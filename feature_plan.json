@@ -1,0 +1,517 @@
+{
+  "project": "Kalshi Flowboard",
+  "phase": "Phase 1 - End-to-end Live Public Trades Feed",
+  "created_at": "2025-12-03",
+  "last_updated": "2025-12-03",
+  "tech_stack": {
+    "backend": "Python 3.x + Starlette (ASGI) + uv",
+    "frontend": "React + Vite + Tailwind CSS (npm for package management)",
+    "data": "SQLite + in-memory aggregates"
+  },
+  "milestones": {
+    "milestone_1": {
+      "id": "milestone_1",
+      "goal": "Initialize project with skeleton structure, dependencies, and init.sh script",
+      "priority": 1,
+      "estimated_effort": "2-3 hours",
+      "dependencies": [],
+      "completed": false,
+      "steps": [
+        {
+          "id": "1.1",
+          "instruction": "Create root project directory structure with backend/ and frontend/ folders",
+          "files_to_create": [
+            "backend/",
+            "frontend/",
+            ".env.example",
+            ".gitignore"
+          ],
+          "completed": false,
+          "verified": false
+        },
+        {
+          "id": "1.2",
+          "instruction": "Set up backend Python project structure with src/ layout using uv init",
+          "files_to_create": [
+            "backend/src/",
+            "backend/src/kalshiflow/",
+            "backend/src/kalshiflow/__init__.py",
+            "backend/pyproject.toml"
+          ],
+          "commands": [
+            "uv init backend --package",
+            "Setup src/kalshiflow package structure"
+          ],
+          "completed": false,
+          "verified": false
+        },
+        {
+          "id": "1.3",
+          "instruction": "Initialize React frontend project using Vite with Tailwind CSS configured via npm",
+          "files_to_create": [
+            "frontend/package.json",
+            "frontend/vite.config.js",
+            "frontend/tailwind.config.js",
+            "frontend/src/",
+            "frontend/src/App.jsx",
+            "frontend/src/main.jsx",
+            "frontend/src/index.css"
+          ],
+          "completed": false,
+          "verified": false
+        },
+        {
+          "id": "1.4",
+          "instruction": "Add backend dependencies using uv including Starlette, uvicorn, websockets, sqlite3, cryptography",
+          "commands": [
+            "uv add starlette uvicorn websockets cryptography pydantic",
+            "uv add --dev pytest pytest-asyncio"
+          ],
+          "acceptance_criteria": "pyproject.toml includes all necessary packages for RSA-based Kalshi auth and WebSocket handling (cryptography for RSA signing)",
+          "completed": false,
+          "verified": false
+        },
+        {
+          "id": "1.5",
+          "instruction": "Create init.sh script that installs all dependencies and starts both backend and frontend",
+          "files_to_create": [
+            "init.sh"
+          ],
+          "script_commands": [
+            "cd backend && uv sync",
+            "cd frontend && npm install (using npm for frontend dependencies)",
+            "uv run backend/src/kalshiflow/main.py & (start backend)",
+            "cd frontend && npm run dev & (start frontend)"
+          ],
+          "acceptance_criteria": "Script successfully installs backend deps using uv, frontend deps using npm, starts backend on port 8000 and frontend on port 3000",
+          "completed": false,
+          "verified": false
+        },
+        {
+          "id": "1.6",
+          "instruction": "Create environment configuration with .env.example for Kalshi RSA authentication credentials",
+          "files_to_create": [
+            ".env.example"
+          ],
+          "env_vars": [
+            "KALSHI_API_KEY",
+            "KALSHI_PRIVATE_KEY_PATH",
+            "KALSHI_WS_URL",
+            "WINDOW_MINUTES",
+            "HOT_MARKETS_LIMIT",
+            "RECENT_TRADES_LIMIT",
+            "SQLITE_DB_PATH"
+          ],
+          "completed": false,
+          "verified": false
+        },
+        {
+          "id": "1.7",
+          "instruction": "Create basic Starlette app entry point with health check endpoint",
+          "files_to_create": [
+            "backend/src/kalshiflow/main.py",
+            "backend/src/kalshiflow/app.py"
+          ],
+          "run_command": "uv run uvicorn kalshiflow.app:app --reload",
+          "acceptance_criteria": "App starts successfully with uv run and responds to GET /health with 200 status",
+          "completed": false,
+          "verified": false
+        }
+      ]
+    },
+    "milestone_2": {
+      "id": "milestone_2",
+      "goal": "Implement Kalshi WebSocket client with RSA auth to subscribe to public trades",
+      "priority": 2,
+      "estimated_effort": "4-6 hours",
+      "dependencies": ["milestone_1"],
+      "completed": false,
+      "steps": [
+        {
+          "id": "2.1",
+          "instruction": "Create data models for Kalshi trade messages using Pydantic",
+          "files_to_create": [
+            "backend/src/kalshiflow/models.py"
+          ],
+          "models": [
+            "TradeMessage",
+            "Trade",
+            "TickerState"
+          ],
+          "acceptance_criteria": "Models validate incoming Kalshi trade JSON payloads correctly",
+          "completed": false,
+          "verified": false
+        },
+        {
+          "id": "2.2",
+          "instruction": "Implement RSA signature authentication for Kalshi API using private key file",
+          "files_to_create": [
+            "backend/src/kalshiflow/auth.py"
+          ],
+          "key_functions": [
+            "Signer.sign (RSA signature with PSS padding)",
+            "Auth.create_auth_headers (timestamp + signature)"
+          ],
+          "auth_details": {
+            "mechanism": "RSA private key signing with PSS padding and SHA256",
+            "required_env": ["KALSHI_API_KEY (access key)", "KALSHI_PRIVATE_KEY_PATH (path to RSA private key file)"],
+            "signature_process": "timestamp_ms + method + path -> sign with private key -> base64 encode",
+            "headers": ["KALSHI-ACCESS-KEY", "KALSHI-ACCESS-SIGNATURE", "KALSHI-ACCESS-TIMESTAMP"]
+          },
+          "reference": "https://github.com/clouvelai/prophete/blob/main/backend/app/core/auth.py",
+          "completed": false,
+          "verified": false
+        },
+        {
+          "id": "2.3",
+          "instruction": "Create KalshiWebSocketClient class with connection and authentication logic",
+          "files_to_create": [
+            "backend/src/kalshiflow/kalshi_client.py"
+          ],
+          "key_methods": [
+            "connect",
+            "authenticate",
+            "subscribe_to_trades",
+            "handle_message"
+          ],
+          "acceptance_criteria": "Client can connect to Kalshi WebSocket and authenticate using RSA signature successfully",
+          "completed": false,
+          "verified": false
+        },
+        {
+          "id": "2.4",
+          "instruction": "Implement reconnection logic with exponential backoff for WebSocket failures",
+          "key_methods": [
+            "reconnect_with_backoff",
+            "handle_disconnect"
+          ],
+          "acceptance_criteria": "Client automatically reconnects after network failures with proper delays",
+          "completed": false,
+          "verified": false
+        },
+        {
+          "id": "2.5",
+          "instruction": "Add subscription to public trades channel and message parsing",
+          "acceptance_criteria": "Client subscribes to trades channel and parses incoming trade messages into Trade objects",
+          "completed": false,
+          "verified": false
+        },
+        {
+          "id": "2.6",
+          "instruction": "Create standalone script to test Kalshi client functionality",
+          "files_to_create": [
+            "backend/scripts/test_kalshi_client.py"
+          ],
+          "run_command": "uv run backend/scripts/test_kalshi_client.py",
+          "acceptance_criteria": "Script connects, authenticates, subscribes, and prints trade messages to stdout when run with uv",
+          "completed": false,
+          "verified": false
+        },
+        {
+          "id": "2.7",
+          "instruction": "Write unit tests for Kalshi client authentication and message parsing",
+          "files_to_create": [
+            "backend/tests/",
+            "backend/tests/test_auth.py",
+            "backend/tests/test_kalshi_client.py",
+            "backend/tests/test_models.py"
+          ],
+          "test_coverage": [
+            "RSA signature generation with private key file",
+            "Auth header creation (timestamp + signature)",
+            "Trade message validation",
+            "WebSocket connection handling"
+          ],
+          "completed": false,
+          "verified": false
+        }
+      ]
+    },
+    "milestone_3": {
+      "id": "milestone_3", 
+      "goal": "Integrate Kalshi client with Starlette backend for real-time trade processing",
+      "priority": 3,
+      "estimated_effort": "3-4 hours",
+      "dependencies": ["milestone_2"],
+      "completed": false,
+      "steps": [
+        {
+          "id": "3.1",
+          "instruction": "Create SQLite database schema for trades storage",
+          "files_to_create": [
+            "backend/src/kalshiflow/database.py"
+          ],
+          "tables": [
+            "trades (id, market_ticker, yes_price, no_price, yes_price_dollars, no_price_dollars, count, taker_side, ts, received_at)"
+          ],
+          "indexes": [
+            "trades_ts_idx",
+            "trades_ticker_ts_idx"
+          ],
+          "completed": false,
+          "verified": false
+        },
+        {
+          "id": "3.2",
+          "instruction": "Implement in-memory trade aggregation and ticker state management",
+          "files_to_create": [
+            "backend/src/kalshiflow/aggregator.py"
+          ],
+          "key_classes": [
+            "TradeAggregator",
+            "TickerStateManager"
+          ],
+          "key_methods": [
+            "process_trade",
+            "update_ticker_state",
+            "get_hot_markets",
+            "prune_old_data"
+          ],
+          "completed": false,
+          "verified": false
+        },
+        {
+          "id": "3.3",
+          "instruction": "Create trade processor service that handles incoming trades from Kalshi client",
+          "files_to_create": [
+            "backend/src/kalshiflow/trade_processor.py"
+          ],
+          "responsibilities": [
+            "Receive trades from Kalshi client",
+            "Store in SQLite",
+            "Update in-memory aggregates",
+            "Emit events to WebSocket broadcaster"
+          ],
+          "completed": false,
+          "verified": false
+        },
+        {
+          "id": "3.4",
+          "instruction": "Implement WebSocket broadcaster for frontend real-time updates",
+          "files_to_create": [
+            "backend/src/kalshiflow/websocket_handler.py"
+          ],
+          "endpoint": "/ws/stream",
+          "message_types": [
+            "snapshot (initial data)",
+            "trade (incremental updates)"
+          ],
+          "completed": false,
+          "verified": false
+        },
+        {
+          "id": "3.5",
+          "instruction": "Integrate Kalshi client as background task in Starlette app startup",
+          "key_integration_points": [
+            "Start Kalshi client on app startup",
+            "Connect trade processor to client",
+            "Handle graceful shutdown"
+          ],
+          "acceptance_criteria": "Backend starts, connects to Kalshi, and processes trades while serving WebSocket endpoint",
+          "completed": false,
+          "verified": false
+        },
+        {
+          "id": "3.6",
+          "instruction": "Add optional HTTP API endpoints for debugging and initial data",
+          "endpoints": [
+            "GET /api/markets/hot",
+            "GET /api/trades/recent",
+            "GET /api/markets/{ticker}/trades"
+          ],
+          "acceptance_criteria": "API endpoints return JSON data matching WebSocket message format",
+          "completed": false,
+          "verified": false
+        },
+        {
+          "id": "3.7",
+          "instruction": "Test complete backend integration with mock trade data",
+          "files_to_create": [
+            "backend/tests/test_integration.py"
+          ],
+          "test_scenarios": [
+            "Mock trades flow through system correctly",
+            "WebSocket clients receive updates",
+            "SQLite stores trade data properly"
+          ],
+          "completed": false,
+          "verified": false
+        }
+      ]
+    },
+    "milestone_4": {
+      "id": "milestone_4",
+      "goal": "Implement frontend layout and real-time trade feed",
+      "priority": 4,
+      "estimated_effort": "4-5 hours",
+      "dependencies": ["milestone_3"],
+      "completed": false,
+      "steps": [
+        {
+          "id": "4.1",
+          "instruction": "Create main app layout with header and two-column responsive design",
+          "files_to_create": [
+            "frontend/src/components/Layout.jsx",
+            "frontend/src/components/Header.jsx"
+          ],
+          "layout_features": [
+            "App title: 'Kalshi Flowboard'",
+            "Subtitle explaining purpose",
+            "Two-column desktop, stacked mobile"
+          ],
+          "completed": false,
+          "verified": false
+        },
+        {
+          "id": "4.2",
+          "instruction": "Implement WebSocket connection hook for real-time data",
+          "files_to_create": [
+            "frontend/src/hooks/useWebSocket.js",
+            "frontend/src/hooks/useTradeData.js"
+          ],
+          "features": [
+            "Connect to backend WebSocket",
+            "Handle reconnection on failure",
+            "Parse snapshot and trade messages",
+            "Manage connection state"
+          ],
+          "completed": false,
+          "verified": false
+        },
+        {
+          "id": "4.3",
+          "instruction": "Create TradeTape component for left panel live trade feed",
+          "files_to_create": [
+            "frontend/src/components/TradeTape.jsx",
+            "frontend/src/components/TradeRow.jsx"
+          ],
+          "display_fields": [
+            "Time (HH:MM:SS)",
+            "Market ticker (truncated)",
+            "Direction (YES/NO with colors)",
+            "Price (formatted)",
+            "Size (count)"
+          ],
+          "features": [
+            "Newest trades at top",
+            "Highlight new trades",
+            "Click to select ticker"
+          ],
+          "completed": false,
+          "verified": false
+        },
+        {
+          "id": "4.4",
+          "instruction": "Create HotMarkets component for right panel volume-based ranking",
+          "files_to_create": [
+            "frontend/src/components/HotMarkets.jsx",
+            "frontend/src/components/TickerCard.jsx"
+          ],
+          "display_fields": [
+            "Market ticker",
+            "Last price (% YES)",
+            "Volume (10m window)",
+            "Net flow (YES/NO)",
+            "Mini price sparkline"
+          ],
+          "features": [
+            "Sorted by volume_window",
+            "Click to select ticker",
+            "Real-time updates"
+          ],
+          "completed": false,
+          "verified": false
+        },
+        {
+          "id": "4.5",
+          "instruction": "Implement simple SVG sparkline component for price visualization",
+          "files_to_create": [
+            "frontend/src/components/Sparkline.jsx"
+          ],
+          "features": [
+            "Render price_points as line chart",
+            "Responsive sizing",
+            "Handle empty/minimal data"
+          ],
+          "completed": false,
+          "verified": false
+        },
+        {
+          "id": "4.6",
+          "instruction": "Create ticker detail drawer for expanded view",
+          "files_to_create": [
+            "frontend/src/components/TickerDetailDrawer.jsx"
+          ],
+          "features": [
+            "Larger price chart",
+            "Key statistics display",
+            "Recent trades table",
+            "Slide-out/modal interface"
+          ],
+          "completed": false,
+          "verified": false
+        },
+        {
+          "id": "4.7",
+          "instruction": "Integrate all components with real-time data state management",
+          "files_to_create": [
+            "frontend/src/context/TradeContext.jsx"
+          ],
+          "state_management": [
+            "recentTrades array",
+            "hotMarkets array",
+            "selectedTicker",
+            "connection status"
+          ],
+          "completed": false,
+          "verified": false
+        },
+        {
+          "id": "4.8",
+          "instruction": "Add responsive design and basic error handling for WebSocket disconnections",
+          "features": [
+            "Mobile-friendly stacked layout",
+            "Loading states",
+            "Connection status indicator",
+            "Error messages for connection issues"
+          ],
+          "acceptance_criteria": "Frontend displays live trades and hot markets with real-time updates from backend",
+          "completed": false,
+          "verified": false
+        },
+        {
+          "id": "4.9",
+          "instruction": "Test complete end-to-end flow with backend integration",
+          "test_scenarios": [
+            "Frontend connects to backend WebSocket",
+            "Receives snapshot data on load",
+            "Updates real-time as trades come in",
+            "Ticker selection works across components"
+          ],
+          "acceptance_criteria": "Complete working application showing live Kalshi trades in real-time",
+          "completed": false,
+          "verified": false
+        }
+      ]
+    }
+  },
+  "phase_1_completion_criteria": [
+    "Application starts successfully with init.sh script",
+    "Backend authenticates with Kalshi and receives live trade data",
+    "Frontend displays real-time trade tape and hot markets",
+    "End-to-end data flow from Kalshi WebSocket to frontend UI",
+    "Basic error handling and reconnection logic works",
+    "SQLite stores trade history for future analysis"
+  ],
+  "next_steps": {
+    "immediate": "Begin milestone_1 by setting up project structure",
+    "critical_path": [
+      "Project setup → Kalshi client → Backend integration → Frontend implementation"
+    ],
+    "risks": [
+      "Kalshi API authentication complexity",
+      "WebSocket connection stability",
+      "Real-time performance under high trade volume"
+    ]
+  }
+}
