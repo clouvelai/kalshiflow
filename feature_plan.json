@@ -15,7 +15,7 @@
       "priority": 1,
       "estimated_effort": "2-3 hours",
       "dependencies": [],
-      "completed": false,
+      "completed": true,
       "steps": [
         {
           "id": "1.1",
@@ -26,8 +26,8 @@
             ".env.example",
             ".gitignore"
           ],
-          "completed": false,
-          "verified": false
+          "completed": true,
+          "verified": true
         },
         {
           "id": "1.2",
@@ -42,8 +42,8 @@
             "uv init backend --package",
             "Setup src/kalshiflow package structure"
           ],
-          "completed": false,
-          "verified": false
+          "completed": true,
+          "verified": true
         },
         {
           "id": "1.3",
@@ -57,8 +57,8 @@
             "frontend/src/main.jsx",
             "frontend/src/index.css"
           ],
-          "completed": false,
-          "verified": false
+          "completed": true,
+          "verified": true
         },
         {
           "id": "1.4",
@@ -68,8 +68,8 @@
             "uv add --dev pytest pytest-asyncio"
           ],
           "acceptance_criteria": "pyproject.toml includes all necessary packages for RSA-based Kalshi auth and WebSocket handling (cryptography for RSA signing)",
-          "completed": false,
-          "verified": false
+          "completed": true,
+          "verified": true
         },
         {
           "id": "1.5",
@@ -84,8 +84,8 @@
             "cd frontend && npm run dev & (start frontend)"
           ],
           "acceptance_criteria": "Script successfully installs backend deps using uv, frontend deps using npm, starts backend on port 8000 and frontend on port 3000",
-          "completed": false,
-          "verified": false
+          "completed": true,
+          "verified": true
         },
         {
           "id": "1.6",
@@ -94,7 +94,7 @@
             ".env.example"
           ],
           "env_vars": [
-            "KALSHI_API_KEY",
+            "KALSHI_API_KEY_ID",
             "KALSHI_PRIVATE_KEY_PATH",
             "KALSHI_WS_URL",
             "WINDOW_MINUTES",
@@ -102,8 +102,8 @@
             "RECENT_TRADES_LIMIT",
             "SQLITE_DB_PATH"
           ],
-          "completed": false,
-          "verified": false
+          "completed": true,
+          "verified": true
         },
         {
           "id": "1.7",
@@ -114,8 +114,8 @@
           ],
           "run_command": "uv run uvicorn kalshiflow.app:app --reload",
           "acceptance_criteria": "App starts successfully with uv run and responds to GET /health with 200 status",
-          "completed": false,
-          "verified": false
+          "completed": true,
+          "verified": true
         }
       ]
     },
@@ -154,7 +154,7 @@
           ],
           "auth_details": {
             "mechanism": "RSA private key signing with PSS padding and SHA256",
-            "required_env": ["KALSHI_API_KEY (access key)", "KALSHI_PRIVATE_KEY_PATH (path to RSA private key file)"],
+            "required_env": ["KALSHI_API_KEY_ID (access key ID)", "KALSHI_PRIVATE_KEY_PATH (path to RSA private key file)"],
             "signature_process": "timestamp_ms + method + path -> sign with private key -> base64 encode",
             "headers": ["KALSHI-ACCESS-KEY", "KALSHI-ACCESS-SIGNATURE", "KALSHI-ACCESS-TIMESTAMP"]
           },

@@ -1,0 +1,32 @@
+[project]
+name = "kalshiflow"
+version = "0.1.0"
+description = "Real-time Kalshi trade flow visualization with WebSocket streaming"
+readme = "README.md"
+authors = [
+    { name = "Samuel Clark", email = "sctennis77@gmail.com" }
+]
+requires-python = ">=3.11"
+dependencies = [
+    "aiofiles>=25.1.0",
+    "cryptography>=46.0.3",
+    "pydantic>=2.12.5",
+    "python-dotenv>=1.2.1",
+    "starlette>=0.50.0",
+    "uvicorn>=0.38.0",
+    "websockets>=15.0.1",
+]
+
+[project.scripts]
+kalshiflow = "kalshiflow:main"
+
+[build-system]
+requires = ["uv_build>=0.9.5,<0.10.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28.1",
+    "pytest>=9.0.1",
+    "pytest-asyncio>=1.3.0",
+]
