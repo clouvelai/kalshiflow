@@ -102,3 +102,64 @@ uv run pytest tests/test_backend_e2e_regression.py -v -s --log-cli-level=INFO
 # Test Kalshi client standalone
 uv run backend/scripts/test_kalshi_client.py
 ```
+
+## Frontend E2E Regression Test
+
+**Critical test that MUST pass before any deployment or major changes.**
+
+### What it validates:
+- ✅ **Backend Connection**: WebSocket connection established with "Live" status
+- ✅ **Real Data Flow**: Live trade data flows from Kalshi → Backend → Frontend
+- ✅ **Analytics Populated**: Summary statistics show non-zero values (volume, trades)
+- ✅ **Market Grid Active**: At least one market displayed (critical failure if empty)
+- ✅ **Chart Rendering**: Time-series chart renders with data points
+- ✅ **Interactive Features**: Hour/Day mode toggle functions correctly
+- ✅ **Real-time Updates**: Data changes over time proving live stream works
+- ✅ **Component Stability**: All UI components render and remain functional
+
+### Running the test:
+```bash
+# Prerequisites: Backend MUST be running on port 8000
+cd backend && uv run uvicorn kalshiflow.app:app --reload --port 8000
+
+# Run the golden frontend test (in separate terminal)
+cd frontend && npm run test:frontend-regression
+
+# What to expect:
+# - Test duration: ~15-20 seconds
+# - 5 screenshots captured in test-results/screenshots/
+# - Clear ✅/❌ status indicators for each validation step
+# - IMMEDIATE FAILURE if backend not running or no data flowing
+# - Visual proof via screenshots of working system
+
+```
+
+### Understanding test output:
+- **✅ WebSocket connected**: Backend is running and accessible
+- **✅ Analytics active**: Real data flowing (Volume: $XXXk, Trades: XXX)
+- **✅ Market grid populated**: X active markets displayed
+- **✅ Chart rendering**: X data points visible
+- **✅ Real-time updates**: Data increased over test duration
+- **❌ CRITICAL FAILURES**: Backend not running, no data, or component failures
+
+### Screenshots captured:
+1. `01_initial_load.png` - Application startup state
+2. `02_connection_established.png` - WebSocket "Live" connection confirmed
+3. `03_data_populated.png` - Full view with analytics, markets, charts populated
+4. `04_interactive_features.png` - After testing Hour/Day toggle functionality
+5. `05_final_state.png` - Final state showing real-time data updates
+
+### When to run:
+- **Before deployment** (mandatory)
+- **After frontend changes** (highly recommended)
+- **When debugging frontend issues** (screenshots help diagnosis)
+- **As part of CI pipeline** (automated validation)
+
+### Critical failure conditions:
+- Backend not running (WebSocket shows "Disconnected")
+- No data flowing (Analytics shows $0 volume)
+- Empty market grid (No markets displayed)
+- Components not rendering (UI elements missing)
+- No real-time updates (Data unchanged over test duration)
+
+This test serves as the definitive validation that the entire frontend is functional and the E2E system works with live data.
