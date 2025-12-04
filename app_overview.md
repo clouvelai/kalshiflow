@@ -129,7 +129,9 @@ Window logic:
 - ASGI app: Starlette.
 - Components:
   - Kalshi WebSocket client task.
-  - Trade processor + aggregator.
+  - Trade processor + dual aggregation services:
+    - Aggregator (market/ticker-specific data: hot markets, ticker states)
+    - TimeAnalyticsService (time-based statistics: minute/hour buckets, global stats)
   - Market metadata service (PHASE 2).
   - WebSocket endpoint for frontend realtime stream.
   - Optional HTTP REST endpoints for initial snapshot / debugging.
@@ -175,7 +177,7 @@ Market metadata API response (from Kalshi /get-market):
 - latest_expiration_time: Market close/expiration time
 - Full JSON response stored in raw_market_data field
 
-3.4 Trade processor and storage
+3.4 Trade processor and dual aggregation services
 
 Responsibilities:
 - Normalize the incoming JSON trade payload:
@@ -197,12 +199,31 @@ Responsibilities:
 
 - Convert to internal Trade model (Python dataclass or Pydantic-like model).
 - Write one row into SQLite `trades` table (non-blocking via async or threadpool).
-- Update in-memory:
-  - Global recent_trades deque.
-  - Per-ticker TickerState aggregates.
-- Emit an update event to WebSocket broadcaster.
+- Send trade to both aggregation services in parallel:
+  - **Aggregator**: Updates market/ticker-specific data (hot markets, ticker states, recent trades)
+  - **TimeAnalyticsService**: Updates time-based buckets (minute/hour windows, global statistics)
+- Emit update events to WebSocket broadcaster for both trade updates and analytics updates.
 
-3.4 Realtime broadcaster (frontend WebSocket)
+3.5 TimeAnalyticsService (PHASE 2 ENHANCED)
+
+Responsibilities:
+- Maintain dual time-window analytics for unified frontend display:
+  - **Hour/Minute mode**: 60 minutes × 1-minute buckets (real-time chart)
+  - **Day/Hour mode**: 24 hours × 1-hour buckets (daily overview)
+- Process each trade into appropriate time buckets based on timestamp
+- Calculate summary statistics for each time window:
+  - Peak Volume (USD), Total Volume (USD)
+  - Peak Trades, Total Trades
+- Replace global statistics previously handled by Aggregator
+- Broadcast unified analytics data every second via WebSocket
+
+Data Structure:
+- Minute buckets: timestamp, volume_usd, trade_count
+- Hour buckets: timestamp, volume_usd, trade_count  
+- Summary stats: computed in real-time for both time windows
+- Rolling window cleanup to maintain performance
+
+3.6 Realtime broadcaster (frontend WebSocket)
 
 Endpoint: `GET /ws/stream`
 
@@ -294,12 +315,51 @@ Message protocol (JSON):
   }
 }
 
+3) Unified analytics update (PHASE 2 ENHANCED):
+{
+  "type": "analytics_data",
+  "data": {
+    "hour_minute_mode": {
+      "time_series": [
+        {
+          "timestamp": 1669149800000,
+          "volume_usd": 15420.50,
+          "trade_count": 142
+        },
+        ...
+      ],
+      "summary_stats": {
+        "peak_volume": 32615.25,
+        "total_volume": 245300.75,
+        "peak_trades": 387,
+        "total_trades": 4250
+      }
+    },
+    "day_hour_mode": {
+      "time_series": [
+        {
+          "timestamp": 1669104000000,
+          "volume_usd": 125420.50,
+          "trade_count": 2142
+        },
+        ...
+      ],
+      "summary_stats": {
+        "peak_volume": 162615.25,
+        "total_volume": 1845300.75,
+        "peak_trades": 3187,
+        "total_trades": 42500
+      }
+    }
+  }
+}
+
 Implementation:
 - Maintain a set of active WebSocket connections.
 - On each new trade, broadcast the `trade` message to all.
 - Consider throttling / batch updates if trade rate is very high (MVP can send per-trade updates).
 
-3.5 Optional HTTP endpoints (for initial load / debugging)
+3.7 Optional HTTP endpoints (for initial load / debugging)
 
 - `GET /api/markets/hot?window_minutes=10&limit=20`
   - Returns hot_markets list (same shape as snapshot hot_markets).
@@ -326,8 +386,28 @@ Page layout: single page, two-column layout on desktop, stacked on mobile.
 4.1 Header
 - App title: "Kalshi Flowboard".
 - Small subtitle: "Live view of Kalshi public trades. No positions, just the public tape."
+- Connection status indicator
 
-4.2 Left Panel: Live Trade Tape
+4.2 Unified Analytics Section (PHASE 2 ENHANCED)
+
+Component: `<UnifiedAnalytics />` (replaces separate HeroStats and AnalyticsChart)
+
+Behavior:
+- Toggle between two time modes:
+  - **Hour View**: 60 minutes × 1-minute buckets with real-time current minute highlighting
+  - **Day View**: 24 hours × 1-hour buckets showing daily trading patterns
+- Real-time summary statistics display:
+  - Peak Volume, Total Volume (USD)
+  - Peak Trades, Total Trades
+- Chart features:
+  - Volume bars (primary) with current time period highlighted
+  - Trade count line (secondary)
+  - Live indicator showing real-time updates
+  - Current period stats prominently displayed
+- Updates every second via analytics WebSocket messages
+- Replaces both standalone global stats and separate analytics chart
+
+4.3 Left Panel: Live Trade Tape
 
 Component: `<TradeTape />`
 
@@ -344,7 +424,7 @@ Behavior:
 - New trades appear at the top with a short highlight (e.g. Tailwind transition + background flash).
 - Clicking a row selects that ticker and notifies parent.
 
-4.3 Right Panel: Hot Markets
+4.4 Right Panel: Hot Markets
 
 Component: `<HotMarkets />` / `<MarketGrid />` (PHASE 2)
 
@@ -364,7 +444,7 @@ Behavior:
   - Fallback: If metadata unavailable, display original ticker-based format.
 - Clicking a card opens detail drawer for that ticker.
 
-4.4 Detail Drawer / Panel
+4.5 Detail Drawer / Panel
 
 Component: `<TickerDetailDrawer />`
 
@@ -388,7 +468,7 @@ Behavior:
   - Larger line chart for yes_price vs time for last 30–60 minutes.
   - Table of last ~20 trades for that ticker.
 
-4.5 Data flow (frontend)
+4.6 Data flow (frontend)
 
 - On mount:
   - Connect to `ws://<backend>/ws/stream`.
@@ -396,11 +476,17 @@ Behavior:
   - Store:
     - recentTrades in state.
     - hotMarkets in state.
+    - analyticsData (both hour/minute and day/hour modes) in state.
 - On `trade` messages:
   - Update recentTrades (prepend, trim).
   - Update hotMarkets (replace or merge ticker_state; resort).
+- On `analytics_data` messages (PHASE 2 ENHANCED):
+  - Update both time modes simultaneously.
+  - Update summary statistics for current selected mode.
+  - Trigger re-render of UnifiedAnalytics component.
 - Selection:
   - User clicks a ticker → set selectedTicker.
+  - User toggles time mode → switch between hour/day analytics views.
   - Optionally fetch additional history from HTTP endpoint.
 
 --------------------------------

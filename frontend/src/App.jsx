@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { TradeProvider, useTradeContext } from './context/TradeContext';
 import Layout from './components/Layout';
 import HeroStats from './components/HeroStats';
+import AnalyticsChart from './components/AnalyticsChart';
 import MarketGrid from './components/MarketGrid';
 import TradeTape from './components/TradeTape';
 import TickerDetailDrawer from './components/TickerDetailDrawer';
@@ -12,6 +13,8 @@ const AppContent = () => {
     hotMarkets,
     selectedTicker,
     globalStats,
+    analyticsData,
+    analyticsSummary,
     connectionStatus,
     error,
     selectTicker,
@@ -40,6 +43,13 @@ const AppContent = () => {
         tradesCount={globalStats.daily_trades_count}
         totalVolume={globalStats.total_volume}
         netFlow={globalStats.total_net_flow}
+      />
+
+      {/* Analytics Chart Section */}
+      <AnalyticsChart 
+        analyticsData={analyticsData || []}
+        analyticsSummary={analyticsSummary || {}}
+        title="Trading Activity (Last Hour)"
       />
 
       {/* Market Grid Section */}

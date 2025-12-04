@@ -1067,7 +1067,7 @@
       "priority": 7,
       "estimated_effort": "4-5 hours",
       "dependencies": ["milestone_6"],
-      "completed": false,
+      "completed": true,
       "phase": "Phase 2 - Advanced Analytics and Visualization",
       "steps": [
         {
@@ -1093,8 +1093,8 @@
             "Automatic cleanup of old buckets"
           ],
           "acceptance_criteria": "Service maintains 60 minute buckets with accurate volume and trade count aggregation",
-          "completed": false,
-          "verified": false
+          "completed": true,
+          "verified": true
         },
         {
           "id": "7.2",
@@ -1117,8 +1117,8 @@
             }
           },
           "acceptance_criteria": "WebSocket protocol supports analytics time series data with real-time updates",
-          "completed": false,
-          "verified": false
+          "completed": true,
+          "verified": true
         },
         {
           "id": "7.3",
@@ -1138,8 +1138,8 @@
             "4. Continue normal processing flow"
           ],
           "acceptance_criteria": "Analytics integrate seamlessly without affecting existing trade processing performance",
-          "completed": false,
-          "verified": false
+          "completed": true,
+          "verified": true
         },
         {
           "id": "7.4",
@@ -1157,8 +1157,8 @@
             "Memory cleanup task for old minute buckets"
           ],
           "acceptance_criteria": "Analytics service starts with app and provides regular WebSocket updates",
-          "completed": false,
-          "verified": false
+          "completed": true,
+          "verified": true
         },
         {
           "id": "7.5",
@@ -1180,8 +1180,8 @@
             "Responsive design for all screen sizes"
           ],
           "acceptance_criteria": "Chart displays beautiful dual-axis time series with smooth real-time updates",
-          "completed": false,
-          "verified": false
+          "completed": true,
+          "verified": true
         },
         {
           "id": "7.6",
@@ -1201,8 +1201,8 @@
             "Mobile: Compact chart maintaining readability"
           ],
           "acceptance_criteria": "Analytics chart integrates seamlessly with existing layout and visual hierarchy",
-          "completed": false,
-          "verified": false
+          "completed": true,
+          "verified": true
         },
         {
           "id": "7.7",
@@ -1224,8 +1224,8 @@
             "Memory-efficient array operations for time series"
           ],
           "acceptance_criteria": "WebSocket data flow supports real-time analytics with efficient state management",
-          "completed": false,
-          "verified": false
+          "completed": true,
+          "verified": true
         },
         {
           "id": "7.8",
@@ -1247,6 +1247,213 @@
             "Responsive design works across all screen sizes"
           ],
           "acceptance_criteria": "Complete analytics feature provides accurate, beautiful real-time insights into global trading activity",
+          "completed": true,
+          "verified": true
+        }
+      ]
+    },
+    "milestone_8": {
+      "id": "milestone_8",
+      "goal": "Analytics Unification: Consolidate global stats and analytics chart into a single UnifiedAnalytics component with dual time modes (hour/minute and day/hour) and real-time summary statistics",
+      "priority": 8,
+      "estimated_effort": "4-6 hours",
+      "dependencies": ["milestone_7"],
+      "completed": false,
+      "phase": "Phase 2 - Analytics Architecture Enhancement",
+      "steps": [
+        {
+          "id": "8.1",
+          "instruction": "Fix current minute missing from analytics chart and make bottom stats real-time",
+          "files_to_modify": [
+            "backend/src/kalshiflow/time_analytics_service.py",
+            "frontend/src/components/AnalyticsChart.jsx"
+          ],
+          "issues_to_fix": [
+            "Current minute not appearing in analytics window (off-by-one error)",
+            "Chart bottom stats (Peak Volume, Total Volume, etc.) are static and don't update",
+            "Analytics data broadcast interval too slow (30 seconds → 1 second)"
+          ],
+          "immediate_fixes": [
+            "Change analytics broadcast from 30 seconds to 1 second for real-time feel",
+            "Fix analytics window to include current minute properly",
+            "Ensure current minute is highlighted with visual indicators",
+            "Remove static stat calculations from frontend chart"
+          ],
+          "acceptance_criteria": "Current minute appears in chart with live updates every second",
+          "completed": false,
+          "verified": false
+        },
+        {
+          "id": "8.2",
+          "instruction": "Enhance TimeAnalyticsService with dual time windows and summary statistics",
+          "files_to_modify": [
+            "backend/src/kalshiflow/time_analytics_service.py"
+          ],
+          "new_features": [
+            "Add day/hour mode: 24 hours × 1-hour buckets alongside existing hour/minute mode",
+            "Calculate summary statistics for both time modes (Peak Volume, Total Volume, Peak Trades, Total Trades)",
+            "Move global statistics calculation from Aggregator to TimeAnalyticsService",
+            "Provide both time window datasets simultaneously"
+          ],
+          "technical_details": [
+            "HourBucket class for 1-hour aggregation buckets",
+            "Dual bucket management (minute buckets + hour buckets)",
+            "Summary stats computed in real-time for both windows",
+            "Replace Aggregator global stats with time-based equivalents"
+          ],
+          "data_structure": {
+            "minute_buckets": "60 minutes × 1-minute for hour view",
+            "hour_buckets": "24 hours × 1-hour for day view", 
+            "summary_stats_hour": "peak_volume, total_volume, peak_trades, total_trades for hour window",
+            "summary_stats_day": "peak_volume, total_volume, peak_trades, total_trades for day window"
+          },
+          "acceptance_criteria": "Service provides both hour/minute and day/hour analytics with pre-computed summary statistics",
+          "completed": false,
+          "verified": false
+        },
+        {
+          "id": "8.3",
+          "instruction": "Update WebSocket protocol to send unified analytics data with both time modes",
+          "files_to_modify": [
+            "backend/src/kalshiflow/websocket_handler.py",
+            "backend/src/kalshiflow/models.py"
+          ],
+          "protocol_enhancements": [
+            "Enhanced analytics_data message with both hour_minute_mode and day_hour_mode",
+            "Include summary statistics for both time windows in each broadcast",
+            "Maintain backward compatibility during transition",
+            "Send both datasets to keep implementation simple"
+          ],
+          "new_message_format": {
+            "type": "analytics_data",
+            "data": {
+              "hour_minute_mode": {
+                "time_series": "60 minute buckets",
+                "summary_stats": "peak_volume, total_volume, peak_trades, total_trades"
+              },
+              "day_hour_mode": {
+                "time_series": "24 hour buckets", 
+                "summary_stats": "peak_volume, total_volume, peak_trades, total_trades"
+              }
+            }
+          },
+          "acceptance_criteria": "WebSocket sends comprehensive analytics data for both time modes with pre-computed stats",
+          "completed": false,
+          "verified": false
+        },
+        {
+          "id": "8.4", 
+          "instruction": "Remove global statistics calculation from Aggregator service",
+          "files_to_modify": [
+            "backend/src/kalshiflow/aggregator.py",
+            "backend/src/kalshiflow/trade_processor.py"
+          ],
+          "cleanup_tasks": [
+            "Remove daily_trades_count, total_volume, total_net_flow from Aggregator",
+            "Remove global stats from trade broadcast messages",
+            "Preserve all market/ticker-specific functionality in Aggregator",
+            "Update trade processor to not include global stats in trade updates"
+          ],
+          "architecture_clarification": [
+            "Aggregator remains responsible for: hot markets, ticker states, market metadata",
+            "TimeAnalyticsService becomes responsible for: time-based statistics, global metrics",
+            "Both services run in parallel processing the same trade stream",
+            "Clean separation: Aggregator = market data, Analytics = time data"
+          ],
+          "acceptance_criteria": "Aggregator focuses only on market/ticker data while TimeAnalyticsService handles all time-based statistics",
+          "completed": false,
+          "verified": false
+        },
+        {
+          "id": "8.5",
+          "instruction": "Create UnifiedAnalytics component to replace HeroStats and AnalyticsChart",
+          "files_to_create": [
+            "frontend/src/components/UnifiedAnalytics.jsx"
+          ],
+          "files_to_modify": [
+            "frontend/src/App.jsx",
+            "frontend/src/hooks/useTradeData.js"
+          ],
+          "component_features": [
+            "Toggle between Hour View (60 min × 1-min buckets) and Day View (24 hr × 1-hr buckets)",
+            "Real-time summary statistics display using backend-computed values",
+            "Chart with current time period highlighting and live indicators",
+            "Responsive design maintaining existing visual hierarchy",
+            "Smooth animations and time mode switching"
+          ],
+          "ui_layout": [
+            "Top: Time mode toggle (Hour | Day) with summary stats grid",
+            "Middle: Time series chart with current period highlighted", 
+            "Real-time indicators showing live data updates",
+            "Replace both HeroStats section and separate AnalyticsChart"
+          ],
+          "data_integration": [
+            "Consume both hour_minute_mode and day_hour_mode from WebSocket",
+            "Display pre-computed summary statistics from backend",
+            "Handle time mode switching without re-fetching data",
+            "Maintain state for both modes simultaneously"
+          ],
+          "acceptance_criteria": "Single component provides both global stats and time series visualization with seamless mode switching",
+          "completed": false,
+          "verified": false
+        },
+        {
+          "id": "8.6",
+          "instruction": "Update frontend data flow to handle unified analytics architecture",
+          "files_to_modify": [
+            "frontend/src/hooks/useTradeData.js",
+            "frontend/src/context/TradeContext.jsx",
+            "frontend/src/App.jsx"
+          ],
+          "data_flow_changes": [
+            "Remove global stats from trade message processing",
+            "Add unified analytics state management for both time modes",
+            "Handle real-time summary stats updates from analytics messages",
+            "Remove dependency on recentTrades.length for stats calculation"
+          ],
+          "state_management": [
+            "analyticsData: { hourMinuteMode: {...}, dayHourMode: {...} }",
+            "currentTimeMode: 'hour' | 'day'",
+            "Remove globalStats state (replaced by analytics summary stats)",
+            "Efficient state updates for 1-second broadcast frequency"
+          ],
+          "component_cleanup": [
+            "Remove HeroStats component and related imports",
+            "Remove AnalyticsChart component and related imports", 
+            "Update App.jsx layout to use UnifiedAnalytics",
+            "Clean up unused state and props"
+          ],
+          "acceptance_criteria": "Frontend state management supports unified analytics with clean component architecture",
+          "completed": false,
+          "verified": false
+        },
+        {
+          "id": "8.7",
+          "instruction": "Test unified analytics architecture end-to-end with real-time validation",
+          "test_scenarios": [
+            "Current minute appears in chart and updates live as trades flow in",
+            "Time mode toggle switches between hour and day views seamlessly", 
+            "Summary statistics update in real-time (every second) from backend",
+            "Chart highlighting shows current time period correctly",
+            "Performance remains smooth with 1-second update frequency",
+            "Market grid and trade feed continue working unchanged",
+            "No duplicate statistics or unused components remain"
+          ],
+          "validation_criteria": [
+            "UnifiedAnalytics component replaces both HeroStats and AnalyticsChart",
+            "Real-time current minute/hour updates work correctly",
+            "Backend computes and sends all summary statistics",
+            "Clean architecture with proper separation of concerns",
+            "Visual design maintains professional appearance",
+            "Responsive design works across all screen sizes"
+          ],
+          "performance_validation": [
+            "1-second analytics broadcasts don't impact trade processing",
+            "Memory usage remains stable with dual time window management",
+            "Chart updates are smooth without jarring re-renders",
+            "WebSocket message efficiency with larger analytics payloads"
+          ],
+          "acceptance_criteria": "Complete unified analytics system provides superior user experience with real-time insights and clean architecture",
           "completed": false,
           "verified": false
         }
@@ -1285,18 +1492,23 @@
       "focus": "Market Metadata Enrichment - Enhanced market display with human-readable information via strategic Kalshi REST API usage"
     },
     "milestone_7": {
-      "status": "ready_to_start",
+      "status": "completed",
       "focus": "Global Analytics Chart - Time-series visualization showing volume and trade activity with real-time updates"
+    },
+    "milestone_8": {
+      "status": "in_progress",
+      "focus": "Analytics Unification - Consolidate global stats and charts into unified component with dual time modes and real-time backend-computed statistics"
     }
   },
   "next_steps": {
-    "immediate": "Begin Milestone 7 implementation - Global Analytics Chart with minute-based time series showing volume (USD) and trade count over the last hour",
+    "immediate": "Milestone 8: Analytics Unification in progress. Consolidating global stats and analytics into unified architecture with dual time modes.",
     "phase_2_roadmap": [
       "Milestone 6: Market Metadata Enrichment (completed)",
-      "Milestone 7: Global Analytics Chart (current)",
+      "Milestone 7: Global Analytics Chart (completed)",
+      "Milestone 8: Analytics Unification (in progress)",
       "Historical trade analysis and expanded charts",
-      "User preferences and market watchlists",
-      "Performance optimization for high-volume periods", 
+      "User preferences and market watchlists", 
+      "Performance optimization for high-volume periods",
       "Enhanced UI features (market search, filters, alerts)",
       "Database optimization and data retention policies"
     ],

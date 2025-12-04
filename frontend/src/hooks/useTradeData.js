@@ -6,6 +6,15 @@ const useTradeData = () => {
   const [hotMarkets, setHotMarkets] = useState([]);
   const [selectedTicker, setSelectedTicker] = useState(null);
   const [tradeCount, setTradeCount] = useState(0);
+  const [analyticsData, setAnalyticsData] = useState([]);
+  const [analyticsSummary, setAnalyticsSummary] = useState({
+    peak_volume_usd: 0,
+    total_volume_usd: 0,
+    peak_trades: 0,
+    total_trades: 0,
+    current_minute_volume_usd: 0,
+    current_minute_trades: 0
+  });
   const [globalStats, setGlobalStats] = useState({
     daily_trades_count: 0,
     total_volume: 0,
@@ -35,6 +44,15 @@ const useTradeData = () => {
           }
           if (lastMessage.data?.global_stats) {
             setGlobalStats(lastMessage.data.global_stats);
+          }
+          if (lastMessage.data?.analytics_data) {
+            // Handle legacy format (array) and new format (object with time_series/summary)
+            if (Array.isArray(lastMessage.data.analytics_data)) {
+              setAnalyticsData(lastMessage.data.analytics_data);
+            } else {
+              setAnalyticsData(lastMessage.data.analytics_data.time_series || []);
+              setAnalyticsSummary(lastMessage.data.analytics_data.summary || {});
+            }
           }
           break;
 
@@ -94,6 +112,16 @@ const useTradeData = () => {
           }
           break;
 
+        case 'analytics_data':
+          // Real-time analytics update with both time series and summary
+          if (lastMessage.data?.time_series) {
+            setAnalyticsData(lastMessage.data.time_series);
+          }
+          if (lastMessage.data?.summary) {
+            setAnalyticsSummary(lastMessage.data.summary);
+          }
+          break;
+
         default:
       }
     } catch (err) {
@@ -122,6 +150,8 @@ const useTradeData = () => {
     hotMarkets,
     selectedTicker,
     tradeCount,
+    analyticsData,
+    analyticsSummary,
     globalStats,
     connectionStatus,
     error,

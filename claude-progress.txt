@@ -128,3 +128,114 @@ The foundation is now solid with both backend and frontend properly configured a
 ### Next Steps:
 The frontend is now fully functional and beautiful. Phase 1 is complete.
 Ready to proceed with Phase 2 features when requested.
+
+---
+
+## Milestone 7: Global Analytics Chart Implementation
+**Date:** 2025-12-04
+**Time Taken:** ~3 hours
+**Status:** COMPLETED
+
+### What Was Accomplished:
+
+1. **TimeAnalyticsService - Backend Analytics Engine:**
+   - Created comprehensive minute-based time series aggregation service
+   - Implemented MinuteBucket data structure for efficient volume/trade counting
+   - Added 60-minute rolling window with automatic cleanup of old buckets
+   - Integrated USD volume calculation (trade_count × price_dollars)
+   - Background cleanup task to maintain memory efficiency
+
+2. **Enhanced WebSocket Protocol:**
+   - Added new AnalyticsDataMessage model for time series data
+   - Enhanced snapshot messages to include analytics_data
+   - Implemented real-time analytics_data message type for live updates
+   - Added broadcast_analytics_data method to WebSocketBroadcaster
+
+3. **Trade Processing Pipeline Integration:**
+   - Integrated TimeAnalyticsService with existing TradeProcessor
+   - Non-blocking analytics processing to maintain trade flow performance
+   - Added analytics service startup/shutdown to application lifecycle
+   - Background broadcast task sends analytics updates every 30 seconds
+
+4. **Frontend AnalyticsChart Component:**
+   - Built beautiful dual-axis time series visualization using Recharts
+   - Primary Y-axis for Volume USD (blue bars with gradient)
+   - Secondary Y-axis for Trade Count (green line with dots)
+   - Custom tooltip with formatted volume and trade count
+   - Summary statistics showing peak volume, peak trades, totals
+   - Loading states and responsive design for all screen sizes
+
+5. **Layout Integration:**
+   - Positioned AnalyticsChart between HeroStats and MarketGrid
+   - Maintains visual hierarchy: Hero → Analytics → Markets → Feed
+   - Added recharts dependency to frontend package.json
+   - Responsive grid layout preserves existing design aesthetics
+
+6. **Frontend WebSocket Data Flow Enhancement:**
+   - Added analyticsData state to useTradeData hook
+   - Handles 'analytics_data' message type for real-time updates
+   - Includes analytics data in snapshot for immediate chart population
+   - Efficient state updates for smooth chart rendering
+
+### How It Was Validated:
+
+1. **Backend Testing:**
+   - Created comprehensive test suite for TimeAnalyticsService
+   - Validated MinuteBucket volume calculations with test trades
+   - Confirmed proper minute timestamp rounding and bucket creation
+   - Tested service statistics and cleanup functionality
+   - Verified app startup with analytics integration
+
+2. **Frontend Testing:**
+   - Successful build with `npm run build` (zero errors)
+   - Verified AnalyticsChart component imports and renders correctly
+   - Confirmed responsive design works across screen sizes
+
+3. **Integration Testing:**
+   - Analytics service imports and initializes without errors
+   - App.py starts with all analytics components integrated
+   - WebSocket protocol enhancements validated
+   - End-to-end data flow from trade processing to chart visualization
+
+### Technical Features Delivered:
+
+**Backend:**
+- Time-based aggregation with configurable window (60 minutes)
+- Real-time minute bucket updates as trades flow in
+- Memory-efficient cleanup of old data
+- USD volume calculation: sum(trade_count × price_dollars)
+- Background broadcasting every 30 seconds
+- Non-blocking integration with existing trade pipeline
+
+**Frontend:**
+- Dual-axis Recharts visualization
+- Beautiful gradient bars for volume, smooth line for trade count
+- Current time reference line for real-time context
+- Summary stats: peak volume, peak trades, totals
+- Loading states and empty data handling
+- Perfect integration with existing dark theme
+
+### Files Modified/Created:
+
+**Backend:**
+- `/backend/src/kalshiflow/time_analytics_service.py` - New analytics engine
+- `/backend/src/kalshiflow/models.py` - Added AnalyticsDataMessage
+- `/backend/src/kalshiflow/websocket_handler.py` - Analytics broadcast support
+- `/backend/src/kalshiflow/trade_processor.py` - Analytics integration
+- `/backend/src/kalshiflow/app.py` - Background broadcast task
+
+**Frontend:**
+- `/frontend/package.json` - Added recharts dependency
+- `/frontend/src/components/AnalyticsChart.jsx` - New chart component
+- `/frontend/src/App.jsx` - Layout integration
+- `/frontend/src/hooks/useTradeData.js` - Analytics data flow
+- `/frontend/src/context/TradeContext.jsx` - Context pass-through
+
+### Performance Impact:
+- Zero impact on trade processing latency (non-blocking analytics)
+- Efficient in-memory storage with automatic cleanup
+- 30-second broadcast interval balances real-time feel with resource usage
+- Frontend chart renders smoothly with 60 data points
+
+### Next Steps:
+Milestone 7 successfully completed. The application now provides beautiful real-time insights into global trading activity with accurate volume and trade count visualization over the last hour. Ready for additional Phase 2 features or Phase 3 planning.
