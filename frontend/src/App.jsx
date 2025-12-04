@@ -1,8 +1,7 @@
 import React, { useState } from 'react';
 import { TradeProvider, useTradeContext } from './context/TradeContext';
 import Layout from './components/Layout';
-import HeroStats from './components/HeroStats';
-import AnalyticsChart from './components/AnalyticsChart';
+import UnifiedAnalytics from './components/UnifiedAnalytics';
 import MarketGrid from './components/MarketGrid';
 import TradeTape from './components/TradeTape';
 import TickerDetailDrawer from './components/TickerDetailDrawer';
@@ -38,18 +37,12 @@ const AppContent = () => {
     <Layout 
       connectionStatus={connectionStatus}
     >
-      {/* Hero Stats Section */}
-      <HeroStats 
-        tradesCount={globalStats.daily_trades_count}
-        totalVolume={globalStats.total_volume}
-        netFlow={globalStats.total_net_flow}
-      />
-
-      {/* Analytics Chart Section */}
-      <AnalyticsChart 
-        analyticsData={analyticsData || []}
-        analyticsSummary={analyticsSummary || {}}
-        title="Trading Activity (Last Hour)"
+      {/* Unified Analytics Section - replaces HeroStats and AnalyticsChart */}
+      <UnifiedAnalytics 
+        analyticsData={analyticsData || { 
+          hour_minute_mode: { time_series: [], summary_stats: {} },
+          day_hour_mode: { time_series: [], summary_stats: {} }
+        }}
       />
 
       {/* Market Grid Section */}

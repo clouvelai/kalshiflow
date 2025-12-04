@@ -6,7 +6,10 @@ const useTradeData = () => {
   const [hotMarkets, setHotMarkets] = useState([]);
   const [selectedTicker, setSelectedTicker] = useState(null);
   const [tradeCount, setTradeCount] = useState(0);
-  const [analyticsData, setAnalyticsData] = useState([]);
+  const [analyticsData, setAnalyticsData] = useState({
+    hour_minute_mode: { time_series: [], summary_stats: {} },
+    day_hour_mode: { time_series: [], summary_stats: {} }
+  });
   const [analyticsSummary, setAnalyticsSummary] = useState({
     peak_volume_usd: 0,
     total_volume_usd: 0,
@@ -46,12 +49,14 @@ const useTradeData = () => {
             setGlobalStats(lastMessage.data.global_stats);
           }
           if (lastMessage.data?.analytics_data) {
-            // Handle legacy format (array) and new format (object with time_series/summary)
-            if (Array.isArray(lastMessage.data.analytics_data)) {
+            // Handle new dual-mode format
+            if (lastMessage.data.analytics_data.hour_minute_mode && lastMessage.data.analytics_data.day_hour_mode) {
               setAnalyticsData(lastMessage.data.analytics_data);
+              // Set legacy analyticsSummary for backward compatibility (use hour mode by default)
+              setAnalyticsSummary(lastMessage.data.analytics_data.hour_minute_mode.summary_stats || {});
             } else {
-              setAnalyticsData(lastMessage.data.analytics_data.time_series || []);
-              setAnalyticsSummary(lastMessage.data.analytics_data.summary || {});
+              // Fallback for old format
+              console.warn('Received analytics data in old format, this should not happen with new backend');
             }
           }
           break;
@@ -113,12 +118,13 @@ const useTradeData = () => {
           break;
 
         case 'analytics_data':
-          // Real-time analytics update with both time series and summary
-          if (lastMessage.data?.time_series) {
-            setAnalyticsData(lastMessage.data.time_series);
-          }
-          if (lastMessage.data?.summary) {
-            setAnalyticsSummary(lastMessage.data.summary);
+          // Real-time analytics update with dual-mode format
+          if (lastMessage.data?.hour_minute_mode && lastMessage.data?.day_hour_mode) {
+            setAnalyticsData(lastMessage.data);
+            // Update legacy analyticsSummary for backward compatibility (use hour mode by default)
+            setAnalyticsSummary(lastMessage.data.hour_minute_mode.summary_stats || {});
+          } else {
+            console.warn('Received analytics_data in old format, this should not happen with new backend');
           }
           break;
 
