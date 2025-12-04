@@ -47,6 +47,13 @@ npm run dev
 cd backend
 uv run pytest
 
+# CRITICAL: Backend E2E regression test (golden standard)
+# Run this before any deployment to ensure entire backend pipeline works
+uv run pytest tests/test_backend_e2e_regression.py -v
+
+# Detailed validation output for debugging
+uv run pytest tests/test_backend_e2e_regression.py -v -s --log-cli-level=INFO
+
 # Test Kalshi client standalone
 uv run backend/scripts/test_kalshi_client.py
 ```
@@ -134,5 +141,48 @@ HOT_MARKETS_LIMIT=12
 RECENT_TRADES_LIMIT=200
 SQLITE_DB_PATH=./kalshi_trades.db
 ```
+## Backend E2E Regression Test
+
+**Critical test that MUST pass before any deployment or major changes.**
+
+### What it validates:
+- ✅ **Backend Startup**: Complete application starts successfully
+- ✅ **Service Integration**: All services (trade processor, aggregator, websocket manager) initialize
+- ✅ **Kalshi Connection**: WebSocket client connects to Kalshi public trades stream
+- ✅ **Database Functionality**: SQLite database creation and accessibility
+- ✅ **Frontend WebSocket**: Client connections work and receive valid data
+- ✅ **Data Processing**: Trade data flows through complete pipeline (when available)
+- ✅ **Clean Shutdown**: All services stop gracefully
+
+### Running the test:
+```bash
+# Standard run (must pass before deployment)
+uv run pytest tests/test_backend_e2e_regression.py -v
+
+# Debug mode with detailed validation steps
+uv run pytest tests/test_backend_e2e_regression.py -v -s --log-cli-level=INFO
+
+# What to expect:
+# - Test duration: ~10-11 seconds
+# - Clear ✅/❌ status indicators for each validation step
+# - Detailed failure messages if anything breaks
+# - Works with or without live trade data from Kalshi
+```
+
+### Understanding test output:
+- **✅ PASSED**: Validation step completed successfully
+- **❌ FAILED**: Validation step failed (investigate immediately)
+- **⚠️ WARNING**: Non-critical issue detected (monitor)
+- **ℹ️ INFO**: Status information (normal)
+- **📊 STATS**: Final test statistics
+
+### When to run:
+- **Before deployment** (mandatory)
+- **After backend changes** (highly recommended)
+- **When debugging backend issues** (use debug mode)
+- **As part of CI pipeline** (automated)
+
+This test serves as the definitive validation that the entire backend is functional and safe to deploy.
+
 - use the planning agent for all planning
 - use the fullstack websocket agent for all implementation/coding
