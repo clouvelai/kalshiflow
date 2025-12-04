@@ -63,28 +63,6 @@ const MarketGrid = ({ markets = [], selectedTicker, onTickerSelect }) => {
         ))}
       </div>
 
-      {/* Grid Footer */}
-      <div className="bg-gray-50 rounded-xl p-4">
-        <div className="flex items-center justify-center space-x-6 text-sm text-gray-600">
-          <div className="flex items-center">
-            <span className="w-3 h-3 bg-green-500 rounded-full mr-2"></span>
-            <span>YES Flow</span>
-          </div>
-          <div className="flex items-center">
-            <span className="w-3 h-3 bg-red-500 rounded-full mr-2"></span>
-            <span>NO Flow</span>
-          </div>
-          <div className="flex items-center">
-            <span className="text-lg mr-2">🔥</span>
-            <span>High Volume</span>
-          </div>
-        </div>
-        <div className="text-center mt-2">
-          <p className="text-xs text-gray-500">
-            Click on any market card to view detailed information and trading history
-          </p>
-        </div>
-      </div>
     </div>
   );
 };
