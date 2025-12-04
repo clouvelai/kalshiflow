@@ -26,7 +26,15 @@ class MinuteBucket:
     trade_count: int  # Total number of trades for the minute
     
     def add_trade(self, trade: Trade):
-        """Add a trade to this minute bucket."""
+        """Add a trade to this minute bucket.
+        
+        Volume Calculation:
+        - USD Volume = trade.count × price_in_dollars
+        - For YES trades: count × yes_price_dollars  
+        - For NO trades: count × no_price_dollars
+        - This represents the actual monetary value traded (CORRECT approach)
+        - Alternative approaches like counting contracts only are incorrect for USD volume
+        """
         # Calculate USD volume for this trade (count × price in dollars)
         if trade.taker_side == "yes":
             trade_volume_usd = trade.count * trade.yes_price_dollars

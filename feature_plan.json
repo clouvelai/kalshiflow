@@ -1069,6 +1069,7 @@
       "dependencies": ["milestone_6"],
       "completed": true,
       "phase": "Phase 2 - Advanced Analytics and Visualization",
+      "completion_notes": "Analytics chart successfully implemented with accurate USD volume calculation (count × price_dollars), real-time updates, current minute highlighting, and backend-computed summary statistics. TimeAnalyticsService provides correct volume calculations versus legacy aggregator contract counting.",
       "steps": [
         {
           "id": "7.1",
@@ -1493,7 +1494,7 @@
     },
     "milestone_7": {
       "status": "completed",
-      "focus": "Global Analytics Chart - Time-series visualization showing volume and trade activity with real-time updates"
+      "focus": "Global Analytics Chart - Time-series visualization showing volume and trade activity with real-time updates. Accurate USD volume calculation (count × price_dollars) implemented with current minute highlighting and backend-computed statistics."
     },
     "milestone_8": {
       "status": "in_progress",
