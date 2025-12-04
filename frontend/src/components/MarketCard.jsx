@@ -139,65 +139,12 @@ const MarketCard = ({ market, onClick, isSelected = false, rank }) => {
       )}
 
 
-      {/* Market Title and Info */}
+      {/* Market Title */}
       <div className="mb-3">
         {/* Primary Title - Always ticker */}
-        <h3 className="font-semibold text-gray-900 text-sm leading-tight mb-1" title={market.ticker}>
+        <h3 className="font-semibold text-gray-900 text-lg leading-tight" title={market.ticker}>
           {market.ticker}
         </h3>
-        
-        {/* First Subtitle - Market title if metadata available */}
-        {market.title && (
-          <div className="text-xs text-gray-600 mb-1 line-clamp-2" title={market.title}>
-            {market.title}
-          </div>
-        )}
-        
-        {/* Second Subtitle - Liquidity and Open Interest with icons */}
-        <div className="text-xs text-gray-500 mb-1">
-          {(() => {
-            const liquidity = formatLiquidity(market.liquidity_dollars);
-            const openInterest = formatOpenInterest(market.open_interest);
-            
-            const metadataParts = [];
-            if (liquidity) {
-              metadataParts.push(
-                <span key="liquidity" className="inline-flex items-center gap-1">
-                  <span className="text-blue-500">💧</span>
-                  <span>{liquidity}</span>
-                </span>
-              );
-            }
-            if (openInterest) {
-              metadataParts.push(
-                <span key="open-interest" className="inline-flex items-center gap-1">
-                  <span className="text-purple-500">👥</span>
-                  <span>{openInterest}</span>
-                </span>
-              );
-            }
-            
-            if (metadataParts.length === 0) return null;
-            
-            return (
-              <div className="flex items-center gap-3 flex-wrap">
-                {metadataParts.map((part, index) => (
-                  <React.Fragment key={index}>
-                    {part}
-                  </React.Fragment>
-                ))}
-              </div>
-            );
-          })()}
-        </div>
-        
-        {/* Third Subtitle - Time to expiration with clock icon */}
-        {formatTimeToExpiration(market.latest_expiration_time) && (
-          <div className="text-xs text-gray-400 flex items-center gap-1">
-            <span className="text-gray-400">⏰</span>
-            <span>Expires in {formatTimeToExpiration(market.latest_expiration_time)}</span>
-          </div>
-        )}
       </div>
 
       {/* Price Section */}
@@ -230,17 +177,6 @@ const MarketCard = ({ market, onClick, isSelected = false, rank }) => {
         </div>
       </div>
 
-      {/* Liquidity (if available) */}
-      {formatLiquidity(market.liquidity_dollars) && (
-        <div className="mb-3">
-          <div className="flex items-center justify-between">
-            <span className="text-xs text-gray-500">Liquidity</span>
-            <span className="text-sm font-semibold text-blue-600">
-              {formatLiquidity(market.liquidity_dollars)}
-            </span>
-          </div>
-        </div>
-      )}
 
       {/* Net Flow */}
       <div className="mb-3">
@@ -285,8 +221,8 @@ const MarketCard = ({ market, onClick, isSelected = false, rank }) => {
         </div>
       )}
 
-      {/* Footer Stats */}
-      <div className="pt-2 border-t border-gray-100">
+      {/* Yes/No Flow Stats */}
+      <div className="pt-2 border-t border-gray-100 mb-3">
         <div className="flex justify-between text-xs">
           <span className={`
             ${netFlow > 0 ? 'text-green-600 font-semibold' : 'text-gray-500'}
@@ -300,6 +236,47 @@ const MarketCard = ({ market, onClick, isSelected = false, rank }) => {
           </span>
         </div>
       </div>
+
+      {/* Metadata Footer */}
+      {(market.title || market.liquidity_dollars || market.open_interest || market.latest_expiration_time) && (
+        <div className="mt-3 pt-3 border-t border-gray-200 bg-gray-50 -mx-4 -mb-4 px-4 pb-4 rounded-b-xl">
+          {/* Market Title */}
+          {market.title && (
+            <div className="text-xs text-gray-700 mb-2 line-clamp-2 font-medium" title={market.title}>
+              {market.title}
+            </div>
+          )}
+          
+          {/* Metadata Row */}
+          <div className="flex items-center justify-between gap-2 text-xs text-gray-500">
+            <div className="flex items-center gap-3 flex-wrap">
+              {/* Liquidity */}
+              {formatLiquidity(market.liquidity_dollars) && (
+                <span className="inline-flex items-center gap-1">
+                  <span className="text-blue-500">💧</span>
+                  <span>{formatLiquidity(market.liquidity_dollars)}</span>
+                </span>
+              )}
+              
+              {/* Open Interest */}
+              {formatOpenInterest(market.open_interest) && (
+                <span className="inline-flex items-center gap-1">
+                  <span className="text-purple-500">👥</span>
+                  <span>{formatOpenInterest(market.open_interest)}</span>
+                </span>
+              )}
+            </div>
+            
+            {/* Time to Expiration */}
+            {formatTimeToExpiration(market.latest_expiration_time) && (
+              <span className="inline-flex items-center gap-1 text-gray-400">
+                <span>⏰</span>
+                <span>{formatTimeToExpiration(market.latest_expiration_time)}</span>
+              </span>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Hover Overlay */}
       <div className="absolute inset-0 bg-blue-50 opacity-0 hover:opacity-10 rounded-xl transition-opacity duration-200 pointer-events-none"></div>
