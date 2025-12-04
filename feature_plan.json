@@ -125,7 +125,7 @@
       "priority": 2,
       "estimated_effort": "4-6 hours",
       "dependencies": ["milestone_1"],
-      "completed": false,
+      "completed": true,
       "steps": [
         {
           "id": "2.1",
@@ -139,8 +139,8 @@
             "TickerState"
           ],
           "acceptance_criteria": "Models validate incoming Kalshi trade JSON payloads correctly",
-          "completed": false,
-          "verified": false
+          "completed": true,
+          "verified": true
         },
         {
           "id": "2.2",
@@ -159,8 +159,8 @@
             "headers": ["KALSHI-ACCESS-KEY", "KALSHI-ACCESS-SIGNATURE", "KALSHI-ACCESS-TIMESTAMP"]
           },
           "reference": "https://github.com/clouvelai/prophete/blob/main/backend/app/core/auth.py",
-          "completed": false,
-          "verified": false
+          "completed": true,
+          "verified": true
         },
         {
           "id": "2.3",
@@ -175,8 +175,8 @@
             "handle_message"
           ],
           "acceptance_criteria": "Client can connect to Kalshi WebSocket and authenticate using RSA signature successfully",
-          "completed": false,
-          "verified": false
+          "completed": true,
+          "verified": true
         },
         {
           "id": "2.4",
@@ -186,15 +186,15 @@
             "handle_disconnect"
           ],
           "acceptance_criteria": "Client automatically reconnects after network failures with proper delays",
-          "completed": false,
-          "verified": false
+          "completed": true,
+          "verified": true
         },
         {
           "id": "2.5",
           "instruction": "Add subscription to public trades channel and message parsing",
           "acceptance_criteria": "Client subscribes to trades channel and parses incoming trade messages into Trade objects",
-          "completed": false,
-          "verified": false
+          "completed": true,
+          "verified": true
         },
         {
           "id": "2.6",
@@ -204,8 +204,8 @@
           ],
           "run_command": "uv run backend/scripts/test_kalshi_client.py",
           "acceptance_criteria": "Script connects, authenticates, subscribes, and prints trade messages to stdout when run with uv",
-          "completed": false,
-          "verified": false
+          "completed": true,
+          "verified": true
         },
         {
           "id": "2.7",
@@ -222,8 +222,8 @@
             "Trade message validation",
             "WebSocket connection handling"
           ],
-          "completed": false,
-          "verified": false
+          "completed": true,
+          "verified": true
         }
       ]
     },
@@ -248,8 +248,8 @@
             "trades_ts_idx",
             "trades_ticker_ts_idx"
           ],
-          "completed": false,
-          "verified": false
+          "completed": true,
+          "verified": true
         },
         {
           "id": "3.2",
@@ -267,8 +267,8 @@
             "get_hot_markets",
             "prune_old_data"
           ],
-          "completed": false,
-          "verified": false
+          "completed": true,
+          "verified": true
         },
         {
           "id": "3.3",
@@ -282,8 +282,8 @@
             "Update in-memory aggregates",
             "Emit events to WebSocket broadcaster"
           ],
-          "completed": false,
-          "verified": false
+          "completed": true,
+          "verified": true
         },
         {
           "id": "3.4",
@@ -296,8 +296,8 @@
             "snapshot (initial data)",
             "trade (incremental updates)"
           ],
-          "completed": false,
-          "verified": false
+          "completed": true,
+          "verified": true
         },
         {
           "id": "3.5",
@@ -308,8 +308,8 @@
             "Handle graceful shutdown"
           ],
           "acceptance_criteria": "Backend starts, connects to Kalshi, and processes trades while serving WebSocket endpoint",
-          "completed": false,
-          "verified": false
+          "completed": true,
+          "verified": true
         },
         {
           "id": "3.6",
@@ -320,8 +320,8 @@
             "GET /api/markets/{ticker}/trades"
           ],
           "acceptance_criteria": "API endpoints return JSON data matching WebSocket message format",
-          "completed": false,
-          "verified": false
+          "completed": true,
+          "verified": true
         },
         {
           "id": "3.7",
@@ -334,8 +334,8 @@
             "WebSocket clients receive updates",
             "SQLite stores trade data properly"
           ],
-          "completed": false,
-          "verified": false
+          "completed": true,
+          "verified": true
         }
       ]
     },
@@ -359,8 +359,8 @@
             "Subtitle explaining purpose",
             "Two-column desktop, stacked mobile"
           ],
-          "completed": false,
-          "verified": false
+          "completed": true,
+          "verified": true
         },
         {
           "id": "4.2",
@@ -375,8 +375,8 @@
             "Parse snapshot and trade messages",
             "Manage connection state"
           ],
-          "completed": false,
-          "verified": false
+          "completed": true,
+          "verified": true
         },
         {
           "id": "4.3",
@@ -397,8 +397,8 @@
             "Highlight new trades",
             "Click to select ticker"
           ],
-          "completed": false,
-          "verified": false
+          "completed": true,
+          "verified": true
         },
         {
           "id": "4.4",
@@ -419,8 +419,8 @@
             "Click to select ticker",
             "Real-time updates"
           ],
-          "completed": false,
-          "verified": false
+          "completed": true,
+          "verified": true
         },
         {
           "id": "4.5",
@@ -433,8 +433,8 @@
             "Responsive sizing",
             "Handle empty/minimal data"
           ],
-          "completed": false,
-          "verified": false
+          "completed": true,
+          "verified": true
         },
         {
           "id": "4.6",
@@ -448,8 +448,8 @@
             "Recent trades table",
             "Slide-out/modal interface"
           ],
-          "completed": false,
-          "verified": false
+          "completed": true,
+          "verified": true
         },
         {
           "id": "4.7",
@@ -463,8 +463,8 @@
             "selectedTicker",
             "connection status"
           ],
-          "completed": false,
-          "verified": false
+          "completed": true,
+          "verified": true
         },
         {
           "id": "4.8",
@@ -476,8 +476,8 @@
             "Error messages for connection issues"
           ],
           "acceptance_criteria": "Frontend displays live trades and hot markets with real-time updates from backend",
-          "completed": false,
-          "verified": false
+          "completed": true,
+          "verified": true
         },
         {
           "id": "4.9",
@@ -489,8 +489,8 @@
             "Ticker selection works across components"
           ],
           "acceptance_criteria": "Complete working application showing live Kalshi trades in real-time",
-          "completed": false,
-          "verified": false
+          "completed": true,
+          "verified": true
         }
       ]
     }
