@@ -138,6 +138,13 @@ class TickerState(BaseModel):
     no_flow: int = Field(default=0, description="NO-side volume in window")
     price_points: List[Any] = Field(default_factory=list, description="Enhanced price history with volume and timestamp data for advanced visualizations")
     
+    # Optional metadata fields (populated when available)
+    title: Optional[str] = Field(None, description="Human-readable market title")
+    category: Optional[str] = Field(None, description="Market category (Elections, Sports, etc)")
+    liquidity_dollars: Optional[float] = Field(None, description="Total market liquidity in dollars")
+    open_interest: Optional[int] = Field(None, description="Current open interest")
+    latest_expiration_time: Optional[str] = Field(None, description="Market expiration time")
+    
     @property
     def net_flow(self) -> int:
         """Net flow (yes_flow - no_flow)."""

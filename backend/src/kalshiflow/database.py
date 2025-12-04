@@ -28,6 +28,21 @@ class Database:
                 return
                 
             async with aiosqlite.connect(self.db_path) as db:
+                # Create markets table first (for foreign key reference)
+                await db.execute('''
+                    CREATE TABLE IF NOT EXISTS markets (
+                        ticker VARCHAR(50) PRIMARY KEY,
+                        title TEXT NOT NULL,
+                        category VARCHAR(100),
+                        liquidity_dollars REAL,
+                        open_interest INTEGER,
+                        latest_expiration_time TIMESTAMP,
+                        raw_market_data TEXT,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                ''')
+                
                 await db.execute('''
                     CREATE TABLE IF NOT EXISTS trades (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -58,6 +73,22 @@ class Database:
                 await db.execute('''
                     CREATE INDEX IF NOT EXISTS idx_trades_received_at 
                     ON trades(received_at)
+                ''')
+                
+                # Create indexes for markets table
+                await db.execute('''
+                    CREATE INDEX IF NOT EXISTS idx_markets_ticker 
+                    ON markets(ticker)
+                ''')
+                
+                await db.execute('''
+                    CREATE INDEX IF NOT EXISTS idx_markets_category 
+                    ON markets(category)
+                ''')
+                
+                await db.execute('''
+                    CREATE INDEX IF NOT EXISTS idx_markets_updated_at 
+                    ON markets(updated_at)
                 ''')
                 
                 await db.commit()
@@ -189,6 +220,72 @@ class Database:
                 "unique_tickers": ticker_row["unique_tickers"] if ticker_row else 0,
                 "db_path": self.db_path
             }
+    
+    # Market metadata methods
+    async def insert_or_update_market(self, ticker: str, title: str, category: str = None,
+                                    liquidity_dollars: float = None, open_interest: int = None,
+                                    latest_expiration_time: str = None, raw_market_data: str = None) -> bool:
+        """Insert or update market metadata."""
+        async with self.get_connection() as db:
+            # Try to insert first, then update if it exists
+            try:
+                await db.execute('''
+                    INSERT INTO markets (
+                        ticker, title, category, liquidity_dollars, open_interest, 
+                        latest_expiration_time, raw_market_data, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                ''', (ticker, title, category, liquidity_dollars, open_interest, 
+                     latest_expiration_time, raw_market_data))
+            except sqlite3.IntegrityError:
+                # Market already exists, update it
+                await db.execute('''
+                    UPDATE markets SET 
+                        title = ?, category = ?, liquidity_dollars = ?, open_interest = ?,
+                        latest_expiration_time = ?, raw_market_data = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE ticker = ?
+                ''', (title, category, liquidity_dollars, open_interest, 
+                     latest_expiration_time, raw_market_data, ticker))
+            
+            await db.commit()
+            return True
+    
+    async def get_market_metadata(self, ticker: str) -> Optional[Dict[str, Any]]:
+        """Get market metadata for a ticker."""
+        async with self.get_connection() as db:
+            async with db.execute('''
+                SELECT * FROM markets WHERE ticker = ?
+            ''', (ticker,)) as cursor:
+                row = await cursor.fetchone()
+                return dict(row) if row else None
+    
+    async def get_markets_metadata(self, tickers: List[str]) -> Dict[str, Dict[str, Any]]:
+        """Get market metadata for multiple tickers."""
+        if not tickers:
+            return {}
+        
+        placeholders = ','.join('?' for _ in tickers)
+        async with self.get_connection() as db:
+            async with db.execute(f'''
+                SELECT * FROM markets WHERE ticker IN ({placeholders})
+            ''', tickers) as cursor:
+                rows = await cursor.fetchall()
+                return {row['ticker']: dict(row) for row in rows}
+    
+    async def market_exists(self, ticker: str) -> bool:
+        """Check if market metadata exists for a ticker."""
+        async with self.get_connection() as db:
+            async with db.execute('''
+                SELECT 1 FROM markets WHERE ticker = ?
+            ''', (ticker,)) as cursor:
+                row = await cursor.fetchone()
+                return row is not None
+    
+    async def get_all_cached_markets(self) -> List[Dict[str, Any]]:
+        """Get all cached market metadata."""
+        async with self.get_connection() as db:
+            async with db.execute('SELECT * FROM markets ORDER BY updated_at DESC') as cursor:
+                rows = await cursor.fetchall()
+                return [dict(row) for row in rows]
 
 
 # Global database instance

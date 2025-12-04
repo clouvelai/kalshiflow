@@ -195,7 +195,8 @@ class TradeProcessor:
         """Get current snapshot data for new WebSocket connections."""
         try:
             recent_trades = self.aggregator.get_recent_trades()
-            hot_markets = self.aggregator.get_hot_markets()
+            # Use metadata-enriched hot markets for snapshot
+            hot_markets = await self.aggregator.get_hot_markets_with_metadata()
             global_stats = self.aggregator.get_global_stats()
             
             return {

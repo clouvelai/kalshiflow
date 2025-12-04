@@ -14,6 +14,35 @@ const formatVolume = (volume) => {
   }
 };
 
+// Utility function to format expiration date
+const formatExpirationDate = (expirationTime) => {
+  if (!expirationTime) return null;
+  
+  try {
+    const date = new Date(expirationTime);
+    return date.toLocaleDateString('en-US', { 
+      month: 'short', 
+      day: 'numeric', 
+      year: 'numeric' 
+    });
+  } catch {
+    return null;
+  }
+};
+
+// Utility function to format liquidity
+const formatLiquidity = (liquidity) => {
+  if (!liquidity || liquidity === 0) return null;
+  
+  if (liquidity >= 1000000) {
+    return `$${(liquidity / 1000000).toFixed(1)}M`;
+  } else if (liquidity >= 1000) {
+    return `$${(liquidity / 1000).toFixed(0)}k`;
+  } else {
+    return `$${Math.round(liquidity)}`;
+  }
+};
+
 const MarketCard = ({ market, onClick, isSelected = false, rank }) => {
   if (!market) return null;
 
@@ -70,11 +99,40 @@ const MarketCard = ({ market, onClick, isSelected = false, rank }) => {
       )}
 
 
-      {/* Market Ticker */}
+      {/* Market Title and Info */}
       <div className="mb-3">
-        <h3 className="font-semibold text-gray-900 text-sm truncate" title={market.ticker}>
-          {market.ticker}
-        </h3>
+        {market.title ? (
+          <>
+            {/* Primary Title */}
+            <h3 className="font-semibold text-gray-900 text-sm leading-tight mb-1" title={market.title}>
+              <span className="line-clamp-2">
+                {market.title}
+              </span>
+            </h3>
+            
+            {/* Subtitle with ticker, category, and expiration */}
+            <div className="text-xs text-gray-500 truncate">
+              <span className="font-medium">{market.ticker}</span>
+              {market.category && (
+                <>
+                  <span className="mx-1">•</span>
+                  <span className="capitalize">{market.category}</span>
+                </>
+              )}
+              {formatExpirationDate(market.latest_expiration_time) && (
+                <>
+                  <span className="mx-1">•</span>
+                  <span>{formatExpirationDate(market.latest_expiration_time)}</span>
+                </>
+              )}
+            </div>
+          </>
+        ) : (
+          /* Fallback to ticker only when no metadata */
+          <h3 className="font-semibold text-gray-900 text-sm truncate" title={market.ticker}>
+            {market.ticker}
+          </h3>
+        )}
       </div>
 
       {/* Price Section */}
@@ -106,6 +164,18 @@ const MarketCard = ({ market, onClick, isSelected = false, rank }) => {
           </span>
         </div>
       </div>
+
+      {/* Liquidity (if available) */}
+      {formatLiquidity(market.liquidity_dollars) && (
+        <div className="mb-3">
+          <div className="flex items-center justify-between">
+            <span className="text-xs text-gray-500">Liquidity</span>
+            <span className="text-sm font-semibold text-blue-600">
+              {formatLiquidity(market.liquidity_dollars)}
+            </span>
+          </div>
+        </div>
+      )}
 
       {/* Net Flow */}
       <div className="mb-3">

@@ -10,6 +10,7 @@ from typing import Dict, List, Tuple, Optional, Any
 import heapq
 
 from .models import Trade, TickerState
+from .market_metadata_service import get_metadata_service
 
 
 class TradeAggregator:
@@ -178,7 +179,44 @@ class TradeAggregator:
             reverse=True
         )
         
-        return [state.dict() for state in sorted_tickers[:limit]]
+        hot_markets = [state.dict() for state in sorted_tickers[:limit]]
+        
+        # Trigger metadata fetching for hot markets (non-blocking)
+        metadata_service = get_metadata_service()
+        if metadata_service:
+            asyncio.create_task(metadata_service.monitor_hot_markets(hot_markets))
+        
+        return hot_markets
+    
+    async def get_hot_markets_with_metadata(self, limit: int = None) -> List[Dict[str, Any]]:
+        """Get hot markets enriched with metadata from cache."""
+        hot_markets = self.get_hot_markets(limit)
+        
+        # Get metadata service
+        metadata_service = get_metadata_service()
+        if not metadata_service:
+            return hot_markets
+        
+        # Extract tickers
+        tickers = [market["ticker"] for market in hot_markets]
+        
+        # Get metadata for all tickers in one call
+        metadata_dict = await metadata_service.get_markets_metadata(tickers)
+        
+        # Enrich hot markets with metadata
+        for market in hot_markets:
+            ticker = market["ticker"]
+            if ticker in metadata_dict:
+                metadata = metadata_dict[ticker]
+                market.update({
+                    "title": metadata.get("title"),
+                    "category": metadata.get("category"),
+                    "liquidity_dollars": metadata.get("liquidity_dollars"),
+                    "open_interest": metadata.get("open_interest"),
+                    "latest_expiration_time": metadata.get("latest_expiration_time")
+                })
+        
+        return hot_markets
     
     def get_recent_trades(self, limit: int = None) -> List[Dict[str, Any]]:
         """Get recent trades across all markets."""

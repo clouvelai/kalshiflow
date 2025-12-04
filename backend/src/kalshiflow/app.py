@@ -19,6 +19,8 @@ from .websocket_handler import get_websocket_manager, TradeStreamEndpoint
 from .kalshi_client import KalshiWebSocketClient
 from .database import get_database
 from .aggregator import get_aggregator
+from .market_metadata_service import initialize_metadata_service, get_metadata_service
+from .auth import KalshiAuth
 
 # Configure logging
 logging.basicConfig(
@@ -117,6 +119,17 @@ async def get_stats(request):
         except Exception as db_error:
             stats["database"] = {"error": str(db_error)}
         
+        # Try to get metadata service stats
+        try:
+            metadata_service = get_metadata_service()
+            if metadata_service:
+                metadata_stats = await metadata_service.get_service_status()
+                stats["metadata_service"] = metadata_stats
+            else:
+                stats["metadata_service"] = {"status": "not_initialized"}
+        except Exception as meta_error:
+            stats["metadata_service"] = {"error": str(meta_error)}
+        
         return JSONResponse(stats)
     except Exception as e:
         logger.error(f"Error getting stats: {e}")
@@ -151,6 +164,16 @@ async def startup_event():
         # Initialize WebSocket manager
         websocket_manager = get_websocket_manager()
         await websocket_manager.initialize()
+        
+        # Initialize metadata service
+        try:
+            database = get_database()
+            auth = KalshiAuth.from_env()
+            metadata_service = initialize_metadata_service(database, auth)
+            await metadata_service.start()
+            logger.info("Market metadata service started successfully")
+        except Exception as e:
+            logger.warning(f"Failed to start metadata service (continuing without metadata enhancement): {e}")
         
         # Create Kalshi client with trade callback
         async def trade_callback(trade):
@@ -190,6 +213,15 @@ async def shutdown_event():
         # Wait for tasks to complete
         if background_tasks:
             await asyncio.gather(*background_tasks, return_exceptions=True)
+        
+        # Stop metadata service
+        try:
+            metadata_service = get_metadata_service()
+            if metadata_service:
+                await metadata_service.stop()
+                logger.info("Metadata service stopped")
+        except Exception as e:
+            logger.warning(f"Error stopping metadata service: {e}")
         
         # Stop trade processor
         trade_processor = get_trade_processor()
