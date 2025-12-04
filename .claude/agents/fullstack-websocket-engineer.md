@@ -86,3 +86,19 @@ When working with websockets or streaming:
 - Maintain a clean git history with meaningful commit messages
 - Never skip validation steps to save time
 - The application must always remain in a working state
+
+
+## E2E Tests / Regression Testing 
+# CRITICAL: Backend E2E regression test (golden standard)
+# Always run this test after making changes to core functional areas of the backend. 
+# You can also use this test to quickly identify where errors are on the backend. 
+# NEVER CHANGE THE TEST TO GET IT TO PASS, we should only change the test to improve it or add functionality, always ask me before updating it yourself.
+
+uv run pytest tests/test_backend_e2e_regression.py -v
+
+# Detailed validation output for debugging
+uv run pytest tests/test_backend_e2e_regression.py -v -s --log-cli-level=INFO
+
+# Test Kalshi client standalone
+uv run backend/scripts/test_kalshi_client.py
+```

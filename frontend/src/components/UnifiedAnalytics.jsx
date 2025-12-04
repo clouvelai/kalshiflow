@@ -47,7 +47,8 @@ const UnifiedAnalytics = ({
   analyticsData = { 
     hour_minute_mode: { time_series: [], summary_stats: {} },
     day_hour_mode: { time_series: [], summary_stats: {} }
-  } 
+  },
+  ...props
 }) => {
   const [timeMode, setTimeMode] = useState('hour'); // 'hour' or 'day'
   
@@ -214,18 +215,18 @@ const UnifiedAnalytics = ({
   };
 
   return (
-    <div className="bg-gradient-to-br from-slate-50 via-blue-50 to-indigo-50 rounded-2xl p-8 mb-8 shadow-sm border border-white/20">
+    <div className="bg-gradient-to-br from-slate-50 via-blue-50 to-indigo-50 rounded-2xl p-8 mb-8 shadow-sm border border-white/20" {...props} data-testid={props['data-testid'] || "unified-analytics"}>
       {/* Title Section with Toggle */}
       <div className="text-center mb-8">
-        <h1 className="text-4xl font-bold bg-gradient-to-r from-gray-900 to-gray-700 bg-clip-text text-transparent mb-3">
+        <h1 className="text-4xl font-bold bg-gradient-to-r from-gray-900 to-gray-700 bg-clip-text text-transparent mb-3" data-testid="analytics-title">
           Market Analytics
         </h1>
-        <p className="text-gray-600 text-lg mb-6 font-medium">
+        <p className="text-gray-600 text-lg mb-6 font-medium" data-testid="analytics-subtitle">
           Real-time trading activity and market insights
         </p>
         
         {/* Time Mode Toggle */}
-        <div className="inline-flex bg-white/80 backdrop-blur-sm rounded-xl p-1.5 shadow-lg border border-gray-200/50">
+        <div className="inline-flex bg-white/80 backdrop-blur-sm rounded-xl p-1.5 shadow-lg border border-gray-200/50" data-testid="time-mode-toggle">
           <button
             onClick={() => setTimeMode('hour')}
             className={`px-6 py-2.5 rounded-lg font-semibold text-sm transition-all duration-300 ${
@@ -233,6 +234,7 @@ const UnifiedAnalytics = ({
                 ? 'bg-blue-600 text-white shadow-lg transform scale-[1.02]'
                 : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50/50'
             }`}
+            data-testid="hour-view-button"
           >
             Hour View
           </button>
@@ -243,6 +245,7 @@ const UnifiedAnalytics = ({
                 ? 'bg-blue-600 text-white shadow-lg transform scale-[1.02]'
                 : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50/50'
             }`}
+            data-testid="day-view-button"
           >
             Day View
           </button>
@@ -250,30 +253,30 @@ const UnifiedAnalytics = ({
       </div>
 
       {/* Summary Stats Grid */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-6 mb-8">
-        <div className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-lg border border-white/50 p-6 text-center hover:shadow-xl transition-all duration-300">
-          <div className="text-3xl font-bold text-blue-600 mb-1">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-6 mb-8" data-testid="summary-stats-grid">
+        <div className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-lg border border-white/50 p-6 text-center hover:shadow-xl transition-all duration-300" data-testid="peak-volume-stat">
+          <div className="text-3xl font-bold text-blue-600 mb-1" data-testid="peak-volume-value">
             {formatVolume(summaryStats.peak_volume_usd || 0)}
           </div>
           <div className="text-sm font-medium text-gray-600 uppercase tracking-wide">Peak Volume</div>
           <div className="text-xs text-gray-500 mt-1">{peakPeriodLabel}</div>
         </div>
-        <div className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-lg border border-white/50 p-6 text-center hover:shadow-xl transition-all duration-300">
-          <div className="text-3xl font-bold text-emerald-600 mb-1">
+        <div className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-lg border border-white/50 p-6 text-center hover:shadow-xl transition-all duration-300" data-testid="peak-trades-stat">
+          <div className="text-3xl font-bold text-emerald-600 mb-1" data-testid="peak-trades-value">
             {(summaryStats.peak_trades || 0).toLocaleString()}
           </div>
           <div className="text-sm font-medium text-gray-600 uppercase tracking-wide">Peak Trades</div>
           <div className="text-xs text-gray-500 mt-1">{peakPeriodLabel}</div>
         </div>
-        <div className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-lg border border-white/50 p-6 text-center hover:shadow-xl transition-all duration-300">
-          <div className="text-3xl font-bold text-purple-600 mb-1">
+        <div className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-lg border border-white/50 p-6 text-center hover:shadow-xl transition-all duration-300" data-testid="total-volume-stat">
+          <div className="text-3xl font-bold text-purple-600 mb-1" data-testid="total-volume-value">
             {formatVolume(summaryStats.total_volume_usd || 0)}
           </div>
           <div className="text-sm font-medium text-gray-600 uppercase tracking-wide">Total Volume</div>
           <div className="text-xs text-gray-500 mt-1">{totalPeriodLabel}</div>
         </div>
-        <div className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-lg border border-white/50 p-6 text-center hover:shadow-xl transition-all duration-300">
-          <div className="text-3xl font-bold text-indigo-600 mb-1">
+        <div className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-lg border border-white/50 p-6 text-center hover:shadow-xl transition-all duration-300" data-testid="total-trades-stat">
+          <div className="text-3xl font-bold text-indigo-600 mb-1" data-testid="total-trades-value">
             {(summaryStats.total_trades || 0).toLocaleString()}
           </div>
           <div className="text-sm font-medium text-gray-600 uppercase tracking-wide">Total Trades</div>
@@ -282,7 +285,7 @@ const UnifiedAnalytics = ({
       </div>
 
       {/* Chart Section */}
-      <div className="bg-white/80 backdrop-blur-sm rounded-2xl shadow-xl border border-white/50 p-8">
+      <div className="bg-white/80 backdrop-blur-sm rounded-2xl shadow-xl border border-white/50 p-8" data-testid="chart-section">
         {/* Header with Current Stats - Horizontally Aligned */}
         <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-6 mb-6">
           {/* Left Side - Trading Activity Header */}
@@ -297,7 +300,7 @@ const UnifiedAnalytics = ({
                     <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" style={{animationDelay: '0.5s'}}></div>
                     <div className="w-1 h-1 bg-purple-500 rounded-full animate-pulse" style={{animationDelay: '1s'}}></div>
                   </div>
-                  <h2 className="text-xl lg:text-2xl font-bold bg-gradient-to-r from-gray-900 via-blue-800 to-indigo-900 bg-clip-text text-transparent">
+                  <h2 className="text-xl lg:text-2xl font-bold bg-gradient-to-r from-gray-900 via-blue-800 to-indigo-900 bg-clip-text text-transparent" data-testid="chart-title">
                     Trading Activity
                   </h2>
                 </div>
@@ -314,7 +317,7 @@ const UnifiedAnalytics = ({
                 <div className="absolute -inset-1 bg-gradient-to-r from-blue-500 via-purple-500 to-indigo-500 rounded-xl blur opacity-25"></div>
                 
                 {/* Main stats container */}
-                <div className="relative bg-white/95 backdrop-blur-xl border border-white/60 rounded-xl shadow-xl ring-1 ring-white/30 overflow-hidden">
+                <div className="relative bg-white/95 backdrop-blur-xl border border-white/60 rounded-xl shadow-xl ring-1 ring-white/30 overflow-hidden" data-testid="current-stats">
                   {/* Header gradient bar */}
                   <div className="h-0.5 bg-gradient-to-r from-blue-500 via-purple-500 to-indigo-500"></div>
                   
@@ -323,10 +326,10 @@ const UnifiedAnalytics = ({
                     {/* Live indicator and period label */}
                     <div className="flex items-center justify-between gap-3 mb-3">
                       <div className="flex items-center gap-2">
-                        <div className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse shadow-sm"></div>
+                        <div className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse shadow-sm" data-testid="live-indicator"></div>
                         <span className="text-green-700 text-xs font-bold uppercase tracking-wider">Live</span>
                       </div>
-                      <div className="text-xs text-gray-500 font-semibold uppercase tracking-wider">
+                      <div className="text-xs text-gray-500 font-semibold uppercase tracking-wider" data-testid="current-period-label">
                         Current {timeMode === 'hour' ? 'Minute' : 'Hour'}
                       </div>
                     </div>
@@ -334,23 +337,23 @@ const UnifiedAnalytics = ({
                     {/* Current stats - Combined on one line */}
                     <div className="flex items-center justify-between gap-4">
                       {/* Volume */}
-                      <div className="flex-1 min-w-0">
+                      <div className="flex-1 min-w-0" data-testid="current-volume">
                         <div className="flex items-center gap-2 mb-1">
                           <div className="w-2.5 h-2.5 bg-gradient-to-r from-blue-500 to-blue-600 rounded-sm shadow-sm ring-1 ring-blue-200"></div>
                           <span className="text-xs font-semibold text-gray-700 uppercase tracking-wider">Volume</span>
                         </div>
-                        <div className="text-lg font-bold text-blue-700">
+                        <div className="text-lg font-bold text-blue-700" data-testid="current-volume-value">
                           {formatVolume(currentVolume)}
                         </div>
                       </div>
                       
                       {/* Trades */}
-                      <div className="flex-1 min-w-0">
+                      <div className="flex-1 min-w-0" data-testid="current-trades">
                         <div className="flex items-center gap-2 mb-1">
                           <div className="w-2.5 h-0.5 bg-gradient-to-r from-emerald-500 to-emerald-600 rounded-full shadow-sm ring-1 ring-emerald-200"></div>
                           <span className="text-xs font-semibold text-gray-700 uppercase tracking-wider">Trades</span>
                         </div>
-                        <div className="text-lg font-bold text-emerald-700">
+                        <div className="text-lg font-bold text-emerald-700" data-testid="current-trades-value">
                           {currentTrades}
                         </div>
                       </div>
@@ -366,7 +369,7 @@ const UnifiedAnalytics = ({
         </div>
 
         {chartData.length === 0 ? (
-          <div className="h-80 flex items-center justify-center text-gray-500">
+          <div className="h-80 flex items-center justify-center text-gray-500" data-testid="chart-loading">
             <div className="text-center">
               <div className="animate-pulse">
                 <div className="h-4 bg-gray-200 rounded w-36 mx-auto mb-3"></div>
@@ -376,7 +379,7 @@ const UnifiedAnalytics = ({
             </div>
           </div>
         ) : (
-          <div className="h-80 relative">
+          <div className="h-80 relative" data-testid="analytics-chart">
             <ResponsiveContainer width="100%" height="100%">
               <ComposedChart
                 data={chartData}

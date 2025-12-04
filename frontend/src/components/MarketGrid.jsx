@@ -1,10 +1,10 @@
 import React from 'react';
 import MarketCard from './MarketCard';
 
-const MarketGrid = ({ markets = [], selectedTicker, onTickerSelect }) => {
+const MarketGrid = ({ markets = [], selectedTicker, onTickerSelect, ...props }) => {
   if (markets.length === 0) {
     return (
-      <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-8" data-testid="market-grid">
+      <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-8" {...props} data-testid={props['data-testid'] || "market-grid"}>
         <div className="text-center">
           <div className="text-gray-400 mb-4">
             <div className="w-16 h-16 mx-auto mb-4 bg-gray-100 rounded-full flex items-center justify-center">
@@ -24,7 +24,7 @@ const MarketGrid = ({ markets = [], selectedTicker, onTickerSelect }) => {
   }
 
   return (
-    <div className="space-y-6" data-testid="market-grid">
+    <div className="space-y-6" {...props} data-testid={props['data-testid'] || "market-grid"}>
       {/* Section Header */}
       <div className="bg-white/80 backdrop-blur-sm rounded-2xl shadow-xl border border-white/50 p-6">
         <div className="flex items-center justify-between">

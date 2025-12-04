@@ -56,6 +56,19 @@ uv run pytest tests/test_backend_e2e_regression.py -v -s --log-cli-level=INFO
 
 # Test Kalshi client standalone
 uv run backend/scripts/test_kalshi_client.py
+
+# Frontend E2E tests (requires backend running on port 8000)
+cd frontend
+
+# CRITICAL: Frontend E2E regression test (golden standard)
+# Comprehensive validation of entire frontend against live data
+npm run test:frontend-regression
+
+# All frontend E2E tests
+npm run test:e2e
+
+# Interactive UI for debugging
+npm run test:e2e-ui
 ```
 
 ## Key Implementation Details
@@ -183,6 +196,60 @@ uv run pytest tests/test_backend_e2e_regression.py -v -s --log-cli-level=INFO
 - **As part of CI pipeline** (automated)
 
 This test serves as the definitive validation that the entire backend is functional and safe to deploy.
+
+## Frontend E2E Regression Test
+
+**Critical test that MUST pass before any frontend deployment or major changes.**
+
+### What it validates:
+- ✅ **Application Startup**: Complete frontend loads within 15 seconds
+- ✅ **WebSocket Connection**: Frontend connects to backend WebSocket successfully
+- ✅ **Live Data Flow**: Real-time data populates and updates (trades, analytics, markets)
+- ✅ **Component Functionality**: All interactive features work (toggles, drawer, clicks)
+- ✅ **Responsive Design**: Layout functions across desktop, tablet, mobile viewports
+- ✅ **Real-time Updates**: Confirms live data values increment over time
+- ✅ **Visual Validation**: 13 comprehensive screenshots document entire user journey
+
+### Running the test:
+```bash
+# Prerequisites: Backend must be running on port 8000
+cd backend && uv run uvicorn kalshiflow.app:app --reload --port 8000
+
+# Standard run (must pass before deployment)
+cd frontend && npm run test:frontend-regression
+
+# Debug mode with interactive UI
+npm run test:e2e-ui
+
+# What to expect:
+# - Test duration: ~31-33 seconds
+# - Real-time data validation against live Kalshi WebSocket
+# - 6 validation phases with clear ✅/❌ status indicators
+# - 13 screenshots captured in test-results/
+# - Works with live market data
+```
+
+### Test phases:
+1. **Application Startup**: Layout structure, main sections visibility
+2. **Connection & Data**: WebSocket connection, live data population 
+3. **Component Functions**: Analytics toggle, market selection, drawer interactions
+4. **Responsive Design**: Desktop (4-col), tablet (2-col), mobile (1-col) layouts
+5. **Real-time Validation**: Capture initial values, wait, compare for live updates
+6. **Quality Assurance**: Console errors, live indicators, final state verification
+
+### Understanding test output:
+- **✅ PASSED**: Validation step completed successfully
+- **❌ FAILED**: Validation step failed (investigate immediately)
+- **📊 Data Updates**: Shows initial vs updated values to confirm real-time flow
+- **📸 Screenshots**: All 13 validation screenshots saved to test-results/
+
+### When to run:
+- **Before deployment** (mandatory)
+- **After frontend changes** (highly recommended) 
+- **When debugging frontend issues** (use interactive UI mode)
+- **As part of CI pipeline** (automated)
+
+This test serves as the definitive validation that the entire frontend works correctly against live data.
 
 - use the planning agent for all planning
 - use the fullstack websocket agent for all implementation/coding
