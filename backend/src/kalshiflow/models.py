@@ -110,6 +110,10 @@ class TradeMessage(BaseModel):
     
     def to_trade(self) -> Trade:
         """Convert raw Kalshi message to Trade object."""
+        # Convert timestamp from seconds to milliseconds for consistent internal processing
+        raw_timestamp = self.msg["ts"]
+        timestamp_ms = raw_timestamp * 1000 if raw_timestamp < 2000000000 else raw_timestamp
+        
         return Trade(
             market_ticker=self.msg["market_ticker"],
             yes_price=self.msg["yes_price"],
@@ -118,7 +122,7 @@ class TradeMessage(BaseModel):
             no_price_dollars=self.msg["no_price"] / 100.0,
             count=self.msg["count"],
             taker_side=self.msg["taker_side"],
-            ts=self.msg["ts"]
+            ts=timestamp_ms
         )
 
 
@@ -158,6 +162,16 @@ class TickerState(BaseModel):
             return "bearish"
         else:
             return "neutral"
+    
+    def dict(self, **kwargs) -> dict:
+        """Override dict() to include computed properties."""
+        data = super().dict(**kwargs)
+        # Add computed properties
+        data["net_flow"] = self.net_flow
+        data["last_yes_price_dollars"] = self.last_yes_price_dollars
+        data["last_no_price_dollars"] = self.last_no_price_dollars
+        data["flow_direction"] = self.flow_direction
+        return data
 
 
 class WebSocketMessage(BaseModel):

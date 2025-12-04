@@ -230,7 +230,8 @@ class TradeProcessor:
         Converts raw message to Trade object and processes it.
         """
         try:
-            # Convert raw message to Trade object
+            # Convert raw message to Trade object  
+            # Note: Timestamp conversion from seconds to milliseconds is handled in TradeMessage.to_trade()
             trade = Trade(
                 market_ticker=trade_message["market_ticker"],
                 yes_price=trade_message["yes_price"],
