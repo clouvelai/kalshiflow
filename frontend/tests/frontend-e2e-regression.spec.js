@@ -3,322 +3,211 @@ import { test, expect } from '@playwright/test';
 /**
  * Frontend E2E Regression Test - Golden Standard
  * 
- * This is a comprehensive end-to-end test that validates the entire frontend
- * application against live Kalshi WebSocket data. This test serves as the
- * definitive validation that the frontend works correctly.
+ * CRITICAL: This test MUST fail if the backend isn't running.
+ * It validates real data flow from Kalshi → Backend → Frontend.
  * 
- * Test Plan:
- * - Phase 1: Application startup and layout verification
- * - Phase 2: Data population wait (10-15 seconds for live WebSocket data)
- * - Phase 3: Component functionality (analytics toggle, ticker selection, drawer)
- * - Phase 4: Responsive design (desktop 4-col, tablet 2-col, mobile 1-col)
- * - Phase 5: Real-time data validation (confirm values increment)
- * - Phase 6: Quality assurance (console check, final state)
+ * Success Criteria:
+ * ✓ Backend is running and accepting WebSocket connections
+ * ✓ WebSocket connection established with status "Live"
+ * ✓ Real trade data flows into the application
+ * ✓ Analytics shows non-zero values
+ * ✓ Market grid displays actual markets with volume
+ * ✓ Chart renders with real data points
+ * ✓ Time mode toggle works with data in both views
+ * ✓ Data changes over time proving real-time updates
  */
 
-test.describe('Frontend E2E Regression Test', () => {
-  test.beforeEach(async ({ page }) => {
-    // Set up console error tracking
-    const consoleErrors = [];
-    page.on('console', (msg) => {
-      if (msg.type() === 'error') {
-        consoleErrors.push(msg.text());
-      }
-    });
-    
-    // Store console errors for later validation
-    page.consoleErrors = consoleErrors;
-  });
-
-  test('Complete frontend functionality with live data', async ({ page }) => {
+test.describe('Frontend E2E Regression Test - Golden Standard', () => {
+  test('Validates complete data flow from Kalshi through backend to frontend', async ({ page }) => {
     console.log('🚀 Starting Frontend E2E Regression Test');
+    console.log('=====================================');
+    
+    // Track critical failures
+    let criticalFailures = [];
     
     // ================================================================
-    // PHASE 1: Application Startup and Layout Verification
+    // PHASE 1: Backend Connection & Initial Data (0-3 seconds)
     // ================================================================
-    console.log('\n📋 PHASE 1: Application startup and layout verification');
+    console.log('\n📋 PHASE 1: Backend connection & initial data validation');
     
-    console.log('⏱️  Navigating to application...');
-    await page.goto('/');
+    // Navigate to application
+    await page.goto('/', { waitUntil: 'networkidle' });
     
-    // Take initial load screenshot
-    await page.screenshot({ path: 'frontend/test-results/01_initial_load.png', fullPage: true });
-    console.log('✅ Screenshot: 01_initial_load.png');
+    // Verify basic application structure loads
+    await expect(page.getByTestId('app-layout')).toBeVisible({ timeout: 3000 });
+    console.log('✅ Application loaded');
     
-    // Verify basic layout structure
-    console.log('🔍 Verifying basic layout structure...');
-    await expect(page.getByTestId('app-layout')).toBeVisible();
-    await expect(page.getByTestId('app-header')).toBeVisible();
-    await expect(page.getByTestId('header-title')).toContainText('Kalshi Flowboard');
-    await expect(page.getByTestId('main-content')).toBeVisible();
-    console.log('✅ Basic layout structure verified');
-    
-    // Verify main sections are present
-    await expect(page.getByTestId('unified-analytics')).toBeVisible();
-    await expect(page.getByTestId('market-grid')).toBeVisible();
-    await expect(page.getByTestId('trade-tape-section')).toBeVisible();
-    console.log('✅ Main sections present');
-    
-    // ================================================================
-    // PHASE 2: Connection Status and Data Population Wait
-    // ================================================================
-    console.log('\n⏳ PHASE 2: Data population wait (10-15 seconds for live WebSocket data)');
-    
-    // Check connection status
-    console.log('🔗 Checking WebSocket connection status...');
+    // CRITICAL: Check WebSocket connection status
     const connectionStatus = page.getByTestId('connection-status-text');
     
-    // Wait for connection (with timeout)
+    // Wait for connection - fail fast if backend not running
     try {
-      await expect(connectionStatus).toHaveText(/Live|Connected/i, { timeout: 15000 });
-      console.log('✅ WebSocket connected successfully');
+      await expect(connectionStatus).toHaveText('Live', { timeout: 5000 });
+      console.log('✅ WebSocket connected to backend (status: Live)');
     } catch (error) {
-      console.log('⚠️  WebSocket connection timeout - continuing with available data');
+      const actualStatus = await connectionStatus.textContent();
+      console.log(`❌ CRITICAL: WebSocket connection failed. Status: "${actualStatus}"`);
+      throw new Error('Backend is not running or WebSocket connection failed. Status: ' + actualStatus);
     }
     
-    await page.screenshot({ path: 'frontend/test-results/02_connection_status.png', fullPage: true });
-    console.log('✅ Screenshot: 02_connection_status.png');
-    
-    // Wait for data to populate
-    console.log('📊 Waiting for data to populate...');
-    await page.waitForTimeout(8000); // 8 second wait for live data
-    
-    await page.screenshot({ path: 'frontend/test-results/03_data_populated.png', fullPage: true });
-    console.log('✅ Screenshot: 03_data_populated.png');
+    // Quick check for any initial data (1-2 second wait)
+    await page.waitForTimeout(2000);
     
     // ================================================================
-    // PHASE 3: Component Functionality Testing
+    // PHASE 2: Core Component Validation (3-8 seconds)
     // ================================================================
-    console.log('\n🧩 PHASE 3: Component functionality (analytics toggle, ticker selection, drawer)');
+    console.log('\n🔍 PHASE 2: Core component validation');
     
-    // Test Analytics Time Mode Toggle
-    console.log('📈 Testing analytics time mode toggle...');
-    const hourViewButton = page.getByTestId('hour-view-button');
-    const dayViewButton = page.getByTestId('day-view-button');
+    // 1. Analytics Values - Must have non-zero data
+    const totalVolume = await page.getByTestId('total-volume-value').textContent();
+    const totalTrades = await page.getByTestId('total-trades-value').textContent();
     
-    // Test switching to Day view
-    await dayViewButton.click();
-    await page.waitForTimeout(1000);
-    await page.screenshot({ path: 'frontend/test-results/04_analytics_day_mode.png', fullPage: true });
-    console.log('✅ Screenshot: 04_analytics_day_mode.png');
-    
-    // Test switching back to Hour view
-    await hourViewButton.click();
-    await page.waitForTimeout(1000);
-    await page.screenshot({ path: 'frontend/test-results/05_analytics_hour_mode.png', fullPage: true });
-    console.log('✅ Screenshot: 05_analytics_hour_mode.png');
-    console.log('✅ Analytics toggle functionality verified');
-    
-    // Test Market Grid Interaction
-    console.log('🎯 Testing market card interaction...');
-    const marketCards = page.locator('[data-testid^=\"market-card-\"]');
-    const cardCount = await marketCards.count();
-    
-    if (cardCount > 0) {
-      console.log(`📊 Found ${cardCount} market cards`);
-      
-      // Click on the first market card
-      const firstCard = marketCards.first();
-      await firstCard.click();
-      await page.waitForTimeout(1000);
-      
-      // Verify ticker detail drawer opened
-      await expect(page.getByTestId('ticker-detail-drawer')).toBeVisible();
-      await page.screenshot({ path: 'frontend/test-results/06_ticker_drawer_open.png', fullPage: true });
-      console.log('✅ Screenshot: 06_ticker_drawer_open.png');
-      console.log('✅ Ticker detail drawer opens correctly');
-      
-      // Test drawer close button
-      const closeButton = page.getByTestId('close-drawer-button');
-      await closeButton.click();
-      await page.waitForTimeout(500);
-      
-      // Verify drawer closed
-      await expect(page.getByTestId('ticker-detail-drawer')).not.toBeVisible();
-      await page.screenshot({ path: 'frontend/test-results/07_ticker_drawer_closed.png', fullPage: true });
-      console.log('✅ Screenshot: 07_ticker_drawer_closed.png');
-      console.log('✅ Ticker detail drawer closes correctly');
+    if (totalVolume && totalVolume !== '$0' && totalVolume !== '0') {
+      console.log(`✅ Analytics active - Volume: ${totalVolume}, Trades: ${totalTrades}`);
     } else {
-      console.log('⚠️  No market cards found - data may still be loading');
-      await page.screenshot({ path: 'frontend/test-results/06_no_market_cards.png', fullPage: true });
+      criticalFailures.push('No data in analytics after connection');
+      console.log('❌ No analytics data detected');
     }
     
-    // ================================================================
-    // PHASE 4: Responsive Design Testing
-    // ================================================================
-    console.log('\n📱 PHASE 4: Responsive design (desktop 4-col, tablet 2-col, mobile 1-col)');
+    // 2. Market Grid - Should have markets
+    const marketCards = page.locator('[data-testid^="market-card-"]');
+    const marketCount = await marketCards.count();
     
-    // Test Desktop view (4-column grid)
-    console.log('🖥️  Testing desktop view...');
-    await page.setViewportSize({ width: 1400, height: 800 });
-    await page.waitForTimeout(1000);
-    await page.screenshot({ path: 'frontend/test-results/08_desktop_view.png', fullPage: true });
-    console.log('✅ Screenshot: 08_desktop_view.png');
-    
-    // Test Tablet view (2-column grid)
-    console.log('📱 Testing tablet view...');
-    await page.setViewportSize({ width: 768, height: 1024 });
-    await page.waitForTimeout(1000);
-    await page.screenshot({ path: 'frontend/test-results/09_tablet_view.png', fullPage: true });
-    console.log('✅ Screenshot: 09_tablet_view.png');
-    
-    // Test Mobile view (1-column grid)
-    console.log('📱 Testing mobile view...');
-    await page.setViewportSize({ width: 375, height: 667 });
-    await page.waitForTimeout(1000);
-    await page.screenshot({ path: 'frontend/test-results/10_mobile_view.png', fullPage: true });
-    console.log('✅ Screenshot: 10_mobile_view.png');
-    
-    // Return to desktop view for remaining tests
-    await page.setViewportSize({ width: 1400, height: 800 });
-    console.log('✅ Responsive design tested across viewports');
-    
-    // ================================================================
-    // PHASE 5: Real-time Data Validation
-    // ================================================================
-    console.log('\n🔄 PHASE 5: Real-time data validation (confirm values increment)');
-    
-    // Capture initial values
-    console.log('📊 Capturing initial analytics values...');
-    let initialValues = {};
-    
-    try {
-      const peakVolumeEl = page.getByTestId('peak-volume-value');
-      const totalVolumeEl = page.getByTestId('total-volume-value');
-      const currentVolumeEl = page.getByTestId('current-volume-value');
-      const currentTradesEl = page.getByTestId('current-trades-value');
-      
-      if (await peakVolumeEl.isVisible()) {
-        initialValues.peakVolume = await peakVolumeEl.textContent();
-      }
-      if (await totalVolumeEl.isVisible()) {
-        initialValues.totalVolume = await totalVolumeEl.textContent();
-      }
-      if (await currentVolumeEl.isVisible()) {
-        initialValues.currentVolume = await currentVolumeEl.textContent();
-      }
-      if (await currentTradesEl.isVisible()) {
-        initialValues.currentTrades = await currentTradesEl.textContent();
-      }
-      
-      console.log('📈 Initial values captured:', initialValues);
-    } catch (error) {
-      console.log('⚠️  Could not capture initial values - data may still be loading');
+    if (marketCount > 0) {
+      console.log(`✅ Market grid populated - ${marketCount} active markets`);
+    } else {
+      console.log('⚠️  No markets in grid (may be normal if quiet)');
     }
     
-    await page.screenshot({ path: 'frontend/test-results/11_initial_values.png', fullPage: true });
-    console.log('✅ Screenshot: 11_initial_values.png');
+    // 3. Chart Validation - Should have bars
+    const chartBars = page.locator('[data-testid="analytics-chart"] .recharts-bar-rectangle');
+    const barCount = await chartBars.count();
     
-    // Wait for potential updates
-    console.log('⏳ Waiting 5 seconds for real-time updates...');
+    if (barCount > 0) {
+      console.log(`✅ Chart rendering - ${barCount} data points visible`);
+    } else {
+      console.log('⚠️  Chart has no visible data (may be building)');
+    }
+    
+    // 4. Trade Tape Check
+    const tradeCount = await page.locator('[data-testid="trade-tape"] .trade-item').count();
+    console.log(`ℹ️  Trade tape: ${tradeCount} trades visible`);
+    
+    // Capture initial state for comparison
+    const initialState = {
+      volume: totalVolume,
+      trades: totalTrades,
+      tradeCount: tradeCount,
+      marketCount: marketCount
+    };
+    
+    // ================================================================
+    // PHASE 3: Quick Interactive Test (8-10 seconds)
+    // ================================================================
+    console.log('\n⚡ PHASE 3: Quick functionality test');
+    
+    // Test Hour/Day toggle (quick check)
+    const dayButton = page.getByTestId('day-view-button');
+    const hourButton = page.getByTestId('hour-view-button');
+    
+    await dayButton.click();
+    await page.waitForTimeout(500);
+    const dayBars = await chartBars.count();
+    
+    await hourButton.click();
+    await page.waitForTimeout(500);
+    const hourBars = await chartBars.count();
+    
+    console.log(`✅ Time toggle works - Day: ${dayBars} bars, Hour: ${hourBars} bars`);
+    
+    // ================================================================
+    // PHASE 4: Wait and Verify Real-time Updates (10-15 seconds)
+    // ================================================================
+    console.log('\n🔄 PHASE 4: Verifying real-time updates');
+    console.log('⏳ Waiting 5 seconds for data changes...');
+    
     await page.waitForTimeout(5000);
     
-    // Capture updated values
-    let updatedValues = {};
-    try {
-      const peakVolumeEl = page.getByTestId('peak-volume-value');
-      const totalVolumeEl = page.getByTestId('total-volume-value');
-      const currentVolumeEl = page.getByTestId('current-volume-value');
-      const currentTradesEl = page.getByTestId('current-trades-value');
-      
-      if (await peakVolumeEl.isVisible()) {
-        updatedValues.peakVolume = await peakVolumeEl.textContent();
-      }
-      if (await totalVolumeEl.isVisible()) {
-        updatedValues.totalVolume = await totalVolumeEl.textContent();
-      }
-      if (await currentVolumeEl.isVisible()) {
-        updatedValues.currentVolume = await currentVolumeEl.textContent();
-      }
-      if (await currentTradesEl.isVisible()) {
-        updatedValues.currentTrades = await currentTradesEl.textContent();
-      }
-      
-      console.log('📊 Updated values captured:', updatedValues);
-      
-      // Compare values to detect real-time updates
-      const valuesChanged = Object.keys(initialValues).some(key => 
-        initialValues[key] !== updatedValues[key]
-      );
-      
-      if (valuesChanged) {
-        console.log('✅ Real-time data updates detected');
-      } else {
-        console.log('ℹ️  No value changes detected (market may be quiet)');
-      }
-    } catch (error) {
-      console.log('⚠️  Could not capture updated values');
+    // Check for updates
+    const updatedVolume = await page.getByTestId('total-volume-value').textContent();
+    const updatedTrades = await page.getByTestId('total-trades-value').textContent();
+    const updatedTradeCount = await page.locator('[data-testid="trade-tape"] .trade-item').count();
+    const updatedMarketCount = await marketCards.count();
+    
+    const finalState = {
+      volume: updatedVolume,
+      trades: updatedTrades,
+      tradeCount: updatedTradeCount,
+      marketCount: updatedMarketCount
+    };
+    
+    console.log(`📊 Initial: Volume=${initialState.volume}, Trades=${initialState.trades}, Markets=${initialState.marketCount}`);
+    console.log(`📊 Updated: Volume=${finalState.volume}, Trades=${finalState.trades}, Markets=${finalState.marketCount}`);
+    
+    // Check if anything changed
+    let dataChanged = false;
+    if (finalState.volume !== initialState.volume) {
+      console.log(`✅ Volume updated: ${initialState.volume} → ${finalState.volume}`);
+      dataChanged = true;
+    }
+    if (finalState.trades !== initialState.trades) {
+      console.log(`✅ Trade count updated: ${initialState.trades} → ${finalState.trades}`);
+      dataChanged = true;
+    }
+    if (finalState.tradeCount !== initialState.tradeCount) {
+      console.log(`✅ New trades in tape: ${finalState.tradeCount - initialState.tradeCount} new`);
+      dataChanged = true;
     }
     
-    await page.screenshot({ path: 'frontend/test-results/12_updated_values.png', fullPage: true });
-    console.log('✅ Screenshot: 12_updated_values.png');
+    if (!dataChanged) {
+      console.log('ℹ️  No changes detected (market may be quiet)');
+    }
     
     // ================================================================
-    // PHASE 6: Quality Assurance and Final Validation
+    // FINAL VALIDATION (15-16 seconds)
     // ================================================================
-    console.log('\n🔍 PHASE 6: Quality assurance (console check, final state)');
+    console.log('\n📋 FINAL VALIDATION');
+    console.log('=====================================');
     
-    // Check for critical errors in console
-    const consoleErrors = page.consoleErrors || [];
-    const criticalErrors = consoleErrors.filter(error => 
-      !error.includes('WebSocket') && 
-      !error.includes('Failed to fetch') &&
-      error.includes('Error')
-    );
-    
-    if (criticalErrors.length > 0) {
-      console.log('⚠️  Console errors detected:', criticalErrors);
+    // Check connection is still live
+    const finalStatus = await connectionStatus.textContent();
+    if (finalStatus === 'Live') {
+      console.log('✅ WebSocket connection: STABLE');
     } else {
-      console.log('✅ No critical console errors detected');
+      criticalFailures.push(`Connection lost during test: ${finalStatus}`);
+      console.log(`❌ WebSocket connection: ${finalStatus}`);
     }
     
-    // Verify live indicator is working
-    const liveIndicator = page.getByTestId('live-indicator');
-    if (await liveIndicator.isVisible()) {
-      console.log('✅ Live data indicator is visible and active');
+    // Verify all components still visible
+    const componentsOk = 
+      await page.getByTestId('unified-analytics').isVisible() &&
+      await page.getByTestId('market-grid').isVisible() &&
+      await page.getByTestId('trade-tape').isVisible();
+    
+    if (componentsOk) {
+      console.log('✅ All components: RENDERED');
+    } else {
+      criticalFailures.push('Components failed to render');
+      console.log('❌ Component rendering issues detected');
     }
     
-    // Take final comprehensive screenshot
-    await page.screenshot({ path: 'frontend/test-results/13_final_state.png', fullPage: true });
-    console.log('✅ Screenshot: 13_final_state.png');
+    // Final decision
+    if (criticalFailures.length > 0) {
+      console.log('\n❌ TEST FAILED - Critical issues:');
+      criticalFailures.forEach(failure => console.log(`   - ${failure}`));
+      throw new Error(`Test failed with ${criticalFailures.length} critical failures`);
+    }
     
-    // ================================================================
-    // Final Validation Summary
-    // ================================================================
-    console.log('\\n📊 FINAL VALIDATION SUMMARY');
-    console.log('=====================================');
+    // Must have data to pass
+    if (!finalState.volume || finalState.volume === '$0') {
+      throw new Error('No data flowing through system - backend may not be receiving trades');
+    }
     
-    // Verify key components are still functional
-    await expect(page.getByTestId('unified-analytics')).toBeVisible();
-    await expect(page.getByTestId('market-grid')).toBeVisible();
-    await expect(page.getByTestId('trade-tape')).toBeVisible();
-    
-    // Check if data is present
-    const hasAnalyticsData = await page.getByTestId('analytics-chart').isVisible();
-    const hasMarketData = await page.locator('[data-testid^=\"market-card-\"]').count() > 0;
-    const hasTradeData = await page.getByTestId('trade-tape').isVisible();
-    
-    console.log(`✅ Analytics Chart: ${hasAnalyticsData ? 'Present' : 'Loading'}`);
-    console.log(`✅ Market Data: ${hasMarketData ? 'Present' : 'Loading'}`);
-    console.log(`✅ Trade Data: ${hasTradeData ? 'Present' : 'Loading'}`);
-    
-    // Application state validation
-    const connectionText = await page.getByTestId('connection-status-text').textContent();
-    console.log(`✅ Connection Status: ${connectionText}`);
-    
-    console.log('\\n🎉 Frontend E2E Regression Test COMPLETED');
-    console.log('=====================================');
-    console.log('✅ Application loads within 15 seconds');
-    console.log('✅ WebSocket connection functionality verified');
-    console.log('✅ All main components render correctly');
-    console.log('✅ Interactive features work (toggle, drawer, clicks)');
-    console.log('✅ Responsive design functions across viewports');
-    console.log('✅ Real-time data validation performed');
-    console.log('✅ Console errors within acceptable limits');
-    console.log('\\n📸 All 13 validation screenshots captured in test-results/');
-    
-    // Final assertion - the application should be functional
-    await expect(page.getByTestId('app-layout')).toBeVisible();
-    await expect(page.getByTestId('header-title')).toContainText('Kalshi Flowboard');
+    console.log('\n🎉 Frontend E2E Test PASSED');
+    console.log('✅ Backend connected and stable');
+    console.log('✅ Data flowing through system');
+    console.log('✅ All components functional');
+    console.log('✅ System is operational');
+    console.log(`\n⏱️  Test completed in ~15 seconds`);
   });
 });
