@@ -112,6 +112,10 @@ class TradeAggregator:
     
     def _recalculate_window_stats(self, ticker: str, window_start: int):
         """Recalculate aggregated statistics for a ticker within the time window."""
+        # Check if ticker state exists (defensive programming)
+        if ticker not in self.ticker_states:
+            return
+        
         ticker_trades = self.trades_by_ticker[ticker]
         state = self.ticker_states[ticker]
         
@@ -192,16 +196,24 @@ class TradeAggregator:
         
         # Recalculate window stats for all active tickers
         for ticker in list(self.ticker_states.keys()):
+            # Double-check ticker still exists (could be removed by concurrent operations)
+            if ticker not in self.ticker_states:
+                continue
+                
             if ticker in self.trades_by_ticker and self.trades_by_ticker[ticker]:
                 self._recalculate_window_stats(ticker, window_start)
             else:
                 # Remove ticker state if no recent trades
                 if ticker in self.ticker_states:
-                    last_trade_time = self.ticker_states[ticker].last_trade_time
-                    if last_trade_time < window_start:
-                        del self.ticker_states[ticker]
-                        if ticker in self.trades_by_ticker:
-                            del self.trades_by_ticker[ticker]
+                    try:
+                        last_trade_time = self.ticker_states[ticker].last_trade_time
+                        if last_trade_time < window_start:
+                            del self.ticker_states[ticker]
+                            if ticker in self.trades_by_ticker:
+                                del self.trades_by_ticker[ticker]
+                    except KeyError:
+                        # Ticker was already removed by another operation, continue
+                        continue
     
     def get_stats(self) -> Dict[str, Any]:
         """Get aggregator statistics for debugging."""

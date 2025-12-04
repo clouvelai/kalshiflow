@@ -54,6 +54,54 @@ class Trade(BaseModel):
             return f"${self.yes_price_dollars:.2f}"
         else:
             return f"${self.no_price_dollars:.2f}"
+    
+    def __lt__(self, other) -> bool:
+        """Less than comparison based on timestamp."""
+        if not isinstance(other, Trade):
+            return NotImplemented
+        return self.ts < other.ts
+    
+    def __le__(self, other) -> bool:
+        """Less than or equal comparison based on timestamp."""
+        if not isinstance(other, Trade):
+            return NotImplemented
+        return self.ts <= other.ts
+    
+    def __gt__(self, other) -> bool:
+        """Greater than comparison based on timestamp."""
+        if not isinstance(other, Trade):
+            return NotImplemented
+        return self.ts > other.ts
+    
+    def __ge__(self, other) -> bool:
+        """Greater than or equal comparison based on timestamp."""
+        if not isinstance(other, Trade):
+            return NotImplemented
+        return self.ts >= other.ts
+    
+    def __eq__(self, other) -> bool:
+        """Equality comparison based on all fields."""
+        if not isinstance(other, Trade):
+            return NotImplemented
+        return (
+            self.market_ticker == other.market_ticker and
+            self.yes_price == other.yes_price and
+            self.no_price == other.no_price and
+            self.count == other.count and
+            self.taker_side == other.taker_side and
+            self.ts == other.ts
+        )
+    
+    def __hash__(self) -> int:
+        """Hash based on unique trade characteristics."""
+        return hash((
+            self.market_ticker,
+            self.yes_price,
+            self.no_price,
+            self.count,
+            self.taker_side,
+            self.ts
+        ))
 
 
 class TradeMessage(BaseModel):

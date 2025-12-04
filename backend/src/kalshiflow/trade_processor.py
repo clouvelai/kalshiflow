@@ -95,7 +95,23 @@ class TradeProcessor:
             await self._store_trade(trade)
             
             # Update in-memory aggregations
-            ticker_state = self._update_aggregations(trade)
+            ticker_state = None
+            try:
+                ticker_state = self._update_aggregations(trade)
+            except Exception as e:
+                logger.error(f"Aggregation failed for trade {trade.market_ticker}, continuing with limited functionality: {e}")
+                # Create a minimal ticker state for the broadcast
+                ticker_state = TickerState(
+                    ticker=trade.market_ticker,
+                    last_yes_price=trade.yes_price,
+                    last_no_price=trade.no_price,
+                    last_trade_time=trade.ts,
+                    volume_window=trade.count,
+                    trade_count_window=1,
+                    yes_flow=trade.count if trade.taker_side == "yes" else 0,
+                    no_flow=trade.count if trade.taker_side == "no" else 0,
+                    price_points=[trade.yes_price_dollars]
+                )
             
             # Broadcast to WebSocket clients
             await self._broadcast_trade_update(trade, ticker_state)
@@ -131,7 +147,8 @@ class TradeProcessor:
             logger.debug(f"Updated aggregations for {trade.market_ticker}")
             return ticker_state
         except Exception as e:
-            logger.error(f"Failed to update aggregations: {e}")
+            logger.error(f"Failed to update aggregations for ticker {trade.market_ticker}: {e}")
+            logger.debug(f"Trade details: {trade.dict()}")
             raise
     
     async def _broadcast_trade_update(self, trade: Trade, ticker_state: TickerState):
