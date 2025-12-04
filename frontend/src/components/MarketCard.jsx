@@ -153,25 +153,51 @@ const MarketCard = ({ market, onClick, isSelected = false, rank }) => {
           </div>
         )}
         
-        {/* Second Subtitle - Liquidity, Open Interest, and time to expiration */}
-        <div className="text-xs text-gray-500 truncate">
+        {/* Second Subtitle - Liquidity and Open Interest with icons */}
+        <div className="text-xs text-gray-500 mb-1">
           {(() => {
             const liquidity = formatLiquidity(market.liquidity_dollars);
             const openInterest = formatOpenInterest(market.open_interest);
-            const timeToExpiration = formatTimeToExpiration(market.latest_expiration_time);
             
-            const parts = [];
-            if (liquidity) parts.push(liquidity);
-            if (openInterest) parts.push(openInterest);
-            if (timeToExpiration) parts.push(timeToExpiration);
+            const metadataParts = [];
+            if (liquidity) {
+              metadataParts.push(
+                <span key="liquidity" className="inline-flex items-center gap-1">
+                  <span className="text-blue-500">💧</span>
+                  <span>{liquidity}</span>
+                </span>
+              );
+            }
+            if (openInterest) {
+              metadataParts.push(
+                <span key="open-interest" className="inline-flex items-center gap-1">
+                  <span className="text-purple-500">👥</span>
+                  <span>{openInterest}</span>
+                </span>
+              );
+            }
             
-            // If no metadata available, just show time to expiration
-            if (parts.length === 0) return null;
-            if (parts.length === 1 && timeToExpiration) return timeToExpiration;
+            if (metadataParts.length === 0) return null;
             
-            return parts.join(' • ');
+            return (
+              <div className="flex items-center gap-3 flex-wrap">
+                {metadataParts.map((part, index) => (
+                  <React.Fragment key={index}>
+                    {part}
+                  </React.Fragment>
+                ))}
+              </div>
+            );
           })()}
         </div>
+        
+        {/* Third Subtitle - Time to expiration with clock icon */}
+        {formatTimeToExpiration(market.latest_expiration_time) && (
+          <div className="text-xs text-gray-400 flex items-center gap-1">
+            <span className="text-gray-400">⏰</span>
+            <span>Expires in {formatTimeToExpiration(market.latest_expiration_time)}</span>
+          </div>
+        )}
       </div>
 
       {/* Price Section */}
