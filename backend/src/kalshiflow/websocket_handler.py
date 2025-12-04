@@ -12,7 +12,7 @@ from typing import Set, Dict, Any
 from starlette.websockets import WebSocket, WebSocketDisconnect
 from starlette.endpoints import WebSocketEndpoint
 
-from .models import SnapshotMessage
+from .models import SnapshotMessage, AnalyticsDataMessage
 from .trade_processor import get_trade_processor
 
 
@@ -75,6 +75,22 @@ class WebSocketBroadcaster:
         # Remove disconnected clients
         for connection in disconnected:
             self.disconnect(connection)
+    
+    async def broadcast_analytics_data(self, analytics_data):
+        """Broadcast analytics data (time series and summary) to all connected clients."""
+        try:
+            analytics_message = AnalyticsDataMessage(
+                type="analytics_data",
+                data=analytics_data  # analytics_data now contains both time_series and summary
+            )
+            
+            await self.broadcast(analytics_message.dict())
+            
+            time_series_count = len(analytics_data.get("time_series", []))
+            logger.debug(f"Broadcast analytics data with {time_series_count} time points and summary stats")
+            
+        except Exception as e:
+            logger.error(f"Failed to broadcast analytics data: {e}")
     
     async def _send_snapshot(self, websocket: WebSocket):
         """Send initial snapshot data to a newly connected client."""

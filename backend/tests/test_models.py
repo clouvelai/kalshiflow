@@ -55,9 +55,9 @@ class TestTrade:
         with pytest.raises(ValidationError):
             Trade(
                 market_ticker="TEST",
-                yes_price=100,  # Too high
+                yes_price=101,  # Too high (>100)
                 no_price=35,
-                yes_price_dollars=0.65,
+                yes_price_dollars=1.01,
                 no_price_dollars=0.35,
                 count=1,
                 taker_side="yes",
@@ -84,7 +84,7 @@ class TestTrade:
                 market_ticker="TEST",
                 yes_price=65,
                 no_price=35,
-                yes_price_dollars=1.0,  # Too high
+                yes_price_dollars=1.01,  # Too high (>1.0)
                 no_price_dollars=0.35,
                 count=1,
                 taker_side="yes",

@@ -13,6 +13,7 @@ from typing import Optional, Callable, Any, Dict
 from .models import Trade, TickerState, TradeUpdateMessage
 from .database import get_database
 from .aggregator import get_aggregator
+from .time_analytics_service import get_analytics_service
 
 
 logger = logging.getLogger(__name__)
@@ -25,6 +26,7 @@ class TradeProcessor:
         """Initialize the trade processor with database and aggregator."""
         self.database = get_database()
         self.aggregator = get_aggregator()
+        self.analytics_service = get_analytics_service()
         self.websocket_broadcaster = None
         self._running = False
         self._trade_callbacks = []
@@ -51,6 +53,9 @@ class TradeProcessor:
         # Start aggregator
         await self.aggregator.start()
         
+        # Start analytics service
+        await self.analytics_service.start()
+        
         self._running = True
         self.stats["started_at"] = datetime.now()
         
@@ -67,6 +72,9 @@ class TradeProcessor:
         
         # Stop aggregator
         await self.aggregator.stop()
+        
+        # Stop analytics service
+        await self.analytics_service.stop()
         
         logger.info("Trade processor service stopped")
     
@@ -113,6 +121,13 @@ class TradeProcessor:
                     price_points=[trade.yes_price_dollars]
                 )
             
+            # Update analytics (non-blocking)
+            try:
+                self.analytics_service.process_trade(trade)
+            except Exception as e:
+                logger.error(f"Analytics processing failed for trade {trade.market_ticker}: {e}")
+                # Continue processing - analytics failures shouldn't stop trade flow
+            
             # Broadcast to WebSocket clients
             await self._broadcast_trade_update(trade, ticker_state)
             
@@ -152,7 +167,7 @@ class TradeProcessor:
             raise
     
     async def _broadcast_trade_update(self, trade: Trade, ticker_state: TickerState):
-        """Broadcast trade update to WebSocket clients."""
+        """Broadcast trade update and analytics data to WebSocket clients."""
         if not self.websocket_broadcaster:
             return
         
@@ -174,8 +189,18 @@ class TradeProcessor:
                 }
             )
             
-            # Broadcast to all connected clients
+            # Broadcast trade update to all connected clients
             await self.websocket_broadcaster.broadcast(update_message.dict())
+            
+            # Also broadcast updated analytics data after each trade
+            try:
+                analytics_data = self.analytics_service.get_analytics_data()
+                if analytics_data:
+                    await self.websocket_broadcaster.broadcast_analytics_data(analytics_data)
+                    logger.debug(f"Broadcast analytics data after trade for {trade.market_ticker}")
+            except Exception as analytics_error:
+                logger.error(f"Failed to broadcast analytics data after trade: {analytics_error}")
+                # Continue - analytics broadcast failure shouldn't stop trade processing
             
             logger.debug(f"Broadcast trade update for {trade.market_ticker}")
             
@@ -202,11 +227,29 @@ class TradeProcessor:
             # Use metadata-enriched hot markets for snapshot
             hot_markets = await self.aggregator.get_hot_markets_with_metadata()
             global_stats = self.aggregator.get_global_stats()
+            # Include analytics data in snapshot - handle both old and new formats
+            analytics_data = self.analytics_service.get_analytics_data()
+            
+            # Ensure backwards compatibility - if analytics_data is a dict, use it as is
+            # If it's a list (old format), convert to new format
+            if isinstance(analytics_data, list):
+                analytics_data = {
+                    "time_series": analytics_data,
+                    "summary": {
+                        "peak_volume_usd": 0.0,
+                        "total_volume_usd": 0.0,
+                        "peak_trades": 0,
+                        "total_trades": 0,
+                        "current_minute_volume_usd": 0.0,
+                        "current_minute_trades": 0
+                    }
+                }
             
             return {
                 "recent_trades": recent_trades,
                 "hot_markets": hot_markets,
-                "global_stats": global_stats
+                "global_stats": global_stats,
+                "analytics_data": analytics_data
             }
         except Exception as e:
             logger.error(f"Error getting snapshot data: {e}")
@@ -218,7 +261,8 @@ class TradeProcessor:
                     "session_start_time": None,
                     "active_markets_count": 0,
                     "total_window_volume": 0
-                }
+                },
+                "analytics_data": []
             }
     
     def get_stats(self) -> Dict[str, Any]:
@@ -235,8 +279,9 @@ class TradeProcessor:
             "has_websocket_broadcaster": self.websocket_broadcaster is not None
         }
         
-        # Include aggregator and database stats
+        # Include aggregator and analytics stats
         processor_stats["aggregator"] = self.aggregator.get_stats()
+        processor_stats["analytics"] = self.analytics_service.get_stats()
         
         return processor_stats
     

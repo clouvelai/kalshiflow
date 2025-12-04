@@ -20,6 +20,7 @@ from .kalshi_client import KalshiWebSocketClient
 from .database import get_database
 from .aggregator import get_aggregator
 from .market_metadata_service import initialize_metadata_service, get_metadata_service
+from .time_analytics_service import get_analytics_service
 from .auth import KalshiAuth
 
 # Configure logging
@@ -185,9 +186,9 @@ async def startup_event():
         )
         
         # Start Kalshi client as background task
-        task = asyncio.create_task(kalshi_client.start())
-        background_tasks.add(task)
-        task.add_done_callback(background_tasks.discard)
+        kalshi_task = asyncio.create_task(kalshi_client.start())
+        background_tasks.add(kalshi_task)
+        kalshi_task.add_done_callback(background_tasks.discard)
         
         logger.info("All services started successfully")
         

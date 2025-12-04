@@ -74,11 +74,8 @@ class TestKalshiWebSocketClient:
         
         # Mock successful connection flow
         with patch('websockets.connect', side_effect=mock_connect):
-            # Mock authentication response
-            mock_websocket.recv.side_effect = [
-                json.dumps({"id": "auth", "type": "subscribed"}),  # Auth success
-                json.dumps({"id": "trades", "type": "subscribed"})  # Trades subscription success
-            ]
+            # Auth now happens via headers, only subscription response needed
+            mock_websocket.recv.return_value = json.dumps({"id": 1, "type": "subscribed"})
             
             result = await client.connect()
         
@@ -87,19 +84,13 @@ class TestKalshiWebSocketClient:
         assert client.is_authenticated is True
         assert client.reconnect_attempts == 0
         
-        # Verify authentication message was sent
-        auth_call = mock_websocket.send.call_args_list[0][0][0]
-        auth_data = json.loads(auth_call)
-        assert auth_data["id"] == "auth"
-        assert auth_data["cmd"] == "subscribe"
-        assert "auth" in auth_data["params"]
-        
-        # Verify trades subscription was sent
-        trades_call = mock_websocket.send.call_args_list[1][0][0]
+        # Verify trades subscription was sent (only one message now)
+        mock_websocket.send.assert_called_once()
+        trades_call = mock_websocket.send.call_args[0][0]
         trades_data = json.loads(trades_call)
-        assert trades_data["id"] == "trades"
+        assert trades_data["id"] == 1
         assert trades_data["cmd"] == "subscribe"
-        assert "public_trades" in trades_data["params"]["channels"]
+        assert "trade" in trades_data["params"]["channels"]
     
     @pytest.mark.asyncio
     async def test_connect_websocket_failure(self, mock_auth):
@@ -119,17 +110,13 @@ class TestKalshiWebSocketClient:
         client = KalshiWebSocketClient("wss://test.example.com", mock_auth)
         client.websocket = mock_websocket
         
-        # Mock authentication response
-        mock_websocket.recv.return_value = json.dumps({
-            "id": "auth",
-            "type": "subscribed"
-        })
-        
+        # Authentication now happens via headers
         result = await client.authenticate()
         
         assert result is True
         assert client.is_authenticated is True
-        mock_websocket.send.assert_called_once()
+        # No send should be called as auth is done via headers
+        mock_websocket.send.assert_not_called()
     
     @pytest.mark.asyncio
     async def test_authenticate_failure(self, mock_auth, mock_websocket):
@@ -137,17 +124,11 @@ class TestKalshiWebSocketClient:
         client = KalshiWebSocketClient("wss://test.example.com", mock_auth)
         client.websocket = mock_websocket
         
-        # Mock authentication failure response
-        mock_websocket.recv.return_value = json.dumps({
-            "id": "auth",
-            "type": "error",
-            "error": "Authentication failed"
-        })
-        
+        # Authentication now happens via headers and always succeeds if connected
         result = await client.authenticate()
         
-        assert result is False
-        assert client.is_authenticated is False
+        assert result is True  # Always returns True now
+        assert client.is_authenticated is True
     
     @pytest.mark.asyncio
     async def test_authenticate_timeout(self, mock_auth, mock_websocket):
@@ -155,13 +136,11 @@ class TestKalshiWebSocketClient:
         client = KalshiWebSocketClient("wss://test.example.com", mock_auth)
         client.websocket = mock_websocket
         
-        # Mock timeout
-        mock_websocket.recv.side_effect = asyncio.TimeoutError()
-        
+        # Authentication now happens via headers and doesn't wait for response
         result = await client.authenticate()
         
-        assert result is False
-        assert client.is_authenticated is False
+        assert result is True  # Always returns True now
+        assert client.is_authenticated is True
     
     @pytest.mark.asyncio
     async def test_subscribe_to_trades_success(self, mock_auth, mock_websocket):
@@ -169,9 +148,9 @@ class TestKalshiWebSocketClient:
         client = KalshiWebSocketClient("wss://test.example.com", mock_auth)
         client.websocket = mock_websocket
         
-        # Mock subscription response
+        # Mock subscription response with correct ID
         mock_websocket.recv.return_value = json.dumps({
-            "id": "trades",
+            "id": 1,
             "type": "subscribed"
         })
         
@@ -183,9 +162,9 @@ class TestKalshiWebSocketClient:
         # Verify subscription message format
         call_args = mock_websocket.send.call_args[0][0]
         data = json.loads(call_args)
-        assert data["id"] == "trades"
+        assert data["id"] == 1
         assert data["cmd"] == "subscribe"
-        assert "public_trades" in data["params"]["channels"]
+        assert "trade" in data["params"]["channels"]
     
     @pytest.mark.asyncio
     async def test_handle_trade_message(self, mock_auth):

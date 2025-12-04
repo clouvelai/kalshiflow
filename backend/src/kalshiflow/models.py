@@ -202,15 +202,18 @@ class SnapshotMessage(WebSocketMessage):
     @classmethod
     def validate_snapshot_data(cls, v):
         """Ensure snapshot has required fields."""
-        if "recent_trades" not in v or "hot_markets" not in v:
-            raise ValueError("Snapshot data must contain 'recent_trades' and 'hot_markets'")
+        required_fields = ["recent_trades", "hot_markets"]
+        for field in required_fields:
+            if field not in v:
+                raise ValueError(f"Snapshot data must contain '{field}'")
+        # analytics_data is optional for backward compatibility
         return v
 
 
 class TradeUpdateMessage(WebSocketMessage):
     """Incremental trade update message sent to frontend."""
     type: Literal["trade"] = "trade"
-    data: Dict[str, Any] = Field(..., description="Trade update data containing trade and ticker_state")
+    data: Dict[str, Any] = Field(..., description="Trade update data containing trade, ticker_state, and optionally current_minute_stats")
     
     @field_validator('data')
     @classmethod
@@ -218,6 +221,21 @@ class TradeUpdateMessage(WebSocketMessage):
         """Ensure trade update has required fields."""
         if "trade" not in v or "ticker_state" not in v:
             raise ValueError("Trade update data must contain 'trade' and 'ticker_state'")
+        # current_minute_stats is optional
+        return v
+
+
+class AnalyticsDataMessage(WebSocketMessage):
+    """Analytics time series data message sent to frontend."""
+    type: Literal["analytics_data"] = "analytics_data"
+    data: Dict[str, Any] = Field(..., description="Analytics data containing time_series")
+    
+    @field_validator('data')
+    @classmethod
+    def validate_analytics_data(cls, v):
+        """Ensure analytics data has required fields."""
+        if "time_series" not in v:
+            raise ValueError("Analytics data must contain 'time_series'")
         return v
 
 
