@@ -14,17 +14,42 @@ const formatVolume = (volume) => {
   }
 };
 
-// Utility function to format expiration date
-const formatExpirationDate = (expirationTime) => {
+// Utility function to format time to expiration
+const formatTimeToExpiration = (expirationTime) => {
   if (!expirationTime) return null;
   
   try {
-    const date = new Date(expirationTime);
-    return date.toLocaleDateString('en-US', { 
-      month: 'short', 
-      day: 'numeric', 
-      year: 'numeric' 
-    });
+    const now = new Date();
+    const expiration = new Date(expirationTime);
+    const timeDiff = expiration - now;
+    
+    if (timeDiff <= 0) return 'Expired';
+    
+    const minutes = Math.floor(timeDiff / (1000 * 60));
+    const hours = Math.floor(minutes / 60);
+    const days = Math.floor(hours / 24);
+    
+    // If less than 60 minutes, show minutes/seconds
+    if (minutes < 60) {
+      if (minutes < 1) {
+        const seconds = Math.floor(timeDiff / 1000);
+        return `${seconds} second${seconds !== 1 ? 's' : ''}`;
+      }
+      return `${minutes} minute${minutes !== 1 ? 's' : ''}`;
+    }
+    
+    // If less than 1 day, show hours
+    if (hours < 24) {
+      return `${hours} hour${hours !== 1 ? 's' : ''}`;
+    }
+    
+    // If 1 day or more, show days and hours
+    const remainingHours = hours % 24;
+    if (remainingHours === 0) {
+      return `${days} day${days !== 1 ? 's' : ''}`;
+    }
+    
+    return `${days} day${days !== 1 ? 's' : ''} ${remainingHours} hour${remainingHours !== 1 ? 's' : ''}`;
   } catch {
     return null;
   }
@@ -34,12 +59,27 @@ const formatExpirationDate = (expirationTime) => {
 const formatLiquidity = (liquidity) => {
   if (!liquidity || liquidity === 0) return null;
   
-  if (liquidity >= 1000000) {
+  if (liquidity >= 1000000000) {
+    return `$${(liquidity / 1000000000).toFixed(1)}B`;
+  } else if (liquidity >= 1000000) {
     return `$${(liquidity / 1000000).toFixed(1)}M`;
   } else if (liquidity >= 1000) {
-    return `$${(liquidity / 1000).toFixed(0)}k`;
+    return `$${(liquidity / 1000).toFixed(0)}K`;
   } else {
     return `$${Math.round(liquidity)}`;
+  }
+};
+
+// Utility function to format open interest
+const formatOpenInterest = (openInterest) => {
+  if (!openInterest || openInterest === 0) return null;
+  
+  if (openInterest >= 1000000) {
+    return `${(openInterest / 1000000).toFixed(1)}M`;
+  } else if (openInterest >= 1000) {
+    return `${(openInterest / 1000).toFixed(1)}K`;
+  } else {
+    return `${openInterest}`;
   }
 };
 
@@ -101,38 +141,37 @@ const MarketCard = ({ market, onClick, isSelected = false, rank }) => {
 
       {/* Market Title and Info */}
       <div className="mb-3">
-        {market.title ? (
-          <>
-            {/* Primary Title */}
-            <h3 className="font-semibold text-gray-900 text-sm leading-tight mb-1" title={market.title}>
-              <span className="line-clamp-2">
-                {market.title}
-              </span>
-            </h3>
-            
-            {/* Subtitle with ticker, category, and expiration */}
-            <div className="text-xs text-gray-500 truncate">
-              <span className="font-medium">{market.ticker}</span>
-              {market.category && (
-                <>
-                  <span className="mx-1">•</span>
-                  <span className="capitalize">{market.category}</span>
-                </>
-              )}
-              {formatExpirationDate(market.latest_expiration_time) && (
-                <>
-                  <span className="mx-1">•</span>
-                  <span>{formatExpirationDate(market.latest_expiration_time)}</span>
-                </>
-              )}
-            </div>
-          </>
-        ) : (
-          /* Fallback to ticker only when no metadata */
-          <h3 className="font-semibold text-gray-900 text-sm truncate" title={market.ticker}>
-            {market.ticker}
-          </h3>
+        {/* Primary Title - Always ticker */}
+        <h3 className="font-semibold text-gray-900 text-sm leading-tight mb-1" title={market.ticker}>
+          {market.ticker}
+        </h3>
+        
+        {/* First Subtitle - Market title if metadata available */}
+        {market.title && (
+          <div className="text-xs text-gray-600 mb-1 line-clamp-2" title={market.title}>
+            {market.title}
+          </div>
         )}
+        
+        {/* Second Subtitle - Liquidity, Open Interest, and time to expiration */}
+        <div className="text-xs text-gray-500 truncate">
+          {(() => {
+            const liquidity = formatLiquidity(market.liquidity_dollars);
+            const openInterest = formatOpenInterest(market.open_interest);
+            const timeToExpiration = formatTimeToExpiration(market.latest_expiration_time);
+            
+            const parts = [];
+            if (liquidity) parts.push(liquidity);
+            if (openInterest) parts.push(openInterest);
+            if (timeToExpiration) parts.push(timeToExpiration);
+            
+            // If no metadata available, just show time to expiration
+            if (parts.length === 0) return null;
+            if (parts.length === 1 && timeToExpiration) return timeToExpiration;
+            
+            return parts.join(' • ');
+          })()}
+        </div>
       </div>
 
       {/* Price Section */}
