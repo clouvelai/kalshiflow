@@ -12,6 +12,7 @@ const AppContent = () => {
     hotMarkets,
     selectedTicker,
     tradeCount,
+    globalStats,
     connectionStatus,
     error,
     selectTicker,
@@ -38,9 +39,9 @@ const AppContent = () => {
     >
       {/* Hero Stats Section */}
       <HeroStats 
-        tradesCount={recentTrades.length}
-        totalVolume={null}
-        netFlow={null}
+        tradesCount={globalStats.daily_trades_count}
+        totalVolume={globalStats.total_volume}
+        netFlow={globalStats.total_net_flow}
       />
 
       {/* Market Grid Section */}

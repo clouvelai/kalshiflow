@@ -1,6 +1,19 @@
 import React from 'react';
 import Sparkline from './Sparkline';
 
+// Utility function to format volume numbers
+const formatVolume = (volume) => {
+  if (!volume || volume === 0) return '$0';
+  
+  if (volume >= 1000000) {
+    return `$${(volume / 1000000).toFixed(1)}M`;
+  } else if (volume >= 1000) {
+    return `$${(volume / 1000).toFixed(1)}k`;
+  } else {
+    return `$${volume}`;
+  }
+};
+
 const MarketCard = ({ market, onClick, isSelected = false, rank }) => {
   if (!market) return null;
 
@@ -10,11 +23,10 @@ const MarketCard = ({ market, onClick, isSelected = false, rank }) => {
     }
   };
 
-  // Calculate flow direction and intensity
-  const flowDirection = market.yes_flow > market.no_flow ? 'YES' : 'NO';
-  const flowIntensity = Math.abs(market.yes_flow - market.no_flow);
-  const maxFlow = Math.max(market.yes_flow, market.no_flow);
-  const flowPercentage = maxFlow > 0 ? (flowIntensity / maxFlow) * 100 : 0;
+  // Calculate net flow percentage for progress bar
+  const netFlow = market.net_flow || 0;
+  const totalFlow = (market.yes_flow || 0) + (market.no_flow || 0);
+  const flowPercentage = totalFlow > 0 ? (Math.abs(netFlow) / totalFlow) * 100 : 0;
 
   // Determine hotness level based on volume
   const getHotnessLevel = (volume) => {
@@ -32,7 +44,6 @@ const MarketCard = ({ market, onClick, isSelected = false, rank }) => {
     'border-red-200 bg-red-50' // Very hot
   ];
 
-  const hotnessIndicators = ['🟢', '🟡', '🟠', '🔥'];
 
   return (
     <div 
@@ -58,10 +69,6 @@ const MarketCard = ({ market, onClick, isSelected = false, rank }) => {
         </div>
       )}
 
-      {/* Hotness Indicator */}
-      <div className="absolute top-2 right-2 text-lg">
-        {hotnessIndicators[hotnessLevel]}
-      </div>
 
       {/* Market Ticker */}
       <div className="mb-3">
@@ -73,49 +80,57 @@ const MarketCard = ({ market, onClick, isSelected = false, rank }) => {
       {/* Price Section */}
       <div className="mb-3">
         <div className="flex items-center justify-between">
-          <span className="text-xs text-gray-500">Last Price</span>
+          <span className="text-xs text-gray-500">Last Yes Price</span>
           <span className="text-lg font-bold text-gray-900">
             {market.last_price ? `${Math.round(market.last_price * 100)}¢` : '--'}
           </span>
         </div>
-        {market.last_price && (
-          <div className="text-xs text-gray-600">
-            {Math.round(market.last_price * 100)}% YES
-          </div>
-        )}
       </div>
 
       {/* Volume */}
       <div className="mb-3">
         <div className="flex items-center justify-between">
           <span className="text-xs text-gray-500">Volume (10m)</span>
-          <span className="text-sm font-semibold text-orange-600">
-            {market.volume_window || 0}
+          <span className="text-sm font-semibold text-purple-400">
+            {formatVolume(market.volume_window)}
           </span>
         </div>
       </div>
 
-      {/* Flow Direction */}
+      {/* Trade Count */}
       <div className="mb-3">
         <div className="flex items-center justify-between">
-          <span className="text-xs text-gray-500">Flow</span>
-          <span className={`
-            text-sm font-semibold px-2 py-1 rounded-full
-            ${flowDirection === 'YES' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}
-          `}>
-            {flowDirection}
+          <span className="text-xs text-gray-500">Trades (10m)</span>
+          <span className="text-sm font-semibold text-gray-700">
+            {market.trade_count_window || 0}
           </span>
         </div>
-        <div className="mt-1">
-          <div className="w-full bg-gray-200 rounded-full h-1">
-            <div 
-              className={`h-1 rounded-full transition-all duration-500 ${
-                flowDirection === 'YES' ? 'bg-green-500' : 'bg-red-500'
-              }`}
-              style={{ width: `${Math.min(flowPercentage, 100)}%` }}
-            ></div>
-          </div>
+      </div>
+
+      {/* Net Flow */}
+      <div className="mb-3">
+        <div className="flex items-center justify-between">
+          <span className="text-xs text-gray-500">Net Flow (10m)</span>
+          <span className={`
+            text-sm font-semibold px-2 py-1 rounded-full
+            ${market.net_flow > 0 ? 'bg-green-100 text-green-700' : 
+              market.net_flow < 0 ? 'bg-red-100 text-red-700' : 'bg-gray-100 text-gray-700'}
+          `}>
+            {formatVolume(market.net_flow || 0)}
+          </span>
         </div>
+        {market.net_flow !== 0 && (
+          <div className="mt-1">
+            <div className="w-full bg-gray-200 rounded-full h-1">
+              <div 
+                className={`h-1 rounded-full transition-all duration-500 ${
+                  market.net_flow > 0 ? 'bg-green-500' : 'bg-red-500'
+                }`}
+                style={{ width: `${Math.min(flowPercentage, 100)}%` }}
+              ></div>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Sparkline */}
@@ -127,7 +142,7 @@ const MarketCard = ({ market, onClick, isSelected = false, rank }) => {
               data={market.price_points}
               width={180}
               height={32}
-              color={flowDirection === 'YES' ? '#10b981' : '#ef4444'}
+              color={netFlow > 0 ? '#10b981' : netFlow < 0 ? '#ef4444' : '#6b7280'}
               strokeWidth={1.5}
             />
           </div>
@@ -136,9 +151,17 @@ const MarketCard = ({ market, onClick, isSelected = false, rank }) => {
 
       {/* Footer Stats */}
       <div className="pt-2 border-t border-gray-100">
-        <div className="flex justify-between text-xs text-gray-500">
-          <span>YES: {market.yes_flow || 0}</span>
-          <span>NO: {market.no_flow || 0}</span>
+        <div className="flex justify-between text-xs">
+          <span className={`
+            ${netFlow > 0 ? 'text-green-600 font-semibold' : 'text-gray-500'}
+          `}>
+            YES: {formatVolume(market.yes_flow || 0)}
+          </span>
+          <span className={`
+            ${netFlow < 0 ? 'text-red-600 font-semibold' : 'text-gray-500'}
+          `}>
+            NO: {formatVolume(market.no_flow || 0)}
+          </span>
         </div>
       </div>
 

@@ -26,6 +26,12 @@ class TradeAggregator:
         self.trades_by_time: List[Tuple[int, int, str, Trade]] = []  # heap of (timestamp, seq, ticker, trade)
         self.recent_trades: deque = deque(maxlen=int(os.getenv("RECENT_TRADES_LIMIT", "200")))
         
+        # Global statistics tracking
+        self._daily_trades_count = 0
+        self._total_volume = 0
+        self._total_net_flow = 0
+        self._session_start_time = None
+        
         # Sequence number for heap ordering
         self._trade_sequence = 0
         
@@ -39,6 +45,7 @@ class TradeAggregator:
             return
             
         self._running = True
+        self._session_start_time = datetime.now()
         self._cleanup_task = asyncio.create_task(self._periodic_cleanup())
         
     async def stop(self):
@@ -54,6 +61,18 @@ class TradeAggregator:
     def process_trade(self, trade: Trade) -> TickerState:
         """Process a new trade and update aggregations."""
         ticker = trade.market_ticker
+        
+        # Increment global daily trades count
+        self._daily_trades_count += 1
+        
+        # Update global volume (trade volume in shares)
+        self._total_volume += trade.count
+        
+        # Update global net flow (YES trades are positive, NO trades are negative)
+        if trade.taker_side == "yes":
+            self._total_net_flow += trade.count
+        else:
+            self._total_net_flow -= trade.count
         
         # Add to recent trades (newest first)
         self.recent_trades.appendleft(trade.dict())
@@ -169,6 +188,17 @@ class TradeAggregator:
     def get_all_ticker_states(self) -> Dict[str, TickerState]:
         """Get all current ticker states."""
         return self.ticker_states.copy()
+    
+    def get_global_stats(self) -> Dict[str, Any]:
+        """Get global market statistics."""
+        return {
+            "daily_trades_count": self._daily_trades_count,
+            "total_volume": self._total_volume,
+            "total_net_flow": self._total_net_flow,
+            "session_start_time": self._session_start_time.isoformat() if self._session_start_time else None,
+            "active_markets_count": len(self.ticker_states),
+            "total_window_volume": sum(state.volume_window for state in self.ticker_states.values())
+        }
     
     async def _periodic_cleanup(self):
         """Periodically remove old trades from memory."""

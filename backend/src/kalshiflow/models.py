@@ -163,6 +163,11 @@ class TickerState(BaseModel):
         else:
             return "neutral"
     
+    @property
+    def last_price(self) -> float:
+        """Last trade price in dollars (uses YES price as primary market price)."""
+        return self.last_yes_price_dollars
+    
     def dict(self, **kwargs) -> dict:
         """Override dict() to include computed properties."""
         data = super().dict(**kwargs)
@@ -170,6 +175,7 @@ class TickerState(BaseModel):
         data["net_flow"] = self.net_flow
         data["last_yes_price_dollars"] = self.last_yes_price_dollars
         data["last_no_price_dollars"] = self.last_no_price_dollars
+        data["last_price"] = self.last_price
         data["flow_direction"] = self.flow_direction
         return data
 

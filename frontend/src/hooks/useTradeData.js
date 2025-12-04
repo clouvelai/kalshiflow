@@ -6,6 +6,14 @@ const useTradeData = () => {
   const [hotMarkets, setHotMarkets] = useState([]);
   const [selectedTicker, setSelectedTicker] = useState(null);
   const [tradeCount, setTradeCount] = useState(0);
+  const [globalStats, setGlobalStats] = useState({
+    daily_trades_count: 0,
+    total_volume: 0,
+    total_net_flow: 0,
+    session_start_time: null,
+    active_markets_count: 0,
+    total_window_volume: 0
+  });
   
   const wsUrl = `ws://localhost:8000/ws/stream`;
   const { connectionStatus, lastMessage, error } = useWebSocket(wsUrl);
@@ -25,6 +33,9 @@ const useTradeData = () => {
           if (lastMessage.data?.hot_markets) {
             setHotMarkets(lastMessage.data.hot_markets);
           }
+          if (lastMessage.data?.global_stats) {
+            setGlobalStats(lastMessage.data.global_stats);
+          }
           break;
 
         case 'trade':
@@ -39,6 +50,11 @@ const useTradeData = () => {
             });
             
             setTradeCount(prev => prev + 1);
+          }
+          
+          // Update global stats if provided
+          if (lastMessage.data?.global_stats) {
+            setGlobalStats(lastMessage.data.global_stats);
           }
           
           // Update hot markets if ticker state is provided
@@ -94,6 +110,7 @@ const useTradeData = () => {
     hotMarkets,
     selectedTicker,
     tradeCount,
+    globalStats,
     connectionStatus,
     error,
     selectTicker,

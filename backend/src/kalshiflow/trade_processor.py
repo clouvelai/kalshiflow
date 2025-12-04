@@ -157,12 +157,16 @@ class TradeProcessor:
             return
         
         try:
+            # Get current global stats
+            global_stats = self.aggregator.get_global_stats()
+            
             # Create trade update message
             update_message = TradeUpdateMessage(
                 type="trade",
                 data={
                     "trade": trade.dict(),
-                    "ticker_state": ticker_state.dict()
+                    "ticker_state": ticker_state.dict(),
+                    "global_stats": global_stats
                 }
             )
             
@@ -192,16 +196,24 @@ class TradeProcessor:
         try:
             recent_trades = self.aggregator.get_recent_trades()
             hot_markets = self.aggregator.get_hot_markets()
+            global_stats = self.aggregator.get_global_stats()
             
             return {
                 "recent_trades": recent_trades,
-                "hot_markets": hot_markets
+                "hot_markets": hot_markets,
+                "global_stats": global_stats
             }
         except Exception as e:
             logger.error(f"Error getting snapshot data: {e}")
             return {
                 "recent_trades": [],
-                "hot_markets": []
+                "hot_markets": [],
+                "global_stats": {
+                    "daily_trades_count": 0,
+                    "session_start_time": None,
+                    "active_markets_count": 0,
+                    "total_window_volume": 0
+                }
             }
     
     def get_stats(self) -> Dict[str, Any]:
