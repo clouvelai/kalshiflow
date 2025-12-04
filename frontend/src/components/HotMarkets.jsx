@@ -6,8 +6,9 @@ const HotMarkets = ({ markets = [], selectedTicker, onTickerSelect }) => {
     return (
       <div className="bg-white rounded-lg shadow-sm border border-gray-200">
         <div className="p-4 border-b border-gray-200">
-          <h2 className="text-lg font-semibold text-gray-900">Hot Markets</h2>
-          <p className="text-sm text-gray-500">Top markets by volume (10min)</p>
+          <h2 className="text-lg font-semibold text-gray-900">
+            Hot Markets - Loading top markets ranked by trading volume in the last 10 minutes
+          </h2>
         </div>
         <div className="p-8 text-center">
           <div className="text-gray-400 text-sm">
@@ -23,16 +24,9 @@ const HotMarkets = ({ markets = [], selectedTicker, onTickerSelect }) => {
     <div className="bg-white rounded-lg shadow-sm border border-gray-200">
       {/* Header */}
       <div className="p-4 border-b border-gray-200">
-        <div className="flex items-center justify-between">
-          <div>
-            <h2 className="text-lg font-semibold text-gray-900">Hot Markets</h2>
-            <p className="text-sm text-gray-500">Top markets by volume (10min)</p>
-          </div>
-          <div className="text-right">
-            <div className="text-2xl font-bold text-orange-500">{markets.length}</div>
-            <div className="text-xs text-gray-500">Active</div>
-          </div>
-        </div>
+        <h2 className="text-lg font-semibold text-gray-900">
+          Hot Markets - Top {markets.length} markets ranked by trading volume in the last 10 minutes
+        </h2>
       </div>
 
       {/* Markets Grid */}
