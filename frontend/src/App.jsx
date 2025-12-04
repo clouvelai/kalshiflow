@@ -11,7 +11,6 @@ const AppContent = () => {
     recentTrades,
     hotMarkets,
     selectedTicker,
-    tradeCount,
     globalStats,
     connectionStatus,
     error,
@@ -35,7 +34,6 @@ const AppContent = () => {
   return (
     <Layout 
       connectionStatus={connectionStatus}
-      tradeCount={tradeCount}
     >
       {/* Hero Stats Section */}
       <HeroStats 

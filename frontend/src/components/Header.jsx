@@ -1,6 +1,6 @@
 import React from 'react';
 
-const Header = ({ connectionStatus, tradeCount }) => {
+const Header = ({ connectionStatus }) => {
   return (
     <header className="bg-gradient-to-r from-blue-900 to-indigo-900 text-white shadow-lg">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
@@ -18,33 +18,22 @@ const Header = ({ connectionStatus, tradeCount }) => {
             </div>
           </div>
 
-          {/* Connection Status and Stats */}
-          <div className="flex items-center space-x-6">
-            {/* Trade Count */}
-            <div className="text-right">
-              <div className="text-2xl font-bold text-green-400">
-                {tradeCount?.toLocaleString() || '0'}
-              </div>
-              <div className="text-blue-200 text-sm">Trades Today</div>
-            </div>
-
-            {/* Connection Status */}
-            <div className="flex items-center space-x-2">
-              <div className={`w-3 h-3 rounded-full ${
-                connectionStatus === 'connected' 
-                  ? 'bg-green-500 animate-pulse' 
-                  : connectionStatus === 'connecting'
-                  ? 'bg-yellow-500 animate-pulse'
-                  : 'bg-red-500'
-              }`}></div>
-              <span className="text-sm font-medium">
-                {connectionStatus === 'connected' 
-                  ? 'Live' 
-                  : connectionStatus === 'connecting'
-                  ? 'Connecting'
-                  : 'Disconnected'}
-              </span>
-            </div>
+          {/* Connection Status */}
+          <div className="flex items-center space-x-2">
+            <div className={`w-3 h-3 rounded-full ${
+              connectionStatus === 'connected' 
+                ? 'bg-green-500 animate-pulse' 
+                : connectionStatus === 'connecting'
+                ? 'bg-yellow-500 animate-pulse'
+                : 'bg-red-500'
+            }`}></div>
+            <span className="text-sm font-medium">
+              {connectionStatus === 'connected' 
+                ? 'Live' 
+                : connectionStatus === 'connecting'
+                ? 'Connecting'
+                : 'Disconnected'}
+            </span>
           </div>
         </div>
       </div>
