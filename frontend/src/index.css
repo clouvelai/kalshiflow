@@ -1,3 +1,68 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* Custom scrollbar styles */
+@layer utilities {
+  .scrollbar-thin {
+    scrollbar-width: thin;
+    scrollbar-color: rgb(148 163 184) transparent;
+  }
+  
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  
+  .scrollbar-thin::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    background-color: rgb(148 163 184);
+    border-radius: 3px;
+  }
+  
+  .scrollbar-thin::-webkit-scrollbar-thumb:hover {
+    background-color: rgb(100 116 139);
+  }
+}
+
+/* Base styles */
+@layer base {
+  body {
+    @apply bg-gray-950 text-gray-100 antialiased;
+  }
+  
+  /* Custom focus styles */
+  *:focus {
+    @apply outline-none ring-2 ring-primary-500 ring-offset-2 ring-offset-gray-900;
+  }
+}
+
+/* Component styles */
+@layer components {
+  .trade-row-yes {
+    @apply bg-gradient-to-r from-yes-900/20 to-transparent border-l-2 border-yes-500;
+  }
+  
+  .trade-row-no {
+    @apply bg-gradient-to-r from-no-900/20 to-transparent border-l-2 border-no-500;
+  }
+  
+  .hot-market-card {
+    @apply bg-gradient-to-br from-gray-800/50 to-gray-900/50 backdrop-blur-sm;
+  }
+  
+  .status-connected {
+    @apply bg-yes-500 shadow-glow-yes;
+  }
+  
+  .status-disconnected {
+    @apply bg-no-500 shadow-glow-no;
+  }
+  
+  .status-connecting {
+    @apply bg-yellow-500 animate-pulse;
+  }
+}
