@@ -79,5 +79,13 @@ backend/.venv/
 *.tmp
 .cache/
 
+# Puppeteer artifacts
+puppeteer_agent_artifacts/
+
+# Frontend build artifacts
+frontend/.vite/
+frontend/.turbo/
+frontend/coverage/
+
 # keys
 *.pem
