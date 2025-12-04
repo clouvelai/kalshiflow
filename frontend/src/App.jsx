@@ -1,35 +1,82 @@
-import { useState } from 'react'
-import reactLogo from './assets/react.svg'
-import viteLogo from '/vite.svg'
-import './App.css'
+import React, { useState } from 'react';
+import { TradeProvider, useTradeContext } from './context/TradeContext';
+import Layout from './components/Layout';
+import TradeTape from './components/TradeTape';
+import HotMarkets from './components/HotMarkets';
+import TickerDetailDrawer from './components/TickerDetailDrawer';
 
-function App() {
-  const [count, setCount] = useState(0)
+const AppContent = () => {
+  const {
+    recentTrades,
+    hotMarkets,
+    selectedTicker,
+    tradeCount,
+    connectionStatus,
+    error,
+    selectTicker,
+    getTickerData
+  } = useTradeContext();
+
+  const [isDrawerOpen, setIsDrawerOpen] = useState(false);
+
+  const handleTickerSelect = (ticker) => {
+    selectTicker(ticker);
+    setIsDrawerOpen(true);
+  };
+
+  const handleCloseDrawer = () => {
+    setIsDrawerOpen(false);
+  };
+
+  const tickerData = selectedTicker ? getTickerData(selectedTicker) : null;
 
   return (
-    <>
-      <div>
-        <a href="https://vite.dev" target="_blank">
-          <img src={viteLogo} className="logo" alt="Vite logo" />
-        </a>
-        <a href="https://react.dev" target="_blank">
-          <img src={reactLogo} className="logo react" alt="React logo" />
-        </a>
+    <Layout 
+      connectionStatus={connectionStatus}
+      tradeCount={tradeCount}
+    >
+      {/* Left Panel - Trade Tape */}
+      <div className="lg:order-1">
+        <TradeTape
+          trades={recentTrades}
+          selectedTicker={selectedTicker}
+          onTickerSelect={handleTickerSelect}
+        />
       </div>
-      <h1>Vite + React</h1>
-      <div className="card">
-        <button onClick={() => setCount((count) => count + 1)}>
-          count is {count}
-        </button>
-        <p>
-          Edit <code>src/App.jsx</code> and save to test HMR
-        </p>
+
+      {/* Right Panel - Hot Markets */}
+      <div className="lg:order-2">
+        <HotMarkets
+          markets={hotMarkets}
+          selectedTicker={selectedTicker}
+          onTickerSelect={handleTickerSelect}
+        />
       </div>
-      <p className="read-the-docs">
-        Click on the Vite and React logos to learn more
-      </p>
-    </>
-  )
+
+      {/* Ticker Detail Drawer */}
+      <TickerDetailDrawer
+        ticker={selectedTicker}
+        tickerData={tickerData}
+        isOpen={isDrawerOpen}
+        onClose={handleCloseDrawer}
+      />
+
+      {/* Error Display */}
+      {error && (
+        <div className="fixed bottom-4 right-4 bg-red-500 text-white px-4 py-2 rounded-lg shadow-lg">
+          <p className="text-sm">{error}</p>
+        </div>
+      )}
+    </Layout>
+  );
+};
+
+function App() {
+  return (
+    <TradeProvider>
+      <AppContent />
+    </TradeProvider>
+  );
 }
 
 export default App
