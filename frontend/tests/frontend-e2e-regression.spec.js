@@ -1,4 +1,6 @@
 import { test, expect } from '@playwright/test';
+import { mkdir } from 'fs/promises';
+import { join } from 'path';
 
 /**
  * Frontend E2E Regression Test - Golden Standard
@@ -22,6 +24,17 @@ test.describe('Frontend E2E Regression Test - Golden Standard', () => {
     console.log('🚀 Starting Frontend E2E Regression Test');
     console.log('=====================================');
     
+    // Create screenshot directory
+    const screenshotDir = join(process.cwd(), 'test-results', 'screenshots');
+    await mkdir(screenshotDir, { recursive: true });
+    
+    // Helper to take screenshot with logging
+    const takeScreenshot = async (name) => {
+      const path = join(screenshotDir, name);
+      await page.screenshot({ path, fullPage: true });
+      console.log(`📸 Screenshot: ${name}`);
+    };
+    
     // Track critical failures
     let criticalFailures = [];
     
@@ -36,6 +49,7 @@ test.describe('Frontend E2E Regression Test - Golden Standard', () => {
     // Verify basic application structure loads
     await expect(page.getByTestId('app-layout')).toBeVisible({ timeout: 3000 });
     console.log('✅ Application loaded');
+    await takeScreenshot('01_initial_load.png');
     
     // CRITICAL: Check WebSocket connection status
     const connectionStatus = page.getByTestId('connection-status-text');
@@ -44,9 +58,11 @@ test.describe('Frontend E2E Regression Test - Golden Standard', () => {
     try {
       await expect(connectionStatus).toHaveText('Live', { timeout: 5000 });
       console.log('✅ WebSocket connected to backend (status: Live)');
+      await takeScreenshot('02_connection_established.png');
     } catch (error) {
       const actualStatus = await connectionStatus.textContent();
       console.log(`❌ CRITICAL: WebSocket connection failed. Status: "${actualStatus}"`);
+      await takeScreenshot('error_no_connection.png');
       throw new Error('Backend is not running or WebSocket connection failed. Status: ' + actualStatus);
     }
     
@@ -93,6 +109,9 @@ test.describe('Frontend E2E Regression Test - Golden Standard', () => {
     const tradeCount = await page.locator('[data-testid="trade-tape"] .trade-item').count();
     console.log(`ℹ️  Trade tape: ${tradeCount} trades visible`);
     
+    // Take screenshot of data populated state
+    await takeScreenshot('03_data_populated.png');
+    
     // Capture initial state for comparison
     const initialState = {
       volume: totalVolume,
@@ -119,6 +138,7 @@ test.describe('Frontend E2E Regression Test - Golden Standard', () => {
     const hourBars = await chartBars.count();
     
     console.log(`✅ Time toggle works - Day: ${dayBars} bars, Hour: ${hourBars} bars`);
+    await takeScreenshot('04_interactive_features.png');
     
     // ================================================================
     // PHASE 4: Wait and Verify Real-time Updates (10-15 seconds)
@@ -162,6 +182,9 @@ test.describe('Frontend E2E Regression Test - Golden Standard', () => {
     if (!dataChanged) {
       console.log('ℹ️  No changes detected (market may be quiet)');
     }
+    
+    // Take screenshot showing final state with updates
+    await takeScreenshot('05_final_state.png');
     
     // ================================================================
     // FINAL VALIDATION (15-16 seconds)
