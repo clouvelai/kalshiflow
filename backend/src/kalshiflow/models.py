@@ -226,16 +226,29 @@ class TradeUpdateMessage(WebSocketMessage):
 
 
 class AnalyticsDataMessage(WebSocketMessage):
-    """Analytics time series data message sent to frontend."""
+    """Analytics time series data message sent to frontend with dual time modes."""
     type: Literal["analytics_data"] = "analytics_data"
-    data: Dict[str, Any] = Field(..., description="Analytics data containing time_series")
+    data: Dict[str, Any] = Field(..., description="Analytics data containing hour_minute_mode and day_hour_mode")
     
     @field_validator('data')
     @classmethod
     def validate_analytics_data(cls, v):
-        """Ensure analytics data has required fields."""
-        if "time_series" not in v:
-            raise ValueError("Analytics data must contain 'time_series'")
+        """Ensure analytics data has required dual time mode fields."""
+        if "hour_minute_mode" not in v:
+            raise ValueError("Analytics data must contain 'hour_minute_mode'")
+        if "day_hour_mode" not in v:
+            raise ValueError("Analytics data must contain 'day_hour_mode'")
+        
+        # Validate structure of each mode
+        for mode_name in ["hour_minute_mode", "day_hour_mode"]:
+            mode_data = v[mode_name]
+            if not isinstance(mode_data, dict):
+                raise ValueError(f"{mode_name} must be a dictionary")
+            if "time_series" not in mode_data:
+                raise ValueError(f"{mode_name} must contain 'time_series'")
+            if "summary_stats" not in mode_data:
+                raise ValueError(f"{mode_name} must contain 'summary_stats'")
+        
         return v
 
 

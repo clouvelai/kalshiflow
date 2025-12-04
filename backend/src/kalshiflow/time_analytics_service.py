@@ -53,17 +53,54 @@ class MinuteBucket:
         }
 
 
-class TimeAnalyticsService:
-    """Service for maintaining minute-based time series analytics."""
+@dataclass  
+class HourBucket:
+    """Data structure for a single hour's aggregated data."""
+    timestamp: int  # Timestamp in milliseconds for the start of the hour
+    volume_usd: float  # Total USD volume for the hour
+    trade_count: int  # Total number of trades for the hour
     
-    def __init__(self, window_minutes: int = 60):
+    def add_trade(self, trade: Trade):
+        """Add a trade to this hour bucket.
+        
+        Volume Calculation:
+        - USD Volume = trade.count × price_in_dollars
+        - For YES trades: count × yes_price_dollars  
+        - For NO trades: count × no_price_dollars
+        - This represents the actual monetary value traded (CORRECT approach)
+        """
+        # Calculate USD volume for this trade (count × price in dollars)
+        if trade.taker_side == "yes":
+            trade_volume_usd = trade.count * trade.yes_price_dollars
+        else:
+            trade_volume_usd = trade.count * trade.no_price_dollars
+        
+        self.volume_usd += trade_volume_usd
+        self.trade_count += 1
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for JSON serialization."""
+        return {
+            "timestamp": self.timestamp,
+            "volume_usd": round(self.volume_usd, 2),
+            "trade_count": self.trade_count
+        }
+
+
+class TimeAnalyticsService:
+    """Service for maintaining dual time series analytics: minute-based (1 hour) and hour-based (1 day)."""
+    
+    def __init__(self, window_minutes: int = 60, window_hours: int = 24):
         """Initialize the analytics service.
         
         Args:
-            window_minutes: Number of minutes to maintain in the rolling window
+            window_minutes: Number of minutes to maintain in the rolling window (default: 60)
+            window_hours: Number of hours to maintain in the rolling window (default: 24)
         """
         self.window_minutes = window_minutes
+        self.window_hours = window_hours
         self.minute_buckets: Dict[int, MinuteBucket] = {}
+        self.hour_buckets: Dict[int, HourBucket] = {}
         self._running = False
         self._cleanup_task = None
         
@@ -112,15 +149,16 @@ class TimeAnalyticsService:
         logger.info("Time analytics service stopped")
     
     def process_trade(self, trade: Trade):
-        """Process a trade and update the appropriate minute bucket."""
+        """Process a trade and update both minute and hour buckets."""
         if not self._running:
             return
         
         try:
             # Get the minute bucket for this trade's timestamp
             minute_timestamp = self._get_minute_timestamp(trade.ts)
+            hour_timestamp = self._get_hour_timestamp(trade.ts)
             
-            # Get or create the bucket
+            # Get or create the minute bucket
             if minute_timestamp not in self.minute_buckets:
                 self.minute_buckets[minute_timestamp] = MinuteBucket(
                     timestamp=minute_timestamp,
@@ -129,87 +167,111 @@ class TimeAnalyticsService:
                 )
                 self.stats["buckets_created"] += 1
             
-            # Add the trade to the bucket
-            bucket = self.minute_buckets[minute_timestamp]
-            trade_volume_before = bucket.volume_usd
-            bucket.add_trade(trade)
+            # Get or create the hour bucket
+            if hour_timestamp not in self.hour_buckets:
+                self.hour_buckets[hour_timestamp] = HourBucket(
+                    timestamp=hour_timestamp,
+                    volume_usd=0.0,
+                    trade_count=0
+                )
+                self.stats["buckets_created"] += 1
             
-            # Update global stats
+            # Add the trade to both buckets
+            minute_bucket = self.minute_buckets[minute_timestamp]
+            hour_bucket = self.hour_buckets[hour_timestamp]
+            
+            minute_volume_before = minute_bucket.volume_usd
+            minute_bucket.add_trade(trade)
+            hour_bucket.add_trade(trade)
+            
+            # Update global stats (only count once for minute bucket)
             self.stats["total_trades_processed"] += 1
-            self.stats["total_volume_usd"] += (bucket.volume_usd - trade_volume_before)
+            self.stats["total_volume_usd"] += (minute_bucket.volume_usd - minute_volume_before)
             self.stats["last_trade_time"] = datetime.now()
             
-            logger.debug(f"Added trade to minute bucket {minute_timestamp}: volume=${bucket.volume_usd:.2f}, count={bucket.trade_count}")
+            logger.debug(f"Added trade to minute bucket {minute_timestamp} and hour bucket {hour_timestamp}: volume=${minute_bucket.volume_usd:.2f}, count={minute_bucket.trade_count}")
             
         except Exception as e:
             logger.error(f"Error processing trade in analytics service: {e}")
     
     def get_analytics_data(self) -> Dict[str, Any]:
-        """Get the time series data and summary stats for the last hour, including the current minute."""
+        """Get dual time series data and summary stats for both hour/minute and day/hour modes."""
         try:
             now = datetime.now()
-            # Calculate the current minute timestamp
-            current_minute_timestamp = self._get_minute_timestamp(int(now.timestamp() * 1000))
+            now_timestamp_ms = int(now.timestamp() * 1000)
+            current_minute_timestamp = self._get_minute_timestamp(now_timestamp_ms)
+            current_hour_timestamp = self._get_hour_timestamp(now_timestamp_ms)
             
-            # Create a complete list of minute buckets for the window
-            time_series_data = []
-            
-            # Generate 60 minutes ending with the current minute
+            # Generate hour/minute mode data (60 minutes × 1-minute buckets)
+            hour_minute_series = []
             for i in range(self.window_minutes):
-                # Start from (window_minutes - 1) minutes ago and go to current minute
                 minute_offset = (self.window_minutes - 1) - i
                 minute_timestamp = current_minute_timestamp - (minute_offset * 60 * 1000)
                 
                 if minute_timestamp in self.minute_buckets:
                     bucket_data = self.minute_buckets[minute_timestamp].to_dict()
                 else:
-                    # Create empty bucket for minutes with no trades
                     bucket_data = {
                         "timestamp": minute_timestamp,
                         "volume_usd": 0.0,
                         "trade_count": 0
                     }
+                hour_minute_series.append(bucket_data)
+            
+            hour_minute_series.sort(key=lambda x: x["timestamp"])
+            
+            # Generate day/hour mode data (24 hours × 1-hour buckets)
+            day_hour_series = []
+            for i in range(self.window_hours):
+                hour_offset = (self.window_hours - 1) - i
+                hour_timestamp = current_hour_timestamp - (hour_offset * 3600 * 1000)
                 
-                time_series_data.append(bucket_data)
+                if hour_timestamp in self.hour_buckets:
+                    bucket_data = self.hour_buckets[hour_timestamp].to_dict()
+                else:
+                    bucket_data = {
+                        "timestamp": hour_timestamp,
+                        "volume_usd": 0.0,
+                        "trade_count": 0
+                    }
+                day_hour_series.append(bucket_data)
             
-            # Sort by timestamp to ensure proper ordering
-            time_series_data.sort(key=lambda x: x["timestamp"])
+            day_hour_series.sort(key=lambda x: x["timestamp"])
             
-            # Calculate summary statistics
-            summary_stats = self._calculate_summary_stats(time_series_data)
+            # Calculate summary statistics for both modes
+            hour_minute_summary = self._calculate_summary_stats(hour_minute_series, "minute", current_minute_timestamp)
+            day_hour_summary = self._calculate_summary_stats(day_hour_series, "hour", current_hour_timestamp)
             
-            logger.debug(f"Generated analytics data with {len(time_series_data)} minute buckets, current minute: {current_minute_timestamp}")
+            logger.debug(f"Generated dual analytics: {len(hour_minute_series)} minute buckets, {len(day_hour_series)} hour buckets")
             
             return {
-                "time_series": time_series_data,
-                "summary": summary_stats
+                "hour_minute_mode": {
+                    "time_series": hour_minute_series,
+                    "summary_stats": hour_minute_summary
+                },
+                "day_hour_mode": {
+                    "time_series": day_hour_series,
+                    "summary_stats": day_hour_summary
+                }
             }
             
         except Exception as e:
             logger.error(f"Error getting analytics data: {e}")
             return {
-                "time_series": [],
-                "summary": {
-                    "peak_volume_usd": 0.0,
-                    "total_volume_usd": 0.0,
-                    "peak_trades": 0,
-                    "total_trades": 0,
-                    "current_minute_volume_usd": 0.0,
-                    "current_minute_trades": 0
+                "hour_minute_mode": {
+                    "time_series": [],
+                    "summary_stats": self._get_empty_summary_stats()
+                },
+                "day_hour_mode": {
+                    "time_series": [],
+                    "summary_stats": self._get_empty_summary_stats()
                 }
             }
     
-    def _calculate_summary_stats(self, time_series_data: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def _calculate_summary_stats(self, time_series_data: List[Dict[str, Any]], period_type: str, current_timestamp: int) -> Dict[str, Any]:
         """Calculate summary statistics from time series data."""
         if not time_series_data:
-            return {
-                "peak_volume_usd": 0.0,
-                "total_volume_usd": 0.0,
-                "peak_trades": 0,
-                "total_trades": 0,
-                "current_minute_volume_usd": 0.0,
-                "current_minute_trades": 0
-            }
+            return self._get_empty_summary_stats()
         
         # Calculate totals and peaks
         volumes = [data["volume_usd"] for data in time_series_data]
@@ -220,18 +282,35 @@ class TimeAnalyticsService:
         peak_trades = max(trade_counts) if trade_counts else 0
         total_trades = sum(trade_counts) if trade_counts else 0
         
-        # Get current minute stats (last item in sorted time series)
-        current_minute_data = time_series_data[-1] if time_series_data else {}
-        current_minute_volume_usd = current_minute_data.get("volume_usd", 0.0)
-        current_minute_trades = current_minute_data.get("trade_count", 0)
+        # Get current period stats (last item in sorted time series)
+        current_period_data = time_series_data[-1] if time_series_data else {}
+        current_period_volume_usd = current_period_data.get("volume_usd", 0.0)
+        current_period_trades = current_period_data.get("trade_count", 0)
+        
+        # Adjust field names based on period type
+        current_volume_key = f"current_{period_type}_volume_usd"
+        current_trades_key = f"current_{period_type}_trades"
         
         return {
             "peak_volume_usd": round(peak_volume_usd, 2),
             "total_volume_usd": round(total_volume_usd, 2),
             "peak_trades": peak_trades,
             "total_trades": total_trades,
-            "current_minute_volume_usd": round(current_minute_volume_usd, 2),
-            "current_minute_trades": current_minute_trades
+            current_volume_key: round(current_period_volume_usd, 2),
+            current_trades_key: current_period_trades
+        }
+    
+    def _get_empty_summary_stats(self) -> Dict[str, Any]:
+        """Get empty summary statistics structure."""
+        return {
+            "peak_volume_usd": 0.0,
+            "total_volume_usd": 0.0,
+            "peak_trades": 0,
+            "total_trades": 0,
+            "current_minute_volume_usd": 0.0,
+            "current_minute_trades": 0,
+            "current_hour_volume_usd": 0.0,
+            "current_hour_trades": 0
         }
     
     def get_current_minute_stats(self) -> Dict[str, Any]:
@@ -267,6 +346,13 @@ class TimeAnalyticsService:
         minute_start_seconds = (timestamp_seconds // 60) * 60
         return minute_start_seconds * 1000
     
+    def _get_hour_timestamp(self, timestamp_ms: int) -> int:
+        """Convert a timestamp to the start of its hour (in milliseconds)."""
+        # Convert to seconds, truncate to hour, then back to milliseconds
+        timestamp_seconds = timestamp_ms // 1000
+        hour_start_seconds = (timestamp_seconds // 3600) * 3600
+        return hour_start_seconds * 1000
+    
     async def _cleanup_loop(self):
         """Background task to clean up old minute buckets."""
         try:
@@ -280,28 +366,43 @@ class TimeAnalyticsService:
             logger.error(f"Error in analytics cleanup loop: {e}")
     
     async def cleanup_old_buckets(self):
-        """Remove minute buckets older than the window."""
+        """Remove minute and hour buckets older than their respective windows."""
         try:
-            if not self.minute_buckets:
-                return
+            # Cleanup minute buckets
+            if self.minute_buckets:
+                cutoff_time = datetime.now() - timedelta(minutes=self.window_minutes + 5)  # Add 5 minute buffer
+                cutoff_timestamp = int(cutoff_time.timestamp() * 1000)
+                cutoff_minute = self._get_minute_timestamp(cutoff_timestamp)
+                
+                to_remove_minutes = [
+                    timestamp for timestamp in self.minute_buckets.keys()
+                    if timestamp < cutoff_minute
+                ]
+                
+                for timestamp in to_remove_minutes:
+                    del self.minute_buckets[timestamp]
+                    self.stats["buckets_cleaned"] += 1
+                
+                if to_remove_minutes:
+                    logger.debug(f"Cleaned up {len(to_remove_minutes)} old minute buckets")
             
-            cutoff_time = datetime.now() - timedelta(minutes=self.window_minutes + 5)  # Add 5 minute buffer
-            cutoff_timestamp = int(cutoff_time.timestamp() * 1000)
-            cutoff_minute = self._get_minute_timestamp(cutoff_timestamp)
-            
-            # Find buckets to remove
-            to_remove = [
-                timestamp for timestamp in self.minute_buckets.keys()
-                if timestamp < cutoff_minute
-            ]
-            
-            # Remove old buckets
-            for timestamp in to_remove:
-                del self.minute_buckets[timestamp]
-                self.stats["buckets_cleaned"] += 1
-            
-            if to_remove:
-                logger.debug(f"Cleaned up {len(to_remove)} old minute buckets")
+            # Cleanup hour buckets
+            if self.hour_buckets:
+                cutoff_time = datetime.now() - timedelta(hours=self.window_hours + 1)  # Add 1 hour buffer
+                cutoff_timestamp = int(cutoff_time.timestamp() * 1000)
+                cutoff_hour = self._get_hour_timestamp(cutoff_timestamp)
+                
+                to_remove_hours = [
+                    timestamp for timestamp in self.hour_buckets.keys()
+                    if timestamp < cutoff_hour
+                ]
+                
+                for timestamp in to_remove_hours:
+                    del self.hour_buckets[timestamp]
+                    self.stats["buckets_cleaned"] += 1
+                
+                if to_remove_hours:
+                    logger.debug(f"Cleaned up {len(to_remove_hours)} old hour buckets")
             
         except Exception as e:
             logger.error(f"Error cleaning up old buckets: {e}")
@@ -317,7 +418,9 @@ class TimeAnalyticsService:
             "runtime_seconds": runtime_seconds,
             "is_running": self._running,
             "window_minutes": self.window_minutes,
-            "active_buckets": len(self.minute_buckets),
+            "window_hours": self.window_hours,
+            "active_minute_buckets": len(self.minute_buckets),
+            "active_hour_buckets": len(self.hour_buckets),
             "current_minute_stats": self.get_current_minute_stats()
         }
 

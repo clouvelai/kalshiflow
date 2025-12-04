@@ -39,6 +39,9 @@ class TradeProcessor:
             "last_trade_time": None,
             "started_at": None
         }
+        
+        # Analytics broadcasting task
+        self._analytics_task = None
     
     async def start(self):
         """Start the trade processor service."""
@@ -59,6 +62,9 @@ class TradeProcessor:
         self._running = True
         self.stats["started_at"] = datetime.now()
         
+        # Start analytics broadcast task (every 1 second for real-time feel)
+        self._analytics_task = asyncio.create_task(self._analytics_broadcast_loop())
+        
         logger.info("Trade processor service started successfully")
     
     async def stop(self):
@@ -69,6 +75,14 @@ class TradeProcessor:
         logger.info("Stopping trade processor service...")
         
         self._running = False
+        
+        # Stop analytics broadcast task
+        if self._analytics_task:
+            self._analytics_task.cancel()
+            try:
+                await self._analytics_task
+            except asyncio.CancelledError:
+                pass
         
         # Stop aggregator
         await self.aggregator.stop()
@@ -192,15 +206,7 @@ class TradeProcessor:
             # Broadcast trade update to all connected clients
             await self.websocket_broadcaster.broadcast(update_message.dict())
             
-            # Also broadcast updated analytics data after each trade
-            try:
-                analytics_data = self.analytics_service.get_analytics_data()
-                if analytics_data:
-                    await self.websocket_broadcaster.broadcast_analytics_data(analytics_data)
-                    logger.debug(f"Broadcast analytics data after trade for {trade.market_ticker}")
-            except Exception as analytics_error:
-                logger.error(f"Failed to broadcast analytics data after trade: {analytics_error}")
-                # Continue - analytics broadcast failure shouldn't stop trade processing
+            # Note: Analytics data is now broadcast on a 1-second timer via _analytics_broadcast_loop()
             
             logger.debug(f"Broadcast trade update for {trade.market_ticker}")
             
@@ -227,23 +233,8 @@ class TradeProcessor:
             # Use metadata-enriched hot markets for snapshot
             hot_markets = await self.aggregator.get_hot_markets_with_metadata()
             global_stats = self.aggregator.get_global_stats()
-            # Include analytics data in snapshot - handle both old and new formats
+            # Include dual-mode analytics data in snapshot
             analytics_data = self.analytics_service.get_analytics_data()
-            
-            # Ensure backwards compatibility - if analytics_data is a dict, use it as is
-            # If it's a list (old format), convert to new format
-            if isinstance(analytics_data, list):
-                analytics_data = {
-                    "time_series": analytics_data,
-                    "summary": {
-                        "peak_volume_usd": 0.0,
-                        "total_volume_usd": 0.0,
-                        "peak_trades": 0,
-                        "total_trades": 0,
-                        "current_minute_volume_usd": 0.0,
-                        "current_minute_trades": 0
-                    }
-                }
             
             return {
                 "recent_trades": recent_trades,
@@ -262,7 +253,30 @@ class TradeProcessor:
                     "active_markets_count": 0,
                     "total_window_volume": 0
                 },
-                "analytics_data": []
+                "analytics_data": {
+                    "hour_minute_mode": {
+                        "time_series": [],
+                        "summary_stats": {
+                            "peak_volume_usd": 0.0,
+                            "total_volume_usd": 0.0,
+                            "peak_trades": 0,
+                            "total_trades": 0,
+                            "current_minute_volume_usd": 0.0,
+                            "current_minute_trades": 0
+                        }
+                    },
+                    "day_hour_mode": {
+                        "time_series": [],
+                        "summary_stats": {
+                            "peak_volume_usd": 0.0,
+                            "total_volume_usd": 0.0,
+                            "peak_trades": 0,
+                            "total_trades": 0,
+                            "current_hour_volume_usd": 0.0,
+                            "current_hour_trades": 0
+                        }
+                    }
+                }
             }
     
     def get_stats(self) -> Dict[str, Any]:
@@ -312,6 +326,33 @@ class TradeProcessor:
             logger.error(f"Error handling Kalshi trade message: {e}")
             logger.error(f"Raw message: {trade_message}")
             return False
+    
+    async def _analytics_broadcast_loop(self):
+        """Background task to broadcast analytics data every 1 second for real-time updates."""
+        try:
+            logger.info("Started analytics broadcast task (1-second interval)")
+            
+            while self._running:
+                try:
+                    # Only broadcast if we have a websocket broadcaster
+                    if self.websocket_broadcaster:
+                        analytics_data = self.analytics_service.get_analytics_data()
+                        if analytics_data:
+                            await self.websocket_broadcaster.broadcast_analytics_data(analytics_data)
+                            logger.debug("Broadcast analytics data (1-second timer)")
+                    
+                    # Wait 1 second for real-time feel
+                    await asyncio.sleep(1.0)
+                    
+                except Exception as e:
+                    logger.error(f"Error in analytics broadcast loop: {e}")
+                    # Continue - don't let broadcast errors stop the loop
+                    await asyncio.sleep(1.0)
+                    
+        except asyncio.CancelledError:
+            logger.info("Analytics broadcast task cancelled")
+        except Exception as e:
+            logger.error(f"Analytics broadcast task failed: {e}")
 
 
 # Global trade processor instance
