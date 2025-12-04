@@ -283,62 +283,32 @@ const UnifiedAnalytics = ({
 
       {/* Chart Section */}
       <div className="bg-white/80 backdrop-blur-sm rounded-2xl shadow-xl border border-white/50 p-8">
-        <div className="mb-6">
-          <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
-            <div>
-              {/* Enhanced Chart Header with Live Data */}
-              <div className="relative mb-4">
-                <div className="absolute -inset-1 bg-gradient-to-r from-blue-600 via-purple-600 to-indigo-600 rounded-2xl blur opacity-20"></div>
-                <div className="relative bg-white/90 backdrop-blur-sm rounded-xl p-5 border border-white/40">
-                  <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
-                    <div className="flex items-center gap-4">
-                      <div className="flex items-center gap-2">
-                        <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse"></div>
-                        <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" style={{animationDelay: '0.5s'}}></div>
-                        <div className="w-1 h-1 bg-purple-500 rounded-full animate-pulse" style={{animationDelay: '1s'}}></div>
-                      </div>
-                      <h2 className="text-xl lg:text-2xl font-bold bg-gradient-to-r from-gray-900 via-blue-800 to-indigo-900 bg-clip-text text-transparent">
-                        Trading Activity
-                      </h2>
-                    </div>
-                    
-                    {/* Live Status Only */}
-                    <div className="flex items-center gap-2 px-3 py-1.5 bg-gradient-to-r from-green-50 to-emerald-50 rounded-full border border-green-200/50 shadow-sm">
-                      <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse shadow-sm"></div>
-                      <span className="text-green-700 text-xs font-semibold uppercase tracking-wider">Live</span>
-                    </div>
+        {/* Header with Current Stats - Horizontally Aligned */}
+        <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-6 mb-6">
+          {/* Left Side - Trading Activity Header */}
+          <div className="flex-1">
+            {/* Enhanced Chart Header with Live Data */}
+            <div className="relative mb-4">
+              <div className="absolute -inset-1 bg-gradient-to-r from-blue-600 via-purple-600 to-indigo-600 rounded-2xl blur opacity-20"></div>
+              <div className="relative bg-white/90 backdrop-blur-sm rounded-xl p-5 border border-white/40">
+                <div className="flex items-center gap-4">
+                  <div className="flex items-center gap-2">
+                    <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse"></div>
+                    <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" style={{animationDelay: '0.5s'}}></div>
+                    <div className="w-1 h-1 bg-purple-500 rounded-full animate-pulse" style={{animationDelay: '1s'}}></div>
                   </div>
-                </div>
-              </div>
-              
-              <div className="flex items-center gap-8 text-sm">
-                <div className="flex items-center gap-2">
-                  <div className="w-4 h-3 bg-gradient-to-r from-blue-500 to-blue-600 rounded-sm shadow-sm"></div>
-                  <span className="font-medium text-gray-700">Volume (USD)</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <div className="w-4 h-0.5 bg-gradient-to-r from-emerald-500 to-emerald-600 rounded-sm shadow-sm"></div>
-                  <span className="font-medium text-gray-700">Trade Count</span>
+                  <h2 className="text-xl lg:text-2xl font-bold bg-gradient-to-r from-gray-900 via-blue-800 to-indigo-900 bg-clip-text text-transparent">
+                    Trading Activity
+                  </h2>
                 </div>
               </div>
             </div>
+            
           </div>
-        </div>
-        
-        {chartData.length === 0 ? (
-          <div className="h-80 flex items-center justify-center text-gray-500">
-            <div className="text-center">
-              <div className="animate-pulse">
-                <div className="h-4 bg-gray-200 rounded w-36 mx-auto mb-3"></div>
-                <div className="h-3 bg-gray-200 rounded w-28 mx-auto"></div>
-              </div>
-              <p className="mt-3 font-medium">Loading analytics data...</p>
-            </div>
-          </div>
-        ) : (
-          <div className="h-80 relative">
-            {/* Floating Current Stats in Upper Right */}
-            <div className="absolute top-4 right-4 z-10">
+          
+          {/* Right Side - Current Stats */}
+          {chartData.length > 0 && (
+            <div className="flex-shrink-0">
               <div className="relative">
                 {/* Gradient background glow */}
                 <div className="absolute -inset-1 bg-gradient-to-r from-blue-500 via-purple-500 to-indigo-500 rounded-xl blur opacity-25"></div>
@@ -361,10 +331,10 @@ const UnifiedAnalytics = ({
                       </div>
                     </div>
                     
-                    {/* Current stats */}
-                    <div className="space-y-3">
+                    {/* Current stats - Combined on one line */}
+                    <div className="flex items-center justify-between gap-4">
                       {/* Volume */}
-                      <div>
+                      <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 mb-1">
                           <div className="w-2.5 h-2.5 bg-gradient-to-r from-blue-500 to-blue-600 rounded-sm shadow-sm ring-1 ring-blue-200"></div>
                           <span className="text-xs font-semibold text-gray-700 uppercase tracking-wider">Volume</span>
@@ -375,7 +345,7 @@ const UnifiedAnalytics = ({
                       </div>
                       
                       {/* Trades */}
-                      <div>
+                      <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 mb-1">
                           <div className="w-2.5 h-0.5 bg-gradient-to-r from-emerald-500 to-emerald-600 rounded-full shadow-sm ring-1 ring-emerald-200"></div>
                           <span className="text-xs font-semibold text-gray-700 uppercase tracking-wider">Trades</span>
@@ -392,7 +362,21 @@ const UnifiedAnalytics = ({
                 </div>
               </div>
             </div>
-            
+          )}
+        </div>
+
+        {chartData.length === 0 ? (
+          <div className="h-80 flex items-center justify-center text-gray-500">
+            <div className="text-center">
+              <div className="animate-pulse">
+                <div className="h-4 bg-gray-200 rounded w-36 mx-auto mb-3"></div>
+                <div className="h-3 bg-gray-200 rounded w-28 mx-auto"></div>
+              </div>
+              <p className="mt-3 font-medium">Loading analytics data...</p>
+            </div>
+          </div>
+        ) : (
+          <div className="h-80 relative">
             <ResponsiveContainer width="100%" height="100%">
               <ComposedChart
                 data={chartData}
@@ -516,15 +500,6 @@ const UnifiedAnalytics = ({
             </ResponsiveContainer>
           </div>
         )}
-      </div>
-
-      {/* Connection Status */}
-      <div className="mt-8 text-center">
-        <div className="inline-flex items-center px-6 py-3 bg-white/80 backdrop-blur-sm rounded-2xl shadow-lg border border-white/50">
-          <span className="text-sm font-semibold text-gray-700">
-            Connected to Kalshi data feed
-          </span>
-        </div>
       </div>
     </div>
   );
