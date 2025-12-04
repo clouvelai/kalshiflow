@@ -92,7 +92,8 @@ test.describe('Frontend E2E Regression Test - Golden Standard', () => {
     if (marketCount > 0) {
       console.log(`✅ Market grid populated - ${marketCount} active markets`);
     } else {
-      console.log('⚠️  No markets in grid (may be normal if quiet)');
+      criticalFailures.push('No markets in grid - system not functioning properly');
+      console.log('❌ No markets in grid - critical failure');
     }
     
     // 3. Chart Validation - Should have bars
