@@ -206,7 +206,10 @@ class KalshiWebSocketClient:
                     
                     # Call trade callback if provided
                     if self.on_trade_callback:
-                        self.on_trade_callback(trade)
+                        if asyncio.iscoroutinefunction(self.on_trade_callback):
+                            await self.on_trade_callback(trade)
+                        else:
+                            self.on_trade_callback(trade)
                     
                     logger.debug(f"Processed trade: {trade.market_ticker} {trade.taker_side} {trade.price_display}")
                     
