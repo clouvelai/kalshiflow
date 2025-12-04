@@ -1060,6 +1060,197 @@
           "verified": true
         }
       ]
+    },
+    "milestone_7": {
+      "id": "milestone_7",
+      "goal": "Implement global analytics chart with minute-based time series showing volume (USD) and trade count over the last hour with real-time updates",
+      "priority": 7,
+      "estimated_effort": "4-5 hours",
+      "dependencies": ["milestone_6"],
+      "completed": false,
+      "phase": "Phase 2 - Advanced Analytics and Visualization",
+      "steps": [
+        {
+          "id": "7.1",
+          "instruction": "Create TimeAnalyticsService for minute-based aggregation over last hour",
+          "files_to_create": [
+            "backend/src/kalshiflow/time_analytics_service.py"
+          ],
+          "key_classes": [
+            "TimeAnalyticsService - Main aggregation service",
+            "MinuteBucket - Individual minute data structure"
+          ],
+          "key_methods": [
+            "process_trade(trade) - Update current minute bucket",
+            "get_analytics_data() - Get 60 minute buckets for last hour",
+            "cleanup_old_buckets() - Remove buckets older than 1 hour"
+          ],
+          "features": [
+            "60 minute buckets for last hour (rolling window)",
+            "USD volume calculation per minute (sum of trade_count × price_dollars)",
+            "Trade count aggregation per minute",
+            "Real-time current minute bucket updates",
+            "Automatic cleanup of old buckets"
+          ],
+          "acceptance_criteria": "Service maintains 60 minute buckets with accurate volume and trade count aggregation",
+          "completed": false,
+          "verified": false
+        },
+        {
+          "id": "7.2",
+          "instruction": "Enhance WebSocket protocol with analytics_data message type",
+          "files_to_modify": [
+            "backend/src/kalshiflow/websocket_handler.py",
+            "backend/src/kalshiflow/models.py"
+          ],
+          "protocol_enhancements": [
+            "New message type: 'analytics_data' for time series updates",
+            "Include analytics in snapshot message for initial load",
+            "Broadcast analytics updates every 30 seconds"
+          ],
+          "message_format": {
+            "type": "analytics_data",
+            "data": {
+              "time_series": [
+                {"timestamp": 1701234567000, "volume_usd": 12345.67, "trade_count": 42}
+              ]
+            }
+          },
+          "acceptance_criteria": "WebSocket protocol supports analytics time series data with real-time updates",
+          "completed": false,
+          "verified": false
+        },
+        {
+          "id": "7.3",
+          "instruction": "Integrate TimeAnalyticsService with existing trade processing pipeline",
+          "files_to_modify": [
+            "backend/src/kalshiflow/trade_processor.py"
+          ],
+          "integration_points": [
+            "TradeProcessor calls analytics service on each trade",
+            "Non-blocking analytics updates to maintain performance",
+            "Analytics runs parallel to existing aggregation"
+          ],
+          "workflow": [
+            "1. Trade received from Kalshi WebSocket",
+            "2. Process through existing pipeline (SQLite + aggregator)",
+            "3. Update analytics minute bucket in parallel",
+            "4. Continue normal processing flow"
+          ],
+          "acceptance_criteria": "Analytics integrate seamlessly without affecting existing trade processing performance",
+          "completed": false,
+          "verified": false
+        },
+        {
+          "id": "7.4",
+          "instruction": "Add analytics service startup and background broadcast task",
+          "files_to_modify": [
+            "backend/src/kalshiflow/app.py"
+          ],
+          "startup_integration": [
+            "Initialize TimeAnalyticsService on app startup",
+            "Start background task for analytics broadcasts (every 30 seconds)",
+            "Connect analytics service to trade processor"
+          ],
+          "background_tasks": [
+            "Analytics broadcast task running every 30 seconds",
+            "Memory cleanup task for old minute buckets"
+          ],
+          "acceptance_criteria": "Analytics service starts with app and provides regular WebSocket updates",
+          "completed": false,
+          "verified": false
+        },
+        {
+          "id": "7.5",
+          "instruction": "Create frontend AnalyticsChart component with dual-axis time series visualization",
+          "files_to_create": [
+            "frontend/src/components/AnalyticsChart.jsx"
+          ],
+          "chart_features": [
+            "Primary Y-axis: Volume USD (smooth line chart with gradient)",
+            "Secondary Y-axis: Trade count (bar chart)",
+            "Time-based X-axis showing last hour",
+            "Real-time updates without jarring re-renders",
+            "Beautiful styling matching existing design"
+          ],
+          "technical_requirements": [
+            "Use Recharts library for dual-axis rendering",
+            "Add recharts dependency to package.json",
+            "Custom styling with Tailwind CSS integration",
+            "Responsive design for all screen sizes"
+          ],
+          "acceptance_criteria": "Chart displays beautiful dual-axis time series with smooth real-time updates",
+          "completed": false,
+          "verified": false
+        },
+        {
+          "id": "7.6",
+          "instruction": "Integrate AnalyticsChart into main layout between HeroStats and MarketGrid",
+          "files_to_modify": [
+            "frontend/src/App.jsx",
+            "frontend/src/components/Layout.jsx"
+          ],
+          "layout_integration": [
+            "Position chart between HeroStats and MarketGrid",
+            "Maintain visual hierarchy: HeroStats → Analytics → MarketGrid → TradeTape",
+            "Responsive sizing and spacing",
+            "Chart title: 'Trading Activity (Last Hour)'"
+          ],
+          "responsive_behavior": [
+            "Desktop: Full-width chart with proper height",
+            "Mobile: Compact chart maintaining readability"
+          ],
+          "acceptance_criteria": "Analytics chart integrates seamlessly with existing layout and visual hierarchy",
+          "completed": false,
+          "verified": false
+        },
+        {
+          "id": "7.7",
+          "instruction": "Enhance frontend WebSocket data flow for analytics updates",
+          "files_to_modify": [
+            "frontend/src/hooks/useWebSocket.js",
+            "frontend/src/hooks/useTradeData.js",
+            "frontend/src/context/TradeContext.jsx"
+          ],
+          "data_flow_enhancements": [
+            "Handle new 'analytics_data' message type",
+            "Maintain time series state for chart rendering",
+            "Efficient state updates for real-time chart updates",
+            "Include analytics data in initial snapshot"
+          ],
+          "state_management": [
+            "Add analyticsData state to TradeContext",
+            "Efficient updates for minute bucket completion",
+            "Memory-efficient array operations for time series"
+          ],
+          "acceptance_criteria": "WebSocket data flow supports real-time analytics with efficient state management",
+          "completed": false,
+          "verified": false
+        },
+        {
+          "id": "7.8",
+          "instruction": "End-to-end validation of complete analytics pipeline",
+          "test_scenarios": [
+            "Complete pipeline: trade → analytics service → WebSocket → chart",
+            "Chart displays accurate volume and trade count data",
+            "Real-time current minute updates work correctly",
+            "Chart updates smoothly without rendering issues",
+            "Analytics data matches manual calculations",
+            "Memory usage remains stable over time"
+          ],
+          "validation_criteria": [
+            "Analytics chart shows real-time global trading activity",
+            "USD volume calculations are accurate",
+            "Chart updates current minute bucket as trades flow in",
+            "Visual design matches existing application aesthetics",
+            "No performance impact on existing functionality",
+            "Responsive design works across all screen sizes"
+          ],
+          "acceptance_criteria": "Complete analytics feature provides accurate, beautiful real-time insights into global trading activity",
+          "completed": false,
+          "verified": false
+        }
+      ]
     }
   },
   "phase_1_completion_criteria": [
@@ -1090,16 +1281,20 @@
   },
   "phase_2_milestones": {
     "milestone_6": {
+      "status": "completed",
+      "focus": "Market Metadata Enrichment - Enhanced market display with human-readable information via strategic Kalshi REST API usage"
+    },
+    "milestone_7": {
       "status": "ready_to_start",
-      "focus": "Market Metadata Enrichment - First Phase 2 feature to enhance market display with human-readable information via strategic Kalshi REST API usage"
+      "focus": "Global Analytics Chart - Time-series visualization showing volume and trade activity with real-time updates"
     }
   },
   "next_steps": {
-    "immediate": "Begin Milestone 6 implementation - Market Metadata Enrichment to display human-readable market titles, categories, and liquidity information",
+    "immediate": "Begin Milestone 7 implementation - Global Analytics Chart with minute-based time series showing volume (USD) and trade count over the last hour",
     "phase_2_roadmap": [
-      "Milestone 6: Market Metadata Enrichment (current)",
-      "Advanced data aggregation and analytics",
-      "Historical trade analysis and charts",
+      "Milestone 6: Market Metadata Enrichment (completed)",
+      "Milestone 7: Global Analytics Chart (current)",
+      "Historical trade analysis and expanded charts",
       "User preferences and market watchlists",
       "Performance optimization for high-volume periods", 
       "Enhanced UI features (market search, filters, alerts)",

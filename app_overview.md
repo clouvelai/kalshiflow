@@ -47,6 +47,7 @@ PHASE 2 SCOPE:
 - Market metadata enrichment via Kalshi REST API.
 - Enhanced market display with human-readable titles, categories, and liquidity data.
 - Intelligent metadata caching and fallback mechanisms.
+- Global analytics chart with time-series volume and trade visualization.
 
 --------------------------------
 2. DATA MODEL
@@ -454,7 +455,9 @@ Phase 1
 2. Implement Kalshi client to listen for public trades (a) auth -> example of working rsa key based here https://github.com/clouvelai/prophete/blob/main/backend/app/core/auth.py (b) async subscribe to public trades https://docs.kalshi.com/websockets/public-trades -> success criteria for this milestone is we can standalone run the kalshi client, auth successfully, subscribe to public trades and see incoming messages in stdout. We should have unit test coverage for the kalshi client. 
 3. Starlette + kalshi client public trades integration. We can run our backend app, it successfully auth and subscribes and streams trades coming in over websocket. We'd now be able to implement the frontend feed if we wanted to. 
 4. Implement frontend layout + feed. First we should get the frontend skeleton in place, then implement the feed to show incoming events via websocket.
-Phase 2
---- Once we get here we'll plan out storage, aggregation trends etc. 
+5. Beautiful UX layout reorganization with hero stats, market grid, and improved live feed placement.
+6. Market metadata enrichment via Kalshi REST API to display human-readable market information.
+Phase 2 Continued
+7. Global analytics chart: Implement time-series visualization showing global volume (USD) as primary line chart and trade count as secondary bar chart. Use minute-based aggregations over last hour (60 data points) with real-time updates. Chart positioned between hero stats and market grid, updating current minute bucket dynamically as trades flow in. 
 
 END_OF_SPEC
