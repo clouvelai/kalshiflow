@@ -10,10 +10,10 @@ from pydantic import BaseModel, Field, field_validator
 class Trade(BaseModel):
     """A single trade event from Kalshi public trades stream."""
     market_ticker: str = Field(..., description="Market ticker symbol")
-    yes_price: int = Field(..., description="YES price in cents (0-99)")
-    no_price: int = Field(..., description="NO price in cents (0-99)")
-    yes_price_dollars: float = Field(..., description="YES price in dollars (0.00-0.99)")
-    no_price_dollars: float = Field(..., description="NO price in dollars (0.00-0.99)")
+    yes_price: int = Field(..., description="YES price in cents (0-100)")
+    no_price: int = Field(..., description="NO price in cents (0-100)")
+    yes_price_dollars: float = Field(..., description="YES price in dollars (0.00-1.00)")
+    no_price_dollars: float = Field(..., description="NO price in dollars (0.00-1.00)")
     count: int = Field(..., description="Number of shares traded")
     taker_side: Literal["yes", "no"] = Field(..., description="Side taken by the taker")
     ts: int = Field(..., description="Trade timestamp in milliseconds")
@@ -21,17 +21,17 @@ class Trade(BaseModel):
     @field_validator('yes_price', 'no_price')
     @classmethod
     def validate_price_range(cls, v):
-        """Ensure prices are in valid range (0-99 cents)."""
-        if not 0 <= v <= 99:
-            raise ValueError(f"Price must be between 0 and 99 cents, got {v}")
+        """Ensure prices are in valid range (0-100 cents)."""
+        if not 0 <= v <= 100:
+            raise ValueError(f"Price must be between 0 and 100 cents, got {v}")
         return v
     
     @field_validator('yes_price_dollars', 'no_price_dollars')
     @classmethod
     def validate_dollar_price_range(cls, v):
-        """Ensure dollar prices are in valid range (0.00-0.99)."""
-        if not 0.0 <= v <= 0.99:
-            raise ValueError(f"Dollar price must be between 0.00 and 0.99, got {v}")
+        """Ensure dollar prices are in valid range (0.00-1.00)."""
+        if not 0.0 <= v <= 1.0:
+            raise ValueError(f"Dollar price must be between 0.00 and 1.00, got {v}")
         return v
         
     @field_validator('count')

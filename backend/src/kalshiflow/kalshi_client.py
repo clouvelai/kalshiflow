@@ -90,9 +90,13 @@ class KalshiWebSocketClient:
         try:
             logger.info(f"Connecting to Kalshi WebSocket: {self.websocket_url}")
             
-            # Connect to WebSocket
+            # Create authentication headers for WebSocket handshake
+            auth_headers = self.auth.create_auth_headers("GET", "/trade-api/ws/v2")
+            
+            # Connect to WebSocket with authentication headers
             self.websocket = await websockets.connect(
                 self.websocket_url,
+                additional_headers=auth_headers,
                 ping_interval=30,  # Send ping every 30 seconds
                 ping_timeout=10,   # Wait 10 seconds for pong
                 close_timeout=10,  # Wait 10 seconds for close
@@ -133,46 +137,10 @@ class KalshiWebSocketClient:
         Returns:
             True if authentication successful, False otherwise
         """
-        try:
-            logger.info("Authenticating with Kalshi WebSocket")
-            
-            # Create authentication headers
-            auth_headers = self.auth.create_websocket_auth_message()
-            
-            # Send authentication message
-            auth_message = {
-                "id": "auth",
-                "cmd": "subscribe",
-                "params": {
-                    "channels": ["heartbeat"],  # Start with heartbeat channel
-                    "auth": auth_headers
-                }
-            }
-            
-            await self.websocket.send(json.dumps(auth_message))
-            logger.debug("Sent authentication message")
-            
-            # Wait for authentication response
-            response = await asyncio.wait_for(self.websocket.recv(), timeout=10.0)
-            response_data = json.loads(response)
-            
-            logger.debug(f"Auth response: {response_data}")
-            
-            # Check if authentication was successful
-            if response_data.get("id") == "auth" and response_data.get("type") == "subscribed":
-                self.is_authenticated = True
-                logger.info("Authentication successful")
-                return True
-            else:
-                logger.error(f"Authentication failed: {response_data}")
-                return False
-                
-        except asyncio.TimeoutError:
-            logger.error("Authentication timeout")
-            return False
-        except Exception as e:
-            logger.error(f"Authentication error: {e}")
-            return False
+        # Authentication is now handled during WebSocket handshake via headers
+        logger.info("WebSocket authentication completed via handshake headers")
+        self.is_authenticated = True
+        return True
     
     async def subscribe_to_trades(self) -> bool:
         """
@@ -184,12 +152,12 @@ class KalshiWebSocketClient:
         try:
             logger.info("Subscribing to public trades channel")
             
-            # Subscribe to trades channel
+            # Subscribe to trade channel
             trades_message = {
-                "id": "trades",
+                "id": 1,
                 "cmd": "subscribe",
                 "params": {
-                    "channels": ["public_trades"]
+                    "channels": ["trade"]
                 }
             }
             
@@ -203,7 +171,7 @@ class KalshiWebSocketClient:
             logger.debug(f"Trades subscription response: {response_data}")
             
             # Check if subscription was successful
-            if response_data.get("id") == "trades" and response_data.get("type") == "subscribed":
+            if response_data.get("id") == 1 and response_data.get("type") == "subscribed":
                 logger.info("Successfully subscribed to public trades")
                 return True
             else:
