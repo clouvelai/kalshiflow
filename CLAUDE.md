@@ -199,57 +199,64 @@ This test serves as the definitive validation that the entire backend is functio
 
 ## Frontend E2E Regression Test
 
-**Critical test that MUST pass before any frontend deployment or major changes.**
+**Critical test that MUST pass before any deployment or major changes.**
 
 ### What it validates:
-- ✅ **Application Startup**: Complete frontend loads within 15 seconds
-- ✅ **WebSocket Connection**: Frontend connects to backend WebSocket successfully
-- ✅ **Live Data Flow**: Real-time data populates and updates (trades, analytics, markets)
-- ✅ **Component Functionality**: All interactive features work (toggles, drawer, clicks)
-- ✅ **Responsive Design**: Layout functions across desktop, tablet, mobile viewports
-- ✅ **Real-time Updates**: Confirms live data values increment over time
-- ✅ **Visual Validation**: 13 comprehensive screenshots document entire user journey
+- ✅ **Backend Connection**: WebSocket connection established with "Live" status
+- ✅ **Real Data Flow**: Live trade data flows from Kalshi → Backend → Frontend
+- ✅ **Analytics Populated**: Summary statistics show non-zero values (volume, trades)
+- ✅ **Market Grid Active**: At least one market displayed (critical failure if empty)
+- ✅ **Chart Rendering**: Time-series chart renders with data points
+- ✅ **Interactive Features**: Hour/Day mode toggle functions correctly
+- ✅ **Real-time Updates**: Data changes over time proving live stream works
+- ✅ **Component Stability**: All UI components render and remain functional
 
 ### Running the test:
 ```bash
-# Prerequisites: Backend must be running on port 8000
+# Prerequisites: Backend MUST be running on port 8000
 cd backend && uv run uvicorn kalshiflow.app:app --reload --port 8000
 
-# Standard run (must pass before deployment)
+# Run the golden frontend test (in separate terminal)
 cd frontend && npm run test:frontend-regression
 
-# Debug mode with interactive UI
-npm run test:e2e-ui
-
 # What to expect:
-# - Test duration: ~31-33 seconds
-# - Real-time data validation against live Kalshi WebSocket
-# - 6 validation phases with clear ✅/❌ status indicators
-# - 13 screenshots captured in test-results/
-# - Works with live market data
+# - Test duration: ~15-20 seconds
+# - 5 screenshots captured in test-results/screenshots/
+# - Clear ✅/❌ status indicators for each validation step
+# - IMMEDIATE FAILURE if backend not running or no data flowing
+# - Visual proof via screenshots of working system
+
 ```
 
-### Test phases:
-1. **Application Startup**: Layout structure, main sections visibility
-2. **Connection & Data**: WebSocket connection, live data population 
-3. **Component Functions**: Analytics toggle, market selection, drawer interactions
-4. **Responsive Design**: Desktop (4-col), tablet (2-col), mobile (1-col) layouts
-5. **Real-time Validation**: Capture initial values, wait, compare for live updates
-6. **Quality Assurance**: Console errors, live indicators, final state verification
-
 ### Understanding test output:
-- **✅ PASSED**: Validation step completed successfully
-- **❌ FAILED**: Validation step failed (investigate immediately)
-- **📊 Data Updates**: Shows initial vs updated values to confirm real-time flow
-- **📸 Screenshots**: All 13 validation screenshots saved to test-results/
+- **✅ WebSocket connected**: Backend is running and accessible
+- **✅ Analytics active**: Real data flowing (Volume: $XXXk, Trades: XXX)
+- **✅ Market grid populated**: X active markets displayed
+- **✅ Chart rendering**: X data points visible
+- **✅ Real-time updates**: Data increased over test duration
+- **❌ CRITICAL FAILURES**: Backend not running, no data, or component failures
+
+### Screenshots captured:
+1. `01_initial_load.png` - Application startup state
+2. `02_connection_established.png` - WebSocket "Live" connection confirmed
+3. `03_data_populated.png` - Full view with analytics, markets, charts populated
+4. `04_interactive_features.png` - After testing Hour/Day toggle functionality
+5. `05_final_state.png` - Final state showing real-time data updates
 
 ### When to run:
 - **Before deployment** (mandatory)
-- **After frontend changes** (highly recommended) 
-- **When debugging frontend issues** (use interactive UI mode)
-- **As part of CI pipeline** (automated)
+- **After frontend changes** (highly recommended)
+- **When debugging frontend issues** (screenshots help diagnosis)
+- **As part of CI pipeline** (automated validation)
 
-This test serves as the definitive validation that the entire frontend works correctly against live data.
+### Critical failure conditions:
+- Backend not running (WebSocket shows "Disconnected")
+- No data flowing (Analytics shows $0 volume)
+- Empty market grid (No markets displayed)
+- Components not rendering (UI elements missing)
+- No real-time updates (Data unchanged over test duration)
+
+This test serves as the definitive validation that the entire frontend is functional and the E2E system works with live data.
 
 - use the planning agent for all planning
 - use the fullstack websocket agent for all implementation/coding
