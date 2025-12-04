@@ -1,8 +1,8 @@
 {
   "project": "Kalshi Flowboard",
-  "phase": "Phase 1 - End-to-end Live Public Trades Feed",
+  "phase": "Phase 2 - Market Metadata Enrichment (Starting)",
   "created_at": "2025-12-03",
-  "last_updated": "2025-12-04",
+  "last_updated": "2025-12-04T16:30:00Z",
   "tech_stack": {
     "backend": "Python 3.x + Starlette (ASGI) + uv",
     "frontend": "React + Vite + Tailwind CSS (npm for package management)",
@@ -757,6 +757,309 @@
           "verified": true
         }
       ]
+    },
+    "milestone_6": {
+      "id": "milestone_6",
+      "goal": "Market Metadata Enrichment via Kalshi REST API to display human-readable market information (title, category, liquidity) while maintaining WebSocket-only frontend architecture",
+      "priority": 6,
+      "estimated_effort": "3-4 hours",
+      "dependencies": ["milestone_5"],
+      "completed": false,
+      "phase": "Phase 2 - Market Metadata Enrichment",
+      "steps": [
+        {
+          "id": "6.1",
+          "instruction": "Extend database schema with markets table for metadata caching",
+          "files_to_modify": [
+            "backend/src/kalshiflow/database.py"
+          ],
+          "database_changes": [
+            "Create markets table (ticker PRIMARY KEY, title, category, liquidity_dollars, open_interest, latest_expiration_time, raw_market_data, created_at, updated_at)",
+            "Add indexes for efficient lookups (markets_ticker_idx, markets_category_idx)",
+            "Ensure backward compatibility with existing trades table"
+          ],
+          "technical_details": [
+            "ticker VARCHAR(50) PRIMARY KEY - Market identifier",
+            "title TEXT NOT NULL - Human readable market title", 
+            "category VARCHAR(100) - Market category (Elections, Sports, etc)",
+            "liquidity_dollars REAL - Total liquidity in dollars",
+            "open_interest INTEGER - Current open interest",
+            "latest_expiration_time TIMESTAMP - Market expiration date",
+            "raw_market_data TEXT - JSON blob of full market response",
+            "created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+            "updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP"
+          ],
+          "acceptance_criteria": "Database migration creates markets table without affecting existing trades functionality",
+          "completed": false,
+          "verified": false
+        },
+        {
+          "id": "6.2", 
+          "instruction": "Create MarketMetadataService for REST API integration with smart fetching logic",
+          "files_to_create": [
+            "backend/src/kalshiflow/market_metadata_service.py"
+          ],
+          "key_classes": [
+            "MarketMetadataService - Main service orchestrator",
+            "KalshiMarketAPI - REST API client for market data"
+          ],
+          "key_methods": [
+            "fetch_market_metadata(ticker) - Get market details from Kalshi REST API",
+            "cache_market_metadata(market_data) - Store in SQLite markets table",
+            "get_cached_metadata(ticker) - Retrieve from local cache",
+            "monitor_hot_markets() - Watch for new markets entering hot list",
+            "should_fetch_metadata(ticker) - Smart logic for when to fetch"
+          ],
+          "smart_fetching_logic": [
+            "Only fetch when market enters hot_markets list for first time",
+            "Check cache first before making REST call",
+            "One-time fetch per market (permanent cache)",
+            "Non-blocking - never delay real-time trade processing",
+            "Rate limiting to respect Kalshi API limits"
+          ],
+          "authentication": [
+            "Reuse existing RSA signature logic from auth.py",
+            "Same KALSHI_API_KEY_ID and KALSHI_PRIVATE_KEY_PATH",
+            "REST endpoint: GET /trade-api/v2/markets/{ticker}",
+            "Headers: KALSHI-ACCESS-KEY, KALSHI-ACCESS-SIGNATURE, KALSHI-ACCESS-TIMESTAMP"
+          ],
+          "error_handling": [
+            "Graceful degradation if REST API unavailable",
+            "Retry logic with exponential backoff",
+            "Log failures without breaking trade flow",
+            "Continue with ticker-only display on failures"
+          ],
+          "acceptance_criteria": "Service can fetch and cache market metadata without impacting real-time trade processing",
+          "completed": false,
+          "verified": false
+        },
+        {
+          "id": "6.3",
+          "instruction": "Integrate metadata service with existing trade aggregation pipeline",
+          "files_to_modify": [
+            "backend/src/kalshiflow/aggregator.py",
+            "backend/src/kalshiflow/trade_processor.py"
+          ],
+          "integration_points": [
+            "TradeAggregator.get_hot_markets() - Trigger metadata fetching for new hot markets",
+            "TradeProcessor.process_trade() - Optional metadata check on new tickers",
+            "Background task - Metadata fetching runs independently of trade processing"
+          ],
+          "workflow": [
+            "1. Trade comes in for ticker XYZ",
+            "2. If XYZ volume crosses hot_markets threshold for first time",
+            "3. Queue metadata fetch for XYZ (non-blocking)",
+            "4. Metadata service fetches from Kalshi REST API",
+            "5. Metadata cached in SQLite markets table",
+            "6. Future hot_markets queries include metadata"
+          ],
+          "data_flow": [
+            "Preserve all existing aggregation logic",
+            "Add metadata enrichment as optional enhancement",
+            "Ensure trade processing performance unchanged",
+            "Background metadata fetching queue"
+          ],
+          "acceptance_criteria": "Metadata fetching integrates seamlessly without affecting trade aggregation performance",
+          "completed": false,
+          "verified": false
+        },
+        {
+          "id": "6.4",
+          "instruction": "Enhance WebSocket protocol to include market metadata in broadcasts",
+          "files_to_modify": [
+            "backend/src/kalshiflow/websocket_handler.py",
+            "backend/src/kalshiflow/models.py"
+          ],
+          "protocol_enhancements": [
+            "Update HotMarketItem model to include optional metadata fields",
+            "Update TickerStateUpdate model for ticker detail views",
+            "Maintain backward compatibility for frontend"
+          ],
+          "new_model_fields": [
+            "title: Optional[str] = None - Human readable market title",
+            "category: Optional[str] = None - Market category",
+            "liquidity_dollars: Optional[float] = None - Liquidity in dollars",
+            "open_interest: Optional[int] = None - Current open interest",
+            "latest_expiration_time: Optional[datetime] = None - Market expiration"
+          ],
+          "websocket_changes": [
+            "snapshot message - Include metadata for hot markets if available",
+            "trade message - Include metadata in ticker_state if available",
+            "Graceful handling when metadata not yet fetched"
+          ],
+          "example_enhanced_message": {
+            "type": "snapshot",
+            "data": {
+              "hot_markets": [
+                {
+                  "ticker": "PRES-2024",
+                  "volume_window": 45000,
+                  "last_price": 0.52,
+                  "net_flow": "YES",
+                  "price_points": [0.48, 0.51, 0.52],
+                  "title": "Will Donald Trump win the 2024 Presidential Election?",
+                  "category": "Elections",
+                  "liquidity_dollars": 2500000.0,
+                  "latest_expiration_time": "2024-11-05T23:59:59Z"
+                }
+              ]
+            }
+          },
+          "acceptance_criteria": "WebSocket messages include market metadata when available while maintaining compatibility",
+          "completed": false,
+          "verified": false
+        },
+        {
+          "id": "6.5",
+          "instruction": "Enhance frontend MarketCard component with beautiful metadata display",
+          "files_to_modify": [
+            "frontend/src/components/MarketCard.jsx",
+            "frontend/src/components/MarketGrid.jsx"
+          ],
+          "ui_enhancements": [
+            "Primary title display - Show market title when available",
+            "Secondary subtitle - '[TICKER • Category • Expiration]' format",
+            "Liquidity indicator - Display liquidity_dollars formatted", 
+            "Graceful fallback - Show ticker when metadata unavailable",
+            "Enhanced visual hierarchy - Title prominent, ticker/details secondary"
+          ],
+          "display_logic": [
+            "If metadata available: Show '[Title]' with '[Ticker • Category • Expiration]' subtitle",
+            "If metadata missing: Show existing ticker display",
+            "Format expiration as 'Dec 31, 2024' style",
+            "Format liquidity as '$2.5M' style",
+            "Category badge styling"
+          ],
+          "styling_improvements": [
+            "Larger title text with better typography",
+            "Subtle category badges with color coding",
+            "Liquidity display as secondary metric",
+            "Improved card spacing for metadata",
+            "Maintain existing sparkline and volume displays"
+          ],
+          "example_enhanced_card": [
+            "Title: 'Will Donald Trump win the 2024 Presidential Election?'",
+            "Subtitle: 'PRES-2024 • Elections • Nov 5, 2024'",
+            "Liquidity: '$2.5M'",
+            "Existing: Last Price 52¢ YES, Volume $45K, Sparkline"
+          ],
+          "acceptance_criteria": "Market cards display beautiful human-readable titles with graceful fallback to ticker-only",
+          "completed": false,
+          "verified": false
+        },
+        {
+          "id": "6.6",
+          "instruction": "Add startup task to initialize metadata service and background monitoring",
+          "files_to_modify": [
+            "backend/src/kalshiflow/app.py"
+          ],
+          "startup_integration": [
+            "Initialize MarketMetadataService on app startup",
+            "Start background task for monitoring hot markets",
+            "Ensure graceful shutdown of metadata service",
+            "Connect to existing database and trade processor"
+          ],
+          "background_task": [
+            "Periodic check of current hot_markets list (every 30 seconds)",
+            "Identify new tickers that entered hot_markets",
+            "Queue metadata fetch for new hot tickers",
+            "Rate limiting to respect API quotas"
+          ],
+          "error_resilience": [
+            "Metadata service failures don't affect core trade processing",
+            "Continue serving ticker-only data if REST API down",
+            "Log metadata service status for monitoring",
+            "Graceful degradation strategy"
+          ],
+          "configuration": [
+            "Add metadata service settings to environment",
+            "METADATA_FETCH_ENABLED=true (feature flag)",
+            "METADATA_CHECK_INTERVAL=30 (seconds)",
+            "KALSHI_REST_API_URL=https://api.elections.kalshi.com"
+          ],
+          "acceptance_criteria": "Metadata service starts with app and monitors hot markets without affecting core functionality",
+          "completed": false,
+          "verified": false
+        },
+        {
+          "id": "6.7",
+          "instruction": "Create comprehensive test suite for metadata enhancement features",
+          "files_to_create": [
+            "backend/tests/test_market_metadata_service.py",
+            "backend/tests/test_enhanced_websocket.py"
+          ],
+          "files_to_modify": [
+            "backend/tests/test_integration.py"
+          ],
+          "test_coverage": [
+            "MarketMetadataService REST API integration",
+            "Database schema migration and CRUD operations",
+            "WebSocket protocol enhancement with metadata",
+            "Frontend metadata display logic",
+            "Error handling and graceful degradation",
+            "Background task monitoring and fetching"
+          ],
+          "test_scenarios": [
+            "Successful metadata fetch and cache",
+            "REST API failure graceful handling", 
+            "Database persistence and retrieval",
+            "WebSocket message enhancement",
+            "Frontend display with and without metadata",
+            "Performance impact on trade processing"
+          ],
+          "mock_data": [
+            "Sample Kalshi market API responses",
+            "Test market metadata records",
+            "Enhanced WebSocket message payloads"
+          ],
+          "integration_tests": [
+            "End-to-end metadata enrichment flow",
+            "Frontend receives enhanced market data",
+            "Graceful fallback when metadata unavailable"
+          ],
+          "acceptance_criteria": "Comprehensive test coverage ensures metadata enhancement works correctly with proper error handling",
+          "completed": false,
+          "verified": false
+        },
+        {
+          "id": "6.8",
+          "instruction": "End-to-end testing and validation of market metadata enrichment feature",
+          "test_scenarios": [
+            "New market enters hot_markets list and triggers metadata fetch",
+            "Frontend displays enhanced market cards with titles and categories",
+            "Graceful fallback to ticker display when metadata unavailable",
+            "WebSocket messages include metadata for enriched markets",
+            "Database stores market metadata correctly",
+            "Background metadata fetching doesn't affect trade performance",
+            "REST API failures don't break core functionality"
+          ],
+          "validation_criteria": [
+            "Market cards show '[Title]' with '[Ticker • Category • Expiration]' format when metadata available",
+            "Liquidity and open interest display correctly",
+            "Existing sparklines and volume data preserved",
+            "Real-time trade processing performance unchanged",
+            "WebSocket connection remains stable",
+            "Database contains cached metadata after fetching",
+            "Error logs show graceful handling of API failures"
+          ],
+          "manual_testing": [
+            "Watch for new markets entering hot list during live trading",
+            "Verify metadata appears in frontend within 30-60 seconds",
+            "Test with Kalshi REST API disabled to verify fallback",
+            "Confirm market cards look beautiful with enhanced information",
+            "Validate responsive design with longer market titles"
+          ],
+          "performance_validation": [
+            "Trade processing latency unchanged",
+            "WebSocket message frequency unchanged", 
+            "Memory usage impact minimal",
+            "Database query performance acceptable"
+          ],
+          "acceptance_criteria": "Market metadata enrichment works end-to-end with beautiful UI display and zero impact on core trade functionality",
+          "completed": false,
+          "verified": false
+        }
+      ]
     }
   },
   "phase_1_completion_criteria": [
@@ -785,9 +1088,16 @@
       "End-to-end live public trades feed fully functional with major UX improvements"
     ]
   },
+  "phase_2_milestones": {
+    "milestone_6": {
+      "status": "ready_to_start",
+      "focus": "Market Metadata Enrichment - First Phase 2 feature to enhance market display with human-readable information via strategic Kalshi REST API usage"
+    }
+  },
   "next_steps": {
-    "immediate": "Phase 1 complete with Milestone 5 UX enhancements! Ready to begin Phase 2 planning for advanced features",
-    "phase_2_considerations": [
+    "immediate": "Begin Milestone 6 implementation - Market Metadata Enrichment to display human-readable market titles, categories, and liquidity information",
+    "phase_2_roadmap": [
+      "Milestone 6: Market Metadata Enrichment (current)",
       "Advanced data aggregation and analytics",
       "Historical trade analysis and charts",
       "User preferences and market watchlists",

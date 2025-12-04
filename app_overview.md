@@ -6,6 +6,9 @@ A tiny web app that listens to Kalshi’s public trades WebSocket and shows a re
 CORE CONSTRAINT:
 Do not call any Kalshi REST endpoints in the first version. All data must originate from the WebSocket public trades stream.
 
+PHASE 2 ENHANCEMENT:
+Market metadata enrichment via Kalshi REST API to display human-readable market information (title, category, liquidity) while maintaining WebSocket-only frontend architecture.
+
 TECH STACK (LOCKED IN):
 - Backend: Python 3.x + Starlette (ASGI)
 - Frontend: React + Vite + Tailwind CSS
@@ -34,11 +37,16 @@ IN-SCOPE (MVP):
 
 OUT-OF-SCOPE (MVP):
 - Authentication, user accounts, or preferences.
-- REST metadata calls (titles, categories, series names).
+- REST metadata calls (titles, categories, series names) - MOVED TO PHASE 2.
 - Order book, positions, or user fills.
 - Historical backfill from before process start.
 - Advanced filters/search (by category, event date, etc.).
 - Polished mobile UX (basic responsiveness is enough).
+
+PHASE 2 SCOPE:
+- Market metadata enrichment via Kalshi REST API.
+- Enhanced market display with human-readable titles, categories, and liquidity data.
+- Intelligent metadata caching and fallback mechanisms.
 
 --------------------------------
 2. DATA MODEL
@@ -63,6 +71,24 @@ Table: trades
 Indexes:
 - INDEX trades_ts_idx ON trades(ts);
 - INDEX trades_ticker_ts_idx ON trades(market_ticker, ts);
+
+2.1.1 SQLite schema (market metadata - PHASE 2)
+
+Table: markets
+- ticker             TEXT PRIMARY KEY
+- title              TEXT
+- subtitle           TEXT  
+- category           TEXT
+- liquidity_dollars  TEXT
+- open_interest      INTEGER
+- latest_expiration_time TEXT
+- status             TEXT
+- fetched_at         INTEGER NOT NULL        -- unix seconds when metadata fetched
+- raw_market_data    TEXT                    -- full JSON response from Kalshi for extensibility
+
+Indexes:
+- INDEX markets_category_idx ON markets(category);
+- INDEX markets_expiration_idx ON markets(latest_expiration_time);
 
 2.2 In-memory aggregates (per ticker)
 
@@ -103,6 +129,7 @@ Window logic:
 - Components:
   - Kalshi WebSocket client task.
   - Trade processor + aggregator.
+  - Market metadata service (PHASE 2).
   - WebSocket endpoint for frontend realtime stream.
   - Optional HTTP REST endpoints for initial snapshot / debugging.
 - Use Python asyncio and Starlette’s background tasks / startup events.
@@ -124,7 +151,30 @@ Implementation notes:
 - Implement reconnection with exponential backoff on errors/closure.
 - Optionally send heartbeat/ping if Kalshi requires.
 
-3.3 Trade processor and storage
+3.3 Market metadata service (PHASE 2)
+
+Responsibilities:
+- Monitor when markets enter the "hot markets" list (volume threshold trigger).
+- Fetch market details from Kalshi REST API `/get-market` endpoint.
+- Cache market metadata in SQLite `markets` table (one-time fetch per market).
+- Provide metadata to WebSocket broadcaster for enhanced frontend display.
+
+Implementation notes:
+- Background async task that doesn't block real-time trade processing.
+- Smart caching: fetch once per market when it becomes "hot", store permanently.
+- Full JSON storage for future extensibility.
+- Graceful error handling: API failures don't break real-time functionality.
+- Uses same RSA authentication as WebSocket client.
+
+Market metadata API response (from Kalshi /get-market):
+- title: Human-readable market title
+- category: Market category (Politics, Sports, etc.)
+- liquidity_dollars: Current market liquidity
+- open_interest: Total contracts outstanding
+- latest_expiration_time: Market close/expiration time
+- Full JSON response stored in raw_market_data field
+
+3.4 Trade processor and storage
 
 Responsibilities:
 - Normalize the incoming JSON trade payload:
@@ -194,7 +244,15 @@ Message protocol (JSON):
           [1669149800, 32],
           [1669149820, 35],
           [1669149841, 36]
-        ]
+        ],
+        // PHASE 2: Market metadata when available
+        "metadata": {
+          "title": "High Temperature in NYC on Dec 23 above 53.5°F",
+          "category": "Weather",
+          "liquidity_dollars": "12500.00",
+          "open_interest": 2845,
+          "latest_expiration_time": "2023-12-24T05:00:00Z"
+        }
       },
       ...
     ]
@@ -221,8 +279,16 @@ Message protocol (JSON):
       "yes_volume_window": 800,
       "no_volume_window": 434,
       "net_yes_volume_window": 366,
-      "trade_count_window": 54
+      "trade_count_window": 54,
       // price_points omitted here, or include minimal slice as needed
+      // PHASE 2: Include metadata when available for hot markets
+      "metadata": {
+        "title": "...",
+        "category": "...",
+        "liquidity_dollars": "...",
+        "open_interest": 123,
+        "latest_expiration_time": "..."
+      }
     }
   }
 }
@@ -279,17 +345,22 @@ Behavior:
 
 4.3 Right Panel: Hot Markets
 
-Component: `<HotMarkets />`
+Component: `<HotMarkets />` / `<MarketGrid />` (PHASE 2)
 
 Behavior:
 - Shows top N tickers (e.g. 8–12) sorted by volume_window (last 10 min).
 - Each TickerCard shows:
-  - market_ticker.
+  - PHASE 1: market_ticker as primary display.
+  - PHASE 2 (Enhanced): Human-readable title as primary display with metadata.
+    - Primary: Market title (e.g., "Donald Trump to win 2024 Presidential Election").
+    - Secondary: [Market Ticker] • [Category] • [Expiration Date].
+    - Tertiary: Liquidity and Open Interest alongside volume/flow.
   - Last price: convert `last_yes_price` to probability (yes_price/100):
     - e.g., "36% YES".
   - Volume: "Vol (10m): 2.1k" (format volume_window).
   - Net flow: "Flow (10m): +800 YES" or "-300 YES" based on net_yes_volume_window.
   - Mini sparkline of yes_price from `price_points`.
+  - Fallback: If metadata unavailable, display original ticker-based format.
 - Clicking a card opens detail drawer for that ticker.
 
 4.4 Detail Drawer / Panel
@@ -302,12 +373,17 @@ Behavior:
   - Current in-memory state from WebSocket snapshot + updates, OR
   - HTTP endpoint `/api/markets/{ticker}/trades`.
 - Shows:
-  - Title: market_ticker.
+  - Title: market_ticker (PHASE 1) or market title (PHASE 2).
+  - PHASE 2: Enhanced metadata display:
+    - Market title, category, expiration date.
+    - Liquidity and open interest.
+    - Market status and additional context.
   - Key stats:
     - "Last price: 64% YES".
     - "Trades (10m): X".
     - "Volume (10m): Y".
     - "Net YES flow (10m): +Z".
+    - PHASE 2: "Liquidity: $125K", "Open Interest: 45K contracts".
   - Larger line chart for yes_price vs time for last 30–60 minutes.
   - Table of last ~20 trades for that ticker.
 
@@ -356,14 +432,19 @@ Configuration:
   - `SQLITE_DB_PATH` (e.g. `./kalshi_trades.db`)
 
 --------------------------------
-6. STRETCH GOALS (LATER, NOT MVP)
+6. STRETCH GOALS (LATER)
 --------------------------------
 
+IMPLEMENTED IN PHASE 2:
+- ✅ Use Kalshi REST API to enrich market_ticker with human-readable event names and categories.
+
+FUTURE ENHANCEMENTS:
 - Simple filters: show only tickers matching a substring.
-- “Pin” selected tickers to top of hot markets.
-- Display cumulative PnL-style “drift” chart for a ticker over the session.
-- Use Kalshi REST API to enrich market_ticker with human-readable event names and categories.
+- "Pin" selected tickers to top of hot markets.
+- Display cumulative PnL-style "drift" chart for a ticker over the session.
 - Persist aggregate stats in SQLite and allow multi-hour charts.
+- Market category filtering and search functionality.
+- Historical market metadata analytics and trending.
 
 --------------------------------
 7. Milestones and Validation
