@@ -36,7 +36,7 @@ const useWebSocket = (url) => {
         console.log('WebSocket disconnected:', event.code, event.reason);
         setConnectionStatus('disconnected');
         
-        // Attempt to reconnect if it wasn't a manual close
+        // Only attempt to reconnect if it wasn't a manual close and we haven't exceeded max attempts
         if (event.code !== 1000 && reconnectAttemptsRef.current < maxReconnectAttempts) {
           const delay = Math.min(
             baseReconnectDelay * Math.pow(2, reconnectAttemptsRef.current),
@@ -44,11 +44,16 @@ const useWebSocket = (url) => {
           );
           
           console.log(`Attempting to reconnect in ${delay}ms (attempt ${reconnectAttemptsRef.current + 1})`);
+          setError(`Connection lost. Reconnecting in ${Math.ceil(delay/1000)}s...`);
           
           reconnectTimeoutRef.current = setTimeout(() => {
-            reconnectAttemptsRef.current++;
-            connect();
+            if (reconnectAttemptsRef.current < maxReconnectAttempts) {
+              reconnectAttemptsRef.current++;
+              connect();
+            }
           }, delay);
+        } else if (reconnectAttemptsRef.current >= maxReconnectAttempts) {
+          setError('Connection failed after maximum retry attempts');
         }
       };
 
@@ -88,9 +93,18 @@ const useWebSocket = (url) => {
     connect();
 
     return () => {
-      disconnect();
+      // Clear any pending reconnection attempts
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+        reconnectTimeoutRef.current = null;
+      }
+      
+      // Close connection if open
+      if (ws.current && ws.current.readyState !== WebSocket.CLOSED) {
+        ws.current.close(1000, 'Component unmounting');
+      }
     };
-  }, [connect, disconnect]);
+  }, [connect]);
 
   return {
     connectionStatus,

@@ -1,8 +1,9 @@
 import React, { useState } from 'react';
 import { TradeProvider, useTradeContext } from './context/TradeContext';
 import Layout from './components/Layout';
+import HeroStats from './components/HeroStats';
+import MarketGrid from './components/MarketGrid';
 import TradeTape from './components/TradeTape';
-import HotMarkets from './components/HotMarkets';
 import TickerDetailDrawer from './components/TickerDetailDrawer';
 
 const AppContent = () => {
@@ -35,19 +36,24 @@ const AppContent = () => {
       connectionStatus={connectionStatus}
       tradeCount={tradeCount}
     >
-      {/* Left Panel - Trade Tape */}
-      <div className="lg:order-1">
+      {/* Hero Stats Section */}
+      <HeroStats 
+        tradesCount={recentTrades.length}
+        totalVolume={null}
+        netFlow={null}
+      />
+
+      {/* Market Grid Section */}
+      <MarketGrid
+        markets={hotMarkets}
+        selectedTicker={selectedTicker}
+        onTickerSelect={handleTickerSelect}
+      />
+
+      {/* Live Trade Feed Section - Bottom with reduced prominence */}
+      <div className="max-w-4xl">
         <TradeTape
           trades={recentTrades}
-          selectedTicker={selectedTicker}
-          onTickerSelect={handleTickerSelect}
-        />
-      </div>
-
-      {/* Right Panel - Hot Markets */}
-      <div className="lg:order-2">
-        <HotMarkets
-          markets={hotMarkets}
           selectedTicker={selectedTicker}
           onTickerSelect={handleTickerSelect}
         />
