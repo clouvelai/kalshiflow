@@ -1,5 +1,5 @@
 import React from 'react';
-import Sparkline from './Sparkline';
+import VolumeWeightedSparkline from './VolumeWeightedSparkline';
 
 const TickerDetailDrawer = ({ ticker, tickerData, onClose, isOpen }) => {
   if (!isOpen || !ticker || !tickerData) {
@@ -62,13 +62,15 @@ const TickerDetailDrawer = ({ ticker, tickerData, onClose, isOpen }) => {
               <>
                 {/* Price Chart Section */}
                 <div className="bg-gray-50 rounded-lg p-4">
-                  <h3 className="text-lg font-semibold text-gray-900 mb-4">Price Chart</h3>
-                  <div className="bg-white rounded p-4">
-                    <Sparkline 
+                  <h3 className="text-lg font-semibold text-gray-900 mb-3">Live Price Momentum</h3>
+                  <div className="bg-white rounded-lg p-4">
+                    <VolumeWeightedSparkline 
                       data={marketData.price_points || []} 
-                      width={400} 
-                      height={80}
+                      width={420} 
+                      height={100}
                       className="w-full"
+                      showVolumeIndicators={true}
+                      animationDuration={400}
                     />
                   </div>
                 </div>

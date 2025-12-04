@@ -136,7 +136,7 @@ class TickerState(BaseModel):
     trade_count_window: int = Field(default=0, description="Number of trades in current window")
     yes_flow: int = Field(default=0, description="YES-side volume in window")
     no_flow: int = Field(default=0, description="NO-side volume in window")
-    price_points: List[float] = Field(default_factory=list, description="Price history for sparkline (YES prices as decimals)")
+    price_points: List[Any] = Field(default_factory=list, description="Enhanced price history with volume and timestamp data for advanced visualizations")
     
     @property
     def net_flow(self) -> int:

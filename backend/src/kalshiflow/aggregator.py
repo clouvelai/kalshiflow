@@ -116,8 +116,14 @@ class TradeAggregator:
         state.last_no_price = new_trade.no_price
         state.last_trade_time = new_trade.ts
         
-        # Add new price point (using YES price for sparkline)
-        state.price_points.append(new_trade.yes_price_dollars)
+        # Add new enhanced price point with volume and timestamp for advanced visualizations
+        price_point = {
+            "price": new_trade.yes_price_dollars,
+            "volume": new_trade.count,
+            "timestamp": new_trade.ts,
+            "side": new_trade.taker_side  # yes/no for momentum calculation
+        }
+        state.price_points.append(price_point)
         if len(state.price_points) > self.max_price_points:
             state.price_points.pop(0)
         

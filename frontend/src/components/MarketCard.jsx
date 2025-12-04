@@ -1,5 +1,5 @@
 import React from 'react';
-import Sparkline from './Sparkline';
+import VolumeWeightedSparkline from './VolumeWeightedSparkline';
 
 // Utility function to format volume numbers
 const formatVolume = (volume) => {
@@ -133,17 +133,18 @@ const MarketCard = ({ market, onClick, isSelected = false, rank }) => {
         )}
       </div>
 
-      {/* Sparkline */}
+      {/* Enhanced Volume-Weighted Sparkline */}
       {market.price_points && market.price_points.length > 1 && (
         <div className="mb-2">
-          <div className="text-xs text-gray-500 mb-1">Price Trend</div>
-          <div className="h-8">
-            <Sparkline 
+          <div className="text-xs text-gray-500 mb-1">Live Price Momentum</div>
+          <div className="h-10">
+            <VolumeWeightedSparkline 
               data={market.price_points}
               width={180}
-              height={32}
-              color={netFlow > 0 ? '#10b981' : netFlow < 0 ? '#ef4444' : '#6b7280'}
-              strokeWidth={1.5}
+              height={40}
+              showVolumeIndicators={true}
+              animationDuration={400}
+              className="rounded-sm"
             />
           </div>
         </div>
