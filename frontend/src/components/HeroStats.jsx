@@ -1,14 +1,14 @@
 import React, { useState, useEffect } from 'react';
 
-// Utility function to format volume numbers
+// Utility function to format volume numbers with higher precision for hero stats
 const formatVolume = (volume) => {
   if (!volume || volume === 0) return '$0';
   
   const absVolume = Math.abs(volume);
   if (absVolume >= 1000000) {
-    return `$${(volume / 1000000).toFixed(1)}M`;
+    return `$${(volume / 1000000).toFixed(2)}M`;
   } else if (absVolume >= 1000) {
-    return `$${(volume / 1000).toFixed(1)}k`;
+    return `$${(volume / 1000).toFixed(2)}k`;
   } else {
     return `$${volume}`;
   }
