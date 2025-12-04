@@ -4,6 +4,7 @@ In-memory trade aggregation and ticker state management for real-time market dat
 
 import os
 import asyncio
+import logging
 from collections import defaultdict, deque
 from datetime import datetime, timedelta
 from typing import Dict, List, Tuple, Optional, Any
@@ -181,15 +182,12 @@ class TradeAggregator:
         
         hot_markets = [state.dict() for state in sorted_tickers[:limit]]
         
-        # Trigger metadata fetching for hot markets (non-blocking)
-        metadata_service = get_metadata_service()
-        if metadata_service:
-            asyncio.create_task(metadata_service.monitor_hot_markets(hot_markets))
+        # Note: metadata fetching for hot markets is handled via immediate fetch when needed
         
         return hot_markets
     
     async def get_hot_markets_with_metadata(self, limit: int = None) -> List[Dict[str, Any]]:
-        """Get hot markets enriched with metadata from cache."""
+        """Get hot markets enriched with metadata, fetching immediately if missing."""
         hot_markets = self.get_hot_markets(limit)
         
         # Get metadata service
@@ -203,7 +201,47 @@ class TradeAggregator:
         # Get metadata for all tickers in one call
         metadata_dict = await metadata_service.get_markets_metadata(tickers)
         
-        # Enrich hot markets with metadata
+        # Track missing metadata and fetch immediately
+        missing_tickers = []
+        for market in hot_markets:
+            ticker = market["ticker"]
+            if ticker not in metadata_dict:
+                missing_tickers.append(ticker)
+        
+        # Fetch missing metadata immediately with timeout protection
+        if missing_tickers:
+            logger = logging.getLogger(__name__)
+            logger.info(f"Immediately fetching metadata for {len(missing_tickers)} missing markets: {missing_tickers}")
+            
+            # Use asyncio.gather with timeout for concurrent fetching
+            try:
+                fetch_tasks = [
+                    metadata_service.fetch_metadata_now(ticker, timeout=3.0)  # 3 second timeout per market
+                    for ticker in missing_tickers
+                ]
+                
+                # Wait for all fetches with overall 10-second timeout
+                immediate_metadata_list = await asyncio.wait_for(
+                    asyncio.gather(*fetch_tasks, return_exceptions=True),
+                    timeout=10.0
+                )
+                
+                # Process results and add to metadata_dict
+                for ticker, result in zip(missing_tickers, immediate_metadata_list):
+                    if isinstance(result, dict) and result:
+                        metadata_dict[ticker] = result
+                        logger.info(f"Successfully fetched immediate metadata for {ticker}")
+                    elif isinstance(result, Exception):
+                        logger.warning(f"Exception fetching metadata for {ticker}: {result}")
+                    else:
+                        logger.warning(f"Failed to fetch metadata for {ticker}")
+                        
+            except asyncio.TimeoutError:
+                logger.warning(f"Overall timeout (10s) exceeded while fetching metadata for missing markets")
+            except Exception as e:
+                logger.error(f"Error during immediate metadata fetching: {e}")
+        
+        # Enrich hot markets with metadata (both cached and newly fetched)
         for market in hot_markets:
             ticker = market["ticker"]
             if ticker in metadata_dict:

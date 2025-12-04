@@ -47,10 +47,10 @@ async def get_config(request):
     })
 
 async def get_hot_markets(request):
-    """Get current hot markets for debugging"""
+    """Get current hot markets with metadata"""
     try:
         aggregator = get_aggregator()
-        hot_markets = aggregator.get_hot_markets()
+        hot_markets = await aggregator.get_hot_markets_with_metadata()
         return JSONResponse({
             "hot_markets": hot_markets,
             "count": len(hot_markets),

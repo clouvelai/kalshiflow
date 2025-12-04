@@ -160,13 +160,17 @@ class TradeProcessor:
             # Get current global stats
             global_stats = self.aggregator.get_global_stats()
             
+            # Get hot markets with metadata to ensure metadata is preserved in real-time updates
+            hot_markets = await self.aggregator.get_hot_markets_with_metadata()
+            
             # Create trade update message
             update_message = TradeUpdateMessage(
                 type="trade",
                 data={
                     "trade": trade.dict(),
                     "ticker_state": ticker_state.dict(),
-                    "global_stats": global_stats
+                    "global_stats": global_stats,
+                    "hot_markets": hot_markets  # Include metadata-enriched hot markets
                 }
             )
             

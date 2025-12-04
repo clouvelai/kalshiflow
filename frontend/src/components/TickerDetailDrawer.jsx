@@ -26,6 +26,46 @@ const TickerDetailDrawer = ({ ticker, tickerData, onClose, isOpen }) => {
     return volume?.toString() || '0';
   };
 
+  // Utility functions for metadata formatting
+  const formatLiquidity = (liquidity) => {
+    if (!liquidity || liquidity === 0) return null;
+    
+    if (liquidity >= 1000000000) {
+      return `$${(liquidity / 1000000000).toFixed(1)}B`;
+    } else if (liquidity >= 1000000) {
+      return `$${(liquidity / 1000000).toFixed(1)}M`;
+    } else if (liquidity >= 1000) {
+      return `$${(liquidity / 1000).toFixed(0)}K`;
+    } else {
+      return `$${Math.round(liquidity)}`;
+    }
+  };
+
+  const formatOpenInterest = (openInterest) => {
+    if (!openInterest || openInterest === 0) return null;
+    
+    if (openInterest >= 1000000) {
+      return `${(openInterest / 1000000).toFixed(1)}M`;
+    } else if (openInterest >= 1000) {
+      return `${(openInterest / 1000).toFixed(1)}K`;
+    } else {
+      return `${openInterest}`;
+    }
+  };
+
+  const formatExpiration = (expirationTime) => {
+    if (!expirationTime) return null;
+    
+    const date = new Date(expirationTime);
+    return date.toLocaleString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit'
+    });
+  };
+
   return (
     <div className="fixed inset-0 z-50 overflow-hidden" onClick={onClose}>
       <div className="absolute inset-0 bg-black bg-opacity-50" />
@@ -74,6 +114,62 @@ const TickerDetailDrawer = ({ ticker, tickerData, onClose, isOpen }) => {
                     />
                   </div>
                 </div>
+
+                {/* Market Metadata */}
+                {(marketData.title || marketData.liquidity_dollars || marketData.open_interest || marketData.latest_expiration_time) && (
+                  <div className="bg-gray-50 rounded-lg p-4">
+                    <h3 className="text-lg font-semibold text-gray-900 mb-4">Market Information</h3>
+                    
+                    {/* Market Title */}
+                    {marketData.title && (
+                      <div className="bg-white rounded-lg p-4 mb-4">
+                        <h4 className="text-sm font-medium text-gray-700 mb-2">Market Title</h4>
+                        <p className="text-gray-900 leading-relaxed">{marketData.title}</p>
+                      </div>
+                    )}
+                    
+                    {/* Metadata Stats Grid */}
+                    {(marketData.liquidity_dollars || marketData.open_interest || marketData.latest_expiration_time) && (
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                        {formatLiquidity(marketData.liquidity_dollars) && (
+                          <div className="bg-white rounded-lg p-4">
+                            <div className="flex items-center gap-2 mb-2">
+                              <span className="text-blue-500 text-lg">💧</span>
+                              <span className="text-sm font-medium text-gray-700">Liquidity</span>
+                            </div>
+                            <p className="text-xl font-bold text-blue-600">
+                              {formatLiquidity(marketData.liquidity_dollars)}
+                            </p>
+                          </div>
+                        )}
+                        
+                        {formatOpenInterest(marketData.open_interest) && (
+                          <div className="bg-white rounded-lg p-4">
+                            <div className="flex items-center gap-2 mb-2">
+                              <span className="text-purple-500 text-lg">👥</span>
+                              <span className="text-sm font-medium text-gray-700">Open Interest</span>
+                            </div>
+                            <p className="text-xl font-bold text-purple-600">
+                              {formatOpenInterest(marketData.open_interest)}
+                            </p>
+                          </div>
+                        )}
+                        
+                        {formatExpiration(marketData.latest_expiration_time) && (
+                          <div className="bg-white rounded-lg p-4">
+                            <div className="flex items-center gap-2 mb-2">
+                              <span className="text-orange-500 text-lg">⏰</span>
+                              <span className="text-sm font-medium text-gray-700">Expires</span>
+                            </div>
+                            <p className="text-sm font-medium text-orange-600">
+                              {formatExpiration(marketData.latest_expiration_time)}
+                            </p>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 {/* Key Statistics */}
                 <div className="bg-gray-50 rounded-lg p-4">

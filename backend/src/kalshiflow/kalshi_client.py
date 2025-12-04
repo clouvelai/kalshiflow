@@ -353,7 +353,7 @@ class KalshiWebSocketClient:
         if self.on_connection_change:
             status = ConnectionStatus(
                 connected=connected,
-                last_connected=None if not connected else None,  # TODO: track last connection time
+                last_connected=None if not connected else None,
                 reconnect_attempts=self.reconnect_attempts,
                 error_message=error_message
             )

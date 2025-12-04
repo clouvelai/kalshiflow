@@ -70,21 +70,18 @@ class KalshiMarketAPI:
             session = await self._get_session()
             url = f"{self.base_url}{path}"
             
-            logger.debug(f"Fetching market details for {ticker} from {url}")
-            
             async with session.get(url, headers=headers) as response:
                 if response.status == 200:
                     data = await response.json()
-                    logger.info(f"Successfully fetched market details for {ticker}")
                     return data
                 elif response.status == 404:
-                    logger.warning(f"Market {ticker} not found (404)")
+                    logger.warning(f"Market {ticker} not found")
                     return None
                 elif response.status == 429:
                     logger.warning(f"Rate limited when fetching market {ticker}")
                     return None
                 else:
-                    logger.error(f"Failed to fetch market {ticker}: {response.status} - {await response.text()}")
+                    logger.error(f"Failed to fetch market {ticker}: {response.status}")
                     return None
                     
         except Exception as e:
@@ -109,149 +106,25 @@ class MarketMetadataService:
         
         # Track which markets we've attempted to fetch (to avoid repeated failures)
         self._fetch_attempted: Set[str] = set()
-        self._fetch_queue = asyncio.Queue()
-        self._fetch_worker_task: Optional[asyncio.Task] = None
-        self._running = False
         
         # Configuration
         self.fetch_enabled = os.getenv("METADATA_FETCH_ENABLED", "true").lower() == "true"
-        self.check_interval = int(os.getenv("METADATA_CHECK_INTERVAL", "30"))
         
         logger.info(f"Initialized MarketMetadataService (fetch_enabled={self.fetch_enabled})")
     
     async def start(self):
-        """Start the metadata service background tasks."""
+        """Start the metadata service."""
         if not self.fetch_enabled:
             logger.info("Metadata fetching disabled by configuration")
             return
-            
-        self._running = True
-        self._fetch_worker_task = asyncio.create_task(self._fetch_worker())
-        logger.info("Started metadata service background worker")
+        logger.info("Metadata service started")
     
     async def stop(self):
         """Stop the metadata service and cleanup resources."""
-        self._running = False
-        
-        if self._fetch_worker_task and not self._fetch_worker_task.done():
-            self._fetch_worker_task.cancel()
-            try:
-                await self._fetch_worker_task
-            except asyncio.CancelledError:
-                pass
-        
         await self.api_client.close()
         logger.info("Stopped metadata service")
     
-    async def _fetch_worker(self):
-        """Background worker for processing metadata fetch requests."""
-        while self._running:
-            try:
-                # Wait for a ticker to fetch with timeout
-                ticker = await asyncio.wait_for(
-                    self._fetch_queue.get(), 
-                    timeout=1.0
-                )
-                
-                await self._fetch_and_cache_market(ticker)
-                self._fetch_queue.task_done()
-                
-                # Rate limiting - wait between requests
-                await asyncio.sleep(0.5)
-                
-            except asyncio.TimeoutError:
-                # No items to fetch, continue loop
-                continue
-            except Exception as e:
-                logger.error(f"Error in fetch worker: {e}")
-                await asyncio.sleep(1.0)
     
-    async def _fetch_and_cache_market(self, ticker: str):
-        """
-        Fetch market metadata from API and cache in database.
-        
-        Args:
-            ticker: Market ticker to fetch
-        """
-        try:
-            # Mark as attempted regardless of success to avoid repeated failures
-            self._fetch_attempted.add(ticker)
-            
-            market_data = await self.api_client.fetch_market_details(ticker)
-            if not market_data:
-                logger.warning(f"No market data returned for {ticker}")
-                return
-            
-            # Extract relevant fields from the API response
-            market = market_data.get("market", {})
-            if not market:
-                logger.warning(f"No market object in response for {ticker}")
-                return
-            
-            # Extract metadata fields
-            title = market.get("title", ticker)
-            category = market.get("category", "Unknown")
-            liquidity_dollars = market.get("liquidity", 0)
-            open_interest = market.get("open_interest", 0)
-            
-            # Handle expiration time
-            expiration_time = None
-            if market.get("close_time"):
-                try:
-                    # Convert to ISO format if needed
-                    expiration_time = market["close_time"]
-                except (ValueError, TypeError):
-                    logger.warning(f"Invalid close_time format for {ticker}: {market.get('close_time')}")
-            
-            # Store the complete API response as raw data
-            raw_market_data = json.dumps(market_data)
-            
-            # Save to database
-            success = await self.database.insert_or_update_market(
-                ticker=ticker,
-                title=title,
-                category=category,
-                liquidity_dollars=liquidity_dollars,
-                open_interest=open_interest,
-                latest_expiration_time=expiration_time,
-                raw_market_data=raw_market_data
-            )
-            
-            if success:
-                logger.info(f"Cached metadata for {ticker}: {title}")
-            else:
-                logger.error(f"Failed to cache metadata for {ticker}")
-                
-        except Exception as e:
-            logger.error(f"Error fetching and caching market {ticker}: {e}")
-    
-    async def queue_metadata_fetch(self, ticker: str) -> bool:
-        """
-        Queue a market ticker for metadata fetching.
-        
-        Args:
-            ticker: Market ticker to fetch
-            
-        Returns:
-            True if queued, False if already attempted or disabled
-        """
-        if not self.fetch_enabled:
-            return False
-        
-        if ticker in self._fetch_attempted:
-            return False
-        
-        # Check if already in cache
-        if await self.database.market_exists(ticker):
-            return False
-        
-        try:
-            self._fetch_queue.put_nowait(ticker)
-            logger.debug(f"Queued metadata fetch for {ticker}")
-            return True
-        except asyncio.QueueFull:
-            logger.warning(f"Fetch queue is full, dropping request for {ticker}")
-            return False
     
     async def get_market_metadata(self, ticker: str) -> Optional[Dict[str, Any]]:
         """
@@ -277,50 +150,92 @@ class MarketMetadataService:
         """
         return await self.database.get_markets_metadata(tickers)
     
-    def should_fetch_metadata(self, ticker: str) -> bool:
+    async def fetch_metadata_now(self, ticker: str, timeout: float = 5.0) -> Optional[Dict[str, Any]]:
         """
-        Determine if we should attempt to fetch metadata for a ticker.
+        Immediately fetch metadata for a market with timeout protection.
         
         Args:
-            ticker: Market ticker
+            ticker: Market ticker to fetch
+            timeout: Maximum time to wait for fetch (seconds)
             
         Returns:
-            True if should fetch, False otherwise
+            Market metadata dictionary or None if failed/timeout
         """
         if not self.fetch_enabled:
-            return False
-        
-        # Don't fetch if already attempted
-        if ticker in self._fetch_attempted:
-            return False
-        
-        # Only fetch for markets that appear in hot markets
-        return True
-    
-    async def monitor_hot_markets(self, hot_markets: List[Dict[str, Any]]):
-        """
-        Monitor hot markets list and queue metadata fetching for new markets.
-        
-        Args:
-            hot_markets: List of hot market dictionaries with 'ticker' field
-        """
-        if not self.fetch_enabled:
-            return
-        
-        for market in hot_markets:
-            ticker = market.get("ticker")
-            if ticker and self.should_fetch_metadata(ticker):
-                await self.queue_metadata_fetch(ticker)
+            return None
+            
+        try:
+            # Check cache first
+            cached = await self.database.get_market_metadata(ticker)
+            if cached:
+                return cached
+            
+            # Fetch with timeout
+            market_data = await asyncio.wait_for(
+                self.api_client.fetch_market_details(ticker),
+                timeout=timeout
+            )
+            
+            if not market_data:
+                return None
+            
+            # Extract relevant fields from the API response
+            market = market_data.get("market", {})
+            if not market:
+                return None
+            
+            # Extract metadata fields
+            title = market.get("title", ticker)
+            category = market.get("category", "Unknown")
+            liquidity_dollars = market.get("liquidity", 0)
+            open_interest = market.get("open_interest", 0)
+            
+            # Handle expiration time
+            expiration_time = None
+            if market.get("close_time"):
+                try:
+                    expiration_time = market["close_time"]
+                except (ValueError, TypeError):
+                    logger.warning(f"Invalid close_time format for {ticker}: {market.get('close_time')}")
+            
+            # Store the complete API response as raw data
+            raw_market_data = json.dumps(market_data)
+            
+            # Save to database (async, don't wait)
+            asyncio.create_task(
+                self.database.insert_or_update_market(
+                    ticker=ticker,
+                    title=title,
+                    category=category,
+                    liquidity_dollars=liquidity_dollars,
+                    open_interest=open_interest,
+                    latest_expiration_time=expiration_time,
+                    raw_market_data=raw_market_data
+                )
+            )
+            
+            # Return metadata immediately
+            metadata = {
+                "title": title,
+                "category": category,
+                "liquidity_dollars": liquidity_dollars,
+                "open_interest": open_interest,
+                "latest_expiration_time": expiration_time
+            }
+            
+            return metadata
+            
+        except asyncio.TimeoutError:
+            return None
+        except Exception as e:
+            logger.error(f"Error in immediate metadata fetch for {ticker}: {e}")
+            return None
     
     async def get_service_status(self) -> Dict[str, Any]:
         """Get service status for monitoring."""
         return {
-            "running": self._running,
             "fetch_enabled": self.fetch_enabled,
-            "attempted_fetches": len(self._fetch_attempted),
-            "queue_size": self._fetch_queue.qsize(),
-            "worker_running": self._fetch_worker_task and not self._fetch_worker_task.done(),
-            "check_interval": self.check_interval
+            "attempted_fetches": len(self._fetch_attempted)
         }
 
 
