@@ -12,7 +12,7 @@ import heapq
 
 from .models import Trade, TickerState
 from .market_metadata_service import get_metadata_service
-from .database import get_database
+from .database_factory import get_current_database
 
 
 class TradeAggregator:
@@ -89,7 +89,7 @@ class TradeAggregator:
         logger.info("Starting aggregator recovery from database...")
         
         try:
-            database = get_database()
+            database = get_current_database()
             
             # Get recent trades for populating recent_trades deque
             recent_trades_data = await database.get_recent_trades(limit=self.recent_trades.maxlen)

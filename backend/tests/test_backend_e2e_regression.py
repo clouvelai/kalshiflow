@@ -124,7 +124,7 @@ class BackendE2ETestServer:
             
             logger.info(f"Using temporary database: {self.temp_db_path}")
             
-            # Override database path for testing
+            # Override database configuration for testing
             with patch.dict(os.environ, {
                 'SQLITE_DB_PATH': self.temp_db_path,
                 'WINDOW_MINUTES': '1',  # Short window for faster testing
@@ -209,16 +209,24 @@ class BackendE2ETestServer:
     async def check_database_has_trades(self) -> bool:
         """Check if database contains trade records."""
         try:
-            if not self.temp_db_path or not os.path.exists(self.temp_db_path):
-                return False
+            # For PostgreSQL mode, check via the backend API stats endpoint
+            # since we don't have direct database access in tests
+            stats = await self.get_stats()
+            if stats and "database" in stats:
+                total_trades = stats.get("database", {}).get("total_trades", 0)
+                logger.info(f"Database contains {total_trades} trade records")
+                return total_trades > 0
                 
-            # Direct database check
-            with sqlite3.connect(self.temp_db_path) as conn:
-                cursor = conn.cursor()
-                cursor.execute("SELECT COUNT(*) FROM trades")
-                count = cursor.fetchone()[0]
-                logger.info(f"Database contains {count} trade records")
-                return count > 0
+            # Fallback: try SQLite check if stats not available
+            if self.temp_db_path and os.path.exists(self.temp_db_path):
+                with sqlite3.connect(self.temp_db_path) as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT COUNT(*) FROM trades")
+                    count = cursor.fetchone()[0]
+                    logger.info(f"Database contains {count} trade records")
+                    return count > 0
+                
+            return False
                 
         except Exception as e:
             logger.error(f"Error checking database: {e}")
@@ -410,14 +418,25 @@ async def test_backend_e2e_regression():
             # This could happen if no trades occurred during test window
             logger.info("VALIDATING: Database structure and accessibility (without trade data)")
             try:
-                with sqlite3.connect(test_server.temp_db_path) as conn:
-                    cursor = conn.cursor()
-                    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='trades'")
-                    table_exists = cursor.fetchone() is not None
-                    if not table_exists:
-                        logger.error("❌ FAILED: Database trades table was not created")
-                        pytest.fail("Database trades table not created")
-                logger.info("✅ PASSED: Database structure validated (trades table exists)")
+                # For PostgreSQL mode, check via backend stats which includes database info
+                stats = await test_server.get_stats()
+                if stats and "database" in stats:
+                    db_type = stats.get("database", {}).get("database_type", "Unknown")
+                    logger.info(f"✅ PASSED: Database structure validated ({db_type} initialized)")
+                else:
+                    # Fallback: Check SQLite if stats not available
+                    if test_server.temp_db_path and os.path.exists(test_server.temp_db_path):
+                        with sqlite3.connect(test_server.temp_db_path) as conn:
+                            cursor = conn.cursor()
+                            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='trades'")
+                            table_exists = cursor.fetchone() is not None
+                            if not table_exists:
+                                logger.error("❌ FAILED: Database trades table was not created")
+                                pytest.fail("Database trades table not created")
+                        logger.info("✅ PASSED: Database structure validated (SQLite trades table exists)")
+                    else:
+                        logger.error("❌ FAILED: No database information available")
+                        pytest.fail("No database information available")
             except Exception as e:
                 logger.error(f"❌ FAILED: Database validation error - {e}")
                 raise

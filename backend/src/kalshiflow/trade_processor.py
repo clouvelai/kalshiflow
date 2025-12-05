@@ -11,7 +11,7 @@ from datetime import datetime
 from typing import Optional, Callable, Any, Dict
 
 from .models import Trade, TickerState, TradeUpdateMessage
-from .database import get_database
+from .database_factory import get_current_database
 from .aggregator import get_aggregator
 from .time_analytics_service import get_analytics_service
 
@@ -24,7 +24,7 @@ class TradeProcessor:
     
     def __init__(self):
         """Initialize the trade processor with database and aggregator."""
-        self.database = get_database()
+        self.database = get_current_database()
         self.aggregator = get_aggregator()
         self.analytics_service = get_analytics_service()
         self.websocket_broadcaster = None
@@ -207,7 +207,9 @@ class TradeProcessor:
             )
             
             # Broadcast trade update to all connected clients
-            await self.websocket_broadcaster.broadcast(update_message.model_dump())
+            # The WebSocket broadcaster handles JSON serialization with custom encoder
+            message_dict = update_message.model_dump()
+            await self.websocket_broadcaster.broadcast(message_dict)
             
             # Note: Analytics data is now broadcast on a 1-second timer via _analytics_broadcast_loop()
             

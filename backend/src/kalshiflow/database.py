@@ -224,8 +224,14 @@ class Database:
     # Market metadata methods
     async def insert_or_update_market(self, ticker: str, title: str, category: str = None,
                                     liquidity_dollars: float = None, open_interest: int = None,
-                                    latest_expiration_time: str = None, raw_market_data: str = None) -> bool:
+                                    latest_expiration_time: str = None, raw_market_data = None) -> bool:
         """Insert or update market metadata."""
+        # Convert dict raw_market_data to JSON string for SQLite TEXT storage
+        json_data = raw_market_data
+        if raw_market_data and isinstance(raw_market_data, dict):
+            import json
+            json_data = json.dumps(raw_market_data)
+            
         async with self.get_connection() as db:
             # Try to insert first, then update if it exists
             try:
@@ -235,7 +241,7 @@ class Database:
                         latest_expiration_time, raw_market_data, created_at, updated_at
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                 ''', (ticker, title, category, liquidity_dollars, open_interest, 
-                     latest_expiration_time, raw_market_data))
+                     latest_expiration_time, json_data))
             except sqlite3.IntegrityError:
                 # Market already exists, update it
                 await db.execute('''
@@ -244,7 +250,7 @@ class Database:
                         latest_expiration_time = ?, raw_market_data = ?, updated_at = CURRENT_TIMESTAMP
                     WHERE ticker = ?
                 ''', (title, category, liquidity_dollars, open_interest, 
-                     latest_expiration_time, raw_market_data, ticker))
+                     latest_expiration_time, json_data, ticker))
             
             await db.commit()
             return True

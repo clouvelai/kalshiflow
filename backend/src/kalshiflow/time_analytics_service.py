@@ -13,7 +13,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 
 from .models import Trade
-from .database import get_database
+from .database_factory import get_current_database
 
 
 logger = logging.getLogger(__name__)
@@ -177,7 +177,7 @@ class TimeAnalyticsService:
         logger.info("Starting time analytics recovery from database...")
         
         try:
-            database = get_database()
+            database = get_current_database()
             
             # Get trade count to estimate processing time
             recovery_trade_count = await database.get_recovery_trade_count(hours=24)

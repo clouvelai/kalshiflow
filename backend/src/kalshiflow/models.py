@@ -4,6 +4,7 @@ Pydantic models for Kalshi WebSocket trade messages and internal data structures
 
 from typing import Optional, List, Literal, Any, Dict
 from datetime import datetime
+from decimal import Decimal
 from pydantic import BaseModel, Field, field_validator
 
 
@@ -29,7 +30,10 @@ class Trade(BaseModel):
     @field_validator('yes_price_dollars', 'no_price_dollars')
     @classmethod
     def validate_dollar_price_range(cls, v):
-        """Ensure dollar prices are in valid range (0.00-1.00)."""
+        """Ensure dollar prices are in valid range (0.00-1.00) and convert Decimal to float."""
+        # Convert Decimal to float for JSON serialization
+        if isinstance(v, Decimal):
+            v = float(v)
         if not 0.0 <= v <= 1.0:
             raise ValueError(f"Dollar price must be between 0.00 and 1.00, got {v}")
         return v

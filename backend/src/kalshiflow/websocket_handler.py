@@ -9,6 +9,8 @@ import json
 import asyncio
 import logging
 from typing import Set, Dict, Any
+from datetime import datetime, date
+from decimal import Decimal
 from starlette.websockets import WebSocket, WebSocketDisconnect
 from starlette.endpoints import WebSocketEndpoint
 
@@ -59,7 +61,15 @@ class WebSocketBroadcaster:
         if not self.connections:
             return
         
-        message_json = json.dumps(message)
+        # Custom encoder to handle datetime and Decimal objects
+        def custom_encoder(obj):
+            if isinstance(obj, Decimal):
+                return float(obj)
+            elif isinstance(obj, (datetime, date)):
+                return obj.isoformat()
+            raise TypeError(repr(obj) + " is not JSON serializable")
+        
+        message_json = json.dumps(message, default=custom_encoder)
         disconnected = set()
         
         # Send to all connected clients
@@ -126,7 +136,15 @@ class WebSocketBroadcaster:
                 data=snapshot_data
             )
             
-            await websocket.send_text(json.dumps(snapshot_message.model_dump()))
+            # Custom encoder to handle datetime and Decimal objects
+            def custom_encoder(obj):
+                if isinstance(obj, Decimal):
+                    return float(obj)
+                elif isinstance(obj, (datetime, date)):
+                    return obj.isoformat()
+                raise TypeError(repr(obj) + " is not JSON serializable")
+            
+            await websocket.send_text(json.dumps(snapshot_message.model_dump(), default=custom_encoder))
             
             logger.debug("Sent snapshot data to new client")
             

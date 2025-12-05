@@ -11,7 +11,7 @@ Kalshi Flowboard - A real-time web application that displays Kalshi public trade
 ### Tech Stack
 - **Backend**: Python 3.x + Starlette (ASGI) with uv for dependency management
 - **Frontend**: React + Vite + Tailwind CSS with npm for dependency management
-- **Data**: SQLite for durable trade history + in-memory aggregates for performance
+- **Database**: Supabase PostgreSQL (production) + Local Supabase (development) + SQLite (fallback)
 - **Authentication**: RSA private key file-based auth for Kalshi API
 
 ### Core Constraint
@@ -19,13 +19,31 @@ Do not call any Kalshi REST endpoints in the MVP. All data must originate from t
 
 ### Data Flow
 1. Kalshi WebSocket → Backend (auth with RSA signature)
-2. Backend processes trades → SQLite (durable) + In-memory (aggregates)
+2. Backend processes trades → PostgreSQL/Supabase (durable) + In-memory (aggregates)
 3. Backend broadcasts → Frontend WebSocket
 4. Frontend displays → Trade tape + Hot markets + Ticker details
 
 ## Common Commands
 
 ### Development Setup
+
+#### Quick Start with Supabase
+```bash
+# Switch to local development environment
+./scripts/switch-env.sh local
+
+# Start local Supabase instance
+cd backend && supabase start
+
+# Install dependencies and run backend
+uv sync
+uv run uvicorn kalshiflow.app:app --reload
+
+# In separate terminal: run frontend
+cd frontend && npm install && npm run dev
+```
+
+#### Traditional Setup
 ```bash
 # Initialize and install all dependencies
 ./init.sh
@@ -39,6 +57,16 @@ uv run uvicorn kalshiflow.app:app --reload
 cd frontend
 npm install
 npm run dev
+```
+
+#### Environment Management
+```bash
+# Switch between local/production environments
+./scripts/switch-env.sh local       # Use local Supabase
+./scripts/switch-env.sh production  # Use remote Supabase
+./scripts/switch-env.sh current     # Show current environment
+
+# See SUPABASE_SETUP.md for detailed configuration
 ```
 
 ### Testing

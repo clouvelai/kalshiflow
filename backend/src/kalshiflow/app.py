@@ -3,9 +3,11 @@
 import os
 import asyncio
 import logging
-from datetime import datetime
+import json
+from datetime import datetime, date
+from decimal import Decimal
 from starlette.applications import Starlette
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, Response
 from starlette.routing import Route, WebSocketRoute
 from starlette.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
@@ -17,7 +19,7 @@ load_dotenv()
 from .trade_processor import get_trade_processor
 from .websocket_handler import get_websocket_manager, TradeStreamEndpoint
 from .kalshi_client import KalshiWebSocketClient
-from .database import get_database
+from .database_factory import get_current_database, initialize_database, close_database, DatabaseFactory
 from .aggregator import get_aggregator
 from .market_metadata_service import initialize_metadata_service, get_metadata_service
 from .time_analytics_service import get_analytics_service
@@ -30,6 +32,20 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
+
+
+def custom_json_response(data, status_code=200):
+    """Create a JSONResponse with custom serialization for Decimal and datetime objects"""
+    def custom_encoder(obj):
+        if isinstance(obj, Decimal):
+            return float(obj)
+        elif isinstance(obj, (datetime, date)):
+            return obj.isoformat()
+        raise TypeError(repr(obj) + " is not JSON serializable")
+    
+    json_str = json.dumps(data, default=custom_encoder)
+    return Response(json_str, media_type="application/json", status_code=status_code)
+
 
 async def health_check(request):
     """Health check endpoint to verify the server is running"""
@@ -79,36 +95,36 @@ async def get_hot_markets(request):
     try:
         aggregator = get_aggregator()
         hot_markets = await aggregator.get_hot_markets_with_metadata()
-        return JSONResponse({
+        return custom_json_response({
             "hot_markets": hot_markets,
             "count": len(hot_markets),
             "timestamp": datetime.now().isoformat()
         })
     except Exception as e:
         logger.error(f"Error getting hot markets: {e}")
-        return JSONResponse({"error": str(e)}, status_code=500)
+        return custom_json_response({"error": str(e)}, status_code=500)
 
 async def get_recent_trades(request):
     """Get recent trades for debugging"""
     try:
         aggregator = get_aggregator()
         recent_trades = aggregator.get_recent_trades()
-        return JSONResponse({
+        return custom_json_response({
             "recent_trades": recent_trades,
             "count": len(recent_trades),
             "timestamp": datetime.now().isoformat()
         })
     except Exception as e:
         logger.error(f"Error getting recent trades: {e}")
-        return JSONResponse({"error": str(e)}, status_code=500)
+        return custom_json_response({"error": str(e)}, status_code=500)
 
 async def get_ticker_trades(request):
     """Get trades for a specific ticker"""
     ticker = request.path_params['ticker']
     try:
-        database = get_database()
+        database = get_current_database()
         trades = await database.get_trades_for_ticker(ticker, limit=100)
-        return JSONResponse({
+        return custom_json_response({
             "ticker": ticker,
             "trades": trades,
             "count": len(trades),
@@ -116,7 +132,7 @@ async def get_ticker_trades(request):
         })
     except Exception as e:
         logger.error(f"Error getting trades for ticker {ticker}: {e}")
-        return JSONResponse({"error": str(e)}, status_code=500)
+        return custom_json_response({"error": str(e)}, status_code=500)
 
 async def get_stats(request):
     """Get system statistics for debugging"""
@@ -141,11 +157,12 @@ async def get_stats(request):
         
         # Try to get database stats, but don't fail if it errors
         try:
-            database = get_database()
+            database = get_current_database()
             db_stats = await database.get_db_stats()
+            db_stats["database_type"] = DatabaseFactory.get_database_type()
             stats["database"] = db_stats
         except Exception as db_error:
-            stats["database"] = {"error": str(db_error)}
+            stats["database"] = {"error": str(db_error), "database_type": DatabaseFactory.get_database_type()}
         
         # Try to get metadata service stats
         try:
@@ -173,10 +190,10 @@ async def get_stats(request):
         except Exception as analytics_error:
             stats["analytics_service"] = {"error": str(analytics_error)}
         
-        return JSONResponse(stats)
+        return custom_json_response(stats)
     except Exception as e:
         logger.error(f"Error getting stats: {e}")
-        return JSONResponse({"error": str(e)}, status_code=500)
+        return custom_json_response({"error": str(e)}, status_code=500)
 
 # Define routes
 routes = [
@@ -212,8 +229,8 @@ async def startup_event():
     
     try:
         # Initialize database first
-        database = get_database()
-        await database.initialize()
+        database = await initialize_database()
+        logger.info(f"Database initialized: {DatabaseFactory.get_database_type()}")
         
         # Initialize trade processor
         trade_processor = get_trade_processor()
@@ -334,6 +351,13 @@ async def shutdown_event():
         # Stop trade processor
         trade_processor = get_trade_processor()
         await trade_processor.stop()
+        
+        # Close database connection
+        try:
+            await close_database()
+            logger.info(f"Database connection closed: {DatabaseFactory.get_database_type()}")
+        except Exception as e:
+            logger.warning(f"Error closing database: {e}")
         
         logger.info("All services shut down successfully")
         
