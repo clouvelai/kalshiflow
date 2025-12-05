@@ -5,6 +5,7 @@ import UnifiedAnalytics from './components/UnifiedAnalytics';
 import MarketGrid from './components/MarketGrid';
 import TradeTape from './components/TradeTape';
 import TickerDetailDrawer from './components/TickerDetailDrawer';
+import FAQ from './components/FAQ';
 
 const AppContent = () => {
   const {
@@ -55,14 +56,19 @@ const AppContent = () => {
         data-testid="market-grid"
       />
 
-      {/* Live Trade Feed Section - Bottom with reduced prominence */}
-      <div className="max-w-4xl" data-testid="trade-tape-section">
-        <TradeTape
-          trades={recentTrades}
-          selectedTicker={selectedTicker}
-          onTickerSelect={handleTickerSelect}
-          data-testid="trade-tape"
-        />
+      {/* FAQ and Live Trade Feed Section - Side by side */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 lg:gap-8 max-w-6xl mx-auto mt-12 px-4 sm:px-0" data-testid="faq-tradetape-section">
+        <div className="order-1" data-testid="faq-component">
+          <FAQ />
+        </div>
+        <div className="order-2" data-testid="trade-tape-section">
+          <TradeTape
+            trades={recentTrades}
+            selectedTicker={selectedTicker}
+            onTickerSelect={handleTickerSelect}
+            data-testid="trade-tape"
+          />
+        </div>
       </div>
 
       {/* Ticker Detail Drawer */}

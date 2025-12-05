@@ -152,7 +152,7 @@ const MarketCard = ({ market, onClick, isSelected = false, rank }) => {
         <div className="flex items-center justify-between">
           <span className="text-xs text-gray-500">Last Yes Price</span>
           <span className="text-lg font-bold text-gray-900">
-            {market.last_price ? `${Math.round(market.last_price * 100)}¢` : '--'}
+            {market.last_yes_price ? `${market.last_yes_price}¢` : '--'}
           </span>
         </div>
       </div>

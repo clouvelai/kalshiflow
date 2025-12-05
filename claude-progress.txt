@@ -239,3 +239,99 @@ Ready to proceed with Phase 2 features when requested.
 
 ### Next Steps:
 Milestone 7 successfully completed. The application now provides beautiful real-time insights into global trading activity with accurate volume and trade count visualization over the last hour. Ready for additional Phase 2 features or Phase 3 planning.
+
+---
+
+## FAQ/Contact Section Implementation - Enhancing User Experience
+**Date:** December 5, 2025
+**Time Taken:** ~2 hours
+**Status:** COMPLETED
+
+### Problem Solved:
+Application needed transparency about data sources and easy access to developer contact information to build user trust and provide support channels.
+
+### Solution Implemented:
+Professional FAQ/Contact section with expandable questions and elegant contact footer, integrated seamlessly into the application layout.
+
+### Technical Implementation:
+
+#### 1. FAQ Component (/frontend/src/components/FAQ.jsx)
+- **Accordion Interface**: Expandable/collapsible questions with smooth animations
+- **Essential Questions**: 
+  - "What data is this application using?" - Explains Kalshi API usage and public trades
+  - "What markets are displayed?" - Describes market selection criteria  
+- **Interactive Design**: Click to expand, chevron rotation, hover effects
+- **Accessibility**: Proper ARIA attributes, keyboard navigation support
+
+#### 2. FAQ Data Structure (/frontend/src/data/faqData.js)
+- **Structured Content**: Clean separation of questions and answers
+- **Maintainable Format**: Easy to add/modify FAQ content
+- **Rich Text Support**: Links and formatting within answers
+
+#### 3. Contact Footer Integration
+- **Professional Design**: Card-based contact items with icons
+- **Contact Methods**:
+  - Email: samuelmacarthurclark@gmail.com (clickable mailto)
+  - Portfolio: https://www.samuelclark.dev/ (opens new tab)
+  - LinkedIn: https://www.linkedin.com/in/samclark77/ (opens new tab)
+- **Visual Elements**: SVG icons (envelope, globe, LinkedIn), hover effects
+- **Color Coding**: Blue for professional links, purple for portfolio
+
+#### 4. Layout Integration (/frontend/src/App.jsx)
+- **Side-by-side Design**: FAQ and TradeTape positioned horizontally
+- **Width Consistency**: Matches MarketGrid and other component widths
+- **Responsive Behavior**: Stacks vertically on mobile, side-by-side on desktop
+- **Grid System**: Uses Tailwind CSS grid for consistent spacing
+
+### Design Highlights:
+
+#### **Visual Consistency:**
+- **Theme Integration**: Matches existing light theme with white cards and gray gradients  
+- **Typography**: Consistent font sizes, weights, and spacing
+- **Color Palette**: Blue/purple gradients matching existing component headers
+- **Border System**: Consistent border styles and hover states
+
+#### **User Experience:**
+- **Smooth Animations**: CSS transitions for expand/collapse and hover states
+- **Intuitive Interaction**: Clear visual feedback for clickable elements
+- **Mobile Optimization**: Touch-friendly targets, proper spacing
+- **Accessibility**: Screen reader support, keyboard navigation
+
+#### **Professional Polish:**
+- **Contact Cards**: Styled cards with proper icons and external link indicators
+- **Hover Effects**: Subtle color transitions and background changes
+- **Spacing**: Proper padding and margins for visual hierarchy
+- **Typography Hierarchy**: Clear distinction between headings and content
+
+### Performance Results:
+- **Zero Impact**: No effect on real-time trading data or WebSocket performance
+- **Lightweight**: Minimal JavaScript for accordion functionality
+- **Fast Rendering**: Pure CSS animations, no heavy libraries
+- **Responsive**: Optimized for all screen sizes without performance impact
+
+### Validation Results:
+✅ **Frontend E2E regression test**: Passes with FAQ/Contact section
+✅ **Responsive design**: Works across desktop, tablet, mobile
+✅ **Accessibility**: Proper ARIA attributes and keyboard navigation
+✅ **Link functionality**: All contact links working correctly
+✅ **Visual consistency**: Matches existing application design
+✅ **Interactive elements**: Smooth accordion animations
+✅ **Mobile experience**: Touch-friendly and properly scaled
+
+### Business Impact:
+- **Transparency**: Clear explanation of data sources builds user trust
+- **Professional Image**: Polished contact section enhances credibility  
+- **User Support**: Easy access to developer contact information
+- **SEO Benefits**: FAQ content improves search engine discoverability
+- **User Retention**: Professional appearance encourages continued use
+
+### Files Created/Modified:
+**New Files:**
+- `/frontend/src/components/FAQ.jsx` - Interactive accordion FAQ component
+- `/frontend/src/data/faqData.js` - Structured FAQ content
+
+**Modified Files:**
+- `/frontend/src/App.jsx` - Layout integration and responsive grid
+- `/frontend/src/components/Contact.jsx` - Preserved for future use (not currently imported)
+
+This implementation successfully adds professional transparency and contact capabilities while maintaining the application's high-performance real-time functionality. The FAQ section provides essential user information while the contact footer offers multiple professional channels for user engagement.

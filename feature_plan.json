@@ -1850,6 +1850,233 @@
           "verified": false
         }
       ]
+    },
+    "milestone_11": {
+      "id": "milestone_11",
+      "goal": "Implement FAQ/Contact section at the bottom of the application with expandable questions and developer contact information",
+      "priority": 11,
+      "estimated_effort": "3-4 hours",
+      "dependencies": ["milestone_9"],
+      "completed": false,
+      "phase": "Phase 2 - UI/UX Enhancement",
+      "business_impact": {
+        "user_experience": "Provide users with easy access to application information and developer contact",
+        "transparency": "Clear explanation of data sources and application purpose",
+        "support": "Direct contact information for feedback and inquiries"
+      },
+      "steps": [
+        {
+          "id": "11.1",
+          "instruction": "Create FAQ data structure with expandable/collapsible questions following reference design",
+          "files_to_create": [
+            "frontend/src/components/FAQ.jsx",
+            "frontend/src/data/faqData.js"
+          ],
+          "features": [
+            "Accordion-style expandable questions (similar to reference screenshot)",
+            "Smooth expand/collapse animations",
+            "Click-to-toggle interaction pattern",
+            "Dark theme styling consistent with existing design",
+            "First FAQ item: 'What data is this application using?' with Kalshi API explanation"
+          ],
+          "technical_details": [
+            "React state management for expand/collapse",
+            "Tailwind CSS for styling and animations",
+            "Responsive design for all screen sizes",
+            "Accessibility considerations (keyboard navigation, ARIA attributes)"
+          ],
+          "acceptance_criteria": "FAQ component displays expandable questions with smooth animations and proper dark theme styling",
+          "completed": false,
+          "verified": false
+        },
+        {
+          "id": "11.2",
+          "instruction": "Design Contact/About section with developer information and modern styling",
+          "files_to_create": [
+            "frontend/src/components/Contact.jsx"
+          ],
+          "contact_information": [
+            "Developer: Samuel Clark",
+            "Email: samuelmacarthurclark@gmail.com (clickable mailto link)",
+            "Portfolio: https://www.samuelclark.dev/ (opens in new tab)"
+          ],
+          "design_requirements": [
+            "Modern card-based layout matching existing design language",
+            "Dark theme consistency with current application",
+            "Professional styling with subtle gradients or shadows",
+            "Responsive design for mobile and desktop",
+            "Clean typography and appropriate spacing"
+          ],
+          "interactive_elements": [
+            "Clickable email link with mailto functionality",
+            "External portfolio link with proper target='_blank'",
+            "Hover effects on interactive elements",
+            "Copy-to-clipboard functionality for email (optional enhancement)"
+          ],
+          "acceptance_criteria": "Contact section displays professional developer information with clean, modern styling",
+          "completed": false,
+          "verified": false
+        },
+        {
+          "id": "11.3",
+          "instruction": "Implement FAQ accordion component with smooth expand/collapse animations",
+          "files_to_modify": [
+            "frontend/src/components/FAQ.jsx"
+          ],
+          "animation_features": [
+            "Smooth height transitions for expand/collapse",
+            "Rotation animation for expand/collapse indicators (chevron icons)",
+            "Fade-in animation for question content",
+            "Staggered animation timing for multiple items",
+            "CSS transitions using Tailwind classes"
+          ],
+          "interaction_patterns": [
+            "Click anywhere on question header to toggle",
+            "Visual feedback on hover (subtle background change)",
+            "Clear visual indicators for expanded/collapsed state",
+            "One question open at a time (accordion behavior) or multiple (configurable)",
+            "Keyboard accessibility (Enter/Space to toggle)"
+          ],
+          "styling_details": [
+            "Dark background with subtle borders (matching reference)",
+            "Proper contrast ratios for text readability",
+            "Consistent spacing and typography",
+            "Rounded corners and subtle shadows",
+            "Responsive text sizing"
+          ],
+          "acceptance_criteria": "FAQ accordion provides smooth, engaging interaction with proper animations and accessibility",
+          "completed": false,
+          "verified": false
+        },
+        {
+          "id": "11.4",
+          "instruction": "Integrate FAQ and Contact components into main application layout",
+          "files_to_modify": [
+            "frontend/src/App.jsx",
+            "frontend/src/components/Layout.jsx"
+          ],
+          "layout_integration": [
+            "Position at bottom of application after TradeTape section",
+            "Maintain existing layout structure and visual hierarchy",
+            "Add proper spacing and section separation",
+            "Ensure components don't interfere with existing functionality",
+            "Responsive positioning across all screen sizes"
+          ],
+          "visual_hierarchy": [
+            "Header → UnifiedAnalytics → MarketGrid → TradeTape → FAQ/Contact",
+            "Clear visual separation between main app content and FAQ/Contact",
+            "Consistent color scheme and typography",
+            "Appropriate background treatments",
+            "Proper margins and padding"
+          ],
+          "responsive_considerations": [
+            "Desktop: Side-by-side FAQ and Contact sections",
+            "Mobile: Stacked FAQ above Contact",
+            "Tablet: Appropriate intermediate layout",
+            "Text scaling for different screen sizes",
+            "Touch-friendly interface elements"
+          ],
+          "acceptance_criteria": "FAQ/Contact sections integrate seamlessly with existing layout and maintain visual consistency",
+          "completed": false,
+          "verified": false
+        },
+        {
+          "id": "11.5",
+          "instruction": "Apply consistent dark theme styling throughout FAQ/Contact components",
+          "files_to_modify": [
+            "frontend/src/components/FAQ.jsx",
+            "frontend/src/components/Contact.jsx"
+          ],
+          "theme_analysis": [
+            "Study existing component styling patterns (Header, MarketCard, etc.)",
+            "Note current application uses light theme (gray gradient backgrounds)",
+            "Reference screenshot shows dark theme - adapt to current application theme",
+            "Ensure consistency with existing color palette and design language"
+          ],
+          "styling_approach": [
+            "Use existing Tailwind utility classes matching current components",
+            "Maintain consistent background colors and gradients",
+            "Apply proper text contrast ratios",
+            "Use existing shadow and border patterns",
+            "Follow established spacing and typography scales"
+          ],
+          "color_palette_consistency": [
+            "Background colors matching Layout and MarketCard patterns",
+            "Text colors consistent with existing components",
+            "Accent colors (blue gradients) matching Header component",
+            "Interactive element colors (hover states) consistent with MarketGrid",
+            "Border and shadow colors matching existing design system"
+          ],
+          "acceptance_criteria": "FAQ/Contact components seamlessly blend with existing application styling and theme",
+          "completed": false,
+          "verified": false
+        },
+        {
+          "id": "11.6",
+          "instruction": "Add comprehensive responsive design and cross-device testing",
+          "responsive_breakpoints": [
+            "Mobile (320px-768px): Single column, stacked layout",
+            "Tablet (768px-1024px): Intermediate responsive layout",
+            "Desktop (1024px+): Full layout with optimal spacing"
+          ],
+          "responsive_features": [
+            "Fluid typography scaling with screen size",
+            "Appropriate touch targets for mobile devices",
+            "Readable text sizes across all devices",
+            "Proper spacing and padding adjustments",
+            "Image and icon scaling as needed"
+          ],
+          "cross_device_validation": [
+            "Test on various mobile devices (iOS/Android)",
+            "Verify tablet landscape and portrait modes",
+            "Desktop browser compatibility (Chrome, Firefox, Safari)",
+            "Touch interaction testing on mobile/tablet",
+            "Keyboard navigation testing on desktop"
+          ],
+          "accessibility_considerations": [
+            "Proper heading hierarchy (h1, h2, h3, etc.)",
+            "ARIA labels for interactive elements",
+            "Keyboard navigation support",
+            "Screen reader compatibility",
+            "Color contrast compliance (WCAG standards)"
+          ],
+          "acceptance_criteria": "FAQ/Contact sections provide excellent user experience across all devices and accessibility standards",
+          "completed": false,
+          "verified": false
+        },
+        {
+          "id": "11.7",
+          "instruction": "End-to-end validation and testing of complete FAQ/Contact implementation",
+          "test_scenarios": [
+            "FAQ accordion expands/collapses smoothly with proper animations",
+            "Contact information displays correctly with working links",
+            "Components integrate seamlessly with existing application",
+            "Responsive design works across mobile, tablet, desktop",
+            "Styling matches existing application theme consistently",
+            "Accessibility features work properly (keyboard navigation, screen readers)",
+            "No impact on existing application functionality"
+          ],
+          "validation_criteria": [
+            "All FAQ questions expand/collapse with smooth animations",
+            "Email link opens default mail client correctly",
+            "Portfolio link opens in new tab without breaking application",
+            "Components maintain visual consistency with existing design",
+            "Responsive breakpoints function properly",
+            "Performance impact is minimal",
+            "Cross-browser compatibility verified"
+          ],
+          "user_experience_validation": [
+            "Users can easily find and access application information",
+            "FAQ answers provide clear, helpful information",
+            "Contact information is easily accessible and usable",
+            "Overall visual flow from main app to FAQ/Contact feels natural",
+            "Components enhance rather than detract from main application"
+          ],
+          "acceptance_criteria": "Complete FAQ/Contact implementation enhances user experience while maintaining application quality and performance",
+          "completed": false,
+          "verified": false
+        }
+      ]
     }
   },
   "phase_1_completion_criteria": [
@@ -1898,6 +2125,10 @@
     "milestone_10": {
       "status": "pending",
       "focus": "Warm Restart Functionality - Eliminate cold start periods during deployments by rebuilding in-memory aggregation windows from SQLite data on startup. Reduce deployment downtime from 60 minutes to 1-2 minutes."
+    },
+    "milestone_11": {
+      "status": "pending",
+      "focus": "FAQ/Contact Section - Add expandable FAQ section with Kalshi API data source explanation and professional developer contact information at bottom of application."
     }
   },
   "next_steps": {
