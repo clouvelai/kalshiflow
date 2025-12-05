@@ -13,6 +13,8 @@ from starlette.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
 # Load environment variables
+# Try .env.local first for local development, then fall back to .env
+load_dotenv(".env.local", override=True)
 load_dotenv()
 
 # Import our services

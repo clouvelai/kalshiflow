@@ -71,7 +71,8 @@ class Database:
                 logger.info(f"DIRECT URL: {direct_url[:50]}...")
                 
             logger.info(f"SELECTED URL: {self.database_url[:50]}...")
-            
+        
+        try:
             # Parse URL details for debugging
             if self.database_url:
                 try:

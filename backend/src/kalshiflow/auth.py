@@ -121,20 +121,42 @@ class KalshiAuth:
         
         Required environment variables:
         - KALSHI_API_KEY_ID: The API key ID
-        - KALSHI_PRIVATE_KEY_PATH: Path to RSA private key file
+        - KALSHI_PRIVATE_KEY_CONTENT: RSA private key content as string
         
         Returns:
             KalshiAuth instance
         """
+        import tempfile
+        
         api_key_id = os.getenv("KALSHI_API_KEY_ID")
-        private_key_path = os.getenv("KALSHI_PRIVATE_KEY_PATH")
+        private_key_content = os.getenv("KALSHI_PRIVATE_KEY_CONTENT")
         
         if not api_key_id:
             raise KalshiAuthError("KALSHI_API_KEY_ID environment variable is required")
-        if not private_key_path:
-            raise KalshiAuthError("KALSHI_PRIVATE_KEY_PATH environment variable is required")
-            
-        return cls(api_key_id, private_key_path)
+        
+        if not private_key_content:
+            raise KalshiAuthError("KALSHI_PRIVATE_KEY_CONTENT environment variable is required")
+        
+        # Create temporary file with private key content
+        temp_fd, temp_path = tempfile.mkstemp(suffix='.pem', prefix='kalshi_key_')
+        try:
+            with os.fdopen(temp_fd, 'w') as temp_file:
+                # Ensure proper RSA key format with line breaks
+                if not private_key_content.startswith('-----BEGIN'):
+                    # Add RSA headers and format if missing
+                    formatted_key = f"-----BEGIN RSA PRIVATE KEY-----\n{private_key_content}\n-----END RSA PRIVATE KEY-----"
+                else:
+                    formatted_key = private_key_content
+                    
+                temp_file.write(formatted_key)
+            return cls(api_key_id, temp_path)
+        except Exception as e:
+            # Clean up temp file if creation fails
+            try:
+                os.unlink(temp_path)
+            except:
+                pass
+            raise KalshiAuthError(f"Failed to create temporary key file: {e}")
     
     def create_auth_headers(self, method: str, path: str) -> Dict[str, str]:
         """
