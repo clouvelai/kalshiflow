@@ -1,0 +1,10 @@
+[build]
+builder = "nixpacks"
+
+[deploy]
+startCommand = "npm run build && npx serve -s dist -l $PORT"
+healthcheckPath = "/"
+
+[environments.production]
+# This will be set to the backend service URL
+VITE_WS_URL = "wss://kalshi-flowboard-backend-production.up.railway.app/ws/stream"

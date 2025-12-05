@@ -27,7 +27,7 @@ const useTradeData = () => {
     total_window_volume: 0
   });
   
-  const wsUrl = `ws://localhost:8000/ws/stream`;
+  const wsUrl = import.meta.env.VITE_WS_URL || `ws://localhost:8000/ws/stream`;
   const { connectionStatus, lastMessage, error } = useWebSocket(wsUrl);
 
   // Process incoming WebSocket messages
