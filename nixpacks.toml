@@ -1,0 +1,16 @@
+[variables]
+# Force Python detection by excluding Node.js
+NIXPACKS_NO_DEFAULT_CACHE_DIRS = "true"
+
+[phases.setup]
+nixPkgs = ['python311', 'python311Packages.pip']
+
+[phases.install] 
+# Install backend Python dependencies only
+cmds = ['cd backend && python -m pip install uv && uv sync']
+
+[phases.build]
+cmds = []
+
+[start]
+cmd = 'cd backend && uv run uvicorn kalshiflow.app:app --host 0.0.0.0 --port $PORT'
