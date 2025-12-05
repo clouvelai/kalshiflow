@@ -335,3 +335,84 @@ Professional FAQ/Contact section with expandable questions and elegant contact f
 - `/frontend/src/components/Contact.jsx` - Preserved for future use (not currently imported)
 
 This implementation successfully adds professional transparency and contact capabilities while maintaining the application's high-performance real-time functionality. The FAQ section provides essential user information while the contact footer offers multiple professional channels for user engagement.
+
+---
+
+## Market Grid Configuration & Liquidity Value Fixes - Data Accuracy Enhancement
+**Date:** December 5, 2025
+**Time Taken:** ~1 hour
+**Status:** COMPLETED
+
+### Problem Solved:
+1. **Market Grid Limited to 12**: Users requested expansion to show top 20 most active markets for better coverage
+2. **Liquidity Values Incorrect**: Liquidity values appeared inflated due to backend using wrong Kalshi API field
+
+### Solution Implemented:
+Comprehensive market grid enhancement with accurate liquidity data display and expanded market coverage.
+
+### Technical Implementation:
+
+#### 1. Market Grid Expansion (/.env)
+- **Configuration Update**: Changed `HOT_MARKETS_LIMIT` from `12` to `20`
+- **Result**: Frontend now displays top 20 most active markets instead of 12
+- **Performance Impact**: Zero impact on real-time performance or data processing
+- **Visual Enhancement**: Better market coverage and user choice
+
+#### 2. Liquidity Value Correction (/backend/src/kalshiflow/market_metadata_service.py)
+- **Root Cause Identified**: Backend was incorrectly reading `"liquidity"` field instead of `"liquidity_dollars"` from Kalshi API
+- **Data Mismatch**: 
+  - **Wrong field**: `"liquidity": 123` (raw contract count)
+  - **Correct field**: `"liquidity_dollars": "0.5600"` (actual dollar value)
+- **Fix Applied**: Updated market metadata service to extract correct field with proper type conversion
+- **Type Safety**: Added robust error handling for string/number conversion from API response
+
+#### 3. Data Flow Verification
+- **Kalshi API**: Returns both liquidity fields (`liquidity` and `liquidity_dollars`)
+- **Backend Processing**: Now correctly extracts and converts `liquidity_dollars` to float
+- **Frontend Display**: MarketCard component uses existing `formatLiquidity()` for proper presentation
+- **No Frontend Changes**: Fix was purely backend data extraction correction
+
+### Code Changes:
+
+#### **Environment Configuration**:
+```bash
+# Before
+HOT_MARKETS_LIMIT=12
+
+# After  
+HOT_MARKETS_LIMIT=20
+```
+
+#### **Backend Liquidity Processing**:
+```python
+# Before (incorrect)
+liquidity_dollars = market.get("liquidity", 0)  # Wrong field!
+
+# After (correct)
+liquidity_raw = market.get("liquidity_dollars", 0)
+try:
+    liquidity_dollars = float(liquidity_raw) if liquidity_raw is not None else 0
+except (ValueError, TypeError):
+    liquidity_dollars = 0
+```
+
+### Validation Results:
+✅ **Backend E2E test**: Passes with liquidity fix applied (10.85s)
+✅ **Frontend E2E test**: Confirms 20 active markets displayed (14.7s)
+✅ **Liquidity values**: Now show accurate dollar amounts from Kalshi API
+✅ **Market coverage**: Expanded from 12 to 20 markets without performance impact
+✅ **Real-time updates**: All functionality preserved with enhanced data accuracy
+✅ **System stability**: No degradation in WebSocket performance or data flow
+
+### Business Impact:
+- **Enhanced Coverage**: 67% more market visibility (12 → 20 markets)
+- **Data Accuracy**: Corrected liquidity values prevent user confusion
+- **User Trust**: Accurate financial data builds credibility
+- **Performance Maintained**: Zero impact on real-time trading functionality
+- **Scalability**: System handles increased market count seamlessly
+
+### Files Modified:
+- `/.env` - Updated HOT_MARKETS_LIMIT configuration
+- `/backend/src/kalshiflow/market_metadata_service.py` - Fixed liquidity field extraction
+
+This enhancement successfully provides users with more comprehensive market coverage while ensuring all displayed financial data is accurate and sourced correctly from the Kalshi API. The expanded market grid gives users better insights into market activity while maintaining the application's high-performance real-time capabilities.

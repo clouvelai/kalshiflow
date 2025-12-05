@@ -187,7 +187,14 @@ class MarketMetadataService:
             # Extract metadata fields
             title = market.get("title", ticker)
             category = market.get("category", "Unknown")
-            liquidity_dollars = market.get("liquidity", 0)
+            
+            # Handle liquidity_dollars (may be string or number)
+            liquidity_raw = market.get("liquidity_dollars", 0)
+            try:
+                liquidity_dollars = float(liquidity_raw) if liquidity_raw is not None else 0
+            except (ValueError, TypeError):
+                liquidity_dollars = 0
+                
             open_interest = market.get("open_interest", 0)
             
             # Handle expiration time
