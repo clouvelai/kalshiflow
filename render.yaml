@@ -1,0 +1,35 @@
+services:
+  - type: web
+    name: kalshiflow-backend
+    env: python
+    plan: starter
+    buildCommand: pip install uv && cd backend && uv sync
+    startCommand: cd backend && uv run uvicorn kalshiflow.app:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: DATABASE_URL_POOLED
+        sync: false
+      - key: KALSHI_API_KEY
+        sync: false
+      - key: KALSHI_PRIVATE_KEY_PATH
+        sync: false
+      - key: KALSHI_WS_URL
+        value: wss://api.elections.kalshi.com/trade-api/ws/v2
+      - key: WINDOW_MINUTES
+        value: "10"
+      - key: HOT_MARKETS_LIMIT
+        value: "20"
+      - key: RECENT_TRADES_LIMIT
+        value: "200"
+      - key: WARM_RESTART_ENABLED
+        value: "true"
+      - key: METADATA_FETCH_ENABLED
+        value: "true"
+
+  - type: web
+    name: kalshiflow-frontend
+    env: static
+    buildCommand: cd frontend && npm install && npm run build
+    staticPublishPath: frontend/dist
