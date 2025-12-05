@@ -11,7 +11,7 @@ Kalshi Flowboard - A real-time web application that displays Kalshi public trade
 ### Tech Stack
 - **Backend**: Python 3.x + Starlette (ASGI) with uv for dependency management
 - **Frontend**: React + Vite + Tailwind CSS with npm for dependency management
-- **Database**: Supabase PostgreSQL (production) + Local Supabase (development) + SQLite (fallback)
+- **Database**: PostgreSQL via Supabase (production + development)
 - **Authentication**: RSA private key file-based auth for Kalshi API
 
 ### Core Constraint
@@ -19,7 +19,7 @@ Do not call any Kalshi REST endpoints in the MVP. All data must originate from t
 
 ### Data Flow
 1. Kalshi WebSocket → Backend (auth with RSA signature)
-2. Backend processes trades → PostgreSQL/Supabase (durable) + In-memory (aggregates)
+2. Backend processes trades → PostgreSQL (durable) + In-memory (aggregates)
 3. Backend broadcasts → Frontend WebSocket
 4. Frontend displays → Trade tape + Hot markets + Ticker details
 
@@ -27,11 +27,8 @@ Do not call any Kalshi REST endpoints in the MVP. All data must originate from t
 
 ### Development Setup
 
-#### Quick Start with Supabase
+#### Quick Start (PostgreSQL/Supabase)
 ```bash
-# Switch to local development environment
-./scripts/switch-env.sh local
-
 # Start local Supabase instance
 cd backend && supabase start
 
@@ -43,7 +40,7 @@ uv run uvicorn kalshiflow.app:app --reload
 cd frontend && npm install && npm run dev
 ```
 
-#### Traditional Setup
+#### Alternative Setup
 ```bash
 # Initialize and install all dependencies
 ./init.sh
@@ -66,6 +63,7 @@ npm run dev
 ./scripts/switch-env.sh production  # Use remote Supabase
 ./scripts/switch-env.sh current     # Show current environment
 
+# PostgreSQL is used in both environments via Supabase
 # See SUPABASE_SETUP.md for detailed configuration
 ```
 
@@ -159,7 +157,7 @@ backend/
     auth.py         # RSA authentication
     kalshi_client.py # WebSocket client
     models.py       # Pydantic models
-    database.py     # SQLite setup
+    database.py     # PostgreSQL setup
     aggregator.py   # In-memory aggregation
     trade_processor.py # Trade handling
     websocket_handler.py # Frontend WebSocket
@@ -174,13 +172,23 @@ frontend/
 
 Required `.env` variables:
 ```
+# Kalshi API Configuration
 KALSHI_API_KEY=<your_api_key>
 KALSHI_PRIVATE_KEY_PATH=<path_to_rsa_key>
 KALSHI_WS_URL=wss://api.elections.kalshi.com/trade-api/ws/v2
+
+# Application Settings
 WINDOW_MINUTES=10
-HOT_MARKETS_LIMIT=12
+HOT_MARKETS_LIMIT=20
 RECENT_TRADES_LIMIT=200
-SQLITE_DB_PATH=./kalshi_trades.db
+
+# PostgreSQL Database Configuration (via Supabase)
+DATABASE_URL=<postgresql_connection_string>
+DATABASE_URL_POOLED=<postgresql_pooled_connection_string>
+
+# Server Configuration
+BACKEND_PORT=8000
+FRONTEND_PORT=5173
 ```
 ## Backend E2E Regression Test
 
@@ -190,7 +198,7 @@ SQLITE_DB_PATH=./kalshi_trades.db
 - ✅ **Backend Startup**: Complete application starts successfully
 - ✅ **Service Integration**: All services (trade processor, aggregator, websocket manager) initialize
 - ✅ **Kalshi Connection**: WebSocket client connects to Kalshi public trades stream
-- ✅ **Database Functionality**: SQLite database creation and accessibility
+- ✅ **Database Functionality**: PostgreSQL database connection and functionality
 - ✅ **Frontend WebSocket**: Client connections work and receive valid data
 - ✅ **Data Processing**: Trade data flows through complete pipeline (when available)
 - ✅ **Clean Shutdown**: All services stop gracefully

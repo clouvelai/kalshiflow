@@ -19,7 +19,7 @@ load_dotenv()
 from .trade_processor import get_trade_processor
 from .websocket_handler import get_websocket_manager, TradeStreamEndpoint
 from .kalshi_client import KalshiWebSocketClient
-from .database_factory import get_current_database, initialize_database, close_database, DatabaseFactory
+from .database import get_database
 from .aggregator import get_aggregator
 from .market_metadata_service import initialize_metadata_service, get_metadata_service
 from .time_analytics_service import get_analytics_service
@@ -122,7 +122,7 @@ async def get_ticker_trades(request):
     """Get trades for a specific ticker"""
     ticker = request.path_params['ticker']
     try:
-        database = get_current_database()
+        database = get_database()
         trades = await database.get_trades_for_ticker(ticker, limit=100)
         return custom_json_response({
             "ticker": ticker,
@@ -157,12 +157,12 @@ async def get_stats(request):
         
         # Try to get database stats, but don't fail if it errors
         try:
-            database = get_current_database()
+            database = get_database()
             db_stats = await database.get_db_stats()
-            db_stats["database_type"] = DatabaseFactory.get_database_type()
+            db_stats["database_type"] = "PostgreSQL"
             stats["database"] = db_stats
         except Exception as db_error:
-            stats["database"] = {"error": str(db_error), "database_type": DatabaseFactory.get_database_type()}
+            stats["database"] = {"error": str(db_error), "database_type": "PostgreSQL"}
         
         # Try to get metadata service stats
         try:
@@ -229,8 +229,9 @@ async def startup_event():
     
     try:
         # Initialize database first
-        database = await initialize_database()
-        logger.info(f"Database initialized: {DatabaseFactory.get_database_type()}")
+        database = get_database()
+        await database.initialize()
+        logger.info("Database initialized: PostgreSQL")
         
         # Initialize trade processor
         trade_processor = get_trade_processor()
@@ -354,8 +355,10 @@ async def shutdown_event():
         
         # Close database connection
         try:
-            await close_database()
-            logger.info(f"Database connection closed: {DatabaseFactory.get_database_type()}")
+            database = get_database()
+            if hasattr(database, 'close'):
+                await database.close()
+            logger.info("Database connection closed: PostgreSQL")
         except Exception as e:
             logger.warning(f"Error closing database: {e}")
         

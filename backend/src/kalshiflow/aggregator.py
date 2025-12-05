@@ -12,7 +12,7 @@ import heapq
 
 from .models import Trade, TickerState
 from .market_metadata_service import get_metadata_service
-from .database_factory import get_current_database
+from .database import get_database
 
 
 class TradeAggregator:
@@ -62,7 +62,7 @@ class TradeAggregator:
                 pass
     
     async def warm_start_from_database(self, enable_recovery: bool = True) -> Dict[str, Any]:
-        """Reconstruct ticker states and hot markets from SQLite database for warm restart.
+        """Reconstruct ticker states and hot markets from PostgreSQL database for warm restart.
         
         Args:
             enable_recovery: Whether to enable recovery (can be disabled for testing cold start)
@@ -89,7 +89,7 @@ class TradeAggregator:
         logger.info("Starting aggregator recovery from database...")
         
         try:
-            database = get_current_database()
+            database = get_database()
             
             # Get recent trades for populating recent_trades deque
             recent_trades_data = await database.get_recent_trades(limit=self.recent_trades.maxlen)

@@ -11,7 +11,7 @@ from datetime import datetime
 from typing import Optional, Callable, Any, Dict
 
 from .models import Trade, TickerState, TradeUpdateMessage
-from .database_factory import get_current_database
+from .database import get_database
 from .aggregator import get_aggregator
 from .time_analytics_service import get_analytics_service
 
@@ -24,7 +24,7 @@ class TradeProcessor:
     
     def __init__(self):
         """Initialize the trade processor with database and aggregator."""
-        self.database = get_current_database()
+        self.database = get_database()
         self.aggregator = get_aggregator()
         self.analytics_service = get_analytics_service()
         self.websocket_broadcaster = None
@@ -160,7 +160,7 @@ class TradeProcessor:
             return False
     
     async def _store_trade(self, trade: Trade):
-        """Store trade in SQLite database."""
+        """Store trade in PostgreSQL database."""
         try:
             trade_id = await self.database.insert_trade(trade)
             self.stats["trades_stored"] += 1

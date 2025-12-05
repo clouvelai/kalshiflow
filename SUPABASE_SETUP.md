@@ -115,9 +115,9 @@ cd backend && uv run uvicorn kalshiflow.app:app --reload
    cd backend
    uv run python -c "
    import asyncio
-   from kalshiflow.database_factory import get_current_database
+   from kalshiflow.database import get_database
    async def test(): 
-       db = get_current_database()
+       db = get_database()
        await db.initialize()
        stats = await db.get_db_stats()
        print('Production DB connected:', stats)

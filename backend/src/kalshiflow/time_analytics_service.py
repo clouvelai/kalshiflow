@@ -13,7 +13,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 
 from .models import Trade
-from .database_factory import get_current_database
+from .database import get_database
 
 
 logger = logging.getLogger(__name__)
@@ -150,7 +150,7 @@ class TimeAnalyticsService:
         logger.info("Time analytics service stopped")
     
     async def recover_from_database(self, enable_recovery: bool = True) -> Dict[str, Any]:
-        """Recover minute and hour buckets from SQLite database for warm restart.
+        """Recover minute and hour buckets from PostgreSQL database for warm restart.
         
         Args:
             enable_recovery: Whether to enable recovery (can be disabled for testing cold start)
@@ -177,7 +177,7 @@ class TimeAnalyticsService:
         logger.info("Starting time analytics recovery from database...")
         
         try:
-            database = get_current_database()
+            database = get_database()
             
             # Get trade count to estimate processing time
             recovery_trade_count = await database.get_recovery_trade_count(hours=24)
