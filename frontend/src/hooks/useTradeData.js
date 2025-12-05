@@ -118,13 +118,90 @@ const useTradeData = () => {
           break;
 
         case 'analytics_data':
-          // Real-time analytics update with dual-mode format
+          // Real-time analytics update with dual-mode format (full time series)
           if (lastMessage.data?.hour_minute_mode && lastMessage.data?.day_hour_mode) {
             setAnalyticsData(lastMessage.data);
             // Update legacy analyticsSummary for backward compatibility (use hour mode by default)
             setAnalyticsSummary(lastMessage.data.hour_minute_mode.summary_stats || {});
           } else {
             console.warn('Received analytics_data in old format, this should not happen with new backend');
+          }
+          break;
+
+        case 'analytics_incremental':
+          // Lightweight incremental analytics update (current period data + summary only)
+          if (lastMessage.data?.current_minute_data && lastMessage.data?.current_hour_data) {
+            const incrementalData = lastMessage.data;
+            
+            // Efficiently update existing time series data with current period information
+            setAnalyticsData(prevAnalytics => {
+              const now = Date.now();
+              const currentMinuteTimestamp = incrementalData.current_minute_data.timestamp;
+              const currentHourTimestamp = incrementalData.current_hour_data.timestamp;
+              
+              // Helper function to create complete sliding window with zero-filled gaps
+              const createCompleteTimeWindow = (existingTimeSeries, currentData, windowSize, periodMs) => {
+                const currentPeriodStart = Math.floor(currentData.timestamp / periodMs) * periodMs;
+                const windowStart = currentPeriodStart - ((windowSize - 1) * periodMs);
+                
+                // Create a map of existing data points for quick lookup
+                const existingDataMap = new Map();
+                existingTimeSeries.forEach(point => {
+                  const periodStart = Math.floor(point.timestamp / periodMs) * periodMs;
+                  existingDataMap.set(periodStart, point);
+                });
+                
+                // Add/update current period data
+                existingDataMap.set(currentPeriodStart, currentData);
+                
+                // Generate complete timeline with zero-filled gaps
+                const completeTimeSeries = [];
+                for (let i = 0; i < windowSize; i++) {
+                  const periodTimestamp = windowStart + (i * periodMs);
+                  const existingData = existingDataMap.get(periodTimestamp);
+                  
+                  completeTimeSeries.push(existingData || {
+                    timestamp: periodTimestamp,
+                    volume_usd: 0,
+                    trade_count: 0
+                  });
+                }
+                
+                return completeTimeSeries;
+              };
+              
+              // Update hour/minute mode with complete 60-minute sliding window
+              const updatedHourMinuteMode = {
+                time_series: createCompleteTimeWindow(
+                  prevAnalytics.hour_minute_mode?.time_series || [],
+                  incrementalData.current_minute_data,
+                  60, // 60 minutes
+                  60 * 1000 // 1 minute in milliseconds
+                ),
+                summary_stats: incrementalData.hour_minute_mode_summary || {}
+              };
+              
+              // Update day/hour mode with complete 24-hour sliding window  
+              const updatedDayHourMode = {
+                time_series: createCompleteTimeWindow(
+                  prevAnalytics.day_hour_mode?.time_series || [],
+                  incrementalData.current_hour_data,
+                  24, // 24 hours
+                  60 * 60 * 1000 // 1 hour in milliseconds
+                ),
+                summary_stats: incrementalData.day_hour_mode_summary || {}
+              };
+              
+              return {
+                hour_minute_mode: updatedHourMinuteMode,
+                day_hour_mode: updatedDayHourMode
+              };
+            });
+            
+            // Update legacy analyticsSummary for backward compatibility
+            setAnalyticsSummary(incrementalData.hour_minute_mode_summary || {});
+          } else {
+            console.warn('Received incomplete analytics_incremental data');
           }
           break;
 

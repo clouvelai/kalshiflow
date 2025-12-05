@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo, useCallback } from 'react';
 import {
   ComposedChart,
   Bar,
@@ -52,16 +52,18 @@ const UnifiedAnalytics = ({
 }) => {
   const [timeMode, setTimeMode] = useState('hour'); // 'hour' or 'day'
   
-  // Get current mode data
-  const currentModeData = timeMode === 'hour' 
-    ? analyticsData.hour_minute_mode 
-    : analyticsData.day_hour_mode;
+  // Memoize current mode data to prevent unnecessary recalculations
+  const currentModeData = useMemo(() => {
+    return timeMode === 'hour' 
+      ? analyticsData.hour_minute_mode 
+      : analyticsData.day_hour_mode;
+  }, [analyticsData, timeMode]);
   
-  const timeSeriesData = currentModeData.time_series || [];
-  const summaryStats = currentModeData.summary_stats || {};
+  const timeSeriesData = useMemo(() => currentModeData.time_series || [], [currentModeData.time_series]);
+  const summaryStats = useMemo(() => currentModeData.summary_stats || {}, [currentModeData.summary_stats]);
   
-  // Get current timestamp for highlighting
-  const getCurrentTimestamp = () => {
+  // Calculate current timestamp - recalculate on every render to keep it fresh
+  const currentTimestamp = useMemo(() => {
     const now = new Date();
     if (timeMode === 'hour') {
       // Current minute
@@ -74,13 +76,11 @@ const UnifiedAnalytics = ({
                                   now.getHours(), 0, 0, 0);
       return hourStart.getTime();
     }
-  };
+  }, [timeMode, timeSeriesData]); // Recalculate when timeMode changes OR when new data arrives
   
-  const currentTimestamp = getCurrentTimestamp();
-  
-  // Format data for recharts
-  const formatChartData = (data) => {
-    return data.map(point => ({
+  // Memoize expensive chart data formatting to prevent unnecessary recalculations on every render
+  const chartData = useMemo(() => {
+    return timeSeriesData.map(point => ({
       ...point,
       // Convert timestamp to time string for display
       timeString: timeMode === 'hour' 
@@ -100,9 +100,7 @@ const UnifiedAnalytics = ({
       // Mark if this is the current period
       isCurrentPeriod: point.timestamp === currentTimestamp
     }));
-  };
-
-  const chartData = formatChartData(timeSeriesData);
+  }, [timeSeriesData, timeMode, currentTimestamp]);
 
   // Custom tooltip component with premium styling
   const CustomTooltip = ({ active, payload, label }) => {
@@ -172,47 +170,50 @@ const UnifiedAnalytics = ({
     return null;
   };
 
-  // Calculate max values for scaling
-  const maxVolume = Math.max(...chartData.map(d => d.volume_usd || 0));
-  const maxTrades = Math.max(...chartData.map(d => d.trade_count || 0));
+  // Memoize expensive calculations for chart scaling
+  const { maxVolume, maxTrades } = useMemo(() => {
+    return {
+      maxVolume: Math.max(...chartData.map(d => d.volume_usd || 0)),
+      maxTrades: Math.max(...chartData.map(d => d.trade_count || 0))
+    };
+  }, [chartData]);
 
-  // Find current period data
-  const currentPeriodData = chartData.find(d => d.isCurrentPeriod);
+  // Memoize current period data lookup
+  const currentPeriodData = useMemo(() => {
+    return chartData.find(d => d.isCurrentPeriod);
+  }, [chartData]);
   
-  // Get current period stats from summary
-  const currentVolumeKey = timeMode === 'hour' ? 'current_minute_volume_usd' : 'current_hour_volume_usd';
-  const currentTradesKey = timeMode === 'hour' ? 'current_minute_trades' : 'current_hour_trades';
-  const currentVolume = summaryStats[currentVolumeKey] || currentPeriodData?.volume_usd || 0;
-  const currentTrades = summaryStats[currentTradesKey] || currentPeriodData?.trade_count || 0;
+  // Memoize current period statistics
+  const { currentVolume, currentTrades, currentVolumeKey, currentTradesKey } = useMemo(() => {
+    const volumeKey = timeMode === 'hour' ? 'current_minute_volume_usd' : 'current_hour_volume_usd';
+    const tradesKey = timeMode === 'hour' ? 'current_minute_trades' : 'current_hour_trades';
+    
+    return {
+      currentVolumeKey: volumeKey,
+      currentTradesKey: tradesKey,
+      currentVolume: summaryStats[volumeKey] || currentPeriodData?.volume_usd || 0,
+      currentTrades: summaryStats[tradesKey] || currentPeriodData?.trade_count || 0
+    };
+  }, [timeMode, summaryStats, currentPeriodData]);
 
-  // Title and period description
-  const title = timeMode === 'hour' ? "Trading Activity (Last Hour)" : "Trading Activity (Last 24 Hours)";
-  const periodLabel = timeMode === 'hour' ? "minute" : "hour";
-  
-  // Time period descriptions for metrics
-  const peakPeriodLabel = timeMode === 'hour' ? "minute" : "hour";
-  const totalPeriodLabel = timeMode === 'hour' ? "hourly" : "daily";
+  // Memoize label descriptions to prevent recreation on every render
+  const labelDescriptions = useMemo(() => {
+    return {
+      title: timeMode === 'hour' ? "Trading Activity (Last Hour)" : "Trading Activity (Last 24 Hours)",
+      periodLabel: timeMode === 'hour' ? "minute" : "hour",
+      peakPeriodLabel: timeMode === 'hour' ? "minute" : "hour",
+      totalPeriodLabel: timeMode === 'hour' ? "hourly" : "daily"
+    };
+  }, [timeMode]);
 
-  // Current time period for tooltip
-  const getCurrentTimePeriodText = () => {
-    const now = new Date();
-    if (timeMode === 'hour') {
-      // Show current minute (e.g., "14:23")
-      return now.toLocaleTimeString([], { 
-        hour: '2-digit', 
-        minute: '2-digit',
-        hour12: false 
-      });
-    } else {
-      // Show current hour (e.g., "Dec 04, 14:00")
-      return now.toLocaleDateString([], { 
-        month: 'short',
-        day: '2-digit',
-        hour: '2-digit',
-        hour12: false
-      });
-    }
-  };
+  // Optimize time mode toggle functions with useCallback to prevent unnecessary re-renders
+  const handleHourModeToggle = useCallback(() => {
+    setTimeMode('hour');
+  }, []);
+
+  const handleDayModeToggle = useCallback(() => {
+    setTimeMode('day');
+  }, []);
 
   return (
     <div className="bg-gradient-to-br from-slate-50 via-blue-50 to-indigo-50 rounded-2xl p-8 mb-8 shadow-sm border border-white/20" {...props} data-testid={props['data-testid'] || "unified-analytics"}>
@@ -228,7 +229,7 @@ const UnifiedAnalytics = ({
         {/* Time Mode Toggle */}
         <div className="inline-flex bg-white/80 backdrop-blur-sm rounded-xl p-1.5 shadow-lg border border-gray-200/50" data-testid="time-mode-toggle">
           <button
-            onClick={() => setTimeMode('hour')}
+            onClick={handleHourModeToggle}
             className={`px-6 py-2.5 rounded-lg font-semibold text-sm transition-all duration-300 ${
               timeMode === 'hour'
                 ? 'bg-blue-600 text-white shadow-lg transform scale-[1.02]'
@@ -239,7 +240,7 @@ const UnifiedAnalytics = ({
             Hour View
           </button>
           <button
-            onClick={() => setTimeMode('day')}
+            onClick={handleDayModeToggle}
             className={`px-6 py-2.5 rounded-lg font-semibold text-sm transition-all duration-300 ${
               timeMode === 'day'
                 ? 'bg-blue-600 text-white shadow-lg transform scale-[1.02]'
@@ -259,28 +260,28 @@ const UnifiedAnalytics = ({
             {formatVolume(summaryStats.peak_volume_usd || 0)}
           </div>
           <div className="text-sm font-medium text-gray-600 uppercase tracking-wide">Peak Volume</div>
-          <div className="text-xs text-gray-500 mt-1">{peakPeriodLabel}</div>
+          <div className="text-xs text-gray-500 mt-1">{labelDescriptions.peakPeriodLabel}</div>
         </div>
         <div className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-lg border border-white/50 p-6 text-center hover:shadow-xl transition-all duration-300" data-testid="peak-trades-stat">
           <div className="text-3xl font-bold text-emerald-600 mb-1" data-testid="peak-trades-value">
             {(summaryStats.peak_trades || 0).toLocaleString()}
           </div>
           <div className="text-sm font-medium text-gray-600 uppercase tracking-wide">Peak Trades</div>
-          <div className="text-xs text-gray-500 mt-1">{peakPeriodLabel}</div>
+          <div className="text-xs text-gray-500 mt-1">{labelDescriptions.peakPeriodLabel}</div>
         </div>
         <div className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-lg border border-white/50 p-6 text-center hover:shadow-xl transition-all duration-300" data-testid="total-volume-stat">
           <div className="text-3xl font-bold text-purple-600 mb-1" data-testid="total-volume-value">
             {formatVolume(summaryStats.total_volume_usd || 0)}
           </div>
           <div className="text-sm font-medium text-gray-600 uppercase tracking-wide">Total Volume</div>
-          <div className="text-xs text-gray-500 mt-1">{totalPeriodLabel}</div>
+          <div className="text-xs text-gray-500 mt-1">{labelDescriptions.totalPeriodLabel}</div>
         </div>
         <div className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-lg border border-white/50 p-6 text-center hover:shadow-xl transition-all duration-300" data-testid="total-trades-stat">
           <div className="text-3xl font-bold text-indigo-600 mb-1" data-testid="total-trades-value">
             {(summaryStats.total_trades || 0).toLocaleString()}
           </div>
           <div className="text-sm font-medium text-gray-600 uppercase tracking-wide">Total Trades</div>
-          <div className="text-xs text-gray-500 mt-1">{totalPeriodLabel}</div>
+          <div className="text-xs text-gray-500 mt-1">{labelDescriptions.totalPeriodLabel}</div>
         </div>
       </div>
 
@@ -508,4 +509,4 @@ const UnifiedAnalytics = ({
   );
 };
 
-export default UnifiedAnalytics;
+export default React.memo(UnifiedAnalytics);

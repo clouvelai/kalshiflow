@@ -77,7 +77,7 @@ class TradeAggregator:
             self._total_net_flow -= trade.count
         
         # Add to recent trades (newest first)
-        self.recent_trades.appendleft(trade.dict())
+        self.recent_trades.appendleft(trade.model_dump())
         
         # Add to ticker-specific trade queue
         ticker_trades = self.trades_by_ticker[ticker]
@@ -180,7 +180,7 @@ class TradeAggregator:
             reverse=True
         )
         
-        hot_markets = [state.dict() for state in sorted_tickers[:limit]]
+        hot_markets = [state.model_dump() for state in sorted_tickers[:limit]]
         
         # Note: metadata fetching for hot markets is handled via immediate fetch when needed
         
