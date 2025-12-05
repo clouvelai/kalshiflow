@@ -1,6 +1,0 @@
-{
-  "dependencies": {
-    "puppeteer": "^24.32.0",
-    "recharts": "^3.5.1"
-  }
-}

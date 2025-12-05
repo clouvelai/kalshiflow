@@ -1,13 +1,10 @@
 [build]
 builder = "nixpacks"
-buildCommand = "npm install && npm run build"
 
 [deploy]
-startCommand = "npx serve -s dist -p $PORT"
+startCommand = "npm run dev -- --host 0.0.0.0 --port $PORT"
 healthcheckPath = "/"
-healthcheckTimeout = 300
 restartPolicyType = "on_failure"
 
-[environments]
 [environments.production]
-RAILWAY_ENVIRONMENT_NAME = "production"
+VITE_WS_URL = "$BACKEND_URL"
