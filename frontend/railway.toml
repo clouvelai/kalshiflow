@@ -2,7 +2,7 @@
 builder = "nixpacks"
 
 [deploy]
-startCommand = "npm run build && npx serve -s dist -l $PORT"
+startCommand = "npx serve -s dist -l $PORT"
 healthcheckPath = "/"
 
 [environments.production]
