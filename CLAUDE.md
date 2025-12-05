@@ -298,5 +298,39 @@ cd frontend && npm run test:frontend-regression
 
 This test serves as the definitive validation that the entire frontend is functional and the E2E system works with live data.
 
+## Railway Deployment
+
+The application is deployed on Railway.app for production hosting.
+
+### Deployment Prerequisites
+1. **Railway CLI**: Ensure `railway` CLI is installed and authenticated
+2. **Backend Tests**: Run `uv run pytest tests/test_backend_e2e_regression.py -v` (must pass)
+3. **Frontend Tests**: Run `npm run test:frontend-regression` (must pass)
+
+### Deployment Process
+```bash
+# Deploy backend to Railway
+railway login
+railway up
+
+# Environment variables are managed via Railway dashboard:
+# - KALSHI_API_KEY
+# - KALSHI_PRIVATE_KEY_PATH
+# - DATABASE_URL (Supabase PostgreSQL)
+# - DATABASE_URL_POOLED
+```
+
+### Railway Configuration
+- **Build Command**: `cd backend && pip install uv && uv sync`
+- **Start Command**: `cd backend && uv run uvicorn kalshiflow.app:app --host 0.0.0.0 --port $PORT`
+- **Health Check**: `/health` endpoint
+- **Auto-deploy**: Enabled on `main` branch
+
+### Production Monitoring
+- **Logs**: Available via Railway dashboard
+- **Metrics**: CPU, memory, and request metrics tracked
+- **Health**: Continuous health monitoring on `/health`
+
 - use the planning agent for all planning
 - use the fullstack websocket agent for all implementation/coding
+- use the deployment agent for Railway.app deployments and production infrastructure
