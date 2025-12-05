@@ -308,7 +308,7 @@ class TradeAggregator:
             reverse=True
         )
         
-        hot_markets = [state.model_dump() for state in sorted_tickers[:limit]]
+        hot_markets = [state.dict() for state in sorted_tickers[:limit]]
         
         # Note: metadata fetching for hot markets is handled via immediate fetch when needed
         

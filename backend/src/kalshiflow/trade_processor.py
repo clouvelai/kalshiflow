@@ -193,11 +193,14 @@ class TradeProcessor:
             hot_markets = await self.aggregator.get_hot_markets_with_metadata()
             
             # Create trade update message
+            # Use dict() instead of model_dump() to include computed properties like net_flow
+            ticker_state_dump = ticker_state.dict()
+            
             update_message = TradeUpdateMessage(
                 type="trade",
                 data={
                     "trade": trade.model_dump(),
-                    "ticker_state": ticker_state.model_dump(),
+                    "ticker_state": ticker_state_dump,
                     "global_stats": global_stats,
                     "hot_markets": hot_markets  # Include metadata-enriched hot markets
                 }
