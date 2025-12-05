@@ -130,7 +130,14 @@ class Database:
             """)
             
             # Run migration files in order
-            migration_files = ['001_initial_schema.sql', '002_indexes.sql', '003_fix_constraints.sql']
+            migration_files = [
+                '001_initial_schema.sql', 
+                '002_indexes.sql', 
+                '003_fix_constraints.sql',
+                '004_optimize_production_indexes.sql',
+                '005_add_production_constraints.sql',
+                '006_production_optimizations.sql'
+            ]
             
             for filename in migration_files:
                 # Check if migration already applied
