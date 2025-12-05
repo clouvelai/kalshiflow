@@ -23,9 +23,10 @@ class Database:
     
     def __init__(self, database_url: str = None, pool_size: int = 10):
         """Initialize database with connection pool."""
-        # Prefer pooled connection for production (port 6543), fallback to direct (port 5432)
+        # Enhanced connection string priority for Render compatibility
         self.database_url = (
             database_url or 
+            os.getenv("DATABASE_URL_FALLBACK") or  # IPv4-specific fallback for Render
             os.getenv("DATABASE_URL_POOLED") or 
             os.getenv("DATABASE_URL")
         )
