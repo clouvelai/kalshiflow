@@ -139,6 +139,7 @@ const MarketCard = ({ market, onClick, isSelected = false, rank }) => {
       )}
 
 
+
       {/* Market Title */}
       <div className="mb-3">
         {/* Primary Title - Always ticker */}

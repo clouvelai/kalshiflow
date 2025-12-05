@@ -30,25 +30,55 @@ const MarketGrid = ({ markets = [], selectedTicker, onTickerSelect, ...props }) 
         <div className="flex items-center justify-between">
           <div className="flex-1">
             {/* Enhanced Hot Markets Header with Live Data */}
-            <div className="relative mb-2">
+            <div className="relative">
               <div className="absolute -inset-1 bg-gradient-to-r from-orange-500 via-red-500 to-pink-600 rounded-2xl blur opacity-20"></div>
               <div className="relative bg-white/90 backdrop-blur-sm rounded-xl p-5 border border-white/40">
-                <div className="flex items-center gap-4">
-                  <div className="flex items-center gap-2">
-                    <div className="w-2 h-2 bg-orange-500 rounded-full animate-pulse"></div>
-                    <div className="w-1.5 h-1.5 bg-red-500 rounded-full animate-pulse" style={{animationDelay: '0.5s'}}></div>
-                    <div className="w-1 h-1 bg-pink-500 rounded-full animate-pulse" style={{animationDelay: '1s'}}></div>
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-4">
+                    <div className="flex items-center gap-2">
+                      <div className="w-2 h-2 bg-orange-500 rounded-full animate-pulse"></div>
+                      <div className="w-1.5 h-1.5 bg-red-500 rounded-full animate-pulse" style={{animationDelay: '0.5s'}}></div>
+                      <div className="w-1 h-1 bg-pink-500 rounded-full animate-pulse" style={{animationDelay: '1s'}}></div>
+                    </div>
+                    <div>
+                      <h2 className="text-xl lg:text-2xl font-bold bg-gradient-to-r from-gray-900 via-orange-800 to-red-900 bg-clip-text text-transparent">
+                        Hot Markets
+                      </h2>
+                      <p className="text-gray-600 text-sm mt-1">
+                        Top markets ranked by trading volume in the last 10 minutes
+                      </p>
+                    </div>
                   </div>
-                  <h2 className="text-xl lg:text-2xl font-bold bg-gradient-to-r from-gray-900 via-orange-800 to-red-900 bg-clip-text text-transparent">
-                    Hot Markets
-                  </h2>
+                  
+                  {/* Kalshi Link Button */}
+                  <a
+                    href="https://kalshi.com/sign-up/?referral=3f328bbb-7b1b-479a-93f9-9f8197e92a70"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="
+                      group flex items-center gap-2 px-4 py-2.5
+                      bg-gradient-to-r from-emerald-500 to-green-600 
+                      hover:from-emerald-600 hover:to-green-700
+                      rounded-xl shadow-lg hover:shadow-xl
+                      transition-all duration-200 ease-out
+                      hover:scale-105 hover:-translate-y-0.5
+                      border border-emerald-400/30
+                    "
+                    title="Visit Kalshi to trade these markets"
+                    data-testid="kalshi-header-link"
+                  >
+                    <span className="w-6 h-6 bg-white/20 rounded-lg flex items-center justify-center">
+                      <span className="text-white font-bold text-sm">K</span>
+                    </span>
+                    <span className="text-white font-semibold text-sm hidden sm:block">
+                      Trade on Kalshi
+                    </span>
+                  </a>
                 </div>
               </div>
             </div>
-            <p className="text-gray-600 ml-2">
-              Top markets ranked by trading volume in the last 10 minutes
-            </p>
           </div>
+          
           <div className="text-center ml-6">
             <div className="relative">
               {/* Gradient background glow */}
