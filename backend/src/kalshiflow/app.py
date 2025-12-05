@@ -39,6 +39,33 @@ async def health_check(request):
         "version": "0.1.0"
     })
 
+async def health_ready(request):
+    """Health check endpoint indicating if the server is ready to serve requests"""
+    global recovery_status
+    
+    if recovery_status["is_complete"]:
+        return JSONResponse({
+            "status": "ready",
+            "service": "kalshiflow-backend",
+            "recovery": {
+                "enabled": recovery_status["recovery_enabled"],
+                "completed_at": recovery_status["completed_at"],
+                "duration_seconds": recovery_status["duration_seconds"],
+                "success": recovery_status.get("stats", {}).get("analytics", {}).get("success", False) and 
+                          recovery_status.get("stats", {}).get("aggregator", {}).get("success", False)
+            }
+        })
+    else:
+        return JSONResponse({
+            "status": "not_ready",
+            "service": "kalshiflow-backend", 
+            "message": "Recovery in progress",
+            "recovery": {
+                "enabled": recovery_status["recovery_enabled"],
+                "started_at": recovery_status["started_at"]
+            }
+        }, status_code=503)
+
 async def get_config(request):
     """Return non-sensitive configuration for the frontend"""
     return JSONResponse({
@@ -131,6 +158,21 @@ async def get_stats(request):
         except Exception as meta_error:
             stats["metadata_service"] = {"error": str(meta_error)}
         
+        # Try to get analytics service stats
+        try:
+            analytics_service = get_analytics_service()
+            if analytics_service:
+                analytics_stats = analytics_service.get_stats()
+                # Convert any datetime objects to ISO strings
+                for key, value in analytics_stats.items():
+                    if isinstance(value, datetime):
+                        analytics_stats[key] = value.isoformat()
+                stats["analytics_service"] = analytics_stats
+            else:
+                stats["analytics_service"] = {"status": "not_initialized"}
+        except Exception as analytics_error:
+            stats["analytics_service"] = {"error": str(analytics_error)}
+        
         return JSONResponse(stats)
     except Exception as e:
         logger.error(f"Error getting stats: {e}")
@@ -139,6 +181,7 @@ async def get_stats(request):
 # Define routes
 routes = [
     Route("/health", health_check, methods=["GET"]),
+    Route("/health/ready", health_ready, methods=["GET"]),
     Route("/api/config", get_config, methods=["GET"]),
     Route("/api/markets/hot", get_hot_markets, methods=["GET"]),
     Route("/api/trades/recent", get_recent_trades, methods=["GET"]),
@@ -151,13 +194,27 @@ routes = [
 kalshi_client = None
 background_tasks = set()
 
+# Global recovery status
+recovery_status = {
+    "is_complete": False,
+    "recovery_enabled": True,
+    "started_at": None,
+    "completed_at": None,
+    "duration_seconds": 0.0,
+    "stats": {}
+}
+
 async def startup_event():
     """Initialize services on application startup"""
-    global kalshi_client
+    global kalshi_client, recovery_status
     
     logger.info("Starting Kalshi Flowboard backend services...")
     
     try:
+        # Initialize database first
+        database = get_database()
+        await database.initialize()
+        
         # Initialize trade processor
         trade_processor = get_trade_processor()
         await trade_processor.start()
@@ -166,9 +223,57 @@ async def startup_event():
         websocket_manager = get_websocket_manager()
         await websocket_manager.initialize()
         
-        # Initialize metadata service
+        # Check if recovery is enabled via environment variable
+        enable_recovery = os.getenv("ENABLE_WARM_RESTART", "true").lower() == "true"
+        recovery_status["recovery_enabled"] = enable_recovery
+        recovery_status["started_at"] = datetime.now().isoformat()
+        
+        logger.info(f"Warm restart recovery: {'ENABLED' if enable_recovery else 'DISABLED'}")
+        
+        # Recovery Phase: Rebuild in-memory state from database
+        if enable_recovery:
+            logger.info("=== WARM RESTART RECOVERY PHASE ===")
+            recovery_start = datetime.now()
+            
+            try:
+                # Recover TimeAnalyticsService first (time series buckets)
+                analytics_service = get_analytics_service()
+                analytics_recovery_stats = await analytics_service.recover_from_database(enable_recovery=enable_recovery)
+                
+                # Recover TradeAggregator (ticker states and hot markets)  
+                aggregator = get_aggregator()
+                aggregator_recovery_stats = await aggregator.warm_start_from_database(enable_recovery=enable_recovery)
+                
+                # Calculate total recovery time
+                recovery_duration = (datetime.now() - recovery_start).total_seconds()
+                recovery_status["duration_seconds"] = recovery_duration
+                recovery_status["stats"] = {
+                    "analytics": analytics_recovery_stats,
+                    "aggregator": aggregator_recovery_stats
+                }
+                
+                if analytics_recovery_stats["success"] and aggregator_recovery_stats["success"]:
+                    logger.info(f"=== RECOVERY COMPLETED SUCCESSFULLY IN {recovery_duration:.2f}s ===")
+                    logger.info(f"Analytics: {analytics_recovery_stats['minute_buckets_created']} minute buckets, {analytics_recovery_stats['hour_buckets_created']} hour buckets")
+                    logger.info(f"Aggregator: {aggregator_recovery_stats['tickers_recovered']} tickers, {aggregator_recovery_stats['recent_trades_populated']} recent trades")
+                else:
+                    logger.warning("Recovery completed with some failures - see logs above")
+                
+            except Exception as recovery_error:
+                logger.error(f"Recovery phase failed: {recovery_error}")
+                logger.info("Continuing with cold start")
+                recovery_status["stats"]["error"] = str(recovery_error)
+            
+            recovery_status["completed_at"] = datetime.now().isoformat()
+            recovery_status["is_complete"] = True
+            logger.info("=== RECOVERY PHASE COMPLETE ===")
+        else:
+            logger.info("Recovery disabled - starting with empty state (cold start)")
+            recovery_status["is_complete"] = True
+            recovery_status["completed_at"] = datetime.now().isoformat()
+        
+        # Initialize metadata service after recovery
         try:
-            database = get_database()
             auth = KalshiAuth.from_env()
             metadata_service = initialize_metadata_service(database, auth)
             await metadata_service.start()
@@ -176,7 +281,7 @@ async def startup_event():
         except Exception as e:
             logger.warning(f"Failed to start metadata service (continuing without metadata enhancement): {e}")
         
-        # Create Kalshi client with trade callback
+        # Create Kalshi client with trade callback (only start after recovery is complete)
         async def trade_callback(trade):
             """Callback to handle trades from Kalshi client"""
             await trade_processor.process_trade(trade)
@@ -190,10 +295,12 @@ async def startup_event():
         background_tasks.add(kalshi_task)
         kalshi_task.add_done_callback(background_tasks.discard)
         
-        logger.info("All services started successfully")
+        logger.info("All services started successfully - ready to accept connections")
         
     except Exception as e:
         logger.error(f"Failed to start services: {e}")
+        recovery_status["is_complete"] = True  # Mark as complete even on failure
+        recovery_status["completed_at"] = datetime.now().isoformat()
         raise
 
 async def shutdown_event():

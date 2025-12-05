@@ -13,6 +13,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 
 from .models import Trade
+from .database import get_database
 
 
 logger = logging.getLogger(__name__)
@@ -147,6 +148,136 @@ class TimeAnalyticsService:
                 pass
         
         logger.info("Time analytics service stopped")
+    
+    async def recover_from_database(self, enable_recovery: bool = True) -> Dict[str, Any]:
+        """Recover minute and hour buckets from SQLite database for warm restart.
+        
+        Args:
+            enable_recovery: Whether to enable recovery (can be disabled for testing cold start)
+        
+        Returns:
+            Dictionary with recovery statistics
+        """
+        recovery_stats = {
+            "enabled": enable_recovery,
+            "minute_trades_processed": 0,
+            "hour_trades_processed": 0,
+            "minute_buckets_created": 0,
+            "hour_buckets_created": 0,
+            "duration_seconds": 0.0,
+            "success": False
+        }
+        
+        if not enable_recovery:
+            logger.info("Recovery disabled - starting with empty buckets (cold start)")
+            recovery_stats["success"] = True
+            return recovery_stats
+        
+        start_time = datetime.now()
+        logger.info("Starting time analytics recovery from database...")
+        
+        try:
+            database = get_database()
+            
+            # Get trade count to estimate processing time
+            recovery_trade_count = await database.get_recovery_trade_count(hours=24)
+            logger.info(f"Recovering from {recovery_trade_count} trades in last 24 hours")
+            
+            if recovery_trade_count == 0:
+                logger.info("No trades found for recovery - starting with empty buckets")
+                recovery_stats["success"] = True
+                return recovery_stats
+            
+            # Get trades for minute-level recovery (last 60 minutes)
+            minute_trades_data = await database.get_trades_for_minute_recovery(minutes=self.window_minutes)
+            logger.info(f"Processing {len(minute_trades_data)} trades for minute-level recovery")
+            
+            # Get trades for hour-level recovery (last 24 hours)
+            hour_trades_data = await database.get_trades_for_recovery(hours=self.window_hours)
+            logger.info(f"Processing {len(hour_trades_data)} trades for hour-level recovery")
+            
+            # Process minute-level trades
+            for trade_data in minute_trades_data:
+                trade = Trade(
+                    market_ticker=trade_data["market_ticker"],
+                    yes_price=trade_data["yes_price"],
+                    no_price=trade_data["no_price"],
+                    yes_price_dollars=trade_data["yes_price_dollars"],
+                    no_price_dollars=trade_data["no_price_dollars"],
+                    count=trade_data["count"],
+                    taker_side=trade_data["taker_side"],
+                    ts=trade_data["ts"]
+                )
+                
+                # Get the minute bucket for this trade's timestamp
+                minute_timestamp = self._get_minute_timestamp(trade.ts)
+                
+                # Get or create the minute bucket
+                if minute_timestamp not in self.minute_buckets:
+                    self.minute_buckets[minute_timestamp] = MinuteBucket(
+                        timestamp=minute_timestamp,
+                        volume_usd=0.0,
+                        trade_count=0
+                    )
+                    recovery_stats["minute_buckets_created"] += 1
+                
+                # Add the trade to the bucket
+                self.minute_buckets[minute_timestamp].add_trade(trade)
+                recovery_stats["minute_trades_processed"] += 1
+            
+            # Process hour-level trades
+            for trade_data in hour_trades_data:
+                trade = Trade(
+                    market_ticker=trade_data["market_ticker"],
+                    yes_price=trade_data["yes_price"],
+                    no_price=trade_data["no_price"],
+                    yes_price_dollars=trade_data["yes_price_dollars"],
+                    no_price_dollars=trade_data["no_price_dollars"],
+                    count=trade_data["count"],
+                    taker_side=trade_data["taker_side"],
+                    ts=trade_data["ts"]
+                )
+                
+                # Get the hour bucket for this trade's timestamp
+                hour_timestamp = self._get_hour_timestamp(trade.ts)
+                
+                # Get or create the hour bucket
+                if hour_timestamp not in self.hour_buckets:
+                    self.hour_buckets[hour_timestamp] = HourBucket(
+                        timestamp=hour_timestamp,
+                        volume_usd=0.0,
+                        trade_count=0
+                    )
+                    recovery_stats["hour_buckets_created"] += 1
+                
+                # Add the trade to the bucket
+                self.hour_buckets[hour_timestamp].add_trade(trade)
+                recovery_stats["hour_trades_processed"] += 1
+            
+            # Update global stats
+            total_volume_recovered = sum(bucket.volume_usd for bucket in self.minute_buckets.values())
+            total_trades_recovered = sum(bucket.trade_count for bucket in self.minute_buckets.values())
+            
+            self.stats["total_trades_processed"] = total_trades_recovered
+            self.stats["total_volume_usd"] = total_volume_recovered
+            
+            recovery_stats["duration_seconds"] = (datetime.now() - start_time).total_seconds()
+            recovery_stats["success"] = True
+            
+            logger.info(f"Time analytics recovery completed successfully in {recovery_stats['duration_seconds']:.2f}s")
+            logger.info(f"Recovered {recovery_stats['minute_buckets_created']} minute buckets and {recovery_stats['hour_buckets_created']} hour buckets")
+            logger.info(f"Total volume: ${total_volume_recovered:,.2f}, Total trades: {total_trades_recovered}")
+            
+        except Exception as e:
+            recovery_stats["duration_seconds"] = (datetime.now() - start_time).total_seconds()
+            recovery_stats["error"] = str(e)
+            logger.error(f"Error during time analytics recovery: {e}")
+            logger.info("Continuing with empty buckets (cold start fallback)")
+            # Clear any partially recovered data to ensure consistent state
+            self.minute_buckets.clear()
+            self.hour_buckets.clear()
+        
+        return recovery_stats
     
     def process_trade(self, trade: Trade):
         """Process a trade and update both minute and hour buckets."""

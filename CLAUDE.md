@@ -214,10 +214,14 @@ This test serves as the definitive validation that the entire backend is functio
 ### Running the test:
 ```bash
 # Prerequisites: Backend MUST be running on port 8000
+# From project root directory
 cd backend && uv run uvicorn kalshiflow.app:app --reload --port 8000
 
 # Run the golden frontend test (in separate terminal)
+# From project root directory  
 cd frontend && npm run test:frontend-regression
+
+# Note: Ensure you're in the kalshiflow root directory before running these commands
 
 # What to expect:
 # - Test duration: ~15-20 seconds

@@ -1596,6 +1596,260 @@
           "verified": true
         }
       ]
+    },
+    "milestone_10": {
+      "id": "milestone_10",
+      "goal": "Implement warm restart functionality to rebuild in-memory aggregation windows from SQLite data on backend startup, eliminating cold start periods during deployments",
+      "priority": 10,
+      "estimated_effort": "4-6 hours",
+      "dependencies": ["milestone_9"],
+      "completed": false,
+      "phase": "Phase 2 - Deployment and Operations Enhancement",
+      "business_impact": {
+        "current_problem": "Backend restarts cause 60 minutes of empty charts until new data accumulates, creating poor user experience during deployments",
+        "solution_benefit": "Near-seamless deployments with 1-2 minute gap vs 60 minute cold start period",
+        "user_experience_improvement": "Better deployment reliability and reduced downtime impact"
+      },
+      "technical_approach": {
+        "overview": "Add startup recovery phase that queries SQLite for recent trades and rebuilds time series analytics and aggregation windows before accepting client connections",
+        "recovery_scope": "Last 24 hours of trade data to rebuild both minute/hour and day/hour analytics windows",
+        "performance_target": "Recovery completion within 2 minutes for typical datasets"
+      },
+      "steps": [
+        {
+          "id": "10.1",
+          "instruction": "Enhance TimeAnalyticsService with warm restart recovery functionality",
+          "files_to_modify": [
+            "backend/src/kalshiflow/time_analytics_service.py"
+          ],
+          "new_methods": [
+            "recover_from_database() - Main recovery orchestrator",
+            "rebuild_minute_buckets() - Reconstruct 60-minute window from SQLite",
+            "rebuild_hour_buckets() - Reconstruct 24-hour window from SQLite",
+            "calculate_recovery_summary_stats() - Recompute peak/total metrics"
+          ],
+          "recovery_logic": [
+            "Query trades from SQLite for last 24 hours ordered by timestamp",
+            "Group trades into appropriate time buckets (minute and hour)",
+            "Calculate accurate volume (count × price_dollars) and trade counts",
+            "Rebuild summary statistics for both time windows",
+            "Ensure data consistency with real-time processing format"
+          ],
+          "database_queries": [
+            "SELECT * FROM trades WHERE ts >= ? ORDER BY ts ASC (last 24 hours)",
+            "Efficient batch processing to handle large recovery datasets",
+            "Index optimization for recovery performance (trades_ts_idx)"
+          ],
+          "acceptance_criteria": "TimeAnalyticsService can accurately reconstruct minute and hour buckets from historical trade data",
+          "completed": false,
+          "verified": false
+        },
+        {
+          "id": "10.2", 
+          "instruction": "Enhance Aggregator with warm restart capability for ticker states and hot markets",
+          "files_to_modify": [
+            "backend/src/kalshiflow/aggregator.py"
+          ],
+          "new_methods": [
+            "warm_start_from_database() - Reconstruct aggregator state from SQLite",
+            "rebuild_ticker_states() - Recreate TickerState objects for active markets",
+            "recalculate_hot_markets() - Rebuild hot markets ranking from historical data",
+            "restore_sliding_windows() - Reconstruct 10-minute sliding windows per ticker"
+          ],
+          "recovery_process": [
+            "Query recent trades grouped by ticker for sliding window reconstruction",
+            "Rebuild price_points arrays for sparkline visualization",
+            "Recalculate volume_window and net_flow for each ticker",
+            "Restore hot_markets ranking based on recent activity",
+            "Ensure ticker metadata associations are preserved"
+          ],
+          "data_integrity": [
+            "Verify reconstructed data matches expected real-time format",
+            "Maintain consistency with existing aggregation algorithms",
+            "Preserve market metadata relationships from previous sessions"
+          ],
+          "acceptance_criteria": "Aggregator can rebuild complete ticker states and hot markets from SQLite trade history",
+          "completed": false,
+          "verified": false
+        },
+        {
+          "id": "10.3",
+          "instruction": "Add application startup recovery phase with progress monitoring",
+          "files_to_modify": [
+            "backend/src/kalshiflow/app.py",
+            "backend/src/kalshiflow/trade_processor.py"
+          ],
+          "startup_sequence": [
+            "1. Database initialization (existing)",
+            "2. NEW: Warm restart recovery phase",
+            "3. Service initialization (TimeAnalyticsService, Aggregator)",
+            "4. Kalshi WebSocket client startup",
+            "5. Frontend WebSocket handler activation"
+          ],
+          "recovery_orchestration": [
+            "TradeProcessor.warm_restart() - Coordinate recovery across services",
+            "Progress logging for recovery status monitoring",
+            "Graceful fallback to cold start if recovery fails",
+            "Validation that recovered data is consistent and complete"
+          ],
+          "startup_flow": [
+            "Check if warm restart is enabled (environment flag)",
+            "Determine recovery time window based on available data",
+            "Execute parallel recovery for analytics and aggregation services",
+            "Validate recovery completion before accepting client connections",
+            "Log recovery metrics (time taken, records processed, etc.)"
+          ],
+          "acceptance_criteria": "Application startup includes warm restart phase that completes before WebSocket connections are accepted",
+          "completed": false,
+          "verified": false
+        },
+        {
+          "id": "10.4",
+          "instruction": "Add health check endpoints to verify warm restart completion and system readiness",
+          "files_to_create": [
+            "backend/src/kalshiflow/health_service.py"
+          ],
+          "files_to_modify": [
+            "backend/src/kalshiflow/app.py"
+          ],
+          "new_endpoints": [
+            "GET /health/ready - System ready for client connections",
+            "GET /health/recovery - Warm restart recovery status",
+            "GET /health/analytics - Analytics service health and data coverage"
+          ],
+          "health_checks": [
+            "Analytics service has valid time series data (not empty)",
+            "Aggregator has hot markets and ticker states populated",
+            "Database connectivity and recent data availability",
+            "WebSocket handler ready for client connections"
+          ],
+          "recovery_status_info": [
+            "recovery_completed: boolean",
+            "recovery_duration_seconds: number",
+            "records_processed: number",
+            "time_window_recovered: string",
+            "services_recovered: array of service names"
+          ],
+          "deployment_integration": [
+            "Health endpoints can be used by deployment scripts",
+            "Load balancers can check /health/ready before routing traffic",
+            "Monitoring systems can track recovery metrics"
+          ],
+          "acceptance_criteria": "Health endpoints provide clear status on warm restart completion and system readiness",
+          "completed": false,
+          "verified": false
+        },
+        {
+          "id": "10.5",
+          "instruction": "Optimize database queries and indexing for efficient warm restart performance",
+          "files_to_modify": [
+            "backend/src/kalshiflow/database.py"
+          ],
+          "index_optimizations": [
+            "Ensure trades_ts_idx is optimized for time range queries",
+            "Add composite index trades_ticker_ts_idx for per-ticker recovery",
+            "Consider trades_ts_ticker_idx for efficient grouping operations"
+          ],
+          "query_optimizations": [
+            "Batch processing for large recovery datasets",
+            "Efficient time range queries with proper index usage",
+            "Minimize memory usage during recovery operations",
+            "Streaming query results for large time windows"
+          ],
+          "performance_considerations": [
+            "Recovery time scales linearly with trade volume history",
+            "Memory-efficient processing for high-volume periods",
+            "Progress tracking for long-running recovery operations",
+            "Configurable recovery time window (default 24 hours)"
+          ],
+          "configuration_options": [
+            "WARM_RESTART_ENABLED=true (feature flag)",
+            "WARM_RESTART_WINDOW_HOURS=24 (recovery time window)",
+            "WARM_RESTART_TIMEOUT_SECONDS=120 (max recovery time)",
+            "WARM_RESTART_BATCH_SIZE=1000 (query batch size)"
+          ],
+          "acceptance_criteria": "Database queries execute efficiently during recovery with configurable performance parameters",
+          "completed": false,
+          "verified": false
+        },
+        {
+          "id": "10.6",
+          "instruction": "Implement comprehensive testing for warm restart functionality",
+          "files_to_create": [
+            "backend/tests/test_warm_restart.py",
+            "backend/tests/test_warm_restart_integration.py"
+          ],
+          "test_scenarios": [
+            "Complete warm restart with historical data populates all services correctly",
+            "Analytics service recovery produces identical results to real-time accumulation", 
+            "Aggregator recovery creates correct hot markets and ticker states",
+            "Health endpoints accurately report recovery status",
+            "Warm restart gracefully handles database connection issues",
+            "Recovery timeout and fallback to cold start works properly"
+          ],
+          "data_consistency_tests": [
+            "Verify recovered analytics data matches real-time equivalent",
+            "Ensure hot markets ranking is identical to live computation",
+            "Check ticker states have accurate price points and volume data",
+            "Validate summary statistics match expected values"
+          ],
+          "performance_tests": [
+            "Recovery completes within 2 minutes for typical datasets",
+            "Memory usage remains reasonable during large recoveries",
+            "Database query performance meets targets",
+            "No impact on normal trade processing after recovery"
+          ],
+          "error_handling_tests": [
+            "Database unavailable during startup",
+            "Corrupted or inconsistent historical data",
+            "Recovery timeout scenarios",
+            "Partial recovery failures"
+          ],
+          "acceptance_criteria": "Comprehensive test suite validates warm restart functionality across all scenarios with proper error handling",
+          "completed": false,
+          "verified": false
+        },
+        {
+          "id": "10.7",
+          "instruction": "End-to-end validation of warm restart deployment workflow",
+          "validation_scenarios": [
+            "Complete backend restart with warm restart enabled",
+            "Frontend connects and immediately sees populated charts and markets",
+            "Recovery completes within target timeframe (< 2 minutes)",
+            "All real-time functionality works correctly post-recovery",
+            "Health endpoints confirm system readiness",
+            "No data loss or inconsistency after warm restart"
+          ],
+          "deployment_testing": [
+            "Simulate production deployment cycle with warm restart",
+            "Verify graceful degradation if warm restart fails",
+            "Test load balancer integration with health endpoints",
+            "Validate monitoring and alerting for recovery metrics"
+          ],
+          "user_experience_validation": [
+            "Charts show complete data immediately upon frontend load",
+            "Hot markets display correctly with proper rankings", 
+            "Real-time updates continue seamlessly from recovered state",
+            "No visual indicators of restart or data gaps to end users"
+          ],
+          "performance_validation": [
+            "Total deployment downtime reduced from 60+ minutes to 1-2 minutes",
+            "Recovery accuracy: 100% reconstruction of sliding windows",
+            "No performance degradation in real-time processing post-recovery",
+            "Database and memory usage within acceptable limits"
+          ],
+          "success_criteria": [
+            "Near-seamless deployments with minimal user impact",
+            "100% accurate reconstruction of all sliding windows and aggregations",
+            "Recovery time consistently under 2 minutes",
+            "Zero functional regressions in existing real-time capabilities",
+            "Production-ready deployment workflow with proper monitoring"
+          ],
+          "acceptance_criteria": "Complete warm restart functionality provides near-seamless deployment experience with verified data accuracy and performance",
+          "completed": false,
+          "verified": false
+        }
+      ]
     }
   },
   "phase_1_completion_criteria": [
@@ -1640,15 +1894,20 @@
     "milestone_9": {
       "status": "completed",
       "focus": "Major Performance Optimization - Achieved 91.3% WebSocket bandwidth reduction and eliminated chart re-renders while maintaining all real-time functionality. Significant improvement in system performance and user experience."
+    },
+    "milestone_10": {
+      "status": "pending",
+      "focus": "Warm Restart Functionality - Eliminate cold start periods during deployments by rebuilding in-memory aggregation windows from SQLite data on startup. Reduce deployment downtime from 60 minutes to 1-2 minutes."
     }
   },
   "next_steps": {
-    "immediate": "Phase 2 milestones completed successfully with major performance optimization. System now operates at peak efficiency. Ready for Phase 3 advanced features or UI/UX enhancements.",
+    "immediate": "Phase 2 nearing completion with major performance optimization achieved. Next priority is implementing warm restart functionality (Milestone 10) to eliminate deployment downtime before moving to Phase 3 advanced features.",
     "phase_2_roadmap": [
       "Milestone 6: Market Metadata Enrichment (completed)",
       "Milestone 7: Global Analytics Chart (completed)",
       "Milestone 8: Analytics Unification (completed)",
       "Milestone 9: Major Performance Optimization (completed - 91.3% bandwidth reduction)",
+      "Milestone 10: Warm Restart Functionality (pending - deployment optimization)",
       "Historical trade analysis and expanded charts",
       "User preferences and market watchlists", 
       "Enhanced UI features (market search, filters, alerts)",

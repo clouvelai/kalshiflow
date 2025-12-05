@@ -286,6 +286,45 @@ class Database:
             async with db.execute('SELECT * FROM markets ORDER BY updated_at DESC') as cursor:
                 rows = await cursor.fetchall()
                 return [dict(row) for row in rows]
+    
+    # Recovery methods for warm restart functionality
+    async def get_trades_for_recovery(self, hours: int = 24) -> List[Dict[str, Any]]:
+        """Get trades for warm restart recovery within specified hours."""
+        cutoff_ts = int((datetime.now().timestamp() - hours * 3600) * 1000)
+        
+        async with self.get_connection() as db:
+            async with db.execute('''
+                SELECT * FROM trades 
+                WHERE ts >= ?
+                ORDER BY ts ASC
+            ''', (cutoff_ts,)) as cursor:
+                rows = await cursor.fetchall()
+                return [dict(row) for row in rows]
+    
+    async def get_trades_for_minute_recovery(self, minutes: int = 60) -> List[Dict[str, Any]]:
+        """Get trades for minute-level recovery within specified minutes."""
+        cutoff_ts = int((datetime.now().timestamp() - minutes * 60) * 1000)
+        
+        async with self.get_connection() as db:
+            async with db.execute('''
+                SELECT * FROM trades 
+                WHERE ts >= ?
+                ORDER BY ts ASC
+            ''', (cutoff_ts,)) as cursor:
+                rows = await cursor.fetchall()
+                return [dict(row) for row in rows]
+    
+    async def get_recovery_trade_count(self, hours: int = 24) -> int:
+        """Get count of trades available for recovery to estimate processing time."""
+        cutoff_ts = int((datetime.now().timestamp() - hours * 3600) * 1000)
+        
+        async with self.get_connection() as db:
+            async with db.execute('''
+                SELECT COUNT(*) as count FROM trades 
+                WHERE ts >= ?
+            ''', (cutoff_ts,)) as cursor:
+                row = await cursor.fetchone()
+                return row["count"] if row else 0
 
 
 # Global database instance
