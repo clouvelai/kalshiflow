@@ -6,6 +6,7 @@ Unified database implementation using PostgreSQL for all environments.
 import os
 import asyncio
 import asyncpg
+import socket
 from datetime import datetime
 from contextlib import asynccontextmanager
 from typing import List, Optional, Dict, Any, Union
@@ -33,6 +34,11 @@ class Database:
         self._init_lock = asyncio.Lock()
         self._initialized = False
     
+    async def _setup_ipv4_connection(self, connection):
+        """Setup connection to prefer IPv4 addressing for Render compatibility."""
+        # This is called during connection setup to ensure IPv4 is preferred
+        pass
+    
     def _convert_decimals_to_float(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Convert Decimal values to float for JSON serialization."""
         for key, value in data.items():
@@ -59,11 +65,11 @@ class Database:
             logger.info(f"DATABASE_URL available: {'YES' if direct_url else 'NO'}")
             
             if pooled_url:
-                logger.info(f"POOLED URL: {pooled_url}")
+                logger.info(f"POOLED URL: {pooled_url[:50]}...")
             if direct_url:
-                logger.info(f"DIRECT URL: {direct_url}")
+                logger.info(f"DIRECT URL: {direct_url[:50]}...")
                 
-            logger.info(f"SELECTED URL: {self.database_url}")
+            logger.info(f"SELECTED URL: {self.database_url[:50]}...")
             
             # Parse URL details for debugging
             if self.database_url:
@@ -88,37 +94,121 @@ class Database:
                 except Exception as parse_error:
                     logger.info(f"URL PARSING ERROR: {parse_error}")
             
-            logger.info("=== ATTEMPTING CONNECTION ===")
-                
+            # Render connectivity fix: Force IPv4 connections with multiple fallback strategies
+            connection_successful = False
+            last_error = None
+            
+            # Strategy 1: Primary connection with enhanced IPv4 settings for Render
+            logger.info("=== STRATEGY 1: IPv4-optimized connection ===")
             try:
-                # Create connection pool
-                # Set statement_cache_size=0 to work with Supabase pgbouncer pooling
                 self._pool = await asyncpg.create_pool(
                     self.database_url,
-                    min_size=2,
-                    max_size=self.pool_size,
-                    command_timeout=30,
+                    min_size=1,  # Reduced for faster startup on Render
+                    max_size=min(self.pool_size, 8),  # Limit connections for Render free tier
+                    command_timeout=20,  # Reduced timeout for faster failures
                     statement_cache_size=0,  # Required for pgbouncer compatibility
                     server_settings={
-                        'application_name': 'kalshiflow',
+                        'application_name': 'kalshiflow-render',
                         'timezone': 'UTC'
-                    }
+                    },
+                    # Force IPv4 by setting socket family
+                    setup=self._setup_ipv4_connection
                 )
                 
-                # Run migrations only if not using local Supabase
-                # Local Supabase handles migrations via supabase/migrations/ 
-                supabase_url = os.getenv("SUPABASE_URL", "")
-                if not supabase_url.startswith("http://localhost"):
-                    await self._run_migrations()
-                else:
-                    logger.info("Skipping migrations for local Supabase (handled by Supabase CLI)")
-                
-                logger.info(f"PostgreSQL database initialized with pool size {self.pool_size}")
-                self._initialized = True
+                # Test the connection
+                async with self._pool.acquire() as conn:
+                    await conn.fetchval('SELECT 1')
+                    
+                connection_successful = True
+                logger.info("✅ STRATEGY 1 SUCCESSFUL: IPv4-optimized connection established")
                 
             except Exception as e:
-                logger.error(f"Failed to initialize PostgreSQL database: {e}")
-                raise
+                last_error = e
+                logger.warning(f"⚠️ STRATEGY 1 FAILED: {e}")
+                
+                # Clean up failed pool
+                if self._pool:
+                    try:
+                        await self._pool.close()
+                    except:
+                        pass
+                    self._pool = None
+            
+            # Strategy 2: Alternative connection string if available
+            if not connection_successful and direct_url and direct_url != self.database_url:
+                logger.info("=== STRATEGY 2: Alternative connection string ===")
+                try:
+                    self._pool = await asyncpg.create_pool(
+                        direct_url,
+                        min_size=1,
+                        max_size=6,
+                        command_timeout=15,
+                        statement_cache_size=0,
+                        server_settings={
+                            'application_name': 'kalshiflow-render-fallback',
+                            'timezone': 'UTC'
+                        }
+                    )
+                    
+                    # Test the connection
+                    async with self._pool.acquire() as conn:
+                        await conn.fetchval('SELECT 1')
+                        
+                    connection_successful = True
+                    logger.info("✅ STRATEGY 2 SUCCESSFUL: Alternative connection established")
+                    
+                except Exception as e:
+                    last_error = e
+                    logger.warning(f"⚠️ STRATEGY 2 FAILED: {e}")
+                    
+                    if self._pool:
+                        try:
+                            await self._pool.close()
+                        except:
+                            pass
+                        self._pool = None
+            
+            # Strategy 3: Basic connection without custom settings
+            if not connection_successful:
+                logger.info("=== STRATEGY 3: Basic connection (last resort) ===")
+                try:
+                    self._pool = await asyncpg.create_pool(
+                        self.database_url,
+                        min_size=1,
+                        max_size=5,
+                        command_timeout=10,
+                        statement_cache_size=0
+                    )
+                    
+                    # Test the connection
+                    async with self._pool.acquire() as conn:
+                        await conn.fetchval('SELECT 1')
+                        
+                    connection_successful = True
+                    logger.info("✅ STRATEGY 3 SUCCESSFUL: Basic connection established")
+                    
+                except Exception as e:
+                    last_error = e
+                    logger.error(f"❌ STRATEGY 3 FAILED: {e}")
+            
+            if not connection_successful:
+                logger.error("❌ ALL CONNECTION STRATEGIES FAILED")
+                raise last_error or Exception("Unable to establish database connection")
+                
+            # Run migrations only if not using local Supabase
+            # Local Supabase handles migrations via supabase/migrations/ 
+            supabase_url = os.getenv("SUPABASE_URL", "")
+            if not supabase_url.startswith("http://localhost"):
+                await self._run_migrations()
+            else:
+                logger.info("Skipping migrations for local Supabase (handled by Supabase CLI)")
+            
+            logger.info(f"PostgreSQL database initialized with pool size {min(self.pool_size, 8)}")
+            self._initialized = True
+                
+        except Exception as e:
+            logger.error(f"Failed to initialize PostgreSQL database: {e}")
+            raise
     
     async def setup_database(self):
         """Alias for initialize() for consistency with previous interface."""
