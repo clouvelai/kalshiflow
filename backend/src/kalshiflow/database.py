@@ -49,11 +49,46 @@ class Database:
             if not self.database_url:
                 raise ValueError("DATABASE_URL environment variable is required")
                 
-            # Log which database URL is being used for debugging
+            # Enhanced debugging for Render connectivity issues
             pooled_url = os.getenv("DATABASE_URL_POOLED")
             direct_url = os.getenv("DATABASE_URL")
-            logger.info(f"Database URL priority: pooled={'***' if pooled_url else 'None'}, direct={'***' if direct_url else 'None'}")
-            logger.info(f"Using database URL: {self.database_url[:50]}... (host: {self.database_url.split('@')[1].split(':')[0] if '@' in self.database_url else 'unknown'})")
+            
+            logger.info("=== DATABASE CONNECTION DEBUG ===")
+            logger.info(f"Environment: ENVIRONMENT={os.getenv('ENVIRONMENT', 'unknown')}")
+            logger.info(f"DATABASE_URL_POOLED available: {'YES' if pooled_url else 'NO'}")
+            logger.info(f"DATABASE_URL available: {'YES' if direct_url else 'NO'}")
+            
+            if pooled_url:
+                logger.info(f"POOLED URL: {pooled_url}")
+            if direct_url:
+                logger.info(f"DIRECT URL: {direct_url}")
+                
+            logger.info(f"SELECTED URL: {self.database_url}")
+            
+            # Parse URL details for debugging
+            if self.database_url:
+                try:
+                    url_parts = self.database_url.split('@')
+                    if len(url_parts) > 1:
+                        host_port = url_parts[1].split('/')[0]
+                        host = host_port.split(':')[0]
+                        port = host_port.split(':')[1] if ':' in host_port else 'unknown'
+                        logger.info(f"TARGET HOST: {host}")
+                        logger.info(f"TARGET PORT: {port}")
+                        
+                        # Check if it's the pooled or direct connection
+                        if ':6543' in self.database_url:
+                            logger.info("CONNECTION TYPE: POOLED (6543) - Should work with IPv4")
+                        elif ':5432' in self.database_url:
+                            logger.info("CONNECTION TYPE: DIRECT (5432) - May have IPv6 issues")
+                        else:
+                            logger.info(f"CONNECTION TYPE: UNKNOWN PORT ({port})")
+                    else:
+                        logger.info("URL FORMAT: Could not parse host/port")
+                except Exception as parse_error:
+                    logger.info(f"URL PARSING ERROR: {parse_error}")
+            
+            logger.info("=== ATTEMPTING CONNECTION ===")
                 
             try:
                 # Create connection pool
