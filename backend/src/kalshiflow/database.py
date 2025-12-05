@@ -49,6 +49,12 @@ class Database:
             if not self.database_url:
                 raise ValueError("DATABASE_URL environment variable is required")
                 
+            # Log which database URL is being used for debugging
+            pooled_url = os.getenv("DATABASE_URL_POOLED")
+            direct_url = os.getenv("DATABASE_URL")
+            logger.info(f"Database URL priority: pooled={'***' if pooled_url else 'None'}, direct={'***' if direct_url else 'None'}")
+            logger.info(f"Using database URL: {self.database_url[:50]}... (host: {self.database_url.split('@')[1].split(':')[0] if '@' in self.database_url else 'unknown'})")
+                
             try:
                 # Create connection pool
                 # Set statement_cache_size=0 to work with Supabase pgbouncer pooling

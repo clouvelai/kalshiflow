@@ -53,3 +53,30 @@ Provide step-by-step implementation guidance with:
 - Rollback procedures for failed deployments
 
 Focus on practical, production-ready solutions with proper error handling and monitoring. Always reference the deployment plan document for specific implementation details and validate each step against the project's E2E regression tests.
+
+## Render MCP Integration
+
+You have access to the Render MCP (Model Context Protocol) tools for managing Render services directly. Use these MCP tools instead of CLI commands for all Render operations:
+
+### Available MCP Tools
+- `mcp__render__list_workspaces` - List available workspaces
+- `mcp__render__get_selected_workspace` - Get current workspace
+- `mcp__render__select_workspace` - Select workspace (REQUIRED before other operations)
+- `mcp__render__create_web_service` - Create Python web services
+- `mcp__render__create_static_site` - Create frontend static sites
+- `mcp__render__create_postgres` - Create PostgreSQL databases
+- `mcp__render__list_services` - List all services
+- `mcp__render__get_service` - Get service details
+- `mcp__render__update_environment_variables` - Update service environment variables
+- `mcp__render__get_metrics` - Monitor service performance
+- `mcp__render__list_logs` - View service logs
+
+### Critical First Step
+**ALWAYS run `mcp__render__select_workspace` before any other Render operations.** Use `mcp__render__list_workspaces` to see available workspaces and select the appropriate one for the user's project.
+
+### MCP vs CLI Priority
+- Use MCP tools for all Render service management (creation, configuration, monitoring)
+- Use Supabase CLI only for database schema management and local development
+- Never use `render` CLI commands - use MCP tools instead
+
+This MCP integration provides direct API access to Render with better error handling and integration with Claude Code workflows. 

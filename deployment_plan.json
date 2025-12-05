@@ -2,13 +2,37 @@
   "project": "Kalshi Flowboard",
   "deployment_strategy": "Render + Supabase",
   "created_at": "2025-12-05",
-  "last_updated": "2025-12-05T16:00:00Z",
+  "last_updated": "2025-12-05T19:30:00Z",
   "overview": {
     "hosting_platform": "Render",
     "database": "Supabase PostgreSQL",
     "architecture": "Full-stack deployment with native WebSocket support",
     "estimated_cost": "$30-50/month",
     "deployment_time": "4-6 hours total setup"
+  },
+  "current_status": {
+    "phase_1_database_migration": "COMPLETED",
+    "phase_2_render_deployment": "IN_PROGRESS",
+    "current_milestone": "2.1 - Render Account and Service Setup",
+    "render_cli_status": "AUTHENTICATED (v2.5.0)",
+    "next_action": "Use deployment-engineer agent to create Render services via CLI"
+  },
+  "deployment_agent_instructions": {
+    "current_task": "Complete Phase 2.1 - Create Render services using authenticated CLI",
+    "cli_available": "render (v2.5.0) authenticated as clouvel.ai@gmail.com",
+    "cli_usage_note": "Use -o json or -o yaml flags for non-interactive mode due to TTY issues",
+    "exact_next_steps": [
+      "Create backend web service with exact config from render_backend_config",
+      "Create frontend static site with exact config from render_frontend_config", 
+      "Move to milestone 2.2 for environment variables configuration",
+      "Continue through Phase 2 milestones 2.2-2.5 systematically"
+    ],
+    "critical_configs": {
+      "backend_build_cmd": "cd backend && uv sync",
+      "backend_start_cmd": "cd backend && uv run uvicorn kalshiflow.app:app --host 0.0.0.0 --port $PORT",
+      "frontend_build_cmd": "cd frontend && npm install && npm run build",
+      "frontend_publish_dir": "frontend/dist"
+    }
   },
   "why_render": {
     "websocket_support": "Native WebSocket support (critical requirement)",
@@ -63,23 +87,27 @@
           "id": "1.1",
           "name": "Supabase Project Setup",
           "duration": "30 minutes",
+          "status": "COMPLETED",
+          "completed_at": "2025-12-05T19:30:00Z",
           "tasks": [
-            "Create new Supabase project at https://supabase.com",
-            "Configure database settings (region: us-east-1 recommended)",
-            "Enable Row Level Security (RLS)",
-            "Obtain connection strings (Database > Settings > Database)",
-            "Note down: Project URL, API Keys, Database Password"
+            "✅ Create new Supabase project at https://supabase.com",
+            "✅ Configure database settings (region: us-east-1 recommended)",
+            "✅ Enable Row Level Security (RLS)",
+            "✅ Obtain connection strings (Database > Settings > Database)",
+            "✅ Note down: Project URL, API Keys, Database Password"
           ],
           "deliverables": [
-            "Supabase project created",
-            "Connection strings documented",
-            "Database credentials secured"
+            "✅ Supabase project created",
+            "✅ Connection strings documented",
+            "✅ Database credentials secured"
           ]
         },
         {
           "id": "1.2", 
           "name": "Local Environment Configuration",
           "duration": "30 minutes",
+          "status": "COMPLETED",
+          "completed_at": "2025-12-05T19:30:00Z",
           "tasks": [
             "Install Supabase CLI: npm install -g supabase",
             "Install PostgreSQL tools: pip install asyncpg psycopg2-binary",
@@ -99,6 +127,8 @@
           "id": "1.3",
           "name": "Database Schema Migration",
           "duration": "2 hours",
+          "status": "COMPLETED",
+          "completed_at": "2025-12-05T19:30:00Z",
           "tasks": [
             "Create migration SQL files for PostgreSQL",
             "Convert SQLite schema to PostgreSQL (trades and markets tables)",
@@ -122,6 +152,8 @@
           "id": "1.4",
           "name": "Backend Database Layer Refactor",
           "duration": "3 hours",
+          "status": "COMPLETED",
+          "completed_at": "2025-12-05T19:30:00Z",
           "tasks": [
             "Replace aiosqlite with asyncpg in database.py",
             "Update all SQL queries for PostgreSQL compatibility",
@@ -145,6 +177,8 @@
           "id": "1.5",
           "name": "Testing and Validation",
           "duration": "1 hour",
+          "status": "COMPLETED",
+          "completed_at": "2025-12-05T19:30:00Z",
           "tasks": [
             "Update all database tests for PostgreSQL",
             "Run backend E2E regression tests",
@@ -171,12 +205,15 @@
           "id": "2.1",
           "name": "Render Account and Service Setup",
           "duration": "1 hour",
+          "status": "IN_PROGRESS",
+          "started_at": "2025-12-05T19:30:00Z",
+          "notes": "Render CLI authenticated (v2.5.0), ready for service creation",
           "tasks": [
-            "Create Render account at https://render.com",
-            "Connect GitHub repository to Render",
-            "Create backend web service configuration",
-            "Create frontend static site configuration",
-            "Configure build settings for both services"
+            "✅ Create Render account at https://render.com",
+            "✅ Connect GitHub repository to Render (via CLI)",
+            "⏳ Create backend web service configuration",
+            "⏳ Create frontend static site configuration",
+            "⏳ Configure build settings for both services"
           ],
           "render_backend_config": {
             "service_type": "Web Service",
