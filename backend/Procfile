@@ -1,1 +1,1 @@
-web: uvicorn kalshiflow.app:app --host 0.0.0.0 --port $PORT
+web: . /opt/venv/bin/activate && uv run uvicorn kalshiflow.app:app --host 0.0.0.0 --port $PORT

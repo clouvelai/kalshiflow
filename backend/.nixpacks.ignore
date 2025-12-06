@@ -1,0 +1,9 @@
+../frontend/
+../node_modules/
+../package.json
+../package-lock.json
+../*.js
+../*.ts
+../*.tsx
+../vite.config.js
+../tailwind.config.js
