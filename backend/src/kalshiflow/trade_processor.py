@@ -340,31 +340,32 @@ class TradeProcessor:
             return False
     
     async def _analytics_broadcast_loop(self):
-        """Background task to broadcast lightweight incremental analytics data every 1 second for real-time updates.
+        """Background task to broadcast incremental analytics data every 60 seconds (per-minute updates).
         
-        This optimized version sends only current period data and summary statistics,
-        reducing bandwidth by ~95% compared to full time series data (6KB -> 0.3KB per second).
+        Optimized frequency: Peak stats and historical data don't need sub-second updates.
+        Current minute/hour stats are handled by ultra-fast current_minute_fast messages.
+        This separation prevents oscillation and optimizes bandwidth usage.
         """
         try:
-            logger.info("Started optimized incremental analytics broadcast task (1-second interval)")
+            logger.info("Started incremental analytics broadcast task (60-second interval for peak/historical data)")
             
             while self._running:
                 try:
                     # Only broadcast if we have a websocket broadcaster
                     if self.websocket_broadcaster:
-                        # Use lightweight incremental analytics data instead of full data
+                        # Use lightweight incremental analytics data for peak stats and chart data
                         incremental_data = self.analytics_service.get_incremental_analytics_data()
                         if incremental_data:
                             await self.websocket_broadcaster.broadcast_analytics_incremental(incremental_data)
-                            logger.debug("Broadcast incremental analytics data (1-second timer) - 95% bandwidth saved")
+                            logger.debug("Broadcast incremental analytics data (60-second timer) - peaks/historical only")
                     
-                    # Wait 1 second for real-time feel
-                    await asyncio.sleep(1.0)
+                    # Wait 60 seconds - peak stats and historical data don't need frequent updates
+                    await asyncio.sleep(60.0)
                     
                 except Exception as e:
                     logger.error(f"Error in analytics broadcast loop: {e}")
                     # Continue - don't let broadcast errors stop the loop
-                    await asyncio.sleep(1.0)
+                    await asyncio.sleep(60.0)
                     
         except asyncio.CancelledError:
             logger.info("Analytics broadcast task cancelled")

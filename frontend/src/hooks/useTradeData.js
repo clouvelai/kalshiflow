@@ -221,7 +221,8 @@ const useTradeData = () => {
           break;
 
         case 'analytics_incremental':
-          // Lightweight incremental analytics update (current period data + summary only)
+          // CLEAN SEPARATION: analytics_incremental ONLY updates peak stats + time series chart data
+          // Does NOT update current minute/hour values (handled by current_minute_fast)
           if (lastMessage.data?.current_minute_data && lastMessage.data?.current_hour_data) {
             const incrementalData = lastMessage.data;
             
@@ -284,20 +285,38 @@ const useTradeData = () => {
                 summary_stats: incrementalData.day_hour_mode_summary || {}
               };
               
-              // CRITICAL FIX: Persist current minute/hour data for UnifiedAnalytics component
+              // CLEAN SEPARATION: Preserve current period data from ultra-fast messages
               return {
                 hour_minute_mode: updatedHourMinuteMode,
                 day_hour_mode: updatedDayHourMode,
-                // Add current period data to analytics structure for component access
-                current_minute_data: incrementalData.current_minute_data,
-                current_hour_data: incrementalData.current_hour_data,
+                // CRITICAL: DO NOT override current_minute_data/current_hour_data
+                // These are managed by current_minute_fast for ultra-fast responsiveness
+                current_minute_data: prevAnalytics.current_minute_data,
+                current_hour_data: prevAnalytics.current_hour_data,
+                // Preserve ultra-fast totals
+                ultra_fast_totals: prevAnalytics.ultra_fast_totals,
                 // Add update timestamp for debugging/monitoring
                 last_incremental_update: Date.now()
               };
             });
             
-            // Update legacy analyticsSummary for backward compatibility
-            setAnalyticsSummary(incrementalData.hour_minute_mode_summary || {});
+            // CLEAN SEPARATION: Update only PEAK stats, preserve current values
+            setAnalyticsSummary(prevSummary => ({
+              ...prevSummary,
+              // Update ONLY peak stats from analytics_incremental
+              peak_volume_usd: incrementalData.hour_minute_mode_summary?.peak_volume_usd || prevSummary.peak_volume_usd || 0,
+              peak_trades: incrementalData.hour_minute_mode_summary?.peak_trades || prevSummary.peak_trades || 0,
+              // DO NOT update current minute/hour or total values - these are managed by current_minute_fast
+              // Preserve current values that are updated by ultra-fast messages
+              current_minute_volume_usd: prevSummary.current_minute_volume_usd,
+              current_minute_trades: prevSummary.current_minute_trades,
+              current_hour_volume_usd: prevSummary.current_hour_volume_usd,
+              current_hour_trades: prevSummary.current_hour_trades,
+              total_volume_usd: prevSummary.total_volume_usd,
+              total_trades: prevSummary.total_trades,
+              // Mark this as an incremental update (peaks only)
+              last_incremental_update: Date.now()
+            }));
           } else {
             console.warn('Received incomplete analytics_incremental data', lastMessage.data);
           }
