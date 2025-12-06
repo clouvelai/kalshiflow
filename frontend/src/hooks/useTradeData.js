@@ -185,6 +185,12 @@ const useTradeData = () => {
                 volume_usd: fastData.volume_usd,
                 trade_count: fastData.trade_count
               },
+              // CRITICAL: Update current_hour_data with ultra-fast data for day mode
+              current_hour_data: {
+                timestamp: fastData.current_hour_timestamp,
+                volume_usd: fastData.current_hour_volume_usd || 0,
+                trade_count: fastData.current_hour_trades || 0
+              },
               // Mark this as an ultra-fast update for debugging
               last_ultra_fast_update: Date.now(),
               last_trade_ts: fastData.last_trade_ts,
@@ -201,6 +207,9 @@ const useTradeData = () => {
               ...prevSummary,
               current_minute_volume_usd: fastData.volume_usd,
               current_minute_trades: fastData.trade_count,
+              // CRITICAL: Add ultra-fast current hour stats for day mode
+              current_hour_volume_usd: fastData.current_hour_volume_usd || 0,
+              current_hour_trades: fastData.current_hour_trades || 0,
               // CRITICAL: Add ultra-fast total stats to summary
               total_volume_usd: fastData.total_volume_usd || prevSummary.total_volume_usd || 0,
               total_trades: fastData.total_trades || prevSummary.total_trades || 0,

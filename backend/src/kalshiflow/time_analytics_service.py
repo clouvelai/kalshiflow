@@ -501,12 +501,27 @@ class TimeAnalyticsService:
                     current_minute_volume = bucket.volume_usd
                     current_minute_trades = bucket.trade_count
             
+            # CRITICAL: Also calculate current hour data for day mode ultra-fast updates
+            current_hour = self._get_hour_timestamp(trade_timestamp)
+            current_hour_volume = 0.0
+            current_hour_trades = 0
+            
+            # Get current hour data from hour buckets
+            if current_hour in self.hour_buckets:
+                hour_bucket = self.hour_buckets[current_hour]
+                current_hour_volume = hour_bucket.volume_usd
+                current_hour_trades = hour_bucket.trade_count
+            
             return {
                 # Current minute data (ultra-fast)
                 "volume_usd": round(current_minute_volume, 2),
                 "trade_count": current_minute_trades,
                 "timestamp": current_minute,
                 "last_trade_ts": trade_timestamp,
+                # CRITICAL: Add current hour data for day mode ultra-fast updates
+                "current_hour_volume_usd": round(current_hour_volume, 2),
+                "current_hour_trades": current_hour_trades,
+                "current_hour_timestamp": current_hour,
                 # CRITICAL: Add total stats for ultra-fast total updates
                 "total_volume_usd": round(total_volume_usd, 2),
                 "total_trades": total_trades
@@ -516,11 +531,15 @@ class TimeAnalyticsService:
             logger.error(f"Error getting fast current minute data: {e}")
             # Return safe default with zeros
             current_minute = self._get_minute_timestamp(trade_timestamp)
+            current_hour = self._get_hour_timestamp(trade_timestamp)
             return {
                 "volume_usd": 0.0,
                 "trade_count": 0,
                 "timestamp": current_minute,
                 "last_trade_ts": trade_timestamp,
+                "current_hour_volume_usd": 0.0,
+                "current_hour_trades": 0,
+                "current_hour_timestamp": current_hour,
                 "total_volume_usd": 0.0,
                 "total_trades": 0
             }
