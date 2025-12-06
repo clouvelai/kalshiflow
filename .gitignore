@@ -93,6 +93,7 @@ frontend/coverage/
 # Playwright test artifacts
 frontend/playwright-report/
 frontend/test-results/
+test-results/
 
 # keys
 *.pem
