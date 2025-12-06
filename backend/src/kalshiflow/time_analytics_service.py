@@ -413,34 +413,10 @@ class TimeAnalyticsService:
         peak_trades = max(trade_counts) if trade_counts else 0
         total_trades = sum(trade_counts) if trade_counts else 0
         
-        # Find current period data by timestamp (fixed timing bug)
-        current_period_volume_usd = 0.0
-        current_period_trades = 0
-        timing_tolerance_ms = 30000  # 30 seconds tolerance for timing races
-        
-        # Search for the current period bucket with timing tolerance
-        for data in time_series_data:
-            data_timestamp = data.get("timestamp", 0)
-            if abs(data_timestamp - current_timestamp) <= timing_tolerance_ms:
-                current_period_volume_usd = data.get("volume_usd", 0.0)
-                current_period_trades = data.get("trade_count", 0)
-                logger.debug(f"Found current {period_type} period data: timestamp={data_timestamp}, volume={current_period_volume_usd}, trades={current_period_trades}")
-                break
-        
-        # If exact match not found, try to find the closest recent bucket
-        if current_period_volume_usd == 0.0 and current_period_trades == 0 and time_series_data:
-            # Sort by timestamp proximity to current_timestamp
-            sorted_by_proximity = sorted(time_series_data, key=lambda x: abs(x.get("timestamp", 0) - current_timestamp))
-            closest_data = sorted_by_proximity[0]
-            closest_timestamp = closest_data.get("timestamp", 0)
-            
-            # Only use if it's within a reasonable window
-            if abs(closest_timestamp - current_timestamp) <= timing_tolerance_ms:
-                current_period_volume_usd = closest_data.get("volume_usd", 0.0)
-                current_period_trades = closest_data.get("trade_count", 0)
-                logger.debug(f"Using closest {period_type} period data: timestamp={closest_timestamp} (diff={abs(closest_timestamp - current_timestamp)}ms), volume={current_period_volume_usd}, trades={current_period_trades}")
-            else:
-                logger.debug(f"No suitable current {period_type} period data found within tolerance. Closest timestamp diff: {abs(closest_timestamp - current_timestamp)}ms")
+        # Get current period data (last item in sorted time series)
+        current_period_data = time_series_data[-1] if time_series_data else {}
+        current_period_volume_usd = current_period_data.get("volume_usd", 0.0)
+        current_period_trades = current_period_data.get("trade_count", 0)
         
         # Adjust field names based on period type
         current_volume_key = f"current_{period_type}_volume_usd"
@@ -589,38 +565,16 @@ class TimeAnalyticsService:
             trade_counts = []
             current_period_volume = 0.0
             current_period_trades = 0
-            timing_tolerance_ms = 30000  # 30 seconds tolerance for timing races
-            current_bucket_found = False
             
-            # First pass: collect all valid buckets and look for exact current timestamp match
-            valid_buckets = []
             for timestamp, bucket in buckets.items():
                 if timestamp >= cutoff_timestamp:
                     volumes.append(bucket.volume_usd)
                     trade_counts.append(bucket.trade_count)
-                    valid_buckets.append((timestamp, bucket))
                     
-                    # Check if this is the current period bucket (exact match)
+                    # Check if this is the current period bucket
                     if timestamp == current_timestamp:
                         current_period_volume = bucket.volume_usd
                         current_period_trades = bucket.trade_count
-                        current_bucket_found = True
-                        logger.debug(f"Found exact current {period_type} bucket: timestamp={timestamp}, volume={current_period_volume}, trades={current_period_trades}")
-            
-            # Second pass: if no exact match, find closest bucket within tolerance
-            if not current_bucket_found and valid_buckets:
-                # Sort by proximity to current timestamp
-                sorted_buckets = sorted(valid_buckets, key=lambda x: abs(x[0] - current_timestamp))
-                closest_timestamp, closest_bucket = sorted_buckets[0]
-                timestamp_diff = abs(closest_timestamp - current_timestamp)
-                
-                if timestamp_diff <= timing_tolerance_ms:
-                    current_period_volume = closest_bucket.volume_usd
-                    current_period_trades = closest_bucket.trade_count
-                    current_bucket_found = True
-                    logger.debug(f"Using closest current {period_type} bucket: timestamp={closest_timestamp} (diff={timestamp_diff}ms), volume={current_period_volume}, trades={current_period_trades}")
-                else:
-                    logger.debug(f"No suitable current {period_type} bucket found within tolerance. Closest timestamp diff: {timestamp_diff}ms, tolerance: {timing_tolerance_ms}ms")
             
             # Calculate totals and peaks
             peak_volume_usd = max(volumes) if volumes else 0.0

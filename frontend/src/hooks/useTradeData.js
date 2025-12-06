@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import useWebSocket from './useWebSocket';
 
 const useTradeData = () => {
@@ -27,7 +27,11 @@ const useTradeData = () => {
     total_window_volume: 0
   });
   
-  const wsUrl = import.meta.env.VITE_WS_URL || `ws://localhost:8000/ws/stream`;
+  // Memoize WebSocket URL to prevent recreation on every render
+  const wsUrl = useMemo(() => 
+    import.meta.env.VITE_WS_URL || `ws://localhost:8000/ws/stream`, 
+    []
+  );
   const { connectionStatus, lastMessage, error } = useWebSocket(wsUrl);
 
   // Process incoming WebSocket messages

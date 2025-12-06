@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
   ComposedChart,
   Bar,
@@ -62,21 +62,43 @@ const UnifiedAnalytics = ({
   const timeSeriesData = useMemo(() => currentModeData.time_series || [], [currentModeData.time_series]);
   const summaryStats = useMemo(() => currentModeData.summary_stats || {}, [currentModeData.summary_stats]);
   
-  // Calculate current timestamp - recalculate on every render to keep it fresh
-  const currentTimestamp = useMemo(() => {
+  // Use a timer to update currentTimestamp every 30 seconds to keep current period highlighting accurate
+  const [currentTimestamp, setCurrentTimestamp] = useState(() => {
     const now = new Date();
     if (timeMode === 'hour') {
-      // Current minute
       const minuteStart = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 
                                     now.getHours(), now.getMinutes(), 0, 0);
       return minuteStart.getTime();
     } else {
-      // Current hour
       const hourStart = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 
                                   now.getHours(), 0, 0, 0);
       return hourStart.getTime();
     }
-  }, [timeMode, timeSeriesData]); // Recalculate when timeMode changes OR when new data arrives
+  });
+
+  // Update currentTimestamp every 30 seconds to keep current period highlighting accurate
+  useEffect(() => {
+    const updateTimestamp = () => {
+      const now = new Date();
+      if (timeMode === 'hour') {
+        const minuteStart = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 
+                                      now.getHours(), now.getMinutes(), 0, 0);
+        setCurrentTimestamp(minuteStart.getTime());
+      } else {
+        const hourStart = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 
+                                    now.getHours(), 0, 0, 0);
+        setCurrentTimestamp(hourStart.getTime());
+      }
+    };
+
+    // Update immediately when timeMode changes
+    updateTimestamp();
+
+    // Then update every 30 seconds
+    const interval = setInterval(updateTimestamp, 30000);
+    
+    return () => clearInterval(interval);
+  }, [timeMode]);
   
   // Memoize expensive chart data formatting to prevent unnecessary recalculations on every render
   const chartData = useMemo(() => {
@@ -183,18 +205,38 @@ const UnifiedAnalytics = ({
     return chartData.find(d => d.isCurrentPeriod);
   }, [chartData]);
   
+  // Extract only the specific data we need to avoid dependency on entire analyticsData object
+  const currentMinuteData = analyticsData.current_minute_data;
+  const currentHourData = analyticsData.current_hour_data;
+
   // Memoize current period statistics
   const { currentVolume, currentTrades, currentVolumeKey, currentTradesKey } = useMemo(() => {
     const volumeKey = timeMode === 'hour' ? 'current_minute_volume_usd' : 'current_hour_volume_usd';
     const tradesKey = timeMode === 'hour' ? 'current_minute_trades' : 'current_hour_trades';
     
+    // Check for current period data from multiple sources:
+    // 1. Summary stats (full analytics messages)
+    // 2. Current period data from chart time series
+    // 3. Direct incremental analytics data (from analytics_incremental messages)
+    let currentVolume = summaryStats[volumeKey] || currentPeriodData?.volume_usd || 0;
+    let currentTrades = summaryStats[tradesKey] || currentPeriodData?.trade_count || 0;
+    
+    // If we have incremental analytics data, use it directly (most up-to-date)
+    if (timeMode === 'hour' && currentMinuteData) {
+      currentVolume = currentMinuteData.volume_usd || currentVolume;
+      currentTrades = currentMinuteData.trade_count || currentTrades;
+    } else if (timeMode === 'day' && currentHourData) {
+      currentVolume = currentHourData.volume_usd || currentVolume;
+      currentTrades = currentHourData.trade_count || currentTrades;
+    }
+    
     return {
       currentVolumeKey: volumeKey,
       currentTradesKey: tradesKey,
-      currentVolume: summaryStats[volumeKey] || currentPeriodData?.volume_usd || 0,
-      currentTrades: summaryStats[tradesKey] || currentPeriodData?.trade_count || 0
+      currentVolume,
+      currentTrades
     };
-  }, [timeMode, summaryStats, currentPeriodData]);
+  }, [timeMode, summaryStats, currentPeriodData, currentMinuteData, currentHourData]);
 
   // Memoize label descriptions to prevent recreation on every render
   const labelDescriptions = useMemo(() => {
@@ -390,6 +432,9 @@ const UnifiedAnalytics = ({
                   left: 40,
                   bottom: 20,
                 }}
+                animationDuration={0}
+                isAnimationActive={false}
+                key={`chart-${timeMode}-${chartData.length}`}
               >
                 <CartesianGrid strokeDasharray="2 4" stroke="#e2e8f0" strokeOpacity={0.6} />
                 
@@ -439,54 +484,8 @@ const UnifiedAnalytics = ({
                   fillOpacity={0.8}
                   radius={[3, 3, 0, 0]}
                   name="Volume (USD)"
-                  shape={(props) => {
-                    const { fill, x, y, width, height, payload } = props;
-                    const isCurrentPeriod = payload.isCurrentPeriod;
-                    
-                    return (
-                      <g>
-                        <rect
-                          x={x}
-                          y={y}
-                          width={width}
-                          height={height}
-                          fill={isCurrentPeriod ? "#10b981" : fill}
-                          fillOpacity={isCurrentPeriod ? 0.95 : 0.8}
-                          rx={3}
-                          ry={3}
-                          filter={isCurrentPeriod ? "url(#glow)" : "none"}
-                        />
-                        {isCurrentPeriod && (
-                          <rect
-                            x={x}
-                            y={y}
-                            width={width}
-                            height={height}
-                            fill="#10b981"
-                            fillOpacity={0.4}
-                            rx={3}
-                            ry={3}
-                          >
-                            <animate
-                              attributeName="fillOpacity"
-                              values="0.4;0.7;0.4"
-                              dur="2s"
-                              repeatCount="indefinite"
-                            />
-                          </rect>
-                        )}
-                        <defs>
-                          <filter id="glow">
-                            <feGaussianBlur stdDeviation="3" result="coloredBlur"/>
-                            <feMerge> 
-                              <feMergeNode in="coloredBlur"/>
-                              <feMergeNode in="SourceGraphic"/> 
-                            </feMerge>
-                          </filter>
-                        </defs>
-                      </g>
-                    );
-                  }}
+                  isAnimationActive={false}
+                  animationDuration={0}
                 />
                 
                 {/* Trade count line (secondary) */}
@@ -497,8 +496,10 @@ const UnifiedAnalytics = ({
                   stroke="#10b981"
                   strokeWidth={3}
                   dot={{ r: 3, fill: '#10b981', strokeWidth: 2, stroke: '#fff' }}
-                  activeDot={{ r: 6, stroke: '#10b981', strokeWidth: 3, fill: '#fff', filter: 'drop-shadow(0 2px 4px rgba(16, 185, 129, 0.3))' }}
+                  activeDot={{ r: 6, stroke: '#10b981', strokeWidth: 3, fill: '#fff' }}
                   name="Trade Count"
+                  isAnimationActive={false}
+                  animationDuration={0}
                 />
               </ComposedChart>
             </ResponsiveContainer>

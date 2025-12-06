@@ -18,16 +18,22 @@ const TradeTape = ({ trades = [], selectedTicker, onTickerSelect }) => {
     });
 
     if (newIds.size > 0) {
-      setNewTradeIds(newIds);
+      setNewTradeIds(prev => new Set([...prev, ...newIds]));
       
       // Remove highlighting after 2 seconds
-      setTimeout(() => {
-        setNewTradeIds(prev => {
-          const updated = new Set(prev);
-          newIds.forEach(id => updated.delete(id));
+      const idsArray = Array.from(newIds);
+      const timeoutId = setTimeout(() => {
+        setNewTradeIds(prevIds => {
+          const updated = new Set(prevIds);
+          idsArray.forEach(id => updated.delete(id));
           return updated;
         });
       }, 2000);
+      
+      // Return cleanup function for this specific timeout
+      return () => {
+        clearTimeout(timeoutId);
+      };
     }
 
     previousTradesRef.current = trades;

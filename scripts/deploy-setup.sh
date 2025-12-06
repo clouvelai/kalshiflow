@@ -18,7 +18,7 @@ fi
 echo "✅ Railway CLI found"
 
 # Check if logged in to Railway
-if ! railway auth; then
+if ! railway whoami > /dev/null 2>&1; then
     echo "❌ Not logged in to Railway. Please run: railway login"
     exit 1
 fi

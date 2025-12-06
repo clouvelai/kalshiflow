@@ -21,7 +21,7 @@ const VolumeCounter = ({ value, label, icon, comingSoon = false }) => {
     if (comingSoon || typeof value !== 'number') return;
 
     const duration = 500;
-    const startValue = displayValue;
+    const startValue = displayValue; // Capture current value at effect start
     const endValue = value;
     const startTime = Date.now();
 
@@ -40,7 +40,7 @@ const VolumeCounter = ({ value, label, icon, comingSoon = false }) => {
     };
 
     requestAnimationFrame(animate);
-  }, [value, comingSoon, displayValue]);
+  }, [value, comingSoon]); // Remove displayValue from dependencies to prevent infinite loop
 
   return (
     <div className="bg-white rounded-xl shadow-lg border border-gray-100 p-6 hover:shadow-xl transition-all duration-300 transform hover:-translate-y-1 hover:border-blue-200 animate-slide-up">
@@ -92,7 +92,7 @@ const CounterAnimation = ({ value, label, icon, comingSoon = false }) => {
     if (comingSoon || typeof value !== 'number') return;
 
     const duration = 500; // Animation duration in ms
-    const startValue = displayValue;
+    const startValue = displayValue; // Capture current value at effect start
     const endValue = value;
     const startTime = Date.now();
 
@@ -112,7 +112,7 @@ const CounterAnimation = ({ value, label, icon, comingSoon = false }) => {
     };
 
     requestAnimationFrame(animate);
-  }, [value, comingSoon, displayValue]);
+  }, [value, comingSoon]); // Remove displayValue from dependencies to prevent infinite loop
 
   return (
     <div className="bg-white rounded-xl shadow-lg border border-gray-100 p-6 hover:shadow-xl transition-all duration-300 transform hover:-translate-y-1 hover:border-blue-200 animate-slide-up">
