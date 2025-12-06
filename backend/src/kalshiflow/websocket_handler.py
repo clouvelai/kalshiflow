@@ -14,7 +14,7 @@ from decimal import Decimal
 from starlette.websockets import WebSocket, WebSocketDisconnect
 from starlette.endpoints import WebSocketEndpoint
 
-from .models import SnapshotMessage, AnalyticsDataMessage, AnalyticsIncrementalMessage
+from .models import SnapshotMessage, AnalyticsDataMessage, AnalyticsIncrementalMessage, CurrentMinuteFastMessage
 from .trade_processor import get_trade_processor
 
 
@@ -124,6 +124,28 @@ class WebSocketBroadcaster:
             
         except Exception as e:
             logger.error(f"Failed to broadcast incremental analytics data: {e}")
+
+    async def broadcast_current_minute_fast(self, current_minute_stats):
+        """Broadcast ultra-fast current minute updates for immediate responsiveness.
+        
+        This method sends only current minute statistics instantly when trades occur,
+        providing sub-100ms latency matching the trade ticker responsiveness.
+        
+        Args:
+            current_minute_stats: Dict containing volume_usd, trade_count, timestamp, last_trade_ts
+        """
+        try:
+            fast_message = CurrentMinuteFastMessage(
+                type="current_minute_fast",
+                data=current_minute_stats
+            )
+            
+            await self.broadcast(fast_message.model_dump())
+            
+            logger.debug(f"Broadcast ultra-fast current minute update: ${current_minute_stats['volume_usd']:.2f}, {current_minute_stats['trade_count']} trades")
+            
+        except Exception as e:
+            logger.error(f"Failed to broadcast current minute fast update: {e}")
     
     async def _send_snapshot(self, websocket: WebSocket):
         """Send initial snapshot data to a newly connected client."""

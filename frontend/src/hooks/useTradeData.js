@@ -55,7 +55,26 @@ const useTradeData = () => {
           if (lastMessage.data?.analytics_data) {
             // Handle new dual-mode format
             if (lastMessage.data.analytics_data.hour_minute_mode && lastMessage.data.analytics_data.day_hour_mode) {
-              setAnalyticsData(lastMessage.data.analytics_data);
+              // Extract the most recent data points for current minute/hour display
+              const hourMinuteTimeSeries = lastMessage.data.analytics_data.hour_minute_mode.time_series || [];
+              const dayHourTimeSeries = lastMessage.data.analytics_data.day_hour_mode.time_series || [];
+              
+              // Get current minute and hour data from the latest time series entries
+              const latestMinuteData = hourMinuteTimeSeries.length > 0 
+                ? hourMinuteTimeSeries[hourMinuteTimeSeries.length - 1] 
+                : { timestamp: Date.now(), volume_usd: 0, trade_count: 0 };
+              const latestHourData = dayHourTimeSeries.length > 0 
+                ? dayHourTimeSeries[dayHourTimeSeries.length - 1] 
+                : { timestamp: Date.now(), volume_usd: 0, trade_count: 0 };
+              
+              setAnalyticsData({
+                ...lastMessage.data.analytics_data,
+                // Initialize current period data for immediate availability
+                current_minute_data: latestMinuteData,
+                current_hour_data: latestHourData,
+                last_snapshot_update: Date.now()
+              });
+              
               // Set legacy analyticsSummary for backward compatibility (use hour mode by default)
               setAnalyticsSummary(lastMessage.data.analytics_data.hour_minute_mode.summary_stats || {});
             } else {
@@ -124,11 +143,62 @@ const useTradeData = () => {
         case 'analytics_data':
           // Real-time analytics update with dual-mode format (full time series)
           if (lastMessage.data?.hour_minute_mode && lastMessage.data?.day_hour_mode) {
-            setAnalyticsData(lastMessage.data);
+            // Extract the most recent data points for current minute/hour display
+            const hourMinuteTimeSeries = lastMessage.data.hour_minute_mode.time_series || [];
+            const dayHourTimeSeries = lastMessage.data.day_hour_mode.time_series || [];
+            
+            // Get current minute and hour data from the latest time series entries
+            const latestMinuteData = hourMinuteTimeSeries.length > 0 
+              ? hourMinuteTimeSeries[hourMinuteTimeSeries.length - 1] 
+              : { timestamp: Date.now(), volume_usd: 0, trade_count: 0 };
+            const latestHourData = dayHourTimeSeries.length > 0 
+              ? dayHourTimeSeries[dayHourTimeSeries.length - 1] 
+              : { timestamp: Date.now(), volume_usd: 0, trade_count: 0 };
+            
+            setAnalyticsData({
+              ...lastMessage.data,
+              // Always include current period data for component access
+              current_minute_data: latestMinuteData,
+              current_hour_data: latestHourData,
+              last_full_update: Date.now()
+            });
+            
             // Update legacy analyticsSummary for backward compatibility (use hour mode by default)
             setAnalyticsSummary(lastMessage.data.hour_minute_mode.summary_stats || {});
           } else {
             console.warn('Received analytics_data in old format, this should not happen with new backend');
+          }
+          break;
+
+        case 'current_minute_fast':
+          // ULTRA-FAST: Instant current minute updates on every trade
+          // Provides immediate responsiveness matching trade ticker speed
+          if (lastMessage.data?.volume_usd !== undefined && lastMessage.data?.trade_count !== undefined) {
+            const fastData = lastMessage.data;
+            
+            // Immediately update current minute data in analytics state
+            setAnalyticsData(prevAnalytics => ({
+              ...prevAnalytics,
+              // Update current_minute_data with ultra-fast data
+              current_minute_data: {
+                timestamp: fastData.timestamp,
+                volume_usd: fastData.volume_usd,
+                trade_count: fastData.trade_count
+              },
+              // Mark this as an ultra-fast update for debugging
+              last_ultra_fast_update: Date.now(),
+              last_trade_ts: fastData.last_trade_ts
+            }));
+            
+            // Also update the analyticsSummary for legacy components
+            setAnalyticsSummary(prevSummary => ({
+              ...prevSummary,
+              current_minute_volume_usd: fastData.volume_usd,
+              current_minute_trades: fastData.trade_count,
+              last_ultra_fast_update: Date.now()
+            }));
+
+            // Ultra-fast update processed successfully
           }
           break;
 
@@ -139,23 +209,23 @@ const useTradeData = () => {
             
             // Efficiently update existing time series data with current period information
             setAnalyticsData(prevAnalytics => {
-              const now = Date.now();
-              const currentMinuteTimestamp = incrementalData.current_minute_data.timestamp;
-              const currentHourTimestamp = incrementalData.current_hour_data.timestamp;
-              
               // Helper function to create complete sliding window with zero-filled gaps
               const createCompleteTimeWindow = (existingTimeSeries, currentData, windowSize, periodMs) => {
-                const currentPeriodStart = Math.floor(currentData.timestamp / periodMs) * periodMs;
+                // Use current data's timestamp as the anchor point for consistency with backend
+                const currentPeriodStart = currentData.timestamp;
                 const windowStart = currentPeriodStart - ((windowSize - 1) * periodMs);
                 
                 // Create a map of existing data points for quick lookup
                 const existingDataMap = new Map();
-                existingTimeSeries.forEach(point => {
-                  const periodStart = Math.floor(point.timestamp / periodMs) * periodMs;
-                  existingDataMap.set(periodStart, point);
-                });
+                if (Array.isArray(existingTimeSeries)) {
+                  existingTimeSeries.forEach(point => {
+                    if (point && typeof point.timestamp === 'number') {
+                      existingDataMap.set(point.timestamp, point);
+                    }
+                  });
+                }
                 
-                // Add/update current period data
+                // Always update/set current period data with the latest values
                 existingDataMap.set(currentPeriodStart, currentData);
                 
                 // Generate complete timeline with zero-filled gaps
@@ -171,7 +241,7 @@ const useTradeData = () => {
                   });
                 }
                 
-                return completeTimeSeries;
+                return completeTimeSeries.sort((a, b) => a.timestamp - b.timestamp);
               };
               
               // Update hour/minute mode with complete 60-minute sliding window
@@ -196,16 +266,22 @@ const useTradeData = () => {
                 summary_stats: incrementalData.day_hour_mode_summary || {}
               };
               
+              // CRITICAL FIX: Persist current minute/hour data for UnifiedAnalytics component
               return {
                 hour_minute_mode: updatedHourMinuteMode,
-                day_hour_mode: updatedDayHourMode
+                day_hour_mode: updatedDayHourMode,
+                // Add current period data to analytics structure for component access
+                current_minute_data: incrementalData.current_minute_data,
+                current_hour_data: incrementalData.current_hour_data,
+                // Add update timestamp for debugging/monitoring
+                last_incremental_update: Date.now()
               };
             });
             
             // Update legacy analyticsSummary for backward compatibility
             setAnalyticsSummary(incrementalData.hour_minute_mode_summary || {});
           } else {
-            console.warn('Received incomplete analytics_incremental data');
+            console.warn('Received incomplete analytics_incremental data', lastMessage.data);
           }
           break;
 

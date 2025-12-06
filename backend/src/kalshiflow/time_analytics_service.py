@@ -470,6 +470,46 @@ class TimeAnalyticsService:
                 "current_minute_timestamp": 0
             }
 
+    def get_current_minute_fast_data(self, trade_timestamp: int) -> Dict[str, Any]:
+        """Get ultra-fast current minute data for immediate broadcasting.
+        
+        Optimized for instant updates when trades occur - minimal processing overhead.
+        
+        Args:
+            trade_timestamp: Timestamp of the triggering trade in milliseconds
+            
+        Returns:
+            Dict with volume_usd, trade_count, timestamp, last_trade_ts
+        """
+        try:
+            current_minute = self._get_minute_timestamp(trade_timestamp)
+            
+            if current_minute in self.minute_buckets:
+                bucket = self.minute_buckets[current_minute]
+                return {
+                    "volume_usd": round(bucket.volume_usd, 2),
+                    "trade_count": bucket.trade_count,
+                    "timestamp": current_minute,
+                    "last_trade_ts": trade_timestamp
+                }
+            else:
+                return {
+                    "volume_usd": 0.0,
+                    "trade_count": 0,
+                    "timestamp": current_minute,
+                    "last_trade_ts": trade_timestamp
+                }
+        except Exception as e:
+            logger.error(f"Error getting fast current minute data: {e}")
+            # Return safe default
+            current_minute = self._get_minute_timestamp(trade_timestamp)
+            return {
+                "volume_usd": 0.0,
+                "trade_count": 0,
+                "timestamp": current_minute,
+                "last_trade_ts": trade_timestamp
+            }
+
     def get_incremental_analytics_data(self) -> Dict[str, Any]:
         """Get lightweight incremental analytics data for real-time broadcasting.
         

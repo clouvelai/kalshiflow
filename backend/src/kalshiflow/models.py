@@ -308,6 +308,46 @@ class AnalyticsIncrementalMessage(WebSocketMessage):
         return v
 
 
+class CurrentMinuteFastMessage(WebSocketMessage):
+    """Ultra-fast message for instant current minute updates on every trade.
+    
+    Designed for sub-100ms latency, immediate responsiveness matching trade ticker.
+    Broadcasts instantly when trades occur, not on timer intervals.
+    
+    Message contains only current minute statistics:
+    - volume_usd: Current minute volume in USD
+    - trade_count: Current minute trade count
+    - timestamp: Current minute bucket timestamp
+    - last_trade_ts: Timestamp of the triggering trade
+    
+    Total size: ~80 bytes for maximum performance
+    """
+    type: Literal["current_minute_fast"] = "current_minute_fast"
+    data: Dict[str, Any] = Field(..., description="Ultra-fast current minute data")
+    
+    @field_validator('data')
+    @classmethod
+    def validate_fast_data(cls, v):
+        """Ensure fast current minute data has required fields."""
+        required_fields = ["volume_usd", "trade_count", "timestamp", "last_trade_ts"]
+        
+        for field in required_fields:
+            if field not in v:
+                raise ValueError(f"Missing required field in current_minute_fast data: {field}")
+        
+        # Ensure numeric types
+        if not isinstance(v["volume_usd"], (int, float)):
+            raise ValueError("volume_usd must be numeric")
+        if not isinstance(v["trade_count"], int):
+            raise ValueError("trade_count must be an integer")
+        if not isinstance(v["timestamp"], int):
+            raise ValueError("timestamp must be an integer")
+        if not isinstance(v["last_trade_ts"], int):
+            raise ValueError("last_trade_ts must be an integer")
+        
+        return v
+
+
 class ConnectionStatus(BaseModel):
     """WebSocket connection status information."""
     connected: bool = Field(..., description="Whether connection is active")

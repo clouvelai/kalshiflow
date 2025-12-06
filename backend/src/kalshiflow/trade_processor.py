@@ -138,6 +138,13 @@ class TradeProcessor:
             # Update analytics (non-blocking)
             try:
                 self.analytics_service.process_trade(trade)
+                
+                # ULTRA-FAST: Broadcast current minute update immediately after analytics processing
+                # This provides instant responsiveness matching trade ticker speed
+                if self.websocket_broadcaster:
+                    current_minute_fast_data = self.analytics_service.get_current_minute_fast_data(trade.ts)
+                    await self.websocket_broadcaster.broadcast_current_minute_fast(current_minute_fast_data)
+                    
             except Exception as e:
                 logger.error(f"Analytics processing failed for trade {trade.market_ticker}: {e}")
                 # Continue processing - analytics failures shouldn't stop trade flow
