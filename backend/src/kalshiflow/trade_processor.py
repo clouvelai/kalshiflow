@@ -139,11 +139,11 @@ class TradeProcessor:
             try:
                 self.analytics_service.process_trade(trade)
                 
-                # ULTRA-FAST: Broadcast current minute update immediately after analytics processing
-                # This provides instant responsiveness matching trade ticker speed
+                # REALTIME UPDATE: Broadcast current period data everywhere it appears
+                # This provides instant updates for current stats, chart current bar, totals, and peaks
                 if self.websocket_broadcaster:
-                    current_minute_fast_data = self.analytics_service.get_current_minute_fast_data(trade.ts)
-                    await self.websocket_broadcaster.broadcast_current_minute_fast(current_minute_fast_data)
+                    realtime_data = self.analytics_service.get_realtime_update_data(trade.ts)
+                    await self.websocket_broadcaster.broadcast_realtime_update(realtime_data)
                     
             except Exception as e:
                 logger.error(f"Analytics processing failed for trade {trade.market_ticker}: {e}")
@@ -340,26 +340,26 @@ class TradeProcessor:
             return False
     
     async def _analytics_broadcast_loop(self):
-        """Background task to broadcast incremental analytics data every 60 seconds (per-minute updates).
+        """Background task to broadcast chart data every 60 seconds.
         
-        Optimized frequency: Peak stats and historical data don't need sub-second updates.
-        Current minute/hour stats are handled by ultra-fast current_minute_fast messages.
-        This separation prevents oscillation and optimizes bandwidth usage.
+        Optimized frequency: Historical chart data doesn't need sub-second updates.
+        Current period stats are handled by realtime_update messages on every trade.
+        This clean separation prevents data conflicts and optimizes bandwidth usage.
         """
         try:
-            logger.info("Started incremental analytics broadcast task (60-second interval for peak/historical data)")
+            logger.info("Started chart data broadcast task (60-second interval for historical chart data)")
             
             while self._running:
                 try:
                     # Only broadcast if we have a websocket broadcaster
                     if self.websocket_broadcaster:
-                        # Use lightweight incremental analytics data for peak stats and chart data
-                        incremental_data = self.analytics_service.get_incremental_analytics_data()
-                        if incremental_data:
-                            await self.websocket_broadcaster.broadcast_analytics_incremental(incremental_data)
-                            logger.debug("Broadcast incremental analytics data (60-second timer) - peaks/historical only")
+                        # Use chart data for historical chart bars only (excluding current period)
+                        chart_data = self.analytics_service.get_chart_data()
+                        if chart_data:
+                            await self.websocket_broadcaster.broadcast_chart_data(chart_data)
+                            logger.debug("Broadcast chart data (60-second timer) - historical bars only")
                     
-                    # Wait 60 seconds - peak stats and historical data don't need frequent updates
+                    # Wait 60 seconds - historical chart data doesn't need frequent updates
                     await asyncio.sleep(60.0)
                     
                 except Exception as e:

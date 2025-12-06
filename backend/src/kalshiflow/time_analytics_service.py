@@ -470,17 +470,21 @@ class TimeAnalyticsService:
                 "current_minute_timestamp": 0
             }
 
-    def get_current_minute_fast_data(self, trade_timestamp: int) -> Dict[str, Any]:
-        """Get ultra-fast current minute data + mode-specific totals for immediate broadcasting.
+    def get_realtime_update_data(self, trade_timestamp: int) -> Dict[str, Any]:
+        """Get real-time data for current period everywhere it appears.
         
-        Optimized for instant updates when trades occur - minimal processing overhead.
-        Provides mode-specific totals for both Hour mode (60-minute window) and Day mode (24-hour window).
+        This is the single source of truth for current period data, sent on every trade.
+        Powers:
+        - Current minute/hour stats boxes
+        - Current period bar in chart (rightmost bar)
+        - Total volume/trades (mode-specific: hour vs day)
+        - Peak stats
         
         Args:
             trade_timestamp: Timestamp of the triggering trade in milliseconds
             
         Returns:
-            Dict with current minute/hour data + mode-specific totals for immediate UI updates
+            Dict with structured real-time update data
         """
         try:
             current_minute = self._get_minute_timestamp(trade_timestamp)
@@ -527,55 +531,75 @@ class TimeAnalyticsService:
                     day_mode_total_volume += bucket.volume_usd
                     day_mode_total_trades += bucket.trade_count
             
+            # Calculate peak stats (from minute buckets for consistency)
+            peak_volume_usd = 0.0
+            peak_trades = 0
+            for timestamp, bucket in self.minute_buckets.items():
+                if timestamp >= hour_mode_cutoff:  # Within hour window
+                    peak_volume_usd = max(peak_volume_usd, bucket.volume_usd)
+                    peak_trades = max(peak_trades, bucket.trade_count)
+            
             return {
-                # Current minute data (ultra-fast)
-                "volume_usd": round(current_minute_volume, 2),
-                "trade_count": current_minute_trades,
-                "timestamp": current_minute,
-                "last_trade_ts": trade_timestamp,
-                # Current hour data for day mode ultra-fast updates
-                "current_hour_volume_usd": round(current_hour_volume, 2),
-                "current_hour_trades": current_hour_trades,
-                "current_hour_timestamp": current_hour,
-                # CRITICAL FIX: Mode-specific totals enable different values for Hour/Day modes
-                "hour_mode_total_volume_usd": round(hour_mode_total_volume, 2),
-                "hour_mode_total_trades": hour_mode_total_trades,
-                "day_mode_total_volume_usd": round(day_mode_total_volume, 2),
-                "day_mode_total_trades": day_mode_total_trades
+                "current_minute": {
+                    "timestamp": current_minute,
+                    "volume_usd": round(current_minute_volume, 2),
+                    "trade_count": current_minute_trades
+                },
+                "current_hour": {
+                    "timestamp": current_hour,
+                    "volume_usd": round(current_hour_volume, 2),
+                    "trade_count": current_hour_trades
+                },
+                "mode_totals": {
+                    "hour_mode_total_volume_usd": round(hour_mode_total_volume, 2),
+                    "hour_mode_total_trades": hour_mode_total_trades,
+                    "day_mode_total_volume_usd": round(day_mode_total_volume, 2),
+                    "day_mode_total_trades": day_mode_total_trades
+                },
+                "peaks": {
+                    "peak_volume_usd": round(peak_volume_usd, 2),
+                    "peak_trades": peak_trades
+                }
             }
             
         except Exception as e:
-            logger.error(f"Error getting fast current minute data: {e}")
-            # Return safe default with zeros
+            logger.error(f"Error getting real-time update data: {e}")
+            # Return safe default
             current_minute = self._get_minute_timestamp(trade_timestamp)
             current_hour = self._get_hour_timestamp(trade_timestamp)
             return {
-                "volume_usd": 0.0,
-                "trade_count": 0,
-                "timestamp": current_minute,
-                "last_trade_ts": trade_timestamp,
-                "current_hour_volume_usd": 0.0,
-                "current_hour_trades": 0,
-                "current_hour_timestamp": current_hour,
-                # Safe defaults for mode-specific totals
-                "hour_mode_total_volume_usd": 0.0,
-                "hour_mode_total_trades": 0,
-                "day_mode_total_volume_usd": 0.0,
-                "day_mode_total_trades": 0
+                "current_minute": {
+                    "timestamp": current_minute,
+                    "volume_usd": 0.0,
+                    "trade_count": 0
+                },
+                "current_hour": {
+                    "timestamp": current_hour,
+                    "volume_usd": 0.0,
+                    "trade_count": 0
+                },
+                "mode_totals": {
+                    "hour_mode_total_volume_usd": 0.0,
+                    "hour_mode_total_trades": 0,
+                    "day_mode_total_volume_usd": 0.0,
+                    "day_mode_total_trades": 0
+                },
+                "peaks": {
+                    "peak_volume_usd": 0.0,
+                    "peak_trades": 0
+                }
             }
 
-    def get_incremental_analytics_data(self) -> Dict[str, Any]:
-        """Get complete time series analytics data for reliable chart display.
+    def get_chart_data(self) -> Dict[str, Any]:
+        """Get complete historical time series data for chart rendering.
         
-        CRITICAL FIX: This method now returns complete time series data to prevent
-        gaps in the frontend chart caused by incomplete data in 60-second broadcasts.
+        This method returns historical time series data EXCLUDING current period.
+        Current period data comes from realtime_update to prevent conflicts.
         
         Returns:
             Dict containing:
-            - hour_minute_mode: Complete time series + summary stats 
-            - day_hour_mode: Complete time series + summary stats
-            
-        Data size: ~6KB (same as full analytics) but sent every 60s for peak/historical updates
+            - hour_minute_mode: Historical time series (59 completed minutes) + summary stats
+            - day_hour_mode: Historical time series (23 completed hours) + summary stats
         """
         try:
             now = datetime.now()
@@ -583,13 +607,10 @@ class TimeAnalyticsService:
             current_minute_timestamp = self._get_minute_timestamp(now_timestamp_ms)
             current_hour_timestamp = self._get_hour_timestamp(now_timestamp_ms)
             
-            # CRITICAL FIX: Ensure current minute and hour buckets always exist
-            # This ensures current period data is always available for the frontend
-            self._ensure_current_buckets_exist(current_minute_timestamp, current_hour_timestamp)
             
-            # Generate complete hour/minute mode data (60 minutes × 1-minute buckets)
+            # Generate hour/minute mode data (59 COMPLETED minutes, excluding current)
             hour_minute_series = []
-            for i in range(self.window_minutes):
+            for i in range(self.window_minutes - 1):  # -1 to exclude current minute
                 minute_offset = (self.window_minutes - 1) - i
                 minute_timestamp = current_minute_timestamp - (minute_offset * 60 * 1000)
                 
@@ -605,9 +626,9 @@ class TimeAnalyticsService:
             
             hour_minute_series.sort(key=lambda x: x["timestamp"])
             
-            # Generate complete day/hour mode data (24 hours × 1-hour buckets)
+            # Generate day/hour mode data (23 COMPLETED hours, excluding current)
             day_hour_series = []
-            for i in range(self.window_hours):
+            for i in range(self.window_hours - 1):  # -1 to exclude current hour
                 hour_offset = (self.window_hours - 1) - i
                 hour_timestamp = current_hour_timestamp - (hour_offset * 3600 * 1000)
                 
@@ -623,11 +644,12 @@ class TimeAnalyticsService:
             
             day_hour_series.sort(key=lambda x: x["timestamp"])
             
-            # Calculate summary statistics for both modes
-            hour_minute_summary = self._calculate_summary_stats(hour_minute_series, "minute", current_minute_timestamp)
-            day_hour_summary = self._calculate_summary_stats(day_hour_series, "hour", current_hour_timestamp)
+            # Calculate summary statistics based on ALL data (including current period)
+            # This ensures peak/total calculations are accurate for axis scaling
+            hour_minute_summary = self._calculate_summary_stats_for_chart("minute", current_minute_timestamp)
+            day_hour_summary = self._calculate_summary_stats_for_chart("hour", current_hour_timestamp)
             
-            logger.debug(f"Generated complete incremental analytics: {len(hour_minute_series)} minute buckets, {len(day_hour_series)} hour buckets")
+            logger.debug(f"Generated chart data: {len(hour_minute_series)} historical minute buckets, {len(day_hour_series)} historical hour buckets")
             
             return {
                 "hour_minute_mode": {
@@ -641,7 +663,7 @@ class TimeAnalyticsService:
             }
             
         except Exception as e:
-            logger.error(f"Error getting incremental analytics data: {e}")
+            logger.error(f"Error getting chart data: {e}")
             return {
                 "hour_minute_mode": {
                     "time_series": [],
@@ -709,6 +731,58 @@ class TimeAnalyticsService:
         except Exception as e:
             logger.error(f"Error calculating lightweight summary stats for {period_type}: {e}")
             return self._get_empty_summary_stats()
+    
+    def _calculate_summary_stats_for_chart(self, period_type: str, current_timestamp: int) -> Dict[str, Any]:
+        """Calculate summary statistics for chart data (including current period for axis scaling).
+        
+        This calculates peaks and totals across ALL buckets (including current period)
+        to ensure proper chart axis scaling, but doesn't include current period values
+        in the response since those come from realtime_update.
+        """
+        try:
+            if period_type == "minute":
+                buckets = self.minute_buckets
+                window_size = self.window_minutes
+                window_ms = window_size * 60 * 1000  # minutes to milliseconds
+            else:  # hour
+                buckets = self.hour_buckets
+                window_size = self.window_hours
+                window_ms = window_size * 3600 * 1000  # hours to milliseconds
+            
+            # Only consider buckets within the current window
+            cutoff_timestamp = current_timestamp - window_ms + (60000 if period_type == "minute" else 3600000)
+            
+            volumes = []
+            trade_counts = []
+            total_volume = 0.0
+            total_trades = 0
+            
+            for timestamp, bucket in buckets.items():
+                if timestamp >= cutoff_timestamp:
+                    volumes.append(bucket.volume_usd)
+                    trade_counts.append(bucket.trade_count)
+                    total_volume += bucket.volume_usd
+                    total_trades += bucket.trade_count
+            
+            # Calculate peaks across all buckets for proper chart scaling
+            peak_volume_usd = max(volumes) if volumes else 0.0
+            peak_trades = max(trade_counts) if trade_counts else 0
+            
+            return {
+                "peak_volume_usd": round(peak_volume_usd, 2),
+                "total_volume_usd": round(total_volume, 2),
+                "peak_trades": peak_trades,
+                "total_trades": total_trades
+            }
+            
+        except Exception as e:
+            logger.error(f"Error calculating chart summary stats for {period_type}: {e}")
+            return {
+                "peak_volume_usd": 0.0,
+                "total_volume_usd": 0.0,
+                "peak_trades": 0,
+                "total_trades": 0
+            }
     
     def _get_minute_timestamp(self, timestamp_ms: int) -> int:
         """Convert a timestamp to the start of its minute (in milliseconds)."""

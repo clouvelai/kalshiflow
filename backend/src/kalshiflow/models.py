@@ -229,19 +229,68 @@ class TradeUpdateMessage(WebSocketMessage):
         return v
 
 
-class AnalyticsDataMessage(WebSocketMessage):
-    """Analytics time series data message sent to frontend with dual time modes."""
-    type: Literal["analytics_data"] = "analytics_data"
-    data: Dict[str, Any] = Field(..., description="Analytics data containing hour_minute_mode and day_hour_mode")
+class RealtimeUpdateMessage(WebSocketMessage):
+    """Ultra-fast real-time update message for current period data everywhere it appears.
+    
+    Sent on every trade for instant updates to:
+    - Current minute/hour stats boxes
+    - Current period bar in chart (rightmost bar)
+    - Total volume/trades (mode-specific: hour vs day)
+    - Peak stats
+    
+    This is the only source of truth for current period data, eliminating conflicts.
+    """
+    type: Literal["realtime_update"] = "realtime_update"
+    data: Dict[str, Any] = Field(..., description="Real-time update data for current periods and totals")
     
     @field_validator('data')
     @classmethod
-    def validate_analytics_data(cls, v):
-        """Ensure analytics data has required dual time mode fields."""
+    def validate_realtime_data(cls, v):
+        """Ensure real-time update has required fields."""
+        required_fields = {
+            "current_minute": ["timestamp", "volume_usd", "trade_count"],
+            "current_hour": ["timestamp", "volume_usd", "trade_count"],
+            "mode_totals": ["hour_mode_total_volume_usd", "hour_mode_total_trades", 
+                          "day_mode_total_volume_usd", "day_mode_total_trades"],
+            "peaks": ["peak_volume_usd", "peak_trades"]
+        }
+        
+        for section, fields in required_fields.items():
+            if section not in v:
+                raise ValueError(f"Real-time update data must contain '{section}'")
+            
+            section_data = v[section]
+            if not isinstance(section_data, dict):
+                raise ValueError(f"{section} must be a dictionary")
+                
+            for field in fields:
+                if field not in section_data:
+                    raise ValueError(f"{section} must contain '{field}'")
+        
+        return v
+
+
+class ChartDataMessage(WebSocketMessage):
+    """Complete time series data for chart historical bars only.
+    
+    Sent every 60 seconds with complete historical time series for chart rendering.
+    Powers:
+    - Chart bars/lines (excluding current period - that comes from realtime_update)
+    - Chart axis scaling
+    
+    This message contains NO current period data to prevent conflicts.
+    """
+    type: Literal["chart_data"] = "chart_data"
+    data: Dict[str, Any] = Field(..., description="Complete historical time series data for chart rendering")
+    
+    @field_validator('data')
+    @classmethod
+    def validate_chart_data(cls, v):
+        """Ensure chart data has required dual time mode fields."""
         if "hour_minute_mode" not in v:
-            raise ValueError("Analytics data must contain 'hour_minute_mode'")
+            raise ValueError("Chart data must contain 'hour_minute_mode'")
         if "day_hour_mode" not in v:
-            raise ValueError("Analytics data must contain 'day_hour_mode'")
+            raise ValueError("Chart data must contain 'day_hour_mode'")
         
         # Validate structure of each mode
         for mode_name in ["hour_minute_mode", "day_hour_mode"]:
@@ -256,83 +305,6 @@ class AnalyticsDataMessage(WebSocketMessage):
         return v
 
 
-class AnalyticsIncrementalMessage(WebSocketMessage):
-    """Lightweight incremental analytics message for real-time broadcasting.
-    
-    This message type sends only current period data and summary statistics,
-    reducing bandwidth by ~95% compared to full analytics data.
-    
-    Data structure:
-    - current_minute_data: Current minute bucket (65 bytes)
-    - current_hour_data: Current hour bucket (65 bytes) 
-    - hour_minute_mode_summary: Summary stats for hour/minute mode (~100 bytes)
-    - day_hour_mode_summary: Summary stats for day/hour mode (~100 bytes)
-    
-    Total size: ~330 bytes vs 6KB for full analytics (95% reduction)
-    """
-    type: Literal["analytics_incremental"] = "analytics_incremental"
-    data: Dict[str, Any] = Field(..., description="Incremental analytics data with current period buckets and summary stats")
-    
-    @field_validator('data')
-    @classmethod
-    def validate_incremental_data(cls, v):
-        """Ensure incremental analytics data has required dual time mode fields (same as full analytics)."""
-        if "hour_minute_mode" not in v:
-            raise ValueError("Incremental analytics data must contain 'hour_minute_mode'")
-        if "day_hour_mode" not in v:
-            raise ValueError("Incremental analytics data must contain 'day_hour_mode'")
-        
-        # Validate structure of each mode
-        for mode_name in ["hour_minute_mode", "day_hour_mode"]:
-            mode_data = v[mode_name]
-            if not isinstance(mode_data, dict):
-                raise ValueError(f"{mode_name} must be a dictionary")
-            if "time_series" not in mode_data:
-                raise ValueError(f"{mode_name} must contain 'time_series'")
-            if "summary_stats" not in mode_data:
-                raise ValueError(f"{mode_name} must contain 'summary_stats'")
-        
-        return v
-
-
-class CurrentMinuteFastMessage(WebSocketMessage):
-    """Ultra-fast message for instant current minute updates on every trade.
-    
-    Designed for sub-100ms latency, immediate responsiveness matching trade ticker.
-    Broadcasts instantly when trades occur, not on timer intervals.
-    
-    Message contains only current minute statistics:
-    - volume_usd: Current minute volume in USD
-    - trade_count: Current minute trade count
-    - timestamp: Current minute bucket timestamp
-    - last_trade_ts: Timestamp of the triggering trade
-    
-    Total size: ~80 bytes for maximum performance
-    """
-    type: Literal["current_minute_fast"] = "current_minute_fast"
-    data: Dict[str, Any] = Field(..., description="Ultra-fast current minute data")
-    
-    @field_validator('data')
-    @classmethod
-    def validate_fast_data(cls, v):
-        """Ensure fast current minute data has required fields."""
-        required_fields = ["volume_usd", "trade_count", "timestamp", "last_trade_ts"]
-        
-        for field in required_fields:
-            if field not in v:
-                raise ValueError(f"Missing required field in current_minute_fast data: {field}")
-        
-        # Ensure numeric types
-        if not isinstance(v["volume_usd"], (int, float)):
-            raise ValueError("volume_usd must be numeric")
-        if not isinstance(v["trade_count"], int):
-            raise ValueError("trade_count must be an integer")
-        if not isinstance(v["timestamp"], int):
-            raise ValueError("timestamp must be an integer")
-        if not isinstance(v["last_trade_ts"], int):
-            raise ValueError("last_trade_ts must be an integer")
-        
-        return v
 
 
 class ConnectionStatus(BaseModel):

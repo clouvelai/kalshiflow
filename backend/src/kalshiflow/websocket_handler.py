@@ -14,7 +14,7 @@ from decimal import Decimal
 from starlette.websockets import WebSocket, WebSocketDisconnect
 from starlette.endpoints import WebSocketEndpoint
 
-from .models import SnapshotMessage, AnalyticsDataMessage, AnalyticsIncrementalMessage, CurrentMinuteFastMessage
+from .models import SnapshotMessage, RealtimeUpdateMessage, ChartDataMessage
 from .trade_processor import get_trade_processor
 
 
@@ -86,66 +86,57 @@ class WebSocketBroadcaster:
         for connection in disconnected:
             self.disconnect(connection)
     
-    async def broadcast_analytics_data(self, analytics_data):
-        """Broadcast analytics data (time series and summary) to all connected clients."""
-        try:
-            analytics_message = AnalyticsDataMessage(
-                type="analytics_data",
-                data=analytics_data  # analytics_data now contains both time_series and summary
-            )
-            
-            await self.broadcast(analytics_message.model_dump())
-            
-            time_series_count = len(analytics_data.get("time_series", []))
-            logger.debug(f"Broadcast analytics data with {time_series_count} time points and summary stats")
-            
-        except Exception as e:
-            logger.error(f"Failed to broadcast analytics data: {e}")
 
-    async def broadcast_analytics_incremental(self, incremental_data):
-        """Broadcast lightweight incremental analytics data for real-time updates.
+    async def broadcast_chart_data(self, chart_data):
+        """Broadcast historical chart data for chart rendering.
         
-        This method sends only current period data and summary statistics,
-        achieving a ~95% bandwidth reduction compared to full analytics data.
+        This method sends complete historical time series data (excluding current period)
+        for rendering chart bars/lines. Current period data comes from realtime_update.
         
         Args:
-            incremental_data: Dict containing current_minute_data, current_hour_data,
-                            and summary stats for both modes
+            chart_data: Dict containing historical time series for both hour/minute and day/hour modes
         """
         try:
-            incremental_message = AnalyticsIncrementalMessage(
-                type="analytics_incremental",
-                data=incremental_data
+            chart_message = ChartDataMessage(
+                type="chart_data",
+                data=chart_data
             )
             
-            await self.broadcast(incremental_message.model_dump())
+            await self.broadcast(chart_message.model_dump())
             
-            logger.debug("Broadcast incremental analytics data (current periods + summary only)")
+            hour_bars = len(chart_data.get("hour_minute_mode", {}).get("time_series", []))
+            day_bars = len(chart_data.get("day_hour_mode", {}).get("time_series", []))
+            logger.debug(f"Broadcast chart data: {hour_bars} minute bars, {day_bars} hour bars (historical only)")
             
         except Exception as e:
-            logger.error(f"Failed to broadcast incremental analytics data: {e}")
+            logger.error(f"Failed to broadcast chart data: {e}")
 
-    async def broadcast_current_minute_fast(self, current_minute_stats):
-        """Broadcast ultra-fast current minute updates for immediate responsiveness.
+    async def broadcast_realtime_update(self, realtime_data):
+        """Broadcast real-time updates for current period data everywhere it appears.
         
-        This method sends only current minute statistics instantly when trades occur,
-        providing sub-100ms latency matching the trade ticker responsiveness.
+        This method provides instant updates for:
+        - Current minute/hour stats boxes
+        - Current period bar in chart (rightmost bar)
+        - Total volume/trades (mode-specific: hour vs day)
+        - Peak stats
         
         Args:
-            current_minute_stats: Dict containing volume_usd, trade_count, timestamp, last_trade_ts
+            realtime_data: Dict containing structured real-time update data
         """
         try:
-            fast_message = CurrentMinuteFastMessage(
-                type="current_minute_fast",
-                data=current_minute_stats
+            realtime_message = RealtimeUpdateMessage(
+                type="realtime_update",
+                data=realtime_data
             )
             
-            await self.broadcast(fast_message.model_dump())
+            await self.broadcast(realtime_message.model_dump())
             
-            logger.debug(f"Broadcast ultra-fast current minute update: ${current_minute_stats['volume_usd']:.2f}, {current_minute_stats['trade_count']} trades")
+            current_minute = realtime_data.get("current_minute", {})
+            current_hour = realtime_data.get("current_hour", {})
+            logger.debug(f"Broadcast realtime update: ${current_minute.get('volume_usd', 0):.2f} (minute), ${current_hour.get('volume_usd', 0):.2f} (hour)")
             
         except Exception as e:
-            logger.error(f"Failed to broadcast current minute fast update: {e}")
+            logger.error(f"Failed to broadcast realtime update: {e}")
     
     async def _send_snapshot(self, websocket: WebSocket):
         """Send initial snapshot data to a newly connected client."""
