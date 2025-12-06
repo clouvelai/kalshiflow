@@ -276,34 +276,21 @@ class AnalyticsIncrementalMessage(WebSocketMessage):
     @field_validator('data')
     @classmethod
     def validate_incremental_data(cls, v):
-        """Ensure incremental analytics data has required fields."""
-        required_fields = [
-            "current_minute_data",
-            "current_hour_data", 
-            "hour_minute_mode_summary",
-            "day_hour_mode_summary"
-        ]
+        """Ensure incremental analytics data has required dual time mode fields (same as full analytics)."""
+        if "hour_minute_mode" not in v:
+            raise ValueError("Incremental analytics data must contain 'hour_minute_mode'")
+        if "day_hour_mode" not in v:
+            raise ValueError("Incremental analytics data must contain 'day_hour_mode'")
         
-        for field in required_fields:
-            if field not in v:
-                raise ValueError(f"Incremental analytics data must contain '{field}'")
-        
-        # Validate current period data structure
-        for period_field in ["current_minute_data", "current_hour_data"]:
-            period_data = v[period_field]
-            if not isinstance(period_data, dict):
-                raise ValueError(f"{period_field} must be a dictionary")
-            required_period_fields = ["timestamp", "volume_usd", "trade_count"]
-            for req_field in required_period_fields:
-                if req_field not in period_data:
-                    raise ValueError(f"{period_field} must contain '{req_field}'")
-        
-        # Validate summary stats structure
-        for summary_field in ["hour_minute_mode_summary", "day_hour_mode_summary"]:
-            summary_data = v[summary_field]
-            if not isinstance(summary_data, dict):
-                raise ValueError(f"{summary_field} must be a dictionary")
-            # Summary stats should have peak/total volume/trades and current period stats
+        # Validate structure of each mode
+        for mode_name in ["hour_minute_mode", "day_hour_mode"]:
+            mode_data = v[mode_name]
+            if not isinstance(mode_data, dict):
+                raise ValueError(f"{mode_name} must be a dictionary")
+            if "time_series" not in mode_data:
+                raise ValueError(f"{mode_name} must contain 'time_series'")
+            if "summary_stats" not in mode_data:
+                raise ValueError(f"{mode_name} must contain 'summary_stats'")
         
         return v
 
