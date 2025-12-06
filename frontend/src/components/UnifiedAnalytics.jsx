@@ -272,11 +272,9 @@ const UnifiedAnalytics = ({
     // Create enhanced summary stats that merge ultra-fast data with regular summary stats
     const enhancedSummaryStats = { ...summaryStats };
     
-    // CRITICAL: Prioritize ultra-fast total stats for immediate responsiveness
-    if (ultraFastTotals && (ultraFastTotals.total_volume_usd > 0 || ultraFastTotals.total_trades > 0)) {
-      enhancedSummaryStats.total_volume_usd = ultraFastTotals.total_volume_usd;
-      enhancedSummaryStats.total_trades = ultraFastTotals.total_trades;
-    }
+    // FIXED: Total stats should be mode-specific, NOT from global ultra_fast_totals
+    // Use the summary_stats from the current mode (hour_minute_mode or day_hour_mode)
+    // The total_volume_usd and total_trades in summary_stats are already mode-specific
     
     if (timeMode === 'hour') {
       // PRIORITY 1: Ultra-fast current minute data (most authoritative)
