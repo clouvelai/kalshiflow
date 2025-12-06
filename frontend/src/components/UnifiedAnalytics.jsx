@@ -272,9 +272,36 @@ const UnifiedAnalytics = ({
     // Create enhanced summary stats that merge ultra-fast data with regular summary stats
     const enhancedSummaryStats = { ...summaryStats };
     
-    // FIXED: Total stats should be mode-specific, NOT from global ultra_fast_totals
-    // Use the summary_stats from the current mode (hour_minute_mode or day_hour_mode)
-    // The total_volume_usd and total_trades in summary_stats are already mode-specific
+    // CRITICAL FIX: Use mode-specific totals as base values with ultra-fast updates as authoritative
+    // This gives us different Hour vs Day base totals AND real-time responsiveness working together
+    
+    // Priority 1: Use ultra-fast mode-specific totals if available (most current)
+    if (ultraFastTotals && ultraFastTotals.last_update) {
+      const ultraFastAge = Date.now() - ultraFastTotals.last_update;
+      
+      // Use ultra-fast totals if they're recent (< 5 seconds old)
+      if (ultraFastAge < 5000) {
+        if (timeMode === 'hour') {
+          // Hour mode: Use 60-minute window totals from ultra-fast data
+          enhancedSummaryStats.total_volume_usd = ultraFastTotals.hour_mode_total_volume_usd;
+          enhancedSummaryStats.total_trades = ultraFastTotals.hour_mode_total_trades;
+        } else {
+          // Day mode: Use 24-hour window totals from ultra-fast data
+          enhancedSummaryStats.total_volume_usd = ultraFastTotals.day_mode_total_volume_usd;
+          enhancedSummaryStats.total_trades = ultraFastTotals.day_mode_total_trades;
+        }
+      } else {
+        // Ultra-fast data is stale, fall back to mode-specific base values from summaryStats
+        // summaryStats already contains mode-specific values from hour_minute_mode vs day_hour_mode
+        enhancedSummaryStats.total_volume_usd = summaryStats.total_volume_usd || 0;
+        enhancedSummaryStats.total_trades = summaryStats.total_trades || 0;
+      }
+    } else {
+      // Priority 2: Use mode-specific base values from summaryStats if no ultra-fast data
+      // summaryStats already contains mode-specific values from hour_minute_mode vs day_hour_mode
+      enhancedSummaryStats.total_volume_usd = summaryStats.total_volume_usd || 0;
+      enhancedSummaryStats.total_trades = summaryStats.total_trades || 0;
+    }
     
     if (timeMode === 'hour') {
       // PRIORITY 1: Ultra-fast current minute data (most authoritative)

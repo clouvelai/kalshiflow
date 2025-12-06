@@ -171,8 +171,8 @@ const useTradeData = () => {
           break;
 
         case 'current_minute_fast':
-          // ULTRA-FAST: Instant current minute + total updates on every trade
-          // Provides immediate responsiveness matching trade ticker speed
+          // ULTRA-FAST: Instant current minute + mode-specific total updates on every trade
+          // Provides immediate responsiveness matching trade ticker speed with mode differentiation
           if (lastMessage.data?.volume_usd !== undefined && lastMessage.data?.trade_count !== undefined) {
             const fastData = lastMessage.data;
             
@@ -194,15 +194,19 @@ const useTradeData = () => {
               // Mark this as an ultra-fast update for debugging
               last_ultra_fast_update: Date.now(),
               last_trade_ts: fastData.last_trade_ts,
-              // CRITICAL: Store ultra-fast total stats for immediate UI updates
+              // CRITICAL FIX: Store MODE-SPECIFIC totals for immediate UI updates
               ultra_fast_totals: {
-                total_volume_usd: fastData.total_volume_usd || 0,
-                total_trades: fastData.total_trades || 0,
+                // Hour mode totals (60-minute window)
+                hour_mode_total_volume_usd: fastData.hour_mode_total_volume_usd || 0,
+                hour_mode_total_trades: fastData.hour_mode_total_trades || 0,
+                // Day mode totals (24-hour window)
+                day_mode_total_volume_usd: fastData.day_mode_total_volume_usd || 0,
+                day_mode_total_trades: fastData.day_mode_total_trades || 0,
                 last_update: Date.now()
               }
             }));
             
-            // Also update the analyticsSummary for legacy components + ultra-fast totals
+            // Also update the analyticsSummary for legacy components + ultra-fast mode-specific totals
             setAnalyticsSummary(prevSummary => ({
               ...prevSummary,
               current_minute_volume_usd: fastData.volume_usd,
@@ -210,9 +214,11 @@ const useTradeData = () => {
               // CRITICAL: Add ultra-fast current hour stats for day mode
               current_hour_volume_usd: fastData.current_hour_volume_usd || 0,
               current_hour_trades: fastData.current_hour_trades || 0,
-              // CRITICAL: Add ultra-fast total stats to summary
-              total_volume_usd: fastData.total_volume_usd || prevSummary.total_volume_usd || 0,
-              total_trades: fastData.total_trades || prevSummary.total_trades || 0,
+              // CRITICAL FIX: Store mode-specific totals instead of global totals
+              hour_mode_total_volume_usd: fastData.hour_mode_total_volume_usd || 0,
+              hour_mode_total_trades: fastData.hour_mode_total_trades || 0,
+              day_mode_total_volume_usd: fastData.day_mode_total_volume_usd || 0,
+              day_mode_total_trades: fastData.day_mode_total_trades || 0,
               last_ultra_fast_update: Date.now()
             }));
 
@@ -221,104 +227,58 @@ const useTradeData = () => {
           break;
 
         case 'analytics_incremental':
-          // CLEAN SEPARATION: analytics_incremental ONLY updates peak stats + time series chart data
-          // Does NOT update current minute/hour values (handled by current_minute_fast)
-          if (lastMessage.data?.current_minute_data && lastMessage.data?.current_hour_data) {
+          // CRITICAL FIX: analytics_incremental now contains complete time series data
+          // This prevents gaps in charts by using the backend's complete time series
+          if (lastMessage.data?.hour_minute_mode && lastMessage.data?.day_hour_mode) {
             const incrementalData = lastMessage.data;
             
-            // Efficiently update existing time series data with current period information
-            setAnalyticsData(prevAnalytics => {
-              // Helper function to create complete sliding window with zero-filled gaps
-              const createCompleteTimeWindow = (existingTimeSeries, currentData, windowSize, periodMs) => {
-                // Use current data's timestamp as the anchor point for consistency with backend
-                const currentPeriodStart = currentData.timestamp;
-                const windowStart = currentPeriodStart - ((windowSize - 1) * periodMs);
-                
-                // Create a map of existing data points for quick lookup
-                const existingDataMap = new Map();
-                if (Array.isArray(existingTimeSeries)) {
-                  existingTimeSeries.forEach(point => {
-                    if (point && typeof point.timestamp === 'number') {
-                      existingDataMap.set(point.timestamp, point);
-                    }
-                  });
-                }
-                
-                // Always update/set current period data with the latest values
-                existingDataMap.set(currentPeriodStart, currentData);
-                
-                // Generate complete timeline with zero-filled gaps
-                const completeTimeSeries = [];
-                for (let i = 0; i < windowSize; i++) {
-                  const periodTimestamp = windowStart + (i * periodMs);
-                  const existingData = existingDataMap.get(periodTimestamp);
-                  
-                  completeTimeSeries.push(existingData || {
-                    timestamp: periodTimestamp,
-                    volume_usd: 0,
-                    trade_count: 0
-                  });
-                }
-                
-                return completeTimeSeries.sort((a, b) => a.timestamp - b.timestamp);
-              };
-              
-              // Update hour/minute mode with complete 60-minute sliding window
-              const updatedHourMinuteMode = {
-                time_series: createCompleteTimeWindow(
-                  prevAnalytics.hour_minute_mode?.time_series || [],
-                  incrementalData.current_minute_data,
-                  60, // 60 minutes
-                  60 * 1000 // 1 minute in milliseconds
-                ),
-                summary_stats: incrementalData.hour_minute_mode_summary || {}
-              };
-              
-              // Update day/hour mode with complete 24-hour sliding window  
-              const updatedDayHourMode = {
-                time_series: createCompleteTimeWindow(
-                  prevAnalytics.day_hour_mode?.time_series || [],
-                  incrementalData.current_hour_data,
-                  24, // 24 hours
-                  60 * 60 * 1000 // 1 hour in milliseconds
-                ),
-                summary_stats: incrementalData.day_hour_mode_summary || {}
-              };
-              
-              // CLEAN SEPARATION: Preserve current period data from ultra-fast messages
-              return {
-                hour_minute_mode: updatedHourMinuteMode,
-                day_hour_mode: updatedDayHourMode,
-                // CRITICAL: DO NOT override current_minute_data/current_hour_data
-                // These are managed by current_minute_fast for ultra-fast responsiveness
-                current_minute_data: prevAnalytics.current_minute_data,
-                current_hour_data: prevAnalytics.current_hour_data,
-                // Preserve ultra-fast totals
-                ultra_fast_totals: prevAnalytics.ultra_fast_totals,
-                // Add update timestamp for debugging/monitoring
-                last_incremental_update: Date.now()
-              };
-            });
+            // Extract current period data from the complete time series (latest entries)
+            const hourMinuteTimeSeries = incrementalData.hour_minute_mode.time_series || [];
+            const dayHourTimeSeries = incrementalData.day_hour_mode.time_series || [];
             
-            // CLEAN SEPARATION: Update only PEAK stats, preserve current values
+            // Get current minute and hour data from the latest time series entries
+            const latestMinuteData = hourMinuteTimeSeries.length > 0 
+              ? hourMinuteTimeSeries[hourMinuteTimeSeries.length - 1] 
+              : { timestamp: Date.now(), volume_usd: 0, trade_count: 0 };
+            const latestHourData = dayHourTimeSeries.length > 0 
+              ? dayHourTimeSeries[dayHourTimeSeries.length - 1] 
+              : { timestamp: Date.now(), volume_usd: 0, trade_count: 0 };
+            
+            // Use the complete time series directly from backend - no gaps!
+            setAnalyticsData(prevAnalytics => ({
+              // Use complete time series data directly from backend (no reconstruction needed)
+              hour_minute_mode: incrementalData.hour_minute_mode,
+              day_hour_mode: incrementalData.day_hour_mode,
+              // CLEAN SEPARATION: DO NOT override current period data from ultra-fast messages
+              // These are managed by current_minute_fast for ultra-fast responsiveness
+              current_minute_data: prevAnalytics.current_minute_data || latestMinuteData,
+              current_hour_data: prevAnalytics.current_hour_data || latestHourData,
+              // Preserve ultra-fast totals
+              ultra_fast_totals: prevAnalytics.ultra_fast_totals,
+              // Add update timestamp for debugging/monitoring
+              last_incremental_update: Date.now()
+            }));
+            
+            // CLEAN SEPARATION: Update only PEAK and HISTORICAL stats, preserve current values
             setAnalyticsSummary(prevSummary => ({
               ...prevSummary,
-              // Update ONLY peak stats from analytics_incremental
-              peak_volume_usd: incrementalData.hour_minute_mode_summary?.peak_volume_usd || prevSummary.peak_volume_usd || 0,
-              peak_trades: incrementalData.hour_minute_mode_summary?.peak_trades || prevSummary.peak_trades || 0,
-              // DO NOT update current minute/hour or total values - these are managed by current_minute_fast
+              // Update ONLY peak and total stats from analytics_incremental
+              peak_volume_usd: incrementalData.hour_minute_mode.summary_stats?.peak_volume_usd || prevSummary.peak_volume_usd || 0,
+              peak_trades: incrementalData.hour_minute_mode.summary_stats?.peak_trades || prevSummary.peak_trades || 0,
+              // Update total stats from incremental (backend aggregates these from all buckets)
+              total_volume_usd: incrementalData.hour_minute_mode.summary_stats?.total_volume_usd || prevSummary.total_volume_usd || 0,
+              total_trades: incrementalData.hour_minute_mode.summary_stats?.total_trades || prevSummary.total_trades || 0,
+              // DO NOT update current minute/hour values - these are managed by current_minute_fast
               // Preserve current values that are updated by ultra-fast messages
               current_minute_volume_usd: prevSummary.current_minute_volume_usd,
               current_minute_trades: prevSummary.current_minute_trades,
               current_hour_volume_usd: prevSummary.current_hour_volume_usd,
               current_hour_trades: prevSummary.current_hour_trades,
-              total_volume_usd: prevSummary.total_volume_usd,
-              total_trades: prevSummary.total_trades,
-              // Mark this as an incremental update (peaks only)
+              // Mark this as an incremental update (peaks + totals only)
               last_incremental_update: Date.now()
             }));
           } else {
-            console.warn('Received incomplete analytics_incremental data', lastMessage.data);
+            console.warn('Received incomplete analytics_incremental data (expected complete time series)', lastMessage.data);
           }
           break;
 

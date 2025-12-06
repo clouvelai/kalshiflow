@@ -471,40 +471,32 @@ class TimeAnalyticsService:
             }
 
     def get_current_minute_fast_data(self, trade_timestamp: int) -> Dict[str, Any]:
-        """Get ultra-fast current minute data + totals for immediate broadcasting.
+        """Get ultra-fast current minute data + mode-specific totals for immediate broadcasting.
         
         Optimized for instant updates when trades occur - minimal processing overhead.
+        Provides mode-specific totals for both Hour mode (60-minute window) and Day mode (24-hour window).
         
         Args:
             trade_timestamp: Timestamp of the triggering trade in milliseconds
             
         Returns:
-            Dict with volume_usd, trade_count, timestamp, last_trade_ts, total_volume_usd, total_trades
+            Dict with current minute/hour data + mode-specific totals for immediate UI updates
         """
         try:
             current_minute = self._get_minute_timestamp(trade_timestamp)
+            current_hour = self._get_hour_timestamp(trade_timestamp)
             
-            # Calculate cumulative totals from all minute buckets (lightweight operation)
-            # This ensures total stats update at same ultra-fast cadence as current minute
-            total_volume_usd = 0.0
-            total_trades = 0
+            # Get current minute and hour data
             current_minute_volume = 0.0
             current_minute_trades = 0
-            
-            # Sum all minute buckets for totals (efficient since buckets are limited by window size)
-            for timestamp, bucket in self.minute_buckets.items():
-                total_volume_usd += bucket.volume_usd
-                total_trades += bucket.trade_count
-                
-                # Check if this is the current minute bucket
-                if timestamp == current_minute:
-                    current_minute_volume = bucket.volume_usd
-                    current_minute_trades = bucket.trade_count
-            
-            # CRITICAL: Also calculate current hour data for day mode ultra-fast updates
-            current_hour = self._get_hour_timestamp(trade_timestamp)
             current_hour_volume = 0.0
             current_hour_trades = 0
+            
+            # Get current minute data
+            if current_minute in self.minute_buckets:
+                minute_bucket = self.minute_buckets[current_minute]
+                current_minute_volume = minute_bucket.volume_usd
+                current_minute_trades = minute_bucket.trade_count
             
             # Get current hour data from hour buckets
             if current_hour in self.hour_buckets:
@@ -512,19 +504,44 @@ class TimeAnalyticsService:
                 current_hour_volume = hour_bucket.volume_usd
                 current_hour_trades = hour_bucket.trade_count
             
+            # CRITICAL FIX: Calculate mode-specific totals instead of global totals
+            # This enables different total values for Hour mode vs Day mode
+            
+            # Hour mode totals (60-minute window from minute buckets)
+            hour_mode_total_volume = 0.0
+            hour_mode_total_trades = 0
+            hour_mode_cutoff = current_minute - (59 * 60 * 1000)  # 60 minutes ago
+            
+            for timestamp, bucket in self.minute_buckets.items():
+                if timestamp >= hour_mode_cutoff:
+                    hour_mode_total_volume += bucket.volume_usd
+                    hour_mode_total_trades += bucket.trade_count
+            
+            # Day mode totals (24-hour window from hour buckets)
+            day_mode_total_volume = 0.0
+            day_mode_total_trades = 0
+            day_mode_cutoff = current_hour - (23 * 3600 * 1000)  # 24 hours ago
+            
+            for timestamp, bucket in self.hour_buckets.items():
+                if timestamp >= day_mode_cutoff:
+                    day_mode_total_volume += bucket.volume_usd
+                    day_mode_total_trades += bucket.trade_count
+            
             return {
                 # Current minute data (ultra-fast)
                 "volume_usd": round(current_minute_volume, 2),
                 "trade_count": current_minute_trades,
                 "timestamp": current_minute,
                 "last_trade_ts": trade_timestamp,
-                # CRITICAL: Add current hour data for day mode ultra-fast updates
+                # Current hour data for day mode ultra-fast updates
                 "current_hour_volume_usd": round(current_hour_volume, 2),
                 "current_hour_trades": current_hour_trades,
                 "current_hour_timestamp": current_hour,
-                # CRITICAL: Add total stats for ultra-fast total updates
-                "total_volume_usd": round(total_volume_usd, 2),
-                "total_trades": total_trades
+                # CRITICAL FIX: Mode-specific totals enable different values for Hour/Day modes
+                "hour_mode_total_volume_usd": round(hour_mode_total_volume, 2),
+                "hour_mode_total_trades": hour_mode_total_trades,
+                "day_mode_total_volume_usd": round(day_mode_total_volume, 2),
+                "day_mode_total_trades": day_mode_total_trades
             }
             
         except Exception as e:
@@ -540,23 +557,25 @@ class TimeAnalyticsService:
                 "current_hour_volume_usd": 0.0,
                 "current_hour_trades": 0,
                 "current_hour_timestamp": current_hour,
-                "total_volume_usd": 0.0,
-                "total_trades": 0
+                # Safe defaults for mode-specific totals
+                "hour_mode_total_volume_usd": 0.0,
+                "hour_mode_total_trades": 0,
+                "day_mode_total_volume_usd": 0.0,
+                "day_mode_total_trades": 0
             }
 
     def get_incremental_analytics_data(self) -> Dict[str, Any]:
-        """Get lightweight incremental analytics data for real-time broadcasting.
+        """Get complete time series analytics data for reliable chart display.
         
-        This method returns only current period data and summary statistics,
-        significantly reducing bandwidth compared to full time series data.
+        CRITICAL FIX: This method now returns complete time series data to prevent
+        gaps in the frontend chart caused by incomplete data in 60-second broadcasts.
         
         Returns:
             Dict containing:
-            - current_minute_data: Current minute bucket data
-            - current_hour_data: Current hour bucket data  
-            - summary_stats: Both hour/minute and day/hour summary statistics
+            - hour_minute_mode: Complete time series + summary stats 
+            - day_hour_mode: Complete time series + summary stats
             
-        Data size: ~300 bytes vs ~6KB for full analytics data (95% reduction)
+        Data size: ~6KB (same as full analytics) but sent every 60s for peak/historical updates
         """
         try:
             now = datetime.now()
@@ -568,56 +587,70 @@ class TimeAnalyticsService:
             # This ensures current period data is always available for the frontend
             self._ensure_current_buckets_exist(current_minute_timestamp, current_hour_timestamp)
             
-            # Get current minute bucket data
-            current_minute_data = None
-            if current_minute_timestamp in self.minute_buckets:
-                current_minute_data = self.minute_buckets[current_minute_timestamp].to_dict()
-            else:
-                current_minute_data = {
-                    "timestamp": current_minute_timestamp,
-                    "volume_usd": 0.0,
-                    "trade_count": 0
-                }
+            # Generate complete hour/minute mode data (60 minutes × 1-minute buckets)
+            hour_minute_series = []
+            for i in range(self.window_minutes):
+                minute_offset = (self.window_minutes - 1) - i
+                minute_timestamp = current_minute_timestamp - (minute_offset * 60 * 1000)
+                
+                if minute_timestamp in self.minute_buckets:
+                    bucket_data = self.minute_buckets[minute_timestamp].to_dict()
+                else:
+                    bucket_data = {
+                        "timestamp": minute_timestamp,
+                        "volume_usd": 0.0,
+                        "trade_count": 0
+                    }
+                hour_minute_series.append(bucket_data)
             
-            # Get current hour bucket data
-            current_hour_data = None
-            if current_hour_timestamp in self.hour_buckets:
-                current_hour_data = self.hour_buckets[current_hour_timestamp].to_dict()
-            else:
-                current_hour_data = {
-                    "timestamp": current_hour_timestamp, 
-                    "volume_usd": 0.0,
-                    "trade_count": 0
-                }
+            hour_minute_series.sort(key=lambda x: x["timestamp"])
             
-            # Calculate lightweight summary stats without full time series generation
-            hour_minute_summary = self._calculate_lightweight_summary_stats("minute", current_minute_timestamp)
-            day_hour_summary = self._calculate_lightweight_summary_stats("hour", current_hour_timestamp)
+            # Generate complete day/hour mode data (24 hours × 1-hour buckets)
+            day_hour_series = []
+            for i in range(self.window_hours):
+                hour_offset = (self.window_hours - 1) - i
+                hour_timestamp = current_hour_timestamp - (hour_offset * 3600 * 1000)
+                
+                if hour_timestamp in self.hour_buckets:
+                    bucket_data = self.hour_buckets[hour_timestamp].to_dict()
+                else:
+                    bucket_data = {
+                        "timestamp": hour_timestamp,
+                        "volume_usd": 0.0,
+                        "trade_count": 0
+                    }
+                day_hour_series.append(bucket_data)
             
-            logger.debug("Generated incremental analytics data (current periods + summary only)")
+            day_hour_series.sort(key=lambda x: x["timestamp"])
+            
+            # Calculate summary statistics for both modes
+            hour_minute_summary = self._calculate_summary_stats(hour_minute_series, "minute", current_minute_timestamp)
+            day_hour_summary = self._calculate_summary_stats(day_hour_series, "hour", current_hour_timestamp)
+            
+            logger.debug(f"Generated complete incremental analytics: {len(hour_minute_series)} minute buckets, {len(day_hour_series)} hour buckets")
             
             return {
-                "current_minute_data": current_minute_data,
-                "current_hour_data": current_hour_data,
-                "hour_minute_mode_summary": hour_minute_summary,
-                "day_hour_mode_summary": day_hour_summary
+                "hour_minute_mode": {
+                    "time_series": hour_minute_series,
+                    "summary_stats": hour_minute_summary
+                },
+                "day_hour_mode": {
+                    "time_series": day_hour_series,
+                    "summary_stats": day_hour_summary
+                }
             }
             
         except Exception as e:
             logger.error(f"Error getting incremental analytics data: {e}")
             return {
-                "current_minute_data": {
-                    "timestamp": int(datetime.now().timestamp() * 1000),
-                    "volume_usd": 0.0,
-                    "trade_count": 0
+                "hour_minute_mode": {
+                    "time_series": [],
+                    "summary_stats": self._get_empty_summary_stats()
                 },
-                "current_hour_data": {
-                    "timestamp": int(datetime.now().timestamp() * 1000),
-                    "volume_usd": 0.0,
-                    "trade_count": 0
-                },
-                "hour_minute_mode_summary": self._get_empty_summary_stats(),
-                "day_hour_mode_summary": self._get_empty_summary_stats()
+                "day_hour_mode": {
+                    "time_series": [],
+                    "summary_stats": self._get_empty_summary_stats()
+                }
             }
 
     def _calculate_lightweight_summary_stats(self, period_type: str, current_timestamp: int) -> Dict[str, Any]:
