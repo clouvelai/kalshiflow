@@ -14,7 +14,7 @@ const AppContent = () => {
     selectedTicker,
     globalStats,
     analyticsData,
-    analyticsSummary,
+    realtimeData,
     connectionStatus,
     error,
     selectTicker,
@@ -45,6 +45,7 @@ const AppContent = () => {
           hour_minute_mode: { time_series: [], summary_stats: {} },
           day_hour_mode: { time_series: [], summary_stats: {} }
         }}
+        realtimeData={realtimeData}
         data-testid="unified-analytics"
       />
 

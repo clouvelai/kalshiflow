@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import React, { useState, useMemo, useCallback } from 'react';
 import {
   ComposedChart,
   Bar,
@@ -48,81 +48,74 @@ const UnifiedAnalytics = ({
     hour_minute_mode: { time_series: [], summary_stats: {} },
     day_hour_mode: { time_series: [], summary_stats: {} }
   },
+  realtimeData = {
+    current_minute: { timestamp: 0, volume_usd: 0, trade_count: 0 },
+    current_hour: { timestamp: 0, volume_usd: 0, trade_count: 0 },
+    mode_totals: {
+      hour_mode_total_volume_usd: 0,
+      hour_mode_total_trades: 0,
+      day_mode_total_volume_usd: 0,
+      day_mode_total_trades: 0
+    },
+    peaks: { peak_volume_usd: 0, peak_trades: 0 }
+  },
   ...props
 }) => {
   const [timeMode, setTimeMode] = useState('hour'); // 'hour' or 'day'
   
-  // Memoize current mode data to prevent unnecessary recalculations
+  // Get current mode data for historical chart
   const currentModeData = useMemo(() => {
     return timeMode === 'hour' 
       ? analyticsData.hour_minute_mode 
       : analyticsData.day_hour_mode;
   }, [analyticsData, timeMode]);
   
-  const timeSeriesData = useMemo(() => currentModeData.time_series || [], [currentModeData.time_series]);
-  const summaryStats = useMemo(() => currentModeData.summary_stats || {}, [currentModeData.summary_stats]);
-  
-  // Use a timer to update currentTimestamp every 30 seconds to keep current period highlighting accurate
-  const [currentTimestamp, setCurrentTimestamp] = useState(() => {
+  // Get current period timestamp for highlighting current bar
+  const currentTimestamp = useMemo(() => {
     const now = new Date();
     if (timeMode === 'hour') {
-      const minuteStart = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 
-                                    now.getHours(), now.getMinutes(), 0, 0);
-      return minuteStart.getTime();
+      // Current minute timestamp
+      return new Date(now.getFullYear(), now.getMonth(), now.getDate(), 
+                     now.getHours(), now.getMinutes(), 0, 0).getTime();
     } else {
-      const hourStart = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 
-                                  now.getHours(), 0, 0, 0);
-      return hourStart.getTime();
+      // Current hour timestamp  
+      return new Date(now.getFullYear(), now.getMonth(), now.getDate(), 
+                     now.getHours(), 0, 0, 0).getTime();
     }
-  });
-
-  // Update currentTimestamp every 30 seconds to keep current period highlighting accurate
-  useEffect(() => {
-    const updateTimestamp = () => {
-      const now = new Date();
-      if (timeMode === 'hour') {
-        const minuteStart = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 
-                                      now.getHours(), now.getMinutes(), 0, 0);
-        setCurrentTimestamp(minuteStart.getTime());
-      } else {
-        const hourStart = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 
-                                    now.getHours(), 0, 0, 0);
-        setCurrentTimestamp(hourStart.getTime());
-      }
-    };
-
-    // Update immediately when timeMode changes
-    updateTimestamp();
-
-    // Then update every 30 seconds
-    const interval = setInterval(updateTimestamp, 30000);
-    
-    return () => clearInterval(interval);
   }, [timeMode]);
   
-  // Extract only the specific data we need to avoid dependency on entire analyticsData object
-  const currentMinuteData = analyticsData.current_minute_data;
-  const currentHourData = analyticsData.current_hour_data;
-  const ultraFastTotals = analyticsData.ultra_fast_totals;
+  // Get current period data from realtimeData
+  const currentPeriodData = useMemo(() => {
+    return timeMode === 'hour' 
+      ? realtimeData.current_minute 
+      : realtimeData.current_hour;
+  }, [realtimeData, timeMode]);
   
-  // Memoize expensive chart data formatting to prevent unnecessary recalculations on every render
+  // Get mode-specific totals from realtimeData
+  const modeTotals = useMemo(() => {
+    const totals = realtimeData.mode_totals;
+    return timeMode === 'hour' 
+      ? {
+          total_volume_usd: totals.hour_mode_total_volume_usd,
+          total_trades: totals.hour_mode_total_trades
+        }
+      : {
+          total_volume_usd: totals.day_mode_total_volume_usd,
+          total_trades: totals.day_mode_total_trades
+        };
+  }, [realtimeData.mode_totals, timeMode]);
+  
+  // Prepare chart data with current period enhancement
   const chartData = useMemo(() => {
-    return timeSeriesData.map(point => {
+    const timeSeries = currentModeData.time_series || [];
+    
+    return timeSeries.map(point => {
       let enhancedPoint = { ...point };
       
-      // CRITICAL: Update current period data with ultra-fast values for real-time chart updates
-      if (point.timestamp === currentTimestamp) {
-        if (timeMode === 'hour' && currentMinuteData && 
-            (currentMinuteData.volume_usd > 0 || currentMinuteData.trade_count > 0)) {
-          // Use ultra-fast current minute data for hour mode
-          enhancedPoint.volume_usd = currentMinuteData.volume_usd;
-          enhancedPoint.trade_count = currentMinuteData.trade_count;
-        } else if (timeMode === 'day' && currentHourData && 
-                   (currentHourData.volume_usd > 0 || currentHourData.trade_count > 0)) {
-          // Use current hour data for day mode
-          enhancedPoint.volume_usd = currentHourData.volume_usd;
-          enhancedPoint.trade_count = currentHourData.trade_count;
-        }
+      // Enhance current period with real-time data
+      if (point.timestamp === currentTimestamp && currentPeriodData) {
+        enhancedPoint.volume_usd = currentPeriodData.volume_usd;
+        enhancedPoint.trade_count = currentPeriodData.trade_count;
       }
       
       return {
@@ -140,15 +133,13 @@ const UnifiedAnalytics = ({
               hour: '2-digit',
               hour12: false
             }),
-        // Format volume for display
-        volumeDisplayed: enhancedPoint.volume_usd?.toFixed(0) || 0,
         // Mark if this is the current period
         isCurrentPeriod: point.timestamp === currentTimestamp
       };
     });
-  }, [timeSeriesData, timeMode, currentTimestamp, currentMinuteData, currentHourData]);
+  }, [currentModeData.time_series, timeMode, currentTimestamp, currentPeriodData]);
 
-  // Custom tooltip component with premium styling
+  // Custom tooltip component
   const CustomTooltip = ({ active, payload, label }) => {
     if (active && payload && payload.length) {
       const volumeData = payload.find(p => p.dataKey === 'volume_usd');
@@ -166,7 +157,7 @@ const UnifiedAnalytics = ({
             
             {/* Content */}
             <div className="p-5">
-              {/* Time label with enhanced styling */}
+              {/* Time label */}
               <div className="mb-4 pb-3 border-b border-gray-100/50">
                 <p className="text-sm font-bold bg-gradient-to-r from-gray-900 via-blue-800 to-indigo-900 bg-clip-text text-transparent">
                   {label}
@@ -216,7 +207,7 @@ const UnifiedAnalytics = ({
     return null;
   };
 
-  // Memoize expensive calculations for chart scaling
+  // Calculate chart scaling
   const { maxVolume, maxTrades } = useMemo(() => {
     return {
       maxVolume: Math.max(...chartData.map(d => d.volume_usd || 0)),
@@ -224,171 +215,7 @@ const UnifiedAnalytics = ({
     };
   }, [chartData]);
 
-  // Note: Removed currentPeriodData lookup to eliminate race conditions
-  // that were causing oscillation between real values and 0/0
-
-  // State persistence for last known good values to prevent 0-fallbacks during oscillation
-  const [lastKnownValues, setLastKnownValues] = useState({
-    minute: { volume: 0, trades: 0 },
-    hour: { volume: 0, trades: 0 }
-  });
-
-  // Debouncing ref to prevent excessive state updates
-  const updateTimeoutRef = useRef(null);
-
-  // Optimized state update function with debouncing
-  const updateLastKnownValues = useCallback((timeMode, volume, trades) => {
-    // Clear any pending updates
-    if (updateTimeoutRef.current) {
-      clearTimeout(updateTimeoutRef.current);
-    }
-
-    // Debounce updates to prevent excessive re-renders during rapid data flow
-    updateTimeoutRef.current = setTimeout(() => {
-      setLastKnownValues(prev => ({
-        ...prev,
-        [timeMode]: { volume, trades }
-      }));
-    }, 50); // 50ms debounce
-  }, []);
-
-  // Cleanup timeout on unmount
-  useEffect(() => {
-    return () => {
-      if (updateTimeoutRef.current) {
-        clearTimeout(updateTimeoutRef.current);
-      }
-    };
-  }, []);
-
-  // Memoize current period statistics with prioritized ultra-fast data source
-  const { currentVolume, currentTrades, currentVolumeKey, currentTradesKey, summaryStatsWithUltraFast } = useMemo(() => {
-    const volumeKey = timeMode === 'hour' ? 'current_minute_volume_usd' : 'current_hour_volume_usd';
-    const tradesKey = timeMode === 'hour' ? 'current_minute_trades' : 'current_hour_trades';
-    
-    let currentVolume = 0;
-    let currentTrades = 0;
-    
-    // Create enhanced summary stats that merge ultra-fast data with regular summary stats
-    const enhancedSummaryStats = { ...summaryStats };
-    
-    // CRITICAL FIX: Use mode-specific totals as base values with ultra-fast updates as authoritative
-    // This gives us different Hour vs Day base totals AND real-time responsiveness working together
-    
-    // Priority 1: Use ultra-fast mode-specific totals if available (most current)
-    if (ultraFastTotals && ultraFastTotals.last_update) {
-      const ultraFastAge = Date.now() - ultraFastTotals.last_update;
-      
-      // Use ultra-fast totals if they're recent (< 5 seconds old)
-      if (ultraFastAge < 5000) {
-        if (timeMode === 'hour') {
-          // Hour mode: Use 60-minute window totals from ultra-fast data
-          enhancedSummaryStats.total_volume_usd = ultraFastTotals.hour_mode_total_volume_usd;
-          enhancedSummaryStats.total_trades = ultraFastTotals.hour_mode_total_trades;
-        } else {
-          // Day mode: Use 24-hour window totals from ultra-fast data
-          enhancedSummaryStats.total_volume_usd = ultraFastTotals.day_mode_total_volume_usd;
-          enhancedSummaryStats.total_trades = ultraFastTotals.day_mode_total_trades;
-        }
-      } else {
-        // Ultra-fast data is stale, fall back to mode-specific base values from summaryStats
-        // summaryStats already contains mode-specific values from hour_minute_mode vs day_hour_mode
-        enhancedSummaryStats.total_volume_usd = summaryStats.total_volume_usd || 0;
-        enhancedSummaryStats.total_trades = summaryStats.total_trades || 0;
-      }
-    } else {
-      // Priority 2: Use mode-specific base values from summaryStats if no ultra-fast data
-      // summaryStats already contains mode-specific values from hour_minute_mode vs day_hour_mode
-      enhancedSummaryStats.total_volume_usd = summaryStats.total_volume_usd || 0;
-      enhancedSummaryStats.total_trades = summaryStats.total_trades || 0;
-    }
-    
-    if (timeMode === 'hour') {
-      // PRIORITY 1: Ultra-fast current minute data (most authoritative)
-      if (currentMinuteData && (currentMinuteData.volume_usd > 0 || currentMinuteData.trade_count > 0)) {
-        currentVolume = currentMinuteData.volume_usd;
-        currentTrades = currentMinuteData.trade_count;
-        
-        // CRITICAL: Update summary stats with ultra-fast current minute data
-        enhancedSummaryStats.current_minute_volume_usd = currentVolume;
-        enhancedSummaryStats.current_minute_trades = currentTrades;
-        
-        // Update last known good values with debouncing
-        updateLastKnownValues('minute', currentVolume, currentTrades);
-      }
-      // PRIORITY 2: Summary stats (if ultra-fast data not available)
-      else if (summaryStats[volumeKey] > 0 || summaryStats[tradesKey] > 0) {
-        currentVolume = summaryStats[volumeKey] || 0;
-        currentTrades = summaryStats[tradesKey] || 0;
-        
-        // Update last known good values if this is new data
-        if (currentVolume > lastKnownValues.minute.volume || currentTrades > lastKnownValues.minute.trades) {
-          updateLastKnownValues('minute', currentVolume, currentTrades);
-        }
-      }
-      // PRIORITY 3: Last known good values (prevent 0-fallback)
-      else {
-        currentVolume = lastKnownValues.minute.volume;
-        currentTrades = lastKnownValues.minute.trades;
-        
-        // Use last known values in enhanced summary stats too
-        enhancedSummaryStats.current_minute_volume_usd = currentVolume;
-        enhancedSummaryStats.current_minute_trades = currentTrades;
-      }
-    } else {
-      // Day mode: prioritize current hour data
-      if (currentHourData && (currentHourData.volume_usd > 0 || currentHourData.trade_count > 0)) {
-        currentVolume = currentHourData.volume_usd;
-        currentTrades = currentHourData.trade_count;
-        
-        // CRITICAL: Update summary stats with current hour data for day mode
-        enhancedSummaryStats.current_hour_volume_usd = currentVolume;
-        enhancedSummaryStats.current_hour_trades = currentTrades;
-        
-        // Update last known good values with debouncing
-        updateLastKnownValues('hour', currentVolume, currentTrades);
-      }
-      // Fallback to summary stats for hour mode
-      else if (summaryStats[volumeKey] > 0 || summaryStats[tradesKey] > 0) {
-        currentVolume = summaryStats[volumeKey] || 0;
-        currentTrades = summaryStats[tradesKey] || 0;
-        
-        // Update last known good values if this is new data
-        if (currentVolume > lastKnownValues.hour.volume || currentTrades > lastKnownValues.hour.trades) {
-          updateLastKnownValues('hour', currentVolume, currentTrades);
-        }
-      }
-      // Last known good values fallback
-      else {
-        currentVolume = lastKnownValues.hour.volume;
-        currentTrades = lastKnownValues.hour.trades;
-        
-        // Use last known values in enhanced summary stats too
-        enhancedSummaryStats.current_hour_volume_usd = currentVolume;
-        enhancedSummaryStats.current_hour_trades = currentTrades;
-      }
-    }
-    
-    return {
-      currentVolumeKey: volumeKey,
-      currentTradesKey: tradesKey,
-      currentVolume,
-      currentTrades,
-      summaryStatsWithUltraFast: enhancedSummaryStats
-    };
-  }, [timeMode, summaryStats, currentMinuteData, currentHourData, ultraFastTotals, lastKnownValues, updateLastKnownValues]);
-
-  // Memoize label descriptions to prevent recreation on every render
-  const labelDescriptions = useMemo(() => {
-    return {
-      title: timeMode === 'hour' ? "Trading Activity (Last Hour)" : "Trading Activity (Last 24 Hours)",
-      periodLabel: timeMode === 'hour' ? "minute" : "hour",
-      peakPeriodLabel: timeMode === 'hour' ? "minute" : "hour",
-      totalPeriodLabel: timeMode === 'hour' ? "hourly" : "daily"
-    };
-  }, [timeMode]);
-
-  // Optimize time mode toggle functions with useCallback to prevent unnecessary re-renders
+  // Optimize time mode toggle functions
   const handleHourModeToggle = useCallback(() => {
     setTimeMode('hour');
   }, []);
@@ -435,45 +262,44 @@ const UnifiedAnalytics = ({
         </div>
       </div>
 
-      {/* Summary Stats Grid */}
+      {/* Summary Stats Grid - Using realtimeData directly */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-6 mb-8" data-testid="summary-stats-grid">
         <div className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-lg border border-white/50 p-6 text-center hover:shadow-xl transition-all duration-300" data-testid="peak-volume-stat">
           <div className="text-3xl font-bold text-blue-600 mb-1" data-testid="peak-volume-value">
-            {formatVolume(summaryStatsWithUltraFast.peak_volume_usd || 0)}
+            {formatVolume(realtimeData.peaks.peak_volume_usd)}
           </div>
           <div className="text-sm font-medium text-gray-600 uppercase tracking-wide">Peak Volume</div>
-          <div className="text-xs text-gray-500 mt-1">{labelDescriptions.peakPeriodLabel}</div>
+          <div className="text-xs text-gray-500 mt-1">{timeMode === 'hour' ? 'minute' : 'hour'}</div>
         </div>
         <div className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-lg border border-white/50 p-6 text-center hover:shadow-xl transition-all duration-300" data-testid="peak-trades-stat">
           <div className="text-3xl font-bold text-emerald-600 mb-1" data-testid="peak-trades-value">
-            {(summaryStatsWithUltraFast.peak_trades || 0).toLocaleString()}
+            {(realtimeData.peaks.peak_trades || 0).toLocaleString()}
           </div>
           <div className="text-sm font-medium text-gray-600 uppercase tracking-wide">Peak Trades</div>
-          <div className="text-xs text-gray-500 mt-1">{labelDescriptions.peakPeriodLabel}</div>
+          <div className="text-xs text-gray-500 mt-1">{timeMode === 'hour' ? 'minute' : 'hour'}</div>
         </div>
         <div className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-lg border border-white/50 p-6 text-center hover:shadow-xl transition-all duration-300" data-testid="total-volume-stat">
           <div className="text-3xl font-bold text-purple-600 mb-1" data-testid="total-volume-value">
-            {formatVolume(summaryStatsWithUltraFast.total_volume_usd || 0)}
+            {formatVolume(modeTotals.total_volume_usd)}
           </div>
           <div className="text-sm font-medium text-gray-600 uppercase tracking-wide">Total Volume</div>
-          <div className="text-xs text-gray-500 mt-1">{labelDescriptions.totalPeriodLabel}</div>
+          <div className="text-xs text-gray-500 mt-1">{timeMode === 'hour' ? 'hourly' : 'daily'}</div>
         </div>
         <div className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-lg border border-white/50 p-6 text-center hover:shadow-xl transition-all duration-300" data-testid="total-trades-stat">
           <div className="text-3xl font-bold text-indigo-600 mb-1" data-testid="total-trades-value">
-            {(summaryStatsWithUltraFast.total_trades || 0).toLocaleString()}
+            {(modeTotals.total_trades || 0).toLocaleString()}
           </div>
           <div className="text-sm font-medium text-gray-600 uppercase tracking-wide">Total Trades</div>
-          <div className="text-xs text-gray-500 mt-1">{labelDescriptions.totalPeriodLabel}</div>
+          <div className="text-xs text-gray-500 mt-1">{timeMode === 'hour' ? 'hourly' : 'daily'}</div>
         </div>
       </div>
 
       {/* Chart Section */}
       <div className="bg-white/80 backdrop-blur-sm rounded-2xl shadow-xl border border-white/50 p-8" data-testid="chart-section">
-        {/* Header with Current Stats - Horizontally Aligned */}
+        {/* Header with Current Stats */}
         <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-6 mb-6">
           {/* Left Side - Trading Activity Header */}
           <div className="flex-1">
-            {/* Enhanced Chart Header with Live Data */}
             <div className="relative mb-4">
               <div className="absolute -inset-1 bg-gradient-to-r from-blue-600 via-purple-600 to-indigo-600 rounded-2xl blur opacity-20"></div>
               <div className="relative bg-white/90 backdrop-blur-sm rounded-xl p-5 border border-white/40">
@@ -489,10 +315,9 @@ const UnifiedAnalytics = ({
                 </div>
               </div>
             </div>
-            
           </div>
           
-          {/* Right Side - Current Stats */}
+          {/* Right Side - Current Stats - Using realtimeData directly */}
           {chartData.length > 0 && (
             <div className="flex-shrink-0">
               <div className="relative">
@@ -526,7 +351,7 @@ const UnifiedAnalytics = ({
                           <span className="text-xs font-semibold text-gray-700 uppercase tracking-wider">Volume</span>
                         </div>
                         <div className="text-lg font-bold text-blue-700" data-testid="current-volume-value">
-                          {formatVolume(currentVolume)}
+                          {formatVolume(currentPeriodData.volume_usd)}
                         </div>
                       </div>
                       
@@ -537,7 +362,7 @@ const UnifiedAnalytics = ({
                           <span className="text-xs font-semibold text-gray-700 uppercase tracking-wider">Trades</span>
                         </div>
                         <div className="text-lg font-bold text-emerald-700" data-testid="current-trades-value">
-                          {currentTrades}
+                          {currentPeriodData.trade_count}
                         </div>
                       </div>
                     </div>
