@@ -109,7 +109,8 @@ const UnifiedAnalytics = ({
   const chartData = useMemo(() => {
     const timeSeries = currentModeData.time_series || [];
     
-    return timeSeries.map(point => {
+    // First enhance any existing current period data
+    const enhancedSeries = timeSeries.map(point => {
       let enhancedPoint = { ...point };
       
       // Enhance current period with real-time data
@@ -137,6 +138,33 @@ const UnifiedAnalytics = ({
         isCurrentPeriod: point.timestamp === currentTimestamp
       };
     });
+    
+    // Then append current period if it doesn't exist in historical data
+    const hasCurrentPeriod = timeSeries.some(point => point.timestamp === currentTimestamp);
+    if (!hasCurrentPeriod && currentPeriodData && currentTimestamp) {
+      const currentPeriodPoint = {
+        timestamp: currentTimestamp,
+        volume_usd: currentPeriodData.volume_usd,
+        trade_count: currentPeriodData.trade_count,
+        timeString: timeMode === 'hour' 
+          ? new Date(currentTimestamp).toLocaleTimeString([], { 
+              hour: '2-digit', 
+              minute: '2-digit',
+              hour12: false 
+            })
+          : new Date(currentTimestamp).toLocaleDateString([], { 
+              month: 'short',
+              day: '2-digit',
+              hour: '2-digit',
+              hour12: false
+            }),
+        isCurrentPeriod: true
+      };
+      enhancedSeries.push(currentPeriodPoint);
+    }
+    
+    // Sort by timestamp to maintain chronological order
+    return enhancedSeries.sort((a, b) => a.timestamp - b.timestamp);
   }, [currentModeData.time_series, timeMode, currentTimestamp, currentPeriodData]);
 
   // Custom tooltip component
