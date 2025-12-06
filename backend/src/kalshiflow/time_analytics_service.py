@@ -530,6 +530,10 @@ class TimeAnalyticsService:
             current_minute_timestamp = self._get_minute_timestamp(now_timestamp_ms)
             current_hour_timestamp = self._get_hour_timestamp(now_timestamp_ms)
             
+            # CRITICAL FIX: Ensure current minute and hour buckets always exist
+            # This ensures current period data is always available for the frontend
+            self._ensure_current_buckets_exist(current_minute_timestamp, current_hour_timestamp)
+            
             # Get current minute bucket data
             current_minute_data = None
             if current_minute_timestamp in self.minute_buckets:
@@ -652,6 +656,39 @@ class TimeAnalyticsService:
         timestamp_seconds = timestamp_ms // 1000
         hour_start_seconds = (timestamp_seconds // 3600) * 3600
         return hour_start_seconds * 1000
+    
+    def _ensure_current_buckets_exist(self, current_minute_timestamp: int, current_hour_timestamp: int):
+        """Ensure current minute and hour buckets exist even when there are no trades.
+        
+        This is critical for providing consistent current period data to the frontend,
+        even during quiet periods when no trades are happening.
+        
+        Args:
+            current_minute_timestamp: Current minute timestamp in milliseconds
+            current_hour_timestamp: Current hour timestamp in milliseconds
+        """
+        try:
+            # Create current minute bucket if it doesn't exist
+            if current_minute_timestamp not in self.minute_buckets:
+                self.minute_buckets[current_minute_timestamp] = MinuteBucket(
+                    timestamp=current_minute_timestamp,
+                    volume_usd=0.0,
+                    trade_count=0
+                )
+                logger.debug(f"Created empty current minute bucket: {datetime.fromtimestamp(current_minute_timestamp / 1000)}")
+            
+            # Create current hour bucket if it doesn't exist
+            if current_hour_timestamp not in self.hour_buckets:
+                self.hour_buckets[current_hour_timestamp] = HourBucket(
+                    timestamp=current_hour_timestamp,
+                    volume_usd=0.0,
+                    trade_count=0
+                )
+                logger.debug(f"Created empty current hour bucket: {datetime.fromtimestamp(current_hour_timestamp / 1000)}")
+                
+        except Exception as e:
+            logger.error(f"Error ensuring current buckets exist: {e}")
+            # Non-fatal error - continue with empty buckets if creation fails
     
     async def _cleanup_loop(self):
         """Background task to clean up old minute buckets."""
