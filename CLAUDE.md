@@ -300,36 +300,74 @@ This test serves as the definitive validation that the entire frontend is functi
 
 ## Railway Deployment
 
-The application is deployed on Railway.app for production hosting.
+The application is deployed on Railway.app for production hosting with automated deployment pipeline.
 
 ### Deployment Prerequisites
 1. **Railway CLI**: Ensure `railway` CLI is installed and authenticated
-2. **Backend Tests**: Run `uv run pytest tests/test_backend_e2e_regression.py -v` (must pass)
-3. **Frontend Tests**: Run `npm run test:frontend-regression` (must pass)
+2. **Validation**: Run pre-deployment validation script
+3. **Tests**: Both E2E regression tests must pass
 
-### Deployment Process
+### Automated Deployment Setup
+
+#### Configuration Files
+- **`railway.toml`**: Railway service configuration with health checks
+- **`nixpacks.toml`**: Optimized build process configuration
+- **`scripts/deploy-setup.sh`**: One-time Railway setup script
+- **`scripts/pre-deploy-validation.sh`**: Pre-deployment validation
+
+#### Setup Process
 ```bash
-# Deploy backend to Railway
-railway login
-railway up
+# 1. One-time Railway setup
+./scripts/deploy-setup.sh
 
-# Environment variables are managed via Railway dashboard:
-# - KALSHI_API_KEY
-# - KALSHI_PRIVATE_KEY_PATH
-# - DATABASE_URL (Supabase PostgreSQL)
-# - DATABASE_URL_POOLED
+# 2. Enable auto-deployment on main branch
+railway settings --auto-deploy=main
+
+# 3. Configure missing environment variables
+railway variables set PYTHONPATH="/app/backend/src"
+railway variables set UVICORN_HOST="0.0.0.0"
+railway variables set UVICORN_PORT="$PORT"
+railway variables set NODE_ENV="production"
+```
+
+### Deployment Workflow
+
+#### Manual Deployment (Current)
+```bash
+# 1. Run pre-deployment validation
+./scripts/pre-deploy-validation.sh
+
+# 2. Deploy if validation passes
+railway up
+```
+
+#### Automated Deployment (Target)
+```bash
+# Push to main branch triggers:
+# 1. Pre-deployment validation (backend + frontend tests)
+# 2. Automatic Railway deployment
+# 3. Health check verification
+# 4. Rollback on failure
 ```
 
 ### Railway Configuration
-- **Build Command**: `cd backend && pip install uv && uv sync`
-- **Start Command**: `cd backend && uv run uvicorn kalshiflow.app:app --host 0.0.0.0 --port $PORT`
-- **Health Check**: `/health` endpoint
-- **Auto-deploy**: Enabled on `main` branch
+- **Build**: Optimized via nixpacks.toml
+- **Health Check**: `/health` endpoint with 30s timeout
+- **Restart Policy**: On failure with max 3 retries
+- **Environment Variables**: Managed via Railway dashboard
+
+### Validation Checklist
+- ✅ Backend E2E regression test passes
+- ✅ Frontend builds successfully  
+- ✅ Railway configuration files present
+- ✅ Environment variables configured
+- ✅ Health endpoints responding
 
 ### Production Monitoring
 - **Logs**: Available via Railway dashboard
 - **Metrics**: CPU, memory, and request metrics tracked
-- **Health**: Continuous health monitoring on `/health`
+- **Health**: Continuous monitoring with automatic restarts
+- **WebSocket**: Connection stability monitoring
 
 - use the planning agent for all planning
 - use the fullstack websocket agent for all implementation/coding

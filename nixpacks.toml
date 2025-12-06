@@ -1,0 +1,14 @@
+[phases.build]
+cmds = [
+    "cd backend",
+    "pip install uv",
+    "uv sync --frozen"
+]
+
+[start]
+cmd = "cd backend && uv run uvicorn kalshiflow.app:app --host 0.0.0.0 --port $PORT"
+
+[variables]
+PYTHONPATH = "/app/backend/src"
+UVICORN_HOST = "0.0.0.0"
+UVICORN_PORT = "$PORT"

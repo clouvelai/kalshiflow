@@ -23,22 +23,12 @@ class Database:
     
     def __init__(self, database_url: str = None, pool_size: int = 10):
         """Initialize database with connection pool."""
-        # Prioritize direct DATABASE_URL connection over pooled for Railway/asyncpg
-        self.database_url = (
-            database_url or 
-            os.getenv("DATABASE_URL") or  # Direct connection (port 5432)
-            os.getenv("DATABASE_URL_FALLBACK") or  # IPv4-specific fallback
-            os.getenv("DATABASE_URL_POOLED")  # Pooled connection (port 6543) - last resort
-        )
+        self.database_url = database_url or os.getenv("DATABASE_URL")
         self.pool_size = pool_size
         self._pool = None
         self._init_lock = asyncio.Lock()
         self._initialized = False
     
-    async def _setup_ipv4_connection(self, connection):
-        """Setup connection to prefer IPv4 addressing for Render compatibility."""
-        # This is called during connection setup to ensure IPv4 is preferred
-        pass
     
     def _convert_decimals_to_float(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Convert Decimal values to float for JSON serialization."""
@@ -55,147 +45,24 @@ class Database:
                 
             if not self.database_url:
                 raise ValueError("DATABASE_URL environment variable is required")
-                
-            # Enhanced debugging for Render connectivity issues
-            pooled_url = os.getenv("DATABASE_URL_POOLED")
-            direct_url = os.getenv("DATABASE_URL")
-            
-            logger.info("=== DATABASE CONNECTION DEBUG ===")
-            logger.info(f"Environment: ENVIRONMENT={os.getenv('ENVIRONMENT', 'unknown')}")
-            logger.info(f"DATABASE_URL_POOLED available: {'YES' if pooled_url else 'NO'}")
-            logger.info(f"DATABASE_URL available: {'YES' if direct_url else 'NO'}")
-            
-            if pooled_url:
-                logger.info(f"POOLED URL: {pooled_url[:50]}...")
-            if direct_url:
-                logger.info(f"DIRECT URL: {direct_url[:50]}...")
-                
-            logger.info(f"SELECTED URL: {self.database_url[:50]}...")
         
         try:
-            # Parse URL details for debugging
-            if self.database_url:
-                try:
-                    url_parts = self.database_url.split('@')
-                    if len(url_parts) > 1:
-                        host_port = url_parts[1].split('/')[0]
-                        host = host_port.split(':')[0]
-                        port = host_port.split(':')[1] if ':' in host_port else 'unknown'
-                        logger.info(f"TARGET HOST: {host}")
-                        logger.info(f"TARGET PORT: {port}")
-                        
-                        # Check if it's the pooled or direct connection
-                        if ':6543' in self.database_url:
-                            logger.info("CONNECTION TYPE: POOLED (6543) - Should work with IPv4")
-                        elif ':5432' in self.database_url:
-                            logger.info("CONNECTION TYPE: DIRECT (5432) - May have IPv6 issues")
-                        else:
-                            logger.info(f"CONNECTION TYPE: UNKNOWN PORT ({port})")
-                    else:
-                        logger.info("URL FORMAT: Could not parse host/port")
-                except Exception as parse_error:
-                    logger.info(f"URL PARSING ERROR: {parse_error}")
+            # Create connection pool
+            self._pool = await asyncpg.create_pool(
+                self.database_url,
+                min_size=1,
+                max_size=self.pool_size,
+                command_timeout=20,
+                statement_cache_size=0,  # Required for pgbouncer compatibility
+                server_settings={
+                    'application_name': 'kalshiflow',
+                    'timezone': 'UTC'
+                }
+            )
             
-            # Render connectivity fix: Force IPv4 connections with multiple fallback strategies
-            connection_successful = False
-            last_error = None
-            
-            # Strategy 1: Primary connection with enhanced IPv4 settings for Render
-            logger.info("=== STRATEGY 1: IPv4-optimized connection ===")
-            try:
-                self._pool = await asyncpg.create_pool(
-                    self.database_url,
-                    min_size=1,  # Reduced for faster startup on Render
-                    max_size=min(self.pool_size, 8),  # Limit connections for Render free tier
-                    command_timeout=20,  # Reduced timeout for faster failures
-                    statement_cache_size=0,  # Required for pgbouncer compatibility
-                    server_settings={
-                        'application_name': 'kalshiflow-render',
-                        'timezone': 'UTC'
-                    },
-                    # Force IPv4 by setting socket family
-                    setup=self._setup_ipv4_connection
-                )
-                
-                # Test the connection
-                async with self._pool.acquire() as conn:
-                    await conn.fetchval('SELECT 1')
-                    
-                connection_successful = True
-                logger.info("✅ STRATEGY 1 SUCCESSFUL: IPv4-optimized connection established")
-                
-            except Exception as e:
-                last_error = e
-                logger.warning(f"⚠️ STRATEGY 1 FAILED: {e}")
-                
-                # Clean up failed pool
-                if self._pool:
-                    try:
-                        await self._pool.close()
-                    except:
-                        pass
-                    self._pool = None
-            
-            # Strategy 2: Alternative connection string if available
-            if not connection_successful and direct_url and direct_url != self.database_url:
-                logger.info("=== STRATEGY 2: Alternative connection string ===")
-                try:
-                    self._pool = await asyncpg.create_pool(
-                        direct_url,
-                        min_size=1,
-                        max_size=6,
-                        command_timeout=15,
-                        statement_cache_size=0,
-                        server_settings={
-                            'application_name': 'kalshiflow-render-fallback',
-                            'timezone': 'UTC'
-                        }
-                    )
-                    
-                    # Test the connection
-                    async with self._pool.acquire() as conn:
-                        await conn.fetchval('SELECT 1')
-                        
-                    connection_successful = True
-                    logger.info("✅ STRATEGY 2 SUCCESSFUL: Alternative connection established")
-                    
-                except Exception as e:
-                    last_error = e
-                    logger.warning(f"⚠️ STRATEGY 2 FAILED: {e}")
-                    
-                    if self._pool:
-                        try:
-                            await self._pool.close()
-                        except:
-                            pass
-                        self._pool = None
-            
-            # Strategy 3: Basic connection without custom settings
-            if not connection_successful:
-                logger.info("=== STRATEGY 3: Basic connection (last resort) ===")
-                try:
-                    self._pool = await asyncpg.create_pool(
-                        self.database_url,
-                        min_size=1,
-                        max_size=5,
-                        command_timeout=10,
-                        statement_cache_size=0
-                    )
-                    
-                    # Test the connection
-                    async with self._pool.acquire() as conn:
-                        await conn.fetchval('SELECT 1')
-                        
-                    connection_successful = True
-                    logger.info("✅ STRATEGY 3 SUCCESSFUL: Basic connection established")
-                    
-                except Exception as e:
-                    last_error = e
-                    logger.error(f"❌ STRATEGY 3 FAILED: {e}")
-            
-            if not connection_successful:
-                logger.error("❌ ALL CONNECTION STRATEGIES FAILED")
-                raise last_error or Exception("Unable to establish database connection")
+            # Test the connection
+            async with self._pool.acquire() as conn:
+                await conn.fetchval('SELECT 1')
                 
             # Run migrations only if not using local Supabase
             # Local Supabase handles migrations via supabase/migrations/ 
@@ -205,7 +72,7 @@ class Database:
             else:
                 logger.info("Skipping migrations for local Supabase (handled by Supabase CLI)")
             
-            logger.info(f"PostgreSQL database initialized with pool size {min(self.pool_size, 8)}")
+            logger.info(f"PostgreSQL database initialized with pool size {self.pool_size}")
             self._initialized = True
                 
         except Exception as e:
