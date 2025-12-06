@@ -332,22 +332,29 @@ railway variables set NODE_ENV="production"
 
 ### Deployment Workflow
 
-#### Manual Deployment (Current)
+#### Deployment Script (Recommended)
+```bash
+# IMPORTANT: Only deploy when explicitly requested by the user
+# This script handles all validation and deployment steps
+./deploy.sh
+
+# What the script does:
+# 1. Validates git status (main branch, clean working directory)
+# 2. Runs backend E2E regression tests
+# 3. Runs frontend E2E regression tests  
+# 4. Deploys backend to kalshi-flowboard-backend service
+# 5. Deploys frontend to kalshi-flowboard service
+# 6. Verifies deployment success
+```
+
+#### Manual Deployment (Alternative)
 ```bash
 # 1. Run pre-deployment validation
 ./scripts/pre-deploy-validation.sh
 
-# 2. Deploy if validation passes
-railway up
-```
-
-#### Automated Deployment (Target)
-```bash
-# Push to main branch triggers:
-# 1. Pre-deployment validation (backend + frontend tests)
-# 2. Automatic Railway deployment
-# 3. Health check verification
-# 4. Rollback on failure
+# 2. Deploy backend and frontend separately
+cd backend && railway up --service kalshi-flowboard-backend
+cd frontend && railway up --service kalshi-flowboard
 ```
 
 ### Railway Configuration
@@ -372,3 +379,4 @@ railway up
 - use the planning agent for all planning
 - use the fullstack websocket agent for all implementation/coding
 - use the deployment agent for Railway.app deployments and production infrastructure
+- IMPORTANT: Only deploy to production when explicitly requested by the user. Never deploy autonomously.
