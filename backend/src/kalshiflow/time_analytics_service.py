@@ -471,7 +471,7 @@ class TimeAnalyticsService:
             }
 
     def get_current_minute_fast_data(self, trade_timestamp: int) -> Dict[str, Any]:
-        """Get ultra-fast current minute data for immediate broadcasting.
+        """Get ultra-fast current minute data + totals for immediate broadcasting.
         
         Optimized for instant updates when trades occur - minimal processing overhead.
         
@@ -479,35 +479,50 @@ class TimeAnalyticsService:
             trade_timestamp: Timestamp of the triggering trade in milliseconds
             
         Returns:
-            Dict with volume_usd, trade_count, timestamp, last_trade_ts
+            Dict with volume_usd, trade_count, timestamp, last_trade_ts, total_volume_usd, total_trades
         """
         try:
             current_minute = self._get_minute_timestamp(trade_timestamp)
             
-            if current_minute in self.minute_buckets:
-                bucket = self.minute_buckets[current_minute]
-                return {
-                    "volume_usd": round(bucket.volume_usd, 2),
-                    "trade_count": bucket.trade_count,
-                    "timestamp": current_minute,
-                    "last_trade_ts": trade_timestamp
-                }
-            else:
-                return {
-                    "volume_usd": 0.0,
-                    "trade_count": 0,
-                    "timestamp": current_minute,
-                    "last_trade_ts": trade_timestamp
-                }
+            # Calculate cumulative totals from all minute buckets (lightweight operation)
+            # This ensures total stats update at same ultra-fast cadence as current minute
+            total_volume_usd = 0.0
+            total_trades = 0
+            current_minute_volume = 0.0
+            current_minute_trades = 0
+            
+            # Sum all minute buckets for totals (efficient since buckets are limited by window size)
+            for timestamp, bucket in self.minute_buckets.items():
+                total_volume_usd += bucket.volume_usd
+                total_trades += bucket.trade_count
+                
+                # Check if this is the current minute bucket
+                if timestamp == current_minute:
+                    current_minute_volume = bucket.volume_usd
+                    current_minute_trades = bucket.trade_count
+            
+            return {
+                # Current minute data (ultra-fast)
+                "volume_usd": round(current_minute_volume, 2),
+                "trade_count": current_minute_trades,
+                "timestamp": current_minute,
+                "last_trade_ts": trade_timestamp,
+                # CRITICAL: Add total stats for ultra-fast total updates
+                "total_volume_usd": round(total_volume_usd, 2),
+                "total_trades": total_trades
+            }
+            
         except Exception as e:
             logger.error(f"Error getting fast current minute data: {e}")
-            # Return safe default
+            # Return safe default with zeros
             current_minute = self._get_minute_timestamp(trade_timestamp)
             return {
                 "volume_usd": 0.0,
                 "trade_count": 0,
                 "timestamp": current_minute,
-                "last_trade_ts": trade_timestamp
+                "last_trade_ts": trade_timestamp,
+                "total_volume_usd": 0.0,
+                "total_trades": 0
             }
 
     def get_incremental_analytics_data(self) -> Dict[str, Any]:

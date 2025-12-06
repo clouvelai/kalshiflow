@@ -171,7 +171,7 @@ const useTradeData = () => {
           break;
 
         case 'current_minute_fast':
-          // ULTRA-FAST: Instant current minute updates on every trade
+          // ULTRA-FAST: Instant current minute + total updates on every trade
           // Provides immediate responsiveness matching trade ticker speed
           if (lastMessage.data?.volume_usd !== undefined && lastMessage.data?.trade_count !== undefined) {
             const fastData = lastMessage.data;
@@ -187,14 +187,23 @@ const useTradeData = () => {
               },
               // Mark this as an ultra-fast update for debugging
               last_ultra_fast_update: Date.now(),
-              last_trade_ts: fastData.last_trade_ts
+              last_trade_ts: fastData.last_trade_ts,
+              // CRITICAL: Store ultra-fast total stats for immediate UI updates
+              ultra_fast_totals: {
+                total_volume_usd: fastData.total_volume_usd || 0,
+                total_trades: fastData.total_trades || 0,
+                last_update: Date.now()
+              }
             }));
             
-            // Also update the analyticsSummary for legacy components
+            // Also update the analyticsSummary for legacy components + ultra-fast totals
             setAnalyticsSummary(prevSummary => ({
               ...prevSummary,
               current_minute_volume_usd: fastData.volume_usd,
               current_minute_trades: fastData.trade_count,
+              // CRITICAL: Add ultra-fast total stats to summary
+              total_volume_usd: fastData.total_volume_usd || prevSummary.total_volume_usd || 0,
+              total_trades: fastData.total_trades || prevSummary.total_trades || 0,
               last_ultra_fast_update: Date.now()
             }));
 
