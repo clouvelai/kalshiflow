@@ -1,5 +1,6 @@
 [build]
 builder = "railpack"
+buildCommand = "cd backend && pip install uv && uv sync"
 
 [deploy]
 healthcheckPath = "/health"
