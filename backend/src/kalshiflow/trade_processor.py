@@ -259,21 +259,17 @@ class TradeProcessor:
             return
         
         try:
-            # Get current global stats
-            global_stats = self.aggregator.get_global_stats()
-            
-            # Create lightweight trade update message (no hot markets - too big!)
-            # Use dict() instead of model_dump() to include computed properties like net_flow
-            ticker_state_dump = ticker_state.dict()
-            
+            # Create optimized trade update message with ONLY the trade data
+            # Removed ticker_state (636 bytes) and global_stats (305 bytes) - unused by frontend
+            # This reduces message size from 1,081 bytes to 140 bytes (87% reduction!)
             update_message = TradeUpdateMessage(
                 type="trade",
                 data={
-                    "trade": trade.model_dump(),
-                    "ticker_state": ticker_state_dump,
-                    "global_stats": global_stats
+                    "trade": trade.model_dump()
+                    # REMOVED: ticker_state - unused by frontend, saves 636 bytes per message
+                    # REMOVED: global_stats - unused by frontend, saves 305 bytes per message
                     # REMOVED: hot_markets - this was causing 88KB messages!
-                    # Hot markets updates will be sent separately via periodic broadcasts
+                    # Hot markets and analytics are sent via separate periodic broadcasts
                 }
             )
             

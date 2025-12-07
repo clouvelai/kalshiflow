@@ -217,15 +217,15 @@ class SnapshotMessage(WebSocketMessage):
 class TradeUpdateMessage(WebSocketMessage):
     """Incremental trade update message sent to frontend."""
     type: Literal["trade"] = "trade"
-    data: Dict[str, Any] = Field(..., description="Trade update data containing trade, ticker_state, and optionally current_minute_stats")
+    data: Dict[str, Any] = Field(..., description="Trade update data containing trade data")
     
     @field_validator('data')
     @classmethod
     def validate_trade_data(cls, v):
         """Ensure trade update has required fields."""
-        if "trade" not in v or "ticker_state" not in v:
-            raise ValueError("Trade update data must contain 'trade' and 'ticker_state'")
-        # current_minute_stats is optional
+        if "trade" not in v:
+            raise ValueError("Trade update data must contain 'trade'")
+        # ticker_state and global_stats removed - unused by frontend (saves 941 bytes per message!)
         return v
 
 
