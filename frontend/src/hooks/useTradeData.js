@@ -121,6 +121,14 @@ const useTradeData = () => {
           }
           break;
 
+        case 'ping':
+          // WebSocket keepalive ping from server - no action needed
+          break;
+
+        case 'pong':
+          // WebSocket keepalive pong response - no action needed
+          break;
+
         default:
           console.warn('Received unknown message type:', lastMessage.type);
       }

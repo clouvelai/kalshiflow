@@ -465,8 +465,9 @@ const UnifiedAnalytics = ({
                   left: 40,
                   bottom: 20,
                 }}
-                animationDuration={0}
-                isAnimationActive={false}
+                animationDuration={400}
+                animationEasing="ease-out"
+                isAnimationActive={true}
                 key={`chart-${timeMode}-${chartData.length}`}
               >
                 <CartesianGrid strokeDasharray="2 4" stroke="#e2e8f0" strokeOpacity={0.6} />
@@ -517,8 +518,10 @@ const UnifiedAnalytics = ({
                   fillOpacity={0.8}
                   radius={[3, 3, 0, 0]}
                   name="Volume (USD)"
-                  isAnimationActive={false}
-                  animationDuration={0}
+                  isAnimationActive={true}
+                  animationDuration={400}
+                  animationEasing="ease-out"
+                  animationBegin={0}
                 />
                 
                 {/* Trade count line (secondary) */}
@@ -531,8 +534,10 @@ const UnifiedAnalytics = ({
                   dot={{ r: 3, fill: '#10b981', strokeWidth: 2, stroke: '#fff' }}
                   activeDot={{ r: 6, stroke: '#10b981', strokeWidth: 3, fill: '#fff' }}
                   name="Trade Count"
-                  isAnimationActive={false}
-                  animationDuration={0}
+                  isAnimationActive={true}
+                  animationDuration={400}
+                  animationEasing="ease-out"
+                  animationBegin={100}
                 />
               </ComposedChart>
             </ResponsiveContainer>
