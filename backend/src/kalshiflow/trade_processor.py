@@ -31,10 +31,10 @@ class TradeProcessor:
         self._running = False
         self._trade_callbacks = []
         self._hot_markets_task = None
+        self._analytics_task = None
         
-        # Analytics update throttling (max 1 update per second to prevent frontend lag)
-        self._last_analytics_update = 0
-        self._analytics_throttle_seconds = 1.0
+        # Analytics broadcast frequency (every 1 second for smooth updates)
+        self._analytics_interval = 1.0
         
         # Hot markets broadcast frequency (every 5 seconds)
         self._hot_markets_interval = 5
@@ -44,8 +44,8 @@ class TradeProcessor:
             "trades_processed": 0,
             "trades_stored": 0,
             "processing_errors": 0,
-            "analytics_updates_sent": 0,
-            "analytics_updates_throttled": 0,
+            "analytics_broadcasts_sent": 0,
+            "analytics_broadcast_errors": 0,
             "last_trade_time": None,
             "started_at": None
         }
@@ -73,6 +73,9 @@ class TradeProcessor:
         # Start hot markets broadcast task
         self._hot_markets_task = asyncio.create_task(self._hot_markets_broadcast_loop())
         
+        # Start analytics broadcast task  
+        self._analytics_task = asyncio.create_task(self._analytics_broadcast_loop())
+        
         logger.info("Trade processor service started successfully")
     
     async def stop(self):
@@ -92,6 +95,15 @@ class TradeProcessor:
             except asyncio.CancelledError:
                 pass
             self._hot_markets_task = None
+        
+        # Stop analytics broadcast task
+        if self._analytics_task:
+            self._analytics_task.cancel()
+            try:
+                await self._analytics_task
+            except asyncio.CancelledError:
+                pass
+            self._analytics_task = None
         
         # Stop aggregator
         await self.aggregator.stop()
@@ -144,23 +156,12 @@ class TradeProcessor:
                     price_points=[trade.yes_price_dollars]
                 )
             
-            # Update analytics and broadcast simplified 2-message updates
+            # Update analytics service (broadcasting handled by periodic task)
             try:
-                # Process the trade in the new analytics service
+                # Process the trade in the analytics service
                 self.analytics_service.process_trade(trade)
+                logger.debug(f"Processed trade {trade.market_ticker} in analytics service")
                 
-                # Send 2 analytics updates (one for each mode) with simplified messaging
-                if self.websocket_broadcaster:
-                    # Hour mode analytics update (current minute data + 60-minute window)
-                    hour_analytics = self.analytics_service.get_mode_data("hour", limit=60)
-                    await self.websocket_broadcaster.broadcast_analytics_update(hour_analytics)
-                    
-                    # Day mode analytics update (current hour data + 24-hour window)
-                    day_analytics = self.analytics_service.get_mode_data("day", limit=24)
-                    await self.websocket_broadcaster.broadcast_analytics_update(day_analytics)
-                    
-                    logger.debug(f"Sent analytics updates for both hour and day modes after trade {trade.market_ticker}")
-                    
             except Exception as e:
                 logger.error(f"Analytics processing failed for trade {trade.market_ticker}: {e}")
                 # Continue processing - analytics failures shouldn't stop trade flow
@@ -405,6 +406,49 @@ class TradeProcessor:
             logger.debug("Hot markets broadcast loop cancelled")
         except Exception as e:
             logger.error(f"Fatal error in hot markets broadcast loop: {e}")
+    
+    async def _analytics_broadcast_loop(self):
+        """Periodically broadcast analytics updates for smooth real-time updates."""
+        try:
+            # Wait a bit before starting to ensure analytics service has data
+            logger.info("Analytics broadcast loop starting (waiting 2 seconds)")
+            await asyncio.sleep(2)
+            
+            logger.info(f"Analytics broadcast loop running, websocket_broadcaster: {self.websocket_broadcaster is not None}")
+            
+            while self._running:
+                try:
+                    if self.websocket_broadcaster:
+                        # Send analytics updates for both modes every second for smooth updates
+                        
+                        # Hour mode analytics update (current minute data + 60-minute window)
+                        hour_analytics = self.analytics_service.get_mode_data("hour", limit=60)
+                        await self.websocket_broadcaster.broadcast_analytics_update(hour_analytics)
+                        
+                        # Day mode analytics update (current hour data + 24-hour window)
+                        day_analytics = self.analytics_service.get_mode_data("day", limit=24)
+                        await self.websocket_broadcaster.broadcast_analytics_update(day_analytics)
+                        
+                        # Update stats
+                        self.stats["analytics_broadcasts_sent"] += 2  # Two modes sent
+                        
+                        logger.info("Sent periodic analytics updates for both hour and day modes")
+                    else:
+                        logger.debug("Analytics broadcast loop waiting for websocket broadcaster to be set")
+                    
+                    # Wait for next update (1 second for smooth incremental updates)
+                    await asyncio.sleep(self._analytics_interval)
+                    
+                except Exception as e:
+                    logger.error(f"Error in analytics broadcast loop: {e}")
+                    self.stats["analytics_broadcast_errors"] += 1
+                    # Don't break the loop for individual errors
+                    await asyncio.sleep(self._analytics_interval)
+                    
+        except asyncio.CancelledError:
+            logger.debug("Analytics broadcast loop cancelled")
+        except Exception as e:
+            logger.error(f"Fatal error in analytics broadcast loop: {e}")
 
 
 # Global trade processor instance

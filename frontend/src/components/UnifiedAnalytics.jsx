@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useCallback } from 'react';
+import React, { useState, useMemo, useCallback, useEffect } from 'react';
 import {
   ComposedChart,
   Bar,
@@ -42,6 +42,71 @@ const formatVolumeAxis = (volume) => {
 const formatTradeCount = (count) => {
   return Math.round(count || 0);
 };
+
+// Animated counter component for smooth number transitions
+const AnimatedCounter = ({ 
+  value, 
+  formatter = (val) => val.toLocaleString(), 
+  duration = 750,
+  className = "",
+  ...props 
+}) => {
+  const [displayValue, setDisplayValue] = useState(value || 0);
+
+  useEffect(() => {
+    if (typeof value !== 'number') return;
+
+    const startValue = displayValue;
+    const endValue = value;
+    const startTime = Date.now();
+
+    // Skip animation if values are the same
+    if (startValue === endValue) return;
+
+    const animate = () => {
+      const now = Date.now();
+      const progress = Math.min((now - startTime) / duration, 1);
+      
+      // Easing function for smooth animation (ease-out cubic)
+      const easeOutCubic = 1 - Math.pow(1 - progress, 3);
+      const currentValue = startValue + (endValue - startValue) * easeOutCubic;
+      
+      setDisplayValue(currentValue);
+
+      if (progress < 1) {
+        requestAnimationFrame(animate);
+      }
+    };
+
+    requestAnimationFrame(animate);
+  }, [value, duration]);
+
+  return (
+    <span className={className} {...props}>
+      {formatter(displayValue)}
+    </span>
+  );
+};
+
+// Animated volume counter with proper formatting
+const AnimatedVolumeCounter = ({ value, className = "", ...props }) => (
+  <AnimatedCounter 
+    value={value || 0}
+    formatter={formatVolume}
+    className={className}
+    {...props}
+  />
+);
+
+// Animated trade counter with integer formatting  
+const AnimatedTradeCounter = ({ value, className = "", ...props }) => (
+  <AnimatedCounter 
+    value={value || 0}
+    formatter={(val) => Math.round(val).toLocaleString()}
+    className={className}
+    {...props}
+  />
+);
 
 const UnifiedAnalytics = ({ 
   hourAnalyticsData = {
@@ -157,7 +222,11 @@ const UnifiedAnalytics = ({
                     </div>
                   </div>
                   <div className="mt-1 text-lg font-bold text-blue-600">
-                    ${volumeData.value?.toLocaleString()}
+                    $<AnimatedCounter 
+                      value={volumeData.value || 0}
+                      formatter={(val) => Math.round(val).toLocaleString()}
+                      duration={300}
+                    />
                   </div>
                 </div>
               )}
@@ -172,7 +241,11 @@ const UnifiedAnalytics = ({
                     </div>
                   </div>
                   <div className="mt-1 text-lg font-bold text-emerald-600">
-                    {tradeData.value?.toLocaleString()}
+                    <AnimatedCounter 
+                      value={tradeData.value || 0}
+                      formatter={(val) => Math.round(val).toLocaleString()}
+                      duration={300}
+                    />
                   </div>
                 </div>
               )}
@@ -257,32 +330,32 @@ const UnifiedAnalytics = ({
         </div>
       </div>
 
-      {/* Summary Stats Grid - Using simplified analytics data */}
+      {/* Summary Stats Grid - Using simplified analytics data with animated counters */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-6 mb-8" data-testid="summary-stats-grid">
         <div className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-lg border border-white/50 p-6 text-center hover:shadow-xl transition-all duration-300" data-testid="peak-volume-stat">
           <div className="text-3xl font-bold text-blue-600 mb-1" data-testid="peak-volume-value">
-            {formatVolume(summaryStats.peak_volume_usd)}
+            <AnimatedVolumeCounter value={summaryStats.peak_volume_usd} />
           </div>
           <div className="text-sm font-medium text-gray-600 uppercase tracking-wide">Peak Volume</div>
           <div className="text-xs text-gray-500 mt-1">{timeMode === 'hour' ? 'minute' : 'hour'}</div>
         </div>
         <div className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-lg border border-white/50 p-6 text-center hover:shadow-xl transition-all duration-300" data-testid="peak-trades-stat">
           <div className="text-3xl font-bold text-emerald-600 mb-1" data-testid="peak-trades-value">
-            {(summaryStats.peak_trades || 0).toLocaleString()}
+            <AnimatedTradeCounter value={summaryStats.peak_trades} />
           </div>
           <div className="text-sm font-medium text-gray-600 uppercase tracking-wide">Peak Trades</div>
           <div className="text-xs text-gray-500 mt-1">{timeMode === 'hour' ? 'minute' : 'hour'}</div>
         </div>
         <div className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-lg border border-white/50 p-6 text-center hover:shadow-xl transition-all duration-300" data-testid="total-volume-stat">
           <div className="text-3xl font-bold text-purple-600 mb-1" data-testid="total-volume-value">
-            {formatVolume(summaryStats.total_volume_usd)}
+            <AnimatedVolumeCounter value={summaryStats.total_volume_usd} />
           </div>
           <div className="text-sm font-medium text-gray-600 uppercase tracking-wide">Total Volume</div>
           <div className="text-xs text-gray-500 mt-1">{timeMode === 'hour' ? 'hourly' : 'daily'}</div>
         </div>
         <div className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-lg border border-white/50 p-6 text-center hover:shadow-xl transition-all duration-300" data-testid="total-trades-stat">
           <div className="text-3xl font-bold text-indigo-600 mb-1" data-testid="total-trades-value">
-            {(summaryStats.total_trades || 0).toLocaleString()}
+            <AnimatedTradeCounter value={summaryStats.total_trades} />
           </div>
           <div className="text-sm font-medium text-gray-600 uppercase tracking-wide">Total Trades</div>
           <div className="text-xs text-gray-500 mt-1">{timeMode === 'hour' ? 'hourly' : 'daily'}</div>
@@ -337,7 +410,7 @@ const UnifiedAnalytics = ({
                       </div>
                     </div>
                     
-                    {/* Current stats - Combined on one line */}
+                    {/* Current stats - Combined on one line with animated counters */}
                     <div className="flex items-center justify-between gap-4">
                       {/* Volume */}
                       <div className="flex-1 min-w-0" data-testid="current-volume">
@@ -346,7 +419,7 @@ const UnifiedAnalytics = ({
                           <span className="text-xs font-semibold text-gray-700 uppercase tracking-wider">Volume</span>
                         </div>
                         <div className="text-lg font-bold text-blue-700" data-testid="current-volume-value">
-                          {formatVolume(currentPeriodData.volume_usd)}
+                          <AnimatedVolumeCounter value={currentPeriodData.volume_usd} />
                         </div>
                       </div>
                       
@@ -357,7 +430,7 @@ const UnifiedAnalytics = ({
                           <span className="text-xs font-semibold text-gray-700 uppercase tracking-wider">Trades</span>
                         </div>
                         <div className="text-lg font-bold text-emerald-700" data-testid="current-trades-value">
-                          {currentPeriodData.trade_count}
+                          <AnimatedTradeCounter value={currentPeriodData.trade_count} />
                         </div>
                       </div>
                     </div>
