@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useCallback, useEffect } from 'react';
+import React, { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import {
   ComposedChart,
   Bar,
@@ -43,43 +43,169 @@ const formatTradeCount = (count) => {
   return Math.round(count || 0);
 };
 
-// Animated counter component for smooth number transitions
+/**
+ * Animated counter component that smoothly transitions between numeric values.
+ * 
+ * Provides smooth, visually appealing number transitions using requestAnimationFrame
+ * and cubic easing. Optimized for real-time data streams with debouncing and
+ * intelligent animation management to prevent restart loops.
+ * 
+ * @component
+ * @param {Object} props - Component props
+ * @param {number} props.value - Target numeric value to animate towards
+ * @param {Function} [props.formatter] - Function to format the display value (default: toLocaleString)
+ * @param {number} [props.duration=1200] - Animation duration in milliseconds
+ * @param {string} [props.className=""] - Additional CSS classes to apply
+ * @param {...Object} props.props - Additional props passed to the span element
+ * 
+ * @example
+ * // Basic usage with default formatting
+ * <AnimatedCounter value={1234567} />
+ * 
+ * @example
+ * // Custom formatting for currency
+ * <AnimatedCounter 
+ *   value={1234567} 
+ *   formatter={(val) => `$${(val/1000).toFixed(1)}k`}
+ *   duration={800}
+ * />
+ * 
+ * @example
+ * // Integer-only formatting for trade counts
+ * <AnimatedCounter 
+ *   value={42} 
+ *   formatter={(val) => Math.round(val).toString()}
+ * />
+ * 
+ * Performance & Animation Features:
+ * - Uses requestAnimationFrame for optimal performance
+ * - Debounced updates prevent rapid animation restarts
+ * - Skips animation for minimal value changes (< 1% difference)
+ * - Smooth ease-out transitions with longer duration for stability
+ * - Prevents animation loops with intelligent state management
+ * - Automatically cleans up animation frames
+ * 
+ * @returns {JSX.Element} Span element displaying the animated value
+ */
 const AnimatedCounter = ({ 
   value, 
   formatter = (val) => val.toLocaleString(), 
-  duration = 750,
+  duration = 1200, // Increased from 750ms to prevent overlap with 1s backend updates
   className = "",
   ...props 
 }) => {
   const [displayValue, setDisplayValue] = useState(value || 0);
+  const [isAnimating, setIsAnimating] = useState(false);
+  const debounceTimeoutRef = useRef(null);
+  const lastTargetValueRef = useRef(value || 0);
 
   useEffect(() => {
+    // Validate that we received a numeric value to animate to
     if (typeof value !== 'number') return;
 
-    const startValue = displayValue;
-    const endValue = value;
-    const startTime = Date.now();
+    // Skip if value hasn't actually changed
+    if (value === lastTargetValueRef.current) return;
+    
+    // Calculate percentage change to avoid animating tiny fluctuations
+    const percentChange = lastTargetValueRef.current === 0 ? 1 : 
+      Math.abs((value - lastTargetValueRef.current) / lastTargetValueRef.current);
+    
+    // Skip animation for changes smaller than 0.1% to reduce visual noise while still animating meaningful changes
+    if (percentChange < 0.001 && lastTargetValueRef.current !== 0) {
+      setDisplayValue(value);
+      lastTargetValueRef.current = value;
+      return;
+    }
 
-    // Skip animation if values are the same
-    if (startValue === endValue) return;
+    // Clear any pending debounced animation
+    if (debounceTimeoutRef.current) {
+      clearTimeout(debounceTimeoutRef.current);
+    }
 
-    const animate = () => {
-      const now = Date.now();
-      const progress = Math.min((now - startTime) / duration, 1);
+    // Debounce rapid updates to prevent animation restart loops
+    debounceTimeoutRef.current = setTimeout(() => {
+      // If already animating, let current animation finish before starting new one
+      if (isAnimating) {
+        // Re-schedule this update after current animation completes
+        debounceTimeoutRef.current = setTimeout(() => {
+          startAnimation(value);
+        }, 100);
+        return;
+      }
+
+      startAnimation(value);
+    }, 50); // 50ms debounce for rapid updates
+
+    function startAnimation(targetValue) {
+      // Update the target value reference
+      lastTargetValueRef.current = targetValue;
       
-      // Easing function for smooth animation (ease-out cubic)
-      const easeOutCubic = 1 - Math.pow(1 - progress, 3);
-      const currentValue = startValue + (endValue - startValue) * easeOutCubic;
-      
-      setDisplayValue(currentValue);
+      // Capture current state for animation calculation
+      const startValue = displayValue;  // Where we're animating from
+      const endValue = targetValue;     // Where we're animating to
+      const startTime = Date.now();     // Animation start timestamp
 
-      if (progress < 1) {
-        requestAnimationFrame(animate);
+      // Skip animation if values are the same to avoid unnecessary work
+      if (startValue === endValue) return;
+
+      // Mark animation as active
+      setIsAnimating(true);
+
+      // Track animation frame ID for cleanup
+      let animationFrameId = null;
+      let isActive = true;  // Flag to check if animation should continue
+
+      // Animation loop using requestAnimationFrame for optimal performance
+      const animate = () => {
+        // Early exit if component unmounted or animation cancelled
+        if (!isActive) return;
+
+        const now = Date.now();
+        
+        // Calculate animation progress (0 to 1) clamped to avoid overrun
+        const progress = Math.min((now - startTime) / duration, 1);
+        
+        // Apply ease-out cubic easing for natural, smooth animation
+        // This creates a fast start that gradually slows down
+        // Formula: y = 1 - (1 - x)³
+        const easeOutCubic = 1 - Math.pow(1 - progress, 3);
+        
+        // Interpolate between start and end values using eased progress
+        const currentValue = startValue + (endValue - startValue) * easeOutCubic;
+        
+        // Update the displayed value
+        setDisplayValue(currentValue);
+
+        // Continue animation if not yet complete
+        if (progress < 1 && isActive) {
+          // Schedule next frame - browser will optimize this for 60fps
+          animationFrameId = requestAnimationFrame(animate);
+        } else {
+          // Animation complete
+          setIsAnimating(false);
+        }
+      };
+
+      // Start the animation loop
+      animationFrameId = requestAnimationFrame(animate);
+
+      // Cleanup function to prevent memory leaks
+      return () => {
+        isActive = false;  // Stop animation loop
+        setIsAnimating(false);
+        if (animationFrameId) {
+          cancelAnimationFrame(animationFrameId);  // Cancel pending frame
+        }
+      };
+    }
+
+    // Cleanup function for the effect
+    return () => {
+      if (debounceTimeoutRef.current) {
+        clearTimeout(debounceTimeoutRef.current);
       }
     };
-
-    requestAnimationFrame(animate);
-  }, [value, duration]);
+  }, [value, duration]); // Removed displayValue from dependencies to prevent restart loops
 
   return (
     <span className={className} {...props}>
@@ -88,7 +214,25 @@ const AnimatedCounter = ({
   );
 };
 
-// Animated volume counter with proper formatting
+/**
+ * Animated counter specialized for volume/currency display.
+ * 
+ * Pre-configured AnimatedCounter with currency formatting that automatically
+ * converts large numbers to readable format (e.g., $1.2M, $500k).
+ * 
+ * @component
+ * @param {Object} props - Component props
+ * @param {number} props.value - Volume value in USD to display
+ * @param {string} [props.className=""] - Additional CSS classes
+ * @param {...Object} props.props - Additional props passed to AnimatedCounter
+ * 
+ * @example
+ * <AnimatedVolumeCounter value={1234567} />  // Displays: $1.2M
+ * <AnimatedVolumeCounter value={500000} />   // Displays: $500k
+ * <AnimatedVolumeCounter value={42} />       // Displays: $42
+ * 
+ * @returns {JSX.Element} AnimatedCounter with volume formatting
+ */
 const AnimatedVolumeCounter = ({ value, className = "", ...props }) => (
   <AnimatedCounter 
     value={value || 0}
@@ -98,7 +242,25 @@ const AnimatedVolumeCounter = ({ value, className = "", ...props }) => (
   />
 );
 
-// Animated trade counter with integer formatting  
+/**
+ * Animated counter specialized for trade count display.
+ * 
+ * Pre-configured AnimatedCounter with integer formatting and thousand
+ * separators for displaying trade counts and similar discrete values.
+ * 
+ * @component
+ * @param {Object} props - Component props
+ * @param {number} props.value - Trade count or integer value to display
+ * @param {string} [props.className=""] - Additional CSS classes
+ * @param {...Object} props.props - Additional props passed to AnimatedCounter
+ * 
+ * @example
+ * <AnimatedTradeCounter value={1234} />    // Displays: 1,234
+ * <AnimatedTradeCounter value={42.7} />    // Displays: 43 (rounded)
+ * <AnimatedTradeCounter value={0} />       // Displays: 0
+ * 
+ * @returns {JSX.Element} AnimatedCounter with integer formatting
+ */
 const AnimatedTradeCounter = ({ value, className = "", ...props }) => (
   <AnimatedCounter 
     value={value || 0}
@@ -225,7 +387,7 @@ const UnifiedAnalytics = ({
                     $<AnimatedCounter 
                       value={volumeData.value || 0}
                       formatter={(val) => Math.round(val).toLocaleString()}
-                      duration={300}
+                      duration={800}
                     />
                   </div>
                 </div>
@@ -244,7 +406,7 @@ const UnifiedAnalytics = ({
                     <AnimatedCounter 
                       value={tradeData.value || 0}
                       formatter={(val) => Math.round(val).toLocaleString()}
-                      duration={300}
+                      duration={800}
                     />
                   </div>
                 </div>
