@@ -305,6 +305,72 @@ class ChartDataMessage(WebSocketMessage):
         return v
 
 
+class AnalyticsUpdateMessage(WebSocketMessage):
+    """Single unified analytics update message for clean real-time updates.
+    
+    Replaces the complex 3-message system (snapshot, realtime_update, chart_data) 
+    with one consistent message type that contains complete analytics data for a single mode.
+    
+    Sent on every trade for the active mode with:
+    - Current period data (guaranteed consistency)
+    - Summary statistics (total/peak for the mode window)
+    - Time series data (limited recent history for chart rendering)
+    
+    Eliminates timestamp coordination issues and complex frontend merging logic.
+    """
+    type: Literal["analytics_update"] = "analytics_update"
+    data: Dict[str, Any] = Field(..., description="Unified analytics data for one mode")
+    
+    @field_validator('data')
+    @classmethod
+    def validate_analytics_update_data(cls, v):
+        """Ensure analytics update has required fields for clean data structure."""
+        required_top_level = ["mode", "current_period", "summary_stats", "time_series"]
+        
+        for field in required_top_level:
+            if field not in v:
+                raise ValueError(f"Analytics update data must contain '{field}'")
+        
+        # Validate mode
+        if v["mode"] not in ["hour", "day"]:
+            raise ValueError("Mode must be 'hour' or 'day'")
+        
+        # Validate current_period structure
+        current_period = v["current_period"]
+        if not isinstance(current_period, dict):
+            raise ValueError("current_period must be a dictionary")
+        
+        required_current_fields = ["timestamp", "volume_usd", "trade_count"]
+        for field in required_current_fields:
+            if field not in current_period:
+                raise ValueError(f"current_period must contain '{field}'")
+        
+        # Validate summary_stats structure
+        summary_stats = v["summary_stats"]
+        if not isinstance(summary_stats, dict):
+            raise ValueError("summary_stats must be a dictionary")
+        
+        required_summary_fields = ["total_volume_usd", "total_trades", "peak_volume_usd", "peak_trades"]
+        for field in required_summary_fields:
+            if field not in summary_stats:
+                raise ValueError(f"summary_stats must contain '{field}'")
+        
+        # Validate time_series structure
+        time_series = v["time_series"]
+        if not isinstance(time_series, list):
+            raise ValueError("time_series must be a list")
+        
+        # Validate each time series point if any exist
+        for i, point in enumerate(time_series):
+            if not isinstance(point, dict):
+                raise ValueError(f"time_series[{i}] must be a dictionary")
+            
+            required_point_fields = ["timestamp", "volume_usd", "trade_count"]
+            for field in required_point_fields:
+                if field not in point:
+                    raise ValueError(f"time_series[{i}] must contain '{field}'")
+        
+        return v
 
 
 class ConnectionStatus(BaseModel):

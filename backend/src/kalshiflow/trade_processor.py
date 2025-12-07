@@ -40,8 +40,6 @@ class TradeProcessor:
             "started_at": None
         }
         
-        # Analytics broadcasting task
-        self._analytics_task = None
     
     async def start(self):
         """Start the trade processor service."""
@@ -62,9 +60,6 @@ class TradeProcessor:
         self._running = True
         self.stats["started_at"] = datetime.now()
         
-        # Start analytics broadcast task (every 1 second for real-time feel)
-        self._analytics_task = asyncio.create_task(self._analytics_broadcast_loop())
-        
         logger.info("Trade processor service started successfully")
     
     async def stop(self):
@@ -75,14 +70,6 @@ class TradeProcessor:
         logger.info("Stopping trade processor service...")
         
         self._running = False
-        
-        # Stop analytics broadcast task
-        if self._analytics_task:
-            self._analytics_task.cancel()
-            try:
-                await self._analytics_task
-            except asyncio.CancelledError:
-                pass
         
         # Stop aggregator
         await self.aggregator.stop()
@@ -135,15 +122,22 @@ class TradeProcessor:
                     price_points=[trade.yes_price_dollars]
                 )
             
-            # Update analytics (non-blocking)
+            # Update analytics and broadcast simplified 2-message updates
             try:
+                # Process the trade in the new analytics service
                 self.analytics_service.process_trade(trade)
                 
-                # REALTIME UPDATE: Broadcast current period data everywhere it appears
-                # This provides instant updates for current stats, chart current bar, totals, and peaks
+                # Send 2 analytics updates (one for each mode) with simplified messaging
                 if self.websocket_broadcaster:
-                    realtime_data = self.analytics_service.get_realtime_update_data(trade.ts)
-                    await self.websocket_broadcaster.broadcast_realtime_update(realtime_data)
+                    # Hour mode analytics update (current minute data + 60-minute window)
+                    hour_analytics = self.analytics_service.get_mode_data("hour", limit=10)
+                    await self.websocket_broadcaster.broadcast_analytics_update(hour_analytics)
+                    
+                    # Day mode analytics update (current hour data + 24-hour window)
+                    day_analytics = self.analytics_service.get_mode_data("day", limit=10)
+                    await self.websocket_broadcaster.broadcast_analytics_update(day_analytics)
+                    
+                    logger.debug(f"Sent analytics updates for both hour and day modes after trade {trade.market_ticker}")
                     
             except Exception as e:
                 logger.error(f"Analytics processing failed for trade {trade.market_ticker}: {e}")
@@ -245,8 +239,15 @@ class TradeProcessor:
             # Use metadata-enriched hot markets for snapshot
             hot_markets = await self.aggregator.get_hot_markets_with_metadata()
             global_stats = self.aggregator.get_global_stats()
-            # Include dual-mode analytics data in snapshot
-            analytics_data = self.analytics_service.get_analytics_data()
+            # Include dual-mode analytics data in snapshot using new service
+            hour_mode_data = self.analytics_service.get_mode_data("hour", limit=10)
+            day_mode_data = self.analytics_service.get_mode_data("day", limit=10)
+            
+            # Structure analytics data to match frontend expectations
+            analytics_data = {
+                "hour_mode": hour_mode_data,
+                "day_mode": day_mode_data
+            }
             
             return {
                 "recent_trades": recent_trades,
@@ -266,27 +267,35 @@ class TradeProcessor:
                     "total_window_volume": 0
                 },
                 "analytics_data": {
-                    "hour_minute_mode": {
-                        "time_series": [],
+                    "hour_mode": {
+                        "current_period": {
+                            "timestamp": 0,
+                            "volume_usd": 0.0,
+                            "trade_count": 0
+                        },
                         "summary_stats": {
-                            "peak_volume_usd": 0.0,
                             "total_volume_usd": 0.0,
-                            "peak_trades": 0,
                             "total_trades": 0,
-                            "current_minute_volume_usd": 0.0,
-                            "current_minute_trades": 0
-                        }
+                            "peak_volume_usd": 0.0,
+                            "peak_trades": 0
+                        },
+                        "time_series": [],
+                        "mode": "hour"
                     },
-                    "day_hour_mode": {
-                        "time_series": [],
+                    "day_mode": {
+                        "current_period": {
+                            "timestamp": 0,
+                            "volume_usd": 0.0,
+                            "trade_count": 0
+                        },
                         "summary_stats": {
-                            "peak_volume_usd": 0.0,
                             "total_volume_usd": 0.0,
-                            "peak_trades": 0,
                             "total_trades": 0,
-                            "current_hour_volume_usd": 0.0,
-                            "current_hour_trades": 0
-                        }
+                            "peak_volume_usd": 0.0,
+                            "peak_trades": 0
+                        },
+                        "time_series": [],
+                        "mode": "day"
                     }
                 }
             }
@@ -339,38 +348,6 @@ class TradeProcessor:
             logger.error(f"Raw message: {trade_message}")
             return False
     
-    async def _analytics_broadcast_loop(self):
-        """Background task to broadcast chart data every 60 seconds.
-        
-        Optimized frequency: Historical chart data doesn't need sub-second updates.
-        Current period stats are handled by realtime_update messages on every trade.
-        This clean separation prevents data conflicts and optimizes bandwidth usage.
-        """
-        try:
-            logger.info("Started chart data broadcast task (60-second interval for historical chart data)")
-            
-            while self._running:
-                try:
-                    # Only broadcast if we have a websocket broadcaster
-                    if self.websocket_broadcaster:
-                        # Use chart data for historical chart bars only (excluding current period)
-                        chart_data = self.analytics_service.get_chart_data()
-                        if chart_data:
-                            await self.websocket_broadcaster.broadcast_chart_data(chart_data)
-                            logger.debug("Broadcast chart data (60-second timer) - historical bars only")
-                    
-                    # Wait 60 seconds - historical chart data doesn't need frequent updates
-                    await asyncio.sleep(60.0)
-                    
-                except Exception as e:
-                    logger.error(f"Error in analytics broadcast loop: {e}")
-                    # Continue - don't let broadcast errors stop the loop
-                    await asyncio.sleep(60.0)
-                    
-        except asyncio.CancelledError:
-            logger.info("Analytics broadcast task cancelled")
-        except Exception as e:
-            logger.error(f"Analytics broadcast task failed: {e}")
 
 
 # Global trade processor instance

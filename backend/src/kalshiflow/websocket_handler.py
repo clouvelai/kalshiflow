@@ -14,7 +14,7 @@ from decimal import Decimal
 from starlette.websockets import WebSocket, WebSocketDisconnect
 from starlette.endpoints import WebSocketEndpoint
 
-from .models import SnapshotMessage, RealtimeUpdateMessage, ChartDataMessage
+from .models import SnapshotMessage, RealtimeUpdateMessage, ChartDataMessage, AnalyticsUpdateMessage
 from .trade_processor import get_trade_processor
 
 
@@ -137,6 +137,39 @@ class WebSocketBroadcaster:
             
         except Exception as e:
             logger.error(f"Failed to broadcast realtime update: {e}")
+    
+    async def broadcast_analytics_update(self, analytics_data):
+        """Broadcast unified analytics update for clean real-time updates.
+        
+        This method sends complete analytics data for a single mode, replacing
+        the complex 3-message system (snapshot, realtime_update, chart_data).
+        
+        Provides:
+        - Current period data (guaranteed timestamp consistency)
+        - Summary statistics (total/peak for the mode window)
+        - Time series data (limited recent history for chart rendering)
+        
+        Args:
+            analytics_data: Dict containing unified analytics data for one mode
+        """
+        try:
+            analytics_message = AnalyticsUpdateMessage(
+                type="analytics_update",
+                data=analytics_data
+            )
+            
+            await self.broadcast(analytics_message.model_dump())
+            
+            mode = analytics_data.get("mode", "unknown")
+            current_period = analytics_data.get("current_period", {})
+            time_series_count = len(analytics_data.get("time_series", []))
+            
+            logger.debug(f"Broadcast analytics update ({mode} mode): "
+                        f"${current_period.get('volume_usd', 0):.2f} current, "
+                        f"{time_series_count} historical points")
+            
+        except Exception as e:
+            logger.error(f"Failed to broadcast analytics update: {e}")
     
     async def _send_snapshot(self, websocket: WebSocket):
         """Send initial snapshot data to a newly connected client."""
