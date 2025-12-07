@@ -105,10 +105,9 @@ const useTradeData = () => {
                 updatedMarkets.push(tickerState);
               }
               
-              // Sort by volume window and take top 12
+              // Sort by volume window (backend determines the limit)
               return updatedMarkets
-                .sort((a, b) => (b.volume_window || 0) - (a.volume_window || 0))
-                .slice(0, 12);
+                .sort((a, b) => (b.volume_window || 0) - (a.volume_window || 0));
             });
           }
           break;
