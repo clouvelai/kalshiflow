@@ -34,6 +34,8 @@ class TradeProcessor:
         self._analytics_task = None
         
         # Analytics broadcast frequency (every 1 second for smooth updates)
+        # This high frequency enables smooth counter animations and real-time chart updates
+        # on the frontend without overwhelming network bandwidth
         self._analytics_interval = 1.0
         
         # Hot markets broadcast frequency (every 5 seconds)
@@ -408,13 +410,47 @@ class TradeProcessor:
             logger.error(f"Fatal error in hot markets broadcast loop: {e}")
     
     async def _analytics_broadcast_loop(self):
-        """Periodically broadcast analytics updates for smooth real-time updates."""
+        """
+        Periodically broadcast analytics updates for smooth real-time frontend updates.
+        
+        This method runs continuously as a background task, sending analytics updates
+        every 1 second to provide smooth, incremental data changes to connected WebSocket
+        clients. The loop broadcasts both hour-mode and day-mode analytics data.
+        
+        Features:
+        - 1-second broadcast frequency for smooth UI animations
+        - Dual-mode broadcasting (hour and day analytics)
+        - Robust error handling without breaking the loop
+        - Graceful cancellation support
+        - Statistics tracking for monitoring
+        
+        Broadcast format:
+        - Each mode is sent as a separate 'analytics_update' message
+        - Messages contain: mode, current_period, summary_stats, time_series
+        - Hour mode: Current minute data + 60-minute historical window
+        - Day mode: Current hour data + 24-hour historical window
+        
+        Error handling:
+        - Individual broadcast errors don't break the loop
+        - Errors are logged and statistics are tracked
+        - Loop continues with next scheduled broadcast
+        
+        Performance considerations:
+        - Lightweight data structures to minimize bandwidth
+        - Single-pass data processing in analytics service
+        - Efficient JSON serialization by WebSocket broadcaster
+        
+        Lifecycle:
+        - Started automatically when TradeProcessor.start() is called
+        - Cancelled and cleaned up when TradeProcessor.stop() is called
+        - Waits 2 seconds before starting to allow analytics service initialization
+        """
         try:
             # Wait a bit before starting to ensure analytics service has data
-            logger.info("Analytics broadcast loop starting (waiting 2 seconds)")
+            logger.debug("Analytics broadcast loop starting (waiting 2 seconds)")
             await asyncio.sleep(2)
             
-            logger.info(f"Analytics broadcast loop running, websocket_broadcaster: {self.websocket_broadcaster is not None}")
+            logger.debug(f"Analytics broadcast loop running, websocket_broadcaster: {self.websocket_broadcaster is not None}")
             
             while self._running:
                 try:
@@ -432,7 +468,7 @@ class TradeProcessor:
                         # Update stats
                         self.stats["analytics_broadcasts_sent"] += 2  # Two modes sent
                         
-                        logger.info("Sent periodic analytics updates for both hour and day modes")
+                        logger.debug("Sent periodic analytics updates for both hour and day modes")
                     else:
                         logger.debug("Analytics broadcast loop waiting for websocket broadcaster to be set")
                     
