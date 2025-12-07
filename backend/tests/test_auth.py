@@ -131,30 +131,57 @@ class TestKalshiAuth:
     
     def test_from_env_success(self, temp_key_file):
         """Test creating KalshiAuth from environment variables."""
+        # Read the private key content from the temp file
+        with open(temp_key_file, 'r') as f:
+            key_content = f.read()
+            
         with patch.dict(os.environ, {
             'KALSHI_API_KEY_ID': 'test_api_key',
-            'KALSHI_PRIVATE_KEY_PATH': temp_key_file
+            'KALSHI_PRIVATE_KEY_CONTENT': key_content
         }):
             auth = KalshiAuth.from_env()
             
             assert auth.api_key_id == "test_api_key"
-            assert auth.signer.private_key_path == Path(temp_key_file)
+            assert isinstance(auth.signer, RSASigner)
     
     def test_from_env_missing_api_key(self, temp_key_file):
         """Test error when KALSHI_API_KEY_ID is missing."""
+        # Read the private key content from the temp file
+        with open(temp_key_file, 'r') as f:
+            key_content = f.read()
+            
         with patch.dict(os.environ, {
-            'KALSHI_PRIVATE_KEY_PATH': temp_key_file
+            'KALSHI_PRIVATE_KEY_CONTENT': key_content
         }, clear=True):
             with pytest.raises(KalshiAuthError, match="KALSHI_API_KEY_ID environment variable is required"):
                 KalshiAuth.from_env()
     
-    def test_from_env_missing_private_key_path(self):
-        """Test error when KALSHI_PRIVATE_KEY_PATH is missing."""
+    def test_from_env_missing_private_key_content(self):
+        """Test error when KALSHI_PRIVATE_KEY_CONTENT is missing."""
         with patch.dict(os.environ, {
             'KALSHI_API_KEY_ID': 'test_api_key'
         }, clear=True):
-            with pytest.raises(KalshiAuthError, match="KALSHI_PRIVATE_KEY_PATH environment variable is required"):
+            with pytest.raises(KalshiAuthError, match="KALSHI_PRIVATE_KEY_CONTENT environment variable is required"):
                 KalshiAuth.from_env()
+    
+    def test_from_env_with_unformatted_key_content(self, temp_key_file):
+        """Test creating KalshiAuth from environment with unformatted key content."""
+        # Read the private key content and strip headers/footers to simulate base64 only
+        with open(temp_key_file, 'r') as f:
+            key_content = f.read()
+        
+        # Extract just the base64 content (remove headers and footers)
+        lines = key_content.strip().split('\n')
+        base64_content = ''.join([line for line in lines if not line.startswith('-----')])
+        
+        with patch.dict(os.environ, {
+            'KALSHI_API_KEY_ID': 'test_api_key',
+            'KALSHI_PRIVATE_KEY_CONTENT': base64_content  # Unformatted (no headers)
+        }):
+            auth = KalshiAuth.from_env()
+            
+            assert auth.api_key_id == "test_api_key"
+            assert isinstance(auth.signer, RSASigner)
     
     def test_create_auth_headers(self, temp_key_file):
         """Test authentication header creation."""

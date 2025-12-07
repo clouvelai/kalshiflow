@@ -141,10 +141,10 @@ class KalshiAuth:
         temp_fd, temp_path = tempfile.mkstemp(suffix='.pem', prefix='kalshi_key_')
         try:
             with os.fdopen(temp_fd, 'w') as temp_file:
-                # Ensure proper RSA key format with line breaks
+                # Ensure proper key format with line breaks
                 if not private_key_content.startswith('-----BEGIN'):
-                    # Add RSA headers and format if missing
-                    formatted_key = f"-----BEGIN RSA PRIVATE KEY-----\n{private_key_content}\n-----END RSA PRIVATE KEY-----"
+                    # Add PKCS8 headers and format if missing (standard format)
+                    formatted_key = f"-----BEGIN PRIVATE KEY-----\n{private_key_content}\n-----END PRIVATE KEY-----"
                 else:
                     formatted_key = private_key_content
                     
