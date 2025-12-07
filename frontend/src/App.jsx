@@ -13,8 +13,8 @@ const AppContent = () => {
     hotMarkets,
     selectedTicker,
     globalStats,
-    analyticsData,
-    realtimeData,
+    hourAnalyticsData,
+    dayAnalyticsData,
     connectionStatus,
     error,
     selectTicker,
@@ -39,13 +39,10 @@ const AppContent = () => {
       connectionStatus={connectionStatus}
       data-testid="main-layout"
     >
-      {/* Unified Analytics Section - replaces HeroStats and AnalyticsChart */}
+      {/* Unified Analytics Section - simplified with single analytics_update message */}
       <UnifiedAnalytics 
-        analyticsData={analyticsData || { 
-          hour_minute_mode: { time_series: [], summary_stats: {} },
-          day_hour_mode: { time_series: [], summary_stats: {} }
-        }}
-        realtimeData={realtimeData}
+        hourAnalyticsData={hourAnalyticsData}
+        dayAnalyticsData={dayAnalyticsData}
         data-testid="unified-analytics"
       />
 

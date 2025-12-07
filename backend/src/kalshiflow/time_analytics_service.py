@@ -1,5 +1,5 @@
 """
-TimeAnalyticsServiceV2 - Clean rewrite with simplified architecture.
+TimeAnalyticsService - Clean rewrite with simplified architecture.
 
 Eliminates the 6 overlapping methods from the original service and provides:
 - 3 focused methods: process_trade(), get_mode_data(), get_stats()  
@@ -164,7 +164,7 @@ class TimeAnalyticsService:
             return recovery_stats
         
         start_time = datetime.now()
-        logger.info("Starting TimeAnalyticsServiceV2 recovery from database...")
+        logger.info("Starting TimeAnalyticsService recovery from database...")
         
         try:
             database = get_database()
@@ -253,14 +253,14 @@ class TimeAnalyticsService:
             recovery_stats["duration_seconds"] = (datetime.now() - start_time).total_seconds()
             recovery_stats["success"] = True
             
-            logger.info(f"TimeAnalyticsServiceV2 recovery completed in {recovery_stats['duration_seconds']:.2f}s")
+            logger.info(f"TimeAnalyticsService recovery completed in {recovery_stats['duration_seconds']:.2f}s")
             logger.info(f"Recovered {recovery_stats['minute_buckets_created']} minute buckets and {recovery_stats['hour_buckets_created']} hour buckets")
             logger.info(f"Total volume: ${total_volume_recovered:,.2f}, Total trades: {total_trades_recovered}")
             
         except Exception as e:
             recovery_stats["duration_seconds"] = (datetime.now() - start_time).total_seconds()
             recovery_stats["error"] = str(e)
-            logger.error(f"Error during TimeAnalyticsServiceV2 recovery: {e}")
+            logger.error(f"Error during TimeAnalyticsService recovery: {e}")
             logger.info("Continuing with empty buckets (cold start fallback)")
             # Clear any partially recovered data
             self.minute_buckets.clear()
@@ -321,7 +321,7 @@ class TimeAnalyticsService:
             logger.debug(f"Added trade to buckets {minute_timestamp} and {hour_timestamp}: volume=${minute_bucket.volume_usd:.2f}, count={minute_bucket.trade_count}")
             
         except Exception as e:
-            logger.error(f"Error processing trade in TimeAnalyticsServiceV2: {e}")
+            logger.error(f"Error processing trade in TimeAnalyticsService: {e}")
     
     def get_mode_data(self, mode: Literal["hour", "day"], limit: int = 10) -> Dict[str, Any]:
         """
@@ -546,9 +546,9 @@ class TimeAnalyticsService:
                 # Run cleanup every 5 minutes
                 await asyncio.sleep(300)
         except asyncio.CancelledError:
-            logger.debug("TimeAnalyticsServiceV2 cleanup task cancelled")
+            logger.debug("TimeAnalyticsService cleanup task cancelled")
         except Exception as e:
-            logger.error(f"Error in TimeAnalyticsServiceV2 cleanup loop: {e}")
+            logger.error(f"Error in TimeAnalyticsService cleanup loop: {e}")
     
     async def cleanup_old_buckets(self):
         """Remove buckets older than their respective windows."""

@@ -44,128 +44,80 @@ const formatTradeCount = (count) => {
 };
 
 const UnifiedAnalytics = ({ 
-  analyticsData = { 
-    hour_minute_mode: { time_series: [], summary_stats: {} },
-    day_hour_mode: { time_series: [], summary_stats: {} }
+  hourAnalyticsData = {
+    current_period: { timestamp: 0, volume_usd: 0, trade_count: 0 },
+    summary_stats: { total_volume_usd: 0, total_trades: 0, peak_volume_usd: 0, peak_trades: 0 },
+    time_series: []
   },
-  realtimeData = {
-    current_minute: { timestamp: 0, volume_usd: 0, trade_count: 0 },
-    current_hour: { timestamp: 0, volume_usd: 0, trade_count: 0 },
-    mode_totals: {
-      hour_mode_total_volume_usd: 0,
-      hour_mode_total_trades: 0,
-      day_mode_total_volume_usd: 0,
-      day_mode_total_trades: 0
-    },
-    peaks: { peak_volume_usd: 0, peak_trades: 0 }
+  dayAnalyticsData = {
+    current_period: { timestamp: 0, volume_usd: 0, trade_count: 0 },
+    summary_stats: { total_volume_usd: 0, total_trades: 0, peak_volume_usd: 0, peak_trades: 0 },
+    time_series: []
   },
   ...props
 }) => {
   const [timeMode, setTimeMode] = useState('hour'); // 'hour' or 'day'
   
-  // Get current mode data for historical chart
-  const currentModeData = useMemo(() => {
-    return timeMode === 'hour' 
-      ? analyticsData.hour_minute_mode 
-      : analyticsData.day_hour_mode;
-  }, [analyticsData, timeMode]);
+  // Get current mode analytics data
+  const currentModeAnalytics = useMemo(() => {
+    return timeMode === 'hour' ? hourAnalyticsData : dayAnalyticsData;
+  }, [hourAnalyticsData, dayAnalyticsData, timeMode]);
   
-  // Get current period timestamp for highlighting current bar
-  const currentTimestamp = useMemo(() => {
-    const now = new Date();
-    if (timeMode === 'hour') {
-      // Current minute timestamp
-      return new Date(now.getFullYear(), now.getMonth(), now.getDate(), 
-                     now.getHours(), now.getMinutes(), 0, 0).getTime();
-    } else {
-      // Current hour timestamp  
-      return new Date(now.getFullYear(), now.getMonth(), now.getDate(), 
-                     now.getHours(), 0, 0, 0).getTime();
-    }
-  }, [timeMode]);
-  
-  // Get current period data from realtimeData
+  // Get current period data and timestamp
   const currentPeriodData = useMemo(() => {
-    return timeMode === 'hour' 
-      ? realtimeData.current_minute 
-      : realtimeData.current_hour;
-  }, [realtimeData, timeMode]);
+    return currentModeAnalytics.current_period;
+  }, [currentModeAnalytics]);
   
-  // Get mode-specific totals from realtimeData
-  const modeTotals = useMemo(() => {
-    const totals = realtimeData.mode_totals;
-    return timeMode === 'hour' 
-      ? {
-          total_volume_usd: totals.hour_mode_total_volume_usd,
-          total_trades: totals.hour_mode_total_trades
-        }
-      : {
-          total_volume_usd: totals.day_mode_total_volume_usd,
-          total_trades: totals.day_mode_total_trades
-        };
-  }, [realtimeData.mode_totals, timeMode]);
+  const currentTimestamp = useMemo(() => {
+    return currentPeriodData.timestamp;
+  }, [currentPeriodData]);
   
-  // Prepare chart data with current period enhancement
+  // Get summary stats
+  const summaryStats = useMemo(() => {
+    return currentModeAnalytics.summary_stats;
+  }, [currentModeAnalytics]);
+  
+  // Optimized date formatter functions
+  const formatTimeString = useCallback((timestamp) => {
+    const date = new Date(timestamp);
+    return timeMode === 'hour' 
+      ? date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })
+      : date.toLocaleDateString([], { month: 'short', day: '2-digit', hour: '2-digit', hour12: false });
+  }, [timeMode]);
+
+  // Prepare chart data - optimized for performance
   const chartData = useMemo(() => {
-    const timeSeries = currentModeData.time_series || [];
+    const timeSeries = currentModeAnalytics.time_series || [];
     
-    // First enhance any existing current period data
-    const enhancedSeries = timeSeries.map(point => {
-      let enhancedPoint = { ...point };
-      
-      // Enhance current period with real-time data
-      if (point.timestamp === currentTimestamp && currentPeriodData) {
-        enhancedPoint.volume_usd = currentPeriodData.volume_usd;
-        enhancedPoint.trade_count = currentPeriodData.trade_count;
-      }
-      
-      return {
-        ...enhancedPoint,
-        // Convert timestamp to time string for display
-        timeString: timeMode === 'hour' 
-          ? new Date(point.timestamp).toLocaleTimeString([], { 
-              hour: '2-digit', 
-              minute: '2-digit',
-              hour12: false 
-            })
-          : new Date(point.timestamp).toLocaleDateString([], { 
-              month: 'short',
-              day: '2-digit',
-              hour: '2-digit',
-              hour12: false
-            }),
-        // Mark if this is the current period
-        isCurrentPeriod: point.timestamp === currentTimestamp
-      };
-    });
+    // Early return if no data
+    if (timeSeries.length === 0 && !currentPeriodData?.timestamp) {
+      return [];
+    }
     
-    // Then append current period if it doesn't exist in historical data
-    const hasCurrentPeriod = timeSeries.some(point => point.timestamp === currentTimestamp);
-    if (!hasCurrentPeriod && currentPeriodData && currentTimestamp) {
-      const currentPeriodPoint = {
+    // Process time series data with optimized operations
+    const processedSeries = timeSeries.map(point => ({
+      ...point,
+      timeString: formatTimeString(point.timestamp),
+      isCurrentPeriod: point.timestamp === currentTimestamp
+    }));
+    
+    // Add current period if missing (optimized check)
+    if (currentPeriodData && currentTimestamp && 
+        !processedSeries.some(point => point.timestamp === currentTimestamp)) {
+      processedSeries.push({
         timestamp: currentTimestamp,
         volume_usd: currentPeriodData.volume_usd,
         trade_count: currentPeriodData.trade_count,
-        timeString: timeMode === 'hour' 
-          ? new Date(currentTimestamp).toLocaleTimeString([], { 
-              hour: '2-digit', 
-              minute: '2-digit',
-              hour12: false 
-            })
-          : new Date(currentTimestamp).toLocaleDateString([], { 
-              month: 'short',
-              day: '2-digit',
-              hour: '2-digit',
-              hour12: false
-            }),
+        timeString: formatTimeString(currentTimestamp),
         isCurrentPeriod: true
-      };
-      enhancedSeries.push(currentPeriodPoint);
+      });
     }
     
-    // Sort by timestamp to maintain chronological order
-    return enhancedSeries.sort((a, b) => a.timestamp - b.timestamp);
-  }, [currentModeData.time_series, timeMode, currentTimestamp, currentPeriodData]);
+    // Sort by timestamp (only if needed)
+    return processedSeries.length > 1 
+      ? processedSeries.sort((a, b) => a.timestamp - b.timestamp)
+      : processedSeries;
+  }, [currentModeAnalytics.time_series, currentTimestamp, currentPeriodData, formatTimeString]);
 
   // Custom tooltip component
   const CustomTooltip = ({ active, payload, label }) => {
@@ -235,11 +187,26 @@ const UnifiedAnalytics = ({
     return null;
   };
 
-  // Calculate chart scaling
+  // Calculate chart scaling - optimized
   const { maxVolume, maxTrades } = useMemo(() => {
+    if (chartData.length === 0) {
+      return { maxVolume: 100, maxTrades: 10 }; // Default minimums for empty charts
+    }
+    
+    let maxVol = 0;
+    let maxTrd = 0;
+    
+    // Single pass through data instead of multiple map calls
+    for (const point of chartData) {
+      const vol = point.volume_usd || 0;
+      const trd = point.trade_count || 0;
+      if (vol > maxVol) maxVol = vol;
+      if (trd > maxTrd) maxTrd = trd;
+    }
+    
     return {
-      maxVolume: Math.max(...chartData.map(d => d.volume_usd || 0)),
-      maxTrades: Math.max(...chartData.map(d => d.trade_count || 0))
+      maxVolume: Math.max(maxVol, 1), // Ensure minimum of 1
+      maxTrades: Math.max(maxTrd, 1)  // Ensure minimum of 1
     };
   }, [chartData]);
 
@@ -290,32 +257,32 @@ const UnifiedAnalytics = ({
         </div>
       </div>
 
-      {/* Summary Stats Grid - Using realtimeData directly */}
+      {/* Summary Stats Grid - Using simplified analytics data */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-6 mb-8" data-testid="summary-stats-grid">
         <div className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-lg border border-white/50 p-6 text-center hover:shadow-xl transition-all duration-300" data-testid="peak-volume-stat">
           <div className="text-3xl font-bold text-blue-600 mb-1" data-testid="peak-volume-value">
-            {formatVolume(realtimeData.peaks.peak_volume_usd)}
+            {formatVolume(summaryStats.peak_volume_usd)}
           </div>
           <div className="text-sm font-medium text-gray-600 uppercase tracking-wide">Peak Volume</div>
           <div className="text-xs text-gray-500 mt-1">{timeMode === 'hour' ? 'minute' : 'hour'}</div>
         </div>
         <div className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-lg border border-white/50 p-6 text-center hover:shadow-xl transition-all duration-300" data-testid="peak-trades-stat">
           <div className="text-3xl font-bold text-emerald-600 mb-1" data-testid="peak-trades-value">
-            {(realtimeData.peaks.peak_trades || 0).toLocaleString()}
+            {(summaryStats.peak_trades || 0).toLocaleString()}
           </div>
           <div className="text-sm font-medium text-gray-600 uppercase tracking-wide">Peak Trades</div>
           <div className="text-xs text-gray-500 mt-1">{timeMode === 'hour' ? 'minute' : 'hour'}</div>
         </div>
         <div className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-lg border border-white/50 p-6 text-center hover:shadow-xl transition-all duration-300" data-testid="total-volume-stat">
           <div className="text-3xl font-bold text-purple-600 mb-1" data-testid="total-volume-value">
-            {formatVolume(modeTotals.total_volume_usd)}
+            {formatVolume(summaryStats.total_volume_usd)}
           </div>
           <div className="text-sm font-medium text-gray-600 uppercase tracking-wide">Total Volume</div>
           <div className="text-xs text-gray-500 mt-1">{timeMode === 'hour' ? 'hourly' : 'daily'}</div>
         </div>
         <div className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-lg border border-white/50 p-6 text-center hover:shadow-xl transition-all duration-300" data-testid="total-trades-stat">
           <div className="text-3xl font-bold text-indigo-600 mb-1" data-testid="total-trades-value">
-            {(modeTotals.total_trades || 0).toLocaleString()}
+            {(summaryStats.total_trades || 0).toLocaleString()}
           </div>
           <div className="text-sm font-medium text-gray-600 uppercase tracking-wide">Total Trades</div>
           <div className="text-xs text-gray-500 mt-1">{timeMode === 'hour' ? 'hourly' : 'daily'}</div>
@@ -345,7 +312,7 @@ const UnifiedAnalytics = ({
             </div>
           </div>
           
-          {/* Right Side - Current Stats - Using realtimeData directly */}
+          {/* Right Side - Current Stats - Using simplified analytics data */}
           {chartData.length > 0 && (
             <div className="flex-shrink-0">
               <div className="relative">

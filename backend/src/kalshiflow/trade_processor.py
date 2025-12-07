@@ -31,11 +31,17 @@ class TradeProcessor:
         self._running = False
         self._trade_callbacks = []
         
+        # Analytics update throttling (max 1 update per second to prevent frontend lag)
+        self._last_analytics_update = 0
+        self._analytics_throttle_seconds = 1.0
+        
         # Statistics for monitoring
         self.stats = {
             "trades_processed": 0,
             "trades_stored": 0,
             "processing_errors": 0,
+            "analytics_updates_sent": 0,
+            "analytics_updates_throttled": 0,
             "last_trade_time": None,
             "started_at": None
         }
@@ -190,10 +196,7 @@ class TradeProcessor:
             # Get current global stats
             global_stats = self.aggregator.get_global_stats()
             
-            # Get hot markets with metadata to ensure metadata is preserved in real-time updates
-            hot_markets = await self.aggregator.get_hot_markets_with_metadata()
-            
-            # Create trade update message
+            # Create lightweight trade update message (no hot markets - too big!)
             # Use dict() instead of model_dump() to include computed properties like net_flow
             ticker_state_dump = ticker_state.dict()
             
@@ -202,8 +205,9 @@ class TradeProcessor:
                 data={
                     "trade": trade.model_dump(),
                     "ticker_state": ticker_state_dump,
-                    "global_stats": global_stats,
-                    "hot_markets": hot_markets  # Include metadata-enriched hot markets
+                    "global_stats": global_stats
+                    # REMOVED: hot_markets - this was causing 88KB messages!
+                    # Hot markets updates will be sent separately via periodic broadcasts
                 }
             )
             

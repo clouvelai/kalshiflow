@@ -7,23 +7,17 @@ const useTradeData = () => {
   const [selectedTicker, setSelectedTicker] = useState(null);
   const [tradeCount, setTradeCount] = useState(0);
   
-  // Simplified state structure for 2-message architecture
-  const [analyticsData, setAnalyticsData] = useState({
-    hour_minute_mode: { time_series: [], summary_stats: {} },
-    day_hour_mode: { time_series: [], summary_stats: {} }
+  // Simplified state structure for single analytics_update message
+  const [hourAnalyticsData, setHourAnalyticsData] = useState({
+    current_period: { timestamp: 0, volume_usd: 0, trade_count: 0 },
+    summary_stats: { total_volume_usd: 0, total_trades: 0, peak_volume_usd: 0, peak_trades: 0 },
+    time_series: []
   });
   
-  // Real-time current period data from realtime_update messages
-  const [realtimeData, setRealtimeData] = useState({
-    current_minute: { timestamp: 0, volume_usd: 0, trade_count: 0 },
-    current_hour: { timestamp: 0, volume_usd: 0, trade_count: 0 },
-    mode_totals: {
-      hour_mode_total_volume_usd: 0,
-      hour_mode_total_trades: 0,
-      day_mode_total_volume_usd: 0,
-      day_mode_total_trades: 0
-    },
-    peaks: { peak_volume_usd: 0, peak_trades: 0 }
+  const [dayAnalyticsData, setDayAnalyticsData] = useState({
+    current_period: { timestamp: 0, volume_usd: 0, trade_count: 0 },
+    summary_stats: { total_volume_usd: 0, total_trades: 0, peak_volume_usd: 0, peak_trades: 0 },
+    time_series: []
   });
   
   const [globalStats, setGlobalStats] = useState({
@@ -42,7 +36,7 @@ const useTradeData = () => {
   );
   const { connectionStatus, lastMessage, error } = useWebSocket(wsUrl);
 
-  // Process incoming WebSocket messages - Simplified 2-message architecture
+  // Process incoming WebSocket messages - Single analytics_update message
   useEffect(() => {
     if (!lastMessage) return;
 
@@ -60,14 +54,7 @@ const useTradeData = () => {
           if (lastMessage.data?.global_stats) {
             setGlobalStats(lastMessage.data.global_stats);
           }
-          if (lastMessage.data?.analytics_data) {
-            // Handle chart data for initial load
-            if (lastMessage.data.analytics_data.hour_minute_mode && lastMessage.data.analytics_data.day_hour_mode) {
-              setAnalyticsData(lastMessage.data.analytics_data);
-            } else {
-              console.warn('Received analytics data in unexpected format during snapshot');
-            }
-          }
+          // Initial analytics data will come via analytics_update messages
           break;
 
         case 'trade':
@@ -126,38 +113,32 @@ const useTradeData = () => {
           }
           break;
 
-        case 'realtime_update':
-          // NEW: Real-time update for current period data everywhere (instant updates on every trade)
-          // Powers: Current minute/hour boxes + current chart bar + totals + peaks
+        case 'analytics_update':
+          // NEW: Single unified analytics update for clean real-time updates
+          // Complete analytics data for one mode with guaranteed consistency
           if (lastMessage.data) {
             const updateData = lastMessage.data;
             
             // Validate the structure
-            if (updateData.current_minute && updateData.current_hour && 
-                updateData.mode_totals && updateData.peaks) {
+            if (updateData.mode && updateData.current_period && 
+                updateData.summary_stats && updateData.time_series !== undefined) {
               
-              setRealtimeData({
-                current_minute: updateData.current_minute,
-                current_hour: updateData.current_hour,
-                mode_totals: updateData.mode_totals,
-                peaks: updateData.peaks
-              });
+              const analyticsData = {
+                current_period: updateData.current_period,
+                summary_stats: updateData.summary_stats,
+                time_series: updateData.time_series
+              };
+              
+              if (updateData.mode === 'hour') {
+                setHourAnalyticsData(analyticsData);
+              } else if (updateData.mode === 'day') {
+                setDayAnalyticsData(analyticsData);
+              } else {
+                console.warn('Unknown analytics mode:', updateData.mode);
+              }
             } else {
-              console.warn('Received incomplete realtime_update data', updateData);
+              console.warn('Received incomplete analytics_update data', updateData);
             }
-          }
-          break;
-
-        case 'chart_data':
-          // NEW: Historical chart data only (60s updates, excludes current period)
-          // Powers: Historical chart bars only
-          if (lastMessage.data?.hour_minute_mode && lastMessage.data?.day_hour_mode) {
-            setAnalyticsData({
-              hour_minute_mode: lastMessage.data.hour_minute_mode,
-              day_hour_mode: lastMessage.data.day_hour_mode
-            });
-          } else {
-            console.warn('Received incomplete chart_data', lastMessage.data);
           }
           break;
 
@@ -190,8 +171,8 @@ const useTradeData = () => {
     hotMarkets,
     selectedTicker,
     tradeCount,
-    analyticsData,
-    realtimeData,  // NEW: Real-time current period data
+    hourAnalyticsData,  // NEW: Complete hour mode analytics data
+    dayAnalyticsData,   // NEW: Complete day mode analytics data
     globalStats,
     connectionStatus,
     error,
