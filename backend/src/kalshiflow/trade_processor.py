@@ -8,7 +8,7 @@ in-memory aggregation, and WebSocket broadcasting to frontend.
 import asyncio
 import logging
 from datetime import datetime
-from typing import Optional, Callable, Any, Dict
+from typing import Optional, Callable, Any, Dict, List
 
 from .models import Trade, TickerState, TradeUpdateMessage
 from .database import get_database
@@ -41,6 +41,13 @@ class TradeProcessor:
         # Hot markets broadcast frequency (every 5 seconds)
         self._hot_markets_interval = 5
         
+        # Write queue system for non-blocking database writes
+        self._write_queue = asyncio.Queue(maxsize=10000)  # Large queue to handle bursts
+        self._write_worker_task = None
+        self._write_batch_size = 25  # Process in batches for efficiency
+        self._write_timeout_ms = 100  # Max wait time for batching (100ms)
+        self._write_retry_attempts = 3  # Number of retry attempts for failed writes
+        
         # Statistics for monitoring
         self.stats = {
             "trades_processed": 0,
@@ -49,7 +56,12 @@ class TradeProcessor:
             "analytics_broadcasts_sent": 0,
             "analytics_broadcast_errors": 0,
             "last_trade_time": None,
-            "started_at": None
+            "started_at": None,
+            "queued_writes": 0,
+            "batch_writes_executed": 0,
+            "write_errors": 0,
+            "write_queue_size": 0,
+            "max_queue_size": 0
         }
         
     
@@ -77,6 +89,9 @@ class TradeProcessor:
         
         # Start analytics broadcast task  
         self._analytics_task = asyncio.create_task(self._analytics_broadcast_loop())
+        
+        # Start write worker task for background database writes
+        self._write_worker_task = asyncio.create_task(self._write_worker_loop())
         
         logger.info("Trade processor service started successfully")
     
@@ -107,6 +122,9 @@ class TradeProcessor:
                 pass
             self._analytics_task = None
         
+        # Stop write worker and flush remaining trades
+        await self._shutdown_write_worker()
+        
         # Stop aggregator
         await self.aggregator.stop()
         
@@ -125,7 +143,12 @@ class TradeProcessor:
     
     async def process_trade(self, trade: Trade) -> bool:
         """
-        Process a single trade through the complete pipeline.
+        Process a single trade through the complete pipeline with immediate analytics updates.
+        
+        This method prioritizes real-time analytics by:
+        1. Immediately updating in-memory aggregations and analytics
+        2. Broadcasting updates to WebSocket clients 
+        3. Queueing database writes for background processing
         
         Returns True if processing succeeded, False otherwise.
         """
@@ -136,13 +159,11 @@ class TradeProcessor:
         try:
             logger.debug(f"Processing trade: {trade.market_ticker} {trade.taker_side} {trade.count}@{trade.price_display}")
             
-            # Store trade in database
-            await self._store_trade(trade)
-            
-            # Update in-memory aggregations
+            # IMMEDIATE ANALYTICS: Update in-memory aggregations first (no blocking)
             ticker_state = None
             try:
                 ticker_state = self._update_aggregations(trade)
+                logger.debug(f"Updated aggregations for {trade.market_ticker} immediately")
             except Exception as e:
                 logger.error(f"Aggregation failed for trade {trade.market_ticker}, continuing with limited functionality: {e}")
                 # Create a minimal ticker state for the broadcast
@@ -158,21 +179,23 @@ class TradeProcessor:
                     price_points=[trade.yes_price_dollars]
                 )
             
-            # Update analytics service (broadcasting handled by periodic task)
+            # IMMEDIATE ANALYTICS: Update analytics service (no blocking)
             try:
-                # Process the trade in the analytics service
                 self.analytics_service.process_trade(trade)
-                logger.debug(f"Processed trade {trade.market_ticker} in analytics service")
+                logger.debug(f"Processed trade {trade.market_ticker} in analytics service immediately")
                 
             except Exception as e:
                 logger.error(f"Analytics processing failed for trade {trade.market_ticker}: {e}")
                 # Continue processing - analytics failures shouldn't stop trade flow
             
-            # Broadcast to WebSocket clients
+            # IMMEDIATE BROADCAST: Send updates to WebSocket clients immediately
             await self._broadcast_trade_update(trade, ticker_state)
             
-            # Call registered callbacks
+            # IMMEDIATE CALLBACKS: Call registered callbacks immediately
             await self._call_trade_callbacks(trade, ticker_state)
+            
+            # BACKGROUND WRITE: Queue trade for background database write (non-blocking)
+            await self._queue_trade_for_write(trade)
             
             # Update statistics
             self.stats["trades_processed"] += 1
@@ -194,6 +217,30 @@ class TradeProcessor:
         except Exception as e:
             logger.error(f"Failed to store trade in database: {e}")
             raise
+    
+    async def _queue_trade_for_write(self, trade: Trade):
+        """Queue a trade for background database write (non-blocking)."""
+        try:
+            # Add trade to the write queue (non-blocking if space available)
+            self._write_queue.put_nowait(trade)
+            self.stats["queued_writes"] += 1
+            
+            # Update queue size statistics
+            current_queue_size = self._write_queue.qsize()
+            self.stats["write_queue_size"] = current_queue_size
+            if current_queue_size > self.stats["max_queue_size"]:
+                self.stats["max_queue_size"] = current_queue_size
+            
+            logger.debug(f"Queued trade for background write: {trade.market_ticker} (queue size: {current_queue_size})")
+            
+        except asyncio.QueueFull:
+            # Queue is full - this is a critical situation, try to write immediately
+            logger.warning(f"Write queue full ({self._write_queue.maxsize}), writing trade {trade.market_ticker} immediately")
+            await self._store_trade(trade)
+        except Exception as e:
+            logger.error(f"Failed to queue trade for write: {e}")
+            # Fallback to immediate write
+            await self._store_trade(trade)
     
     def _update_aggregations(self, trade: Trade) -> TickerState:
         """Update in-memory aggregations with new trade."""
@@ -334,7 +381,16 @@ class TradeProcessor:
             "runtime_seconds": runtime_seconds,
             "is_running": self._running,
             "callbacks_count": len(self._trade_callbacks),
-            "has_websocket_broadcaster": self.websocket_broadcaster is not None
+            "has_websocket_broadcaster": self.websocket_broadcaster is not None,
+            "write_queue_stats": {
+                "current_queue_size": self._write_queue.qsize(),
+                "max_queue_size": self.stats["max_queue_size"],
+                "queued_writes": self.stats["queued_writes"],
+                "batch_writes_executed": self.stats["batch_writes_executed"],
+                "write_errors": self.stats["write_errors"],
+                "batch_size": self._write_batch_size,
+                "timeout_ms": self._write_timeout_ms
+            }
         }
         
         # Include aggregator and analytics stats
@@ -485,6 +541,160 @@ class TradeProcessor:
             logger.debug("Analytics broadcast loop cancelled")
         except Exception as e:
             logger.error(f"Fatal error in analytics broadcast loop: {e}")
+    
+    async def _write_worker_loop(self):
+        """
+        Background worker loop for batch database writes.
+        
+        This worker continuously processes queued trades in batches for efficiency.
+        Features:
+        - Batch processing (up to _write_batch_size trades or _write_timeout_ms timeout)
+        - Automatic retry with exponential backoff for failed writes
+        - Graceful handling of individual trade write failures
+        - Performance statistics tracking
+        
+        The worker optimizes database writes by:
+        1. Collecting trades into batches to reduce database round trips
+        2. Using PostgreSQL batch insert for maximum efficiency
+        3. Handling failures gracefully without blocking the queue
+        """
+        logger.debug("Write worker loop starting")
+        
+        try:
+            while self._running:
+                try:
+                    # Collect trades for batch processing
+                    batch_trades = await self._collect_write_batch()
+                    
+                    if batch_trades:
+                        # Process the batch with retry logic
+                        await self._process_write_batch(batch_trades)
+                    
+                except Exception as e:
+                    logger.error(f"Error in write worker loop: {e}")
+                    # Don't break the loop for individual errors
+                    await asyncio.sleep(0.1)  # Brief pause before retrying
+                    
+        except asyncio.CancelledError:
+            logger.debug("Write worker loop cancelled")
+        except Exception as e:
+            logger.error(f"Fatal error in write worker loop: {e}")
+    
+    async def _collect_write_batch(self) -> List[Trade]:
+        """Collect trades from the queue for batch processing."""
+        batch = []
+        batch_start_time = asyncio.get_event_loop().time()
+        timeout_seconds = self._write_timeout_ms / 1000.0
+        
+        try:
+            # Get the first trade (wait up to timeout)
+            trade = await asyncio.wait_for(self._write_queue.get(), timeout=timeout_seconds)
+            batch.append(trade)
+            
+            # Collect additional trades up to batch size (non-blocking)
+            while len(batch) < self._write_batch_size:
+                try:
+                    # Check if we've exceeded the timeout
+                    elapsed = asyncio.get_event_loop().time() - batch_start_time
+                    if elapsed >= timeout_seconds:
+                        break
+                    
+                    # Try to get another trade immediately (non-blocking)
+                    trade = self._write_queue.get_nowait()
+                    batch.append(trade)
+                    
+                except asyncio.QueueEmpty:
+                    # No more trades available immediately
+                    break
+            
+            logger.debug(f"Collected batch of {len(batch)} trades for writing")
+            return batch
+            
+        except asyncio.TimeoutError:
+            # No trades available within timeout
+            return []
+        except Exception as e:
+            logger.error(f"Error collecting write batch: {e}")
+            return []
+    
+    async def _process_write_batch(self, batch_trades: List[Trade]):
+        """Process a batch of trades with retry logic."""
+        if not batch_trades:
+            return
+        
+        retry_count = 0
+        while retry_count < self._write_retry_attempts:
+            try:
+                # Perform batch insert
+                trade_ids = await self.database.insert_trades_batch(batch_trades)
+                
+                # Update statistics
+                self.stats["trades_stored"] += len(batch_trades)
+                self.stats["batch_writes_executed"] += 1
+                
+                # Update queue size stat
+                self.stats["write_queue_size"] = self._write_queue.qsize()
+                
+                logger.debug(f"Successfully wrote batch of {len(batch_trades)} trades (IDs: {trade_ids[0]}-{trade_ids[-1]})")
+                return  # Success - exit retry loop
+                
+            except Exception as e:
+                retry_count += 1
+                
+                # Check if this is a duplicate key error (expected during startup/recovery)
+                if "duplicate key value violates unique constraint" in str(e):
+                    logger.debug(f"Batch write detected {len(batch_trades)} duplicate trades (expected during recovery), skipping batch")
+                    # Don't count duplicates as errors - they're expected during startup
+                    return
+                
+                self.stats["write_errors"] += 1
+                
+                if retry_count < self._write_retry_attempts:
+                    # Exponential backoff: 0.1s, 0.2s, 0.4s
+                    retry_delay = 0.1 * (2 ** (retry_count - 1))
+                    logger.warning(f"Batch write failed (attempt {retry_count}/{self._write_retry_attempts}), retrying in {retry_delay}s: {e}")
+                    await asyncio.sleep(retry_delay)
+                else:
+                    # Final attempt failed - log critical error
+                    logger.error(f"Batch write failed after {self._write_retry_attempts} attempts, dropping {len(batch_trades)} trades: {e}")
+                    # Note: In production, you might want to write these to a dead letter queue
+                    break
+    
+    async def _shutdown_write_worker(self):
+        """Gracefully shutdown the write worker and flush remaining trades."""
+        logger.info("Shutting down write worker and flushing remaining trades...")
+        
+        # Cancel the worker task
+        if self._write_worker_task:
+            self._write_worker_task.cancel()
+            try:
+                await self._write_worker_task
+            except asyncio.CancelledError:
+                pass
+            self._write_worker_task = None
+        
+        # Flush any remaining trades in the queue
+        remaining_trades = []
+        try:
+            while True:
+                trade = self._write_queue.get_nowait()
+                remaining_trades.append(trade)
+        except asyncio.QueueEmpty:
+            pass
+        
+        if remaining_trades:
+            logger.info(f"Flushing {len(remaining_trades)} remaining trades from write queue...")
+            try:
+                # Process remaining trades in batches
+                for i in range(0, len(remaining_trades), self._write_batch_size):
+                    batch = remaining_trades[i:i + self._write_batch_size]
+                    await self._process_write_batch(batch)
+                
+                logger.info(f"Successfully flushed {len(remaining_trades)} trades")
+            except Exception as e:
+                logger.error(f"Error flushing remaining trades: {e}")
+        else:
+            logger.info("No remaining trades to flush")
 
 
 # Global trade processor instance

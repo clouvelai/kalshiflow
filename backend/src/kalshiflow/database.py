@@ -239,6 +239,46 @@ class Database:
             )
             return row_id
     
+    async def insert_trades_batch(self, trades: List[Trade]) -> List[int]:
+        """Insert multiple trades in a single batch operation for efficiency."""
+        if not trades:
+            return []
+        
+        received_at = int(datetime.now().timestamp() * 1000)
+        
+        # Prepare batch data
+        values = []
+        for trade in trades:
+            values.extend([
+                trade.market_ticker,
+                trade.yes_price,
+                trade.no_price,
+                trade.yes_price_dollars,
+                trade.no_price_dollars,
+                trade.count,
+                trade.taker_side,
+                trade.ts,
+                received_at
+            ])
+        
+        # Build parameterized query with correct number of placeholders
+        placeholders = []
+        for i in range(len(trades)):
+            base_idx = i * 9
+            placeholders.append(f"(${base_idx + 1}, ${base_idx + 2}, ${base_idx + 3}, ${base_idx + 4}, ${base_idx + 5}, ${base_idx + 6}, ${base_idx + 7}, ${base_idx + 8}, ${base_idx + 9})")
+        
+        query = f'''
+            INSERT INTO trades (
+                market_ticker, yes_price, no_price, yes_price_dollars, 
+                no_price_dollars, count, taker_side, ts, received_at
+            ) VALUES {', '.join(placeholders)}
+            RETURNING id
+        '''
+        
+        async with self.get_connection() as conn:
+            rows = await conn.fetch(query, *values)
+            return [row['id'] for row in rows]
+    
     async def get_recent_trades(self, limit: int = 200) -> List[Dict[str, Any]]:
         """Get recent trades ordered by timestamp descending."""
         async with self.get_connection() as conn:
