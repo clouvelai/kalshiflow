@@ -136,7 +136,7 @@ class TradeProcessor:
                 # Send 2 analytics updates (one for each mode) with simplified messaging
                 if self.websocket_broadcaster:
                     # Hour mode analytics update (current minute data + 60-minute window)
-                    hour_analytics = self.analytics_service.get_mode_data("hour", limit=10)
+                    hour_analytics = self.analytics_service.get_mode_data("hour", limit=60)
                     await self.websocket_broadcaster.broadcast_analytics_update(hour_analytics)
                     
                     # Day mode analytics update (current hour data + 24-hour window)
@@ -244,7 +244,7 @@ class TradeProcessor:
             hot_markets = await self.aggregator.get_hot_markets_with_metadata()
             global_stats = self.aggregator.get_global_stats()
             # Include dual-mode analytics data in snapshot using new service
-            hour_mode_data = self.analytics_service.get_mode_data("hour", limit=10)
+            hour_mode_data = self.analytics_service.get_mode_data("hour", limit=60)
             day_mode_data = self.analytics_service.get_mode_data("day", limit=10)
             
             # Structure analytics data to match frontend expectations
