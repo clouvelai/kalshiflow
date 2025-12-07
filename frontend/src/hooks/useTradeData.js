@@ -114,6 +114,13 @@ const useTradeData = () => {
           }
           break;
 
+        case 'hot_markets_update':
+          // NEW: Periodic hot markets update (every 30 seconds)
+          if (lastMessage.data?.hot_markets) {
+            setHotMarkets(lastMessage.data.hot_markets);
+          }
+          break;
+
         default:
           console.warn('Received unknown message type:', lastMessage.type);
       }

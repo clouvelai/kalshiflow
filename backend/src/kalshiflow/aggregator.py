@@ -18,10 +18,12 @@ from .database import get_database
 class TradeAggregator:
     """Manages real-time trade aggregation with sliding window calculations."""
     
-    def __init__(self, window_minutes: int = None, max_price_points: int = 50):
+    def __init__(self, window_minutes: int = None, max_price_points: int = None):
         """Initialize aggregator with time window settings."""
         self.window_minutes = window_minutes or int(os.getenv("WINDOW_MINUTES", "10"))
-        self.max_price_points = max_price_points
+        # Optimize for sparklines: 20 points is plenty for smooth visualization
+        # while keeping messages small. Configurable via env var for flexibility.
+        self.max_price_points = max_price_points or int(os.getenv("MAX_PRICE_POINTS", "20"))
         
         # Data structures for efficient aggregation
         self.ticker_states: Dict[str, TickerState] = {}
@@ -247,6 +249,7 @@ class TradeAggregator:
         state.last_trade_time = new_trade.ts
         
         # Add new enhanced price point with volume and timestamp for advanced visualizations
+        # Optimize for JSON size: use shorter field names and integers where possible
         price_point = {
             "price": new_trade.yes_price_dollars,
             "volume": new_trade.count,

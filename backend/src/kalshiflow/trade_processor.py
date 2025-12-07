@@ -30,10 +30,14 @@ class TradeProcessor:
         self.websocket_broadcaster = None
         self._running = False
         self._trade_callbacks = []
+        self._hot_markets_task = None
         
         # Analytics update throttling (max 1 update per second to prevent frontend lag)
         self._last_analytics_update = 0
         self._analytics_throttle_seconds = 1.0
+        
+        # Hot markets broadcast frequency (every 5 seconds)
+        self._hot_markets_interval = 5
         
         # Statistics for monitoring
         self.stats = {
@@ -66,6 +70,9 @@ class TradeProcessor:
         self._running = True
         self.stats["started_at"] = datetime.now()
         
+        # Start hot markets broadcast task
+        self._hot_markets_task = asyncio.create_task(self._hot_markets_broadcast_loop())
+        
         logger.info("Trade processor service started successfully")
     
     async def stop(self):
@@ -76,6 +83,15 @@ class TradeProcessor:
         logger.info("Stopping trade processor service...")
         
         self._running = False
+        
+        # Stop hot markets broadcast task
+        if self._hot_markets_task:
+            self._hot_markets_task.cancel()
+            try:
+                await self._hot_markets_task
+            except asyncio.CancelledError:
+                pass
+            self._hot_markets_task = None
         
         # Stop aggregator
         await self.aggregator.stop()
@@ -352,6 +368,43 @@ class TradeProcessor:
             logger.error(f"Raw message: {trade_message}")
             return False
     
+    async def _hot_markets_broadcast_loop(self):
+        """Periodically broadcast hot markets updates to all connected clients."""
+        try:
+            # Wait a bit before starting to ensure aggregator has data
+            await asyncio.sleep(5)
+            
+            while self._running:
+                try:
+                    if self.websocket_broadcaster:
+                        # Get fresh hot markets with metadata
+                        hot_markets = await self.aggregator.get_hot_markets_with_metadata()
+                        
+                        # Create hot markets update message
+                        message = {
+                            "type": "hot_markets_update",
+                            "data": {
+                                "hot_markets": hot_markets
+                            }
+                        }
+                        
+                        # Broadcast to all connected clients
+                        await self.websocket_broadcaster.broadcast(message)
+                        
+                        logger.debug(f"Broadcast hot markets update: {len(hot_markets)} markets")
+                    
+                    # Wait for next update
+                    await asyncio.sleep(self._hot_markets_interval)
+                    
+                except Exception as e:
+                    logger.error(f"Error in hot markets broadcast loop: {e}")
+                    # Don't break the loop for individual errors
+                    await asyncio.sleep(self._hot_markets_interval)
+                    
+        except asyncio.CancelledError:
+            logger.debug("Hot markets broadcast loop cancelled")
+        except Exception as e:
+            logger.error(f"Fatal error in hot markets broadcast loop: {e}")
 
 
 # Global trade processor instance
