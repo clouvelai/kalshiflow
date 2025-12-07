@@ -427,6 +427,7 @@ class TimeAnalyticsService:
                 "generated_at": now_ms
             }
             
+            
             # Cache the result
             self._cache_data(cache_key, result)
             

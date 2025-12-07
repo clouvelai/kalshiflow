@@ -28,13 +28,18 @@ class WebSocketBroadcaster:
         """Initialize the broadcaster."""
         self.connections: Set[WebSocket] = set()
         self._running = False
+        self._ping_interval = 30  # Send ping every 30 seconds
+        self._ping_timeout = 10   # Wait 10 seconds for pong
+        self._ping_tasks: Dict[WebSocket, asyncio.Task] = {}
         
         # Statistics
         self.stats = {
             "active_connections": 0,
             "total_connections": 0,
             "messages_sent": 0,
-            "broadcast_errors": 0
+            "broadcast_errors": 0,
+            "pings_sent": 0,
+            "pong_timeouts": 0
         }
     
     async def connect(self, websocket: WebSocket):
@@ -46,6 +51,10 @@ class WebSocketBroadcaster:
         
         logger.info(f"WebSocket connected. Active connections: {len(self.connections)}")
         
+        # Start ping task for this connection
+        ping_task = asyncio.create_task(self._ping_loop(websocket))
+        self._ping_tasks[websocket] = ping_task
+        
         # Send snapshot data to new client
         await self._send_snapshot(websocket)
     
@@ -53,6 +62,11 @@ class WebSocketBroadcaster:
         """Remove a WebSocket connection."""
         self.connections.discard(websocket)
         self.stats["active_connections"] = len(self.connections)
+        
+        # Cancel ping task for this connection
+        if websocket in self._ping_tasks:
+            ping_task = self._ping_tasks.pop(websocket)
+            ping_task.cancel()
         
         logger.info(f"WebSocket disconnected. Active connections: {len(self.connections)}")
     
@@ -171,6 +185,33 @@ class WebSocketBroadcaster:
         except Exception as e:
             logger.error(f"Failed to broadcast analytics update: {e}")
     
+    async def _ping_loop(self, websocket: WebSocket):
+        """Send periodic ping frames to keep connection alive."""
+        try:
+            while websocket in self.connections:
+                await asyncio.sleep(self._ping_interval)
+                
+                if websocket not in self.connections:
+                    break
+                
+                try:
+                    # Send ping message
+                    ping_message = {"type": "ping", "timestamp": asyncio.get_event_loop().time()}
+                    await websocket.send_text(json.dumps(ping_message))
+                    self.stats["pings_sent"] += 1
+                    
+                    logger.debug(f"Sent ping to WebSocket connection")
+                    
+                except Exception as e:
+                    logger.warning(f"Failed to send ping: {e}")
+                    # Connection likely closed, will be cleaned up by disconnect handler
+                    break
+                    
+        except asyncio.CancelledError:
+            logger.debug("Ping loop cancelled for WebSocket connection")
+        except Exception as e:
+            logger.error(f"Error in ping loop: {e}")
+            
     async def _send_snapshot(self, websocket: WebSocket):
         """Send initial snapshot data to a newly connected client."""
         try:
@@ -228,7 +269,10 @@ class TradeStreamEndpoint(WebSocketEndpoint):
             
             # Handle different message types
             if message.get("type") == "ping":
-                await websocket.send_text(json.dumps({"type": "pong"}))
+                await websocket.send_text(json.dumps({"type": "pong", "timestamp": asyncio.get_event_loop().time()}))
+            elif message.get("type") == "pong":
+                # Client responding to our ping - connection is alive
+                logger.debug("Received pong from client")
             elif message.get("type") == "get_snapshot":
                 await self.broadcaster._send_snapshot(websocket)
             else:

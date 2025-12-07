@@ -97,9 +97,11 @@ class KalshiWebSocketClient:
             self.websocket = await websockets.connect(
                 self.websocket_url,
                 additional_headers=auth_headers,
-                ping_interval=30,  # Send ping every 30 seconds
-                ping_timeout=10,   # Wait 10 seconds for pong
+                ping_interval=25,  # Send ping every 25 seconds (more aggressive for Railway)
+                ping_timeout=15,   # Wait 15 seconds for pong
                 close_timeout=10,  # Wait 10 seconds for close
+                max_size=2**20,    # 1MB max message size
+                compression=None,  # Disable compression for lower latency
             )
             
             self.is_connected = True

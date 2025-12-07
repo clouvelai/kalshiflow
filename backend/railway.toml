@@ -1,18 +1,6 @@
-[build]
-builder = "nixpacks"
-buildCommand = "echo 'Using nixpacks.toml for build configuration'"
-
 [deploy]
-startCommand = ". /opt/venv/bin/activate && uv run uvicorn kalshiflow.app:app --host 0.0.0.0 --port $PORT"
+startCommand = "uv run uvicorn kalshiflow.app:app --host 0.0.0.0 --port $PORT --ws-ping-interval 30 --ws-ping-timeout 10"
 healthcheckPath = "/health"
 healthcheckTimeout = 300
 restartPolicyType = "on_failure"
 watchPaths = ["src/**/*.py", "pyproject.toml"]
-
-[variables]
-# Force Python detection
-NIXPACKS_PYTHON_VERSION = "3.11"
-
-[environments]
-[environments.production]
-RAILWAY_ENVIRONMENT_NAME = "production"
