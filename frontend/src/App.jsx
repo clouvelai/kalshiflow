@@ -1,39 +1,21 @@
-import React, { useState } from 'react';
+import React from 'react';
 import { TradeProvider, useTradeContext } from './context/TradeContext';
 import Layout from './components/Layout';
 import UnifiedAnalytics from './components/UnifiedAnalytics';
-import TradeFlowRiver from './components/TradeFlowRiver';
 import MarketGrid from './components/MarketGrid';
-import TradeTape from './components/TradeTape';
-import TickerDetailDrawer from './components/TickerDetailDrawer';
+import TradeFlowRiver from './components/TradeFlowRiver';
 import FAQ from './components/FAQ';
 
 const AppContent = () => {
   const {
     recentTrades,
     hotMarkets,
-    selectedTicker,
     globalStats,
     hourAnalyticsData,
     dayAnalyticsData,
     connectionStatus,
-    error,
-    selectTicker,
-    getTickerData
+    error
   } = useTradeContext();
-
-  const [isDrawerOpen, setIsDrawerOpen] = useState(false);
-
-  const handleTickerSelect = (ticker) => {
-    selectTicker(ticker);
-    setIsDrawerOpen(true);
-  };
-
-  const handleCloseDrawer = () => {
-    setIsDrawerOpen(false);
-  };
-
-  const tickerData = selectedTicker ? getTickerData(selectedTicker) : null;
 
   return (
     <Layout 
@@ -47,43 +29,21 @@ const AppContent = () => {
         data-testid="unified-analytics"
       />
 
-      {/* Trade Flow River - Live trade stream visualization */}
-      <TradeFlowRiver 
-        trades={recentTrades}
-        data-testid="trade-flow-river"
-      />
+      {/* Trade Flow River - Visual representation of trades */}
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mt-8">
+        <TradeFlowRiver trades={recentTrades} />
+      </div>
 
       {/* Market Grid Section */}
       <MarketGrid
         markets={hotMarkets}
-        selectedTicker={selectedTicker}
-        onTickerSelect={handleTickerSelect}
         data-testid="market-grid"
       />
 
-      {/* FAQ and Live Trade Feed Section - Side by side */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 lg:gap-8 max-w-6xl mx-auto mt-12 px-4 sm:px-0" data-testid="faq-tradetape-section">
-        <div className="order-1" data-testid="faq-component">
-          <FAQ />
-        </div>
-        <div className="order-2" data-testid="trade-tape-section">
-          <TradeTape
-            trades={recentTrades}
-            selectedTicker={selectedTicker}
-            onTickerSelect={handleTickerSelect}
-            data-testid="trade-tape"
-          />
-        </div>
+      {/* FAQ Section */}
+      <div className="max-w-3xl mx-auto mt-12 px-4 sm:px-0" data-testid="faq-section">
+        <FAQ />
       </div>
-
-      {/* Ticker Detail Drawer */}
-      <TickerDetailDrawer
-        ticker={selectedTicker}
-        tickerData={tickerData}
-        isOpen={isDrawerOpen}
-        onClose={handleCloseDrawer}
-        data-testid="ticker-detail-drawer"
-      />
 
       {/* Error Display */}
       {error && (

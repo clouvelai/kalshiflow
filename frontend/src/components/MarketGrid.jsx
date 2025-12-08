@@ -1,7 +1,7 @@
 import React from 'react';
 import MarketCard from './MarketCard';
 
-const MarketGrid = ({ markets = [], selectedTicker, onTickerSelect, ...props }) => {
+const MarketGrid = ({ markets = [], ...props }) => {
   if (markets.length === 0) {
     return (
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-8" {...props} data-testid={props['data-testid'] || "market-grid"}>
@@ -104,8 +104,6 @@ const MarketGrid = ({ markets = [], selectedTicker, onTickerSelect, ...props }) 
           >
             <MarketCard
               market={market}
-              onClick={onTickerSelect}
-              isSelected={selectedTicker === market.ticker}
               rank={index + 1}
             />
           </div>

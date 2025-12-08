@@ -116,14 +116,6 @@
 
 /* Component styles */
 @layer components {
-  .trade-row-yes {
-    @apply bg-gradient-to-r from-yes-900/20 to-transparent border-l-2 border-yes-500;
-  }
-  
-  .trade-row-no {
-    @apply bg-gradient-to-r from-no-900/20 to-transparent border-l-2 border-no-500;
-  }
-  
   .hot-market-card {
     @apply bg-gradient-to-br from-gray-800/50 to-gray-900/50 backdrop-blur-sm;
   }

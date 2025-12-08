@@ -4,8 +4,6 @@ import useWebSocket from './useWebSocket';
 const useTradeData = () => {
   const [recentTrades, setRecentTrades] = useState([]);
   const [hotMarkets, setHotMarkets] = useState([]);
-  const [selectedTicker, setSelectedTicker] = useState(null);
-  const [tradeCount, setTradeCount] = useState(0);
   
   // Simplified state structure for single analytics_update message
   const [hourAnalyticsData, setHourAnalyticsData] = useState({
@@ -46,7 +44,6 @@ const useTradeData = () => {
           // Initial data load
           if (lastMessage.data?.recent_trades) {
             setRecentTrades(lastMessage.data.recent_trades);
-            setTradeCount(lastMessage.data.recent_trades.length);
           }
           if (lastMessage.data?.hot_markets) {
             setHotMarkets(lastMessage.data.hot_markets);
@@ -58,17 +55,9 @@ const useTradeData = () => {
           break;
 
         case 'trade':
-          // Real-time trade update (single trade)
+          // Real-time trade update
           if (lastMessage.data?.trade) {
-            const newTrade = lastMessage.data.trade;
-            
-            setRecentTrades(prevTrades => {
-              const updatedTrades = [newTrade, ...prevTrades];
-              // Keep only the most recent 200 trades
-              return updatedTrades.slice(0, 200);
-            });
-            
-            setTradeCount(prev => prev + 1);
+            setRecentTrades(prev => [lastMessage.data.trade, ...prev.slice(0, 199)]);
           }
           
           // Update global stats if provided
@@ -80,25 +69,15 @@ const useTradeData = () => {
           if (lastMessage.data?.hot_markets) {
             setHotMarkets(lastMessage.data.hot_markets);
           }
-          // Note: Removed fallback logic that reconstructed hot markets from ticker_state
-          // This was causing unlimited growth to 100+ markets. Hot markets should only
-          // come from initial snapshot and explicit backend updates.
           break;
 
         case 'trades':
-          // Batched trades update for performance
+          // Batched trades update
           if (lastMessage.data?.trades && Array.isArray(lastMessage.data.trades)) {
-            const newTrades = lastMessage.data.trades;
-            
-            setRecentTrades(prevTrades => {
-              // Add all new trades at once, newest first
-              const updatedTrades = [...newTrades, ...prevTrades];
-              // Keep only the most recent 200 trades
-              return updatedTrades.slice(0, 200);
+            setRecentTrades(prev => {
+              const newTrades = [...lastMessage.data.trades, ...prev];
+              return newTrades.slice(0, 200);
             });
-            
-            // Update trade count by batch size
-            setTradeCount(prev => prev + newTrades.length);
           }
           break;
 
@@ -154,34 +133,15 @@ const useTradeData = () => {
     }
   }, [lastMessage]);
 
-  const selectTicker = useCallback((ticker) => {
-    setSelectedTicker(ticker);
-  }, []);
-
-  const getTickerData = useCallback((ticker) => {
-    if (!ticker) return null;
-    
-    const marketData = hotMarkets.find(market => market.ticker === ticker);
-    const tickerTrades = recentTrades.filter(trade => trade.market_ticker === ticker);
-    
-    return {
-      marketData,
-      recentTrades: tickerTrades
-    };
-  }, [hotMarkets, recentTrades]);
 
   return {
     recentTrades,
     hotMarkets,
-    selectedTicker,
-    tradeCount,
-    hourAnalyticsData,  // NEW: Complete hour mode analytics data
-    dayAnalyticsData,   // NEW: Complete day mode analytics data
+    hourAnalyticsData,  // Complete hour mode analytics data
+    dayAnalyticsData,   // Complete day mode analytics data
     globalStats,
     connectionStatus,
-    error,
-    selectTicker,
-    getTickerData
+    error
   };
 };
 

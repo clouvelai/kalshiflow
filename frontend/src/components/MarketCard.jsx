@@ -83,14 +83,8 @@ const formatOpenInterest = (openInterest) => {
   }
 };
 
-const MarketCard = ({ market, onClick, isSelected = false, rank }) => {
+const MarketCard = ({ market, rank }) => {
   if (!market) return null;
-
-  const handleClick = () => {
-    if (onClick && market.ticker) {
-      onClick(market.ticker);
-    }
-  };
 
   // Calculate net flow percentage for progress bar
   const netFlow = market.net_flow || 0;
@@ -117,12 +111,10 @@ const MarketCard = ({ market, onClick, isSelected = false, rank }) => {
   return (
     <div 
       className={`
-        relative cursor-pointer rounded-xl border-2 p-4 transition-all duration-300 
+        relative rounded-xl border-2 p-4 transition-all duration-300 
         hover:shadow-lg hover:-translate-y-1 hover:border-blue-300
-        ${isSelected ? 'border-blue-500 bg-blue-50 shadow-md' : hotnessColors[hotnessLevel]}
-        ${isSelected ? 'ring-2 ring-blue-200' : ''}
+        ${hotnessColors[hotnessLevel]}
       `}
-      onClick={handleClick}
       data-testid={`market-card-${market.ticker}`}
     >
       {/* Rank Badge */}

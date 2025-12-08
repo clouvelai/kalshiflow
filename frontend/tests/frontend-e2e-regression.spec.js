@@ -11,7 +11,7 @@ import { join } from 'path';
  * Success Criteria:
  * ✓ Backend is running and accepting WebSocket connections
  * ✓ WebSocket connection established with status "Live"
- * ✓ Real trade data flows into the application
+ * ✓ Real market data flows into the application
  * ✓ Analytics shows non-zero values
  * ✓ Market grid displays actual markets with volume
  * ✓ Chart renders with real data points
@@ -106,16 +106,12 @@ test.describe('Frontend E2E Regression Test - Golden Standard', () => {
       console.log('⚠️  Chart has no visible data (may be building)');
     }
     
-    // 4. Trade Tape Check
-    const tradeCount = await page.locator('[data-testid="trade-tape"] .trade-item').count();
-    console.log(`ℹ️  Trade tape: ${tradeCount} trades visible`);
-    
-    // 5. Trade Flow River Check (minimal - just ensure component renders)
-    const tradeFlowRiver = page.getByTestId('trade-flow-river-container');
-    if (await tradeFlowRiver.isVisible()) {
-      console.log('✅ Trade Flow River component rendered');
+    // 4. FAQ Section Check (replacing trade components)
+    const faqSection = page.getByTestId('faq-section');
+    if (await faqSection.isVisible()) {
+      console.log('✅ FAQ section rendered');
     } else {
-      console.log('⚠️  Trade Flow River not visible');
+      console.log('⚠️  FAQ section not visible');
     }
     
     // Take screenshot of data populated state
@@ -125,7 +121,6 @@ test.describe('Frontend E2E Regression Test - Golden Standard', () => {
     const initialState = {
       volume: totalVolume,
       trades: totalTrades,
-      tradeCount: tradeCount,
       marketCount: marketCount
     };
     
@@ -160,18 +155,20 @@ test.describe('Frontend E2E Regression Test - Golden Standard', () => {
     // Check for updates
     const updatedVolume = await page.getByTestId('total-volume-value').textContent();
     const updatedTrades = await page.getByTestId('total-trades-value').textContent();
-    const updatedTradeCount = await page.locator('[data-testid="trade-tape"] .trade-item').count();
+    // Check if TradeFlowRiver is present instead of trade tape
+    const tradeFlowRiver = page.getByTestId('trade-flow-river-container');
+    const hasTradeFlow = await tradeFlowRiver.isVisible();
     const updatedMarketCount = await marketCards.count();
     
     const finalState = {
       volume: updatedVolume,
       trades: updatedTrades,
-      tradeCount: updatedTradeCount,
+      hasTradeFlow: hasTradeFlow,
       marketCount: updatedMarketCount
     };
     
     console.log(`📊 Initial: Volume=${initialState.volume}, Trades=${initialState.trades}, Markets=${initialState.marketCount}`);
-    console.log(`📊 Updated: Volume=${finalState.volume}, Trades=${finalState.trades}, Markets=${finalState.marketCount}`);
+    console.log(`📊 Updated: Volume=${finalState.volume}, Trades=${finalState.trades}, Markets=${finalState.marketCount}, TradeFlow=${finalState.hasTradeFlow}`);
     
     // Check if anything changed
     let dataChanged = false;
@@ -183,9 +180,8 @@ test.describe('Frontend E2E Regression Test - Golden Standard', () => {
       console.log(`✅ Trade count updated: ${initialState.trades} → ${finalState.trades}`);
       dataChanged = true;
     }
-    if (finalState.tradeCount !== initialState.tradeCount) {
-      console.log(`✅ New trades in tape: ${finalState.tradeCount - initialState.tradeCount} new`);
-      dataChanged = true;
+    if (finalState.hasTradeFlow) {
+      console.log(`✅ Trade flow river is active`);
     }
     
     if (!dataChanged) {
@@ -214,7 +210,7 @@ test.describe('Frontend E2E Regression Test - Golden Standard', () => {
     const componentsOk = 
       await page.getByTestId('unified-analytics').isVisible() &&
       await page.getByTestId('market-grid').isVisible() &&
-      await page.getByTestId('trade-tape').isVisible();
+      await page.getByTestId('faq-section').isVisible();
     
     if (componentsOk) {
       console.log('✅ All components: RENDERED');
