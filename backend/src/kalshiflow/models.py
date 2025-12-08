@@ -373,6 +373,27 @@ class AnalyticsUpdateMessage(WebSocketMessage):
         return v
 
 
+class TopTradesMessage(WebSocketMessage):
+    """Message containing top trades by volume."""
+    type: Literal["top_trades"] = "top_trades"
+    
+    def __init__(self, trades: List[Dict[str, Any]], window_minutes: int = 10):
+        """Initialize with top trades data.
+        
+        Args:
+            trades: List of top trades with metadata
+            window_minutes: Window size in minutes
+        """
+        super().__init__(
+            type="top_trades",
+            data={
+                "trades": trades,
+                "window_minutes": window_minutes,
+                "timestamp": int(datetime.now().timestamp() * 1000)
+            }
+        )
+
+
 class ConnectionStatus(BaseModel):
     """WebSocket connection status information."""
     connected: bool = Field(..., description="Whether connection is active")

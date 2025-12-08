@@ -4,12 +4,14 @@ import Layout from './components/Layout';
 import UnifiedAnalytics from './components/UnifiedAnalytics';
 import MarketGrid from './components/MarketGrid';
 import TradeFlowRiver from './components/TradeFlowRiver';
+import TopTradesList from './components/TopTradesList';
 import FAQ from './components/FAQ';
 
 const AppContent = () => {
   const {
     recentTrades,
     hotMarkets,
+    topTrades,
     globalStats,
     hourAnalyticsData,
     dayAnalyticsData,
@@ -32,6 +34,11 @@ const AppContent = () => {
       {/* Trade Flow River - Visual representation of trades */}
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mt-8">
         <TradeFlowRiver trades={recentTrades} />
+      </div>
+
+      {/* Top Trades List - Biggest trades by volume */}
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mt-8">
+        <TopTradesList trades={topTrades} />
       </div>
 
       {/* Market Grid Section */}

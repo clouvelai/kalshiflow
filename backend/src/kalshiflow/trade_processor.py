@@ -41,6 +41,10 @@ class TradeProcessor:
         # Hot markets broadcast frequency (every 5 seconds)
         self._hot_markets_interval = 5
         
+        # Top trades broadcast task
+        self._top_trades_task = None
+        self._top_trades_interval = 60  # Update every minute
+        
         # Write queue system for non-blocking database writes
         self._write_queue = asyncio.Queue(maxsize=10000)  # Large queue to handle bursts
         self._write_worker_task = None
@@ -97,6 +101,9 @@ class TradeProcessor:
         # Start analytics broadcast task  
         self._analytics_task = asyncio.create_task(self._analytics_broadcast_loop())
         
+        # Start top trades broadcast task
+        self._top_trades_task = asyncio.create_task(self._top_trades_broadcast_loop())
+        
         # Start write worker task for background database writes
         self._write_worker_task = asyncio.create_task(self._write_worker_loop())
         
@@ -131,6 +138,15 @@ class TradeProcessor:
             except asyncio.CancelledError:
                 pass
             self._analytics_task = None
+        
+        # Stop top trades broadcast task
+        if self._top_trades_task:
+            self._top_trades_task.cancel()
+            try:
+                await self._top_trades_task
+            except asyncio.CancelledError:
+                pass
+            self._top_trades_task = None
         
         # Stop trade batch task and flush remaining trades
         if self._trade_batch_task:
@@ -219,6 +235,11 @@ class TradeProcessor:
             
             # IMMEDIATE BROADCAST: Send updates to WebSocket clients immediately
             await self._broadcast_trade_update(trade, ticker_state)
+            
+            # Check if this trade might affect top trades list
+            if self.aggregator.should_broadcast_top_trades(trade):
+                # Trigger immediate top trades update
+                asyncio.create_task(self._broadcast_top_trades_immediate())
             
             # IMMEDIATE CALLBACKS: Call registered callbacks immediately
             await self._call_trade_callbacks(trade, ticker_state)
@@ -376,6 +397,8 @@ class TradeProcessor:
             # Use metadata-enriched hot markets for snapshot
             hot_markets = await self.aggregator.get_hot_markets_with_metadata()
             global_stats = self.aggregator.get_global_stats()
+            # Get top trades for snapshot
+            top_trades = await self.aggregator.get_top_trades()
             # Include dual-mode analytics data in snapshot using new service
             hour_mode_data = self.analytics_service.get_mode_data("hour", limit=60)
             day_mode_data = self.analytics_service.get_mode_data("day", limit=24)
@@ -390,7 +413,8 @@ class TradeProcessor:
                 "recent_trades": recent_trades,
                 "hot_markets": hot_markets,
                 "global_stats": global_stats,
-                "analytics_data": analytics_data
+                "analytics_data": analytics_data,
+                "top_trades": top_trades
             }
         except Exception as e:
             logger.error(f"Error getting snapshot data: {e}")
@@ -531,6 +555,69 @@ class TradeProcessor:
             logger.debug("Hot markets broadcast loop cancelled")
         except Exception as e:
             logger.error(f"Fatal error in hot markets broadcast loop: {e}")
+    
+    async def _broadcast_top_trades_immediate(self):
+        """Broadcast top trades immediately when a significant trade is detected."""
+        try:
+            if self.websocket_broadcaster:
+                # Force update and get fresh top trades
+                top_trades = await self.aggregator.update_top_trades(force=True)
+                
+                # Import TopTradesMessage
+                from .models import TopTradesMessage
+                
+                # Create top trades message
+                top_trades_message = TopTradesMessage(
+                    trades=top_trades,
+                    window_minutes=self.aggregator._top_trades_window_minutes
+                )
+                
+                # Broadcast to all connected clients
+                await self.websocket_broadcaster.broadcast(top_trades_message.model_dump())
+                
+                logger.debug(f"Immediate broadcast of top trades: {len(top_trades)} trades")
+                
+        except Exception as e:
+            logger.error(f"Error in immediate top trades broadcast: {e}")
+    
+    async def _top_trades_broadcast_loop(self):
+        """Periodically broadcast top trades by volume to all connected clients."""
+        try:
+            # Wait a bit before starting to ensure aggregator has data
+            await asyncio.sleep(10)
+            
+            while self._running:
+                try:
+                    if self.websocket_broadcaster:
+                        # Get top trades from aggregator
+                        top_trades = await self.aggregator.get_top_trades()
+                        
+                        # Import TopTradesMessage
+                        from .models import TopTradesMessage
+                        
+                        # Create top trades message
+                        top_trades_message = TopTradesMessage(
+                            trades=top_trades, 
+                            window_minutes=self.aggregator._top_trades_window_minutes
+                        )
+                        
+                        # Broadcast to all connected clients
+                        await self.websocket_broadcaster.broadcast(top_trades_message.model_dump())
+                        
+                        logger.debug(f"Broadcast top trades update: {len(top_trades)} trades")
+                    
+                    # Wait for next update
+                    await asyncio.sleep(self._top_trades_interval)
+                    
+                except Exception as e:
+                    logger.error(f"Error in top trades broadcast loop: {e}")
+                    # Don't break the loop for individual errors
+                    await asyncio.sleep(self._top_trades_interval)
+                    
+        except asyncio.CancelledError:
+            logger.debug("Top trades broadcast loop cancelled")
+        except Exception as e:
+            logger.error(f"Fatal error in top trades broadcast loop: {e}")
     
     async def _analytics_broadcast_loop(self):
         """

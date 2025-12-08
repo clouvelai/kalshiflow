@@ -4,6 +4,7 @@ import useWebSocket from './useWebSocket';
 const useTradeData = () => {
   const [recentTrades, setRecentTrades] = useState([]);
   const [hotMarkets, setHotMarkets] = useState([]);
+  const [topTrades, setTopTrades] = useState([]);
   
   // Simplified state structure for single analytics_update message
   const [hourAnalyticsData, setHourAnalyticsData] = useState({
@@ -50,6 +51,9 @@ const useTradeData = () => {
           }
           if (lastMessage.data?.global_stats) {
             setGlobalStats(lastMessage.data.global_stats);
+          }
+          if (lastMessage.data?.top_trades) {
+            setTopTrades(lastMessage.data.top_trades);
           }
           // Initial analytics data will come via analytics_update messages
           break;
@@ -123,6 +127,13 @@ const useTradeData = () => {
           }
           break;
 
+        case 'top_trades':
+          // Top trades by volume update
+          if (lastMessage.data?.trades) {
+            setTopTrades(lastMessage.data.trades);
+          }
+          break;
+
         case 'ping':
           // WebSocket keepalive ping from server - no action needed
           break;
@@ -143,6 +154,7 @@ const useTradeData = () => {
   return {
     recentTrades,
     hotMarkets,
+    topTrades,
     hourAnalyticsData,  // Complete hour mode analytics data
     dayAnalyticsData,   // Complete day mode analytics data
     globalStats,

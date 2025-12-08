@@ -494,6 +494,45 @@ class Database:
                 WHERE ts >= $1 AND ts >= $2
             ''', cutoff_ts, min_valid_ts)
             return count or 0
+    
+    async def get_top_trades_by_volume(self, window_minutes: int = 10, limit: int = 10) -> List[Dict[str, Any]]:
+        """Get top trades by volume (size * cost) within a time window.
+        
+        Args:
+            window_minutes: Time window in minutes (default: 10)
+            limit: Maximum number of trades to return (default: 10)
+            
+        Returns:
+            List of trade dictionaries ordered by volume (highest first)
+        """
+        cutoff_ts = int((datetime.now().timestamp() - window_minutes * 60) * 1000)
+        
+        async with self.get_connection() as conn:
+            # Calculate volume as count * price in dollars
+            # For yes trades, use yes_price_dollars; for no trades, use no_price_dollars
+            rows = await conn.fetch('''
+                SELECT 
+                    id,
+                    market_ticker,
+                    yes_price,
+                    no_price,
+                    yes_price_dollars,
+                    no_price_dollars,
+                    count,
+                    taker_side,
+                    ts,
+                    received_at,
+                    CASE 
+                        WHEN taker_side = 'yes' THEN count * yes_price_dollars
+                        ELSE count * no_price_dollars
+                    END as volume_dollars
+                FROM trades 
+                WHERE ts >= $1
+                ORDER BY volume_dollars DESC
+                LIMIT $2
+            ''', cutoff_ts, limit)
+            
+            return [self._convert_decimals_to_float(dict(row)) for row in rows]
 
 
 # Global database instance

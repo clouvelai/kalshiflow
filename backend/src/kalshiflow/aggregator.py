@@ -45,6 +45,12 @@ class TradeAggregator:
         self._duplicate_detector = TradeDuplicateDetector(window_minutes=5)
         self.logger = logging.getLogger(__name__)
         
+        # Top trades tracking
+        self._top_trades = []
+        self._top_trades_last_update = datetime.now()
+        self._top_trades_update_interval = 60  # Update every minute
+        self._top_trades_window_minutes = 10  # Default 10-minute window
+        
         # Cleanup task
         self._cleanup_task = None
         self._running = False
@@ -441,11 +447,13 @@ class TradeAggregator:
         }
     
     async def _periodic_cleanup(self):
-        """Periodically remove old trades from memory."""
+        """Periodically remove old trades from memory and update top trades."""
         while self._running:
             try:
                 await asyncio.sleep(60)  # Cleanup every minute
                 await self._prune_old_data()
+                # Also update top trades periodically
+                await self.update_top_trades()
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -485,6 +493,112 @@ class TradeAggregator:
                         # Ticker was already removed by another operation, continue
                         continue
     
+    async def update_top_trades(self, force: bool = False) -> List[Dict[str, Any]]:
+        """Update the list of top trades by volume from database.
+        
+        Args:
+            force: If True, force an update regardless of time interval
+            
+        Returns:
+            List of top trades with metadata
+        """
+        now = datetime.now()
+        time_since_update = (now - self._top_trades_last_update).seconds
+        
+        # Only update if forced or enough time has passed
+        if not force and time_since_update < self._top_trades_update_interval:
+            return self._top_trades
+        
+        try:
+            database = get_database()
+            
+            # Get top trades from database
+            top_trades_data = await database.get_top_trades_by_volume(
+                window_minutes=self._top_trades_window_minutes,
+                limit=10
+            )
+            
+            # Get metadata service for enriching trades
+            metadata_service = get_metadata_service()
+            
+            # Enrich trades with metadata if available
+            enriched_trades = []
+            for trade in top_trades_data:
+                enriched_trade = trade.copy()
+                
+                # Calculate human-readable time ago
+                trade_ts = trade["ts"]
+                time_ago_seconds = (now.timestamp() * 1000 - trade_ts) / 1000
+                
+                if time_ago_seconds < 60:
+                    time_ago = f"{int(time_ago_seconds)}s ago"
+                elif time_ago_seconds < 3600:
+                    time_ago = f"{int(time_ago_seconds / 60)}m ago"
+                else:
+                    time_ago = f"{int(time_ago_seconds / 3600)}h ago"
+                
+                enriched_trade["time_ago"] = time_ago
+                
+                # Add market metadata if available
+                if metadata_service:
+                    metadata = await metadata_service.get_market_metadata(trade["market_ticker"])
+                    if metadata:
+                        enriched_trade["title"] = metadata.get("title")
+                        enriched_trade["category"] = metadata.get("category")
+                
+                enriched_trades.append(enriched_trade)
+            
+            self._top_trades = enriched_trades
+            self._top_trades_last_update = now
+            
+            self.logger.debug(f"Updated top trades: {len(enriched_trades)} trades")
+            
+        except Exception as e:
+            self.logger.error(f"Error updating top trades: {e}")
+        
+        return self._top_trades
+    
+    async def get_top_trades(self, window_minutes: int = None) -> List[Dict[str, Any]]:
+        """Get current top trades by volume.
+        
+        Args:
+            window_minutes: Optional window size override
+            
+        Returns:
+            List of top trades with metadata
+        """
+        # Update window if specified
+        if window_minutes and window_minutes != self._top_trades_window_minutes:
+            self._top_trades_window_minutes = window_minutes
+            # Force update with new window
+            return await self.update_top_trades(force=True)
+        
+        # Return cached data if recent, otherwise update
+        return await self.update_top_trades()
+    
+    def should_broadcast_top_trades(self, trade: Trade) -> bool:
+        """Check if a new trade should trigger a top trades broadcast.
+        
+        Args:
+            trade: The new trade to evaluate
+            
+        Returns:
+            True if the trade might affect the top 10 list
+        """
+        if not self._top_trades:
+            return True  # Always broadcast if we have no data
+        
+        # Calculate volume for the new trade
+        if trade.taker_side == "yes":
+            new_trade_volume = trade.count * trade.yes_price_dollars
+        else:
+            new_trade_volume = trade.count * trade.no_price_dollars
+        
+        # Check if this trade's volume exceeds the smallest in top 10
+        min_volume = min(t.get("volume_dollars", 0) for t in self._top_trades) if self._top_trades else 0
+        
+        return new_trade_volume > min_volume
+    
     def get_stats(self) -> Dict[str, Any]:
         """Get aggregator statistics for debugging."""
         # Get duplicate detector stats
@@ -508,6 +622,12 @@ class TradeAggregator:
                 "detection_rate_percent": duplicate_stats["detection_rate_percent"],
                 "cache_size": duplicate_stats["cache_size"],
                 "window_minutes": duplicate_stats["window_minutes"]
+            },
+            # Top trades stats
+            "top_trades": {
+                "count": len(self._top_trades),
+                "window_minutes": self._top_trades_window_minutes,
+                "last_update": self._top_trades_last_update.isoformat() if self._top_trades_last_update else None
             }
         }
 
