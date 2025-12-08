@@ -12,7 +12,7 @@ from kalshiflow.aggregator import TradeAggregator
 from kalshiflow.models import Trade
 
 
-async def test_duplicate_detection_with_stats():
+async def demonstrate_duplicate_detection_with_stats():
     """Test duplicate detection and show comprehensive statistics."""
     print("🔍 Testing In-Memory Duplicate Detection")
     print("=" * 50)
@@ -155,4 +155,4 @@ async def test_duplicate_detection_with_stats():
 
 
 if __name__ == "__main__":
-    asyncio.run(test_duplicate_detection_with_stats())
+    asyncio.run(demonstrate_duplicate_detection_with_stats())

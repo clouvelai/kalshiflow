@@ -291,11 +291,11 @@ class TestWebSocketMessages:
         assert "trade" in update.data
         assert "ticker_state" in update.data
         
-        # Test validation failure
+        # Test validation failure - missing 'trade' field entirely
         with pytest.raises(ValidationError):
             TradeUpdateMessage(data={
-                "trade": {}
-                # Missing ticker_state
+                "ticker_state": {}
+                # Missing trade field - should fail validation
             })
 
 

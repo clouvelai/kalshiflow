@@ -364,12 +364,27 @@ const TradeFlowRiver = ({ trades = [] }) => {
   );
 };
 
+// Optimize re-rendering with React.memo
+// Only re-render if trades array reference changed or trade data actually changed
 export default React.memo(TradeFlowRiver, (prevProps, nextProps) => {
-  // Only re-render if trades array reference changed or length changed
-  // This prevents re-renders when parent updates for other reasons
-  return (
-    prevProps.trades === nextProps.trades ||
-    (prevProps.trades?.length === nextProps.trades?.length &&
-     prevProps.trades?.[0]?.trade_id === nextProps.trades?.[0]?.trade_id)
-  );
+  // Return true to prevent re-render, false to allow it
+  // We want to re-render only when trades actually change
+  
+  // If references are the same, no re-render needed
+  if (prevProps.trades === nextProps.trades) {
+    return true;
+  }
+  
+  // If lengths differ, re-render needed
+  if (prevProps.trades?.length !== nextProps.trades?.length) {
+    return false;
+  }
+  
+  // If first trade is different, re-render needed (new trades at top)
+  if (prevProps.trades?.[0]?.trade_id !== nextProps.trades?.[0]?.trade_id) {
+    return false;
+  }
+  
+  // Otherwise, prevent unnecessary re-renders
+  return true;
 });
