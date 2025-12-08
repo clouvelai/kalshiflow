@@ -1,0 +1,412 @@
+"""
+Integration tests for RL Trading Subsystem.
+
+Tests the complete pipeline from WebSocket message processing
+through orderbook state updates to database persistence.
+"""
+
+import pytest
+import asyncio
+import time
+import json
+from unittest.mock import AsyncMock, MagicMock, patch
+
+from kalshiflow_rl.data.orderbook_client import OrderbookClient
+from kalshiflow_rl.data.orderbook_state import get_shared_orderbook_state
+from kalshiflow_rl.data.write_queue import OrderbookWriteQueue
+from kalshiflow_rl.data.database import rl_db
+
+
+@pytest.fixture(scope="function")
+def mock_websocket():
+    """Mock WebSocket for testing."""
+    websocket = MagicMock()
+    websocket.__aenter__ = AsyncMock(return_value=websocket)
+    websocket.__aexit__ = AsyncMock(return_value=None)
+    websocket.send = AsyncMock()
+    websocket.close = AsyncMock()
+    return websocket
+
+
+@pytest.fixture
+def sample_websocket_snapshot():
+    """Sample WebSocket snapshot message."""
+    return {
+        "channel": "orderbook_delta.TEST-MARKET",
+        "type": "snapshot",
+        "data": {
+            "seq": 1000,
+            "yes": {
+                "b": {"45": 1000, "44": 500},  # bids
+                "a": {"55": 800, "56": 400}     # asks
+            },
+            "no": {
+                "b": {"45": 600, "44": 300},   # bids
+                "a": {"55": 700, "56": 200}     # asks
+            }
+        }
+    }
+
+
+@pytest.fixture
+def sample_websocket_delta():
+    """Sample WebSocket delta message."""
+    return {
+        "channel": "orderbook_delta.TEST-MARKET",
+        "data": {
+            "seq": 1001,
+            "side": "yes",
+            "price": 45,
+            "old_size": 1000,
+            "new_size": 1200
+        }
+    }
+
+
+class TestCompleteDataPipeline:
+    """Test the complete data flow pipeline."""
+    
+    @pytest.mark.asyncio
+    @patch('kalshiflow_rl.data.write_queue.rl_db')
+    async def test_end_to_end_message_flow(
+        self,
+        mock_rl_db,
+        sample_websocket_snapshot,
+        sample_websocket_delta
+    ):
+        """Test complete message flow from message processing to orderbook state updates."""
+        
+        # Setup database mock
+        mock_rl_db.batch_insert_snapshots = AsyncMock(return_value=1)
+        mock_rl_db.batch_insert_deltas = AsyncMock(return_value=1)
+        
+        # Create client (no WebSocket connection needed for this test)
+        client = OrderbookClient("TEST-MARKET")
+        
+        # Initialize orderbook state manually (avoid WebSocket connection)
+        client._orderbook_state = await get_shared_orderbook_state("TEST-MARKET")
+        
+        try:
+            # Process snapshot message directly
+            await client._process_message(json.dumps(sample_websocket_snapshot))
+            
+            # Process delta message directly  
+            await client._process_message(json.dumps(sample_websocket_delta))
+            
+            # Wait for any async processing
+            await asyncio.sleep(0.1)
+            
+            # Verify orderbook state was updated
+            shared_state = await get_shared_orderbook_state("TEST-MARKET")
+            snapshot = await shared_state.get_snapshot()
+            
+            assert snapshot["last_sequence"] == 1001
+            assert snapshot["market_ticker"] == "TEST-MARKET"
+            
+            # Verify snapshot has expected structure
+            assert "yes_bids" in snapshot
+            assert "yes_asks" in snapshot
+            assert "no_bids" in snapshot
+            assert "no_asks" in snapshot
+            
+            # Verify specific bid/ask data from test messages
+            assert 45 in snapshot["yes_bids"]  # From snapshot
+            assert snapshot["yes_bids"][45] == 1200  # Updated by delta
+            
+        finally:
+            # No need to stop since we didn't start WebSocket connection
+            pass
+    
+    @pytest.mark.asyncio
+    async def test_non_blocking_behavior(self):
+        """Test that message processing doesn't block on slow operations."""
+        
+        # Create write queue with slow flush
+        write_queue = OrderbookWriteQueue(
+            batch_size=1000,  # Large batch to prevent immediate flush
+            flush_interval=10.0  # Long interval
+        )
+        
+        await write_queue.start()
+        
+        try:
+            # Enqueue many messages and measure time
+            num_messages = 1000
+            start_time = time.time()
+            
+            for i in range(num_messages):
+                snapshot_data = {
+                    "market_ticker": "TEST-MARKET",
+                    "timestamp_ms": int(time.time() * 1000),
+                    "sequence_number": i,
+                    "yes_bids": {"45": 1000},
+                    "yes_asks": {"55": 800},
+                    "no_bids": {"45": 600},
+                    "no_asks": {"55": 700}
+                }
+                
+                await write_queue.enqueue_snapshot(snapshot_data)
+            
+            enqueue_time = time.time() - start_time
+            
+            # Should be very fast (non-blocking)
+            assert enqueue_time < 1.0
+            
+            # All messages should be queued
+            assert write_queue._messages_enqueued == num_messages
+            
+        finally:
+            await write_queue.stop()
+    
+    @pytest.mark.asyncio
+    @patch('kalshiflow_rl.data.write_queue.rl_db')
+    async def test_message_persistence_accuracy(self, mock_rl_db):
+        """Test that messages are persisted accurately."""
+        
+        mock_rl_db.batch_insert_snapshots = AsyncMock()
+        mock_rl_db.batch_insert_deltas = AsyncMock()
+        
+        write_queue = OrderbookWriteQueue(
+            batch_size=2,
+            flush_interval=0.1,
+            delta_sample_rate=1  # No sampling
+        )
+        
+        await write_queue.start()
+        
+        try:
+            # Enqueue specific test data
+            snapshot1 = {
+                "market_ticker": "TEST-MARKET",
+                "timestamp_ms": 1000,
+                "sequence_number": 100,
+                "yes_bids": {"45": 1000},
+                "yes_asks": {"55": 800},
+                "no_bids": {"45": 600},
+                "no_asks": {"55": 700}
+            }
+            
+            snapshot2 = {
+                "market_ticker": "TEST-MARKET",
+                "timestamp_ms": 2000,
+                "sequence_number": 200,
+                "yes_bids": {"46": 1100},
+                "yes_asks": {"54": 900},
+                "no_bids": {"46": 650},
+                "no_asks": {"54": 750}
+            }
+            
+            await write_queue.enqueue_snapshot(snapshot1)
+            await write_queue.enqueue_snapshot(snapshot2)
+            
+            # Wait for batch processing
+            await asyncio.sleep(0.2)
+            
+            # Verify correct data was passed to database
+            mock_rl_db.batch_insert_snapshots.assert_called_once()
+            
+            call_args = mock_rl_db.batch_insert_snapshots.call_args[0][0]
+            assert len(call_args) == 2
+            
+            # Check first snapshot
+            assert call_args[0]["market_ticker"] == "TEST-MARKET"
+            assert call_args[0]["sequence_number"] == 100
+            assert call_args[0]["timestamp_ms"] == 1000
+            
+            # Check second snapshot
+            assert call_args[1]["market_ticker"] == "TEST-MARKET"
+            assert call_args[1]["sequence_number"] == 200
+            assert call_args[1]["timestamp_ms"] == 2000
+            
+        finally:
+            await write_queue.stop()
+    
+    @pytest.mark.asyncio
+    async def test_concurrent_updates_consistency(self):
+        """Test that concurrent updates maintain consistency."""
+        
+        shared_state = await get_shared_orderbook_state("TEST-MARKET")
+        
+        # Apply initial snapshot
+        initial_snapshot = {
+            "market_ticker": "TEST-MARKET",
+            "timestamp_ms": int(time.time() * 1000),
+            "sequence_number": 100,
+            "yes_bids": {"45": 1000},
+            "yes_asks": {"55": 800},
+            "no_bids": {"45": 600},
+            "no_asks": {"55": 700}
+        }
+        
+        await shared_state.apply_snapshot(initial_snapshot)
+        
+        # Create concurrent delta applications
+        async def apply_delta(seq):
+            delta = {
+                "market_ticker": "TEST-MARKET",
+                "timestamp_ms": int(time.time() * 1000),
+                "sequence_number": 100 + seq,
+                "side": "yes",
+                "action": "update",
+                "price": 45,
+                "old_size": 1000,
+                "new_size": 1000 + seq * 100
+            }
+            return await shared_state.apply_delta(delta)
+        
+        # Run concurrent updates
+        tasks = [apply_delta(i) for i in range(1, 11)]  # seq 101-110
+        results = await asyncio.gather(*tasks)
+        
+        # All should succeed (though order might vary due to concurrency)
+        assert all(results)
+        
+        # Final state should be consistent
+        final_snapshot = await shared_state.get_snapshot()
+        assert final_snapshot["last_sequence"] >= 101  # At least one update applied
+        assert "yes_bids" in final_snapshot
+    
+    @pytest.mark.asyncio
+    async def test_performance_under_load(self):
+        """Test system performance under realistic load."""
+        
+        # Create components with realistic settings
+        write_queue = OrderbookWriteQueue(
+            batch_size=100,
+            flush_interval=1.0,
+            delta_sample_rate=5,  # Keep 1 out of 5 deltas
+            max_queue_size=10000
+        )
+        
+        shared_state = await get_shared_orderbook_state("LOAD-TEST")
+        
+        await write_queue.start()
+        
+        try:
+            # Apply initial snapshot
+            initial_snapshot = {
+                "market_ticker": "LOAD-TEST",
+                "timestamp_ms": int(time.time() * 1000),
+                "sequence_number": 0,
+                "yes_bids": {"45": 1000},
+                "yes_asks": {"55": 800},
+                "no_bids": {"45": 600},
+                "no_asks": {"55": 700}
+            }
+            
+            await shared_state.apply_snapshot(initial_snapshot)
+            await write_queue.enqueue_snapshot(initial_snapshot)
+            
+            # Generate high-frequency deltas (simulate real trading)
+            num_deltas = 5000
+            start_time = time.time()
+            
+            for i in range(num_deltas):
+                delta_data = {
+                    "market_ticker": "LOAD-TEST",
+                    "timestamp_ms": int(time.time() * 1000),
+                    "sequence_number": i + 1,
+                    "side": "yes" if i % 2 == 0 else "no",
+                    "action": "update",
+                    "price": 45 if i % 3 == 0 else 55,
+                    "old_size": 1000,
+                    "new_size": 1000 + (i % 500)
+                }
+                
+                # Update state and queue for persistence
+                await shared_state.apply_delta(delta_data)
+                await write_queue.enqueue_delta(delta_data)
+            
+            processing_time = time.time() - start_time
+            
+            # Should handle 5000 updates in reasonable time
+            assert processing_time < 10.0  # Less than 10 seconds
+            
+            # System should remain responsive
+            final_snapshot = await shared_state.get_snapshot()
+            assert final_snapshot["last_sequence"] > 0
+            
+            # Write queue should be healthy
+            assert write_queue.is_healthy()
+            
+            # Check throughput
+            throughput = num_deltas / processing_time
+            assert throughput > 500  # At least 500 updates/sec
+            
+        finally:
+            await write_queue.stop()
+    
+    @pytest.mark.asyncio
+    async def test_error_recovery(self):
+        """Test system recovery from various error conditions."""
+        
+        # Test recovery from orderbook state corruption
+        shared_state = await get_shared_orderbook_state("ERROR-TEST")
+        
+        # Apply valid snapshot
+        valid_snapshot = {
+            "market_ticker": "ERROR-TEST",
+            "timestamp_ms": int(time.time() * 1000),
+            "sequence_number": 100,
+            "yes_bids": {"45": 1000},
+            "yes_asks": {"55": 800},
+            "no_bids": {"45": 600},
+            "no_asks": {"55": 700}
+        }
+        
+        await shared_state.apply_snapshot(valid_snapshot)
+        
+        # Try to apply invalid deltas
+        invalid_deltas = [
+            {
+                "sequence_number": 50,  # Out of order
+                "side": "yes",
+                "action": "update",
+                "price": 45,
+                "new_size": 1200
+            },
+            {
+                "sequence_number": 101,
+                "side": "invalid",  # Invalid side
+                "action": "update",
+                "price": 45,
+                "new_size": 1200
+            },
+            {
+                "sequence_number": 102,
+                "side": "yes",
+                "action": "invalid",  # Invalid action
+                "price": 45,
+                "new_size": 1200
+            }
+        ]
+        
+        # Apply invalid deltas (should be rejected)
+        for delta in invalid_deltas:
+            delta["market_ticker"] = "ERROR-TEST"
+            delta["timestamp_ms"] = int(time.time() * 1000)
+            result = await shared_state.apply_delta(delta)
+            assert result is False
+        
+        # State should remain valid
+        final_snapshot = await shared_state.get_snapshot()
+        assert final_snapshot["last_sequence"] == 100  # Unchanged
+        assert final_snapshot["market_ticker"] == "ERROR-TEST"
+        
+        # Apply valid delta to confirm recovery
+        valid_delta = {
+            "market_ticker": "ERROR-TEST",
+            "timestamp_ms": int(time.time() * 1000),
+            "sequence_number": 101,
+            "side": "yes",
+            "action": "update",
+            "price": 45,
+            "old_size": 1000,
+            "new_size": 1200
+        }
+        
+        result = await shared_state.apply_delta(valid_delta)
+        assert result is True
+        
+        final_snapshot = await shared_state.get_snapshot()
+        assert final_snapshot["last_sequence"] == 101

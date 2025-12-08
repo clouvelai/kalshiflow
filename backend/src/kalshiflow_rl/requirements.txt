@@ -1,0 +1,42 @@
+# RL-Specific Dependencies for Kalshi Flow RL Trading Subsystem
+# These extend the base kalshiflow dependencies defined in pyproject.toml
+
+# Core RL Framework Dependencies
+gymnasium>=1.0.0  # OpenAI Gym environments
+stable-baselines3>=2.3.2  # RL algorithms (PPO, A2C, etc.)
+torch>=2.4.0  # PyTorch for neural networks
+numpy>=1.24.0  # Numerical computing
+
+# Data Processing and Analysis
+pandas>=2.2.0  # Data manipulation and analysis
+scipy>=1.11.0  # Scientific computing utilities
+scikit-learn>=1.3.0  # ML utilities and preprocessing
+
+# Efficient Data Structures for Orderbooks
+sortedcontainers>=2.4.0  # SortedDict for orderbook price levels
+
+# Async and Queue Management (most already in base)
+# asyncio - built-in to Python 3.11+
+# asyncpg>=0.29.0 - already in base dependencies
+# starlette>=0.50.0 - already in base dependencies
+
+# Testing and Development
+pytest-benchmark>=4.0.0  # Performance benchmarking for queue tests
+memory-profiler>=0.61.0  # Memory usage profiling
+
+# Optional: Enhanced monitoring and observability
+prometheus-client>=0.20.0  # Metrics collection
+structlog>=24.1.0  # Structured logging
+
+# Optional: Advanced RL features for future phases
+tensorboard>=2.15.0  # Training visualization
+wandb>=0.17.0  # Experiment tracking (optional)
+
+# Note: The following are already available from base kalshiflow dependencies:
+# - asyncpg (database connections)
+# - websockets (Kalshi WebSocket client)
+# - cryptography (RSA authentication)
+# - pydantic (data validation)
+# - starlette (ASGI app framework)
+# - uvicorn (ASGI server)
+# - python-dotenv (environment variables)
