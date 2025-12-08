@@ -11,7 +11,7 @@ import json
 import logging
 import time
 import traceback
-from typing import Dict, Any, Optional, Callable
+from typing import Dict, Any, Optional, Callable, List
 import websockets
 from websockets.exceptions import ConnectionClosed, InvalidMessage
 
@@ -29,32 +29,40 @@ class OrderbookClient:
     
     Features:
     - Connects to Kalshi orderbook WebSocket with authentication
-    - Subscribes to orderbook deltas for specified market
+    - Subscribes to orderbook deltas for multiple markets
     - Processes snapshots and incremental updates
     - Updates in-memory SharedOrderbookState immediately (non-blocking)
     - Queues all messages for database persistence (non-blocking)
     - Automatic reconnection with exponential backoff
-    - Sequence number tracking and validation
+    - Per-market sequence number tracking and validation
     """
     
-    def __init__(self, market_ticker: str = None):
+    def __init__(self, market_tickers: Optional[List[str]] = None):
         """
         Initialize orderbook client.
         
         Args:
-            market_ticker: Market ticker to subscribe to (defaults to config)
+            market_tickers: List of market tickers to subscribe to (defaults to config)
         """
-        self.market_ticker = market_ticker or config.RL_MARKET_TICKER
+        # Support backward compatibility - accept single ticker as string
+        if isinstance(market_tickers, str):
+            self.market_tickers = [market_tickers]
+        elif market_tickers is None:
+            # Use configured tickers (multi-market support)
+            self.market_tickers = config.RL_MARKET_TICKERS
+        else:
+            self.market_tickers = market_tickers
+            
         self.ws_url = config.KALSHI_WS_URL
         
         # WebSocket connection management
         self._websocket: Optional[websockets.WebSocketServerProtocol] = None
         self._running = False
         self._reconnect_count = 0
-        self._last_sequence = 0
         
-        # Shared orderbook state
-        self._orderbook_state: Optional[SharedOrderbookState] = None
+        # Per-market tracking
+        self._last_sequences: Dict[str, int] = {ticker: 0 for ticker in self.market_tickers}
+        self._orderbook_states: Dict[str, SharedOrderbookState] = {}
         
         # Statistics and monitoring
         self._messages_received = 0
@@ -68,7 +76,7 @@ class OrderbookClient:
         self._on_disconnected: Optional[Callable] = None
         self._on_error: Optional[Callable] = None
         
-        logger.info(f"OrderbookClient initialized for market: {self.market_ticker}")
+        logger.info(f"OrderbookClient initialized for {len(self.market_tickers)} markets: {', '.join(self.market_tickers)}")
     
     async def start(self) -> None:
         """Start the orderbook client and begin connection."""
@@ -76,12 +84,14 @@ class OrderbookClient:
             logger.warning("OrderbookClient is already running")
             return
         
-        logger.info(f"Starting OrderbookClient for {self.market_ticker}")
+        logger.info(f"Starting OrderbookClient for {len(self.market_tickers)} markets")
         self._running = True
         self._reconnect_count = 0
         
-        # Get shared orderbook state
-        self._orderbook_state = await get_shared_orderbook_state(self.market_ticker)
+        # Get shared orderbook states for all markets
+        for market_ticker in self.market_tickers:
+            self._orderbook_states[market_ticker] = await get_shared_orderbook_state(market_ticker)
+            logger.info(f"Initialized orderbook state for: {market_ticker}")
         
         # Start connection loop
         await self._connection_loop()
@@ -135,7 +145,7 @@ class OrderbookClient:
         
         async with websockets.connect(
             self.ws_url,
-            extra_headers=headers,
+            additional_headers=headers,
             ping_interval=config.WEBSOCKET_PING_INTERVAL,
             ping_timeout=config.WEBSOCKET_TIMEOUT,
             max_size=1024*1024,  # 1MB max message size
@@ -146,7 +156,7 @@ class OrderbookClient:
             self._connection_start_time = time.time()
             self._reconnect_count = 0  # Reset on successful connection
             
-            logger.info(f"WebSocket connected for {self.market_ticker}")
+            logger.info(f"WebSocket connected for {len(self.market_tickers)} markets")
             
             if self._on_connected:
                 try:
@@ -154,24 +164,27 @@ class OrderbookClient:
                 except Exception as e:
                     logger.error(f"Connection callback error: {e}")
             
-            # Subscribe to orderbook
+            # Subscribe to orderbook for all markets
             await self._subscribe_to_orderbook()
             
             # Process messages
             await self._message_loop()
     
     async def _subscribe_to_orderbook(self) -> None:
-        """Subscribe to orderbook channel for the market."""
+        """Subscribe to orderbook channels for all markets."""
+        # Create channels list for all markets
+        channels = [f"orderbook_delta.{ticker}" for ticker in self.market_tickers]
+        
         subscription_message = {
-            "id": f"sub_{self.market_ticker}_{int(time.time())}",
+            "id": f"sub_multi_{int(time.time())}",
             "cmd": "subscribe",
             "params": {
-                "channels": [f"orderbook_delta.{self.market_ticker}"]
+                "channels": channels
             }
         }
         
         await self._websocket.send(json.dumps(subscription_message))
-        logger.info(f"Subscribed to orderbook for {self.market_ticker}")
+        logger.info(f"Subscribed to orderbook for {len(self.market_tickers)} markets: {', '.join(self.market_tickers)}")
     
     async def _message_loop(self) -> None:
         """Process incoming WebSocket messages."""
@@ -220,7 +233,7 @@ class OrderbookClient:
             elif msg_type == "delta":
                 await self._process_delta(message)
             elif msg_type == "subscription_ack":
-                logger.info(f"Subscription acknowledged for {self.market_ticker}")
+                logger.info("Subscription acknowledged for multi-market orderbook")
             elif msg_type == "heartbeat":
                 logger.debug("Received heartbeat")
             else:
@@ -249,14 +262,47 @@ class OrderbookClient:
         
         return "unknown"
     
+    def _extract_market_from_channel(self, channel: str) -> Optional[str]:
+        """
+        Extract market ticker from channel string.
+        
+        Channel format: "orderbook_delta.{MARKET_TICKER}"
+        
+        Args:
+            channel: Channel string from WebSocket message
+            
+        Returns:
+            Market ticker or None if not extractable
+        """
+        if not channel or "orderbook_delta." not in channel:
+            return None
+        
+        try:
+            # Split on '.' and get the part after 'orderbook_delta'
+            parts = channel.split(".")
+            if len(parts) >= 2 and parts[0] == "orderbook_delta":
+                return ".".join(parts[1:])  # Handle tickers with dots
+        except Exception:
+            pass
+        
+        return None
+    
     async def _process_snapshot(self, message: Dict[str, Any]) -> None:
         """Process orderbook snapshot message."""
         try:
+            # Extract market ticker from channel
+            channel = message.get("channel", "")
+            market_ticker = self._extract_market_from_channel(channel)
+            
+            if not market_ticker or market_ticker not in self.market_tickers:
+                logger.warning(f"Received snapshot for unknown market: {market_ticker}")
+                return
+            
             # Extract snapshot data
             data = message.get("data", {})
             
             snapshot_data = {
-                "market_ticker": self.market_ticker,
+                "market_ticker": market_ticker,
                 "timestamp_ms": int(time.time() * 1000),
                 "sequence_number": data.get("seq", 0),
                 "yes_bids": data.get("yes", {}).get("b", {}),
@@ -265,12 +311,12 @@ class OrderbookClient:
                 "no_asks": data.get("no", {}).get("a", {})
             }
             
-            self._last_sequence = snapshot_data["sequence_number"]
+            self._last_sequences[market_ticker] = snapshot_data["sequence_number"]
             self._snapshots_received += 1
             
             # Update in-memory state immediately (non-blocking)
-            if self._orderbook_state:
-                await self._orderbook_state.apply_snapshot(snapshot_data)
+            if market_ticker in self._orderbook_states:
+                await self._orderbook_states[market_ticker].apply_snapshot(snapshot_data)
             
             # Queue for database persistence (non-blocking)
             await write_queue.enqueue_snapshot(snapshot_data)
@@ -278,7 +324,7 @@ class OrderbookClient:
             total_levels = (len(snapshot_data['yes_bids']) + len(snapshot_data['yes_asks']) + 
                            len(snapshot_data['no_bids']) + len(snapshot_data['no_asks']))
             logger.info(
-                f"Processed snapshot for {self.market_ticker}: seq={self._last_sequence}, "
+                f"Processed snapshot for {market_ticker}: seq={self._last_sequences[market_ticker]}, "
                 f"levels={total_levels}"
             )
             
@@ -288,11 +334,19 @@ class OrderbookClient:
     async def _process_delta(self, message: Dict[str, Any]) -> None:
         """Process orderbook delta message."""
         try:
+            # Extract market ticker from channel
+            channel = message.get("channel", "")
+            market_ticker = self._extract_market_from_channel(channel)
+            
+            if not market_ticker or market_ticker not in self.market_tickers:
+                logger.warning(f"Received delta for unknown market: {market_ticker}")
+                return
+            
             # Extract delta data
             data = message.get("data", {})
             
             delta_data = {
-                "market_ticker": self.market_ticker,
+                "market_ticker": market_ticker,
                 "timestamp_ms": int(time.time() * 1000),
                 "sequence_number": data.get("seq", 0),
                 "side": data.get("side"),  # "yes" or "no"
@@ -306,21 +360,21 @@ class OrderbookClient:
             if not self._validate_delta(delta_data):
                 return
             
-            self._last_sequence = delta_data["sequence_number"]
+            self._last_sequences[market_ticker] = delta_data["sequence_number"]
             self._deltas_received += 1
             
             # Update in-memory state immediately (non-blocking)
-            if self._orderbook_state:
-                success = await self._orderbook_state.apply_delta(delta_data)
+            if market_ticker in self._orderbook_states:
+                success = await self._orderbook_states[market_ticker].apply_delta(delta_data)
                 if not success:
-                    logger.warning(f"Failed to apply delta: seq={delta_data['sequence_number']}")
+                    logger.warning(f"Failed to apply delta for {market_ticker}: seq={delta_data['sequence_number']}")
             
             # Queue for database persistence (non-blocking)
             await write_queue.enqueue_delta(delta_data)
             
             # Log periodically
             if self._deltas_received % 100 == 0:
-                logger.debug(f"Processed {self._deltas_received} deltas for {self.market_ticker}")
+                logger.debug(f"Processed {self._deltas_received} deltas across {len(self.market_tickers)} markets")
             
         except Exception as e:
             logger.error(f"Error processing delta: {e}\n{traceback.format_exc()}")
@@ -381,11 +435,12 @@ class OrderbookClient:
             uptime = time.time() - self._connection_start_time
         
         return {
-            "market_ticker": self.market_ticker,
+            "market_tickers": self.market_tickers,
+            "market_count": len(self.market_tickers),
             "running": self._running,
             "connected": self._websocket is not None,
             "reconnect_count": self._reconnect_count,
-            "last_sequence": self._last_sequence,
+            "last_sequences": self._last_sequences,
             "messages_received": self._messages_received,
             "snapshots_received": self._snapshots_received,
             "deltas_received": self._deltas_received,
@@ -405,7 +460,19 @@ class OrderbookClient:
                 return False
         
         return True
+    
+    def get_orderbook_state(self, market_ticker: str) -> Optional[SharedOrderbookState]:
+        """
+        Get orderbook state for a specific market.
+        
+        Args:
+            market_ticker: Market ticker to get state for
+            
+        Returns:
+            SharedOrderbookState for the market or None if not found
+        """
+        return self._orderbook_states.get(market_ticker)
 
 
-# Global orderbook client instance
+# Global orderbook client instance - uses configured market tickers
 orderbook_client = OrderbookClient()

@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from kalshiflow_rl.data.orderbook_client import OrderbookClient
 from kalshiflow_rl.data.orderbook_state import get_shared_orderbook_state
-from kalshiflow_rl.data.write_queue import OrderbookWriteQueue
+from kalshiflow_rl.data.write_queue import OrderbookWriteQueue, get_write_queue
 from kalshiflow_rl.data.database import rl_db
 
 
@@ -80,42 +80,58 @@ class TestCompleteDataPipeline:
         mock_rl_db.batch_insert_snapshots = AsyncMock(return_value=1)
         mock_rl_db.batch_insert_deltas = AsyncMock(return_value=1)
         
-        # Create client (no WebSocket connection needed for this test)
-        client = OrderbookClient("TEST-MARKET")
-        
-        # Initialize orderbook state manually (avoid WebSocket connection)
-        client._orderbook_state = await get_shared_orderbook_state("TEST-MARKET")
+        # Create and start a test write queue
+        test_write_queue = OrderbookWriteQueue(
+            batch_size=10,
+            flush_interval=0.1,
+            delta_sample_rate=1,  # No sampling for testing
+            max_queue_size=100
+        )
+        await test_write_queue.start()
         
         try:
-            # Process snapshot message directly
-            await client._process_message(json.dumps(sample_websocket_snapshot))
-            
-            # Process delta message directly  
-            await client._process_message(json.dumps(sample_websocket_delta))
-            
-            # Wait for any async processing
-            await asyncio.sleep(0.1)
-            
-            # Verify orderbook state was updated
-            shared_state = await get_shared_orderbook_state("TEST-MARKET")
-            snapshot = await shared_state.get_snapshot()
-            
-            assert snapshot["last_sequence"] == 1001
-            assert snapshot["market_ticker"] == "TEST-MARKET"
-            
-            # Verify snapshot has expected structure
-            assert "yes_bids" in snapshot
-            assert "yes_asks" in snapshot
-            assert "no_bids" in snapshot
-            assert "no_asks" in snapshot
-            
-            # Verify specific bid/ask data from test messages
-            assert 45 in snapshot["yes_bids"]  # From snapshot
-            assert snapshot["yes_bids"][45] == 1200  # Updated by delta
+            # Patch the global write_queue import in orderbook_client
+            with patch('kalshiflow_rl.data.orderbook_client.write_queue', test_write_queue):
+                # Create client (no WebSocket connection needed for this test)
+                client = OrderbookClient("TEST-MARKET")
+                
+                # Initialize orderbook states for all markets the client handles
+                for market_ticker in client.market_tickers:
+                    client._orderbook_states[market_ticker] = await get_shared_orderbook_state(market_ticker)
+                
+                # Process snapshot message directly
+                await client._process_message(json.dumps(sample_websocket_snapshot))
+                
+                # Process delta message directly  
+                await client._process_message(json.dumps(sample_websocket_delta))
+                
+                # Wait for any async processing
+                await asyncio.sleep(0.2)
+                
+                # Verify orderbook state was updated
+                shared_state = await get_shared_orderbook_state("TEST-MARKET")
+                snapshot = await shared_state.get_snapshot()
+                
+                assert snapshot["last_sequence"] == 1001
+                assert snapshot["market_ticker"] == "TEST-MARKET"
+                
+                # Verify snapshot has expected structure
+                assert "yes_bids" in snapshot
+                assert "yes_asks" in snapshot
+                assert "no_bids" in snapshot
+                assert "no_asks" in snapshot
+                
+                # Verify specific bid/ask data from test messages
+                assert 45 in snapshot["yes_bids"]  # From snapshot
+                assert snapshot["yes_bids"][45] == 1200  # Updated by delta
+                
+                # Verify that write queue received messages
+                stats = test_write_queue.get_stats()
+                assert stats["messages_enqueued"] >= 2  # At least snapshot and delta
             
         finally:
-            # No need to stop since we didn't start WebSocket connection
-            pass
+            # Stop the write queue
+            await test_write_queue.stop()
     
     @pytest.mark.asyncio
     async def test_non_blocking_behavior(self):
@@ -220,6 +236,119 @@ class TestCompleteDataPipeline:
             
         finally:
             await write_queue.stop()
+    
+    @pytest.mark.asyncio
+    @patch('kalshiflow_rl.data.write_queue.rl_db')
+    async def test_multi_market_isolation(self, mock_rl_db):
+        """Test that multi-market client properly isolates market data."""
+        
+        # Setup database mock
+        mock_rl_db.batch_insert_snapshots = AsyncMock(return_value=1)
+        mock_rl_db.batch_insert_deltas = AsyncMock(return_value=1)
+        
+        # Create and start a test write queue
+        test_write_queue = OrderbookWriteQueue(
+            batch_size=10,
+            flush_interval=0.1,
+            delta_sample_rate=1,  # No sampling for testing
+            max_queue_size=100
+        )
+        await test_write_queue.start()
+        
+        try:
+            # Patch the global write_queue import
+            with patch('kalshiflow_rl.data.orderbook_client.write_queue', test_write_queue):
+                # Create multi-market client
+                client = OrderbookClient(["MARKET-A", "MARKET-B"])
+                
+                # Initialize orderbook states for all markets
+                for market_ticker in client.market_tickers:
+                    client._orderbook_states[market_ticker] = await get_shared_orderbook_state(market_ticker)
+                
+                # Create snapshots for different markets
+                snapshot_a = {
+                    "channel": "orderbook_delta.MARKET-A",
+                    "type": "snapshot",
+                    "data": {
+                        "seq": 100,
+                        "yes": {"b": {"50": 1000}, "a": {"55": 800}},
+                        "no": {"b": {"50": 600}, "a": {"55": 700}}
+                    }
+                }
+                
+                snapshot_b = {
+                    "channel": "orderbook_delta.MARKET-B",
+                    "type": "snapshot",
+                    "data": {
+                        "seq": 200,
+                        "yes": {"b": {"45": 2000}, "a": {"60": 1200}},
+                        "no": {"b": {"45": 1000}, "a": {"60": 800}}
+                    }
+                }
+                
+                # Process snapshots for both markets
+                await client._process_message(json.dumps(snapshot_a))
+                await client._process_message(json.dumps(snapshot_b))
+                
+                # Wait for processing
+                await asyncio.sleep(0.1)
+                
+                # Verify isolation: each market has its own state
+                state_a = await get_shared_orderbook_state("MARKET-A")
+                state_b = await get_shared_orderbook_state("MARKET-B")
+                
+                snapshot_a_result = await state_a.get_snapshot()
+                snapshot_b_result = await state_b.get_snapshot()
+                
+                # Market A should only have Market A data
+                assert snapshot_a_result["market_ticker"] == "MARKET-A"
+                assert snapshot_a_result["last_sequence"] == 100
+                assert 50 in snapshot_a_result["yes_bids"]
+                assert snapshot_a_result["yes_bids"][50] == 1000
+                
+                # Market B should only have Market B data
+                assert snapshot_b_result["market_ticker"] == "MARKET-B"
+                assert snapshot_b_result["last_sequence"] == 200
+                assert 45 in snapshot_b_result["yes_bids"]
+                assert snapshot_b_result["yes_bids"][45] == 2000
+                
+                # Cross-contamination check: Market A should not have Market B's price levels
+                assert 45 not in snapshot_a_result["yes_bids"]
+                assert 50 not in snapshot_b_result["yes_bids"]
+                
+                # Process delta for Market A only
+                delta_a = {
+                    "channel": "orderbook_delta.MARKET-A",
+                    "data": {
+                        "seq": 101,
+                        "side": "yes",
+                        "price": 50,
+                        "old_size": 1000,
+                        "new_size": 1500
+                    }
+                }
+                
+                await client._process_message(json.dumps(delta_a))
+                await asyncio.sleep(0.1)
+                
+                # Verify only Market A was updated
+                updated_state_a = await get_shared_orderbook_state("MARKET-A")
+                updated_snapshot_a = await updated_state_a.get_snapshot()
+                unchanged_state_b = await get_shared_orderbook_state("MARKET-B")
+                unchanged_snapshot_b = await unchanged_state_b.get_snapshot()
+                
+                assert updated_snapshot_a["last_sequence"] == 101
+                assert updated_snapshot_a["yes_bids"][50] == 1500  # Updated
+                
+                assert unchanged_snapshot_b["last_sequence"] == 200  # Unchanged
+                assert unchanged_snapshot_b["yes_bids"][45] == 2000  # Unchanged
+                
+                # Verify write queue received messages for both markets
+                stats = test_write_queue.get_stats()
+                assert stats["messages_enqueued"] >= 3  # 2 snapshots + 1 delta
+            
+        finally:
+            await test_write_queue.stop()
     
     @pytest.mark.asyncio
     async def test_concurrent_updates_consistency(self):

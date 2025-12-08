@@ -8,6 +8,7 @@ async connection management and batch write operations.
 
 import asyncio
 import asyncpg
+import json
 import logging
 from datetime import datetime
 from contextlib import asynccontextmanager
@@ -94,6 +95,22 @@ class RLDatabase:
             
             logger.info("RL database schema created successfully")
     
+    async def _add_constraint_if_not_exists(self, conn: asyncpg.Connection, table_name: str, constraint_name: str, constraint_sql: str):
+        """Add a constraint only if it doesn't exist."""
+        try:
+            # Check if constraint exists
+            exists = await conn.fetchval("""
+                SELECT EXISTS (
+                    SELECT 1 FROM information_schema.table_constraints
+                    WHERE constraint_name = $1 AND table_name = $2
+                )
+            """, constraint_name, table_name)
+            
+            if not exists:
+                await conn.execute(f"ALTER TABLE {table_name} ADD CONSTRAINT {constraint_name} {constraint_sql}")
+        except Exception as e:
+            logger.warning(f"Failed to add constraint {constraint_name}: {e}")
+    
     async def _create_orderbook_snapshots_table(self, conn: asyncpg.Connection):
         """Create orderbook_snapshots table with full state snapshots."""
         await conn.execute('''
@@ -132,17 +149,19 @@ class RLDatabase:
         ''')
         
         # Add constraints
-        await conn.execute('''
-            ALTER TABLE rl_orderbook_snapshots 
-            ADD CONSTRAINT IF NOT EXISTS chk_snapshots_timestamp_valid 
-            CHECK (timestamp_ms > 1577836800000);  -- After 2020-01-01
-        ''')
+        await self._add_constraint_if_not_exists(
+            conn, 
+            'rl_orderbook_snapshots',
+            'chk_snapshots_timestamp_valid',
+            'CHECK (timestamp_ms > 1577836800000)'  # After 2020-01-01
+        )
         
-        await conn.execute('''
-            ALTER TABLE rl_orderbook_snapshots 
-            ADD CONSTRAINT IF NOT EXISTS chk_snapshots_sequence_positive 
-            CHECK (sequence_number >= 0);
-        ''')
+        await self._add_constraint_if_not_exists(
+            conn,
+            'rl_orderbook_snapshots', 
+            'chk_snapshots_sequence_positive',
+            'CHECK (sequence_number >= 0)'
+        )
         
         await conn.execute('''
             COMMENT ON TABLE rl_orderbook_snapshots IS 'Full orderbook state snapshots for RL training data';
@@ -182,23 +201,26 @@ class RLDatabase:
         ''')
         
         # Add constraints
-        await conn.execute('''
-            ALTER TABLE rl_orderbook_deltas 
-            ADD CONSTRAINT IF NOT EXISTS chk_deltas_side 
-            CHECK (side IN ('yes', 'no'));
-        ''')
+        await self._add_constraint_if_not_exists(
+            conn,
+            'rl_orderbook_deltas',
+            'chk_deltas_side',
+            "CHECK (side IN ('yes', 'no'))"
+        )
         
-        await conn.execute('''
-            ALTER TABLE rl_orderbook_deltas 
-            ADD CONSTRAINT IF NOT EXISTS chk_deltas_action 
-            CHECK (action IN ('add', 'remove', 'update'));
-        ''')
+        await self._add_constraint_if_not_exists(
+            conn,
+            'rl_orderbook_deltas',
+            'chk_deltas_action',
+            "CHECK (action IN ('add', 'remove', 'update'))"
+        )
         
-        await conn.execute('''
-            ALTER TABLE rl_orderbook_deltas 
-            ADD CONSTRAINT IF NOT EXISTS chk_deltas_price_positive 
-            CHECK (price > 0);
-        ''')
+        await self._add_constraint_if_not_exists(
+            conn,
+            'rl_orderbook_deltas',
+            'chk_deltas_price_positive',
+            'CHECK (price > 0)'
+        )
         
         await conn.execute('''
             COMMENT ON TABLE rl_orderbook_deltas IS 'Incremental orderbook updates for efficient state reconstruction';
@@ -241,11 +263,12 @@ class RLDatabase:
         ''')
         
         # Add constraints
-        await conn.execute('''
-            ALTER TABLE rl_models 
-            ADD CONSTRAINT IF NOT EXISTS chk_models_status 
-            CHECK (status IN ('training', 'active', 'retired', 'failed'));
-        ''')
+        await self._add_constraint_if_not_exists(
+            conn,
+            'rl_models',
+            'chk_models_status',
+            "CHECK (status IN ('training', 'active', 'retired', 'failed'))"
+        )
         
         # Add updated_at trigger
         await conn.execute('''
@@ -256,6 +279,10 @@ class RLDatabase:
                 RETURN NEW;
             END;
             $$ language 'plpgsql';
+        ''')
+        
+        await conn.execute('''
+            DROP TRIGGER IF EXISTS update_rl_models_updated_at ON rl_models;
         ''')
         
         await conn.execute('''
@@ -309,17 +336,19 @@ class RLDatabase:
         ''')
         
         # Add constraints
-        await conn.execute('''
-            ALTER TABLE rl_trading_episodes 
-            ADD CONSTRAINT IF NOT EXISTS chk_episodes_timeframe 
-            CHECK (end_timestamp_ms > start_timestamp_ms);
-        ''')
+        await self._add_constraint_if_not_exists(
+            conn,
+            'rl_trading_episodes',
+            'chk_episodes_timeframe',
+            'CHECK (end_timestamp_ms > start_timestamp_ms)'
+        )
         
-        await conn.execute('''
-            ALTER TABLE rl_trading_episodes 
-            ADD CONSTRAINT IF NOT EXISTS chk_episodes_episode_positive 
-            CHECK (episode_number >= 0);
-        ''')
+        await self._add_constraint_if_not_exists(
+            conn,
+            'rl_trading_episodes',
+            'chk_episodes_episode_positive',
+            'CHECK (episode_number >= 0)'
+        )
         
         await conn.execute('''
             COMMENT ON TABLE rl_trading_episodes IS 'Training episode tracking with performance metrics';
@@ -364,17 +393,19 @@ class RLDatabase:
         ''')
         
         # Add constraints
-        await conn.execute('''
-            ALTER TABLE rl_trading_actions 
-            ADD CONSTRAINT IF NOT EXISTS chk_actions_type 
-            CHECK (action_type IN ('buy_yes', 'buy_no', 'sell_yes', 'sell_no', 'hold'));
-        ''')
+        await self._add_constraint_if_not_exists(
+            conn,
+            'rl_trading_actions',
+            'chk_actions_type',
+            "CHECK (action_type IN ('buy_yes', 'buy_no', 'sell_yes', 'sell_no', 'hold'))"
+        )
         
-        await conn.execute('''
-            ALTER TABLE rl_trading_actions 
-            ADD CONSTRAINT IF NOT EXISTS chk_actions_step_positive 
-            CHECK (step_number >= 0);
-        ''')
+        await self._add_constraint_if_not_exists(
+            conn,
+            'rl_trading_actions',
+            'chk_actions_step_positive',
+            'CHECK (step_number >= 0)'
+        )
         
         await conn.execute('''
             COMMENT ON TABLE rl_trading_actions IS 'Detailed logging of all trading actions and decisions';
@@ -401,10 +432,10 @@ class RLDatabase:
                     snap['market_ticker'],
                     snap['timestamp_ms'],
                     snap['sequence_number'],
-                    snap['yes_bids'],
-                    snap['yes_asks'],
-                    snap['no_bids'],
-                    snap['no_asks'],
+                    json.dumps(snap['yes_bids']) if isinstance(snap['yes_bids'], dict) else snap['yes_bids'],
+                    json.dumps(snap['yes_asks']) if isinstance(snap['yes_asks'], dict) else snap['yes_asks'],
+                    json.dumps(snap['no_bids']) if isinstance(snap['no_bids'], dict) else snap['no_bids'],
+                    json.dumps(snap['no_asks']) if isinstance(snap['no_asks'], dict) else snap['no_asks'],
                     snap.get('yes_spread'),
                     snap.get('no_spread'),
                     snap.get('yes_mid_price'),

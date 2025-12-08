@@ -24,7 +24,11 @@ class RLConfig:
         self.DATABASE_URL_POOLED: Optional[str] = os.getenv("DATABASE_URL_POOLED")
         
         # RL-Specific Configuration
+        # Support both single ticker (backward compatibility) and multiple tickers (new feature)
         self.RL_MARKET_TICKER: str = os.getenv("RL_MARKET_TICKER", "INXD-25JAN03")  # Default market for RL training
+        
+        # Parse RL_MARKET_TICKERS environment variable for multiple markets
+        self.RL_MARKET_TICKERS: list[str] = self._parse_market_tickers()
         
         # Orderbook Ingestion Settings
         self.ORDERBOOK_QUEUE_BATCH_SIZE: int = int(os.getenv("RL_ORDERBOOK_BATCH_SIZE", "100"))
@@ -75,6 +79,30 @@ class RLConfig:
             raise ValueError(f"Required environment variable {key} is not set")
         return value
     
+    def _parse_market_tickers(self) -> list[str]:
+        """
+        Parse market tickers from environment variables.
+        
+        Priority:
+        1. RL_MARKET_TICKERS (comma-separated list) - for multiple markets
+        2. RL_MARKET_TICKER (single ticker) - for backward compatibility
+        3. Default to ["INXD-25JAN03"] if neither is set
+        
+        Returns:
+            List of market tickers to monitor
+        """
+        # First try RL_MARKET_TICKERS (new multi-market support)
+        tickers_env = os.getenv("RL_MARKET_TICKERS")
+        if tickers_env:
+            # Parse comma-separated list, strip whitespace
+            tickers = [ticker.strip() for ticker in tickers_env.split(",") if ticker.strip()]
+            if tickers:
+                return tickers
+        
+        # Fall back to single ticker (backward compatibility)
+        single_ticker = os.getenv("RL_MARKET_TICKER", "INXD-25JAN03")
+        return [single_ticker]
+    
     def _validate_config(self) -> None:
         """Validate configuration values."""
         # Skip validation in test environment
@@ -92,6 +120,14 @@ class RLConfig:
         
         if self.ORDERBOOK_DELTA_SAMPLE_RATE < 1:
             raise ValueError("ORDERBOOK_DELTA_SAMPLE_RATE must be >= 1")
+        
+        # Validate market tickers
+        if not self.RL_MARKET_TICKERS:
+            raise ValueError("RL_MARKET_TICKERS cannot be empty")
+        
+        for ticker in self.RL_MARKET_TICKERS:
+            if not ticker or not isinstance(ticker, str):
+                raise ValueError(f"Invalid market ticker: {ticker}")
         
         # Validate database URL format
         if not self.DATABASE_URL.startswith("postgresql://"):
