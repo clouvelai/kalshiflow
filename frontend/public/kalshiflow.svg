@@ -1,0 +1,44 @@
+<svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="signalGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#22C55E"/>
+      <stop offset="50%" stop-color="#10B981"/>
+      <stop offset="100%" stop-color="#14B8A6"/>
+    </linearGradient>
+    
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="2" result="coloredBlur"/>
+      <feMerge>
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+  
+  <!-- Main wave path -->
+  <path 
+    d="M 4 24 Q 12 14 20 24 T 36 24 T 44 24"
+    stroke="url(#signalGradient)"
+    stroke-width="3"
+    stroke-linecap="round"
+    fill="none"
+    filter="url(#glow)"
+    opacity="0.9"
+  />
+  
+  <!-- Second wave for depth -->
+  <path 
+    d="M 4 24 Q 12 34 20 24 T 36 24 T 44 24"
+    stroke="url(#signalGradient)"
+    stroke-width="2"
+    stroke-linecap="round"
+    fill="none"
+    opacity="0.5"
+  />
+  
+  <!-- Signal dots -->
+  <circle cx="4" cy="24" r="2" fill="#22C55E"/>
+  <circle cx="20" cy="24" r="2" fill="#10B981"/>
+  <circle cx="36" cy="24" r="2" fill="#14B8A6"/>
+  <circle cx="44" cy="24" r="2" fill="#22C55E"/>
+</svg>
