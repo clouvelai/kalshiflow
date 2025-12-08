@@ -14,7 +14,7 @@ The application does not provide investment advice and is purely for information
   {
     id: 'markets',
     question: 'What markets are displayed?',
-    answer: `The application displays the most actively traded markets based on recent trading volume. Markets are ranked by their 10-minute trading volume and include various categories such as:
+    answer: `The application displays the 20 most actively traded markets based on recent trading volume. Markets are ranked by their 10-minute trading volume and include various categories such as:
 
 • Elections and political events
 • Economic indicators

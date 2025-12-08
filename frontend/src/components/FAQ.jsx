@@ -29,11 +29,39 @@ const FAQ = () => {
 
   const formatAnswerText = (text) => {
     return text.split('\n').map((line, index) => {
+      // Handle section headers (lines ending with colon)
+      if (line.trim().endsWith(':') && !line.trim().startsWith('•')) {
+        return (
+          <h4 key={index} className="font-semibold text-gray-800 mt-4 mb-3 text-base">
+            {line.trim()}
+          </h4>
+        );
+      }
       // Handle bullet points
       if (line.trim().startsWith('•')) {
+        const content = line.trim().substring(1).trim();
+        // Check if bullet point contains example text in parentheses or key-value pattern
+        const hasExample = content.includes('(') || content.includes(':');
         return (
-          <li key={index} className="ml-4 mb-1">
-            {line.trim().substring(1).trim()}
+          <li key={index} className="ml-6 mb-3 flex items-start">
+            <span className="text-green-500 mr-3 mt-1 font-bold text-sm">▸</span>
+            <span className="flex-1 text-gray-700 leading-relaxed">
+              {hasExample ? (
+                // Parse content with examples or key phrases
+                content.split(/(\([^)]+\)|(?:^|\s)[A-Z][^:]+:|[-+]?\$\d+k)/).map((part, i) => {
+                  if (part.startsWith('(') && part.endsWith(')')) {
+                    return <span key={i} className="text-gray-500 text-sm italic">{part}</span>;
+                  }
+                  if (part.includes('$')) {
+                    return <span key={i} className="font-mono font-semibold text-blue-600">{part}</span>;
+                  }
+                  if (part.endsWith(':') && /^[A-Z]/.test(part.trim())) {
+                    return <span key={i} className="font-semibold text-gray-800">{part}</span>;
+                  }
+                  return part;
+                })
+              ) : content}
+            </span>
           </li>
         );
       }
@@ -43,7 +71,7 @@ const FAQ = () => {
       }
       // Regular paragraph
       return (
-        <p key={index} className="mb-2">
+        <p key={index} className="mb-3 text-gray-700 leading-relaxed">
           {line.trim()}
         </p>
       );
@@ -94,12 +122,14 @@ const FAQ = () => {
                   isOpen ? 'opacity-100' : 'max-h-0 opacity-0'
                 }`}
                 style={{
-                  maxHeight: isOpen ? '1000px' : '0'
+                  maxHeight: isOpen ? '2000px' : '0'
                 }}
               >
-                <div className="px-4 sm:px-6 pb-4">
-                  <div className="text-gray-600 leading-relaxed space-y-0 text-sm sm:text-base">
-                    {formatAnswerText(item.answer)}
+                <div className="px-4 sm:px-8 pb-6 pt-2">
+                  <div className="border-l-4 border-blue-100 pl-6 py-2">
+                    <div className="text-gray-600 leading-relaxed space-y-0 text-sm sm:text-base">
+                      {formatAnswerText(item.answer)}
+                    </div>
                   </div>
                 </div>
               </div>
