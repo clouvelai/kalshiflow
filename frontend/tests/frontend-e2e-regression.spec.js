@@ -114,6 +114,16 @@ test.describe('Frontend E2E Regression Test - Golden Standard', () => {
       console.log('⚠️  FAQ section not visible');
     }
     
+    // 5. TopTradesList Component Check
+    // Simple check - just verify the component is present
+    const topTradesSection = page.locator('text=/Top.*Trades/i').first();
+    const topTradesVisible = await topTradesSection.isVisible().catch(() => false);
+    if (topTradesVisible) {
+      console.log('✅ TopTradesList component rendered');
+    } else {
+      console.log('⚠️  TopTradesList component not visible (may not have enough trades yet)');
+    }
+    
     // Take screenshot of data populated state
     await takeScreenshot('03_data_populated.png');
     
