@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { TradeProvider, useTradeContext } from './context/TradeContext';
 import Layout from './components/Layout';
 import UnifiedAnalytics from './components/UnifiedAnalytics';
+import TradeFlowRiver from './components/TradeFlowRiver';
 import MarketGrid from './components/MarketGrid';
 import TradeTape from './components/TradeTape';
 import TickerDetailDrawer from './components/TickerDetailDrawer';
@@ -44,6 +45,12 @@ const AppContent = () => {
         hourAnalyticsData={hourAnalyticsData}
         dayAnalyticsData={dayAnalyticsData}
         data-testid="unified-analytics"
+      />
+
+      {/* Trade Flow River - Live trade stream visualization */}
+      <TradeFlowRiver 
+        trades={recentTrades}
+        data-testid="trade-flow-river"
       />
 
       {/* Market Grid Section */}

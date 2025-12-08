@@ -58,7 +58,7 @@ const useTradeData = () => {
           break;
 
         case 'trade':
-          // Real-time trade update
+          // Real-time trade update (single trade)
           if (lastMessage.data?.trade) {
             const newTrade = lastMessage.data.trade;
             
@@ -83,6 +83,23 @@ const useTradeData = () => {
           // Note: Removed fallback logic that reconstructed hot markets from ticker_state
           // This was causing unlimited growth to 100+ markets. Hot markets should only
           // come from initial snapshot and explicit backend updates.
+          break;
+
+        case 'trades':
+          // Batched trades update for performance
+          if (lastMessage.data?.trades && Array.isArray(lastMessage.data.trades)) {
+            const newTrades = lastMessage.data.trades;
+            
+            setRecentTrades(prevTrades => {
+              // Add all new trades at once, newest first
+              const updatedTrades = [...newTrades, ...prevTrades];
+              // Keep only the most recent 200 trades
+              return updatedTrades.slice(0, 200);
+            });
+            
+            // Update trade count by batch size
+            setTradeCount(prev => prev + newTrades.length);
+          }
           break;
 
         case 'analytics_update':

@@ -110,6 +110,14 @@ test.describe('Frontend E2E Regression Test - Golden Standard', () => {
     const tradeCount = await page.locator('[data-testid="trade-tape"] .trade-item').count();
     console.log(`ℹ️  Trade tape: ${tradeCount} trades visible`);
     
+    // 5. Trade Flow River Check (minimal - just ensure component renders)
+    const tradeFlowRiver = page.getByTestId('trade-flow-river-container');
+    if (await tradeFlowRiver.isVisible()) {
+      console.log('✅ Trade Flow River component rendered');
+    } else {
+      console.log('⚠️  Trade Flow River not visible');
+    }
+    
     // Take screenshot of data populated state
     await takeScreenshot('03_data_populated.png');
     

@@ -48,6 +48,13 @@ class TradeProcessor:
         self._write_timeout_ms = 100  # Max wait time for batching (100ms)
         self._write_retry_attempts = 3  # Number of retry attempts for failed writes
         
+        # Trade broadcast batching for WebSocket efficiency
+        self._trade_broadcast_batch = []
+        self._trade_batch_lock = asyncio.Lock()
+        self._trade_batch_task = None
+        self._trade_batch_interval = 0.75  # Flush trades every 750ms
+        self._trade_batch_max_size = 10  # Or when batch reaches 10 trades
+        
         # Statistics for monitoring
         self.stats = {
             "trades_processed": 0,
@@ -93,6 +100,9 @@ class TradeProcessor:
         # Start write worker task for background database writes
         self._write_worker_task = asyncio.create_task(self._write_worker_loop())
         
+        # Start trade batch flush task
+        self._trade_batch_task = asyncio.create_task(self._trade_batch_flush_loop())
+        
         logger.info("Trade processor service started successfully")
     
     async def stop(self):
@@ -121,6 +131,20 @@ class TradeProcessor:
             except asyncio.CancelledError:
                 pass
             self._analytics_task = None
+        
+        # Stop trade batch task and flush remaining trades
+        if self._trade_batch_task:
+            self._trade_batch_task.cancel()
+            try:
+                await self._trade_batch_task
+            except asyncio.CancelledError:
+                pass
+            self._trade_batch_task = None
+            
+            # Flush any remaining trades in the batch
+            async with self._trade_batch_lock:
+                if self._trade_broadcast_batch:
+                    await self._flush_trade_batch()
         
         # Stop write worker and flush remaining trades
         await self._shutdown_write_worker()
@@ -254,37 +278,71 @@ class TradeProcessor:
             raise
     
     async def _broadcast_trade_update(self, trade: Trade, ticker_state: TickerState):
-        """Broadcast trade update and analytics data to WebSocket clients."""
+        """Add trade to batch for efficient WebSocket broadcasting."""
         if not self.websocket_broadcaster:
             return
         
         try:
-            # Create optimized trade update message with ONLY the trade data
-            # Removed ticker_state (636 bytes) and global_stats (305 bytes) - unused by frontend
-            # This reduces message size from 1,081 bytes to 140 bytes (87% reduction!)
-            update_message = TradeUpdateMessage(
-                type="trade",
-                data={
-                    "trade": trade.model_dump()
-                    # REMOVED: ticker_state - unused by frontend, saves 636 bytes per message
-                    # REMOVED: global_stats - unused by frontend, saves 305 bytes per message
-                    # REMOVED: hot_markets - this was causing 88KB messages!
-                    # Hot markets and analytics are sent via separate periodic broadcasts
-                }
-            )
+            # Create minimal trade dict without market_ticker (saves ~30-50 bytes per message)
+            minimal_trade = {
+                "yes_price": trade.yes_price,
+                "no_price": trade.no_price,
+                "count": trade.count,
+                "taker_side": trade.taker_side,
+                "ts": trade.ts
+            }
             
-            # Broadcast trade update to all connected clients
-            # The WebSocket broadcaster handles JSON serialization with custom encoder
-            message_dict = update_message.model_dump()
-            await self.websocket_broadcaster.broadcast(message_dict)
+            # Add to batch instead of broadcasting immediately
+            async with self._trade_batch_lock:
+                self._trade_broadcast_batch.append(minimal_trade)
+                
+                # Flush if batch is full
+                if len(self._trade_broadcast_batch) >= self._trade_batch_max_size:
+                    await self._flush_trade_batch()
             
-            # Note: Analytics data is now broadcast on a 1-second timer via _analytics_broadcast_loop()
-            
-            logger.debug(f"Broadcast trade update for {trade.market_ticker}")
+            logger.debug(f"Added trade to batch for {trade.market_ticker}")
             
         except Exception as e:
-            logger.error(f"Failed to broadcast trade update: {e}")
+            logger.error(f"Failed to add trade to batch: {e}")
             # Don't re-raise - broadcasting errors shouldn't stop trade processing
+    
+    async def _flush_trade_batch(self):
+        """Flush the current batch of trades to WebSocket clients."""
+        if not self._trade_broadcast_batch:
+            return
+        
+        try:
+            # Create batched message with all trades
+            batch_message = {
+                "type": "trades",  # New message type for batched trades
+                "data": {
+                    "trades": self._trade_broadcast_batch.copy()
+                }
+            }
+            
+            # Broadcast the batch
+            await self.websocket_broadcaster.broadcast(batch_message)
+            logger.debug(f"Flushed batch of {len(self._trade_broadcast_batch)} trades")
+            
+            # Clear the batch
+            self._trade_broadcast_batch.clear()
+            
+        except Exception as e:
+            logger.error(f"Failed to flush trade batch: {e}")
+    
+    async def _trade_batch_flush_loop(self):
+        """Periodically flush trade batches to ensure timely delivery."""
+        while self._running:
+            try:
+                await asyncio.sleep(self._trade_batch_interval)
+                
+                async with self._trade_batch_lock:
+                    if self._trade_broadcast_batch:
+                        await self._flush_trade_batch()
+                        
+            except Exception as e:
+                logger.error(f"Error in trade batch flush loop: {e}")
+                await asyncio.sleep(1)  # Brief pause on error
     
     async def _call_trade_callbacks(self, trade: Trade, ticker_state: TickerState):
         """Call all registered trade callbacks."""

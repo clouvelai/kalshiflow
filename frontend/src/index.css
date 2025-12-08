@@ -71,6 +71,29 @@
     from { transform: scale(1.2); opacity: 0.8; }
     to { transform: scale(1); opacity: 1; }
   }
+
+  /* Trade flow animation - pure CSS for maximum performance */
+  @keyframes flowAcross {
+    0% {
+      left: -5%;
+      opacity: 0;
+    }
+    5% {
+      opacity: 0.85;
+    }
+    95% {
+      opacity: 0.85;
+    }
+    100% {
+      left: 95%;
+      opacity: 0;
+    }
+  }
+
+  .animate-flow-across {
+    animation: flowAcross 4s linear forwards;
+    will-change: left, opacity;
+  }
 }
 
 /* Base styles */

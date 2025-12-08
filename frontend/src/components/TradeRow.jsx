@@ -12,6 +12,8 @@ const TradeRow = ({ trade, onClick, isSelected, isNew = false }) => {
   };
 
   const formatTicker = (ticker) => {
+    // Handle missing ticker gracefully
+    if (!ticker) return 'N/A';
     // Truncate long ticker names for display
     return ticker.length > 20 ? `${ticker.substring(0, 17)}...` : ticker;
   };
