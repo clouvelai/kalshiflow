@@ -111,7 +111,7 @@ Table: trading_episodes
 - market_ticker       TEXT NOT NULL
 - start_time          TIMESTAMP NOT NULL
 - end_time            TIMESTAMP
-- mode                TEXT NOT NULL          -- 'training', 'paper', 'live'
+- mode                TEXT NOT NULL          -- 'training', 'paper'; 'live' reserved for future (unused in MVP)
 - total_reward        FLOAT
 - total_steps         INTEGER
 - final_position      JSONB                  -- final portfolio state
@@ -152,7 +152,7 @@ OrderbookState (per market):
 
 ActorState:
 - current_episode: UUID
-- current_position: dict[market, position]
+- position_state: dict[market, position]  -- Consistent naming with observation builder
 - model: sb3.Model (inference mode only)
 - model_version: int
 - model_checkpoint_mtime: float  -- for hot-reload detection
@@ -168,11 +168,73 @@ OrderbookWriteQueue:
 - pending_snapshots: list
 - pending_deltas: list
 
+ActionWriteQueue:
+- queue: asyncio.Queue
+- batch_size: int (configurable, default=50)
+- flush_interval: float (seconds, default=2.0)
+- pending_actions: list
+
+SharedOrderbookState:
+- market_ticker: str
+- state: OrderbookState  # Single source of truth
+- lock: asyncio.Lock  # For thread-safe updates
+- subscribers: list  # Actor, UI, etc. read from this
+
 --------------------------------
-3. BACKEND ARCHITECTURE
+3. CRITICAL ARCHITECTURAL REQUIREMENTS
 --------------------------------
 
-3.1 Service Structure
+**These requirements prevent silent failures and ensure system correctness:**
+
+1. **Unified Observation Logic**
+   - ALL observation-building logic MUST live in `observation_space.py`
+   - Both KalshiTradingEnv and TradingActor MUST call the same function:
+     `build_observation_from_orderbook(orderbook_state, position_state)`
+   - This ensures identical feature distribution between training and inference
+
+2. **Non-Blocking Database Writes**
+   - WebSocket orderbook writes MUST use OrderbookWriteQueue
+   - Actor action logs MUST use ActionWriteQueue
+   - NO component may write directly to PostgreSQL in hot paths
+   - Background tasks handle batch flushing asynchronously
+
+3. **Mode Restrictions**
+   - Only 'training' and 'paper' modes allowed for MVP
+   - 'live' mode MUST return HTTP 400/501 error
+   - Actor MUST reject any attempt to enter 'live' mode
+
+4. **Environment Database Isolation**
+   - KalshiTradingEnv MUST preload all data before training
+   - NO database queries allowed during reset() or step()
+   - All historical data loaded into memory or iterator at init
+   - For MVP, preload time-bounded windows (e.g., N days) to manage memory usage
+
+5. **Minimal Reward Logging**
+   - Actor logs reward ONLY if trivial to compute (e.g., mark-to-market)
+   - Complex reward shaping belongs in training env exclusively
+   - Logged rewards NEVER used for training
+
+6. **Pipeline Isolation**
+   - Training and inference pipelines MUST NEVER interact
+   - Actor NEVER pushes to SB3 buffers
+   - Trainer NEVER consumes live actor data
+   - Shared artifacts limited to: checkpoints, DB state, observation builder
+
+7. **Single Orderbook State**
+   - ONE SharedOrderbookState per market (maintained by WebSocket client)
+   - All consumers (Actor, UI) read from this single source
+   - NO duplicate state machines allowed
+
+8. **Historical Data Format Consistency**
+   - Historical replay MUST normalize to exact same structure as live OrderbookState
+   - Both paths feed into same `build_observation_from_orderbook()` function
+   - Prevents training/inference distribution mismatch
+
+--------------------------------
+4. BACKEND ARCHITECTURE
+--------------------------------
+
+4.1 Service Structure
 
 kalshiflow-rl-service/
 ├── src/
@@ -232,7 +294,7 @@ kalshiflow-rl-service/
 │       ├── test_agent.py
 │       └── test_actor.py
 
-3.2 Orderbook WebSocket Client (Non-Blocking)
+4.2 Orderbook WebSocket Client (Non-Blocking)
 
 **CRITICAL**: This continuously collects orderbook data that becomes the training dataset.
 
@@ -276,18 +338,22 @@ class OrderbookClient:
         await self.broadcast(msg)
 ```
 
-3.3 Gymnasium Environment (Historical Data Only)
+4.3 Gymnasium Environment (Historical Data Only)
 
 ```python
 class KalshiTradingEnv(gym.Env):
     """
-    CRITICAL: This environment ONLY replays historical data.
-    It does NOT connect to live WebSockets or use async.
-    All data comes from PostgreSQL or Parquet files.
+    CRITICAL REQUIREMENTS:
+    1. This environment ONLY replays historical data
+    2. It does NOT connect to live WebSockets or use async
+    3. All data must be preloaded - NO DB queries during step() or reset()
+    4. Must use IDENTICAL observation builder as actor (from observation_space.py)
     """
     def __init__(self, config):
-        # Load historical data from DB/Parquet
-        self.historical_data = self.load_historical_data(
+        # PRELOAD all historical data into memory or iterator
+        # NO database access after this point
+        # For MVP, preload a time-bounded window (e.g., N days) to avoid memory issues
+        self.historical_data = self.preload_historical_data(
             market=config['market'],
             start_time=config['start_time'],
             end_time=config['end_time']
@@ -298,22 +364,31 @@ class KalshiTradingEnv(gym.Env):
         
     def reset(self):
         # Reset to beginning of historical data
+        # NO DB queries allowed here
         self.current_step = 0
-        return self._get_observation()
+        orderbook_state = self._reconstruct_orderbook_state()
+        # CRITICAL: Use shared observation builder
+        from kalshiflow_rl.environments.observation_space import build_observation_from_orderbook
+        return build_observation_from_orderbook(orderbook_state, self.position_state)
     
     def step(self, action):
-        # Advance through historical data
+        # Advance through preloaded data
+        # NO DB queries allowed here
         self.current_step += 1
-        # Simulate action execution on historical orderbook
-        # Calculate reward based on simulated fills
-        obs = self._get_observation()
+        orderbook_state = self._reconstruct_orderbook_state()
+        
+        # Use shared observation builder (SAME as actor)
+        from kalshiflow_rl.environments.observation_space import build_observation_from_orderbook
+        obs = build_observation_from_orderbook(orderbook_state, self.position_state)
+        
+        # Calculate reward (complex shaping allowed in training)
         reward = self._calculate_reward(action)
         done = self.current_step >= len(self.historical_data)
         return obs, reward, done, False, {}
     
-    def _get_observation(self):
-        # Return features from historical data at current_step
-        # NO live data, NO async calls
+    def _reconstruct_orderbook_state(self):
+        # Normalize historical data to EXACT same format as live OrderbookState
+        # This ensures training/inference consistency
         pass
 ```
 
@@ -329,29 +404,42 @@ Action Space:
 - Discrete: 0=hold, 1=buy_yes, 2=sell_yes, 3=buy_no, 4=sell_no
 - Future: Continuous (price, quantity)
 
-3.4 Actor Loop (Inference Only)
+4.4 Actor Loop (Inference Only)
 
 ```python
 class TradingActor:
     """
-    CRITICAL: Actor is inference-only. It NEVER trains or writes training data.
-    It connects to live WebSocket for real-time orderbook data.
-    Supports hot-reload of new model checkpoints.
+    CRITICAL REQUIREMENTS:
+    1. Actor is inference-only - NEVER trains or updates weights
+    2. Uses IDENTICAL observation builder as training env
+    3. All DB writes must be non-blocking via queue
+    4. Reads from single shared OrderbookState (no duplicate state)
+    5. Only supports 'paper' mode for MVP ('live' returns error)
     """
-    def __init__(self, model_id, trading_client, config):
+    def __init__(self, model_id, trading_client, config, orderbook_state, write_queue):
         self.model_id = model_id
         self.model = self.load_model(model_id)
         self.client = trading_client  # Paper only for MVP
+        self.orderbook_state = orderbook_state  # Shared with WebSocket client
+        self.write_queue = write_queue  # Shared or dedicated ActionWriteQueue
         self.state = ActorState()
         self.last_checkpoint_mtime = None
+        
+        # Validate mode
+        if config.get('mode') == 'live':
+            raise ValueError("Live trading mode forbidden in MVP - use 'paper' only")
         
     async def run(self):
         while True:
             # Check for model updates (hot-reload)
             await self.check_and_reload_model()
             
-            # Get latest LIVE orderbook state from WebSocket
-            obs = await self.get_live_observation()
+            # Get latest LIVE orderbook from SHARED state (no duplicate state machine)
+            orderbook_snapshot = self.orderbook_state.get_snapshot()
+            
+            # CRITICAL: Use shared observation builder (SAME as training env)
+            from kalshiflow_rl.environments.observation_space import build_observation_from_orderbook
+            obs = build_observation_from_orderbook(orderbook_snapshot, self.state.position_state)
             
             # Get action from model (inference only)
             with torch.no_grad():  # Ensure no gradient computation
@@ -360,8 +448,20 @@ class TradingActor:
             # Execute via paper trading client
             result = await self.client.execute(action)
             
-            # Log action to DB for observability/analysis (NOT for training)
-            await self.log_action_to_database(action, obs_hash, result, reward)
+            # Calculate simple reward if trivial (e.g., mark-to-market)
+            # Complex reward shaping belongs in training env only
+            reward = self._calculate_simple_reward(result) if easy else None
+            
+            # Queue action for NON-BLOCKING database write
+            await self.write_queue.enqueue_action({
+                'episode_id': self.state.current_episode,
+                'action': action,
+                'state_hash': hashlib.md5(obs.tobytes()).hexdigest(),
+                'reward': reward,  # Optional/minimal
+                'result': result
+            })
+            
+            # Broadcast to UI immediately (don't wait for DB)
             await self.broadcast_to_ui(action, obs)
             
             await asyncio.sleep(self.config.tick_interval)
@@ -377,21 +477,24 @@ class TradingActor:
             logger.info(f"Hot-reloaded model {self.model_id}")
 ```
 
-3.5 Trainer/Actor Separation Contract
+4.5 Trainer/Actor Separation Contract
 
-**CRITICAL DESIGN PRINCIPLE**: Complete separation between training and inference.
+**CRITICAL DESIGN PRINCIPLE**: Complete isolation between training and inference pipelines.
 
 ```python
 # Trainer (Historical Data Only)
 class Trainer:
     """
-    Runs SB3 training loops on historical data.
-    NEVER connects to live WebSocket.
-    NEVER does inference on live data.
+    CRITICAL REQUIREMENTS:
+    1. Runs SB3 training loops on HISTORICAL data only
+    2. NEVER connects to live WebSocket
+    3. NEVER consumes live actor data
+    4. NEVER does inference on live data
+    5. Uses shared observation builder from observation_space.py
     """
     def train(self, model_id, config):
-        # Load historical environment
-        env = KalshiTradingEnv(config)  # Historical data only
+        # Load historical environment with PRELOADED data
+        env = KalshiTradingEnv(config)  # Historical data only, no DB access during training
         
         # Initialize or load SB3 model
         if config.get('parent_model_id'):
@@ -402,33 +505,46 @@ class Trainer:
         # Train using SB3's internal replay buffer management
         model.learn(total_timesteps=config['timesteps'])
         
-        # Save checkpoint
+        # Save checkpoint (only shared artifact with Actor)
         checkpoint_path = f"models/{model_id}/checkpoint.zip"
         model.save(checkpoint_path)
         
-        # Update database
+        # Update database (only shared state with Actor)
         update_model_status(model_id, 'ready', checkpoint_path)
 
 # Actor (Live Data Only)
 class Actor:
     """
-    Does inference on live WebSocket data.
-    NEVER trains or updates weights.
-    NEVER writes experience tuples for training.
+    CRITICAL REQUIREMENTS:
+    1. Does inference on live WebSocket data
+    2. NEVER trains or updates weights
+    3. NEVER pushes data to SB3 buffers or training components
+    4. Uses shared observation builder from observation_space.py
+    5. All logging is non-blocking via queues
     """
     # See section 3.4 above
 ```
 
+**Pipeline Isolation Requirements**:
+- Training and inference pipelines MUST NEVER interact directly
+- Actor MUST NEVER push data into any SB3 buffer or training component
+- Trainer MUST NEVER consume live actor data
+- They share ONLY:
+  - Model checkpoints (read-only for Actor)
+  - Database state (models table)
+  - Orderbook data (historical snapshots only, not live stream)
+  - Observation builder function (from observation_space.py)
+
 **Data Flow Separation**:
 - Data Collection: Live WebSocket → Async Queue → PostgreSQL (continuous, always running)
-- Training: PostgreSQL historical → Gymnasium Env → SB3 → Checkpoint
-- Inference: Live WebSocket → Actor → Paper Trading → Action Logging to DB
+- Training: PostgreSQL historical (preloaded) → Gymnasium Env → SB3 → Checkpoint
+- Inference: Live WebSocket → Shared OrderbookState → Actor → Paper Trading → Action Queue → DB
 
 **Important Data Storage Distinction**:
 - Orderbook data (orderbook_snapshots/deltas): Continuously collected, becomes training dataset
-- Actor actions (trading_actions table): Logged for observability, debugging, performance analysis
-- Training replay buffer: Managed internally by SB3, NOT stored in DB
-- Key point: We LOG everything for analysis, but don't manually manage training data structures
+- Actor actions (trading_actions table): Logged for observability via queue, NOT for training
+- Training replay buffer: Managed internally by SB3, NEVER exposed or stored
+- Key point: We LOG everything for analysis, but pipelines remain isolated
 
 **Hot-Reload Protocol**:
 1. Trainer saves new checkpoint to `checkpoint_path`
@@ -438,7 +554,7 @@ class Actor:
 5. Actor loads new checkpoint atomically
 6. Actor continues with new model (no downtime)
 
-3.6 API Endpoints
+4.6 API Endpoints
 
 HTTP Routes (/rl/*):
 - GET /rl/status - Service health and status
@@ -463,10 +579,10 @@ WebSocket Routes:
 - /rl/ws/training - Training progress stream
 
 --------------------------------
-4. FRONTEND INTEGRATION
+5. FRONTEND INTEGRATION
 --------------------------------
 
-4.1 ML Tab Component Structure
+5.1 ML Tab Component Structure
 
 ```
 frontend/src/components/ml/
@@ -479,7 +595,7 @@ frontend/src/components/ml/
 
 ```
 
-4.2 WebSocket Protocol
+5.2 WebSocket Protocol
 
 Orderbook Update:
 ```json
@@ -540,7 +656,7 @@ Training Update:
 ```
 
 --------------------------------
-5. IMPLEMENTATION ROADMAP
+6. IMPLEMENTATION ROADMAP
 --------------------------------
 
 PHASE 1: Data Pipeline (Week 1)
@@ -616,7 +732,7 @@ Milestone 10: Simple deployment
 - Success: Deployed and running
 
 --------------------------------
-6. NON-FUNCTIONAL REQUIREMENTS (MVP)
+7. NON-FUNCTIONAL REQUIREMENTS (MVP)
 --------------------------------
 
 Performance (MVP):
@@ -650,7 +766,7 @@ Configuration (MVP):
   - TICK_INTERVAL_SECONDS
 
 --------------------------------
-7. TESTING STRATEGY (MVP)
+8. TESTING STRATEGY (MVP)
 --------------------------------
 
 Unit Tests:
@@ -670,7 +786,7 @@ Basic E2E Test:
 - Run paper trading for 5 minutes
 
 --------------------------------
-8. SUCCESS CRITERIA (MVP)
+9. SUCCESS CRITERIA (MVP)
 --------------------------------
 
 MVP Completion Checklist:
@@ -694,7 +810,7 @@ Key Metrics (MVP):
 - Hot-reload: Works within 30 seconds
 
 --------------------------------
-9. FUTURE ENHANCEMENTS
+10. FUTURE ENHANCEMENTS
 --------------------------------
 
 Post-MVP Roadmap:
