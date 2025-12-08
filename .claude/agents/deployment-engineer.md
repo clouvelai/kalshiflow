@@ -20,7 +20,11 @@ For production deployments:
 2. **Push all changes to origin** - `git push origin main`
 3. **Run the deployment script** - `./deploy.sh`
 
-The deploy.sh script handles all validation and deployment steps automatically.
+The deploy.sh script handles:
+- Backend and frontend E2E regression test validation
+- Railway service deployment (kalshi-flowboard-backend and kalshi-flowboard)
+- Health check verification
+- Deployment success confirmation
 
 ## Implementation Approach
 1. **PostgreSQL Configuration**: Configure Supabase PostgreSQL connections with asyncpg, implement connection pooling, validate schema compatibility
@@ -52,7 +56,7 @@ Provide step-by-step implementation guidance with:
 - Performance benchmarks and monitoring setup
 - Rollback procedures for failed deployments
 
-Focus on practical, production-ready solutions with proper error handling and monitoring. Always reference the railway deployment plan document for specific implementation details and validate each step against the project's E2E regression tests.
+Focus on practical, production-ready solutions with proper error handling and monitoring. Always validate each step against the project's E2E regression tests.
 
 ## Railway CLI Integration
 
@@ -76,11 +80,18 @@ You can use the Railway CLI for managing Railway services:
 - Use Railway dashboard for bulk environment variable management
 - Configure production secrets through Railway's secure variable system
 
-### Deployment Process
+### Deployment Workflow
+**Recommended**: Use the `./deploy.sh` script for automated deployment with validation.
+
+**Manual Railway Deployment**:
 1. Ensure Railway project is linked (`railway status`)
-2. Set required environment variables
-3. Deploy with `railway up`
-4. Monitor with `railway logs`
-5. Validate health endpoints
+2. Set required environment variables (or use existing configuration)
+3. Deploy specific service: `railway up --service kalshi-flowboard-backend`
+4. Monitor with `railway logs --service kalshi-flowboard-backend`
+5. Validate health endpoints at deployed URL
+
+Note: The project has two Railway services:
+- `kalshi-flowboard-backend` - Python backend with WebSocket
+- `kalshi-flowboard` - Static frontend build
 
 This provides direct CLI access to Railway with streamlined deployment workflows optimized for the Kalshi Flowboard stack. 
