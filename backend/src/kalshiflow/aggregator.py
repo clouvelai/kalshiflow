@@ -13,6 +13,7 @@ import heapq
 from .models import Trade, TickerState
 from .market_metadata_service import get_metadata_service
 from .database import get_database
+from .duplicate_detector import TradeDuplicateDetector
 
 
 class TradeAggregator:
@@ -40,6 +41,10 @@ class TradeAggregator:
         # Sequence number for heap ordering
         self._trade_sequence = 0
         
+        # Duplicate detection
+        self._duplicate_detector = TradeDuplicateDetector(window_minutes=5)
+        self.logger = logging.getLogger(__name__)
+        
         # Cleanup task
         self._cleanup_task = None
         self._running = False
@@ -51,11 +56,19 @@ class TradeAggregator:
             
         self._running = True
         self._session_start_time = datetime.now()
+        
+        # Start duplicate detector
+        await self._duplicate_detector.start()
+        
         self._cleanup_task = asyncio.create_task(self._periodic_cleanup())
         
     async def stop(self):
         """Stop the aggregator and cleanup task."""
         self._running = False
+        
+        # Stop duplicate detector
+        await self._duplicate_detector.stop()
+        
         if self._cleanup_task:
             self._cleanup_task.cancel()
             try:
@@ -190,8 +203,22 @@ class TradeAggregator:
         
         return recovery_stats
     
-    def process_trade(self, trade: Trade) -> TickerState:
-        """Process a new trade and update aggregations."""
+    def process_trade(self, trade: Trade) -> Optional[TickerState]:
+        """Process a new trade and update aggregations.
+        
+        Returns:
+            TickerState if trade was processed (not duplicate), None if duplicate detected
+        """
+        # Check for duplicate trade
+        if self._duplicate_detector.is_duplicate(trade):
+            # Log duplicate detection at INFO level for visibility
+            self.logger.info(
+                f"Duplicate trade filtered: {trade.market_ticker} "
+                f"${trade.yes_price_dollars:.2f}/${trade.no_price_dollars:.2f} "
+                f"x{trade.count} ({trade.taker_side})"
+            )
+            return None
+        
         ticker = trade.market_ticker
         
         # Increment global daily trades count
@@ -460,6 +487,9 @@ class TradeAggregator:
     
     def get_stats(self) -> Dict[str, Any]:
         """Get aggregator statistics for debugging."""
+        # Get duplicate detector stats
+        duplicate_stats = self._duplicate_detector.get_stats()
+        
         return {
             "active_tickers": len(self.ticker_states),
             "recent_trades_count": len(self.recent_trades),
@@ -469,7 +499,16 @@ class TradeAggregator:
             "oldest_trade_in_heap": (
                 datetime.fromtimestamp(self.trades_by_time[0][0] / 1000).isoformat()
                 if self.trades_by_time else None
-            )
+            ),
+            # Duplicate detection stats
+            "duplicate_detection": {
+                "total_checks": duplicate_stats["total_checks"],
+                "duplicates_detected": duplicate_stats["duplicates_detected"],
+                "unique_trades": duplicate_stats["unique_trades"],
+                "detection_rate_percent": duplicate_stats["detection_rate_percent"],
+                "cache_size": duplicate_stats["cache_size"],
+                "window_minutes": duplicate_stats["window_minutes"]
+            }
         }
 
 

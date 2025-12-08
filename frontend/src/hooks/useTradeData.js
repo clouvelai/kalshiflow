@@ -57,7 +57,13 @@ const useTradeData = () => {
         case 'trade':
           // Real-time trade update
           if (lastMessage.data?.trade) {
-            setRecentTrades(prev => [lastMessage.data.trade, ...prev.slice(0, 199)]);
+            setRecentTrades(prev => {
+              // Optimize: Only create new array if trade is actually new
+              if (prev.length > 0 && prev[0].trade_id === lastMessage.data.trade.trade_id) {
+                return prev; // Skip duplicate trade
+              }
+              return [lastMessage.data.trade, ...prev.slice(0, 199)];
+            });
           }
           
           // Update global stats if provided

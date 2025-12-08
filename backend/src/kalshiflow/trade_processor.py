@@ -187,6 +187,11 @@ class TradeProcessor:
             ticker_state = None
             try:
                 ticker_state = self._update_aggregations(trade)
+                if ticker_state is None:
+                    # Duplicate detected - stop processing this trade
+                    logger.info(f"Skipping duplicate trade for {trade.market_ticker}")
+                    # Don't count duplicates in statistics
+                    return True  # Return True since this isn't an error
                 logger.debug(f"Updated aggregations for {trade.market_ticker} immediately")
             except Exception as e:
                 logger.error(f"Aggregation failed for trade {trade.market_ticker}, continuing with limited functionality: {e}")
@@ -266,10 +271,18 @@ class TradeProcessor:
             # Fallback to immediate write
             await self._store_trade(trade)
     
-    def _update_aggregations(self, trade: Trade) -> TickerState:
-        """Update in-memory aggregations with new trade."""
+    def _update_aggregations(self, trade: Trade) -> Optional[TickerState]:
+        """Update in-memory aggregations with new trade.
+        
+        Returns:
+            TickerState if trade was processed (not duplicate), None if duplicate detected
+        """
         try:
             ticker_state = self.aggregator.process_trade(trade)
+            if ticker_state is None:
+                # Duplicate detected - this is handled by the aggregator
+                logger.debug(f"Duplicate trade detected for {trade.market_ticker}, skipping aggregation")
+                return None
             logger.debug(f"Updated aggregations for {trade.market_ticker}")
             return ticker_state
         except Exception as e:

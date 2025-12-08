@@ -114,4 +114,21 @@ const MarketGrid = ({ markets = [], ...props }) => {
   );
 };
 
-export default MarketGrid;
+export default React.memo(MarketGrid, (prevProps, nextProps) => {
+  // Only re-render if markets array actually changed
+  // Compare by length and ticker values to avoid unnecessary re-renders
+  if (prevProps.markets?.length !== nextProps.markets?.length) {
+    return false; // Re-render needed
+  }
+  
+  // If same length, check if any market tickers changed
+  // This is a fast comparison that catches most real updates
+  for (let i = 0; i < (prevProps.markets?.length || 0); i++) {
+    if (prevProps.markets[i]?.ticker !== nextProps.markets[i]?.ticker ||
+        prevProps.markets[i]?.volume_window !== nextProps.markets[i]?.volume_window) {
+      return false; // Re-render needed
+    }
+  }
+  
+  return true; // No re-render needed
+});

@@ -364,4 +364,12 @@ const TradeFlowRiver = ({ trades = [] }) => {
   );
 };
 
-export default TradeFlowRiver;
+export default React.memo(TradeFlowRiver, (prevProps, nextProps) => {
+  // Only re-render if trades array reference changed or length changed
+  // This prevents re-renders when parent updates for other reasons
+  return (
+    prevProps.trades === nextProps.trades ||
+    (prevProps.trades?.length === nextProps.trades?.length &&
+     prevProps.trades?.[0]?.trade_id === nextProps.trades?.[0]?.trade_id)
+  );
+});

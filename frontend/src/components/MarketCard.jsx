@@ -277,4 +277,22 @@ const MarketCard = ({ market, rank }) => {
   );
 };
 
-export default MarketCard;
+export default React.memo(MarketCard, (prevProps, nextProps) => {
+  // Custom comparison function - only re-render if market data actually changed
+  // This prevents re-renders when parent component re-renders for unrelated reasons
+  return (
+    prevProps.rank === nextProps.rank &&
+    prevProps.market?.ticker === nextProps.market?.ticker &&
+    prevProps.market?.volume_window === nextProps.market?.volume_window &&
+    prevProps.market?.trade_count_window === nextProps.market?.trade_count_window &&
+    prevProps.market?.net_flow === nextProps.market?.net_flow &&
+    prevProps.market?.yes_flow === nextProps.market?.yes_flow &&
+    prevProps.market?.no_flow === nextProps.market?.no_flow &&
+    prevProps.market?.last_yes_price === nextProps.market?.last_yes_price &&
+    prevProps.market?.price_points?.length === nextProps.market?.price_points?.length &&
+    prevProps.market?.title === nextProps.market?.title &&
+    prevProps.market?.liquidity_dollars === nextProps.market?.liquidity_dollars &&
+    prevProps.market?.open_interest === nextProps.market?.open_interest &&
+    prevProps.market?.latest_expiration_time === nextProps.market?.latest_expiration_time
+  );
+});
