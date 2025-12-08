@@ -326,18 +326,17 @@ class OrderbookWriteQueue:
         logger.info("Forced flush completed")
 
 
-# Global write queue instance (initialized lazily)
-write_queue: Optional[OrderbookWriteQueue] = None
+# Import config at module level for initialization
+from ..config import config
+
+# Global write queue instance - initialized immediately like orderbook_client
+write_queue = OrderbookWriteQueue(
+    batch_size=config.ORDERBOOK_QUEUE_BATCH_SIZE,
+    delta_sample_rate=config.ORDERBOOK_DELTA_SAMPLE_RATE,
+    flush_interval=config.ORDERBOOK_QUEUE_FLUSH_INTERVAL,
+    max_queue_size=config.ORDERBOOK_MAX_QUEUE_SIZE
+)
 
 def get_write_queue() -> OrderbookWriteQueue:
-    """Get or create the global write queue instance."""
-    global write_queue
-    if write_queue is None:
-        from ..config import config
-        write_queue = OrderbookWriteQueue(
-            batch_size=config.ORDERBOOK_QUEUE_BATCH_SIZE,
-            delta_sample_rate=config.ORDERBOOK_DELTA_SAMPLE_RATE,
-            flush_interval=config.ORDERBOOK_QUEUE_FLUSH_INTERVAL,
-            max_queue_size=config.ORDERBOOK_MAX_QUEUE_SIZE
-        )
+    """Get the global write queue instance (for backwards compatibility)."""
     return write_queue
