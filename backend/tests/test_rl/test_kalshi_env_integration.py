@@ -34,14 +34,17 @@ class TestKalshiEnvIntegration:
                 'early_termination': False
             },
             'reward_config': {
+                'reward_type': 'pnl_based',
                 'trading_fee_rate': 0.01,  # 1% fee
                 'pnl_scale': 0.01,
                 'action_penalty': 0.001,
                 'position_penalty_scale': 0.0001,
                 'drawdown_penalty': 0.01,
                 'diversification_bonus': 0.005,
+                'win_rate_bonus_scale': 0.02,
                 'min_reward': -10.0,
-                'max_reward': 10.0
+                'max_reward': 10.0,
+                'normalize_rewards': True
             }
         }
     
@@ -142,8 +145,15 @@ class TestKalshiEnvIntegration:
             second_quantity = positions['TEST-MARKET']['position_yes']
             second_avg_cost = positions['TEST-MARKET']['avg_cost_yes']
             
+            # Debug output if test fails
+            if second_quantity <= first_quantity:
+                print(f"First quantity: {first_quantity}")
+                print(f"Second quantity: {second_quantity}")
+                print(f"Trade history length: {len(env.trade_history)}")
+                print(f"Info from second step: {info}")
+            
             # Verify position increased
-            assert second_quantity > first_quantity
+            assert second_quantity > first_quantity, f"Expected second_quantity ({second_quantity}) > first_quantity ({first_quantity})"
             
             # Verify weighted average cost basis
             # Should be between first price (0.60) and second price (0.70)
