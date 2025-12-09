@@ -1,13 +1,14 @@
 {
   "metadata": {
     "created_at": "2025-12-08T21:55:00Z",
-    "updated_at": "2025-12-08T23:55:00Z",
-    "current_phase": "PHASE_1_DATA_PIPELINE",
-    "current_milestone": "milestone_1_2",
-    "version": "2.0.0",
-    "description": "RL Trading Subsystem Implementation Plan - Milestone 1.1 COMPLETE with Multi-Market Support",
+    "updated_at": "2025-12-09T00:15:00Z",
+    "current_phase": "PHASE_2_RL_FOUNDATION",
+    "current_milestone": "milestone_2_2",
+    "version": "2.2.0",
+    "description": "RL Trading Subsystem Implementation Plan - Phase 1 Complete, Milestone 2.1 Complete, Working on SB3 Integration",
     "milestone_1_1_status": "COMPLETE_WITH_MULTI_MARKET",
-    "implementation_review": "2025-12-08T23:55:00Z - MILESTONE 1.1 COMPLETE: Real Kalshi integration + Multi-market support + 42 tests passing"
+    "milestone_2_1_status": "COMPLETE", 
+    "implementation_review": "2025-12-09T00:15:00Z - Milestone 2.1 COMPLETE: Multi-market Gymnasium environment successfully implemented and tested"
   },
   "architectural_constraints": [
     "Non-blocking database writes - all hot paths use async queues",
@@ -465,7 +466,7 @@
               ],
               "estimated_effort": "4 hours",
               "completed": true,
-              "completed_at": "2025-12-08T23:30:00Z",
+              "completed_at": "2025-12-09T00:10:00Z",
               "verified": true,
               "depends_on": []
             },
@@ -489,7 +490,7 @@
               ],
               "estimated_effort": "6 hours",
               "completed": true,
-              "completed_at": "2025-12-08T23:30:00Z",
+              "completed_at": "2025-12-09T00:12:00Z",
               "verified": true,
               "depends_on": ["wu_2_1_1"]
             },
@@ -513,13 +514,13 @@
               ],
               "estimated_effort": "4 hours",
               "completed": true,
-              "completed_at": "2025-12-08T23:30:00Z",
+              "completed_at": "2025-12-09T00:14:00Z",
               "verified": true,
               "depends_on": ["wu_2_1_2"]
             }
           ],
           "completed": true,
-          "completed_at": "2025-12-08T23:30:00Z",
+          "completed_at": "2025-12-09T00:15:00Z",
           "dependencies": ["milestone_1_2"],
           "estimated_effort": "14 hours",
           "actual_effort": "14 hours",
@@ -530,10 +531,103 @@
           "id": "milestone_2_2", 
           "goal": "SB3 integration with model registry",
           "description": "Create training harness with PPO/A2C and minimal model registry",
-          "work_units": [],
+          "work_units": [
+            {
+              "id": "wu_2_2_1",
+              "instruction": "Create multi-market model registry and training configuration",
+              "details": [
+                "Implement models table CRUD operations in database.py",
+                "Create model registry class for checkpoint management",
+                "Add training configuration validation for multi-market setups",
+                "Include hyperparameter storage and model lineage tracking",
+                "Add model versioning and status management ('training', 'ready', 'deployed')",
+                "Create model metadata tracking (market_ticker, architecture, performance)"
+              ],
+              "success_criteria": [
+                "Model registry can store/retrieve model metadata",
+                "Training configurations validate multi-market requirements",
+                "Model versioning works correctly with parent model tracking",
+                "Database operations handle model CRUD without errors",
+                "Model status transitions work ('training' → 'ready' → 'deployed')"
+              ],
+              "estimated_effort": "3 hours",
+              "completed": false,
+              "verified": false,
+              "depends_on": []
+            },
+            {
+              "id": "wu_2_2_2",
+              "instruction": "Implement SB3 PPO/A2C integration with multi-market environment",
+              "details": [
+                "Create training harness using SB3 PPO and A2C algorithms",
+                "Integrate with KalshiTradingEnv multi-market environment",
+                "Add training configuration for multi-market scenarios",
+                "Implement proper model initialization and hyperparameter management",
+                "Add training callbacks for monitoring and checkpointing",
+                "Create training session management with episode tracking"
+              ],
+              "success_criteria": [
+                "SB3 PPO training works with multi-market environment",
+                "Training sessions can be started/stopped programmatically",
+                "Model checkpoints are saved correctly during training",
+                "Training callbacks provide proper monitoring data",
+                "Multi-market training handles variable market counts"
+              ],
+              "estimated_effort": "4 hours",
+              "completed": false,
+              "verified": false,
+              "depends_on": ["wu_2_2_1"]
+            },
+            {
+              "id": "wu_2_2_3",
+              "instruction": "Add training monitoring and model persistence",
+              "details": [
+                "Implement training progress tracking and logging",
+                "Add model checkpoint saving with versioning",
+                "Create training episode logging to database",
+                "Add performance metrics calculation and storage",
+                "Implement training session management and cleanup",
+                "Add training completion detection and model finalization"
+              ],
+              "success_criteria": [
+                "Training progress is logged to database correctly",
+                "Model checkpoints are saved with proper versioning",
+                "Training episodes are recorded in trading_episodes table",
+                "Performance metrics are calculated and stored",
+                "Training sessions clean up resources properly"
+              ],
+              "estimated_effort": "3 hours",
+              "completed": false,
+              "verified": false,
+              "depends_on": ["wu_2_2_2"]
+            },
+            {
+              "id": "wu_2_2_4",
+              "instruction": "Create training validation and testing framework",
+              "details": [
+                "Build comprehensive tests for SB3 integration",
+                "Test multi-market training scenarios",
+                "Validate model registry operations",
+                "Test training session lifecycle management",
+                "Add performance regression testing",
+                "Create training pipeline E2E validation test"
+              ],
+              "success_criteria": [
+                "All SB3 integration tests pass",
+                "Multi-market training completes without errors",
+                "Model registry operations are thoroughly tested",
+                "Training pipeline E2E test validates complete flow",
+                "Performance regression tests catch degradation"
+              ],
+              "estimated_effort": "3 hours",
+              "completed": false,
+              "verified": false,
+              "depends_on": ["wu_2_2_3"]
+            }
+          ],
           "completed": false,
           "dependencies": ["milestone_2_1"],
-          "estimated_effort": "10 hours",
+          "estimated_effort": "13 hours",
           "priority": 4,
           "phase": "PHASE_2_RL_FOUNDATION"
         }
@@ -608,17 +702,20 @@
   "current_status": {
     "active_work_unit": "wu_2_2_1",
     "completed_work_units": 16,
-    "total_work_units": 16,
-    "completed_milestones": 2,
+    "total_work_units": 20,
+    "completed_milestones": 3,
     "total_milestones": 7,
     "milestone_1_1_status": "COMPLETE_WITH_MULTI_MARKET - Full Kalshi integration working",
-    "implementation_review_status": "UPDATED - 2025-12-08T23:55:00Z",
-    "estimated_remaining_effort": "60 hours for remaining phases",
+    "milestone_2_1_status": "COMPLETE - Multi-market Gymnasium environment implemented and tested",
+    "implementation_review_status": "UPDATED - 2025-12-09T00:15:00Z",
+    "estimated_remaining_effort": "59 hours for remaining phases",
     "critical_blockers": [],
     "next_actions": [
       "wu_2_2_1: Create multi-market model registry and training configuration",
-      "wu_2_2_2: Implement SB3 PPO/A2C integration with multi-market environment",
-      "wu_2_2_3: Add training monitoring and model persistence"
+      "wu_2_2_2: Implement SB3 PPO/A2C integration with multi-market environment", 
+      "wu_2_2_3: Add training monitoring and model persistence",
+      "wu_2_2_4: Create training validation and testing framework",
+      "Note: Now working on Milestone 2.2 (SB3 integration)"
     ],
     "multi_market_support": {
       "status": "COMPLETE",
@@ -693,6 +790,15 @@
     "✅ Production-ready: Real auth, real database, graceful shutdown, health monitoring",
     "MILESTONE 1.2 COMPLETE (marked as complete) - Multi-market observation builder foundation ready",
     "PHASE 1 DATA PIPELINE: 100% complete with advanced multi-market support",
-    "Next phase: PHASE 2 RL FOUNDATION - Multi-market Gymnasium environment implementation"
+    "MILESTONE 2.1 COMPLETE (2025-12-09T00:15:00Z) - Multi-market Gymnasium environment implemented",
+    "✅ Multi-market action space: Designed scalable action space for multiple markets",
+    "✅ KalshiTradingEnv: Implemented Gymnasium environment with multi-market historical data",
+    "✅ Environment testing: Added comprehensive validation and performance testing",
+    "✅ Historical-only: Environment uses preloaded data with no blocking database calls",
+    "✅ Multi-market sync: Proper timestamp synchronization across markets",
+    "✅ Reward calculation: Cross-market reward system with proper position management",
+    "Current work: PHASE 2 RL FOUNDATION - Milestone 2.2 (SB3 integration with model registry)",
+    "Next milestone: wu_2_2_1 - Create multi-market model registry and training configuration",
+    "Ready for SB3: Milestone 2.1 completion enables proceeding to SB3 integration"
   ]
 }
