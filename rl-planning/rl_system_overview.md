@@ -810,7 +810,176 @@ Key Metrics (MVP):
 - Hot-reload: Works within 30 seconds
 
 --------------------------------
-10. FUTURE ENHANCEMENTS
+10. KALSHI API COMPATIBILITY & PAPER TRADING ARCHITECTURE
+--------------------------------
+
+10.1 WebSocket Stream Architecture
+
+PUBLIC STREAMS (Already Implemented):
+- Live trades feed: Real-time public trade data
+- Orderbook updates: Full orderbook snapshots and deltas
+- Connection: Single WebSocket handles multiple markets
+- State Management: Per-market SharedOrderbookState instances
+
+USER-SPECIFIC STREAMS (Paper Trading Simulation):
+- User fills stream: Notifications when orders are executed
+- Position updates: Real-time position changes
+- Order status stream: Order lifecycle notifications
+- Implementation: Separate subscriptions, not part of public feed
+- Simulation: Paper client generates realistic stream events
+
+10.2 Kalshi Trading API Structure
+
+ORDER MANAGEMENT ENDPOINTS:
+- POST /portfolio/orders: Create single or batch orders
+- POST /portfolio/orders/{id}/amend: Modify existing order
+- POST /portfolio/orders/{id}/decrease: Reduce order size
+- DELETE /portfolio/orders/{id}: Cancel single order
+- DELETE /portfolio/orders/batched: Batch cancel
+
+PORTFOLIO ENDPOINTS:
+- GET /portfolio/balance: Account balance
+- GET /portfolio/positions: Current positions
+- GET /portfolio/fills: Execution history
+- GET /portfolio/settlements: Settlement information
+
+ORDER LIFECYCLE STATES:
+- pending: Order submitted but not yet active
+- resting: Order active in orderbook
+- executed: Order fully or partially filled
+- canceled: Order canceled by user
+- settled: Position settled after market resolution
+
+10.3 Paper Trading Client Design
+
+INTERFACE COMPATIBILITY:
+```python
+class KalshiPaperTradingClient:
+    """100% API-compatible with future KalshiLiveTradingClient"""
+    
+    async def create_order(self, market_ticker: str, side: str, 
+                          order_type: str, quantity: int, price: Optional[int]):
+        # Identical interface to live API
+        pass
+    
+    async def amend_order(self, order_id: str, new_quantity: int, new_price: int):
+        # Matches Kalshi API exactly
+        pass
+    
+    async def cancel_order(self, order_id: str):
+        # Same as live endpoint
+        pass
+    
+    async def get_positions(self) -> List[Position]:
+        # Returns Kalshi-formatted positions
+        pass
+```
+
+POSITION TRACKING (Kalshi Format):
+```python
+class Position:
+    market_ticker: str
+    position: int          # Net position (not separate yes/no)
+    total_traded: int      # Volume traded
+    settlement_status: str # 'unsettled' or 'settled'
+    average_cost: float    # For P&L calculations
+```
+
+FILL SIMULATION ENGINE:
+- Uses live orderbook data for realistic fills
+- Market impact modeling based on order size
+- Slippage calculation from market depth
+- Latency simulation (10-100ms configurable)
+- Partial fills when liquidity insufficient
+
+10.4 Enhanced Action Space
+
+CURRENT LIMITATIONS:
+- Simple BUY_YES/SELL_YES/BUY_NO/SELL_NO actions
+- No price specification for limit orders
+- No order management capabilities
+
+ENHANCED ACTION SPACE:
+```python
+class EnhancedAction:
+    action_type: str  # 'create_order', 'cancel_order', 'amend_order'
+    order_type: str   # 'market' or 'limit'
+    side: str         # 'yes' or 'no'
+    direction: str    # 'buy' or 'sell'
+    quantity: int
+    price: Optional[int]  # For limit orders
+    order_id: Optional[str]  # For cancel/amend
+```
+
+10.5 Database Schema Extensions
+
+```sql
+-- Orders table for paper trading
+CREATE TABLE rl_orders (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    market_ticker TEXT NOT NULL,
+    side TEXT NOT NULL,           -- 'yes' or 'no'
+    direction TEXT NOT NULL,       -- 'buy' or 'sell'
+    order_type TEXT NOT NULL,      -- 'market' or 'limit'
+    status TEXT NOT NULL,          -- Kalshi order states
+    quantity INTEGER NOT NULL,
+    remaining_quantity INTEGER NOT NULL,
+    price INTEGER,                 -- in cents for limit orders
+    filled_quantity INTEGER DEFAULT 0,
+    average_fill_price FLOAT,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+-- Fills table for execution tracking
+CREATE TABLE rl_fills (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    order_id UUID REFERENCES rl_orders(id),
+    market_ticker TEXT NOT NULL,
+    side TEXT NOT NULL,
+    quantity INTEGER NOT NULL,
+    price FLOAT NOT NULL,
+    timestamp TIMESTAMP DEFAULT NOW(),
+    execution_type TEXT NOT NULL   -- 'market' or 'limit'
+);
+
+-- Indexes for performance
+CREATE INDEX idx_orders_market ON rl_orders(market_ticker);
+CREATE INDEX idx_orders_status ON rl_orders(status);
+CREATE INDEX idx_fills_order ON rl_fills(order_id);
+CREATE INDEX idx_fills_timestamp ON rl_fills(timestamp);
+```
+
+10.6 Paper → Live Transition Strategy
+
+SEAMLESS CLIENT SWAP:
+```python
+def create_trading_client(mode: str, config: dict):
+    """Factory pattern for paper/live client creation"""
+    if mode == 'paper':
+        return KalshiPaperTradingClient(config)
+    elif mode == 'live':
+        # Future implementation
+        return KalshiLiveTradingClient(config)
+    else:
+        raise ValueError(f"Unknown mode: {mode}")
+```
+
+VALIDATION REQUIREMENTS:
+- Paper client methods have identical signatures to live
+- All return types match Kalshi API responses exactly
+- Error codes and exceptions match live behavior
+- WebSocket message formats identical to production
+
+SUCCESS METRICS:
+- 100% API interface compatibility
+- Fill simulation within 5% of live behavior
+- Sub-100ms decision latency maintained
+- Zero code changes needed for live transition
+- Position/P&L calculations match Kalshi exactly
+
+--------------------------------
+11. FUTURE ENHANCEMENTS
 --------------------------------
 
 Post-MVP Roadmap:

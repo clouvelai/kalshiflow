@@ -507,6 +507,307 @@ class RLDatabase:
             ''', market_ticker, sequence_number)
             
             return [dict(row) for row in rows]
+    
+    # Model Registry CRUD Operations
+    
+    async def create_model(self, model_data: Dict[str, Any]) -> int:
+        """Create a new model record and return its ID."""
+        async with self.get_connection() as conn:
+            model_id = await conn.fetchval('''
+                INSERT INTO rl_models (
+                    model_name, version, algorithm, market_ticker,
+                    file_path, hyperparameters, training_metrics,
+                    validation_metrics, status
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                RETURNING id
+            ''',
+                model_data['model_name'],
+                model_data['version'],
+                model_data['algorithm'],
+                model_data['market_ticker'],
+                model_data['file_path'],
+                json.dumps(model_data.get('hyperparameters', {})),
+                json.dumps(model_data.get('training_metrics', {})),
+                json.dumps(model_data.get('validation_metrics', {})),
+                model_data.get('status', 'training')
+            )
+            return model_id
+    
+    async def get_model_by_id(self, model_id: int) -> Optional[Dict[str, Any]]:
+        """Get model by ID."""
+        async with self.get_connection() as conn:
+            row = await conn.fetchrow('''
+                SELECT * FROM rl_models WHERE id = $1
+            ''', model_id)
+            
+            if row:
+                model_dict = dict(row)
+                # Parse JSON fields
+                if model_dict.get('hyperparameters'):
+                    model_dict['hyperparameters'] = json.loads(model_dict['hyperparameters'])
+                if model_dict.get('training_metrics'):
+                    model_dict['training_metrics'] = json.loads(model_dict['training_metrics'])
+                if model_dict.get('validation_metrics'):
+                    model_dict['validation_metrics'] = json.loads(model_dict['validation_metrics'])
+                return model_dict
+            return None
+    
+    async def get_model_by_name_version(self, model_name: str, version: str) -> Optional[Dict[str, Any]]:
+        """Get model by name and version."""
+        async with self.get_connection() as conn:
+            row = await conn.fetchrow('''
+                SELECT * FROM rl_models WHERE model_name = $1 AND version = $2
+            ''', model_name, version)
+            
+            if row:
+                model_dict = dict(row)
+                # Parse JSON fields
+                if model_dict.get('hyperparameters'):
+                    model_dict['hyperparameters'] = json.loads(model_dict['hyperparameters'])
+                if model_dict.get('training_metrics'):
+                    model_dict['training_metrics'] = json.loads(model_dict['training_metrics'])
+                if model_dict.get('validation_metrics'):
+                    model_dict['validation_metrics'] = json.loads(model_dict['validation_metrics'])
+                return model_dict
+            return None
+    
+    async def list_models(
+        self,
+        market_ticker: Optional[str] = None,
+        status: Optional[str] = None,
+        algorithm: Optional[str] = None,
+        limit: int = 100
+    ) -> List[Dict[str, Any]]:
+        """List models with optional filtering."""
+        async with self.get_connection() as conn:
+            # Build dynamic query
+            conditions = []
+            params = []
+            param_idx = 1
+            
+            if market_ticker:
+                conditions.append(f"market_ticker = ${param_idx}")
+                params.append(market_ticker)
+                param_idx += 1
+                
+            if status:
+                conditions.append(f"status = ${param_idx}")
+                params.append(status)
+                param_idx += 1
+                
+            if algorithm:
+                conditions.append(f"algorithm = ${param_idx}")
+                params.append(algorithm)
+                param_idx += 1
+            
+            where_clause = "WHERE " + " AND ".join(conditions) if conditions else ""
+            params.append(limit)
+            
+            query = f'''
+                SELECT * FROM rl_models
+                {where_clause}
+                ORDER BY created_at DESC
+                LIMIT ${param_idx}
+            '''
+            
+            rows = await conn.fetch(query, *params)
+            
+            models = []
+            for row in rows:
+                model_dict = dict(row)
+                # Parse JSON fields
+                if model_dict.get('hyperparameters'):
+                    model_dict['hyperparameters'] = json.loads(model_dict['hyperparameters'])
+                if model_dict.get('training_metrics'):
+                    model_dict['training_metrics'] = json.loads(model_dict['training_metrics'])
+                if model_dict.get('validation_metrics'):
+                    model_dict['validation_metrics'] = json.loads(model_dict['validation_metrics'])
+                models.append(model_dict)
+            
+            return models
+    
+    async def update_model_status(self, model_id: int, status: str) -> bool:
+        """Update model status."""
+        async with self.get_connection() as conn:
+            result = await conn.execute('''
+                UPDATE rl_models SET status = $1, updated_at = CURRENT_TIMESTAMP
+                WHERE id = $2
+            ''', status, model_id)
+            return result == "UPDATE 1"
+    
+    async def update_model_metrics(
+        self,
+        model_id: int,
+        training_metrics: Optional[Dict[str, Any]] = None,
+        validation_metrics: Optional[Dict[str, Any]] = None
+    ) -> bool:
+        """Update model performance metrics."""
+        async with self.get_connection() as conn:
+            updates = []
+            params = []
+            param_idx = 1
+            
+            if training_metrics is not None:
+                updates.append(f"training_metrics = ${param_idx}")
+                params.append(json.dumps(training_metrics))
+                param_idx += 1
+            
+            if validation_metrics is not None:
+                updates.append(f"validation_metrics = ${param_idx}")
+                params.append(json.dumps(validation_metrics))
+                param_idx += 1
+            
+            if not updates:
+                return False
+            
+            updates.append("updated_at = CURRENT_TIMESTAMP")
+            params.append(model_id)
+            
+            query = f'''
+                UPDATE rl_models SET {", ".join(updates)}
+                WHERE id = ${param_idx}
+            '''
+            
+            result = await conn.execute(query, *params)
+            return result == "UPDATE 1"
+    
+    async def delete_model(self, model_id: int) -> bool:
+        """Delete model record (soft delete by setting status to 'retired')."""
+        async with self.get_connection() as conn:
+            result = await conn.execute('''
+                UPDATE rl_models SET status = 'retired', updated_at = CURRENT_TIMESTAMP
+                WHERE id = $1
+            ''', model_id)
+            return result == "UPDATE 1"
+    
+    async def get_active_model_for_market(self, market_ticker: str, algorithm: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Get the currently active model for a market."""
+        async with self.get_connection() as conn:
+            # Build query with optional algorithm filter
+            if algorithm:
+                row = await conn.fetchrow('''
+                    SELECT * FROM rl_models 
+                    WHERE market_ticker = $1 AND algorithm = $2 AND status = 'active'
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                ''', market_ticker, algorithm)
+            else:
+                row = await conn.fetchrow('''
+                    SELECT * FROM rl_models 
+                    WHERE market_ticker = $1 AND status = 'active'
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                ''', market_ticker)
+            
+            if row:
+                model_dict = dict(row)
+                # Parse JSON fields
+                if model_dict.get('hyperparameters'):
+                    model_dict['hyperparameters'] = json.loads(model_dict['hyperparameters'])
+                if model_dict.get('training_metrics'):
+                    model_dict['training_metrics'] = json.loads(model_dict['training_metrics'])
+                if model_dict.get('validation_metrics'):
+                    model_dict['validation_metrics'] = json.loads(model_dict['validation_metrics'])
+                return model_dict
+            return None
+    
+    # Episode and Action CRUD Operations
+    
+    async def create_training_episode(self, episode_data: Dict[str, Any]) -> int:
+        """Create a new training episode record."""
+        async with self.get_connection() as conn:
+            episode_id = await conn.fetchval('''
+                INSERT INTO rl_trading_episodes (
+                    model_id, episode_number, market_ticker,
+                    start_timestamp_ms, end_timestamp_ms,
+                    start_balance, end_balance, total_return,
+                    max_drawdown, sharpe_ratio, num_actions, num_trades,
+                    episode_reward, episode_length
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+                RETURNING id
+            ''',
+                episode_data['model_id'],
+                episode_data['episode_number'],
+                episode_data['market_ticker'],
+                episode_data['start_timestamp_ms'],
+                episode_data['end_timestamp_ms'],
+                episode_data['start_balance'],
+                episode_data['end_balance'],
+                episode_data['total_return'],
+                episode_data.get('max_drawdown'),
+                episode_data.get('sharpe_ratio'),
+                episode_data.get('num_actions', 0),
+                episode_data.get('num_trades', 0),
+                episode_data.get('episode_reward'),
+                episode_data['episode_length']
+            )
+            return episode_id
+    
+    async def create_trading_action(self, action_data: Dict[str, Any]) -> int:
+        """Create a new trading action record."""
+        async with self.get_connection() as conn:
+            action_id = await conn.fetchval('''
+                INSERT INTO rl_trading_actions (
+                    episode_id, action_timestamp_ms, step_number,
+                    action_type, price, quantity, position_before, position_after,
+                    reward, observation, model_confidence, executed, execution_price
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                RETURNING id
+            ''',
+                action_data['episode_id'],
+                action_data['action_timestamp_ms'],
+                action_data['step_number'],
+                action_data['action_type'],
+                action_data.get('price'),
+                action_data.get('quantity'),
+                json.dumps(action_data.get('position_before', {})),
+                json.dumps(action_data.get('position_after', {})),
+                action_data.get('reward'),
+                json.dumps(action_data.get('observation', {})) if action_data.get('observation') else None,
+                action_data.get('model_confidence'),
+                action_data.get('executed', False),
+                action_data.get('execution_price')
+            )
+            return action_id
+    
+    async def get_model_performance_summary(self, model_id: int) -> Optional[Dict[str, Any]]:
+        """Get performance summary for a model."""
+        async with self.get_connection() as conn:
+            # Get episode statistics
+            episode_stats = await conn.fetchrow('''
+                SELECT 
+                    COUNT(*) as total_episodes,
+                    AVG(total_return) as avg_return,
+                    MAX(total_return) as max_return,
+                    MIN(total_return) as min_return,
+                    AVG(sharpe_ratio) as avg_sharpe,
+                    AVG(episode_length) as avg_episode_length,
+                    SUM(num_trades) as total_trades,
+                    AVG(CASE WHEN total_return > 0 THEN 1.0 ELSE 0.0 END) as win_rate
+                FROM rl_trading_episodes
+                WHERE model_id = $1
+            ''', model_id)
+            
+            # Get model info
+            model_info = await conn.fetchrow('''
+                SELECT model_name, version, algorithm, market_ticker, status, created_at
+                FROM rl_models
+                WHERE id = $1
+            ''', model_id)
+            
+            if not model_info:
+                return None
+            
+            return {
+                'model_id': model_id,
+                'model_name': model_info['model_name'],
+                'version': model_info['version'],
+                'algorithm': model_info['algorithm'],
+                'market_ticker': model_info['market_ticker'],
+                'status': model_info['status'],
+                'created_at': model_info['created_at'].isoformat(),
+                'performance': dict(episode_stats) if episode_stats else {}
+            }
 
 
 # Global RL database instance

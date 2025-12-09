@@ -7,8 +7,12 @@ for all RL components including data ingestion, training, and trading.
 
 import os
 import logging
-from typing import Optional
+from typing import Optional, List
 from pathlib import Path
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 
 class RLConfig:
@@ -28,7 +32,7 @@ class RLConfig:
         self.RL_MARKET_TICKER: str = os.getenv("RL_MARKET_TICKER", "INXD-25JAN03")  # Default market for RL training
         
         # Parse RL_MARKET_TICKERS environment variable for multiple markets
-        self.RL_MARKET_TICKERS: list[str] = self._parse_market_tickers()
+        self.RL_MARKET_TICKERS: List[str] = self._parse_market_tickers()
         
         # Orderbook Ingestion Settings
         self.ORDERBOOK_QUEUE_BATCH_SIZE: int = int(os.getenv("RL_ORDERBOOK_BATCH_SIZE", "100"))
@@ -79,7 +83,7 @@ class RLConfig:
             raise ValueError(f"Required environment variable {key} is not set")
         return value
     
-    def _parse_market_tickers(self) -> list[str]:
+    def _parse_market_tickers(self) -> List[str]:
         """
         Parse market tickers from environment variables.
         
