@@ -1,0 +1,499 @@
+{
+  "plan_metadata": {
+    "title": "Phase 1: RL Orderbook Collector Backend Service",
+    "description": "Implementation plan for standalone backend service to validate multi-market orderbook processing with real-time WebSocket broadcasting",
+    "created": "2025-12-09",
+    "phase": "PHASE_1_DATA_PIPELINE",
+    "target_service": "kalshiflow-rl-orderbook-collector",
+    "deployment_type": "railway_service",
+    "estimated_total_effort": "2-3 days"
+  },
+  
+  "system_context": {
+    "purpose": "Intermediary milestone to validate orderbook processing before full RL training implementation",
+    "architecture_notes": [
+      "Reuses existing RL subsystem components (OrderbookClient, database.py, write_queue.py, orderbook_state.py)",
+      "Runs as separate Railway service alongside main Kalshiflow backend",
+      "Focuses on multi-market orderbook ingestion with real-time frontend broadcasting",
+      "Statistics tracking for system health monitoring",
+      "Foundation for Phase 2 RL training pipeline"
+    ],
+    "critical_dependencies": [
+      "Multi-market OrderbookClient already implemented",
+      "Database schema already created",
+      "Write queue infrastructure exists",
+      "SharedOrderbookState management functional"
+    ]
+  },
+
+  "work_units": [
+    {
+      "id": "WU001",
+      "title": "Modify Application Entry Point for Multi-Market Support",
+      "description": "Update src/kalshiflow_rl/app.py to initialize OrderbookClient with multiple markets from RL_MARKET_TICKERS and add WebSocket manager integration",
+      "type": "modification",
+      "estimated_effort": "2-3 hours",
+      "priority": 1,
+      "dependencies": [],
+      "acceptance_criteria": [
+        "OrderbookClient initializes with all markets from RL_MARKET_TICKERS config",
+        "WebSocket manager is instantiated and started in lifespan",
+        "Statistics collector is integrated into startup process",
+        "Health endpoint includes multi-market status",
+        "Graceful shutdown handles WebSocket manager cleanup"
+      ],
+      "technical_requirements": [
+        "Update lifespan() to start websocket_manager with orderbook_client reference",
+        "Update lifespan() to start stats_collector with shared state access",
+        "Modify health_check() to report multi-market statistics",
+        "Add WebSocket endpoint route to routes list",
+        "Ensure proper shutdown order: websocket_manager -> orderbook_client -> write_queue"
+      ],
+      "files_to_modify": [
+        "/Users/samuelclark/Desktop/kalshiflow/backend/src/kalshiflow_rl/app.py"
+      ],
+      "verification_steps": [
+        "Service starts successfully with multiple markets configured",
+        "Health endpoint shows all markets with 'healthy' status",
+        "WebSocket endpoint accepts frontend connections",
+        "Graceful shutdown completes without errors"
+      ]
+    },
+
+    {
+      "id": "WU002", 
+      "title": "Create WebSocket Manager Component",
+      "description": "Implement new WebSocket manager component to handle frontend connections and broadcast real-time orderbook updates",
+      "type": "new_file",
+      "estimated_effort": "4-5 hours",
+      "priority": 2,
+      "dependencies": ["WU001"],
+      "acceptance_criteria": [
+        "WebSocket endpoint accepts multiple concurrent connections",
+        "Connection message includes market list and service status",
+        "Orderbook snapshots broadcast to all connected clients",
+        "Orderbook deltas broadcast with proper throttling",
+        "Statistics updates sent every second to clients",
+        "Connection registry maintains active client list",
+        "Graceful handling of client disconnections"
+      ],
+      "technical_requirements": [
+        "Implement WebSocketManager class with connection registry",
+        "Subscribe to SharedOrderbookState updates for each market",
+        "Implement message protocol as specified in ship document",
+        "Add connection/disconnection event handlers",
+        "Implement broadcast_snapshot() method for initial state",
+        "Implement broadcast_delta() method with throttling",
+        "Implement broadcast_stats() method with 1-second interval",
+        "Handle WebSocket exceptions and reconnection gracefully"
+      ],
+      "files_to_create": [
+        "/Users/samuelclark/Desktop/kalshiflow/backend/src/kalshiflow_rl/websocket_manager.py"
+      ],
+      "message_protocol": {
+        "connection": {
+          "type": "connection",
+          "data": {
+            "markets": ["MARKET1", "MARKET2"],
+            "status": "connected",
+            "version": "1.0.0"
+          }
+        },
+        "orderbook_snapshot": {
+          "type": "orderbook_snapshot", 
+          "data": {
+            "market_ticker": "MARKET1",
+            "timestamp_ms": 1234567890,
+            "sequence_number": 1001,
+            "yes_bids": {"45": 100},
+            "yes_asks": {"55": 150},
+            "no_bids": {"40": 200},
+            "no_asks": {"60": 175},
+            "yes_mid_price": 50.0,
+            "no_mid_price": 50.0
+          }
+        },
+        "orderbook_delta": {
+          "type": "orderbook_delta",
+          "data": {
+            "market_ticker": "MARKET1", 
+            "timestamp_ms": 1234567891,
+            "sequence_number": 1002,
+            "side": "yes",
+            "action": "update",
+            "price": 45,
+            "old_size": 100,
+            "new_size": 150
+          }
+        },
+        "stats": {
+          "type": "stats",
+          "data": {
+            "markets_active": 3,
+            "snapshots_processed": 15,
+            "deltas_processed": 1523,
+            "messages_per_second": 12.5,
+            "db_queue_size": 45,
+            "uptime_seconds": 3600,
+            "last_update_ms": 1234567890
+          }
+        }
+      },
+      "verification_steps": [
+        "WebSocket connections established successfully",
+        "Connection message received with correct market list",
+        "Orderbook snapshots received for each market",
+        "Delta updates flowing in real-time",
+        "Statistics updates received every second",
+        "Multiple client connections handled concurrently",
+        "Clean disconnection when client closes"
+      ]
+    },
+
+    {
+      "id": "WU003",
+      "title": "Implement Statistics Collector",
+      "description": "Create lightweight statistics tracking component to monitor system performance and health metrics",
+      "type": "new_file", 
+      "estimated_effort": "2-3 hours",
+      "priority": 3,
+      "dependencies": ["WU002"],
+      "acceptance_criteria": [
+        "Track snapshots and deltas per market",
+        "Monitor database queue health and sizes",
+        "Calculate messages per second rate",
+        "Track WebSocket connection count",
+        "Maintain service uptime counter",
+        "Provide get_stats() method for WebSocket broadcasting",
+        "Thread-safe statistics updates"
+      ],
+      "technical_requirements": [
+        "Implement StatsCollector class with thread-safe counters",
+        "Track per-market metrics (snapshots, deltas)",
+        "Monitor write_queue statistics",
+        "Calculate rolling message rates",
+        "Subscribe to orderbook_client events",
+        "Subscribe to websocket_manager connection events",
+        "Provide formatted stats for WebSocket broadcasts"
+      ],
+      "files_to_create": [
+        "/Users/samuelclark/Desktop/kalshiflow/backend/src/kalshiflow_rl/stats_collector.py"
+      ],
+      "metrics_to_track": [
+        "Total snapshots processed (all markets)",
+        "Total deltas processed (all markets)", 
+        "Per-market update counts",
+        "Database write statistics",
+        "Queue sizes and health",
+        "WebSocket connection count",
+        "Service uptime in seconds",
+        "Messages per second (rolling average)"
+      ],
+      "verification_steps": [
+        "Statistics initialize to zero on startup",
+        "Snapshot and delta counts increment correctly",
+        "Per-market statistics tracked separately", 
+        "Messages per second calculated accurately",
+        "Database queue sizes reported correctly",
+        "WebSocket connection count matches reality",
+        "get_stats() returns properly formatted data"
+      ]
+    },
+
+    {
+      "id": "WU004",
+      "title": "Add WebSocket Route to Application",
+      "description": "Integrate WebSocket endpoint into Starlette application routing",
+      "type": "modification",
+      "estimated_effort": "30 minutes",
+      "priority": 4,
+      "dependencies": ["WU001", "WU002"],
+      "acceptance_criteria": [
+        "WebSocket route added to application routes list",
+        "Route handles WebSocket upgrade requests",
+        "Proper error handling for invalid connections",
+        "Route accessible at /rl/ws path"
+      ],
+      "technical_requirements": [
+        "Add WebSocketRoute to routes list in app.py",
+        "Import websocket_manager in app.py", 
+        "Add error handling for WebSocket exceptions",
+        "Ensure CORS middleware allows WebSocket connections"
+      ],
+      "files_to_modify": [
+        "/Users/samuelclark/Desktop/kalshiflow/backend/src/kalshiflow_rl/app.py"
+      ],
+      "verification_steps": [
+        "WebSocket route accessible at /rl/ws",
+        "Frontend can establish WebSocket connection",
+        "Invalid connections handled gracefully",
+        "Route integrates properly with middleware"
+      ]
+    },
+
+    {
+      "id": "WU005",
+      "title": "Update Configuration for Multi-Market Support",
+      "description": "Verify and test multi-market configuration with RL_MARKET_TICKERS environment variable",
+      "type": "verification",
+      "estimated_effort": "1 hour",
+      "priority": 5,
+      "dependencies": ["WU001"],
+      "acceptance_criteria": [
+        "RL_MARKET_TICKERS parsed correctly from environment",
+        "Multiple markets configured for testing",
+        "Backward compatibility with RL_MARKET_TICKER maintained",
+        "Configuration validation works properly"
+      ],
+      "technical_requirements": [
+        "Test parsing of comma-separated market list",
+        "Verify backward compatibility with single ticker",
+        "Test configuration validation for invalid tickers",
+        "Document environment variable format"
+      ],
+      "example_config": {
+        "RL_MARKET_TICKERS": "KXCABOUT-29,KXFEDDECISION-25DEC,KXLLM1-25DEC31",
+        "description": "Comma-separated list of market tickers to monitor"
+      },
+      "verification_steps": [
+        "Multiple markets parse correctly from RL_MARKET_TICKERS",
+        "Single RL_MARKET_TICKER still works for backward compatibility",
+        "Invalid ticker format raises appropriate errors",
+        "Default markets used when no config provided"
+      ]
+    },
+
+    {
+      "id": "WU006",
+      "title": "Create Deployment Configuration", 
+      "description": "Set up Railway deployment configuration for the orderbook collector service",
+      "type": "configuration",
+      "estimated_effort": "1 hour",
+      "priority": 6,
+      "dependencies": ["WU001", "WU002", "WU003"],
+      "acceptance_criteria": [
+        "Railway service configuration created",
+        "Environment variables properly configured",
+        "Health check endpoint configured",
+        "Port and startup command specified",
+        "Service can be deployed independently"
+      ],
+      "technical_requirements": [
+        "Create railway.toml for service configuration",
+        "Set UVICORN_HOST=0.0.0.0 and UVICORN_PORT=$PORT",
+        "Configure health check endpoint /rl/health",
+        "Set appropriate environment variables for multi-market mode",
+        "Configure restart policy and timeout settings"
+      ],
+      "deployment_config": {
+        "service_name": "kalshiflow-rl-orderbook-collector",
+        "port": "$PORT",
+        "health_endpoint": "/rl/health",
+        "startup_command": "uvicorn kalshiflow_rl.app:app --host 0.0.0.0 --port $PORT",
+        "environment_variables": [
+          "DATABASE_URL",
+          "KALSHI_API_KEY_ID", 
+          "KALSHI_PRIVATE_KEY_CONTENT",
+          "RL_MARKET_TICKERS"
+        ]
+      },
+      "verification_steps": [
+        "Service deploys successfully to Railway",
+        "Health endpoint responds correctly",
+        "Multiple markets initialize properly",
+        "WebSocket endpoint accessible externally",
+        "Service restarts automatically on failure"
+      ]
+    },
+
+    {
+      "id": "WU007",
+      "title": "Backend E2E Test Implementation",
+      "description": "Create comprehensive E2E test similar to test_backend_e2e_regression.py that validates the complete orderbook collector service",
+      "type": "testing",
+      "estimated_effort": "3-4 hours", 
+      "priority": 7,
+      "dependencies": ["WU001", "WU002", "WU003", "WU004", "WU005", "WU006"],
+      "acceptance_criteria": [
+        "E2E test validates complete application startup",
+        "Test verifies multi-market orderbook subscriptions",
+        "Test confirms WebSocket manager initialization",
+        "Test validates statistics collector functioning",
+        "Test checks database connectivity (non-blocking)",
+        "Test verifies frontend WebSocket connection capability",
+        "Test ensures graceful shutdown",
+        "Test must be reliable and non-flaky"
+      ],
+      "test_implementation": {
+        "file_path": "backend/tests/test_rl_orderbook_e2e.py",
+        "test_structure": [
+          "Test application startup with multi-market configuration",
+          "Verify OrderbookClient connects to all configured markets",
+          "Confirm WebSocket manager starts and accepts connections",
+          "Validate statistics collector initializes with zero counts",
+          "Test frontend WebSocket connection establishment",
+          "Verify initial connection message with market list",
+          "Check health endpoint reports all systems operational",
+          "Validate orderbook snapshot received (wait for at least one)",
+          "Skip delta validation in v1 (market-dependent frequency)",
+          "Test statistics update via WebSocket (1-second interval)",
+          "Verify database tables exist and are writable",
+          "Test graceful shutdown sequence"
+        ],
+        "validation_approach": [
+          "Use asyncio test fixtures for async operations",
+          "Set reasonable timeouts (10-15 seconds total)",
+          "Focus on snapshot validation, not deltas (non-flaky)",
+          "Mock or use test markets if needed for reliability",
+          "Clear status indicators (✅/❌) for each validation step",
+          "Detailed logging for debugging failures"
+        ]
+      },
+      "test_scenarios": [
+        "Service startup with RL_MARKET_TICKERS configuration",
+        "WebSocket client connection from frontend perspective",
+        "Orderbook snapshot processing (at least one per market)",
+        "Statistics broadcasting every second",
+        "Database connectivity verification (tables exist)",
+        "Health endpoint returning correct status",
+        "Graceful shutdown without hanging"
+      ],
+      "non_flaky_requirements": [
+        "Do NOT wait for orderbook deltas (market-dependent)",
+        "Use generous timeouts for snapshot receipt",
+        "Allow flexibility in exact message counts",
+        "Focus on service health, not specific data values",
+        "Test structure/flow, not exact orderbook content"
+      ],
+      "verification_output": [
+        "✅ Application started successfully",
+        "✅ OrderbookClient connected to X markets",
+        "✅ WebSocket manager initialized",
+        "✅ Statistics collector started",
+        "✅ Frontend WebSocket connection established",
+        "✅ Connection message received with markets list",
+        "✅ Health endpoint responding (status: healthy)",
+        "✅ Orderbook snapshot received from at least one market",
+        "⏭️ Skipping delta validation (market-dependent)",
+        "✅ Statistics update received via WebSocket",
+        "✅ Database tables accessible",
+        "✅ Graceful shutdown completed",
+        "📊 STATS: Test completed in X.X seconds"
+      ]
+    },
+    {
+      "id": "WU008",
+      "title": "Add E2E Test to CI Pipeline",
+      "description": "Integrate the E2E test into the development workflow as a success gate",
+      "type": "configuration",
+      "estimated_effort": "30 minutes",
+      "priority": 8,
+      "dependencies": ["WU007"],
+      "acceptance_criteria": [
+        "E2E test runs as part of test suite",
+        "Test included in pre-deployment validation",
+        "Clear documentation on running the test",
+        "Test output provides actionable feedback"
+      ],
+      "technical_requirements": [
+        "Add test to pytest discovery",
+        "Include in backend test commands",
+        "Document test execution in CLAUDE.md",
+        "Add to deployment validation scripts"
+      ],
+      "verification_steps": [
+        "pytest discovers and runs the E2E test",
+        "Test passes consistently in CI environment",
+        "Documentation clearly explains test purpose",
+        "Test failure provides clear debugging info"
+      ]
+    }
+  ],
+
+  "deployment_plan": {
+    "target_environment": "Railway.app",
+    "service_configuration": {
+      "name": "kalshiflow-rl-orderbook-collector",
+      "type": "backend_service",
+      "port": "$PORT",
+      "health_check": "/rl/health"
+    },
+    "environment_variables": [
+      "DATABASE_URL",
+      "KALSHI_API_KEY_ID",
+      "KALSHI_PRIVATE_KEY_CONTENT", 
+      "KALSHI_WS_URL",
+      "RL_MARKET_TICKERS",
+      "RL_ORDERBOOK_BATCH_SIZE",
+      "RL_ORDERBOOK_FLUSH_INTERVAL",
+      "RL_ORDERBOOK_SAMPLE_RATE"
+    ],
+    "deployment_steps": [
+      "Verify all work units completed",
+      "Run integration tests locally",
+      "Deploy to Railway staging",
+      "Validate deployment health",
+      "Monitor initial performance",
+      "Promote to production if stable"
+    ]
+  },
+
+  "success_criteria": {
+    "primary_validation": {
+      "e2e_test": "backend/tests/test_rl_orderbook_e2e.py",
+      "test_must_pass": true,
+      "description": "The E2E test is the definitive success criteria that validates the entire orderbook collector backend",
+      "validation_points": [
+        "✅ Multi-market orderbook subscriptions established",
+        "✅ WebSocket manager accepts frontend connections",
+        "✅ Statistics collector tracking metrics correctly",
+        "✅ Health endpoint reporting operational status",
+        "✅ Orderbook snapshots received and processed",
+        "✅ Frontend receives real-time updates via WebSocket",
+        "✅ Database connectivity verified (non-blocking)",
+        "✅ Graceful shutdown without resource leaks"
+      ],
+      "run_command": "cd backend && uv run pytest tests/test_rl_orderbook_e2e.py -v",
+      "expected_duration": "10-15 seconds",
+      "non_flaky_design": "Test focuses on service structure and snapshot validation, explicitly skips market-dependent delta validation"
+    },
+    "functional": [
+      "Service initializes with multiple markets from configuration",
+      "Real-time orderbook data ingested from Kalshi WebSocket",
+      "WebSocket clients receive live orderbook snapshots",
+      "Statistics tracking provides accurate system health metrics",
+      "Service handles connection failures and recovers gracefully"
+    ],
+    "performance": [
+      "Handle orderbook snapshots for all configured markets",
+      "Support multiple concurrent WebSocket connections",
+      "Database writes complete asynchronously (non-blocking)",
+      "Memory usage remains stable during operation",
+      "WebSocket broadcasts don't block on database operations"
+    ],
+    "operational": [
+      "E2E test passes consistently before deployment",
+      "Service deploys successfully to Railway",
+      "Health endpoint reports accurate system status",
+      "Monitoring and logging provide operational visibility",
+      "Ready for Phase 2 RL training implementation"
+    ]
+  },
+
+  "next_phase_preparation": {
+    "phase_2_requirements": [
+      "Historical data loader for training environments",
+      "Unified observation builder (observation_space.py)",
+      "SB3 integration with PPO/A2C training",
+      "Model registry for trained models",
+      "Training progress monitoring and visualization"
+    ],
+    "architectural_foundation": [
+      "Multi-market orderbook processing validated",
+      "Real-time data pipeline proven reliable",
+      "Database schema supports training data requirements",
+      "WebSocket infrastructure ready for training progress updates",
+      "Statistics framework extensible for training metrics"
+    ]
+  }
+}
