@@ -712,9 +712,9 @@ class TestConvenienceFunctions:
                 await session.stop()
     
     @pytest.mark.asyncio
-    async def test_execute_paper_trade_function(self):
-        """Test execute_paper_trade convenience function."""
-        from kalshiflow_rl.trading.integration import execute_paper_trade, session_manager
+    async def test_execute_trade_function(self):
+        """Test execute_trade convenience function."""
+        from kalshiflow_rl.trading.integration import execute_trade, session_manager
         
         with patch('kalshiflow_rl.trading.integration.RLDatabase') as mock_db_class:
             with patch('kalshiflow_rl.trading.integration.create_demo_trading_client') as mock_client_func:
@@ -737,8 +737,8 @@ class TestConvenienceFunctions:
                     session = await session_manager.create_session('paper_trade_test')
                     await session_manager.start_session('paper_trade_test')
                     
-                    # Execute paper trade through convenience function
-                    result = await execute_paper_trade(
+                    # Execute trade through convenience function
+                    result = await execute_trade(
                         session_name='paper_trade_test',
                         action_type=ActionType.BUY_YES,
                         ticker='TEST-MARKET',

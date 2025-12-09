@@ -3,7 +3,7 @@ Trading Integration for RL Trading Subsystem.
 
 This module provides integration between the demo trading client and the existing
 RL infrastructure including SharedOrderbookState, trading action logging, and
-paper trading session management.
+trading session management.
 """
 
 import asyncio
@@ -27,10 +27,10 @@ logger = logging.getLogger("kalshiflow_rl.trading.integration")
 
 class TradingSession:
     """
-    Manages a paper trading session with demo account integration.
+    Manages a trading session with demo account integration.
     
     Connects demo trading client with RL infrastructure for realistic
-    paper trading that logs to the database and integrates with orderbook state.
+    trading that logs to the database and integrates with orderbook state.
     """
     
     def __init__(self, session_name: str, episode_id: Optional[int] = None):
@@ -88,7 +88,7 @@ class TradingSession:
             mode: Trading mode - must be "paper" for demo client
         """
         if mode != "paper":
-            raise ValueError(f"Only 'paper' mode supported for demo trading, got: {mode}")
+            raise ValueError(f"Only 'paper' mode supported, got: {mode}")
         
         try:
             # Initialize database connection
@@ -582,14 +582,14 @@ async def create_trading_session(
     return session
 
 
-async def execute_paper_trade(
+async def execute_trade(
     session_name: str,
     action_type: ActionType,
     ticker: str,
     **kwargs
 ) -> Dict[str, Any]:
     """
-    Execute a paper trade in the specified session.
+    Execute a trade in the specified session.
     
     Args:
         session_name: Name of the trading session
@@ -613,5 +613,5 @@ __all__ = [
     'TradingSessionManager', 
     'session_manager',
     'create_trading_session',
-    'execute_paper_trade'
+    'execute_trade'
 ]
