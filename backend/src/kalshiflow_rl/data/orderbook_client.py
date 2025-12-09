@@ -172,19 +172,19 @@ class OrderbookClient:
     
     async def _subscribe_to_orderbook(self) -> None:
         """Subscribe to orderbook channels for all markets."""
-        # Create channels list for all markets
-        channels = [f"orderbook_delta.{ticker}" for ticker in self.market_tickers]
-        
+        # According to Kalshi docs: use single "orderbook_delta" channel with market_tickers parameter
         subscription_message = {
             "id": f"sub_multi_{int(time.time())}",
             "cmd": "subscribe",
             "params": {
-                "channels": channels
+                "channels": ["orderbook_delta"],
+                "market_tickers": self.market_tickers
             }
         }
         
+        logger.info(f"Sending subscription: {json.dumps(subscription_message)}")
         await self._websocket.send(json.dumps(subscription_message))
-        logger.info(f"Subscribed to orderbook for {len(self.market_tickers)} markets: {', '.join(self.market_tickers)}")
+        logger.info(f"Subscribed to orderbook_delta channel for {len(self.market_tickers)} markets: {', '.join(self.market_tickers)}")
     
     async def _message_loop(self) -> None:
         """Process incoming WebSocket messages."""
@@ -246,17 +246,19 @@ class OrderbookClient:
     
     def _get_message_type(self, message: Dict[str, Any]) -> str:
         """Determine the type of WebSocket message."""
-        if "channel" in message:
-            channel = message["channel"]
-            if "orderbook_delta" in channel:
-                if message.get("type") == "snapshot":
-                    return "snapshot"
-                else:
-                    return "delta"
+        # Check for message type field (Kalshi format)
+        msg_type = message.get("type")
         
+        if msg_type == "orderbook_snapshot":
+            return "snapshot"
+        elif msg_type == "orderbook_delta":
+            return "delta"
+        
+        # Check for acknowledgment
         if message.get("msg") == "ack":
             return "subscription_ack"
         
+        # Check for heartbeat
         if "ping" in message or "pong" in message:
             return "heartbeat"
         
@@ -290,16 +292,15 @@ class OrderbookClient:
     async def _process_snapshot(self, message: Dict[str, Any]) -> None:
         """Process orderbook snapshot message."""
         try:
-            # Extract market ticker from channel
-            channel = message.get("channel", "")
-            market_ticker = self._extract_market_from_channel(channel)
+            # Get market ticker directly from message (Kalshi format)
+            market_ticker = message.get("market_ticker")
             
             if not market_ticker or market_ticker not in self.market_tickers:
                 logger.warning(f"Received snapshot for unknown market: {market_ticker}")
                 return
             
-            # Extract snapshot data
-            data = message.get("data", {})
+            # Snapshot data is at top level of message, not in a 'data' field
+            data = message
             
             # Parse Kalshi array format [[price, qty], ...] into separate bid/ask dicts
             yes_bids = {}
@@ -362,26 +363,41 @@ class OrderbookClient:
     async def _process_delta(self, message: Dict[str, Any]) -> None:
         """Process orderbook delta message."""
         try:
-            # Extract market ticker from channel
-            channel = message.get("channel", "")
-            market_ticker = self._extract_market_from_channel(channel)
+            # Get market ticker directly from message (Kalshi format)
+            market_ticker = message.get("market_ticker")
             
             if not market_ticker or market_ticker not in self.market_tickers:
                 logger.warning(f"Received delta for unknown market: {market_ticker}")
                 return
             
-            # Extract delta data
-            data = message.get("data", {})
+            # Delta data is at top level of message
+            delta_val = message.get("delta", 0)
+            price = message.get("price", 0)
+            
+            # Determine old and new size based on delta
+            # Positive delta means size increased, negative means decreased
+            if delta_val > 0:
+                old_size = 0  # Could be any value, we don't know
+                new_size = abs(delta_val)
+                action = "add"
+            elif delta_val < 0:
+                old_size = abs(delta_val)
+                new_size = 0
+                action = "remove"
+            else:
+                old_size = 0
+                new_size = 0
+                action = "update"
             
             delta_data = {
                 "market_ticker": market_ticker,
                 "timestamp_ms": int(time.time() * 1000),
-                "sequence_number": data.get("seq", 0),
-                "side": data.get("side"),  # "yes" or "no"
-                "action": self._map_delta_action(data),
-                "price": int(data.get("price", 0)),  # Ensure price is int
-                "old_size": int(data.get("old_size", 0)),
-                "new_size": int(data.get("new_size", data.get("size", 0)))
+                "sequence_number": 0,  # Kalshi doesn't provide sequence in delta
+                "side": message.get("side"),  # "yes" or "no"
+                "action": action,
+                "price": int(price),  # Ensure price is int
+                "old_size": old_size,
+                "new_size": new_size
             }
             
             # Validate delta
