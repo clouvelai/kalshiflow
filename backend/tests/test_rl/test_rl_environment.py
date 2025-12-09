@@ -281,9 +281,10 @@ class TestActionSpace:
             ActionType.HOLD.value * len(PositionSizing) + PositionSizing.FIXED_SMALL.value
         ])
         
+        # Use smaller, balanced positions to avoid concentration limit
         current_positions = {
-            'MARKET-1': {'position_yes': 50.0, 'position_no': 0.0, 'unrealized_pnl': 0.0},
-            'MARKET-2': {'position_yes': 0.0, 'position_no': 25.0, 'unrealized_pnl': 10.0}
+            'MARKET-1': {'position_yes': 20.0, 'position_no': 0.0, 'unrealized_pnl': 0.0},
+            'MARKET-2': {'position_yes': 0.0, 'position_no': 30.0, 'unrealized_pnl': 10.0}
         }
         
         is_valid, violations = validate_action(

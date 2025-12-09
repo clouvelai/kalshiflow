@@ -307,14 +307,29 @@ def validate_action(
                 violations.append(f"Total position exposure {total_position_value_after:.2f} exceeds limit {config.max_total_exposure}")
             
             # Check concentration limit
-            if total_position_count > 0:
-                max_single_exposure = max([
-                    (abs(current_positions.get(ticker, {}).get("position_yes", 0)) + 
-                     abs(current_positions.get(ticker, {}).get("position_no", 0))) * 50
-                    for ticker in market_tickers
-                ])
+            if total_position_count > 0 and total_position_value_after > 0:
+                # Calculate the max exposure for any single market AFTER the actions
+                max_single_exposure = 0.0
+                for ticker in market_tickers:
+                    if ticker in market_actions:
+                        # This market has an action, use the calculated new position
+                        action_info = market_actions[ticker]
+                        current_pos = current_positions.get(ticker, {})
+                        current_yes_pos = current_pos.get("position_yes", 0.0)
+                        current_no_pos = current_pos.get("position_no", 0.0)
+                        new_yes_pos, new_no_pos = _calculate_new_position(
+                            current_yes_pos, current_no_pos, 
+                            action_info["action_type"], action_info["quantity"]
+                        )
+                        market_exposure = (abs(new_yes_pos) + abs(new_no_pos)) * 0.50
+                    else:
+                        # No action for this market, use existing position
+                        current_pos = current_positions.get(ticker, {})
+                        market_exposure = (abs(current_pos.get("position_yes", 0)) + 
+                                         abs(current_pos.get("position_no", 0))) * 0.50
+                    max_single_exposure = max(max_single_exposure, market_exposure)
                 
-                concentration_ratio = max_single_exposure / max(total_position_value_after, 1.0)
+                concentration_ratio = max_single_exposure / total_position_value_after
                 if concentration_ratio > config.position_concentration_limit:
                     violations.append(f"Position concentration {concentration_ratio:.2f} exceeds limit {config.position_concentration_limit}")
         

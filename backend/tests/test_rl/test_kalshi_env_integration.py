@@ -147,10 +147,21 @@ class TestKalshiEnvIntegration:
             
             # Debug output if test fails
             if second_quantity <= first_quantity:
+                # Check why the action was invalid
+                from kalshiflow_rl.environments.action_space import validate_action
+                is_valid, violations = validate_action(
+                    action2,
+                    ['TEST-MARKET'],
+                    env.metrics_calculator.get_positions_dict(),
+                    env.metrics_calculator.calculate_portfolio_value(),
+                    env.action_config
+                )
                 print(f"First quantity: {first_quantity}")
                 print(f"Second quantity: {second_quantity}")
                 print(f"Trade history length: {len(env.trade_history)}")
                 print(f"Info from second step: {info}")
+                print(f"Action valid: {is_valid}")
+                print(f"Violations: {violations}")
             
             # Verify position increased
             assert second_quantity > first_quantity, f"Expected second_quantity ({second_quantity}) > first_quantity ({first_quantity})"

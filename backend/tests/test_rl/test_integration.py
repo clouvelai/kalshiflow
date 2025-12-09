@@ -266,13 +266,14 @@ class TestCompleteDataPipeline:
                     client._orderbook_states[market_ticker] = await get_shared_orderbook_state(market_ticker)
                 
                 # Create snapshots for different markets
+                # Use Kalshi array format [[price, qty], ...]
                 snapshot_a = {
                     "channel": "orderbook_delta.MARKET-A",
                     "type": "snapshot",
                     "data": {
                         "seq": 100,
-                        "yes": {"b": {"50": 1000}, "a": {"55": 800}},
-                        "no": {"b": {"50": 600}, "a": {"55": 700}}
+                        "yes": [[50, 1000], [55, 800]],  # 50 is bid, 55 is ask
+                        "no": [[50, 600], [55, 700]]
                     }
                 }
                 
@@ -281,8 +282,8 @@ class TestCompleteDataPipeline:
                     "type": "snapshot",
                     "data": {
                         "seq": 200,
-                        "yes": {"b": {"45": 2000}, "a": {"60": 1200}},
-                        "no": {"b": {"45": 1000}, "a": {"60": 800}}
+                        "yes": [[45, 2000], [60, 1200]],  # 45 is bid, 60 is ask
+                        "no": [[45, 1000], [60, 800]]
                     }
                 }
                 
