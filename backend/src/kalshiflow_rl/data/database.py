@@ -770,6 +770,46 @@ class RLDatabase:
             )
             return action_id
     
+    async def batch_insert_trading_actions(self, action_data_list: List[Dict[str, Any]]) -> int:
+        """Batch insert multiple trading actions for efficiency."""
+        if not action_data_list:
+            return 0
+        
+        async with self.get_connection() as conn:
+            # Prepare data tuples for batch insert
+            records = []
+            for action_data in action_data_list:
+                records.append((
+                    action_data['episode_id'],
+                    action_data['action_timestamp_ms'],
+                    action_data['step_number'],
+                    action_data['action_type'],
+                    action_data.get('price'),
+                    action_data.get('quantity'),
+                    json.dumps(action_data.get('position_before', {})),
+                    json.dumps(action_data.get('position_after', {})),
+                    action_data.get('reward'),
+                    json.dumps(action_data.get('observation', {})) if action_data.get('observation') else None,
+                    action_data.get('model_confidence'),
+                    action_data.get('executed', False),
+                    action_data.get('execution_price')
+                ))
+            
+            # Use COPY for efficient batch insert
+            result = await conn.copy_records_to_table(
+                'rl_trading_actions',
+                records=records,
+                columns=[
+                    'episode_id', 'action_timestamp_ms', 'step_number',
+                    'action_type', 'price', 'quantity', 'position_before', 'position_after',
+                    'reward', 'observation', 'model_confidence', 'executed', 'execution_price'
+                ]
+            )
+            
+            # Extract number of records from result string like "COPY 5"
+            count = int(result.split()[-1]) if result and result.startswith('COPY') else len(records)
+            return count
+    
     async def get_model_performance_summary(self, model_id: int) -> Optional[Dict[str, Any]]:
         """Get performance summary for a model."""
         async with self.get_connection() as conn:

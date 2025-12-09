@@ -23,6 +23,12 @@ class RLConfig:
         # The auth component reads KALSHI_API_KEY_ID and KALSHI_PRIVATE_KEY_PATH/CONTENT directly
         self.KALSHI_WS_URL: str = os.getenv("KALSHI_WS_URL", "wss://api.elections.kalshi.com/trade-api/ws/v2")
         
+        # Kalshi Demo Account Configuration for Paper Trading (ISOLATED from production)
+        self.KALSHI_PAPER_TRADING_API_KEY_ID: Optional[str] = os.getenv("KALSHI_PAPER_TRADING_API_KEY_ID")
+        self.KALSHI_PAPER_TRADING_PRIVATE_KEY_CONTENT: Optional[str] = os.getenv("KALSHI_PAPER_TRADING_PRIVATE_KEY_CONTENT")
+        self.KALSHI_PAPER_TRADING_WS_URL: str = os.getenv("KALSHI_PAPER_TRADING_WS_URL", "wss://demo-api.kalshi.co/trade-api/ws/v2")
+        self.KALSHI_PAPER_TRADING_API_URL: str = os.getenv("KALSHI_PAPER_TRADING_API_URL", "https://demo-api.kalshi.co/trade-api/v2")
+        
         # Database Configuration (shared with main app)
         self.DATABASE_URL: str = self._get_required_env("DATABASE_URL")
         self.DATABASE_URL_POOLED: Optional[str] = os.getenv("DATABASE_URL_POOLED")
