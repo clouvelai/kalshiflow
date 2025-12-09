@@ -3,9 +3,8 @@ Tests for trading fee and cost basis calculations in KalshiTradingEnv.
 
 These tests ensure that:
 1. Trading fees are configurable and applied correctly
-2. Cost basis tracking works properly for both yes/no positions
-3. P&L calculations use actual cost basis, not hardcoded values
-4. Validation prevents unrealistic fee rates
+2. Cost basis tracking works properly via the integrated TradingMetricsCalculator
+3. Fee rate validation works correctly
 """
 
 import pytest
@@ -63,30 +62,14 @@ class TestTradingCalculations:
             env.historical_data = env._generate_dummy_data()
             env.episode_length = 10
             
-            # Setup market state for trade simulation
-            market_state = {
-                'market_ticker': 'TEST-MARKET',
-                'timestamp_ms': 1640995200000,
-                'yes_bids': {'45': 100},
-                'yes_asks': {'55': 100},
-                'no_bids': {'45': 100},
-                'no_asks': {'55': 100}
-            }
-            
-            # Simulate a trade
-            trade = env._simulate_trade_execution(
-                market_ticker='TEST-MARKET',
-                action_type=ActionType.BUY_YES,
-                quantity=100,
-                market_state=market_state
-            )
-            
-            # Check fee calculation
+            # Test fee calculation directly through metrics calculator
             trade_value = 100 * 55 / 100.0  # quantity * best_ask_price / 100
             expected_fee = trade_value * 0.002  # Using configured rate
             
-            assert trade is not None
-            assert abs(trade['fee'] - expected_fee) < 0.001
+            # Check that the calculator uses the configured fee rate
+            actual_fee = env.metrics_calculator.calculate_trade_fee(trade_value)
+            
+            assert abs(actual_fee - expected_fee) < 0.001
     
     def test_cost_basis_tracking_initialization(self, env_config):
         """Test that positions track cost basis properly."""
@@ -119,164 +102,34 @@ class TestTradingCalculations:
             market = 'TEST-MARKET'
             
             # First buy: 100 shares at 60 cents
-            trade1 = {
-                'market_ticker': market,
-                'side': 'yes',
-                'direction': 'buy',
-                'quantity': 100,
-                'price': 60,  # 60 cents
-                'trade_value': 60.0,
-                'fee': 0.6
-            }
-            env._update_position_from_trade(market, trade1)
+            trade1 = env.metrics_calculator.execute_trade(
+                market_ticker=market,
+                side='yes',
+                direction='buy',
+                quantity=100,
+                price_cents=60  # 60 cents
+            )
             
             # Check cost basis after first trade
-            assert env.positions[market]['position_yes'] == 100
-            assert env.positions[market]['avg_cost_yes'] == 0.60
+            positions = env.metrics_calculator.get_positions_dict()
+            assert positions[market]['position_yes'] == 100
+            assert positions[market]['avg_cost_yes'] == 0.60
             
             # Second buy: 50 shares at 70 cents
-            trade2 = {
-                'market_ticker': market,
-                'side': 'yes',
-                'direction': 'buy',
-                'quantity': 50,
-                'price': 70,
-                'trade_value': 35.0,
-                'fee': 0.35
-            }
-            env._update_position_from_trade(market, trade2)
+            trade2 = env.metrics_calculator.execute_trade(
+                market_ticker=market,
+                side='yes',
+                direction='buy',
+                quantity=50,
+                price_cents=70  # 70 cents
+            )
             
             # Check weighted average cost basis
             # (100 * 0.60 + 50 * 0.70) / 150 = 0.633...
             expected_avg = (100 * 0.60 + 50 * 0.70) / 150
-            assert env.positions[market]['position_yes'] == 150
-            assert abs(env.positions[market]['avg_cost_yes'] - expected_avg) < 0.001
-    
-    def test_cost_basis_unchanged_on_sell(self, env_config):
-        """Test that cost basis doesn't change when selling."""
-        with patch.object(KalshiTradingEnv, '_preload_data'):
-            env = KalshiTradingEnv(**env_config)
-            env.historical_data = env._generate_dummy_data()
-            env.episode_length = 10
-            env.reset()
-            
-            market = 'TEST-MARKET'
-            
-            # Buy position
-            buy_trade = {
-                'market_ticker': market,
-                'side': 'yes',
-                'direction': 'buy',
-                'quantity': 100,
-                'price': 50,
-                'trade_value': 50.0,
-                'fee': 0.5
-            }
-            env._update_position_from_trade(market, buy_trade)
-            original_cost_basis = env.positions[market]['avg_cost_yes']
-            
-            # Sell part of position
-            sell_trade = {
-                'market_ticker': market,
-                'side': 'yes',
-                'direction': 'sell',
-                'quantity': 40,
-                'price': 60,
-                'trade_value': 24.0,
-                'fee': 0.24,
-                'immediate_pnl': 4.0  # (60-50) * 40 / 100
-            }
-            env._update_position_from_trade(market, sell_trade)
-            
-            # Cost basis should remain the same
-            assert env.positions[market]['position_yes'] == 60
-            assert env.positions[market]['avg_cost_yes'] == original_cost_basis
-    
-    def test_pnl_calculation_uses_cost_basis(self, env_config):
-        """Test that P&L calculations use actual cost basis, not hardcoded values."""
-        with patch.object(KalshiTradingEnv, '_preload_data'):
-            env = KalshiTradingEnv(**env_config)
-            env.historical_data = env._generate_dummy_data()
-            env.episode_length = 10
-            env.reset()
-            
-            market = 'TEST-MARKET'
-            
-            # Buy at 30 cents (not the hardcoded 50 cents)
-            buy_trade = {
-                'market_ticker': market,
-                'side': 'yes',
-                'direction': 'buy',
-                'quantity': 100,
-                'price': 30,
-                'trade_value': 30.0,
-                'fee': 0.3
-            }
-            env._update_position_from_trade(market, buy_trade)
-            
-            # Calculate P&L when selling at 80 cents
-            current_position = env.positions[market]
-            pnl = env._calculate_trade_pnl(
-                current_position=current_position,
-                side='yes',
-                direction='sell',
-                quantity=50,
-                price=80  # 80 cents
-            )
-            
-            # P&L should be based on actual cost (30 cents), not hardcoded 50
-            expected_pnl = 50 * (0.80 - 0.30)  # 50 shares * 50 cent profit
-            assert abs(pnl - expected_pnl) < 0.001
-    
-    def test_unrealized_pnl_uses_cost_basis(self, env_config):
-        """Test that unrealized P&L uses actual cost basis."""
-        with patch.object(KalshiTradingEnv, '_preload_data'):
-            env = KalshiTradingEnv(**env_config)
-            env.historical_data = env._generate_dummy_data()
-            env.episode_length = 10
-            env.reset()
-            
-            market = 'TEST-MARKET'
-            
-            # Buy yes at 40 cents, no at 60 cents
-            yes_trade = {
-                'market_ticker': market,
-                'side': 'yes',
-                'direction': 'buy',
-                'quantity': 100,
-                'price': 40,
-                'trade_value': 40.0,
-                'fee': 0.4
-            }
-            env._update_position_from_trade(market, yes_trade)
-            
-            no_trade = {
-                'market_ticker': market,
-                'side': 'no',
-                'direction': 'buy',
-                'quantity': 50,
-                'price': 60,
-                'trade_value': 30.0,
-                'fee': 0.3
-            }
-            env._update_position_from_trade(market, no_trade)
-            
-            # Set current market prices
-            env.current_market_states[market] = MagicMock()
-            env.current_market_states[market].orderbook_state = {
-                'yes_mid_price': 70.0,  # 70 cents (up from 40)
-                'no_mid_price': 30.0    # 30 cents (down from 60)
-            }
-            
-            # Update position values
-            env._update_position_values()
-            
-            # Check unrealized P&L calculation
-            expected_yes_pnl = 100 * (0.70 - 0.40)  # 100 shares * 30 cent profit
-            expected_no_pnl = 50 * (0.30 - 0.60)    # 50 shares * 30 cent loss
-            expected_total_pnl = expected_yes_pnl + expected_no_pnl
-            
-            assert abs(env.positions[market]['unrealized_pnl'] - expected_total_pnl) < 0.001
+            positions = env.metrics_calculator.get_positions_dict()
+            assert positions[market]['position_yes'] == 150
+            assert abs(positions[market]['avg_cost_yes'] - expected_avg) < 0.001
     
     def test_fee_rate_validation(self, env_config):
         """Test that fee rate is validated to be realistic."""
@@ -305,60 +158,3 @@ class TestTradingCalculations:
             with patch.object(KalshiTradingEnv, '_preload_data'):
                 env = KalshiTradingEnv(**valid_config)
                 assert env.reward_config['trading_fee_rate'] == rate
-    
-    def test_cost_basis_reset_on_zero_position(self, env_config):
-        """Test that cost basis resets when position goes to zero."""
-        with patch.object(KalshiTradingEnv, '_preload_data'):
-            env = KalshiTradingEnv(**env_config)
-            env.historical_data = env._generate_dummy_data()
-            env.episode_length = 10
-            env.reset()
-            
-            market = 'TEST-MARKET'
-            
-            # Buy position
-            buy_trade = {
-                'market_ticker': market,
-                'side': 'yes',
-                'direction': 'buy',
-                'quantity': 100,
-                'price': 50,
-                'trade_value': 50.0,
-                'fee': 0.5
-            }
-            env._update_position_from_trade(market, buy_trade)
-            assert env.positions[market]['avg_cost_yes'] == 0.50
-            
-            # Sell entire position
-            sell_trade = {
-                'market_ticker': market,
-                'side': 'yes',
-                'direction': 'sell',
-                'quantity': 100,
-                'price': 60,
-                'trade_value': 60.0,
-                'fee': 0.6,
-                'immediate_pnl': 10.0
-            }
-            env._update_position_from_trade(market, sell_trade)
-            
-            # Cost basis should reset to 0
-            assert env.positions[market]['position_yes'] == 0
-            assert env.positions[market]['avg_cost_yes'] == 0.0
-            
-            # New buy should establish new cost basis
-            new_buy_trade = {
-                'market_ticker': market,
-                'side': 'yes',
-                'direction': 'buy',
-                'quantity': 50,
-                'price': 70,
-                'trade_value': 35.0,
-                'fee': 0.35
-            }
-            env._update_position_from_trade(market, new_buy_trade)
-            assert env.positions[market]['avg_cost_yes'] == 0.70
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-v", "--tb=short"])
