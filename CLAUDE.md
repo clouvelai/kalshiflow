@@ -80,6 +80,11 @@ uv run pytest tests/test_backend_e2e_regression.py -v
 # Detailed validation output for debugging
 uv run pytest tests/test_backend_e2e_regression.py -v -s --log-cli-level=INFO
 
+# RL Orderbook Collector E2E test (for RL subsystem)
+uv run pytest tests/test_rl_orderbook_e2e.py -v
+# Or use the test script
+./scripts/test_rl_e2e.sh
+
 # Test Kalshi client standalone
 uv run backend/scripts/test_kalshi_client.py
 
@@ -297,6 +302,54 @@ cd frontend && npm run test:frontend-regression
 - No real-time updates (Data unchanged over test duration)
 
 This test serves as the definitive validation that the entire frontend is functional and the E2E system works with live data.
+
+## RL Orderbook Collector Service
+
+A standalone backend service for collecting multi-market orderbook data for reinforcement learning:
+
+### Features
+- **Multi-market support**: Monitors multiple Kalshi markets simultaneously via `RL_MARKET_TICKERS`
+- **Real-time WebSocket broadcasting**: Streams orderbook snapshots/deltas to frontend clients
+- **Statistics tracking**: Monitors system health and performance metrics
+- **Non-blocking architecture**: Database writes don't block WebSocket broadcasts
+
+### Configuration
+```bash
+# Environment variables
+RL_MARKET_TICKERS=MARKET1,MARKET2,MARKET3  # Comma-separated market list
+RL_ORDERBOOK_BATCH_SIZE=100                # Database write batch size
+RL_ORDERBOOK_FLUSH_INTERVAL=1.0            # Flush interval in seconds
+RL_ORDERBOOK_SAMPLE_RATE=1                 # Delta sampling rate (1 = keep all)
+```
+
+### Endpoints
+- `/rl/health` - Health check with multi-market status
+- `/rl/status` - Detailed status with per-market statistics
+- `/rl/ws` - WebSocket endpoint for real-time orderbook updates
+- `/rl/orderbook/snapshot` - REST endpoint for current snapshots
+
+### Testing
+```bash
+# Run E2E test
+./scripts/test_rl_e2e.sh
+
+# Start service locally
+./scripts/test_rl_orderbook_service.sh
+
+# Service runs on port 8002 by default for local testing
+```
+
+### WebSocket Protocol
+```json
+// Connection message
+{"type": "connection", "data": {"markets": ["M1", "M2"], "status": "connected"}}
+
+// Orderbook snapshot
+{"type": "orderbook_snapshot", "data": {"market_ticker": "M1", ...}}
+
+// Statistics update (every second)
+{"type": "stats", "data": {"markets_active": 3, "snapshots_processed": 100, ...}}
+```
 
 ## Railway Deployment
 

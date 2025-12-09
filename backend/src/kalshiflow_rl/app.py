@@ -11,24 +11,29 @@ import logging
 import signal
 import sys
 from contextlib import asynccontextmanager
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 from starlette.applications import Starlette
 from starlette.responses import JSONResponse
-from starlette.routing import Route
+from starlette.routing import Route, WebSocketRoute
 from starlette.middleware import Middleware
 from starlette.middleware.cors import CORSMiddleware
 
 from .config import config, logger
 from .data.database import rl_db
 from .data.write_queue import write_queue
-from .data.orderbook_client import orderbook_client
-from .data.orderbook_state import get_all_orderbook_states
+from .data.orderbook_client import OrderbookClient
+from .data.orderbook_state import get_all_orderbook_states, SharedOrderbookState
 from .data.auth import validate_rl_auth
+from .websocket_manager import websocket_manager
+from .stats_collector import stats_collector
 
 # Background task management
 _background_tasks = []
 _shutdown_event = asyncio.Event()
+
+# Global orderbook client instance (initialized in lifespan)
+orderbook_client: Optional[OrderbookClient] = None
 
 
 @asynccontextmanager
@@ -57,16 +62,42 @@ async def lifespan(app: Starlette):
         await write_queue.start()
         logger.info("Write queue started")
         
-        # Start orderbook client
+        # Initialize OrderbookClient with multiple markets
+        global orderbook_client
+        orderbook_client = OrderbookClient(market_tickers=config.RL_MARKET_TICKERS)
         orderbook_client.on_connected(_on_orderbook_connected)
         orderbook_client.on_disconnected(_on_orderbook_disconnected)
         orderbook_client.on_error(_on_orderbook_error)
+        
+        # Set up stats collector references
+        stats_collector.orderbook_client = orderbook_client
+        stats_collector.websocket_manager = websocket_manager
+        
+        # Start stats collector
+        await stats_collector.start()
+        logger.info("Statistics collector started")
+        
+        # Start WebSocket manager
+        websocket_manager.stats_collector = stats_collector
+        await websocket_manager.start()
+        logger.info("WebSocket manager started")
         
         # Start orderbook client as background task
         orderbook_task = asyncio.create_task(orderbook_client.start())
         _background_tasks.append(orderbook_task)
         
-        logger.info(f"RL Trading Subsystem started successfully for market: {config.RL_MARKET_TICKER}")
+        # Hook up stats tracking to orderbook updates
+        orderbook_states = await get_all_orderbook_states()
+        for market_ticker, state in orderbook_states.items():
+            def create_stats_callback(ticker):
+                def callback(notification_data):
+                    _on_orderbook_update_for_stats(notification_data, ticker)
+                return callback
+            
+            state.add_subscriber(create_stats_callback(market_ticker))
+        
+        markets_str = ', '.join(config.RL_MARKET_TICKERS)
+        logger.info(f"RL Trading Subsystem started successfully for {len(config.RL_MARKET_TICKERS)} markets: {markets_str}")
         
         # Wait for shutdown signal
         yield
@@ -80,8 +111,15 @@ async def lifespan(app: Starlette):
         logger.info("Shutting down RL Trading Subsystem...")
         _shutdown_event.set()
         
+        # Stop WebSocket manager first (stops broadcasting)
+        await websocket_manager.stop()
+        
         # Stop orderbook client
-        await orderbook_client.stop()
+        if orderbook_client:
+            await orderbook_client.stop()
+        
+        # Stop stats collector
+        await stats_collector.stop()
         
         # Stop write queue (this flushes remaining messages)
         await write_queue.stop()
@@ -116,6 +154,18 @@ async def _on_orderbook_error(error: Exception):
     logger.error(f"Orderbook client error: {error}")
 
 
+def _on_orderbook_update_for_stats(notification_data: Dict[str, Any], market_ticker: str):
+    """Track orderbook updates in statistics (sync callback)."""
+    try:
+        update_type = notification_data.get('update_type')
+        if update_type == "snapshot":
+            stats_collector.track_snapshot(market_ticker)
+        elif update_type == "delta":
+            stats_collector.track_delta(market_ticker)
+    except Exception as e:
+        logger.error(f"Error tracking stats for {market_ticker}: {e}")
+
+
 # API endpoints
 
 async def health_check(request):
@@ -127,7 +177,8 @@ async def health_check(request):
             "timestamp": asyncio.get_event_loop().time(),
             "service": "kalshiflow_rl",
             "version": "0.1.0",
-            "market_ticker": config.RL_MARKET_TICKER,
+            "market_tickers": config.RL_MARKET_TICKERS,
+            "markets_count": len(config.RL_MARKET_TICKERS),
             "components": {}
         }
         
@@ -157,15 +208,41 @@ async def health_check(request):
             health_status["status"] = "degraded"
         
         # Check orderbook client
-        if orderbook_client.is_healthy():
+        if orderbook_client and orderbook_client.is_healthy():
             health_status["components"]["orderbook_client"] = {
                 "status": "healthy",
                 **orderbook_client.get_stats()
             }
         else:
             health_status["components"]["orderbook_client"] = {
+                "status": "unhealthy" if orderbook_client else "not_initialized",
+                **(orderbook_client.get_stats() if orderbook_client else {})
+            }
+            health_status["status"] = "degraded"
+        
+        # Check WebSocket manager
+        if websocket_manager.is_healthy():
+            health_status["components"]["websocket_manager"] = {
+                "status": "healthy",
+                **websocket_manager.get_stats()
+            }
+        else:
+            health_status["components"]["websocket_manager"] = {
                 "status": "unhealthy",
-                **orderbook_client.get_stats()
+                **websocket_manager.get_stats()
+            }
+            health_status["status"] = "degraded"
+        
+        # Check statistics collector
+        if stats_collector.is_healthy():
+            health_status["components"]["stats_collector"] = {
+                "status": "healthy",
+                **stats_collector.get_summary()
+            }
+        else:
+            health_status["components"]["stats_collector"] = {
+                "status": "unhealthy",
+                **stats_collector.get_summary()
             }
             health_status["status"] = "degraded"
         
@@ -192,13 +269,16 @@ async def status_endpoint(request):
             "service": "kalshiflow_rl",
             "timestamp": asyncio.get_event_loop().time(),
             "config": {
-                "market_ticker": config.RL_MARKET_TICKER,
+                "market_tickers": config.RL_MARKET_TICKERS,
+                "markets_count": len(config.RL_MARKET_TICKERS),
                 "environment": config.ENVIRONMENT,
                 "debug": config.DEBUG
             },
             "stats": {
                 "write_queue": write_queue.get_stats(),
-                "orderbook_client": orderbook_client.get_stats(),
+                "orderbook_client": orderbook_client.get_stats() if orderbook_client else {},
+                "websocket_manager": websocket_manager.get_stats(),
+                "stats_collector": stats_collector.get_stats(),
                 "orderbook_states": {
                     ticker: state.get_stats() 
                     for ticker, state in orderbook_states.items()
@@ -217,22 +297,28 @@ async def status_endpoint(request):
 
 
 async def orderbook_snapshot_endpoint(request):
-    """Get current orderbook snapshot for the configured market."""
+    """Get current orderbook snapshots for all configured markets."""
     try:
         orderbook_states = await get_all_orderbook_states()
         
-        if config.RL_MARKET_TICKER in orderbook_states:
-            state = orderbook_states[config.RL_MARKET_TICKER]
-            snapshot = await state.get_snapshot()
-            
+        # Get snapshots for all configured markets
+        snapshots = {}
+        for market_ticker in config.RL_MARKET_TICKERS:
+            if market_ticker in orderbook_states:
+                state = orderbook_states[market_ticker]
+                snapshot = await state.get_snapshot()
+                snapshots[market_ticker] = snapshot
+        
+        if snapshots:
             return JSONResponse({
-                "market_ticker": config.RL_MARKET_TICKER,
-                "snapshot": snapshot,
+                "market_tickers": list(snapshots.keys()),
+                "snapshots": snapshots,
                 "timestamp": asyncio.get_event_loop().time()
             })
         else:
             return JSONResponse({
-                "error": f"No orderbook state found for {config.RL_MARKET_TICKER}",
+                "error": "No orderbook states found for configured markets",
+                "configured_markets": config.RL_MARKET_TICKERS,
                 "available_markets": list(orderbook_states.keys())
             }, status_code=404)
             
@@ -260,12 +346,18 @@ async def force_flush_endpoint(request):
         }, status_code=500)
 
 
+async def websocket_endpoint(websocket):
+    """WebSocket endpoint for real-time orderbook updates."""
+    await websocket_manager.handle_connection(websocket)
+
+
 # Routes
 routes = [
     Route("/rl/health", health_check, methods=["GET"]),
     Route("/rl/status", status_endpoint, methods=["GET"]),
     Route("/rl/orderbook/snapshot", orderbook_snapshot_endpoint, methods=["GET"]),
     Route("/rl/admin/flush", force_flush_endpoint, methods=["POST"]),
+    WebSocketRoute("/rl/ws", websocket_endpoint),
 ]
 
 # Middleware

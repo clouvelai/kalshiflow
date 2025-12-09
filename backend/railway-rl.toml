@@ -1,0 +1,27 @@
+[build]
+builder = "nixpacks"
+
+[deploy]
+startCommand = "cd backend && uvicorn kalshiflow_rl.app:app --host 0.0.0.0 --port $PORT"
+healthcheckPath = "/rl/health"
+healthcheckTimeout = 30
+restartPolicyType = "on-failure"
+restartPolicyMaxRetries = 3
+
+[service]
+name = "kalshiflow-rl-orderbook-collector"
+
+[[services]]
+name = "kalshiflow-rl-orderbook-collector"
+type = "web"
+
+# Environment variables to be set in Railway dashboard:
+# DATABASE_URL - PostgreSQL connection string
+# KALSHI_API_KEY_ID - Kalshi API key ID
+# KALSHI_PRIVATE_KEY_CONTENT - Kalshi RSA private key content
+# RL_MARKET_TICKERS - Comma-separated list of market tickers
+# RL_ORDERBOOK_BATCH_SIZE - Batch size for database writes (default: 100)
+# RL_ORDERBOOK_FLUSH_INTERVAL - Flush interval in seconds (default: 1.0)
+# RL_ORDERBOOK_SAMPLE_RATE - Sample rate for deltas (default: 1)
+# UVICORN_HOST - Should be set to 0.0.0.0
+# UVICORN_PORT - Should be set to $PORT
