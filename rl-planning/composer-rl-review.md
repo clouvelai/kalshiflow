@@ -50,7 +50,10 @@ Create branch `refactor/configurable-training-params`:
 ✅ Updated P&L calculations to use actual tracked cost basis
 ✅ Added validation for realistic fee rates (0-10% range)
 ✅ Created comprehensive test suite (`test_trading_calculations.py`)
-✅ All tests passing (9 new tests + 27 existing tests)
+✅ **ENHANCED**: Created unified `TradingMetricsCalculator` service for consistency between training and inference
+✅ **ENHANCED**: Fixed critical overselling bug preventing negative positions
+✅ **ENHANCED**: Added comprehensive test suite (`test_trading_metrics.py`) for unified calculator
+✅ All tests passing (19 metrics tests + 9 calculation tests + 27 environment tests)
 
 ---
 
