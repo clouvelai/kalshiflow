@@ -41,6 +41,7 @@ from .historical_data_loader import (
     HistoricalDataPoint
 )
 from ..config import config
+from ..trading.trading_metrics import TradingMetricsCalculator
 
 logger = logging.getLogger("kalshiflow_rl.kalshi_env")
 
@@ -99,6 +100,9 @@ class KalshiTradingEnv(gym.Env):
             default_episode_config.update(episode_config)
         self.episode_config = default_episode_config
         
+        # Validate trading parameters
+        self._validate_trading_parameters()
+        
         # Validate market count
         if len(self.market_tickers) > self.observation_config.max_markets:
             raise ValueError(f"Too many markets: {len(self.market_tickers)} > {self.observation_config.max_markets}")
@@ -114,24 +118,21 @@ class KalshiTradingEnv(gym.Env):
         self.data_iterator = None
         self.current_market_states: Dict[str, Dict[str, Any]] = {}
         
-        # Trading state
-        self.positions: Dict[str, Dict[str, float]] = {}  # market -> {position_yes, position_no, unrealized_pnl}
+        # Trading state - Use unified metrics calculator
+        self.metrics_calculator = TradingMetricsCalculator(
+            reward_config=self.reward_config,
+            episode_config=self.episode_config
+        )
         self.trade_history: List[Dict[str, Any]] = []
-        self.cash_balance = self.episode_config['initial_cash']
-        self.initial_portfolio_value = self.cash_balance
         
         # Episode tracking
         self.episode_count = 0
         self.episode_rewards: List[float] = []
         self.episode_start_time = None
-        self.last_portfolio_value = self.cash_balance
         
-        # Performance tracking
-        self.total_trades = 0
-        self.winning_trades = 0
-        self.total_pnl = 0.0
+        # Performance tracking (delegated to metrics calculator)
         self.max_drawdown = 0.0
-        self.peak_portfolio_value = self.cash_balance
+        self.peak_portfolio_value = self.episode_config['initial_cash']
         
         # Determinism support
         self._seed = None
@@ -145,6 +146,21 @@ class KalshiTradingEnv(gym.Env):
                    f"obs_space={self.observation_space.shape}, "
                    f"action_space={self.action_space}")
     
+    @property
+    def positions(self) -> Dict[str, Dict[str, float]]:
+        """Get current positions (delegates to metrics calculator)."""
+        return self.metrics_calculator.get_positions_dict()
+    
+    @property
+    def cash_balance(self) -> float:
+        """Get current cash balance (delegates to metrics calculator)."""
+        return self.metrics_calculator.cash_balance
+    
+    @property
+    def total_trades(self) -> int:
+        """Get total trades count (delegates to metrics calculator)."""
+        return self.metrics_calculator.total_trades
+    
     def _default_reward_config(self) -> Dict[str, Any]:
         """Default reward configuration."""
         return {
@@ -157,7 +173,8 @@ class KalshiTradingEnv(gym.Env):
             'win_rate_bonus_scale': 0.02,  # Bonus based on win rate
             'max_reward': 10.0,  # Cap rewards to prevent instability
             'min_reward': -10.0,  # Cap negative rewards
-            'normalize_rewards': True  # Normalize rewards to [-1, 1] range
+            'normalize_rewards': True,  # Normalize rewards to [-1, 1] range
+            'trading_fee_rate': 0.01  # Trading fee rate (1% default, configurable)
         }
     
     def _default_episode_config(self) -> Dict[str, Any]:
@@ -171,6 +188,18 @@ class KalshiTradingEnv(gym.Env):
             'max_loss_threshold': 0.5,  # Terminate if portfolio loses 50%
             'max_position_threshold': 0.8  # Terminate if single position > 80% of portfolio
         }
+    
+    def _validate_trading_parameters(self) -> None:
+        """Validate trading parameters are realistic."""
+        fee_rate = self.reward_config.get('trading_fee_rate', 0.01)
+        
+        if fee_rate < 0:
+            raise ValueError(f"trading_fee_rate must be non-negative, got {fee_rate}")
+        
+        if fee_rate > 0.1:  # 10% maximum
+            raise ValueError(f"trading_fee_rate must be <= 0.1 (10%), got {fee_rate}")
+        
+        logger.info(f"Trading parameters validated: fee_rate={fee_rate:.3f}")
     
     def _preload_data(self) -> None:
         """
@@ -343,19 +372,12 @@ class KalshiTradingEnv(gym.Env):
             self.episode_count += 1  # Only increment when not seeded
             self.episode_start_time = time.time()
         
-        # Reset trading state
-        self.positions = {
-            ticker: {'position_yes': 0.0, 'position_no': 0.0, 'unrealized_pnl': 0.0}
-            for ticker in self.market_tickers
-        }
+        # Reset trading state using metrics calculator
+        self.metrics_calculator.reset(initial_cash=self.episode_config['initial_cash'])
+        # Initialize empty positions for each market
+        for ticker in self.market_tickers:
+            self.metrics_calculator.get_or_create_position(ticker)
         self.trade_history = []
-        self.cash_balance = self.episode_config['initial_cash']
-        self.initial_portfolio_value = self.cash_balance
-        self.last_portfolio_value = self.cash_balance
-        
-        # Reset performance tracking for this episode
-        episode_start_trades = self.total_trades
-        episode_start_pnl = self.total_pnl
         
         # Create data iterator for this episode (deterministic by default for testing)
         if options and options.get('shuffle_data', False):
@@ -382,7 +404,7 @@ class KalshiTradingEnv(gym.Env):
         # Build initial observation (CRITICAL: Uses same function as actor)
         initial_observation = build_observation_from_orderbook(
             orderbook_states=self._extract_orderbook_states(),
-            position_states=self.positions,
+            position_states=self.metrics_calculator.get_positions_dict(),
             config=self.observation_config
         )
         
@@ -390,11 +412,11 @@ class KalshiTradingEnv(gym.Env):
         info = {
             'episode': self.episode_count,
             'step': self.current_step,
-            'cash_balance': self.cash_balance,
-            'portfolio_value': self.cash_balance,
+            'cash_balance': self.metrics_calculator.cash_balance,
+            'portfolio_value': self.metrics_calculator.calculate_portfolio_value(),
             'total_positions': sum(
                 abs(pos['position_yes']) + abs(pos['position_no']) 
-                for pos in self.positions.values()
+                for pos in self.metrics_calculator.get_positions_dict().values()
             ),
             'markets': list(self.market_tickers),
             'market_states_available': len(self.current_market_states)
@@ -439,8 +461,8 @@ class KalshiTradingEnv(gym.Env):
         is_valid, violations = validate_action(
             action if isinstance(action, np.ndarray) else np.array([action]),
             self.market_tickers,
-            self.positions,
-            self._calculate_portfolio_value(),
+            self.metrics_calculator.get_positions_dict(),
+            self.metrics_calculator.calculate_portfolio_value(),
             self.action_config
         )
         
@@ -463,13 +485,14 @@ class KalshiTradingEnv(gym.Env):
             # Check termination conditions
             terminated, truncated = self._check_termination_conditions()
         
-        # Update portfolio values and positions
-        self._update_position_values()
+        # Update portfolio values using current market prices
+        market_prices = self._get_current_market_prices()
+        self.metrics_calculator.update_market_prices(market_prices)
         
         # Build next observation (CRITICAL: Same function as actor)
         observation = build_observation_from_orderbook(
             orderbook_states=self._extract_orderbook_states(),
-            position_states=self.positions,
+            position_states=self.metrics_calculator.get_positions_dict(),
             config=self.observation_config
         )
         
@@ -483,9 +506,8 @@ class KalshiTradingEnv(gym.Env):
         return observation, reward, terminated, truncated, info
     
     def _execute_actions_and_calculate_reward(self, market_actions: Dict[str, Dict[str, Any]]) -> float:
-        """Execute market actions and calculate step reward."""
-        step_pnl = 0.0
-        actions_taken = 0
+        """Execute market actions and calculate step reward using unified metrics calculator."""
+        trades_executed = []
         
         for market_ticker, action_info in market_actions.items():
             action_type = action_info['action_type']
@@ -507,19 +529,22 @@ class KalshiTradingEnv(gym.Env):
             )
             
             if executed_trade:
-                # Update positions
-                self._update_position_from_trade(market_ticker, executed_trade)
+                # Execute trade through metrics calculator
+                trade_result = self.metrics_calculator.execute_trade(
+                    market_ticker=market_ticker,
+                    side=executed_trade['side'],
+                    direction=executed_trade['direction'],
+                    quantity=executed_trade['quantity'],
+                    price_cents=executed_trade['price']
+                )
                 
                 # Track trade
-                self.trade_history.append(executed_trade)
-                self.total_trades += 1
-                actions_taken += 1
-                
-                # Add to step PnL
-                step_pnl += executed_trade.get('immediate_pnl', 0.0)
+                self.trade_history.append(trade_result)
+                trades_executed.append(trade_result)
         
-        # Calculate total reward for this step
-        reward = self._calculate_step_reward(step_pnl, actions_taken)
+        # Calculate reward using metrics calculator
+        market_prices = self._get_current_market_prices()
+        reward = self.metrics_calculator.calculate_step_reward(trades_executed, market_prices)
         
         return reward
     
@@ -562,156 +587,33 @@ class KalshiTradingEnv(gym.Env):
         if executed_quantity <= 0:
             return None
         
-        # Calculate trade value and fees
-        trade_value = executed_quantity * best_price / 100.0  # Convert cents to dollars
-        fee = trade_value * 0.01  # 1% fee (simplified)
-        
-        # Calculate immediate P&L impact
-        current_position = self.positions.get(market_ticker, {})
-        immediate_pnl = self._calculate_trade_pnl(
-            current_position, side, direction, executed_quantity, best_price
-        )
-        
         # Use deterministic timestamp for trade if market state doesn't have one
         trade_timestamp = market_state.get('timestamp_ms', 1640995200000)
         
+        # Return trade details (P&L calculation delegated to metrics calculator)
         return {
             'timestamp': trade_timestamp,
             'market_ticker': market_ticker,
             'side': side,
             'direction': direction,
             'quantity': executed_quantity,
-            'price': best_price,
-            'trade_value': trade_value,
-            'fee': fee,
-            'immediate_pnl': immediate_pnl
+            'price': best_price
         }
     
-    def _calculate_trade_pnl(
-        self,
-        current_position: Dict[str, float],
-        side: str,
-        direction: str,
-        quantity: int,
-        price: int
-    ) -> float:
-        """Calculate immediate P&L impact of a trade."""
-        # Simplified P&L calculation
-        # In reality, this would consider average cost basis, etc.
-        
-        current_qty = current_position.get(f'position_{side}', 0.0)
-        trade_value = quantity * price / 100.0
-        
-        if direction == 'sell' and current_qty > 0:
-            # Closing or reducing position - realize P&L
-            avg_cost = 50.0  # Simplified: assume $0.50 average cost
-            pnl = quantity * (price / 100.0 - avg_cost)
-            return pnl
-        else:
-            # Opening or increasing position - no immediate P&L
-            return 0.0
-    
-    def _update_position_from_trade(self, market_ticker: str, trade: Dict[str, Any]) -> None:
-        """Update position tracking from executed trade."""
-        if market_ticker not in self.positions:
-            self.positions[market_ticker] = {'position_yes': 0.0, 'position_no': 0.0, 'unrealized_pnl': 0.0}
-        
-        side = trade['side']
-        direction = trade['direction']
-        quantity = trade['quantity']
-        
-        position_key = f'position_{side}'
-        
-        if direction == 'buy':
-            self.positions[market_ticker][position_key] += quantity
-        else:
-            self.positions[market_ticker][position_key] -= quantity
-        
-        # Update cash balance
-        trade_cost = trade['trade_value'] + trade['fee']
-        if direction == 'buy':
-            self.cash_balance -= trade_cost
-        else:
-            self.cash_balance += trade_cost - trade['fee']  # Subtract fee in both cases
-    
-    def _update_position_values(self) -> None:
-        """Update unrealized P&L for all positions based on current market prices."""
-        for market_ticker in self.positions:
-            if market_ticker not in self.current_market_states:
-                continue
-            
+    def _get_current_market_prices(self) -> Dict[str, Dict[str, float]]:
+        """Get current market mid prices for P&L calculation."""
+        market_prices = {}
+        for market_ticker in self.current_market_states:
             market_state = self.current_market_states[market_ticker].orderbook_state
-            position = self.positions[market_ticker]
-            
-            # Calculate mark-to-market value
-            yes_mid = market_state.get('yes_mid_price', 50.0)
-            no_mid = market_state.get('no_mid_price', 50.0)
-            
-            yes_position = position['position_yes']
-            no_position = position['position_no']
-            
-            # Calculate unrealized P&L (simplified)
-            avg_cost = 50.0  # Simplified average cost
-            yes_pnl = yes_position * (yes_mid / 100.0 - avg_cost)
-            no_pnl = no_position * (no_mid / 100.0 - avg_cost)
-            
-            position['unrealized_pnl'] = yes_pnl + no_pnl
-    
-    def _calculate_step_reward(self, step_pnl: float, actions_taken: int) -> float:
-        """Calculate reward for the current step."""
-        reward = 0.0
-        
-        # Base reward from P&L
-        reward += step_pnl * self.reward_config['pnl_scale']
-        
-        # Action penalty (transaction costs)
-        reward -= actions_taken * self.reward_config['action_penalty']
-        
-        # Position penalty (risk management)
-        total_position_value = sum(
-            abs(pos['position_yes']) + abs(pos['position_no'])
-            for pos in self.positions.values()
-        )
-        reward -= total_position_value * self.reward_config['position_penalty_scale']
-        
-        # Portfolio-level rewards
-        current_portfolio_value = self._calculate_portfolio_value()
-        portfolio_change = current_portfolio_value - self.last_portfolio_value
-        
-        # Drawdown penalty
-        if portfolio_change < 0:
-            reward -= abs(portfolio_change) * self.reward_config['drawdown_penalty']
-        
-        # Diversification bonus
-        active_positions = sum(
-            1 for pos in self.positions.values()
-            if abs(pos['position_yes']) + abs(pos['position_no']) > 0.1
-        )
-        if active_positions > 1:
-            reward += self.reward_config['diversification_bonus']
-        
-        # Update tracking
-        self.last_portfolio_value = current_portfolio_value
-        
-        # Apply reward bounds
-        reward = np.clip(
-            reward,
-            self.reward_config['min_reward'],
-            self.reward_config['max_reward']
-        )
-        
-        # Normalize if requested
-        if self.reward_config['normalize_rewards']:
-            reward = np.tanh(reward)
-        
-        return float(reward)
+            market_prices[market_ticker] = {
+                'yes_mid': market_state.get('yes_mid_price', 50.0),
+                'no_mid': market_state.get('no_mid_price', 50.0)
+            }
+        return market_prices
     
     def _calculate_portfolio_value(self) -> float:
-        """Calculate current total portfolio value."""
-        total_unrealized_pnl = sum(
-            pos.get('unrealized_pnl', 0.0) for pos in self.positions.values()
-        )
-        return self.cash_balance + total_unrealized_pnl
+        """Calculate current total portfolio value using metrics calculator."""
+        return self.metrics_calculator.calculate_portfolio_value()
     
     def _check_termination_conditions(self) -> Tuple[bool, bool]:
         """Check if episode should terminate."""
@@ -727,7 +629,8 @@ class KalshiTradingEnv(gym.Env):
             portfolio_value = self._calculate_portfolio_value()
             
             # Loss threshold
-            loss_ratio = (self.initial_portfolio_value - portfolio_value) / self.initial_portfolio_value
+            initial_cash = self.episode_config['initial_cash']
+            loss_ratio = (initial_cash - portfolio_value) / initial_cash
             if loss_ratio > self.episode_config['max_loss_threshold']:
                 terminated = True
                 logger.info(f"Episode terminated due to loss threshold: {loss_ratio:.2%}")
@@ -755,20 +658,20 @@ class KalshiTradingEnv(gym.Env):
     ) -> Dict[str, Any]:
         """Create info dictionary for step return."""
         portfolio_value = self._calculate_portfolio_value()
+        positions = self.metrics_calculator.get_positions_dict()
+        metrics_summary = self.metrics_calculator.get_metrics_summary()
         
         # Create deterministic info dict (avoid non-deterministic elements)
         info = {
             'step': self.current_step,
             'episode': self.episode_count,
             'portfolio_value': float(portfolio_value),  # Ensure float type
-            'cash_balance': float(self.cash_balance),
+            'cash_balance': float(self.metrics_calculator.cash_balance),
             'total_positions': float(sum(
                 abs(pos['position_yes']) + abs(pos['position_no']) 
                 for pos in self.positions.values()
             )),
-            'total_unrealized_pnl': float(sum(
-                pos.get('unrealized_pnl', 0.0) for pos in self.positions.values()
-            )),
+            'total_unrealized_pnl': float(metrics_summary['total_unrealized_pnl']),
             'total_trades': len(self.trade_history),
             'actions_taken': len([
                 action for action in market_actions.values()
@@ -788,7 +691,7 @@ class KalshiTradingEnv(gym.Env):
         """Get final state when episode is already terminated."""
         observation = build_observation_from_orderbook(
             orderbook_states=self._extract_orderbook_states(),
-            position_states=self.positions,
+            position_states=self.metrics_calculator.get_positions_dict(),
             config=self.observation_config
         )
         
@@ -894,8 +797,7 @@ class KalshiTradingEnv(gym.Env):
     
     def get_episode_stats(self) -> Dict[str, Any]:
         """Get statistics for the current episode."""
-        portfolio_value = self._calculate_portfolio_value()
-        total_return = (portfolio_value - self.initial_portfolio_value) / self.initial_portfolio_value
+        metrics = self.metrics_calculator.get_metrics_summary()
         
         winning_trades = sum(
             1 for trade in self.trade_history
@@ -907,14 +809,11 @@ class KalshiTradingEnv(gym.Env):
         return {
             'episode': self.episode_count,
             'steps': self.current_step,
-            'portfolio_value': portfolio_value,
-            'total_return': total_return,
+            'portfolio_value': metrics['portfolio_value'],
+            'total_return': metrics['total_return_pct'] / 100.0,
             'total_trades': len(self.trade_history),
             'winning_trades': winning_trades,
             'win_rate': win_rate,
-            'cash_balance': self.cash_balance,
-            'active_positions': sum(
-                1 for pos in self.positions.values()
-                if abs(pos['position_yes']) + abs(pos['position_no']) > 0.1
-            )
+            'cash_balance': metrics['cash_balance'],
+            'active_positions': metrics['num_active_positions']
         }

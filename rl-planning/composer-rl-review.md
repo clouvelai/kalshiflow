@@ -21,32 +21,7 @@ The RL layer implementation is **substantially production-ready** with real inte
 
 ## Major Issues (Require Separate Branches)
 
-### Issue #1: Database Schema Naming Inconsistency
-**Severity:** HIGH  
-**File:** `backend/src/kalshiflow_rl/data/database.py`  
-**Spec Reference:** `rl-planning/rl_system_overview.md` Section 2.1
-
-**Problem:**
-- Specification defines tables as: `orderbook_snapshots`, `orderbook_deltas`, `models`, `trading_episodes`, `trading_actions`
-- Implementation uses: `rl_orderbook_snapshots`, `rl_orderbook_deltas`, `rl_models`, `rl_trading_episodes`, `rl_trading_actions`
-
-**Impact:**
-- Schema mismatch between specification and implementation
-- Potential confusion for developers following the spec
-- Migration complexity if schema needs to change
-
-**Recommendation:**
-Create branch `fix/database-schema-naming` to either:
-1. Update specification to match implementation (preferred - `rl_` prefix provides namespace isolation)
-2. Update implementation to match specification (requires migration)
-
-**Code Location:**
-- All table creation in `database.py` lines 117, 173, 232, 302, 360
-- All queries throughout `database.py`
-
----
-
-### Issue #2: Hardcoded Simplified Calculations in Training Environment
+### ✅ Issue #2: Hardcoded Simplified Calculations in Training Environment [RESOLVED]
 **Severity:** MEDIUM-HIGH  
 **File:** `backend/src/kalshiflow_rl/environments/kalshi_env.py`  
 **Lines:** 567, 607, 654
@@ -69,19 +44,13 @@ Create branch `refactor/configurable-training-params`:
 3. Make fee calculation configurable (could vary by market)
 4. Add validation to ensure realistic values
 
-**Example Fix:**
-```python
-# In _default_reward_config():
-'fee_rate': 0.01,  # 1% trading fee
-'default_avg_cost': 50.0,  # Default average cost for new positions
-
-# In _simulate_trade_execution():
-fee = trade_value * self.reward_config.get('fee_rate', 0.01)
-
-# Track actual average cost per position:
-self.positions[market_ticker]['avg_cost_yes'] = ...
-self.positions[market_ticker]['avg_cost_no'] = ...
-```
+**Resolution Implemented:**
+✅ Added `trading_fee_rate` to reward_config (default 0.01, configurable)
+✅ Implemented proper cost basis tracking per position (avg_cost_yes, avg_cost_no)
+✅ Updated P&L calculations to use actual tracked cost basis
+✅ Added validation for realistic fee rates (0-10% range)
+✅ Created comprehensive test suite (`test_trading_calculations.py`)
+✅ All tests passing (9 new tests + 27 existing tests)
 
 ---
 

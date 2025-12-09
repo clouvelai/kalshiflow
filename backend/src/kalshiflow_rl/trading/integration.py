@@ -16,6 +16,7 @@ from datetime import datetime
 
 from .demo_client import KalshiDemoTradingClient, create_demo_trading_client
 from .action_write_queue import ActionWriteQueue
+from .trading_metrics import TradingMetricsCalculator
 from ..data.database import RLDatabase
 from ..data.orderbook_state import SharedOrderbookState
 from ..config import config
@@ -48,6 +49,19 @@ class TradingSession:
         self.database: Optional[RLDatabase] = None
         self.action_write_queue: Optional[ActionWriteQueue] = None
         self.orderbook_states: Dict[str, SharedOrderbookState] = {}
+        
+        # Unified metrics calculator for consistent P&L calculations
+        self.metrics_calculator = TradingMetricsCalculator(
+            reward_config={
+                'trading_fee_rate': getattr(config, 'TRADING_FEE_RATE', 0.01),
+                'pnl_scale': 0.01,
+                'action_penalty': 0.001,
+                'normalize_rewards': False  # Don't normalize for inference
+            },
+            episode_config={
+                'initial_cash': 10000.0  # Default starting cash
+            }
+        )
         
         # Session state
         self.is_active = False
@@ -171,19 +185,52 @@ class TradingSession:
         if ticker not in self.orderbook_states:
             raise ValueError(f"Market {ticker} not configured in session")
         
-        # Get current position before action
-        position_before = await self._get_current_position(ticker)
+        # Capture position before action
+        position_before = self.metrics_calculator.get_positions_dict().get(ticker, {
+            'position_yes': 0.0,
+            'position_no': 0.0,
+            'unrealized_pnl': 0.0
+        }).copy()  # Copy to avoid mutation
+        
+        # Track trades for reward calculation
+        trades_executed = []
         
         # Execute the action
         execution_result = await self._execute_action(
             action_type, ticker, quantity, price, side
         )
         
-        # Get position after action
-        position_after = await self._get_current_position(ticker)
+        # If trade was executed, update metrics calculator
+        reward = 0.0
+        if execution_result.get('executed', False) and action_type != 'hold':
+            # Execute through metrics calculator for consistent P&L tracking
+            trade_result = self.metrics_calculator.execute_trade(
+                market_ticker=ticker,
+                side=side,
+                direction=action_type,  # 'buy' or 'sell'
+                quantity=quantity,
+                price_cents=execution_result.get('execution_price', price or 50)
+            )
+            trades_executed.append(trade_result)
+            
+            # Get current market prices for reward calculation
+            market_prices = {}
+            if ticker in self.orderbook_states:
+                orderbook = self.orderbook_states[ticker].get_orderbook_state()
+                market_prices[ticker] = {
+                    'yes_mid': orderbook.get('yes_mid_price', 50.0),
+                    'no_mid': orderbook.get('no_mid_price', 50.0)
+                }
+            
+            # Calculate reward using unified calculator
+            reward = self.metrics_calculator.calculate_step_reward(trades_executed, market_prices)
         
-        # Calculate reward (simplified for demo)
-        reward = self._calculate_reward(position_before, position_after, execution_result)
+        # Get position after action
+        position_after = self.metrics_calculator.get_positions_dict().get(ticker, {
+            'position_yes': 0.0,
+            'position_no': 0.0,
+            'unrealized_pnl': 0.0
+        })
         
         # Log action to database (non-blocking via queue)
         action_data = {
@@ -352,35 +399,6 @@ class TradingSession:
                 'error': str(e)
             }
     
-    def _calculate_reward(
-        self,
-        position_before: Dict[str, Any],
-        position_after: Dict[str, Any],
-        execution_result: Dict[str, Any]
-    ) -> float:
-        """
-        Calculate reward for the trading action.
-        
-        Simple reward calculation based on P&L change.
-        In a real implementation, this would be more sophisticated.
-        """
-        try:
-            # Simple reward based on unrealized P&L change
-            pnl_before = position_before.get('unrealized_pnl', 0)
-            pnl_after = position_after.get('unrealized_pnl', 0)
-            
-            # Calculate P&L change
-            pnl_change = pnl_after - pnl_before
-            
-            # Simple reward: P&L change normalized
-            # In practice, this would include more factors like risk, fees, etc.
-            reward = float(pnl_change) / 100.0  # Normalize by dividing by 100 cents
-            
-            return reward
-        
-        except Exception as e:
-            logger.warning(f"Reward calculation failed: {e}")
-            return 0.0
     
     def get_session_summary(self) -> Dict[str, Any]:
         """Get summary of trading session."""
@@ -392,6 +410,9 @@ class TradingSession:
         if self.demo_client:
             demo_summary = self.demo_client.get_trading_summary()
         
+        # Get metrics from unified calculator
+        metrics_summary = self.metrics_calculator.get_metrics_summary()
+        
         return {
             'session_id': self.session_id,
             'session_name': self.session_name,
@@ -402,7 +423,8 @@ class TradingSession:
             'total_actions': self.total_actions,
             'episode_id': self.episode_id,
             'configured_markets': list(self.orderbook_states.keys()),
-            'demo_account': demo_summary
+            'demo_account': demo_summary,
+            'metrics': metrics_summary  # Includes P&L, positions, etc.
         }
     
     def add_action_callback(self, callback: Callable[[Dict[str, Any]], None]) -> None:
