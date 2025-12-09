@@ -248,7 +248,8 @@ def validate_action(
         # Decode action for validation
         market_actions = decode_action(action_vector, market_tickers, config)
         
-        total_new_exposure = 0.0
+        # Calculate total exposure after all actions
+        total_position_value_after = 0.0
         total_position_count = 0
         
         for ticker, action_info in market_actions.items():
@@ -282,19 +283,28 @@ def validate_action(
                 if abs(new_no_pos) > config.max_position_size:
                     violations.append(f"No position {new_no_pos} exceeds limit {config.max_position_size} for {ticker}")
             
-            # Estimate exposure (assume $0.50 average price for rough calculation)
-            estimated_exposure = (abs(new_yes_pos) + abs(new_no_pos)) * 50  # cents -> dollars
-            total_new_exposure += estimated_exposure
+            # Estimate exposure for the new position sizes
+            # This is the total value of positions AFTER the trade for this market
+            estimated_position_value = (abs(new_yes_pos) + abs(new_no_pos)) * 0.50  # Convert to dollars
+            total_position_value_after += estimated_position_value
             
             if abs(new_yes_pos) > 0.1 or abs(new_no_pos) > 0.1:
                 total_position_count += 1
         
+        # Also add existing positions from other markets
+        for ticker in market_tickers:
+            if ticker not in market_actions:
+                current_pos = current_positions.get(ticker, {})
+                existing_value = (abs(current_pos.get("position_yes", 0)) + 
+                                abs(current_pos.get("position_no", 0))) * 0.50
+                total_position_value_after += existing_value
+        
         # Check portfolio-level constraints
         if config.enforce_portfolio_limits:
-            estimated_new_portfolio_value = current_portfolio_value + total_new_exposure
-            
-            if estimated_new_portfolio_value > config.max_total_exposure:
-                violations.append(f"Portfolio exposure {estimated_new_portfolio_value} exceeds limit {config.max_total_exposure}")
+            # Check if total position value exceeds limit
+            # This should be the total value locked up in positions
+            if total_position_value_after > config.max_total_exposure:
+                violations.append(f"Total position exposure {total_position_value_after:.2f} exceeds limit {config.max_total_exposure}")
             
             # Check concentration limit
             if total_position_count > 0:
@@ -304,7 +314,7 @@ def validate_action(
                     for ticker in market_tickers
                 ])
                 
-                concentration_ratio = max_single_exposure / max(estimated_new_portfolio_value, 1.0)
+                concentration_ratio = max_single_exposure / max(total_position_value_after, 1.0)
                 if concentration_ratio > config.position_concentration_limit:
                     violations.append(f"Position concentration {concentration_ratio:.2f} exceeds limit {config.position_concentration_limit}")
         
