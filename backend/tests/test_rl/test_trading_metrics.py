@@ -348,6 +348,8 @@ class TestTrainingInferenceConsistency:
             'position_penalty_scale': 0.0001,
             'drawdown_penalty': 0.01,
             'diversification_bonus': 0.005,
+            'min_reward': -10.0,
+            'max_reward': 10.0,
             'normalize_rewards': False
         }
         
@@ -370,12 +372,32 @@ class TestTrainingInferenceConsistency:
     
     def test_fee_rate_affects_calculations(self):
         """Test that fee rate properly affects all calculations."""
-        calc_low_fee = TradingMetricsCalculator(
-            reward_config={'trading_fee_rate': 0.001}
-        )
-        calc_high_fee = TradingMetricsCalculator(
-            reward_config={'trading_fee_rate': 0.01}
-        )
+        # Use complete configs to avoid missing keys
+        low_fee_config = {
+            'trading_fee_rate': 0.001,
+            'pnl_scale': 0.01,
+            'action_penalty': 0.001,
+            'position_penalty_scale': 0.0001,
+            'drawdown_penalty': 0.01,
+            'diversification_bonus': 0.005,
+            'min_reward': -10.0,
+            'max_reward': 10.0,
+            'normalize_rewards': False
+        }
+        high_fee_config = {
+            'trading_fee_rate': 0.01,
+            'pnl_scale': 0.01,
+            'action_penalty': 0.001,
+            'position_penalty_scale': 0.0001,
+            'drawdown_penalty': 0.01,
+            'diversification_bonus': 0.005,
+            'min_reward': -10.0,
+            'max_reward': 10.0,
+            'normalize_rewards': False
+        }
+        
+        calc_low_fee = TradingMetricsCalculator(reward_config=low_fee_config)
+        calc_high_fee = TradingMetricsCalculator(reward_config=high_fee_config)
         
         # Same trade, different fees
         trade_low = calc_low_fee.execute_trade("MARKET", 'yes', 'buy', 100, 50)

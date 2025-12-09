@@ -306,14 +306,14 @@ class TradingMetricsCalculator:
         reward += step_pnl * self.reward_config['pnl_scale']
         
         # Action penalty (transaction costs beyond fees)
-        reward -= actions_taken * self.reward_config.get('action_penalty', 0.001)
+        reward -= actions_taken * self.reward_config['action_penalty']
         
         # Position penalty (risk management)
         total_position_value = sum(
             abs(pos.position_yes) + abs(pos.position_no)
             for pos in self.positions.values()
         )
-        reward -= total_position_value * self.reward_config.get('position_penalty_scale', 0.0001)
+        reward -= total_position_value * self.reward_config['position_penalty_scale']
         
         # Portfolio-level rewards
         current_portfolio_value = self.calculate_portfolio_value()
@@ -321,7 +321,7 @@ class TradingMetricsCalculator:
         
         # Drawdown penalty
         if portfolio_change < 0:
-            reward -= abs(portfolio_change) * self.reward_config.get('drawdown_penalty', 0.01)
+            reward -= abs(portfolio_change) * self.reward_config['drawdown_penalty']
         
         # Diversification bonus
         active_positions = sum(
@@ -329,7 +329,7 @@ class TradingMetricsCalculator:
             if abs(pos.position_yes) + abs(pos.position_no) > 0.1
         )
         if active_positions > 1:
-            reward += self.reward_config.get('diversification_bonus', 0.005)
+            reward += self.reward_config['diversification_bonus']
         
         # Update tracking
         self.last_portfolio_value = current_portfolio_value
@@ -337,12 +337,12 @@ class TradingMetricsCalculator:
         # Apply reward bounds
         reward = np.clip(
             reward,
-            self.reward_config.get('min_reward', -10.0),
-            self.reward_config.get('max_reward', 10.0)
+            self.reward_config['min_reward'],
+            self.reward_config['max_reward']
         )
         
         # Normalize if requested
-        if self.reward_config.get('normalize_rewards', True):
+        if self.reward_config['normalize_rewards']:
             reward = np.tanh(reward)
         
         return float(reward)

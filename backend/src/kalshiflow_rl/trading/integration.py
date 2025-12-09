@@ -56,6 +56,11 @@ class TradingSession:
                 'trading_fee_rate': getattr(config, 'TRADING_FEE_RATE', 0.01),
                 'pnl_scale': 0.01,
                 'action_penalty': 0.001,
+                'position_penalty_scale': 0.0001,
+                'drawdown_penalty': 0.01,
+                'diversification_bonus': 0.005,
+                'min_reward': -10.0,
+                'max_reward': 10.0,
                 'normalize_rewards': False  # Don't normalize for inference
             },
             episode_config={
