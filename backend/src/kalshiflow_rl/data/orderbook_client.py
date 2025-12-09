@@ -301,14 +301,42 @@ class OrderbookClient:
             # Extract snapshot data
             data = message.get("data", {})
             
+            # Parse Kalshi array format [[price, qty], ...] into separate bid/ask dicts
+            yes_bids = {}
+            yes_asks = {}
+            no_bids = {}
+            no_asks = {}
+            
+            # Process yes side
+            yes_levels = data.get("yes", [])
+            if isinstance(yes_levels, list):
+                for price, qty in yes_levels:
+                    if qty > 0:
+                        price_int = int(price)
+                        if price_int <= 50:
+                            yes_bids[price_int] = int(qty)
+                        else:
+                            yes_asks[price_int] = int(qty)
+            
+            # Process no side
+            no_levels = data.get("no", [])
+            if isinstance(no_levels, list):
+                for price, qty in no_levels:
+                    if qty > 0:
+                        price_int = int(price)
+                        if price_int <= 50:
+                            no_bids[price_int] = int(qty)
+                        else:
+                            no_asks[price_int] = int(qty)
+            
             snapshot_data = {
                 "market_ticker": market_ticker,
                 "timestamp_ms": int(time.time() * 1000),
                 "sequence_number": data.get("seq", 0),
-                "yes_bids": data.get("yes", {}).get("b", {}),
-                "yes_asks": data.get("yes", {}).get("a", {}),
-                "no_bids": data.get("no", {}).get("b", {}),
-                "no_asks": data.get("no", {}).get("a", {})
+                "yes_bids": yes_bids,
+                "yes_asks": yes_asks,
+                "no_bids": no_bids,
+                "no_asks": no_asks
             }
             
             self._last_sequences[market_ticker] = snapshot_data["sequence_number"]
@@ -351,9 +379,9 @@ class OrderbookClient:
                 "sequence_number": data.get("seq", 0),
                 "side": data.get("side"),  # "yes" or "no"
                 "action": self._map_delta_action(data),
-                "price": data.get("price"),
-                "old_size": data.get("old_size"),
-                "new_size": data.get("new_size", data.get("size"))
+                "price": int(data.get("price", 0)),  # Ensure price is int
+                "old_size": int(data.get("old_size", 0)),
+                "new_size": int(data.get("new_size", data.get("size", 0)))
             }
             
             # Validate delta

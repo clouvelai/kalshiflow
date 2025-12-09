@@ -175,13 +175,18 @@ class OrderbookState:
     
     def _apply_price_levels(self, book: SortedDict, price_levels: Dict) -> None:
         """Apply price levels from snapshot data."""
-        for price_str, size in price_levels.items():
+        for price_key, size in price_levels.items():
             try:
-                price = int(float(price_str))  # Convert to integer cents
+                # Handle both int and string keys
+                if isinstance(price_key, int):
+                    price = price_key
+                else:
+                    price = int(float(price_key))  # Convert string to integer cents
+                    
                 if size > 0:
                     book[price] = int(size)
             except (ValueError, TypeError) as e:
-                logger.warning(f"Invalid price level: {price_str}={size}, error: {e}")
+                logger.warning(f"Invalid price level: {price_key}={size}, error: {e}")
     
     def get_yes_spread(self) -> Optional[int]:
         """Get yes side spread in cents."""
