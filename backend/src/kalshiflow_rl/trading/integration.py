@@ -19,6 +19,7 @@ from .action_write_queue import ActionWriteQueue
 from .trading_metrics import TradingMetricsCalculator
 from ..data.database import RLDatabase
 from ..data.orderbook_state import SharedOrderbookState
+from ..environments.action_space import ActionType
 from ..config import config
 
 logger = logging.getLogger("kalshiflow_rl.trading.integration")
@@ -158,7 +159,7 @@ class TradingSession:
     
     async def execute_trading_action(
         self,
-        action_type: str,
+        action_type: ActionType,
         ticker: str,
         quantity: int = 1,
         price: Optional[int] = None,
@@ -170,7 +171,7 @@ class TradingSession:
         Execute a trading action through the demo client and log to database.
         
         Args:
-            action_type: Type of action ('buy', 'sell', 'hold')
+            action_type: Type of action (ActionType enum)
             ticker: Market ticker to trade
             quantity: Number of contracts
             price: Limit price in cents (None for market orders)
@@ -207,24 +208,36 @@ class TradingSession:
         
         # If trade was executed, update metrics calculator
         reward = 0.0
-        if execution_result.get('executed', False) and action_type != 'hold':
+        if execution_result.get('executed', False) and action_type != ActionType.HOLD:
+            # Determine direction from ActionType
+            direction = 'buy' if action_type in [ActionType.BUY_YES, ActionType.BUY_NO] else 'sell'
+            
+            # Get execution price - must have a valid price for executed trades
+            exec_price = execution_result.get('execution_price', price)
+            if exec_price is None:
+                logger.error(f"Executed trade missing execution price: {execution_result}")
+                raise ValueError(f"Cannot record executed trade without price for {ticker}")
+            
             # Execute through metrics calculator for consistent P&L tracking
             trade_result = self.metrics_calculator.execute_trade(
                 market_ticker=ticker,
                 side=side,
-                direction=action_type,  # 'buy' or 'sell'
+                direction=direction,
                 quantity=quantity,
-                price_cents=execution_result.get('execution_price', price or 50)
+                price_cents=exec_price
             )
             trades_executed.append(trade_result)
             
             # Get current market prices for reward calculation
             market_prices = {}
             if ticker in self.orderbook_states:
-                orderbook = self.orderbook_states[ticker].get_orderbook_state()
+                orderbook = await self.orderbook_states[ticker].get_snapshot()
+                # Convert prices from dollars to cents for metrics calculator
+                yes_mid_price = orderbook.get('yes_mid_price')
+                no_mid_price = orderbook.get('no_mid_price')
                 market_prices[ticker] = {
-                    'yes_mid': orderbook.get('yes_mid_price', 50.0),
-                    'no_mid': orderbook.get('no_mid_price', 50.0)
+                    'yes_mid': yes_mid_price * 100 if yes_mid_price is not None else 50.0,
+                    'no_mid': no_mid_price * 100 if no_mid_price is not None else 50.0
                 }
             
             # Calculate reward using unified calculator
@@ -238,13 +251,25 @@ class TradingSession:
         })
         
         # Log action to database (non-blocking via queue)
+        # Convert ActionType to string for database logging
+        if action_type == ActionType.HOLD:
+            action_type_str = 'hold'
+        elif action_type in [ActionType.BUY_YES, ActionType.BUY_NO]:
+            action_type_str = f"buy_{side}"
+        elif action_type in [ActionType.SELL_YES, ActionType.SELL_NO]:
+            action_type_str = f"sell_{side}"
+        elif action_type == ActionType.CLOSE_POSITION:
+            action_type_str = 'close_position'
+        else:
+            action_type_str = action_type.name.lower()
+        
         action_data = {
             'episode_id': self.episode_id,
             'action_timestamp_ms': int(time.time() * 1000),
             'step_number': self.step_number,
-            'action_type': f"{action_type}_{side}" if action_type != 'hold' else 'hold',
+            'action_type': action_type_str,
             'price': price,
-            'quantity': quantity if action_type != 'hold' else None,
+            'quantity': quantity if action_type != ActionType.HOLD else None,
             'position_before': position_before,
             'position_after': position_after,
             'reward': reward,
@@ -280,7 +305,7 @@ class TradingSession:
         result = {
             'session_id': self.session_id,
             'step_number': self.step_number,
-            'action_type': action_type,
+            'action_type': action_type.name,
             'ticker': ticker,
             'execution_result': execution_result,
             'position_before': position_before,
@@ -293,14 +318,14 @@ class TradingSession:
     
     async def _execute_action(
         self,
-        action_type: str,
+        action_type: ActionType,
         ticker: str,
         quantity: int,
         price: Optional[int],
         side: str
     ) -> Dict[str, Any]:
         """Execute the actual trading action through demo client."""
-        if action_type == "hold":
+        if action_type == ActionType.HOLD:
             return {
                 'action': 'hold',
                 'executed': False,
@@ -308,7 +333,7 @@ class TradingSession:
             }
         
         try:
-            if action_type == "buy":
+            if action_type in [ActionType.BUY_YES, ActionType.BUY_NO]:
                 order_response = await self.demo_client.create_order(
                     ticker=ticker,
                     action="buy",
@@ -326,7 +351,7 @@ class TradingSession:
                     'response': order_response
                 }
             
-            elif action_type == "sell":
+            elif action_type in [ActionType.SELL_YES, ActionType.SELL_NO]:
                 # For selling, we need to check if we have positions to sell
                 order_response = await self.demo_client.create_order(
                     ticker=ticker,
@@ -345,13 +370,23 @@ class TradingSession:
                     'response': order_response
                 }
             
+            elif action_type == ActionType.CLOSE_POSITION:
+                # Close position by selling all holdings
+                # Note: This is a simplified implementation
+                # In a real scenario, we'd check current positions and close them
+                return {
+                    'action': 'close_position',
+                    'executed': False,
+                    'reason': 'Close position not fully implemented in demo mode'
+                }
+            
             else:
-                raise ValueError(f"Unknown action type: {action_type}")
+                raise ValueError(f"Unknown action type: {action_type.name}")
         
         except Exception as e:
             logger.error(f"Action execution failed: {e}")
             return {
-                'action': action_type,
+                'action': action_type.name.lower(),
                 'executed': False,
                 'error': str(e)
             }
@@ -549,7 +584,7 @@ async def create_trading_session(
 
 async def execute_paper_trade(
     session_name: str,
-    action_type: str,
+    action_type: ActionType,
     ticker: str,
     **kwargs
 ) -> Dict[str, Any]:
@@ -558,7 +593,7 @@ async def execute_paper_trade(
     
     Args:
         session_name: Name of the trading session
-        action_type: Type of action ('buy', 'sell', 'hold')
+        action_type: Type of action (ActionType enum)
         ticker: Market ticker
         **kwargs: Additional arguments for execute_trading_action
         
