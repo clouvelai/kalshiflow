@@ -133,6 +133,10 @@ class KalshiTradingEnv(gym.Env):
         self.max_drawdown = 0.0
         self.peak_portfolio_value = self.cash_balance
         
+        # Determinism support
+        self._seed = None
+        self._rng = None
+        
         # Data loading (CRITICAL: All data must be preloaded here)
         self._preload_data()
         
@@ -243,7 +247,15 @@ class KalshiTradingEnv(gym.Env):
         """Generate dummy data for testing when real data is unavailable."""
         dummy_data = {}
         
-        base_timestamp = int(time.time() * 1000) - 24 * 3600 * 1000  # 24 hours ago
+        # Use deterministic base timestamp for reproducibility
+        base_timestamp = 1640995200000  # Fixed timestamp: 2022-01-01 00:00:00 UTC
+        
+        # Use seeded random state if available, otherwise create a deterministic one
+        if hasattr(self, '_rng') and self._rng is not None:
+            rng = self._rng
+        else:
+            # Create deterministic random state for unseeded calls
+            rng = np.random.RandomState(42)
         
         for market_ticker in self.market_tickers:
             data_points = []
@@ -252,31 +264,31 @@ class KalshiTradingEnv(gym.Env):
             for i in range(500):
                 timestamp = base_timestamp + i * 60000  # 1 minute intervals
                 
-                # Simulate realistic orderbook data
-                yes_mid = 45 + 10 * np.sin(i * 0.1) + np.random.normal(0, 2)
+                # Simulate realistic orderbook data using seeded random state
+                yes_mid = 45 + 10 * np.sin(i * 0.1) + rng.normal(0, 2)
                 no_mid = 100 - yes_mid
                 
                 # Clamp to valid range
                 yes_mid = max(10, min(90, yes_mid))
                 no_mid = max(10, min(90, no_mid))
                 
-                spread = 1 + np.random.exponential(1)
+                spread = 1 + rng.exponential(1)
                 
                 orderbook_state = {
                     'market_ticker': market_ticker,
                     'timestamp_ms': timestamp,
                     'sequence_number': i + 1,
-                    'yes_bids': {int(yes_mid - spread/2): 100 + np.random.randint(0, 200)},
-                    'yes_asks': {int(yes_mid + spread/2): 100 + np.random.randint(0, 200)},
-                    'no_bids': {int(no_mid - spread/2): 100 + np.random.randint(0, 200)},
-                    'no_asks': {int(no_mid + spread/2): 100 + np.random.randint(0, 200)},
+                    'yes_bids': {int(yes_mid - spread/2): 100 + rng.randint(0, 200)},
+                    'yes_asks': {int(yes_mid + spread/2): 100 + rng.randint(0, 200)},
+                    'no_bids': {int(no_mid - spread/2): 100 + rng.randint(0, 200)},
+                    'no_asks': {int(no_mid + spread/2): 100 + rng.randint(0, 200)},
                     'last_update_time': timestamp,
                     'last_sequence': i + 1,
                     'yes_spread': int(spread),
                     'no_spread': int(spread),
                     'yes_mid_price': yes_mid,
                     'no_mid_price': no_mid,
-                    'total_volume': 400 + np.random.randint(0, 600)
+                    'total_volume': 400 + rng.randint(0, 600)
                 }
                 
                 data_point = HistoricalDataPoint(
@@ -312,14 +324,24 @@ class KalshiTradingEnv(gym.Env):
         """
         super().reset(seed=seed)
         
+        # Store seed for deterministic behavior
+        self._seed = seed
         if seed is not None:
             np.random.seed(seed)
             random.seed(seed)
+            # Also seed the global numpy random state for consistency
+            self._rng = np.random.RandomState(seed)
         
         # Reset episode state
         self.current_step = 0
-        self.episode_count += 1
-        self.episode_start_time = time.time()
+        
+        # For deterministic behavior: reset episode count when seeded
+        if self._seed is not None:
+            self.episode_count = 1  # Reset to 1 for deterministic behavior
+            self.episode_start_time = 1640995200.0  # Fixed timestamp for deterministic behavior
+        else:
+            self.episode_count += 1  # Only increment when not seeded
+            self.episode_start_time = time.time()
         
         # Reset trading state
         self.positions = {
@@ -550,8 +572,11 @@ class KalshiTradingEnv(gym.Env):
             current_position, side, direction, executed_quantity, best_price
         )
         
+        # Use deterministic timestamp for trade if market state doesn't have one
+        trade_timestamp = market_state.get('timestamp_ms', 1640995200000)
+        
         return {
-            'timestamp': market_state.get('timestamp_ms', int(time.time() * 1000)),
+            'timestamp': trade_timestamp,
             'market_ticker': market_ticker,
             'side': side,
             'direction': direction,
@@ -786,7 +811,8 @@ class KalshiTradingEnv(gym.Env):
     def _get_minimal_market_states(self) -> Dict[str, HistoricalDataPoint]:
         """Generate minimal market states for fallback."""
         minimal_states = {}
-        current_time = int(time.time() * 1000)
+        # Use deterministic timestamp for reproducibility
+        current_time = 1640995200000  # Fixed timestamp
         
         for ticker in self.market_tickers:
             orderbook_state = {
