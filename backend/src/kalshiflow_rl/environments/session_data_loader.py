@@ -4,6 +4,11 @@ Session-based data loading for market-agnostic RL environments.
 This module handles loading historical orderbook data by session_id to create
 episodes with guaranteed data continuity. Sessions provide natural multi-market
 coordination through timestamp grouping.
+
+PRICE FORMAT CONVENTION:
+- Database: Prices stored as integer cents (1-99)  
+- Features: Prices normalized to probability space (0.01-0.99)
+- Conversion: probability = cents / 100.0
 """
 
 from typing import Dict, List, Optional, Tuple, Any, Union
@@ -31,9 +36,9 @@ class SessionDataPoint:
     timestamp_ms: int
     markets_data: Dict[str, Dict[str, Any]]  # market_ticker -> reconstructed OrderbookState data
     
-    # Market-agnostic features extracted from orderbook states
-    spreads: Dict[str, Tuple[Optional[int], Optional[int]]] = field(default_factory=dict)  # ticker -> (yes_spread, no_spread)
-    mid_prices: Dict[str, Tuple[Optional[Decimal], Optional[Decimal]]] = field(default_factory=dict)  # ticker -> (yes_mid, no_mid)
+    # Market-agnostic features extracted from orderbook states (RAW FORMAT - database cents)
+    spreads: Dict[str, Tuple[Optional[int], Optional[int]]] = field(default_factory=dict)  # ticker -> (yes_spread_cents, no_spread_cents)
+    mid_prices: Dict[str, Tuple[Optional[Decimal], Optional[Decimal]]] = field(default_factory=dict)  # ticker -> (yes_mid_cents, no_mid_cents)
     depths: Dict[str, Dict[str, int]] = field(default_factory=dict)  # ticker -> {yes_bids_depth, yes_asks_depth, no_bids_depth, no_asks_depth}
     imbalances: Dict[str, Dict[str, float]] = field(default_factory=dict)  # ticker -> {yes_imbalance, no_imbalance}
     
@@ -117,11 +122,18 @@ class SessionDataLoader:
         groups it by timestamp for natural multi-market coordination,
         and pre-computes temporal features for efficiency.
         
+        PRICE FORMAT: Returns raw database format (cents) - conversion to 
+        probability space happens in feature extraction layer.
+        
         Args:
             session_id: Session identifier to load
             
         Returns:
-            SessionData with all timestamped data points, or None if not found
+            SessionData with all timestamped data points containing:
+            - Raw price data in cents (1-99) from database
+            - Pre-computed temporal features
+            - Market-agnostic aggregations
+            Returns None if session not found
         """
         logger.info(f"Loading session data for session_id: {session_id}")
         
@@ -289,11 +301,17 @@ class SessionDataLoader:
         This creates natural coordination points where multiple markets
         can be observed and acted upon simultaneously.
         
+        PRICE FORMAT: Preserves raw database cents format (1-99). 
+        Feature extraction will convert to probability space later.
+        
         Args:
-            raw_data: Raw reconstructed orderbook state data
+            raw_data: Raw reconstructed orderbook state data (prices in cents)
             
         Returns:
-            List of SessionDataPoint grouped by timestamp
+            List of SessionDataPoint grouped by timestamp with:
+            - spreads/mid_prices in raw cents format
+            - Volume/depth calculations as absolute values
+            - Imbalances as normalized ratios [-1, 1]
         """
         # Group data by timestamp
         timestamp_groups = defaultdict(dict)

@@ -107,18 +107,55 @@ RL_ORDERBOOK_FLUSH_INTERVAL=1.0      # Seconds between flushes
 RL_ORDERBOOK_SAMPLE_RATE=1           # Keep 1 out of N deltas
 ```
 
+## 📊 Price Format Convention
+
+**The RL system uses a consistent price format convention throughout:**
+
+### Database and API Layer (Cents Format)
+- All prices stored as **integers in cents** (1-99)
+- Matches Kalshi API format exactly
+- Examples: 45 cents = 45, 72 cents = 72
+- Used in: Database tables, API calls, orderbook snapshots/deltas
+
+### RL Feature Layer (Probability Format)  
+- All prices normalized to **probability space** (0.01-0.99)
+- Model never sees market tickers or raw cent values
+- Examples: 45 cents → 0.45 probability, 72 cents → 0.72 probability
+- Used in: Feature extraction, model observations, normalized rewards
+
+### Conversion Functions
+```python
+# Cents to probability
+probability = cents / 100.0
+
+# Probability to cents  
+cents = int(probability * 100)
+```
+
+**Why This Convention:**
+- **Consistency**: Same format used across all markets and time periods
+- **Normalization**: Features always in [0,1] range for stable training
+- **Market-Agnostic**: Model learns universal patterns without market-specific bias
+- **API Compatibility**: Database format matches Kalshi API exactly
+
 ## 🔧 Database Schema
+
+**CRITICAL PRICE FORMAT CONVENTION:**
+- **Database/API Storage**: All prices stored as integers in **cents** (1-99)
+- **RL Features**: All prices normalized to **probability** space (0.01-0.99)
+- **Conversion**: `probability = cents / 100.0` and `cents = int(probability * 100)`
 
 ### rl_orderbook_snapshots
 Full orderbook state snapshots for training data
 - `id`, `market_ticker`, `timestamp_ms`, `sequence_number`
-- `yes_bids`, `yes_asks`, `no_bids`, `no_asks` (JSONB)
-- `yes_spread`, `no_spread`, `yes_mid_price`, `no_mid_price`
+- `yes_bids`, `yes_asks`, `no_bids`, `no_asks` (JSONB) - prices as integer cents
+- `yes_spread`, `no_spread` (INTEGER) - spreads in cents  
+- `yes_mid_price`, `no_mid_price` (NUMERIC) - mid prices in cents
 
 ### rl_orderbook_deltas  
 Incremental orderbook updates
 - `id`, `market_ticker`, `timestamp_ms`, `sequence_number`
-- `side`, `action`, `price`, `old_size`, `new_size`
+- `side`, `action`, `price` (INTEGER) - price in cents, `old_size`, `new_size`
 
 ### rl_models
 Model registry with metadata
@@ -133,7 +170,7 @@ Training session tracking
 ### rl_trading_actions
 Detailed action logging
 - `id`, `episode_id`, `action_timestamp_ms`, `step_number`
-- `action_type`, `price`, `quantity`, `position_before`, `position_after`
+- `action_type`, `price` (INTEGER) - price in cents, `quantity`, `position_before`, `position_after`
 
 ## 🚦 Health Monitoring
 

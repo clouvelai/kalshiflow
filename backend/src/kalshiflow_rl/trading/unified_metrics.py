@@ -4,6 +4,12 @@ Unified position tracking and reward calculation for Kalshi RL environments.
 This module provides a single position tracking system that works identically
 for both training and inference, matching Kalshi API conventions exactly.
 Implements simplified reward calculation based on portfolio value change only.
+
+PRICE FORMAT CONVENTION:
+- INPUT: Trade prices in integer cents (1-99) matching Kalshi API
+- CALCULATIONS: Convert cents to dollars for portfolio value (cents / 100.0)
+- OUTPUT: Portfolio values and P&L in dollars for natural reward scaling
+- POSITION TRACKING: Uses Kalshi convention (+YES contracts, -NO contracts)
 """
 
 from typing import Dict, List, Any, Optional, Tuple
@@ -64,15 +70,21 @@ class UnifiedPositionTracker:
         """
         Update position from a trade execution.
         
+        PRICE FORMAT: Input price in cents (1-99), automatically converted to dollars
+        for portfolio calculations. Maintains Kalshi API compatibility.
+        
         Args:
             market_ticker: Market identifier
             side: "YES" or "NO" 
             quantity: Number of contracts (positive for buy, negative for sell)
-            price: Trade price in cents
+            price: Trade price in integer cents (1-99)
             timestamp: Trade timestamp
             
         Returns:
-            Trade information dictionary
+            Trade information dictionary with:
+            - price: Original price in cents
+            - trade_value: Calculated value in dollars (price * quantity / 100)
+            - position updates using Kalshi convention (+YES/-NO)
         """
         # Implementation placeholder - will be completed in M5
         if market_ticker not in self.positions:
@@ -124,11 +136,16 @@ class UnifiedPositionTracker:
         """
         Calculate unrealized P&L for all positions.
         
+        PRICE FORMAT: Input prices in cents, output P&L in dollars.
+        Automatically handles cents→dollars conversion for natural reward scaling.
+        
         Args:
-            market_prices: Current market prices {market_ticker: price_cents}
+            market_prices: Current market prices {market_ticker: price_cents (1-99)}
             
         Returns:
             Unrealized P&L by market {market_ticker: pnl_dollars}
+            - Positive values = profit, negative values = loss
+            - Values in dollars for direct use in reward calculation
         """
         # Implementation placeholder - will be completed in M5
         unrealized_pnl = {}
@@ -151,11 +168,16 @@ class UnifiedPositionTracker:
         """
         Calculate total portfolio value including cash and positions.
         
+        PRICE FORMAT: Input prices in cents, output total value in dollars.
+        This provides natural scaling for reward calculation without artificial normalization.
+        
         Args:
-            market_prices: Current market prices
+            market_prices: Current market prices {market_ticker: price_cents (1-99)}
             
         Returns:
-            Total portfolio value in dollars
+            Total portfolio value in dollars:
+            - cash_balance (dollars) + position_values (converted from cents)
+            - Direct input to reward calculator
         """
         # Implementation placeholder - will be completed in M5
         unrealized_pnl = self.calculate_unrealized_pnl(market_prices)

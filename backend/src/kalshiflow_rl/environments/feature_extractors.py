@@ -4,6 +4,12 @@ Market-agnostic feature extraction for Kalshi RL environments.
 This module provides universal feature extraction functions that work identically
 across all Kalshi markets. Features are normalized to probability space [0,1] and
 the model never sees market tickers or market-specific metadata.
+
+CRITICAL PRICE FORMAT CONVENTION:
+- INPUT: Raw orderbook data with prices in integer cents (1-99)
+- OUTPUT: Normalized features in probability space (0.01-0.99) 
+- CONVERSION: All price features = cents / 100.0
+- PURPOSE: Model learns universal patterns without market-specific bias
 """
 
 from typing import Dict, List, Any, Optional, Tuple
@@ -23,19 +29,27 @@ def extract_market_agnostic_features(orderbook_data: Dict[str, Any]) -> Dict[str
     All features are normalized to [0,1] probability space and work identically
     across different Kalshi markets. The model never sees market tickers.
     
+    PRICE CONVERSION: Input prices in cents (1-99) → Output probability (0.01-0.99)
+    - best_yes_price_norm = yes_price_cents / 100.0  
+    - spread_norm = spread_cents / 100.0
+    - mid_price_norm = mid_price_cents / 100.0
+    
     Args:
-        orderbook_data: Orderbook snapshot for a single market
+        orderbook_data: Orderbook snapshot with prices in integer cents (1-99)
         
     Returns:
-        Dictionary of normalized features in [0,1] range
+        Dictionary of normalized features in [0,1] probability range:
+        - All price features converted from cents to probability
+        - Volume features normalized to [0,1] 
+        - Ratios and indicators naturally in [-1,1] or [0,1]
     """
     # Implementation placeholder - will be completed in M4
     features = {
-        # Price and spread features (normalized to [0,1])
-        'best_yes_price_norm': 0.5,        # Best YES price / 100 cents
-        'best_no_price_norm': 0.5,         # Best NO price / 100 cents  
-        'spread_norm': 0.1,                # (ask - bid) / 100 cents
-        'mid_price_norm': 0.5,             # (bid + ask) / 200 cents
+        # Price and spread features (cents → probability conversion)
+        'best_yes_price_norm': 0.5,        # yes_price_cents / 100.0 → [0.01, 0.99]
+        'best_no_price_norm': 0.5,         # no_price_cents / 100.0 → [0.01, 0.99]  
+        'spread_norm': 0.1,                # spread_cents / 100.0 → [0.01, 0.99]
+        'mid_price_norm': 0.5,             # mid_price_cents / 100.0 → [0.01, 0.99]
         
         # Volume and liquidity features
         'yes_volume_norm': 0.5,            # YES side volume / max_volume
@@ -153,16 +167,21 @@ def build_observation_from_session_data(
     This is the shared function used by both training and inference
     to ensure consistency. All features are market-agnostic.
     
+    PRICE CONVERSION: Automatically converts input prices from cents to probability:
+    - session_data contains raw cents (1-99) from database
+    - extract_market_agnostic_features() converts to probability (0.01-0.99)
+    - Model receives normalized features only
+    
     Args:
-        session_data: Current session data point
-        historical_data: Historical context for temporal features
+        session_data: Current session data point (prices in cents)
+        historical_data: Historical context for temporal features (prices in cents)
         position_data: Current portfolio positions
-        portfolio_value: Total portfolio value
-        cash_balance: Available cash
+        portfolio_value: Total portfolio value in dollars
+        cash_balance: Available cash in dollars
         max_markets: Maximum markets to include in observation
         
     Returns:
-        Observation vector as numpy array
+        Observation vector as numpy array with all features in [0,1] or [-1,1] range
     """
     # Implementation placeholder - will be completed in M4
     observation_parts = []

@@ -4,6 +4,17 @@ PostgreSQL database schema and operations for RL Trading Subsystem.
 Manages all RL-specific tables including orderbook snapshots, deltas,
 model registry, trading episodes, and trading actions. Provides
 async connection management and batch write operations.
+
+CRITICAL PRICE FORMAT CONVENTION:
+All prices in database tables are stored as INTEGER CENTS (1-99) to match
+Kalshi API format exactly. This ensures:
+- API compatibility: Direct storage of Kalshi orderbook data
+- Precision: No floating point rounding errors  
+- Consistency: Same format across all tables and operations
+- Performance: Integer operations faster than decimal
+
+The RL feature extraction layer converts cents to probability (cents/100.0)
+for model training, but database always stores raw cents.
 """
 
 import asyncio
@@ -178,14 +189,14 @@ class RLDatabase:
                 market_ticker VARCHAR(100) NOT NULL,
                 timestamp_ms BIGINT NOT NULL,
                 sequence_number BIGINT NOT NULL,
-                yes_bids JSONB NOT NULL,  -- {price: size} mapping
-                yes_asks JSONB NOT NULL,  -- {price: size} mapping
-                no_bids JSONB NOT NULL,   -- {price: size} mapping
-                no_asks JSONB NOT NULL,   -- {price: size} mapping
-                yes_spread INTEGER,       -- spread in cents
-                no_spread INTEGER,        -- spread in cents
-                yes_mid_price DECIMAL(10,4),
-                no_mid_price DECIMAL(10,4),
+                yes_bids JSONB NOT NULL,  -- {price_cents: size} mapping, prices 1-99
+                yes_asks JSONB NOT NULL,  -- {price_cents: size} mapping, prices 1-99
+                no_bids JSONB NOT NULL,   -- {price_cents: size} mapping, prices 1-99
+                no_asks JSONB NOT NULL,   -- {price_cents: size} mapping, prices 1-99
+                yes_spread INTEGER,       -- spread in cents (1-99)
+                no_spread INTEGER,        -- spread in cents (1-99)
+                yes_mid_price DECIMAL(10,4), -- mid price in cents (1.0000-99.0000)
+                no_mid_price DECIMAL(10,4),  -- mid price in cents (1.0000-99.0000)
                 total_volume BIGINT,
                 created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
             );
@@ -245,7 +256,7 @@ class RLDatabase:
                 sequence_number BIGINT NOT NULL,
                 side VARCHAR(10) NOT NULL,     -- 'yes' or 'no'
                 action VARCHAR(10) NOT NULL,   -- 'add', 'remove', 'update'
-                price INTEGER NOT NULL,       -- price in cents
+                price INTEGER NOT NULL,       -- price in cents (1-99)
                 old_size BIGINT,              -- previous size (for updates/removes)
                 new_size BIGINT,              -- new size (for adds/updates)
                 created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
@@ -439,7 +450,7 @@ class RLDatabase:
                 action_timestamp_ms BIGINT NOT NULL,
                 step_number INTEGER NOT NULL,
                 action_type VARCHAR(20) NOT NULL,         -- 'buy_yes', 'buy_no', 'sell_yes', 'sell_no', 'hold'
-                price INTEGER,                            -- price in cents (null for hold)
+                price INTEGER,                            -- price in cents (1-99, null for hold)
                 quantity BIGINT,                          -- quantity (null for hold)
                 position_before JSONB,                    -- position before action {yes_shares: X, no_shares: Y, balance: Z}
                 position_after JSONB,                     -- position after action
