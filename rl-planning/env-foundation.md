@@ -1038,12 +1038,14 @@ class UnifiedTradingSystem:
 
 ## Implementation Strategy: Clean Slate Approach
 
-### Recommended Approach: Build New, Then Delete Old
+### Recommended Approach: Delete First, Then Build Fresh
 
-After careful analysis, the **optimal strategy** is to build the new system in parallel, then delete the old one once validated. This avoids:
+After careful analysis, the **optimal strategy** is to DELETE the old system first, then build fresh from scratch. This avoids:
 1. Wasting time fixing obsolete tests
-2. Breaking existing functionality during development
+2. Temptation to reference broken old code
 3. Getting bogged down in legacy code refactoring
+4. Confusion about which implementation is active
+5. Accidentally importing old broken modules
 
 ### Step-by-Step Implementation Plan
 
@@ -1070,8 +1072,9 @@ rm backend/tests/test_rl/test_performance.py
 # ✅ backend/tests/test_rl/test_orderbook_*.py - any orderbook tests
 # ✅ backend/tests/test_rl/test_historical_data_loader.py - data loading works!
 
-# Create v2 test directory
-mkdir -p backend/tests/test_rl/tests_v2
+# Create organized test directories for new implementation
+mkdir -p backend/tests/test_rl/environment
+mkdir -p backend/tests/test_rl/training
 
 # Delete old training/eval scripts (these are definitely obsolete)
 rm backend/scripts/train_rl_agent.py
@@ -1086,7 +1089,7 @@ git commit -m "chore: Delete old RL environment (keep working orderbook collecti
 - Removed environment tests that validated incorrect behavior
 - KEPT orderbook collection (working correctly)
 - KEPT orderbook tests (test_rl_orderbook_e2e.py, etc.)
-- Clean slate for market-agnostic v2 environment"
+- Clean slate for market-agnostic environment"
 ```
 
 **Why delete FIRST?**
@@ -1096,7 +1099,7 @@ git commit -m "chore: Delete old RL environment (keep working orderbook collecti
 4. **Forces fresh thinking** about the problem
 5. **Tests can't accidentally pass** for wrong reasons
 
-#### Step 2: Build Fresh V2 Structure (Day 2-3)
+#### Step 2: Build Fresh Structure (Day 2-3)
 ```bash
 backend/src/kalshiflow_rl/
 ├── environments/              # NEW - Build fresh here
@@ -1109,7 +1112,7 @@ backend/src/kalshiflow_rl/
     └── unified_metrics.py     # NEW - Build fresh here
 ```
 
-**Now building in the MAIN location (not _v2 suffix):**
+**Now building in the MAIN location (no version suffix):**
 - No parallel structures to manage
 - No migration step needed later
 - Clear that this IS the implementation
@@ -1147,41 +1150,47 @@ class SessionDataLoader:
 
 #### Step 4: Write Minimal New Tests (Day 6)
 
-**Build tests in the existing test structure:**
+**Build tests in a properly organized structure:**
 
 ```bash
 backend/tests/test_rl/
-├── tests_v2/                       # NEW V2 TESTS HERE
+├── environment/                    # NEW environment tests
 │   ├── __init__.py
-│   ├── test_market_agnostic.py    # Test v2 behavior
-│   ├── test_unified_metrics.py    # Test v2 metrics
-│   └── test_session_loader.py     # Test v2 data loading
+│   ├── test_market_agnostic.py    # Test new environment behavior
+│   ├── test_unified_metrics.py    # Test unified metrics
+│   └── test_session_loader.py     # Test session data loading
+├── training/                       # Training infrastructure tests
+│   ├── __init__.py
+│   └── test_training_pipeline.py
+└── orderbook/                      # KEEP existing working tests
+    └── test_rl_orderbook_e2e.py
 ```
 
-**Configure pytest to run V2 tests:**
+**Configure pytest to run new tests:**
 
 ```bash
-# backend/tests/test_rl/tests_v2/conftest.py
+# backend/tests/test_rl/environment/conftest.py
 """
-V2 Test Configuration
+Environment Test Configuration
 
 These tests validate the NEW correct behavior.
-Old V1 code has been deleted - there's nothing to compare against.
+Old code has been deleted - there's nothing to compare against.
 """
 
 # Run with:
-pytest tests/test_rl/tests_v2/  # Only v2 tests
+pytest tests/test_rl/environment/  # Environment tests
+pytest tests/test_rl/  # All RL tests
 ```
 
-**V2 Test Philosophy - Start from ZERO assumptions:**
+**New Test Philosophy - Start from ZERO assumptions:**
 
 ```python
-# tests_v2/test_market_agnostic.py
+# test_rl/environment/test_market_agnostic.py
 """
-V2 Environment Tests
+Market-Agnostic Environment Tests
 
-IMPORTANT: These tests assume NOTHING from V1.
-V1 never worked correctly. Its tests are irrelevant.
+IMPORTANT: These tests assume NOTHING from old implementation.
+Old environment never worked correctly. Its tests are irrelevant.
 We're testing the NEW correct behavior only.
 """
 
@@ -1198,7 +1207,7 @@ def test_position_convention():
     tracker = UnifiedPositionTracker()
     
     # This is the CORRECT behavior we want
-    # V1 had it wrong with separate yes/no positions
+    # Old implementation had it wrong with separate yes/no positions
     tracker.update_position("TEST", {
         'side': 'yes', 'action': 'buy', 
         'quantity': 10, 'price': 50
@@ -1215,7 +1224,7 @@ def test_reward_is_simple():
     """Reward = portfolio value change ONLY."""
     calc = UnifiedRewardCalculator()
     
-    # V1 had complex penalties - we don't want those
+    # Old implementation had complex penalties - we don't want those
     # This tests our NEW simple approach
     reward = calc.calculate_step_reward(10100, trades_executed=0)  # $100 gain
     assert 0.9 < reward < 1.1  # Roughly scaled by 0.01
@@ -1226,9 +1235,9 @@ def test_reward_is_simple():
 ```
 
 **Don't waste time on:**
-- ❌ Comparing V2 behavior to V1 tests
-- ❌ Making V2 pass any V1 test
-- ❌ Looking at V1 tests for "inspiration"
+- ❌ Comparing new behavior to old tests
+- ❌ Making new env pass any old test
+- ❌ Looking at old tests for "inspiration"
 - ❌ Comprehensive test coverage initially
 
 #### Step 5: Validation Checkpoint (Day 7)
@@ -1236,12 +1245,12 @@ def test_reward_is_simple():
 **Quick validation of the fresh implementation:**
 
 ```python
-# scripts/validate_v2_environment.py
+# scripts/validate_new_environment.py
 """
 Validate the new implementation works end-to-end.
 No comparison to old code needed - it's already deleted!
 """
-def validate_v2():
+def validate_new_env():
     # 1. Can we create the environment?
     env = MarketAgnosticKalshiEnv(session_id="test")
     
@@ -1257,10 +1266,10 @@ def validate_v2():
     model = PPO("MlpPolicy", env, verbose=0)
     model.learn(total_timesteps=1000)
     
-    print("✅ V2 environment validated!")
+    print("✅ New environment validated!")
 
 if __name__ == "__main__":
-    validate_v2()
+    validate_new_env()
 ```
 
 #### Step 6: Build Forward (Day 8+)
@@ -1273,7 +1282,7 @@ if __name__ == "__main__":
 ### Critical Success Factors
 
 #### DO ✅
-- Build new system in parallel folder
+- Delete old system completely before building
 - Use completely new class names initially
 - Test only core functionality
 - Delete old code aggressively once validated
@@ -1299,7 +1308,7 @@ git checkout main -- tests/
 But commit the deletion as a clear break:
 ```bash
 git add -A
-git commit -m "feat: Replace market-specific env with market-agnostic v2
+git commit -m "feat: Replace market-specific env with market-agnostic environment
 
 BREAKING CHANGE: Complete environment rewrite for 1.0 model
 - Deleted old multi-market environment
@@ -1311,10 +1320,10 @@ BREAKING CHANGE: Complete environment rewrite for 1.0 model
 ### Timeline Summary
 
 - **Day 1**: DELETE all old RL code and tests (clean slate)
-- **Days 2-3**: Create fresh V2 structure in main location
+- **Days 2-3**: Create fresh structure in main location
 - **Days 4-5**: Build new components from scratch
-- **Day 6**: Write minimal V2 tests in tests/test_rl/tests_v2/
-- **Day 7**: Validate V2 works end-to-end
+- **Day 6**: Write minimal tests in tests/test_rl/environment/
+- **Day 7**: Validate new environment works end-to-end
 - **Day 8+**: Iterate on clean codebase
 
 **Total: 7 days to clean implementation vs weeks of refactoring**
@@ -1569,28 +1578,35 @@ def test_end_to_end_training():
 3. **Performance**: Sub-millisecond step/reset operations maintained
 4. **Maintainability**: Clear separation of concerns and minimal dependencies
 
-## Migration Strategy
+## Implementation Strategy
 
-### Phase 1: Parallel Implementation
-- Build new environment alongside existing system
-- Validate performance parity on known test cases
-- Ensure backward compatibility with existing training infrastructure
+### Step 1: Complete Deletion (Day 1)
+- Delete ALL old environment code (`backend/src/kalshiflow_rl/environments/`)
+- Delete ALL old environment tests (but KEEP working orderbook tests)
+- Delete old training scripts that reference old environment
+- Commit the deletion as a clear break from the past
+- No temptation to look at or reference broken code
 
-### Phase 2: Gradual Transition
-- Update training scripts to use new session-based approach
-- Migrate model registry to support market-agnostic models  
-- Update inference actor to use shared observation builder
+### Step 2: Build Fresh (Days 2-7)
+- Build new environment directly in main location
+- Write new tests in properly organized structure (`test_rl/environment/`)
+- No parallel implementations to manage
+- No migration step needed - this IS the implementation
+- Fresh thinking without legacy assumptions
 
-### Phase 3: Legacy Cleanup
-- Remove old multi-market coordination code
-- Simplify configuration management
-- Archive obsolete testing infrastructure
+### Step 3: Validate and Ship (Day 8+)
+- Validate new implementation works end-to-end
+- No comparison to old code needed (it's deleted!)
+- Train simple baseline model to verify functionality
+- Ship when core functionality is proven
+- Iterate on clean codebase going forward
 
 ### Risk Mitigation
-- Comprehensive test suite before migration
-- Performance benchmarking at each phase
-- Rollback capability maintained throughout transition
-- Stakeholder validation of new approach
+- Everything is in git if rollback needed: `git checkout main -- backend/src/kalshiflow_rl/environments/`
+- But commit deletion as clear break to prevent confusion
+- Start with minimal functionality and build up
+- Test core behaviors only initially
+- Add complexity incrementally on solid foundation
 
 ## Conclusion
 
