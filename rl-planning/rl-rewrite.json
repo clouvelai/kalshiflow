@@ -173,7 +173,7 @@
     },
     {
       "id": "M3_SESSION_DATA_LOADER",
-      "goal": "Implement SessionDataLoader for database integration with session-based data loading",
+      "goal": "Implement SessionDataLoader to transform raw orderbook data from database into training-ready episodes",
       "phase": "FOUNDATION_REBUILD", 
       "priority": 2,
       "estimated_effort": "1.5 days",
@@ -186,42 +186,42 @@
           "verified": false
         },
         {
-          "instruction": "Implement SessionDataLoader.load_session() method with single query approach",
+          "instruction": "Implement database query methods to fetch snapshots and deltas for a session_id from rl_orderbook_snapshots and rl_orderbook_deltas tables",
           "file_paths": ["backend/src/kalshiflow_rl/environments/session_data_loader.py"],
           "completed": false,
           "verified": false
         },
         {
-          "instruction": "Implement _group_by_timestamp() for natural multi-market coordination",
+          "instruction": "Implement orderbook state reconstruction using existing OrderbookState.from_snapshot() and apply_delta() methods",
           "file_paths": ["backend/src/kalshiflow_rl/environments/session_data_loader.py"],
           "completed": false,
           "verified": false
         },
         {
-          "instruction": "Implement _add_temporal_features() for time gap and activity analysis",
+          "instruction": "Implement feature extraction from reconstructed orderbook states (spreads, depths, imbalances)",
           "file_paths": ["backend/src/kalshiflow_rl/environments/session_data_loader.py"],
           "completed": false,
           "verified": false
         },
         {
-          "instruction": "Add database connection management and error handling",
+          "instruction": "Implement _group_by_timestamp() for natural multi-market coordination and _add_temporal_features() for gaps/momentum",
           "file_paths": ["backend/src/kalshiflow_rl/environments/session_data_loader.py"],
           "completed": false,
           "verified": false
         },
         {
-          "instruction": "Write basic test for session data loading functionality",
+          "instruction": "Write comprehensive test validating full pipeline: database → orderbook reconstruction → features → episode data",
           "file_paths": ["backend/tests/test_rl/environment/test_session_loader.py"],
           "completed": false,
           "verified": false
         }
       ],
       "acceptance_criteria": [
-        "Can load complete session data with single database query",
-        "Multi-market coordination via timestamp grouping works",
-        "Temporal features (gaps, momentum) calculated correctly",
-        "Database errors handled gracefully",
-        "Test validates data loading with real session data"
+        "Can load raw orderbook snapshots and deltas from existing database tables",
+        "Reconstructs orderbook states correctly using existing OrderbookState functionality",
+        "Extracts market-agnostic features from reconstructed orderbook states",
+        "Multi-market data properly aligned by timestamp",
+        "After M3: Load any historical session, get complete training episode, feed directly to gym environment"
       ],
       "completed": false
     },
