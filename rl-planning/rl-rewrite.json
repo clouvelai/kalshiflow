@@ -95,10 +95,16 @@
           "single_market_simplicity": "Clean single-market episodes enable focused strategy learning"
         },
         "test_validation": {
-          "tests_passing": "23/23",
+          "tests_passing": "24/24", 
           "coverage": "Complete feature extraction pipeline tested",
           "consistency_verified": "Market-agnostic features validated across different market types",
           "observation_builder_tested": "Shared observation function validated for training/inference consistency"
+        },
+        "api_alignment_fix": {
+          "description": "Fixed portfolio feature extraction to use actual market prices instead of hardcoded 50 cents",
+          "implementation": "Added current_prices parameter to extract_portfolio_features() with mid-price extraction from session data",
+          "impact": "Accurate position valuation for both training (simulated) and deployment (real API data)",
+          "validation": "New test validates position value calculations vary correctly with market prices"
         }
       }
     }
@@ -400,38 +406,38 @@
     },
     {
       "id": "M6_PRIMITIVE_ACTION_SPACE",
-      "goal": "Implement primitive action space that allows agent to discover complex strategies through learning",
+      "goal": "Implement primitive action space for single-market trading that allows agent to discover complex strategies through learning",
       "phase": "CORE_IMPLEMENTATION",
       "priority": 2,
       "estimated_effort": "1 day", 
       "dependencies": ["M4_FEATURE_EXTRACTORS", "M5_UNIFIED_METRICS"],
       "steps": [
         {
-          "instruction": "Implement PrimitiveActionSpace class with HOLD/NOW/WAIT action types",
+          "instruction": "Implement PrimitiveActionSpace class with 9 discrete actions (HOLD + 4 NOW + 4 WAIT) for single market",
           "file_paths": ["backend/src/kalshiflow_rl/environments/action_space.py"],
           "completed": false,
           "verified": false
         },
         {
-          "instruction": "Implement decode_action() to convert RL actions to Kalshi orders",
+          "instruction": "Implement decode_action() to convert single RL action (0-8) to Kalshi order with fixed 10-contract size",
           "file_paths": ["backend/src/kalshiflow_rl/environments/action_space.py"],
           "completed": false,
           "verified": false
         },
         {
-          "instruction": "Add MultiDiscrete action space for simultaneous actions across markets",
+          "instruction": "Use spaces.Discrete(9) for single-market action space (NOT MultiDiscrete)",
           "file_paths": ["backend/src/kalshiflow_rl/environments/action_space.py"],
           "completed": false,
           "verified": false
         },
         {
-          "instruction": "Implement action validation and market state checking",
+          "instruction": "Implement action validation for single market state (check liquidity, position limits)",
           "file_paths": ["backend/src/kalshiflow_rl/environments/action_space.py"],
           "completed": false,
           "verified": false
         },
         {
-          "instruction": "Add documentation explaining how agents discover strategies (arbitrage, spread provision)",
+          "instruction": "Add documentation explaining single-market strategy discovery (agent learns when to buy/sell YES/NO)",
           "file_paths": ["backend/src/kalshiflow_rl/environments/action_space.py"],
           "completed": false,
           "verified": false
@@ -444,11 +450,11 @@
         }
       ],
       "acceptance_criteria": [
-        "Actions primitive enough for strategy discovery",
-        "MultiDiscrete enables simultaneous YES/NO actions (arbitrage)",
-        "HOLD/NOW/WAIT distinction clear and properly implemented",
-        "Action decoding produces valid Kalshi order format",
-        "Test demonstrates potential for strategy discovery"
+        "9 discrete actions for single market (HOLD + 4 NOW + 4 WAIT)",
+        "Fixed 10-contract sizing (no quantity decision by model)",
+        "spaces.Discrete(9) not MultiDiscrete (single market at a time)",
+        "Action decoding produces valid Kalshi order format for one market",
+        "Compatible with single-market observation space from M4"
       ],
       "completed": false
     },

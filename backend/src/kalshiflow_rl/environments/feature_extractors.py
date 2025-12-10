@@ -393,7 +393,8 @@ def extract_temporal_features(
 def extract_portfolio_features(
     position_data: Dict[str, Any],
     portfolio_value: float,
-    cash_balance: float
+    cash_balance: float,
+    current_prices: Optional[Dict[str, float]] = None
 ) -> Dict[str, float]:
     """
     Extract portfolio state features for observation.
@@ -405,6 +406,7 @@ def extract_portfolio_features(
         position_data: Current positions across markets (Kalshi format: {ticker: {position: int, cost_basis: float, realized_pnl: float}})
         portfolio_value: Total portfolio value in dollars
         cash_balance: Available cash in dollars
+        current_prices: Optional dict mapping ticker to mid price in probability space [0,1]
         
     Returns:
         Dictionary of portfolio features in [0,1] or [-1,1] range
@@ -460,9 +462,14 @@ def extract_portfolio_features(
                 else:
                     short_positions += 1
                 
-                # Estimate position value (assuming mid-market pricing for simplicity)
-                # This is an approximation since we don't have current market prices here
-                position_value = abs(position) * 50.0  # Assume 50 cents average price
+                # Calculate position value using current market prices
+                # Use actual market price from current_prices, fallback to 0.5 (50 cents) if not available
+                if current_prices and ticker in current_prices:
+                    mid_price_probability = current_prices[ticker]  # Already in [0,1] probability space
+                    position_value = abs(position) * (mid_price_probability * 100.0)  # Convert back to cents for calculation
+                else:
+                    # Fallback to 50 cents if price not available
+                    position_value = abs(position) * 50.0
                 position_values.append(position_value)
                 
                 # Unrealized P&L estimation (cost basis vs current value)
@@ -535,7 +542,16 @@ def extract_portfolio_features(
     
     # Leverage approximation (total position value / portfolio value)
     if position_data:
-        total_position_value = sum(abs(pos_info.get('position', 0)) * 50.0 for pos_info in position_data.values())  # Estimate
+        total_position_value = 0.0
+        for ticker, pos_info in position_data.items():
+            position = abs(pos_info.get('position', 0))
+            if current_prices and ticker in current_prices:
+                mid_price_probability = current_prices[ticker]
+                position_val = position * (mid_price_probability * 100.0)  # Convert back to cents
+            else:
+                position_val = position * 50.0  # Fallback to 50 cents
+            total_position_value += position_val
+        
         features['leverage'] = min(total_position_value / portfolio_value, 2.0) if portfolio_value > 0 else 0.0
         features['leverage'] = features['leverage'] / 2.0  # Normalize to [0,1]
     else:
@@ -639,7 +655,26 @@ def build_observation_from_session_data(
     
     # === PORTFOLIO FEATURES ===
     
-    portfolio_features = extract_portfolio_features(position_data, portfolio_value, cash_balance)
+    # Extract current market prices from session data for accurate position valuation
+    current_prices = {}
+    for market_ticker, market_data in session_data.markets_data.items():
+        # Calculate mid-price in probability space for each market
+        yes_bids = market_data.get('yes_bids', {})
+        yes_asks = market_data.get('yes_asks', {})
+        
+        # Get best prices
+        best_yes_bid = max(map(int, yes_bids.keys())) if yes_bids else None
+        best_yes_ask = min(map(int, yes_asks.keys())) if yes_asks else None
+        
+        # Calculate YES mid-price in probability space
+        if best_yes_bid is not None and best_yes_ask is not None:
+            yes_mid_cents = (best_yes_bid + best_yes_ask) / 2.0
+            yes_mid_probability = yes_mid_cents / 100.0  # Convert cents to probability
+            current_prices[market_ticker] = min(max(yes_mid_probability, 0.01), 0.99)  # Clamp to valid range
+        else:
+            current_prices[market_ticker] = 0.5  # Default to 50% if no prices available
+    
+    portfolio_features = extract_portfolio_features(position_data, portfolio_value, cash_balance, current_prices)
     observation_parts.extend(list(portfolio_features.values()))
     
     
@@ -685,7 +720,7 @@ def calculate_observation_space_size(max_markets: int = 1) -> int:
     )
     temporal_features = len(extract_temporal_features(dummy_current, []))
     
-    portfolio_features = len(extract_portfolio_features({}, 1000.0, 800.0))
+    portfolio_features = len(extract_portfolio_features({}, 1000.0, 800.0, {}))
     
     # Global features removed - were redundant with temporal features
     global_features = 0

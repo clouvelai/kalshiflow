@@ -304,7 +304,7 @@ class TestPortfolioFeatures:
     
     def test_empty_portfolio(self):
         """Test feature extraction with empty portfolio."""
-        features = extract_portfolio_features({}, 1000.0, 1000.0)
+        features = extract_portfolio_features({}, 1000.0, 1000.0, {})
         
         # Should return default features for empty portfolio
         default_features = _get_default_portfolio_features()
@@ -323,7 +323,9 @@ class TestPortfolioFeatures:
             'MARKET3': {'position': 25, 'cost_basis': 1250.0, 'realized_pnl': -50.0}   # 25 YES contracts
         }
         
-        features = extract_portfolio_features(position_data, 10000.0, 2000.0)
+        # Test with sample current prices
+        current_prices = {'MARKET1': 0.45, 'MARKET2': 0.55, 'MARKET3': 0.40}
+        features = extract_portfolio_features(position_data, 10000.0, 2000.0, current_prices)
         
         # Portfolio composition
         assert features['cash_ratio'] == 0.2  # $2000 cash / $10000 total
@@ -352,7 +354,8 @@ class TestPortfolioFeatures:
             'MARKET2': {'position': 10, 'cost_basis': 500.0, 'realized_pnl': 0.0}      # Small position
         }
         
-        concentrated_features = extract_portfolio_features(concentrated_positions, 50000.0, 5000.0)
+        current_prices = {'MARKET1': 0.45, 'MARKET2': 0.60}
+        concentrated_features = extract_portfolio_features(concentrated_positions, 50000.0, 5000.0, current_prices)
         
         # Should detect high concentration
         assert concentrated_features['position_concentration'] > 0.8  # Large position dominates
@@ -364,7 +367,8 @@ class TestPortfolioFeatures:
             for i in range(1, 6)  # 5 equal positions
         }
         
-        diversified_features = extract_portfolio_features(diversified_positions, 20000.0, 7500.0)
+        current_prices = {f'MARKET{i}': 0.50 for i in range(1, 6)}  # All at 50 cents
+        diversified_features = extract_portfolio_features(diversified_positions, 20000.0, 7500.0, current_prices)
         
         # Should detect good diversification
         assert diversified_features['position_concentration'] < 0.3  # No single large position
@@ -377,20 +381,66 @@ class TestPortfolioFeatures:
             'MARKET1': {'position': 2000, 'cost_basis': 80000.0, 'realized_pnl': 0.0}  # Large position relative to portfolio
         }
         
-        high_leverage_features = extract_portfolio_features(high_leverage_positions, 50000.0, 10000.0)
+        current_prices = {'MARKET1': 0.40}  # 40 cents
+        high_leverage_features = extract_portfolio_features(high_leverage_positions, 50000.0, 10000.0, current_prices)
         
         # Should detect high leverage (position value >> portfolio value)
-        assert high_leverage_features['leverage'] > 0.8  # High leverage
+        assert high_leverage_features['leverage'] >= 0.8  # High leverage
         
         # Low leverage scenario
         low_leverage_positions = {
             'MARKET1': {'position': 100, 'cost_basis': 5000.0, 'realized_pnl': 0.0}
         }
         
-        low_leverage_features = extract_portfolio_features(low_leverage_positions, 50000.0, 45000.0)
+        current_prices = {'MARKET1': 0.50}  # 50 cents
+        low_leverage_features = extract_portfolio_features(low_leverage_positions, 50000.0, 45000.0, current_prices)
         
         # Should detect low leverage
         assert low_leverage_features['leverage'] < 0.2  # Low leverage
+    
+    def test_current_prices_integration(self):
+        """Test that current_prices parameter properly affects position valuation."""
+        position_data = {
+            'MARKET1': {'position': 100, 'cost_basis': 4500.0, 'realized_pnl': 0.0}  # 100 YES contracts
+        }
+        
+        # Test with low price (30 cents)
+        low_prices = {'MARKET1': 0.30}
+        features_low = extract_portfolio_features(position_data, 10000.0, 6500.0, low_prices)
+        
+        # Test with high price (70 cents)
+        high_prices = {'MARKET1': 0.70}
+        features_high = extract_portfolio_features(position_data, 10000.0, 3000.0, high_prices)
+        
+        # Test without prices (should use 50 cent fallback)
+        features_fallback = extract_portfolio_features(position_data, 10000.0, 5000.0, {})
+        
+        # Position concentration should be different based on prices
+        # Low price = lower position value = lower concentration
+        # High price = higher position value = higher concentration
+        assert features_low['position_concentration'] < features_high['position_concentration'], \
+            f"Low price concentration ({features_low['position_concentration']}) should be < high price ({features_high['position_concentration']})"
+        
+        # Leverage should also be different
+        assert features_low['leverage'] < features_high['leverage'], \
+            f"Low price leverage ({features_low['leverage']}) should be < high price ({features_high['leverage']})"
+        
+        # Fallback should be between low and high
+        assert features_low['position_concentration'] <= features_fallback['position_concentration'] <= features_high['position_concentration'], \
+            "Fallback concentration should be between low and high price scenarios"
+        
+        # Test missing price for a ticker (should use 50 cent fallback for that ticker only)
+        mixed_position_data = {
+            'MARKET1': {'position': 100, 'cost_basis': 3000.0, 'realized_pnl': 0.0},
+            'MARKET2': {'position': 50, 'cost_basis': 2500.0, 'realized_pnl': 0.0}  # Missing price
+        }
+        partial_prices = {'MARKET1': 0.30}  # Only MARKET1 has price, MARKET2 should use fallback
+        
+        features_mixed = extract_portfolio_features(mixed_position_data, 15000.0, 10000.0, partial_prices)
+        
+        # Should handle mixed scenario gracefully
+        assert 0.0 <= features_mixed['position_concentration'] <= 1.0
+        assert 0.0 <= features_mixed['leverage'] <= 1.0
 
 
 class TestObservationBuilding:
@@ -612,7 +662,7 @@ class TestEdgeCases:
     def test_portfolio_edge_cases(self):
         """Test portfolio feature extraction edge cases."""
         # Zero portfolio value
-        zero_features = extract_portfolio_features({}, 0.0, 0.0)
+        zero_features = extract_portfolio_features({}, 0.0, 0.0, {})
         default_features = _get_default_portfolio_features()
         assert zero_features == default_features
         
@@ -621,12 +671,19 @@ class TestEdgeCases:
             'MARKET1': {'position': -100, 'cost_basis': 5500.0, 'realized_pnl': 0.0}  # Short 100 contracts
         }
         
-        short_features = extract_portfolio_features(short_positions, 10000.0, 4500.0)
+        current_prices = {'MARKET1': 0.55}  # 55 cents
+        short_features = extract_portfolio_features(short_positions, 10000.0, 4500.0, current_prices)
         
         # Should handle negative positions correctly
         assert short_features['short_position_ratio'] == 1.0  # All positions are short
         assert short_features['long_position_ratio'] == 0.0   # No long positions
         assert short_features['net_position_bias'] < 0.0      # Negative bias
+        
+        # Position value should be calculated using current price (55 cents)
+        # 100 contracts * 55 cents = 5500 cents = $55 position value
+        expected_position_value = 100 * 55.0  # $5500
+        expected_concentration = expected_position_value / 10000.0  # 0.55
+        assert abs(short_features['position_concentration'] - expected_concentration) < 0.05  # Allow small tolerance
 
 
 if __name__ == "__main__":

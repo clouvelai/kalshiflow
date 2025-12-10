@@ -21,7 +21,7 @@ from ..trading.unified_metrics import UnifiedPositionTracker, UnifiedRewardCalcu
 class SessionConfig:
     """Configuration for session-based episode generation."""
     session_pool: List[str]  # List of session_ids to sample from (extract from get_available_sessions)
-    max_markets: int = 5     # Maximum markets per episode
+    max_markets: int = 1     # Single market training (universal strategy across all markets)
     temporal_features: bool = True  # Include time gap and activity analysis
     cash_start: float = 1000.0      # Starting cash per episode
     
@@ -74,9 +74,9 @@ class MarketAgnosticKalshiEnv(gym.Env):
             dtype=np.float32
         )
         
-        # MultiDiscrete action space for simultaneous YES/NO actions
-        # Will be properly sized based on max_markets in M7
-        self.action_space = spaces.MultiDiscrete([3] * self.session_config.max_markets)
+        # Single market action space with 9 discrete actions
+        # HOLD(0) + 4 NOW actions + 4 WAIT actions for single market trading
+        self.action_space = spaces.Discrete(9)  # Single market at a time
         
     def reset(
         self, 
