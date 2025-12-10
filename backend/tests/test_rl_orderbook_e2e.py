@@ -4,6 +4,10 @@ End-to-end test for RL orderbook collector service.
 This is the CRITICAL test that validates the entire orderbook collector backend.
 It must pass before any deployment or major changes.
 
+IMPORTANT: This test starts its own backend service on port 8001.
+Make sure no other RL backend service is running before running this test,
+as shared global instances can cause event loop conflicts.
+
 Validates:
 - ✅ Multi-market orderbook subscriptions established
 - ✅ WebSocket manager accepts frontend connections
@@ -40,14 +44,13 @@ import uvicorn
 backend_path = Path(__file__).parent.parent / "src"
 sys.path.insert(0, str(backend_path))
 
-# Configure test markets (use real markets that are likely to have activity)
-TEST_MARKETS = ["KXCABOUT-29", "KXFEDDECISION-25DEC", "KXLLM1-25DEC31"]
-os.environ["RL_MARKET_TICKERS"] = ",".join(TEST_MARKETS)
+# Configure discovery mode with limit of 3 markets for testing
+# This is more robust than hardcoding specific markets that might close
+os.environ["RL_MARKET_MODE"] = "discovery"
+os.environ["ORDERBOOK_MARKET_LIMIT"] = "3"
+TEST_MARKET_COUNT = 3  # Expected number of markets in discovery mode
 
-# Import after setting environment
-from kalshiflow_rl.app import app
-from kalshiflow_rl.config import config
-from kalshiflow_rl.data.database import rl_db
+# Import after setting environment - but delay app import to avoid event loop issues
 
 # Test configuration
 TEST_TIMEOUT = 15  # seconds total for test
@@ -100,6 +103,10 @@ class E2ETestValidator:
 
 @pytest.mark.asyncio
 async def test_rl_orderbook_collector_e2e():
+    # Import app here to avoid event loop issues
+    from kalshiflow_rl.app import app
+    from kalshiflow_rl.config import config
+    from kalshiflow_rl.data.database import rl_db
     """
     Comprehensive E2E test for the RL orderbook collector service.
     
@@ -115,7 +122,7 @@ async def test_rl_orderbook_collector_e2e():
     """
     validator = E2ETestValidator()
     validator.info("Starting RL Orderbook Collector E2E Test")
-    validator.info(f"Configured markets: {', '.join(TEST_MARKETS)}")
+    validator.info(f"Using discovery mode with limit of {TEST_MARKET_COUNT} markets")
     
     # Track resources for cleanup
     client = None
@@ -172,8 +179,8 @@ async def test_rl_orderbook_collector_e2e():
             
             # Check configured markets
             validator.validate(
-                health_data.get("markets_count") == len(TEST_MARKETS),
-                f"Configured markets count: {health_data.get('markets_count')}"
+                health_data.get("markets_count") == TEST_MARKET_COUNT,
+                f"Configured markets count: {health_data.get('markets_count')} (expected {TEST_MARKET_COUNT})"
             )
             
             # Check components
@@ -244,8 +251,8 @@ async def test_rl_orderbook_collector_e2e():
                 
                 markets_list = connection_data.get("data", {}).get("markets", [])
                 validator.validate(
-                    len(markets_list) == len(TEST_MARKETS),
-                    f"Connection message contains {len(markets_list)} markets"
+                    len(markets_list) == TEST_MARKET_COUNT,
+                    f"Connection message contains {len(markets_list)} markets (expected {TEST_MARKET_COUNT})"
                 )
                 
                 # ============================================
@@ -357,8 +364,11 @@ async def test_rl_orderbook_collector_e2e():
             
             finally:
                 # Close WebSocket if open
-                if websocket and websocket.open:
-                    await websocket.close()
+                if websocket:
+                    try:
+                        await websocket.close()
+                    except Exception:
+                        pass
             
             # ============================================
             # 9. Test graceful shutdown
@@ -380,8 +390,11 @@ async def test_rl_orderbook_collector_e2e():
     
     finally:
         # Clean up any remaining resources
-        if websocket and websocket.open:
-            await websocket.close()
+        if websocket:
+            try:
+                await websocket.close()
+            except Exception:
+                pass
         
         # Print final summary
         validator.info("\n" + "="*60)
@@ -392,6 +405,9 @@ async def test_rl_orderbook_collector_e2e():
 
 def test_rl_health_endpoint_only():
     """Simplified test that only checks the health endpoint."""
+    # Import app here to avoid event loop issues
+    from kalshiflow_rl.app import app
+    
     # Use TestClient for simpler sync testing
     with TestClient(app) as client:
         response = client.get("/rl/health")
