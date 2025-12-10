@@ -5,7 +5,7 @@
     "version": "1.0",
     "description": "Complete RL environment rewrite - market-agnostic, session-based architecture",
     "strategy": "DELETE_FIRST_BUILD_FRESH",
-    "total_milestones": 12,
+    "total_milestones": 13,
     "estimated_duration": "4 weeks",
     "phases": [
       "SURGICAL_DELETION",
@@ -106,6 +106,12 @@
           "impact": "Accurate position valuation for both training (simulated) and deployment (real API data)",
           "validation": "New test validates position value calculations vary correctly with market prices"
         }
+      },
+      "kalshi_limit_order_discovery": {
+        "discovery_date": "2025-12-10",
+        "critical_finding": "Kalshi only supports limit orders, no market orders",
+        "impact": "Original 5-action stateless design incompatible with Kalshi's trading constraints",
+        "required_action": "Update action space to handle limit order pricing and order state management"
       }
     }
   },
@@ -405,27 +411,91 @@
       "completed": false
     },
     {
+      "id": "M4b_LIMIT_ORDER_ACTION_SPACE",
+      "goal": "Update action space to work with Kalshi's limit-only order system",
+      "phase": "FOUNDATION_REBUILD",
+      "priority": 1,
+      "estimated_effort": "1.5 days",
+      "dependencies": ["M4_FEATURE_EXTRACTORS"],
+      "critical_discovery_context": "Kalshi only supports limit orders (no market orders), requiring significant action space redesign",
+      "design_decisions": {
+        "action_count": "7 actions: HOLD, PLACE_BUY_YES_LIMIT, PLACE_SELL_YES_LIMIT, PLACE_BUY_NO_LIMIT, PLACE_SELL_NO_LIMIT, CANCEL_ALL, ADJUST_AGGRESSIVE",
+        "order_management": "One order per market rule (simplifies state management)",
+        "contract_sizing": "Fixed 10 contract sizing (maintained from original M6 design)",
+        "pricing_strategy": "Orders use actual limit prices based on bid/ask, not market type",
+        "state_tracking": "Add order tracking features to observation space"
+      },
+      "steps": [
+        {
+          "instruction": "Update action_space.py to handle limit order pricing using bid/ask based calculations",
+          "file_paths": ["backend/src/kalshiflow_rl/environments/action_space.py"],
+          "completed": false,
+          "verified": false
+        },
+        {
+          "instruction": "Add order state tracking with open_orders dictionary for position awareness",
+          "file_paths": ["backend/src/kalshiflow_rl/environments/action_space.py"],
+          "completed": false,
+          "verified": false
+        },
+        {
+          "instruction": "Update observation space to include order status features (pending orders, order ages, etc.)",
+          "file_paths": ["backend/src/kalshiflow_rl/environments/feature_extractors.py"],
+          "completed": false,
+          "verified": false
+        },
+        {
+          "instruction": "Implement cancel/amend order logic for CANCEL_ALL and ADJUST_AGGRESSIVE actions",
+          "file_paths": ["backend/src/kalshiflow_rl/environments/action_space.py"],
+          "completed": false,
+          "verified": false
+        },
+        {
+          "instruction": "Add integration with user-fills WebSocket for fill tracking and position updates",
+          "file_paths": ["backend/src/kalshiflow_rl/environments/action_space.py"],
+          "completed": false,
+          "verified": false
+        },
+        {
+          "instruction": "Update tests for limit order behavior and order state management",
+          "file_paths": ["backend/tests/test_rl/environment/test_action_space.py"],
+          "completed": false,
+          "verified": false
+        }
+      ],
+      "acceptance_criteria": [
+        "Actions generate valid Kalshi limit orders with proper pricing",
+        "Order state tracked between agent steps",
+        "Observation includes order awareness features",
+        "Can cancel and amend existing orders",
+        "Works with Kalshi's limit-only constraint",
+        "Maintains fixed 10-contract sizing for simplicity"
+      ],
+      "completed": false
+    },
+    {
       "id": "M6_PRIMITIVE_ACTION_SPACE",
-      "goal": "Implement primitive action space for single-market trading that allows agent to discover complex strategies through learning",
+      "goal": "Implement simplified 5-action primitive action space for truly stateless single-market trading",
       "phase": "CORE_IMPLEMENTATION",
       "priority": 2,
       "estimated_effort": "1 day", 
-      "dependencies": ["M4_FEATURE_EXTRACTORS", "M5_UNIFIED_METRICS"],
+      "dependencies": ["M4b_LIMIT_ORDER_ACTION_SPACE", "M5_UNIFIED_METRICS"],
+      "simplification_reason": "Removed WAIT actions (limit orders) for truly stateless operation - only immediate market orders",
       "steps": [
         {
-          "instruction": "Implement PrimitiveActionSpace class with 9 discrete actions (HOLD + 4 NOW + 4 WAIT) for single market",
+          "instruction": "Implement PrimitiveActionSpace class with 5 discrete actions (HOLD + 4 NOW) for single market",
           "file_paths": ["backend/src/kalshiflow_rl/environments/action_space.py"],
           "completed": false,
           "verified": false
         },
         {
-          "instruction": "Implement decode_action() to convert single RL action (0-8) to Kalshi order with fixed 10-contract size",
+          "instruction": "Implement decode_action() to convert single RL action (0-4) to Kalshi order with fixed 10-contract size",
           "file_paths": ["backend/src/kalshiflow_rl/environments/action_space.py"],
           "completed": false,
           "verified": false
         },
         {
-          "instruction": "Use spaces.Discrete(9) for single-market action space (NOT MultiDiscrete)",
+          "instruction": "Use spaces.Discrete(5) for single-market action space (NOT MultiDiscrete)",
           "file_paths": ["backend/src/kalshiflow_rl/environments/action_space.py"],
           "completed": false,
           "verified": false
@@ -437,23 +507,24 @@
           "verified": false
         },
         {
-          "instruction": "Add documentation explaining single-market strategy discovery (agent learns when to buy/sell YES/NO)",
+          "instruction": "Add documentation explaining stateless design and single-market strategy discovery",
           "file_paths": ["backend/src/kalshiflow_rl/environments/action_space.py"],
           "completed": false,
           "verified": false
         },
         {
-          "instruction": "Write tests for action decoding and strategy discovery potential",
+          "instruction": "Write tests for 5-action decoding and stateless operation",
           "file_paths": ["backend/tests/test_rl/environment/test_action_space.py"],
           "completed": false,
           "verified": false
         }
       ],
       "acceptance_criteria": [
-        "9 discrete actions for single market (HOLD + 4 NOW + 4 WAIT)",
+        "5 discrete actions for single market (HOLD + 4 NOW, NO WAIT actions)",
         "Fixed 10-contract sizing (no quantity decision by model)",
-        "spaces.Discrete(9) not MultiDiscrete (single market at a time)",
+        "spaces.Discrete(5) not MultiDiscrete (single market at a time)",
         "Action decoding produces valid Kalshi order format for one market",
+        "Truly stateless - no pending orders to track",
         "Compatible with single-market observation space from M4"
       ],
       "completed": false
@@ -464,7 +535,7 @@
       "phase": "CORE_IMPLEMENTATION", 
       "priority": 1,
       "estimated_effort": "2.5 days",
-      "dependencies": ["M3_SESSION_DATA_LOADER", "M4_FEATURE_EXTRACTORS", "M5_UNIFIED_METRICS", "M6_PRIMITIVE_ACTION_SPACE"],
+      "dependencies": ["M3_SESSION_DATA_LOADER", "M4b_LIMIT_ORDER_ACTION_SPACE", "M5_UNIFIED_METRICS", "M6_PRIMITIVE_ACTION_SPACE"],
       "steps": [
         {
           "instruction": "Implement MarketAgnosticKalshiEnv.__init__() with SessionConfig parameter",
@@ -797,7 +868,7 @@
     },
     "FOUNDATION_REBUILD": {
       "description": "Build core infrastructure components from scratch with proper architecture", 
-      "milestones": ["M2_FRESH_STRUCTURE", "M3_SESSION_DATA_LOADER", "M4_FEATURE_EXTRACTORS", "M5_UNIFIED_METRICS"],
+      "milestones": ["M2_FRESH_STRUCTURE", "M3_SESSION_DATA_LOADER", "M4_FEATURE_EXTRACTORS", "M4b_LIMIT_ORDER_ACTION_SPACE", "M5_UNIFIED_METRICS"],
       "key_principle": "Fresh implementation directly in main location, no parallel structures"
     },
     "CORE_IMPLEMENTATION": {
@@ -837,7 +908,7 @@
     }
   },
   "implementation_timeline": {
-    "week_1": ["M1_SURGICAL_DELETION", "M2_FRESH_STRUCTURE", "M3_SESSION_DATA_LOADER", "M4_FEATURE_EXTRACTORS"],
+    "week_1": ["M1_SURGICAL_DELETION", "M2_FRESH_STRUCTURE", "M3_SESSION_DATA_LOADER", "M4_FEATURE_EXTRACTORS", "M4b_LIMIT_ORDER_ACTION_SPACE"],
     "week_2": ["M5_UNIFIED_METRICS", "M6_PRIMITIVE_ACTION_SPACE", "M7_MARKET_AGNOSTIC_ENV"],
     "week_3": ["M8_CURRICULUM_LEARNING", "M9_SB3_INTEGRATION", "M10_E2E_VALIDATION"],
     "week_4": ["M11_INFERENCE_INTEGRATION", "M12_DOCUMENTATION_CLEANUP", "Final validation and deployment"]
