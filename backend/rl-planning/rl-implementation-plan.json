@@ -1,0 +1,613 @@
+{
+  "metadata": {
+    "title": "Kalshi Flow RL Trading Subsystem Implementation Plan",
+    "version": "2.0",
+    "created": "2024-12-10",
+    "last_updated": "2024-12-10",
+    "architecture": "single-market-training",
+    "description": "Single-market episode training to learn universal patterns, then deploy to hundreds of markets in parallel"
+  },
+  "phases": {
+    "PHASE_1_DATA_PIPELINE": "Data collection and session management",
+    "PHASE_2_RL_FOUNDATION": "Core RL components with single-market training",
+    "PHASE_3_TRADING_LOGIC": "Inference and deployment to multiple markets",
+    "PHASE_4_VISUALIZATION": "UI and monitoring",
+    "PHASE_5_MVP_COMPLETION": "Integration and testing"
+  },
+  "critical_architectural_requirements": [
+    "Single-market episodes with universal pattern learning",
+    "Market-agnostic feature extraction (no ticker exposure)",
+    "Session-based curriculum learning with market diversity",
+    "Unified observation logic for training/inference consistency",
+    "Non-blocking async queues for all hot paths",
+    "Pipeline isolation (training and inference separate)",
+    "Paper trading only (no live trading)",
+    "One SharedOrderbookState per market for inference deployment"
+  ],
+  "milestones": [
+    {
+      "id": "M1_ASYNC_INFRASTRUCTURE", 
+      "goal": "Implement async queue infrastructure for non-blocking database writes",
+      "phase": "PHASE_1_DATA_PIPELINE",
+      "priority": 1,
+      "estimated_effort": "1-2 days",
+      "dependencies": [],
+      "steps": [
+        {
+          "instruction": "Implement OrderbookWriteQueue with async batch processing",
+          "completed": false,
+          "verified": false
+        },
+        {
+          "instruction": "Add queue metrics and monitoring",
+          "completed": false,
+          "verified": false
+        },
+        {
+          "instruction": "Test queue under high-frequency orderbook updates",
+          "completed": false,
+          "verified": false
+        }
+      ],
+      "acceptance_criteria": [
+        "No WebSocket message drops during queue writes",
+        "Configurable batch sizes and flush intervals",
+        "Queue overflow protection and backpressure handling"
+      ],
+      "completed": false
+    },
+    {
+      "id": "M2_WEBSOCKET_CLIENT",
+      "goal": "Implement non-blocking WebSocket orderbook client for real-time data",
+      "phase": "PHASE_1_DATA_PIPELINE", 
+      "priority": 1,
+      "estimated_effort": "1-2 days",
+      "dependencies": ["M1_ASYNC_INFRASTRUCTURE"],
+      "steps": [
+        {
+          "instruction": "Implement KalshiOrderbookClient with async WebSocket connection",
+          "completed": false,
+          "verified": false
+        },
+        {
+          "instruction": "Add reconnection logic and error handling", 
+          "completed": false,
+          "verified": false
+        },
+        {
+          "instruction": "Integrate with OrderbookWriteQueue for non-blocking writes",
+          "completed": false,
+          "verified": false
+        }
+      ],
+      "acceptance_criteria": [
+        "Maintains real-time orderbook updates across multiple markets",
+        "Zero message loss during database write operations", 
+        "Automatic reconnection on connection failures"
+      ],
+      "completed": false
+    },
+    {
+      "id": "M3_SESSION_DATA_LOADER",
+      "goal": "Bridge raw orderbook data to training episodes with session-based grouping",
+      "phase": "PHASE_1_DATA_PIPELINE",
+      "priority": 2, 
+      "estimated_effort": "1-2 days",
+      "dependencies": [],
+      "steps": [
+        {
+          "instruction": "Implement SessionDataLoader for historical data access",
+          "completed": true,
+          "verified": true
+        },
+        {
+          "instruction": "Add session-based data grouping and filtering",
+          "completed": true, 
+          "verified": true
+        },
+        {
+          "instruction": "Validate data quality and completeness",
+          "completed": true,
+          "verified": true
+        }
+      ],
+      "acceptance_criteria": [
+        "Groups orderbook data into trading sessions",
+        "Provides consistent data format for training",
+        "Validates data quality and handles missing data",
+        "Successfully loads 500+ market sessions for training"
+      ],
+      "completed": true
+    },
+    {
+      "id": "M4_FEATURE_EXTRACTORS",
+      "goal": "Implement market-agnostic feature extraction with universal normalization",
+      "phase": "PHASE_2_RL_FOUNDATION",
+      "priority": 1,
+      "estimated_effort": "2-3 days", 
+      "dependencies": ["M3_SESSION_DATA_LOADER"],
+      "steps": [
+        {
+          "instruction": "Implement extract_market_agnostic_features() with cents→probability conversion",
+          "completed": true,
+          "verified": true
+        },
+        {
+          "instruction": "Implement extract_temporal_features() for time-based patterns",
+          "completed": true,
+          "verified": true
+        },
+        {
+          "instruction": "Implement extract_portfolio_features() with Kalshi position convention",
+          "completed": true,
+          "verified": true
+        },
+        {
+          "instruction": "Create build_observation_from_session_data() for training/inference consistency",
+          "completed": true,
+          "verified": true
+        },
+        {
+          "instruction": "Add comprehensive test coverage for all feature extraction scenarios",
+          "completed": true,
+          "verified": true
+        }
+      ],
+      "acceptance_criteria": [
+        "Market-agnostic design with no ticker exposure to model",
+        "Universal normalization (prices: cents→probability, volumes: log-normalized)",
+        "Comprehensive feature categories: market (21), temporal (14), portfolio (12), global (6)",
+        "Training/inference consistency through shared functions",
+        "Single-market observation space (48 features total)",
+        "All features in valid ranges with NaN/inf handling",
+        "23/23 test cases passing with full coverage"
+      ],
+      "completed": true
+    },
+    {
+      "id": "M5_SHARED_ORDERBOOK_STATE",
+      "goal": "Implement SharedOrderbookState management for real-time inference",
+      "phase": "PHASE_2_RL_FOUNDATION",
+      "priority": 2,
+      "estimated_effort": "1-2 days",
+      "dependencies": ["M2_WEBSOCKET_CLIENT"],
+      "steps": [
+        {
+          "instruction": "Implement SharedOrderbookState with thread-safe updates",
+          "completed": false,
+          "verified": false
+        },
+        {
+          "instruction": "Add orderbook snapshot and delta management", 
+          "completed": false,
+          "verified": false
+        },
+        {
+          "instruction": "Integrate with WebSocket client for real-time updates",
+          "completed": false,
+          "verified": false
+        }
+      ],
+      "acceptance_criteria": [
+        "One SharedOrderbookState per market for inference",
+        "Thread-safe concurrent access for multiple actors",
+        "Real-time orderbook state synchronization"
+      ],
+      "completed": false
+    },
+    {
+      "id": "M6_PRIMITIVE_ACTION_SPACE",
+      "goal": "Implement primitive single-market action space that allows agent to discover universal strategies through learning",
+      "phase": "PHASE_2_RL_FOUNDATION", 
+      "priority": 2,
+      "estimated_effort": "1-2 days",
+      "dependencies": ["M4_FEATURE_EXTRACTORS"],
+      "steps": [
+        {
+          "instruction": "Define discrete action space for single-market trading",
+          "completed": false,
+          "verified": false
+        },
+        {
+          "instruction": "Implement action validation and constraints",
+          "completed": false,
+          "verified": false
+        },
+        {
+          "instruction": "Add action space integration with Gymnasium environment",
+          "completed": false,
+          "verified": false
+        }
+      ],
+      "acceptance_criteria": [
+        "Discrete action space for single-market trading (6 actions)",
+        "Action validation prevents invalid trades",
+        "Gymnasium-compatible action space definition"
+      ],
+      "completed": false
+    },
+    {
+      "id": "M7_MARKET_AGNOSTIC_ENV", 
+      "goal": "Implement MarketAgnosticKalshiEnv with single-market episodes using random market selection from session data",
+      "phase": "PHASE_2_RL_FOUNDATION",
+      "priority": 1,
+      "estimated_effort": "2-3 days",
+      "dependencies": ["M4_FEATURE_EXTRACTORS", "M6_PRIMITIVE_ACTION_SPACE"],
+      "steps": [
+        {
+          "instruction": "Implement MarketAgnosticKalshiEnv with Gymnasium interface",
+          "completed": false,
+          "verified": false
+        },
+        {
+          "instruction": "Implement random market selection per episode from session data",
+          "completed": false,
+          "verified": false
+        },
+        {
+          "instruction": "Add episode termination conditions and reward calculation",
+          "completed": false,
+          "verified": false
+        },
+        {
+          "instruction": "Integrate feature extraction for consistent observations",
+          "completed": false,
+          "verified": false
+        },
+        {
+          "instruction": "Add environment validation and testing",
+          "completed": false,
+          "verified": false
+        }
+      ],
+      "acceptance_criteria": [
+        "Single-market episodes with random market selection",
+        "Gymnasium-compatible environment interface", 
+        "Consistent observation format using shared feature extraction",
+        "Episode isolation with no cross-episode state leakage"
+      ],
+      "completed": false
+    },
+    {
+      "id": "M8_CURRICULUM_LEARNING",
+      "goal": "Implement session-based curriculum learning with market diversity across episodes for universal pattern learning", 
+      "phase": "PHASE_2_RL_FOUNDATION",
+      "priority": 3,
+      "estimated_effort": "1-2 days",
+      "dependencies": ["M7_MARKET_AGNOSTIC_ENV"],
+      "steps": [
+        {
+          "instruction": "Implement curriculum progression through market difficulty levels",
+          "completed": false,
+          "verified": false
+        },
+        {
+          "instruction": "Add market diversity metrics and rotation strategies",
+          "completed": false,
+          "verified": false
+        },
+        {
+          "instruction": "Implement session-based progression tracking",
+          "completed": false,
+          "verified": false
+        }
+      ],
+      "acceptance_criteria": [
+        "Market diversity across episodes for universal pattern learning",
+        "Curriculum progression based on agent performance",
+        "Session-based difficulty scaling and market rotation"
+      ],
+      "completed": false
+    },
+    {
+      "id": "M9_SB3_INTEGRATION",
+      "goal": "Integrate Stable-Baselines3 with MarketAgnosticKalshiEnv for PPO/A2C training",
+      "phase": "PHASE_2_RL_FOUNDATION",
+      "priority": 2, 
+      "estimated_effort": "1-2 days",
+      "dependencies": ["M7_MARKET_AGNOSTIC_ENV"],
+      "steps": [
+        {
+          "instruction": "Configure PPO/A2C algorithms for single-market training",
+          "completed": false,
+          "verified": false
+        },
+        {
+          "instruction": "Implement training loop with episode logging",
+          "completed": false,
+          "verified": false
+        },
+        {
+          "instruction": "Add model checkpointing and evaluation",
+          "completed": false,
+          "verified": false
+        }
+      ],
+      "acceptance_criteria": [
+        "PPO/A2C training on single-market episodes",
+        "Model convergence on universal trading patterns",
+        "Training metrics and checkpoint management"
+      ],
+      "completed": false
+    },
+    {
+      "id": "M10_MODEL_REGISTRY",
+      "goal": "Implement model registry for trained model storage and versioning",
+      "phase": "PHASE_2_RL_FOUNDATION",
+      "priority": 3,
+      "estimated_effort": "1-2 days", 
+      "dependencies": ["M9_SB3_INTEGRATION"],
+      "steps": [
+        {
+          "instruction": "Implement model storage with metadata tracking",
+          "completed": false,
+          "verified": false
+        },
+        {
+          "instruction": "Add model versioning and rollback capabilities",
+          "completed": false,
+          "verified": false
+        },
+        {
+          "instruction": "Implement model validation before registry storage",
+          "completed": false,
+          "verified": false
+        }
+      ],
+      "acceptance_criteria": [
+        "Versioned model storage with metadata",
+        "Model validation before deployment",
+        "Hot-reload capabilities for inference actors"
+      ],
+      "completed": false
+    },
+    {
+      "id": "M11_PAPER_TRADING_CLIENT", 
+      "goal": "Implement paper trading client for safe trade execution simulation",
+      "phase": "PHASE_3_TRADING_LOGIC",
+      "priority": 1,
+      "estimated_effort": "2-3 days",
+      "dependencies": ["M10_MODEL_REGISTRY"],
+      "steps": [
+        {
+          "instruction": "Implement PaperTradingClient with simulated order execution",
+          "completed": false,
+          "verified": false
+        },
+        {
+          "instruction": "Add portfolio state tracking and position management",
+          "completed": false,
+          "verified": false
+        },
+        {
+          "instruction": "Implement risk controls and position limits",
+          "completed": false,
+          "verified": false
+        }
+      ],
+      "acceptance_criteria": [
+        "Simulated trade execution with realistic fills",
+        "Portfolio state consistency across multiple markets",
+        "Risk controls prevent excessive position sizes"
+      ],
+      "completed": false
+    },
+    {
+      "id": "M12_INFERENCE_ACTOR",
+      "goal": "Implement TradingActor for inference-only model deployment to multiple markets",
+      "phase": "PHASE_3_TRADING_LOGIC",
+      "priority": 1,
+      "estimated_effort": "2-3 days",
+      "dependencies": ["M5_SHARED_ORDERBOOK_STATE", "M11_PAPER_TRADING_CLIENT"],
+      "steps": [
+        {
+          "instruction": "Implement TradingActor with shared observation building",
+          "completed": false, 
+          "verified": false
+        },
+        {
+          "instruction": "Add parallel deployment to hundreds of markets",
+          "completed": false,
+          "verified": false
+        },
+        {
+          "instruction": "Implement action execution through paper trading client",
+          "completed": false,
+          "verified": false
+        },
+        {
+          "instruction": "Add hot-reload for model updates",
+          "completed": false,
+          "verified": false
+        }
+      ],
+      "acceptance_criteria": [
+        "Single trained model deployed to hundreds of markets simultaneously",
+        "Shared observation building logic with training environment",
+        "Non-blocking inference with async action execution",
+        "Hot-reload capability for model updates"
+      ],
+      "completed": false
+    },
+    {
+      "id": "M13_ACTION_WRITE_QUEUE",
+      "goal": "Implement ActionWriteQueue for non-blocking trade execution logging",
+      "phase": "PHASE_3_TRADING_LOGIC",
+      "priority": 2,
+      "estimated_effort": "1-2 days", 
+      "dependencies": ["M12_INFERENCE_ACTOR"],
+      "steps": [
+        {
+          "instruction": "Implement ActionWriteQueue with async batch processing", 
+          "completed": false,
+          "verified": false
+        },
+        {
+          "instruction": "Add trade execution logging and audit trail",
+          "completed": false,
+          "verified": false
+        },
+        {
+          "instruction": "Integrate with TradingActor for non-blocking execution",
+          "completed": false,
+          "verified": false
+        }
+      ],
+      "acceptance_criteria": [
+        "Non-blocking trade execution logging",
+        "Complete audit trail for all trading decisions", 
+        "Queue overflow protection for high-frequency trading"
+      ],
+      "completed": false
+    },
+    {
+      "id": "M14_ML_VISUALIZATION",
+      "goal": "Implement ML tab React components for training and inference monitoring",
+      "phase": "PHASE_4_VISUALIZATION",
+      "priority": 2,
+      "estimated_effort": "2-3 days",
+      "dependencies": ["M12_INFERENCE_ACTOR"],
+      "steps": [
+        {
+          "instruction": "Create ML dashboard React components",
+          "completed": false,
+          "verified": false
+        },
+        {
+          "instruction": "Add training progress visualization",
+          "completed": false,
+          "verified": false
+        },
+        {
+          "instruction": "Implement inference monitoring across markets",
+          "completed": false,
+          "verified": false
+        },
+        {
+          "instruction": "Add real-time performance metrics display",
+          "completed": false,
+          "verified": false
+        }
+      ],
+      "acceptance_criteria": [
+        "Real-time training progress visualization",
+        "Multi-market inference monitoring dashboard",
+        "Performance metrics and model comparison tools"
+      ],
+      "completed": false
+    },
+    {
+      "id": "M15_WEBSOCKET_ENDPOINTS", 
+      "goal": "Implement WebSocket endpoints for real-time ML data streaming to frontend",
+      "phase": "PHASE_4_VISUALIZATION",
+      "priority": 2,
+      "estimated_effort": "1-2 days",
+      "dependencies": ["M14_ML_VISUALIZATION"],
+      "steps": [
+        {
+          "instruction": "Implement /rl/ws/* WebSocket endpoints",
+          "completed": false,
+          "verified": false
+        },
+        {
+          "instruction": "Add real-time training metrics streaming",
+          "completed": false,
+          "verified": false
+        },
+        {
+          "instruction": "Implement inference status broadcasting across markets",
+          "completed": false,
+          "verified": false
+        }
+      ],
+      "acceptance_criteria": [
+        "Real-time ML metrics streaming to frontend",
+        "Multi-market status updates",
+        "Training progress and model performance data"
+      ],
+      "completed": false
+    },
+    {
+      "id": "M16_INTEGRATION_TESTING",
+      "goal": "End-to-end integration testing of complete RL pipeline",
+      "phase": "PHASE_5_MVP_COMPLETION", 
+      "priority": 1,
+      "estimated_effort": "1-2 days",
+      "dependencies": ["M13_ACTION_WRITE_QUEUE", "M15_WEBSOCKET_ENDPOINTS"],
+      "steps": [
+        {
+          "instruction": "Implement end-to-end pipeline testing",
+          "completed": false,
+          "verified": false
+        },
+        {
+          "instruction": "Validate training/inference consistency",
+          "completed": false,
+          "verified": false
+        },
+        {
+          "instruction": "Test multi-market deployment scalability",
+          "completed": false,
+          "verified": false
+        },
+        {
+          "instruction": "Verify all critical architectural requirements",
+          "completed": false,
+          "verified": false
+        }
+      ],
+      "acceptance_criteria": [
+        "Complete pipeline runs without blocking operations",
+        "Training and inference use identical observation building",
+        "Multi-market deployment scales to hundreds of markets",
+        "All critical architectural requirements verified"
+      ],
+      "completed": false
+    },
+    {
+      "id": "M17_DOCKER_CONTAINERIZATION",
+      "goal": "Package RL system in Docker containers for production deployment",
+      "phase": "PHASE_5_MVP_COMPLETION",
+      "priority": 3,
+      "estimated_effort": "1-2 days", 
+      "dependencies": ["M16_INTEGRATION_TESTING"],
+      "steps": [
+        {
+          "instruction": "Create Dockerfiles for training and inference services",
+          "completed": false,
+          "verified": false
+        },
+        {
+          "instruction": "Implement docker-compose for local development",
+          "completed": false,
+          "verified": false
+        },
+        {
+          "instruction": "Add container health checks and monitoring",
+          "completed": false,
+          "verified": false
+        }
+      ],
+      "acceptance_criteria": [
+        "Containerized training and inference services",
+        "Local development environment via docker-compose",
+        "Production-ready container configuration"
+      ],
+      "completed": false
+    }
+  ],
+  "current_status": {
+    "active_phase": "PHASE_2_RL_FOUNDATION",
+    "completed_milestones": ["M3_SESSION_DATA_LOADER", "M4_FEATURE_EXTRACTORS"], 
+    "in_progress_milestones": [],
+    "blocked_milestones": [],
+    "next_recommended": "M1_ASYNC_INFRASTRUCTURE"
+  },
+  "architecture_notes": {
+    "single_market_training": "Each episode trains on one randomly selected market to learn universal patterns, then deploy same model to hundreds of markets in parallel",
+    "observation_space": "48 features total for single-market episodes (21 market + 14 temporal + 12 portfolio + 1 global)",
+    "action_space": "Discrete 6-action space for single-market trading (HOLD, BUY_YES, SELL_YES, BUY_NO, SELL_NO, CLOSE_POSITION)",
+    "deployment_strategy": "One trained model → hundreds of parallel TradingActors → thousands of markets simultaneously",
+    "universal_patterns": "Agent learns market-agnostic strategies through diverse single-market episodes that generalize across all markets"
+  }
+}
