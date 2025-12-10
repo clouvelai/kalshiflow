@@ -402,10 +402,13 @@ class OrderbookClient:
                 new_size = 0
                 action = "update"
             
+            # Get sequence from the outer message (same as snapshots)
+            sequence_number = message.get("seq", 0)
+            
             delta_data = {
                 "market_ticker": market_ticker,
                 "timestamp_ms": int(time.time() * 1000),
-                "sequence_number": 0,  # Kalshi doesn't provide sequence in delta
+                "sequence_number": sequence_number,  # From outer message
                 "side": msg_data.get("side"),  # "yes" or "no"
                 "action": action,
                 "price": int(price),  # Ensure price is int

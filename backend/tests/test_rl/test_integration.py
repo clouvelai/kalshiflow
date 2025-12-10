@@ -57,7 +57,7 @@ def sample_websocket_delta():
     """Sample WebSocket delta message."""
     return {
         "type": "orderbook_delta",
-        "seq": 0,  # Set to 0 for now
+        "seq": 1001,  # Sequence number in outer message like snapshots
         "msg": {
             "market_ticker": "TEST-MARKET",
             "side": "yes",
@@ -70,7 +70,6 @@ def sample_websocket_delta():
 class TestCompleteDataPipeline:
     """Test the complete data flow pipeline."""
     
-    @pytest.mark.xfail(reason="Sequence number handling needs verification with actual Kalshi data")
     @pytest.mark.asyncio
     @patch('kalshiflow_rl.data.write_queue.rl_db')
     async def test_end_to_end_message_flow(
@@ -116,7 +115,7 @@ class TestCompleteDataPipeline:
                 shared_state = await get_shared_orderbook_state("TEST-MARKET")
                 snapshot = await shared_state.get_snapshot()
                 
-                assert snapshot["last_sequence"] == 1000  # Delta with seq=0 doesn't update last_sequence
+                assert snapshot["last_sequence"] == 1001  # Delta updates sequence
                 assert snapshot["market_ticker"] == "TEST-MARKET"
                 
                 # Verify snapshot has expected structure
@@ -240,7 +239,6 @@ class TestCompleteDataPipeline:
         finally:
             await write_queue.stop()
     
-    @pytest.mark.xfail(reason="Sequence number handling needs verification with actual Kalshi data")
     @pytest.mark.asyncio
     @patch('kalshiflow_rl.data.write_queue.rl_db')
     async def test_multi_market_isolation(self, mock_rl_db):
@@ -323,7 +321,7 @@ class TestCompleteDataPipeline:
                 # Process delta for Market A only
                 delta_a = {
                     "type": "orderbook_delta",
-                    "seq": 0,  # Set to 0 for now
+                    "seq": 101,  # Sequence number for MARKET-A
                     "msg": {
                         "market_ticker": "MARKET-A",
                         "side": "yes",
@@ -341,7 +339,7 @@ class TestCompleteDataPipeline:
                 unchanged_state_b = await get_shared_orderbook_state("MARKET-B")
                 unchanged_snapshot_b = await unchanged_state_b.get_snapshot()
                 
-                assert updated_snapshot_a["last_sequence"] == 100  # Seq doesn't change with delta seq=0
+                assert updated_snapshot_a["last_sequence"] == 101  # Seq updated from delta
                 assert updated_snapshot_a["yes_bids"][50] == 500  # Delta of 500 creates new size
                 
                 assert unchanged_snapshot_b["last_sequence"] == 200  # Unchanged

@@ -122,7 +122,7 @@ class TestOrderbookParsing:
             delta_data = mock_queue.enqueue_delta.call_args[0][0]
             
             assert delta_data["market_ticker"] == "TEST-MARKET"
-            assert delta_data["sequence_number"] == 0  # Kalshi doesn't provide seq in delta
+            assert delta_data["sequence_number"] == 12346  # From outer message seq field
             assert delta_data["side"] == "yes"
             assert delta_data["price"] == 46  # Should be int
             assert delta_data["old_size"] == 0  # Should be int
