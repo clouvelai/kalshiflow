@@ -51,7 +51,7 @@ class DataLoadConfig:
     # Memory management
     max_data_points: int = 100000  # Maximum data points to load
     batch_size: int = 1000  # Batch size for database queries
-    preload_strategy: str = "time_ordered"  # "time_ordered", "snapshot_only", "sample_uniform"
+    preload_strategy: str = "reconstruct"  # "reconstruct", "snapshot_only", "time_ordered"
     
     # Data filtering
     min_activity_threshold: int = 100  # Minimum total volume to include
@@ -148,31 +148,25 @@ class HistoricalDataLoader:
                     all_market_data[market_ticker] = market_data
                     logger.info(f"Loaded {len(market_data)} data points for {market_ticker}")
                 else:
-                    logger.warning(f"No historical data found for {market_ticker}")
+                    logger.warning(f"No data found for {market_ticker}")
                     
             except Exception as e:
-                logger.error(f"Failed to load data for {market_ticker}: {e}")
+                logger.error(f"Error loading data for {market_ticker}: {e}")
                 continue
         
-        # Post-process data
-        processed_data = await self._post_process_data(all_market_data, load_config)
-        
-        # Cache the data for potential reuse
-        cache_key = self._generate_cache_key(market_tickers, start_time, end_time, load_config)
-        self._cache[cache_key] = processed_data
-        self._cache_metadata[cache_key] = {
-            "market_tickers": market_tickers,
-            "start_time": start_time,
-            "end_time": end_time,
-            "total_points": sum(len(points) for points in processed_data.values()),
-            "created_at": datetime.utcnow()
+        # Cache data and metadata
+        self._cache = all_market_data
+        self._cache_metadata = {
+            'loaded_at': datetime.utcnow(),
+            'start_time': start_time,
+            'end_time': end_time,
+            'total_data_points': sum(len(data) for data in all_market_data.values()),
+            'markets': list(all_market_data.keys())
         }
         
-        logger.info(f"Historical data loading complete: "
-                   f"{len(processed_data)} markets, "
-                   f"{sum(len(points) for points in processed_data.values())} total points")
+        logger.info(f"Successfully loaded {self._cache_metadata['total_data_points']} total data points")
         
-        return processed_data
+        return all_market_data
     
     async def _load_market_data(
         self,
@@ -183,35 +177,26 @@ class HistoricalDataLoader:
     ) -> List[HistoricalDataPoint]:
         """Load data for a single market."""
         
-        # Convert to milliseconds
         start_ms = int(start_time.timestamp() * 1000)
         end_ms = int(end_time.timestamp() * 1000)
         
-        # Load snapshots first (they establish baseline state)
-        snapshots = await self._load_snapshots(market_ticker, start_ms, end_ms, load_config)
+        if load_config.preload_strategy == "snapshot_only":
+            # Load only snapshots (simpler, less accurate)
+            return await self._load_snapshots(market_ticker, start_ms, end_ms, load_config)
         
-        # Load deltas if needed
-        if load_config.preload_strategy != "snapshot_only":
-            deltas = await self._load_deltas(market_ticker, start_ms, end_ms, load_config)
+        elif load_config.preload_strategy == "reconstruct":
+            # Reconstruct orderbook states from snapshots and deltas
+            return await self._reconstruct_orderbook_states(market_ticker, start_ms, end_ms, load_config)
+        
         else:
-            deltas = []
-        
-        # Combine and sort by timestamp
-        all_data = snapshots + deltas
-        all_data.sort(key=lambda x: (x.timestamp_ms, x.sequence_number))
-        
-        # Apply sampling if configured
-        if load_config.sample_rate > 1:
-            all_data = all_data[::load_config.sample_rate]
-        
-        # Apply data point limit
-        if len(all_data) > load_config.max_data_points:
-            # Keep evenly spaced data points
-            indices = np.linspace(0, len(all_data) - 1, load_config.max_data_points, dtype=int)
-            all_data = [all_data[i] for i in indices]
-            logger.warning(f"Truncated {market_ticker} data to {load_config.max_data_points} points")
-        
-        return all_data
+            # Default: Load snapshots and interpolate
+            snapshots = await self._load_snapshots(market_ticker, start_ms, end_ms, load_config)
+            
+            # Apply sampling if requested
+            if load_config.sample_rate > 1:
+                snapshots = snapshots[::load_config.sample_rate]
+            
+            return snapshots
     
     async def _load_snapshots(
         self,
@@ -222,31 +207,42 @@ class HistoricalDataLoader:
     ) -> List[HistoricalDataPoint]:
         """Load orderbook snapshots."""
         query = """
-        SELECT timestamp, sequence_number, yes_bids, yes_asks, no_bids, no_asks, received_at
-        FROM orderbook_snapshots
+        SELECT timestamp_ms, sequence_number, yes_bids, yes_asks, no_bids, no_asks
+        FROM rl_orderbook_snapshots
         WHERE market_ticker = $1 
-          AND timestamp >= $2 
-          AND timestamp <= $3
-        ORDER BY timestamp, sequence_number
+          AND timestamp_ms >= $2 
+          AND timestamp_ms <= $3
+        ORDER BY timestamp_ms, sequence_number
         LIMIT $4
         """
         
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(query, market_ticker, start_ms, end_ms, load_config.max_data_points)
         
+        if not rows:
+            logger.debug(f"No snapshots found for {market_ticker} in time range")
+            return []
+        
         snapshots = []
         for row in rows:
-            # Convert to OrderbookState-compatible format
+            # Convert JSONB to Python dict (handle both dict and JSON string)
+            def parse_orderbook_field(value):
+                if value is None:
+                    return {}
+                if isinstance(value, dict):
+                    return value
+                if isinstance(value, str):
+                    return json.loads(value)
+                return {}
+            
             orderbook_state = {
                 'market_ticker': market_ticker,
-                'timestamp_ms': row['timestamp'],
+                'timestamp_ms': row['timestamp_ms'],
                 'sequence_number': row['sequence_number'],
-                'yes_bids': dict(row['yes_bids']) if row['yes_bids'] else {},
-                'yes_asks': dict(row['yes_asks']) if row['yes_asks'] else {},
-                'no_bids': dict(row['no_bids']) if row['no_bids'] else {},
-                'no_asks': dict(row['no_asks']) if row['no_asks'] else {},
-                'last_update_time': row['timestamp'],
-                'last_sequence': row['sequence_number']
+                'yes_bids': parse_orderbook_field(row['yes_bids']),
+                'yes_asks': parse_orderbook_field(row['yes_asks']),
+                'no_bids': parse_orderbook_field(row['no_bids']),
+                'no_asks': parse_orderbook_field(row['no_asks'])
             }
             
             # Calculate derived fields
@@ -258,7 +254,7 @@ class HistoricalDataLoader:
                 continue
             
             snapshot = HistoricalDataPoint(
-                timestamp_ms=row['timestamp'],
+                timestamp_ms=row['timestamp_ms'],
                 market_ticker=market_ticker,
                 orderbook_state=orderbook_state,
                 sequence_number=row['sequence_number'],
@@ -269,108 +265,186 @@ class HistoricalDataLoader:
         logger.debug(f"Loaded {len(snapshots)} snapshots for {market_ticker}")
         return snapshots
     
-    async def _load_deltas(
+    async def _reconstruct_orderbook_states(
         self,
         market_ticker: str,
         start_ms: int,
         end_ms: int,
         load_config: DataLoadConfig
     ) -> List[HistoricalDataPoint]:
-        """Load orderbook deltas."""
-        
-        # For MVP, we'll reconstruct orderbook states by applying deltas to snapshots
-        # This is more complex but provides complete historical replay
-        
-        # First, get a baseline snapshot just before our window
-        baseline_snapshot = await self._get_baseline_snapshot(market_ticker, start_ms)
-        if not baseline_snapshot:
-            logger.warning(f"No baseline snapshot found for {market_ticker}")
-            return []
-        
-        # Load deltas in the time window
-        query = """
-        SELECT timestamp, sequence_number, delta_type, side, price, quantity
-        FROM orderbook_deltas
-        WHERE market_ticker = $1 
-          AND timestamp >= $2 
-          AND timestamp <= $3
-        ORDER BY timestamp, sequence_number
-        LIMIT $4
+        """
+        Reconstruct orderbook states by applying deltas to snapshots.
+        This provides the most accurate historical replay.
         """
         
-        async with self.pool.acquire() as conn:
-            rows = await conn.fetch(query, market_ticker, start_ms, end_ms, load_config.max_data_points)
-        
-        # Reconstruct orderbook states by applying deltas
-        current_state = OrderbookState(market_ticker)
-        current_state.apply_snapshot(baseline_snapshot)
-        
-        deltas = []
-        for row in rows:
-            # Apply delta to current state
-            delta_data = {
-                'sequence_number': row['sequence_number'],
-                'timestamp_ms': row['timestamp'],
-                'side': row['side'],
-                'action': row['delta_type'],
-                'price': row['price'],
-                'new_size': row['quantity']
-            }
-            
-            success = current_state.apply_delta(delta_data)
-            if not success and load_config.validate_sequences:
-                logger.warning(f"Failed to apply delta {row['sequence_number']} for {market_ticker}")
-                continue
-            
-            # Create historical data point
-            orderbook_dict = current_state.to_dict()
-            
-            # Filter by activity threshold
-            if (not load_config.include_inactive_periods and 
-                orderbook_dict.get('total_volume', 0) < load_config.min_activity_threshold):
-                continue
-            
-            delta_point = HistoricalDataPoint(
-                timestamp_ms=row['timestamp'],
-                market_ticker=market_ticker,
-                orderbook_state=orderbook_dict,
-                sequence_number=row['sequence_number'],
-                is_snapshot=False
-            )
-            deltas.append(delta_point)
-        
-        logger.debug(f"Loaded {len(deltas)} deltas for {market_ticker}")
-        return deltas
-    
-    async def _get_baseline_snapshot(
-        self,
-        market_ticker: str,
-        start_ms: int
-    ) -> Optional[Dict[str, Any]]:
-        """Get baseline snapshot before the time window."""
-        query = """
-        SELECT timestamp, sequence_number, yes_bids, yes_asks, no_bids, no_asks
-        FROM orderbook_snapshots
-        WHERE market_ticker = $1 AND timestamp < $2
-        ORDER BY timestamp DESC
+        # Get the latest snapshot before or at start time
+        baseline_query = """
+        SELECT timestamp_ms, sequence_number, yes_bids, yes_asks, no_bids, no_asks
+        FROM rl_orderbook_snapshots
+        WHERE market_ticker = $1 AND timestamp_ms <= $2
+        ORDER BY timestamp_ms DESC, sequence_number DESC
         LIMIT 1
         """
         
         async with self.pool.acquire() as conn:
-            row = await conn.fetchrow(query, market_ticker, start_ms)
+            baseline_row = await conn.fetchrow(baseline_query, market_ticker, start_ms)
         
-        if not row:
-            return None
+        if not baseline_row:
+            logger.warning(f"No baseline snapshot found for {market_ticker} before {start_ms}")
+            # Try loading snapshots only
+            return await self._load_snapshots(market_ticker, start_ms, end_ms, load_config)
         
-        return {
+        # Initialize OrderbookState with baseline
+        current_state = OrderbookState(market_ticker)
+        
+        # Helper to parse JSONB fields
+        def parse_orderbook_field(value):
+            if value is None:
+                return {}
+            if isinstance(value, dict):
+                return value
+            if isinstance(value, str):
+                return json.loads(value)
+            return {}
+        
+        baseline_data = {
             'market_ticker': market_ticker,
-            'timestamp_ms': row['timestamp'],
-            'sequence_number': row['sequence_number'],
-            'yes_bids': dict(row['yes_bids']) if row['yes_bids'] else {},
-            'yes_asks': dict(row['yes_asks']) if row['yes_asks'] else {},
-            'no_bids': dict(row['no_bids']) if row['no_bids'] else {},
-            'no_asks': dict(row['no_asks']) if row['no_asks'] else {}
+            'timestamp_ms': baseline_row['timestamp_ms'],
+            'sequence_number': baseline_row['sequence_number'],
+            'yes_bids': parse_orderbook_field(baseline_row['yes_bids']),
+            'yes_asks': parse_orderbook_field(baseline_row['yes_asks']),
+            'no_bids': parse_orderbook_field(baseline_row['no_bids']),
+            'no_asks': parse_orderbook_field(baseline_row['no_asks'])
         }
+        current_state.apply_snapshot(baseline_data)
+        
+        # Store reconstructed states
+        reconstructed_states = []
+        
+        # Add baseline if it's within our time range
+        if baseline_row['timestamp_ms'] >= start_ms:
+            reconstructed_states.append(HistoricalDataPoint(
+                timestamp_ms=baseline_row['timestamp_ms'],
+                market_ticker=market_ticker,
+                orderbook_state=current_state.to_dict(),
+                sequence_number=baseline_row['sequence_number'],
+                is_snapshot=True
+            ))
+        
+        # Load all snapshots and deltas in the time range
+        combined_query = """
+        WITH combined AS (
+            SELECT 
+                timestamp_ms,
+                sequence_number,
+                'snapshot' as event_type,
+                yes_bids,
+                yes_asks,
+                no_bids,
+                no_asks,
+                NULL as side,
+                NULL as action,
+                NULL as price,
+                NULL as old_size,
+                NULL as new_size
+            FROM rl_orderbook_snapshots
+            WHERE market_ticker = $1 
+              AND timestamp_ms > $2 
+              AND timestamp_ms <= $3
+              AND sequence_number > $4
+            
+            UNION ALL
+            
+            SELECT 
+                timestamp_ms,
+                sequence_number,
+                'delta' as event_type,
+                NULL as yes_bids,
+                NULL as yes_asks,
+                NULL as no_bids,
+                NULL as no_asks,
+                side,
+                action,
+                price,
+                old_size,
+                new_size
+            FROM rl_orderbook_deltas
+            WHERE market_ticker = $1 
+              AND timestamp_ms > $2 
+              AND timestamp_ms <= $3
+              AND sequence_number > $4
+        )
+        SELECT * FROM combined
+        ORDER BY sequence_number, timestamp_ms
+        LIMIT $5
+        """
+        
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                combined_query, 
+                market_ticker, 
+                baseline_row['timestamp_ms'],
+                end_ms,
+                baseline_row['sequence_number'],
+                load_config.max_data_points
+            )
+        
+        logger.info(f"Found {len(rows)} events for {market_ticker} to reconstruct")
+        
+        for row in rows:
+            if row['event_type'] == 'snapshot':
+                # Apply snapshot
+                snapshot_data = {
+                    'market_ticker': market_ticker,
+                    'timestamp_ms': row['timestamp_ms'],
+                    'sequence_number': row['sequence_number'],
+                    'yes_bids': parse_orderbook_field(row['yes_bids']),
+                    'yes_asks': parse_orderbook_field(row['yes_asks']),
+                    'no_bids': parse_orderbook_field(row['no_bids']),
+                    'no_asks': parse_orderbook_field(row['no_asks'])
+                }
+                current_state.apply_snapshot(snapshot_data)
+                
+                # Only include if in our time range
+                if row['timestamp_ms'] >= start_ms:
+                    reconstructed_states.append(HistoricalDataPoint(
+                        timestamp_ms=row['timestamp_ms'],
+                        market_ticker=market_ticker,
+                        orderbook_state=current_state.to_dict(),
+                        sequence_number=row['sequence_number'],
+                        is_snapshot=True
+                    ))
+                    
+            elif row['event_type'] == 'delta':
+                # Apply delta
+                delta_data = {
+                    'sequence_number': row['sequence_number'],
+                    'timestamp_ms': row['timestamp_ms'],
+                    'side': row['side'],
+                    'action': row['action'],
+                    'price': row['price'],
+                    'old_size': row['old_size'],
+                    'new_size': row['new_size']
+                }
+                
+                success = current_state.apply_delta(delta_data)
+                
+                if not success and load_config.validate_sequences:
+                    logger.warning(f"Failed to apply delta seq={row['sequence_number']} for {market_ticker}")
+                    continue
+                
+                # Only include if in our time range
+                if row['timestamp_ms'] >= start_ms:
+                    reconstructed_states.append(HistoricalDataPoint(
+                        timestamp_ms=row['timestamp_ms'],
+                        market_ticker=market_ticker,
+                        orderbook_state=current_state.to_dict(),
+                        sequence_number=row['sequence_number'],
+                        is_snapshot=False
+                    ))
+        
+        logger.info(f"Reconstructed {len(reconstructed_states)} states for {market_ticker}")
+        return reconstructed_states
     
     def _calculate_derived_fields(self, orderbook_state: Dict[str, Any]) -> Dict[str, Any]:
         """Calculate derived fields like spreads, mid prices, total volume."""
@@ -411,248 +485,37 @@ class HistoricalDataLoader:
             'total_volume': total_volume
         }
     
-    async def _post_process_data(
+    async def get_episode_iterator(
         self,
-        market_data: Dict[str, List[HistoricalDataPoint]],
-        load_config: DataLoadConfig
-    ) -> Dict[str, List[HistoricalDataPoint]]:
-        """Post-process loaded data for quality and consistency."""
-        
-        processed_data = {}
-        
-        for market_ticker, data_points in market_data.items():
-            if not data_points:
-                continue
-            
-            processed_points = data_points.copy()
-            
-            # Remove outliers if requested
-            if load_config.remove_outliers:
-                processed_points = self._remove_outliers(processed_points)
-            
-            # Fill gaps if requested
-            if load_config.fill_gaps:
-                processed_points = self._fill_sequence_gaps(processed_points)
-            
-            # Validate sequences if requested
-            if load_config.validate_sequences:
-                processed_points = self._validate_sequences(processed_points, market_ticker)
-            
-            processed_data[market_ticker] = processed_points
-            
-            logger.debug(f"Post-processed {market_ticker}: "
-                        f"{len(data_points)} -> {len(processed_points)} points")
-        
-        # Synchronize timestamps across markets for multi-market training
-        if len(processed_data) > 1:
-            processed_data = self._synchronize_timestamps(processed_data)
-        
-        # Memory cleanup
-        gc.collect()
-        
-        return processed_data
-    
-    def _remove_outliers(self, data_points: List[HistoricalDataPoint]) -> List[HistoricalDataPoint]:
-        """Remove outlier data points based on volume and price statistics."""
-        if len(data_points) < 10:
-            return data_points
-        
-        # Extract total volumes for outlier detection
-        volumes = [point.orderbook_state.get('total_volume', 0) for point in data_points]
-        
-        # Use IQR method for outlier detection
-        q1 = np.percentile(volumes, 25)
-        q3 = np.percentile(volumes, 75)
-        iqr = q3 - q1
-        lower_bound = q1 - 1.5 * iqr
-        upper_bound = q3 + 1.5 * iqr
-        
-        filtered_points = []
-        for point in data_points:
-            volume = point.orderbook_state.get('total_volume', 0)
-            if lower_bound <= volume <= upper_bound:
-                filtered_points.append(point)
-        
-        outliers_removed = len(data_points) - len(filtered_points)
-        if outliers_removed > 0:
-            logger.debug(f"Removed {outliers_removed} outlier data points")
-        
-        return filtered_points
-    
-    def _fill_sequence_gaps(self, data_points: List[HistoricalDataPoint]) -> List[HistoricalDataPoint]:
-        """Fill sequence number gaps with interpolated data."""
-        if len(data_points) < 2:
-            return data_points
-        
-        filled_points = []
-        for i in range(len(data_points) - 1):
-            current_point = data_points[i]
-            next_point = data_points[i + 1]
-            
-            filled_points.append(current_point)
-            
-            # Check for sequence gap
-            seq_gap = next_point.sequence_number - current_point.sequence_number
-            if seq_gap > 1 and seq_gap < 10:  # Only fill small gaps
-                # Create interpolated points
-                for j in range(1, seq_gap):
-                    interp_factor = j / seq_gap
-                    interp_timestamp = int(
-                        current_point.timestamp_ms + 
-                        interp_factor * (next_point.timestamp_ms - current_point.timestamp_ms)
-                    )
-                    interp_sequence = current_point.sequence_number + j
-                    
-                    # Use current point's orderbook state (simple interpolation)
-                    interp_point = HistoricalDataPoint(
-                        timestamp_ms=interp_timestamp,
-                        market_ticker=current_point.market_ticker,
-                        orderbook_state=current_point.orderbook_state.copy(),
-                        sequence_number=interp_sequence,
-                        is_snapshot=False
-                    )
-                    filled_points.append(interp_point)
-        
-        # Add the last point
-        if data_points:
-            filled_points.append(data_points[-1])
-        
-        gaps_filled = len(filled_points) - len(data_points)
-        if gaps_filled > 0:
-            logger.debug(f"Filled {gaps_filled} sequence gaps")
-        
-        return filled_points
-    
-    def _validate_sequences(
-        self, 
-        data_points: List[HistoricalDataPoint], 
-        market_ticker: str
-    ) -> List[HistoricalDataPoint]:
-        """Validate and filter data points with sequence issues."""
-        if len(data_points) < 2:
-            return data_points
-        
-        valid_points = []
-        last_sequence = 0
-        
-        for point in data_points:
-            # Check sequence ordering
-            if point.sequence_number >= last_sequence:
-                valid_points.append(point)
-                last_sequence = point.sequence_number
-            else:
-                logger.debug(f"Dropped out-of-order point {point.sequence_number} for {market_ticker}")
-        
-        invalid_count = len(data_points) - len(valid_points)
-        if invalid_count > 0:
-            logger.debug(f"Removed {invalid_count} invalid sequence points for {market_ticker}")
-        
-        return valid_points
-    
-    def _synchronize_timestamps(
-        self,
-        market_data: Dict[str, List[HistoricalDataPoint]]
-    ) -> Dict[str, List[HistoricalDataPoint]]:
-        """Synchronize timestamps across markets for consistent multi-market training."""
-        
-        # Find common time range
-        all_timestamps = []
-        for data_points in market_data.values():
-            timestamps = [point.timestamp_ms for point in data_points]
-            all_timestamps.extend(timestamps)
-        
-        if not all_timestamps:
-            return market_data
-        
-        # Use common time grid
-        min_time = min(all_timestamps)
-        max_time = max(all_timestamps)
-        
-        # Create synchronized data
-        synchronized_data = {}
-        
-        for market_ticker, data_points in market_data.items():
-            # Filter to common time range and ensure consistent spacing
-            filtered_points = [
-                point for point in data_points
-                if min_time <= point.timestamp_ms <= max_time
-            ]
-            
-            synchronized_data[market_ticker] = filtered_points
-        
-        return synchronized_data
-    
-    def _generate_cache_key(
-        self,
-        market_tickers: List[str],
-        start_time: datetime,
-        end_time: datetime,
-        load_config: DataLoadConfig
-    ) -> str:
-        """Generate cache key for loaded data."""
-        tickers_str = "_".join(sorted(market_tickers))
-        start_str = start_time.strftime("%Y%m%d_%H%M%S")
-        end_str = end_time.strftime("%Y%m%d_%H%M%S")
-        config_hash = hash(str(load_config))
-        
-        return f"{tickers_str}_{start_str}_{end_str}_{config_hash}"
-    
-    def create_data_iterator(
-        self,
-        market_data: Dict[str, List[HistoricalDataPoint]],
-        batch_size: int = 1,
-        shuffle: bool = False
-    ) -> Iterator[Dict[str, HistoricalDataPoint]]:
+        market_ticker: str,
+        episode_length: int = 1000
+    ) -> Iterator[List[HistoricalDataPoint]]:
         """
-        Create iterator over historical data for training.
+        Iterator for training episodes from cached historical data.
         
         Args:
-            market_data: Loaded historical data
-            batch_size: Batch size for iteration (currently only supports 1)
-            shuffle: Whether to shuffle the data order
+            market_ticker: Market to iterate over
+            episode_length: Number of data points per episode
             
         Yields:
-            Dict mapping market_ticker -> HistoricalDataPoint for each timestamp
+            List of HistoricalDataPoint for one episode
         """
-        if not market_data:
-            return
+        if market_ticker not in self._cache:
+            raise ValueError(f"No cached data for {market_ticker}. Call load_historical_data first.")
         
-        # Get all unique timestamps across markets
-        all_timestamps = set()
-        for data_points in market_data.values():
-            for point in data_points:
-                all_timestamps.add(point.timestamp_ms)
+        market_data = self._cache[market_ticker]
         
-        timestamps = sorted(all_timestamps)
-        
-        if shuffle:
-            np.random.shuffle(timestamps)
-        
-        # Create timestamp -> market_data mapping
-        timestamp_map = {}
-        for market_ticker, data_points in market_data.items():
-            for point in data_points:
-                if point.timestamp_ms not in timestamp_map:
-                    timestamp_map[point.timestamp_ms] = {}
-                timestamp_map[point.timestamp_ms][market_ticker] = point
-        
-        # Yield data for each timestamp
-        for timestamp in timestamps:
-            if timestamp in timestamp_map:
-                yield timestamp_map[timestamp]
+        # Sliding window over historical data
+        for i in range(0, len(market_data) - episode_length + 1):
+            yield market_data[i:i + episode_length]
     
-    def get_cache_stats(self) -> Dict[str, Any]:
-        """Get cache statistics."""
-        total_points = sum(
-            metadata.get("total_points", 0) 
-            for metadata in self._cache_metadata.values()
-        )
-        
-        return {
-            "cached_datasets": len(self._cache),
-            "total_cached_points": total_points,
-            "cache_keys": list(self._cache.keys()),
-            "memory_usage_mb": sum(
-                len(str(data).encode('utf-8')) for data in self._cache.values()
-            ) / (1024 * 1024)
-        }
+    def get_cache_metadata(self) -> Dict[str, Any]:
+        """Get metadata about cached historical data."""
+        return self._cache_metadata.copy()
+    
+    def clear_cache(self) -> None:
+        """Clear cached historical data to free memory."""
+        self._cache.clear()
+        self._cache_metadata.clear()
+        gc.collect()
+        logger.info("Cleared historical data cache")
