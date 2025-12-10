@@ -1,16 +1,24 @@
 {
   "metadata": {
     "created_at": "2025-12-08T21:55:00Z",
-    "updated_at": "2025-12-10T12:00:00Z",
+    "updated_at": "2025-12-10T20:00:00Z",
     "current_phase": "PHASE_2_RL_FOUNDATION",
     "current_milestone": "milestone_2_3",
-    "version": "2.7.0",
-    "description": "RL Trading Subsystem Implementation Plan - Phase 1 Data Collection SHIP READY. Priority pivot to ML model development while complex orderbook UI deferred to future milestone.",
+    "version": "2.8.0",
+    "description": "RL Trading Subsystem Implementation Plan - CORE FOCUS: Build v1.0 model with flawless paper trading actor, then iterate to v2.0 sophistication.",
     "milestone_1_1_status": "SHIP_READY",
     "milestone_2_1_status": "COMPLETE", 
     "milestone_2_2_status": "COMPLETE_WITH_COMPREHENSIVE_TESTING",
-    "implementation_review": "2025-12-10T18:00:00Z - Data collection system ready to ship with simple WebSocket stats view. Complex orderbook grid UI moved to future milestone. Focus shifted to ML model development.",
-    "milestone_3_1_status": "PARTIAL_COMPLETE - Demo account integration complete, ActionWriteQueue implementation added and pending"
+    "implementation_review": "2025-12-10T20:00:00Z - Strategic focus clarified: Perfect v1.0 execution before v2.0 sophistication.",
+    "milestone_3_1_status": "PARTIAL_COMPLETE - Demo account integration complete, ActionWriteQueue implementation added and pending",
+    "core_implementation_strategy": {
+      "primary_objective": "Build FLAWLESS v1.0 trading system (Sharpe 1.0+) with bulletproof paper trading actor",
+      "phase_1_goal": "Fundamental training infrastructure + basic model (orderbook patterns only)",
+      "phase_2_goal": "Perfect live actor integration in paper mode (demo API) - MUST BE FLAWLESS",
+      "phase_3_goal": "Only after actor is bulletproof → iterate to v2.0 model sophistication",
+      "success_criteria": "v1.0 agent trades autonomously for 30+ days in paper mode without operational issues",
+      "quality_philosophy": "Execution excellence over feature complexity - the actor must never fail"
+    }
   },
   "architectural_constraints": [
     "Non-blocking database writes - all hot paths use async queues",
@@ -809,82 +817,62 @@
         },
         {
           "id": "milestone_2_3",
-          "goal": "Advanced RL model architecture and evaluation",
-          "description": "Develop sophisticated multi-market RL models with advanced architectures, reward functions, and performance evaluation framework",
+          "goal": "Basic v1.0 model training (orderbook patterns only)",
+          "description": "Train fundamental v1.0 model focused on basic orderbook arbitrage and spread patterns to achieve Sharpe 1.0+ - NO advanced features yet",
           "work_units": [
             {
               "id": "wu_2_3_1",
-              "instruction": "Design advanced multi-market RL model architectures",
+              "instruction": "Train basic v1.0 model on orderbook patterns only",
               "details": [
-                "Research and implement advanced neural network architectures for multi-market trading",
-                "Design attention mechanisms for market correlation modeling",
-                "Implement LSTM/GRU components for temporal modeling",
-                "Create ensemble methods for model robustness",
-                "Add market selection and allocation strategies",
-                "Include risk-aware architecture components"
+                "Use existing SB3 PPO integration for basic model training",
+                "Focus ONLY on fundamental orderbook features: spreads, imbalances, price levels",
+                "Train on 3-5 markets maximum for initial validation",
+                "Target Sharpe 1.0+ with simple arbitrage and spread patterns",
+                "NO cross-market correlations, NO temporal complexity, NO advanced features",
+                "Validate model saves/loads correctly and achieves basic profitability",
+                "Create simple evaluation metrics: Sharpe, win rate, max drawdown"
               ],
               "success_criteria": [
-                "Advanced architectures show improved performance over baseline PPO",
-                "Attention mechanisms capture meaningful market correlations",
-                "Temporal modeling improves prediction accuracy",
-                "Ensemble methods increase model stability",
-                "Risk-aware components prevent excessive exposure"
+                "v1.0 model achieves Sharpe 1.0+ on simple orderbook patterns",
+                "Model training completes without errors and saves correctly",
+                "Basic evaluation metrics calculated and logged properly",
+                "Model demonstrates consistent performance across multiple episodes",
+                "Foundation ready for actor integration - no complex features yet"
               ],
-              "estimated_effort": "6 hours",
+              "estimated_effort": "4 hours",
               "completed": false,
               "depends_on": []
             },
             {
               "id": "wu_2_3_2",
-              "instruction": "Implement sophisticated reward functions and risk management",
+              "instruction": "Create basic model evaluation and validation pipeline",
               "details": [
-                "Design multi-objective reward functions (profit, risk, market impact)",
-                "Implement dynamic position sizing based on market conditions",
-                "Add correlation-aware risk penalties",
-                "Create market regime detection for adaptive rewards",
-                "Include transaction cost modeling",
-                "Add drawdown and volatility constraints"
+                "Implement simple backtesting on out-of-sample data",
+                "Calculate core metrics: Sharpe ratio, win rate, max drawdown",
+                "Add basic performance visualization (equity curve, trade distribution)",
+                "Create model validation framework for actor integration",
+                "Ensure evaluation pipeline works with paper trading validation",
+                "Add performance tracking and logging for live validation"
               ],
               "success_criteria": [
-                "Reward functions align with trading objectives",
-                "Risk management prevents excessive losses",
-                "Market regime detection improves adaptability",
-                "Transaction costs are properly modeled",
-                "Models learn conservative strategies when appropriate"
+                "Evaluation pipeline calculates metrics correctly",
+                "Out-of-sample testing shows consistent performance",
+                "Model validation framework ready for actor integration",
+                "Performance visualization helps debug and validate model behavior",
+                "Evaluation results feed into actor deployment decisions"
               ],
-              "estimated_effort": "4 hours",
+              "estimated_effort": "3 hours",
               "completed": false,
               "depends_on": ["wu_2_3_1"]
-            },
-            {
-              "id": "wu_2_3_3",
-              "instruction": "Create comprehensive model evaluation and backtesting framework",
-              "details": [
-                "Implement walk-forward validation for time series data",
-                "Create performance attribution analysis",
-                "Add risk metrics calculation (Sharpe, max drawdown, VaR)",
-                "Implement statistical significance testing",
-                "Create model comparison and ranking system",
-                "Add performance visualization and reporting"
-              ],
-              "success_criteria": [
-                "Evaluation framework provides reliable performance estimates",
-                "Risk metrics accurately capture model behavior",
-                "Statistical tests validate model improvements",
-                "Comparison system identifies best models",
-                "Reporting provides actionable insights"
-              ],
-              "estimated_effort": "4 hours",
-              "completed": false,
-              "depends_on": ["wu_2_3_2"]
             }
           ],
           "completed": false,
           "dependencies": ["milestone_2_2"],
-          "estimated_effort": "14 hours",
+          "estimated_effort": "7 hours",
           "priority": 5,
           "phase": "PHASE_2_RL_FOUNDATION",
-          "focus_area": "Advanced ML model development prioritized over complex UI visualization"
+          "focus_area": "Basic v1.0 model training - foundation for flawless actor integration",
+          "v1_scope_limitation": "DELIBERATELY LIMITED: Only basic orderbook patterns, NO advanced features until actor is bulletproof"
         }
       ]
     },
@@ -1072,30 +1060,34 @@
         },
         {
           "id": "milestone_3_2",
-          "goal": "Inference-only actor with hot-reload",
-          "description": "Build async actor for inference with hot-reload protocol and action logging",
+          "goal": "FLAWLESS paper trading actor (MOST CRITICAL MILESTONE)",
+          "description": "Build bulletproof async actor that trades autonomously in demo mode for 30+ days without failure - EXECUTION EXCELLENCE OVER FEATURES",
           "work_units": [
             {
               "id": "wu_3_2_1",
-              "instruction": "Implement TradingActor with hot-reload protocol",
+              "instruction": "Implement BULLETPROOF TradingActor with comprehensive error handling",
               "details": [
-                "Create TradingActor class with async inference loop",
-                "Implement model hot-reload without stopping inference",
-                "Add unified observation building using build_observation_from_orderbook()",
-                "Create action queue for non-blocking execution",
-                "Add position tracking and risk management",
-                "Implement graceful shutdown and error recovery"
+                "Create TradingActor class with async inference loop - MUST NEVER CRASH",
+                "Implement exhaustive error handling for all possible failure modes",
+                "Add unified observation building using build_observation_from_orderbook() with validation",
+                "Create action queue with failsafe mechanisms and monitoring",
+                "Add position tracking with reconciliation and error detection",
+                "Implement graceful shutdown, connection recovery, and state preservation",
+                "Add comprehensive logging and alerting for all edge cases",
+                "CRITICAL: Actor must survive network failures, API errors, model issues, data corruption"
               ],
               "success_criteria": [
-                "Actor runs continuous inference without blocking",
-                "Model hot-reload works without inference interruption",
-                "Uses same observation builder as training environment",
-                "Action queue prevents blocking on trade execution",
-                "Position tracking maintains accurate state"
+                "Actor runs continuously for 7+ days without crashing or manual intervention",
+                "All error conditions handled gracefully with automatic recovery",
+                "Uses same observation builder as training environment with validation",
+                "Action queue never blocks and handles all edge cases",
+                "Position tracking always reconciles correctly with demo account",
+                "Comprehensive monitoring and alerting catches all issues before they become problems"
               ],
-              "estimated_effort": "3 hours",
+              "estimated_effort": "5 hours",
               "completed": false,
-              "depends_on": []
+              "depends_on": [],
+              "critical_importance": "FLAWLESS EXECUTION REQUIRED - This is the foundation for all future development"
             },
             {
               "id": "wu_3_2_2", 
@@ -1188,9 +1180,12 @@
           ],
           "completed": false,
           "dependencies": ["milestone_3_1"],
-          "estimated_effort": "12 hours",
+          "estimated_effort": "20 hours",
           "priority": 6,
-          "phase": "PHASE_3_TRADING_LOGIC"
+          "phase": "PHASE_3_TRADING_LOGIC",
+          "quality_requirements": "ZERO TOLERANCE FOR FAILURES - Actor must be production-ready for autonomous operation",
+          "success_definition": "Actor trades continuously for 30+ days in paper mode without crashes, manual intervention, or data corruption",
+          "post_completion_gate": "Only after this milestone is BULLETPROOF do we work on model v2.0 sophistication"
         }
       ]
     },
@@ -1243,17 +1238,18 @@
     "milestone_2_2_status": "COMPLETE_WITH_VERIFICATION - 82 tests passing, all SB3 components operational and verified",
     "milestone_3_1_status": "PARTIAL_COMPLETE - Demo account integration complete (22 tests passing), ActionWriteQueue implementation pending",
     "implementation_review_status": "UPDATED - 2025-12-10T12:00:00Z",
-    "estimated_remaining_effort": "42 hours for remaining phases - Simple stats UI (3h) + Advanced ML models (14h) + Phase 3&4&5 (25h)",
+    "estimated_remaining_effort": "35 hours for v1.0 completion - Simple stats UI (3h) + Basic v1.0 model (7h) + FLAWLESS actor (20h) + Integration (5h)",
     "critical_blockers": [],
     "next_actions": [
       "wu_1_3_1: Create simple RL stats WebSocket dashboard component (SHIP BLOCKING)",
       "SHIP Milestone 1.1: Data collection system with basic stats view",
-      "wu_2_3_1: Design advanced multi-market RL model architectures",
-      "wu_2_3_2: Implement sophisticated reward functions and risk management",
-      "wu_2_3_3: Create comprehensive model evaluation and backtesting framework",
-      "Note: Complex orderbook grid UI moved to future milestone 4.2",
-      "Note: Focus shifted to ML model development after shipping data collection",
-      "Note: Simple stats view sufficient for validating data collection pipeline"
+      "wu_2_3_1: Train basic v1.0 model on orderbook patterns only (Sharpe 1.0+ target)",
+      "wu_2_3_2: Create basic model evaluation and validation pipeline",
+      "wu_3_1_5: Complete ActionWriteQueue implementation (non-blocking database writes)",
+      "wu_3_2_1: Build BULLETPROOF TradingActor - MOST CRITICAL (must never fail)",
+      "Note: v1.0 SCOPE DELIBERATELY LIMITED - basic orderbook patterns only",
+      "Note: Actor must be FLAWLESS before any v2.0 model sophistication",
+      "Note: 30+ days autonomous paper trading is success criteria for actor"
     ],
     "multi_market_support": {
       "status": "COMPLETE_PRODUCTION_SCALE",
