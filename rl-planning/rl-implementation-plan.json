@@ -559,6 +559,42 @@
           "actual_effort": "10 hours",
           "priority": 2,
           "phase": "PHASE_1_DATA_PIPELINE"
+        },
+        {
+          "id": "milestone_1_3",
+          "goal": "Simple WebSocket stats frontend for shipping",
+          "description": "Create minimal React component showing live stats from RL orderbook collector: session status, market count, message rates, and basic health metrics",
+          "work_units": [
+            {
+              "id": "wu_1_3_1",
+              "instruction": "Create simple RL stats WebSocket dashboard component",
+              "details": [
+                "Create /rl-stats route with basic React component",
+                "Display current session ID and status",
+                "Show number of markets being tracked",
+                "Display live counts of snapshots/deltas collected",
+                "Show basic health metrics (uptime, message rate)",
+                "Use useRLOrderbook hook for WebSocket connection",
+                "Simple, clean UI focused on operational visibility"
+              ],
+              "success_criteria": [
+                "WebSocket connects to RL backend successfully",
+                "Live stats update in real-time",
+                "Session information displayed correctly",
+                "Market count and health metrics visible",
+                "UI is clean and focused on system status"
+              ],
+              "estimated_effort": "3 hours",
+              "completed": false,
+              "depends_on": []
+            }
+          ],
+          "completed": false,
+          "dependencies": ["milestone_1_1"],
+          "estimated_effort": "3 hours",
+          "priority": 2,
+          "phase": "PHASE_1_DATA_PIPELINE",
+          "ship_priority": "IMMEDIATE - Required for Milestone 1.1 shipping"
         }
       ]
     },
@@ -770,6 +806,85 @@
           "actual_effort": "13 hours",
           "priority": 4,
           "phase": "PHASE_2_RL_FOUNDATION"
+        },
+        {
+          "id": "milestone_2_3",
+          "goal": "Advanced RL model architecture and evaluation",
+          "description": "Develop sophisticated multi-market RL models with advanced architectures, reward functions, and performance evaluation framework",
+          "work_units": [
+            {
+              "id": "wu_2_3_1",
+              "instruction": "Design advanced multi-market RL model architectures",
+              "details": [
+                "Research and implement advanced neural network architectures for multi-market trading",
+                "Design attention mechanisms for market correlation modeling",
+                "Implement LSTM/GRU components for temporal modeling",
+                "Create ensemble methods for model robustness",
+                "Add market selection and allocation strategies",
+                "Include risk-aware architecture components"
+              ],
+              "success_criteria": [
+                "Advanced architectures show improved performance over baseline PPO",
+                "Attention mechanisms capture meaningful market correlations",
+                "Temporal modeling improves prediction accuracy",
+                "Ensemble methods increase model stability",
+                "Risk-aware components prevent excessive exposure"
+              ],
+              "estimated_effort": "6 hours",
+              "completed": false,
+              "depends_on": []
+            },
+            {
+              "id": "wu_2_3_2",
+              "instruction": "Implement sophisticated reward functions and risk management",
+              "details": [
+                "Design multi-objective reward functions (profit, risk, market impact)",
+                "Implement dynamic position sizing based on market conditions",
+                "Add correlation-aware risk penalties",
+                "Create market regime detection for adaptive rewards",
+                "Include transaction cost modeling",
+                "Add drawdown and volatility constraints"
+              ],
+              "success_criteria": [
+                "Reward functions align with trading objectives",
+                "Risk management prevents excessive losses",
+                "Market regime detection improves adaptability",
+                "Transaction costs are properly modeled",
+                "Models learn conservative strategies when appropriate"
+              ],
+              "estimated_effort": "4 hours",
+              "completed": false,
+              "depends_on": ["wu_2_3_1"]
+            },
+            {
+              "id": "wu_2_3_3",
+              "instruction": "Create comprehensive model evaluation and backtesting framework",
+              "details": [
+                "Implement walk-forward validation for time series data",
+                "Create performance attribution analysis",
+                "Add risk metrics calculation (Sharpe, max drawdown, VaR)",
+                "Implement statistical significance testing",
+                "Create model comparison and ranking system",
+                "Add performance visualization and reporting"
+              ],
+              "success_criteria": [
+                "Evaluation framework provides reliable performance estimates",
+                "Risk metrics accurately capture model behavior",
+                "Statistical tests validate model improvements",
+                "Comparison system identifies best models",
+                "Reporting provides actionable insights"
+              ],
+              "estimated_effort": "4 hours",
+              "completed": false,
+              "depends_on": ["wu_2_3_2"]
+            }
+          ],
+          "completed": false,
+          "dependencies": ["milestone_2_2"],
+          "estimated_effort": "14 hours",
+          "priority": 5,
+          "phase": "PHASE_2_RL_FOUNDATION",
+          "focus_area": "Advanced ML model development prioritized over complex UI visualization"
         }
       ]
     },
@@ -1117,28 +1232,28 @@
     }
   ],
   "current_status": {
-    "active_work_unit": "wu_3_1_5",
+    "active_work_unit": "wu_1_3_1",
     "completed_work_units": 33,
-    "total_work_units": 47,
+    "total_work_units": 52,
     "completed_milestones": 4,
-    "total_milestones": 7,
+    "total_milestones": 10,
     "milestone_1_1_status": "COMPLETE_WITH_SESSION_TRACKING - Full Kalshi integration with production session tracking for 300+ markets",
     "milestone_1_2_status": "COMPLETE_WITH_MULTI_MARKET - Observation builder foundation ready for SB3",
     "milestone_2_1_status": "COMPLETE - Multi-market Gymnasium environment implemented and tested", 
     "milestone_2_2_status": "COMPLETE_WITH_VERIFICATION - 82 tests passing, all SB3 components operational and verified",
     "milestone_3_1_status": "PARTIAL_COMPLETE - Demo account integration complete (22 tests passing), ActionWriteQueue implementation pending",
     "implementation_review_status": "UPDATED - 2025-12-10T12:00:00Z",
-    "estimated_remaining_effort": "22 hours for remaining phases - ActionWriteQueue (2h) + Milestone 3.2 (12h) + Phase 4&5 (8h)",
+    "estimated_remaining_effort": "42 hours for remaining phases - Simple stats UI (3h) + Advanced ML models (14h) + Phase 3&4&5 (25h)",
     "critical_blockers": [],
     "next_actions": [
-      "wu_3_1_5: Implement ActionWriteQueue for non-blocking database writes of trading actions (CRITICAL)",
-      "wu_3_2_1: Implement TradingActor with hot-reload protocol",
-      "wu_3_2_2: Create inference pipeline with action queue",
-      "wu_3_2_3: Add model hot-reload and validation",
-      "wu_3_2_4: Integrate actor with demo trading client",
-      "wu_3_2_5: Create comprehensive testing for inference pipeline",
-      "Note: Milestone 3.1 PARTIAL - Demo account integration complete, ActionWriteQueue optimization added",
-      "Note: ActionWriteQueue critical for non-blocking trading execution (high-frequency scenarios)"
+      "wu_1_3_1: Create simple RL stats WebSocket dashboard component (SHIP BLOCKING)",
+      "SHIP Milestone 1.1: Data collection system with basic stats view",
+      "wu_2_3_1: Design advanced multi-market RL model architectures",
+      "wu_2_3_2: Implement sophisticated reward functions and risk management",
+      "wu_2_3_3: Create comprehensive model evaluation and backtesting framework",
+      "Note: Complex orderbook grid UI moved to future milestone 4.2",
+      "Note: Focus shifted to ML model development after shipping data collection",
+      "Note: Simple stats view sufficient for validating data collection pipeline"
     ],
     "multi_market_support": {
       "status": "COMPLETE_PRODUCTION_SCALE",
@@ -1271,6 +1386,12 @@
     "🎯 Session Benefits: Proper handling of WebSocket reconnections, sequence number resets, and data reconstruction",
     "📊 Production Scale: Successfully collecting data for 300+ markets with session tracking",
     "🔧 Data Integrity: Unique constraints on (session_id, market_ticker, sequence_number) prevent duplicates",
-    "▶️ Next Focus: Complete ActionWriteQueue (wu_3_1_5) before proceeding to TradingActor (wu_3_2_1)"
+    "🎯 PRIORITY PIVOT (2025-12-10T18:00:00Z): Data collection system ready to ship with simple stats view",
+    "📊 SHIP MILESTONE 1.1: Data collection system SHIP_READY with basic WebSocket stats dashboard",
+    "🚚 Simple Stats View: Session ID, market count, live message rates, and health metrics sufficient for MVP validation",
+    "📈 Complex UI Deferred: Multi-market orderbook grid UI moved to future milestone 4.2 (300+ orderbook cards)",
+    "🧠 ML Focus Shift: Priority moved to advanced RL model development (milestone 2.3) after shipping data collection",
+    "⚡ Next Immediate: wu_1_3_1 - Create simple RL stats WebSocket dashboard (SHIP BLOCKING)",
+    "🎯 Strategic Direction: Ship scalable data collection NOW, build ML models NEXT, complex UI LATER"
   ]
 }

@@ -2,13 +2,13 @@
 
 ## Executive Summary
 
-This document outlines the implementation plan for the RL Orderbook Collector, an intermediary milestone that establishes the foundation for the Kalshi RL Trading Subsystem. This service will collect real orderbook data from multiple markets, store it in PostgreSQL, and surface it to the frontend via WebSocket - all before implementing any RL training or inference components.
+This document outlines the implementation plan for the RL Orderbook Collector SHIPPING milestone. The data collection system is READY TO SHIP with a simple WebSocket stats dashboard. Complex orderbook UI (300+ market grid) has been moved to a future milestone to prioritize ML model development.
 
-**Rationale:**
-1. Validate orderbook processing and storage is working exactly as intended
-2. Start collecting training data immediately (the sooner we start, the better)
-3. Prevent bugs/errors from assumptions and hypothetical data
-4. Establish a solid upstream pipeline for all downstream RL components
+**Updated Priorities:**
+1. ✅ SHIP NOW: Data collection system with simple stats view (session ID, market count, live metrics)
+2. 🧠 NEXT: Focus on advanced RL model development and training
+3. 📈 FUTURE: Complex multi-market orderbook grid UI (milestone 4.2)
+4. ⚡ GOAL: Start collecting data immediately while building the actual ML models
 
 ## Architecture Overview
 
@@ -175,52 +175,39 @@ frontend/src/
         └── OrderbookCard.tsx   # Individual market card
 ```
 
-#### 2.2 Hero Statistics Section
+#### 2.2 Simple Stats Dashboard (SHIP VERSION)
 
-Display real-time system metrics:
+Display essential system metrics for operational visibility:
 ```typescript
-interface OrderbookStats {
+interface RLStats {
+  sessionId: string;
+  sessionStatus: 'active' | 'connecting' | 'disconnected';
   marketsActive: number;
   snapshotsProcessed: number;
   deltasProcessed: number;
   messagesPerSecond: number;
   uptimeSeconds: number;
-  connectionStatus: 'connecting' | 'connected' | 'disconnected';
   lastUpdateMs: number;
 }
 ```
 
-Visual elements:
-- Large metric cards with icons
-- Real-time update indicators
-- Connection status badge
-- Uptime counter (formatted as HH:MM:SS)
+Minimal UI elements for shipping:
+- Current session ID and status
+- Number of markets being tracked  
+- Live counts of snapshots/deltas collected
+- Basic health metrics (uptime, message rate)
+- Clean, focused design for operational visibility
 
-#### 2.3 Market Grid View
+#### 2.3 Market Grid View (MOVED TO FUTURE MILESTONE 4.2)
 
-Grid of cards showing each market's orderbook:
+**DEFERRED**: Complex multi-market orderbook grid UI with 300+ market cards has been moved to future milestone 4.2. This includes:
+- Real-time orderbook depth visualization
+- Market activity heatmaps
+- Advanced filtering and sorting
+- Interactive orderbook drill-down views
+- Performance optimization for 300+ cards
 
-**Per-Market Card:**
-```typescript
-interface MarketOrderbook {
-  marketTicker: string;
-  lastSequence: number;
-  updateCount: number;
-  lastUpdateMs: number;
-  bestBid: { yes: number; no: number };
-  bestAsk: { yes: number; no: number };
-  spread: { yes: number; no: number };
-  depth: { bids: number; asks: number };
-}
-```
-
-Visual features:
-- Market ticker as card title
-- Best bid/ask prices prominently displayed
-- Spread indicator
-- Update counter
-- Time since last update
-- Visual pulse on update
+**RATIONALE**: Simple stats view is sufficient to validate data collection pipeline. Priority shifted to ML model development after shipping basic data collection system.
 
 #### 2.4 WebSocket Hook (`useRLOrderbook`)
 
@@ -423,32 +410,24 @@ export const BACKENDS = {
    - Integrated into development workflow
 
 ### ✅ PHASE 2 COMPLETE - SESSION TRACKING SYSTEM (2025-12-10)
+### 🚚 PHASE 3 READY - SIMPLE STATS UI FOR SHIPPING (2025-12-10)
 
 #### Session Tracking Implementation:
 9. **WU009** ✅ Database Schema Enhancement for Session Tracking
-   - Created `rl_orderbook_sessions` table to track WebSocket connection sessions
-   - Added `session_id` foreign key to both `rl_orderbook_snapshots` and `rl_orderbook_deltas` tables
-   - Implemented unique constraints on `(session_id, market_ticker, sequence_number)` for proper reconnection handling
-
-10. **WU010** ✅ OrderbookClient Session Management Integration
-    - Enhanced OrderbookClient to automatically create and track sessions on startup
-    - Session creation includes metadata: start timestamp, market configuration, and service version
-    - Session IDs properly propagate through all message processing workflows
-
+10. **WU010** ✅ OrderbookClient Session Management Integration  
 11. **WU011** ✅ Write Queue Session Integration
-    - Modified OrderbookWriteQueue to include session_id in all database writes
-    - Ensured both snapshots and deltas are properly tagged with current session
-    - Session boundaries maintained across queue batching operations
-
 12. **WU012** ✅ Historical Analysis Tools Update
-    - Updated `analyze_market_history.py` script to support session-based queries
-    - Added session filtering and reconstruction capabilities
-    - Session-aware data analysis for sequence number validation
-
 13. **WU013** ✅ Production Deployment and Validation
-    - Successfully deployed session tracking system to production
-    - Currently running and collecting data for 300 markets in session 5
-    - Sequence number reset handling verified through reconnection testing
+
+#### SHIPPING MILESTONE - Simple Stats UI:
+14. **WU014** 🚚 Simple RL Stats Dashboard for Immediate Shipping
+    - Create `/rl-stats` route with basic React component
+    - Display current session ID and connection status
+    - Show number of markets being tracked (300+)
+    - Display live counts of snapshots/deltas collected
+    - Show basic health metrics (uptime, message rate)
+    - Clean, focused UI for operational visibility
+    - **STATUS**: SHIP BLOCKING - Required for Milestone 1.1 release
 
 ### Running the Service
 
@@ -466,26 +445,25 @@ curl http://localhost:8001/rl/health
 
 ## Success Criteria
 
-### Must Have (Launch Blocking)
+### ✅ READY TO SHIP (Launch Blocking)
 - ✅ OrderbookClient connects to all configured markets
-- ✅ Snapshots and deltas stored correctly in PostgreSQL
-- ✅ Frontend receives real-time updates via WebSocket
-- ✅ Statistics accurately reflect processing
+- ✅ Snapshots and deltas stored correctly in PostgreSQL  
 - ✅ System remains stable for 1+ hour of continuous operation
 - ✅ Session tracking handles WebSocket reconnections properly
 - ✅ Data collection operates at scale with 300+ markets
+- 🚚 Simple stats WebSocket dashboard shows live metrics
 
-### Should Have (Post-Launch)
-- Reconnection handling for Kalshi WebSocket
-- Graceful degradation on partial market failures
-- Performance metrics dashboard
-- Alert on anomalies (no data for X minutes)
+### 🧠 NEXT PRIORITY (Post-Shipping)
+- Advanced RL model development with sophisticated architectures
+- Multi-objective reward functions and risk management
+- Comprehensive model evaluation and backtesting framework
+- Trading actor development with hot-reload capabilities
 
-### Nice to Have (Future)
-- Historical data replay capability
-- Data export functionality
-- Market health indicators
-- Orderbook visualization charts
+### 📈 FUTURE MILESTONES (Deferred)
+- Complex multi-market orderbook grid UI (milestone 4.2)
+- Advanced orderbook depth visualization
+- Market heatmaps and analytics
+- Interactive orderbook drill-down views
 
 ## Migration Notes
 
@@ -550,33 +528,41 @@ The RL tables are already created but isolated from trade flow:
 - Day 4: Deploy to Railway and configure
 - Day 5: Production validation and monitoring
 
-## Next Steps After This Milestone
+## Next Steps After Shipping
 
-Once the orderbook collector is successfully deployed and collecting data:
+Once the orderbook collector with simple stats view is shipped:
 
-1. **Immediate Next (Week 3-4):**
-   - Analyze collected data quality
-   - Implement data validation checks
-   - Add monitoring dashboards
+1. **🧠 IMMEDIATE FOCUS (Priority 1):**
+   - Design advanced multi-market RL model architectures
+   - Implement sophisticated reward functions with risk management
+   - Create comprehensive model evaluation and backtesting framework
+   - Build trading actor with hot-reload capabilities
 
-2. **Following Sprint:**
-   - Begin implementing Gymnasium environment using collected data
-   - Design reward functions based on real orderbook dynamics
-   - Start training pipeline development
+2. **🎯 ML MODEL DEVELOPMENT:**
+   - Attention mechanisms for market correlation modeling
+   - LSTM/GRU components for temporal modeling
+   - Ensemble methods for model robustness
+   - Risk-aware architecture components
 
-3. **Future Sprints:**
-   - Actor implementation with hot-reload
-   - Paper trading integration
-   - Model registry and versioning
-   - Performance evaluation framework
+3. **📈 FUTURE UI DEVELOPMENT:**
+   - Complex multi-market orderbook grid (milestone 4.2)
+   - Real-time orderbook depth visualization
+   - Market heatmaps and advanced analytics
+   - Interactive features for 300+ markets
 
 ## Conclusion
 
-This orderbook collector milestone provides a solid foundation for the RL Trading Subsystem by:
-1. Establishing real data flow from Kalshi to our system
-2. Validating our orderbook processing logic with actual market data
-3. Building the upstream pipeline that all RL components will depend on
-4. Starting data collection immediately for future training
-5. Creating a visible, production-ready service that demonstrates progress
+**PRIORITY UPDATE**: The orderbook collector is READY TO SHIP with a simple stats dashboard. Complex UI has been strategically deferred to focus on what matters most:
 
-By shipping this first, we ensure that all subsequent RL development is grounded in real, validated data rather than assumptions or simulations.
+1. ✅ **SHIP NOW**: Real data collection with operational visibility
+2. 🧠 **BUILD NEXT**: Advanced ML models that can actually trade
+3. 📈 **ENHANCE LATER**: Complex visualization for 300+ markets
+
+**Strategic Benefits:**
+- Start collecting training data immediately
+- Validate data pipeline with production deployment
+- Focus development effort on ML model sophistication
+- Ship visible progress while building core trading capabilities
+- Defer complex UI until after trading actor is functional
+
+This approach ensures we have a working data collection system in production while focusing on the ML models that will actually generate trading value.
