@@ -18,6 +18,7 @@ from websockets.exceptions import ConnectionClosed, InvalidMessage
 from .auth import get_rl_auth
 from .orderbook_state import get_shared_orderbook_state, SharedOrderbookState
 from .write_queue import write_queue
+from .database import rl_db
 from ..config import config
 
 logger = logging.getLogger("kalshiflow_rl.orderbook_client")
@@ -59,6 +60,7 @@ class OrderbookClient:
         self._websocket: Optional[websockets.WebSocketServerProtocol] = None
         self._running = False
         self._reconnect_count = 0
+        self._session_id: Optional[int] = None
         
         # Per-market tracking
         self._last_sequences: Dict[str, int] = {ticker: 0 for ticker in self.market_tickers}
@@ -93,6 +95,9 @@ class OrderbookClient:
             self._orderbook_states[market_ticker] = await get_shared_orderbook_state(market_ticker)
             logger.info(f"Initialized orderbook state for: {market_ticker}")
         
+        # Initialize database
+        await rl_db.initialize()
+        
         # Start connection loop
         await self._connection_loop()
     
@@ -104,6 +109,15 @@ class OrderbookClient:
         if self._websocket:
             await self._websocket.close()
             self._websocket = None
+        
+        # Close session if active
+        if self._session_id:
+            try:
+                await rl_db.close_session(self._session_id, status='closed')
+                logger.info(f"Closed session {self._session_id}")
+            except Exception as e:
+                logger.error(f"Failed to close session {self._session_id}: {e}")
+            self._session_id = None
         
         logger.info(
             f"OrderbookClient stopped. Final stats: "
@@ -156,7 +170,16 @@ class OrderbookClient:
             self._connection_start_time = time.time()
             self._reconnect_count = 0  # Reset on successful connection
             
-            logger.info(f"WebSocket connected for {len(self.market_tickers)} markets")
+            # Create new session
+            self._session_id = await rl_db.create_session(
+                market_tickers=self.market_tickers,
+                websocket_url=self.ws_url
+            )
+            
+            # Pass session ID to write queue
+            write_queue.set_session_id(self._session_id)
+            
+            logger.info(f"WebSocket connected for {len(self.market_tickers)} markets, session {self._session_id}")
             
             if self._on_connected:
                 try:
@@ -197,6 +220,21 @@ class OrderbookClient:
                 
         except ConnectionClosed as e:
             logger.warning(f"WebSocket connection closed: {e}")
+            
+            # Close session on disconnect
+            if self._session_id:
+                try:
+                    await rl_db.close_session(self._session_id, status='closed')
+                    await rl_db.update_session_stats(
+                        self._session_id, 
+                        messages=self._messages_received, 
+                        snapshots=self._snapshots_received, 
+                        deltas=self._deltas_received
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to update session on disconnect: {e}")
+                self._session_id = None
+            
             if self._on_disconnected:
                 try:
                     await self._on_disconnected()
@@ -358,7 +396,7 @@ class OrderbookClient:
             if market_ticker in self._orderbook_states:
                 await self._orderbook_states[market_ticker].apply_snapshot(snapshot_data)
             
-            # Queue for database persistence (non-blocking)
+            # Queue for database persistence with session ID (non-blocking)
             await write_queue.enqueue_snapshot(snapshot_data)
             
             # Log snapshot processing (less verbose for production)
@@ -429,7 +467,7 @@ class OrderbookClient:
                 if not success:
                     logger.warning(f"Failed to apply delta for {market_ticker}: seq={delta_data['sequence_number']}")
             
-            # Queue for database persistence (non-blocking)
+            # Queue for database persistence with session ID (non-blocking)
             await write_queue.enqueue_delta(delta_data)
             
             # Log periodically at info level for production monitoring
@@ -505,7 +543,8 @@ class OrderbookClient:
             "snapshots_received": self._snapshots_received,
             "deltas_received": self._deltas_received,
             "uptime_seconds": uptime,
-            "last_message_time": self._last_message_time
+            "last_message_time": self._last_message_time,
+            "session_id": self._session_id
         }
     
     def is_healthy(self) -> bool:

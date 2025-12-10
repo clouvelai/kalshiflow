@@ -80,6 +80,7 @@ class RLDatabase:
         """Create all RL-specific database tables and indexes."""
         async with self.get_connection() as conn:
             # Create tables in dependency order
+            await self._create_orderbook_sessions_table(conn)
             await self._create_orderbook_snapshots_table(conn)
             await self._create_orderbook_deltas_table(conn)
             await self._create_models_table(conn)
@@ -87,6 +88,7 @@ class RLDatabase:
             await self._create_trading_actions_table(conn)
             
             # Analyze tables for optimal query planning
+            await conn.execute("ANALYZE rl_orderbook_sessions")
             await conn.execute("ANALYZE rl_orderbook_snapshots")
             await conn.execute("ANALYZE rl_orderbook_deltas")
             await conn.execute("ANALYZE rl_models")
@@ -111,11 +113,68 @@ class RLDatabase:
         except Exception as e:
             logger.warning(f"Failed to add constraint {constraint_name}: {e}")
     
+    async def _create_orderbook_sessions_table(self, conn: asyncpg.Connection):
+        """Create orderbook_sessions table for tracking WebSocket connection sessions."""
+        await conn.execute('''
+            CREATE TABLE IF NOT EXISTS rl_orderbook_sessions (
+                session_id BIGSERIAL PRIMARY KEY,
+                market_tickers TEXT[] NOT NULL,  -- Array of market tickers for this session
+                started_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                ended_at TIMESTAMPTZ,  -- NULL while session is active
+                status VARCHAR(20) NOT NULL DEFAULT 'active',  -- active, closed, error
+                websocket_url TEXT,
+                connection_metadata JSONB,  -- Additional connection info
+                messages_received BIGINT DEFAULT 0,
+                snapshots_count INTEGER DEFAULT 0,
+                deltas_count INTEGER DEFAULT 0,
+                last_message_at TIMESTAMPTZ,
+                error_message TEXT,  -- If session ended with error
+                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+            );
+        ''')
+        
+        # Create indexes
+        await conn.execute('''
+            CREATE INDEX IF NOT EXISTS idx_sessions_status_started 
+                ON rl_orderbook_sessions(status, started_at DESC);
+        ''')
+        
+        await conn.execute('''
+            CREATE INDEX IF NOT EXISTS idx_sessions_active 
+                ON rl_orderbook_sessions(status) 
+                WHERE status = 'active';
+        ''')
+        
+        await conn.execute('''
+            CREATE INDEX IF NOT EXISTS idx_sessions_markets 
+                ON rl_orderbook_sessions USING GIN(market_tickers);
+        ''')
+        
+        # Add constraints
+        await self._add_constraint_if_not_exists(
+            conn,
+            'rl_orderbook_sessions',
+            'chk_sessions_status',
+            "CHECK (status IN ('active', 'closed', 'error'))"
+        )
+        
+        await self._add_constraint_if_not_exists(
+            conn,
+            'rl_orderbook_sessions',
+            'chk_sessions_dates',
+            'CHECK (ended_at IS NULL OR ended_at >= started_at)'
+        )
+        
+        await conn.execute('''
+            COMMENT ON TABLE rl_orderbook_sessions IS 'WebSocket connection sessions for orderbook data collection';
+        ''')
+    
     async def _create_orderbook_snapshots_table(self, conn: asyncpg.Connection):
         """Create orderbook_snapshots table with full state snapshots."""
         await conn.execute('''
             CREATE TABLE IF NOT EXISTS rl_orderbook_snapshots (
                 id BIGSERIAL PRIMARY KEY,
+                session_id BIGINT NOT NULL REFERENCES rl_orderbook_sessions(session_id),
                 market_ticker VARCHAR(100) NOT NULL,
                 timestamp_ms BIGINT NOT NULL,
                 sequence_number BIGINT NOT NULL,
@@ -134,18 +193,18 @@ class RLDatabase:
         
         # Create indexes for performance
         await conn.execute('''
+            CREATE INDEX IF NOT EXISTS idx_snapshots_session_market_seq 
+                ON rl_orderbook_snapshots(session_id, market_ticker, sequence_number);
+        ''')
+        
+        await conn.execute('''
             CREATE INDEX IF NOT EXISTS idx_snapshots_market_time 
                 ON rl_orderbook_snapshots(market_ticker, timestamp_ms DESC);
         ''')
         
         await conn.execute('''
-            CREATE INDEX IF NOT EXISTS idx_snapshots_sequence 
-                ON rl_orderbook_snapshots(market_ticker, sequence_number DESC);
-        ''')
-        
-        await conn.execute('''
-            CREATE INDEX IF NOT EXISTS idx_snapshots_timestamp 
-                ON rl_orderbook_snapshots(timestamp_ms DESC);
+            CREATE INDEX IF NOT EXISTS idx_snapshots_session_time 
+                ON rl_orderbook_snapshots(session_id, timestamp_ms DESC);
         ''')
         
         # Add constraints
@@ -163,6 +222,14 @@ class RLDatabase:
             'CHECK (sequence_number >= 0)'
         )
         
+        # Add unique constraint for session + market + sequence
+        await self._add_constraint_if_not_exists(
+            conn,
+            'rl_orderbook_snapshots',
+            'uq_snapshots_session_market_seq',
+            'UNIQUE (session_id, market_ticker, sequence_number)'
+        )
+        
         await conn.execute('''
             COMMENT ON TABLE rl_orderbook_snapshots IS 'Full orderbook state snapshots for RL training data';
         ''')
@@ -172,6 +239,7 @@ class RLDatabase:
         await conn.execute('''
             CREATE TABLE IF NOT EXISTS rl_orderbook_deltas (
                 id BIGSERIAL PRIMARY KEY,
+                session_id BIGINT NOT NULL REFERENCES rl_orderbook_sessions(session_id),
                 market_ticker VARCHAR(100) NOT NULL,
                 timestamp_ms BIGINT NOT NULL,
                 sequence_number BIGINT NOT NULL,
@@ -186,13 +254,13 @@ class RLDatabase:
         
         # Create indexes for performance
         await conn.execute('''
-            CREATE INDEX IF NOT EXISTS idx_deltas_market_seq 
-                ON rl_orderbook_deltas(market_ticker, sequence_number DESC);
+            CREATE INDEX IF NOT EXISTS idx_deltas_session_market_seq 
+                ON rl_orderbook_deltas(session_id, market_ticker, sequence_number);
         ''')
         
         await conn.execute('''
-            CREATE INDEX IF NOT EXISTS idx_deltas_timestamp 
-                ON rl_orderbook_deltas(timestamp_ms DESC);
+            CREATE INDEX IF NOT EXISTS idx_deltas_session_time 
+                ON rl_orderbook_deltas(session_id, timestamp_ms DESC);
         ''')
         
         await conn.execute('''
@@ -220,6 +288,14 @@ class RLDatabase:
             'rl_orderbook_deltas',
             'chk_deltas_price_positive',
             'CHECK (price > 0)'
+        )
+        
+        # Add unique constraint for session + market + sequence
+        await self._add_constraint_if_not_exists(
+            conn,
+            'rl_orderbook_deltas',
+            'uq_deltas_session_market_seq',
+            'UNIQUE (session_id, market_ticker, sequence_number)'
         )
         
         await conn.execute('''
@@ -418,9 +494,67 @@ class RLDatabase:
             self._initialized = False
             logger.info("RL database connection pool closed")
     
+    # Session management operations
+    
+    async def create_session(self, market_tickers: List[str], websocket_url: str = None) -> int:
+        """Create a new orderbook session and return its ID."""
+        async with self.get_connection() as conn:
+            session_id = await conn.fetchval('''
+                INSERT INTO rl_orderbook_sessions (
+                    market_tickers, websocket_url, status, started_at
+                ) VALUES ($1, $2, 'active', CURRENT_TIMESTAMP)
+                RETURNING session_id
+            ''', market_tickers, websocket_url)
+            
+            logger.info(f"Created orderbook session {session_id} for {len(market_tickers)} markets")
+            return session_id
+    
+    async def update_session_stats(self, session_id: int, messages: int = 0, snapshots: int = 0, deltas: int = 0) -> None:
+        """Update session statistics."""
+        async with self.get_connection() as conn:
+            await conn.execute('''
+                UPDATE rl_orderbook_sessions 
+                SET messages_received = messages_received + $2,
+                    snapshots_count = snapshots_count + $3,
+                    deltas_count = deltas_count + $4,
+                    last_message_at = CURRENT_TIMESTAMP
+                WHERE session_id = $1
+            ''', session_id, messages, snapshots, deltas)
+    
+    async def close_session(self, session_id: int, status: str = 'closed', error_message: str = None) -> None:
+        """Close an orderbook session."""
+        async with self.get_connection() as conn:
+            await conn.execute('''
+                UPDATE rl_orderbook_sessions 
+                SET status = $2, 
+                    ended_at = CURRENT_TIMESTAMP,
+                    error_message = $3
+                WHERE session_id = $1
+            ''', session_id, status, error_message)
+            
+            logger.info(f"Closed orderbook session {session_id} with status: {status}")
+    
+    async def get_active_sessions(self) -> List[Dict[str, Any]]:
+        """Get all active sessions."""
+        async with self.get_connection() as conn:
+            rows = await conn.fetch('''
+                SELECT * FROM rl_orderbook_sessions 
+                WHERE status = 'active' 
+                ORDER BY started_at DESC
+            ''')
+            return [dict(row) for row in rows]
+    
+    async def get_session(self, session_id: int) -> Optional[Dict[str, Any]]:
+        """Get session by ID."""
+        async with self.get_connection() as conn:
+            row = await conn.fetchrow('''
+                SELECT * FROM rl_orderbook_sessions WHERE session_id = $1
+            ''', session_id)
+            return dict(row) if row else None
+    
     # Batch write operations for high-performance ingestion
     
-    async def batch_insert_snapshots(self, snapshots: List[Dict[str, Any]]) -> int:
+    async def batch_insert_snapshots(self, snapshots: List[Dict[str, Any]], session_id: int) -> int:
         """Batch insert orderbook snapshots."""
         if not snapshots:
             return 0
@@ -429,6 +563,7 @@ class RLDatabase:
             records = []
             for snap in snapshots:
                 records.append((
+                    session_id,
                     snap['market_ticker'],
                     snap['timestamp_ms'],
                     snap['sequence_number'],
@@ -445,16 +580,16 @@ class RLDatabase:
             
             query = '''
                 INSERT INTO rl_orderbook_snapshots (
-                    market_ticker, timestamp_ms, sequence_number,
+                    session_id, market_ticker, timestamp_ms, sequence_number,
                     yes_bids, yes_asks, no_bids, no_asks,
                     yes_spread, no_spread, yes_mid_price, no_mid_price, total_volume
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
             '''
             
             await conn.executemany(query, records)
             return len(records)
     
-    async def batch_insert_deltas(self, deltas: List[Dict[str, Any]]) -> int:
+    async def batch_insert_deltas(self, deltas: List[Dict[str, Any]], session_id: int) -> int:
         """Batch insert orderbook deltas."""
         if not deltas:
             return 0
@@ -463,6 +598,7 @@ class RLDatabase:
             records = []
             for delta in deltas:
                 records.append((
+                    session_id,
                     delta['market_ticker'],
                     delta['timestamp_ms'],
                     delta['sequence_number'],
@@ -475,36 +611,80 @@ class RLDatabase:
             
             query = '''
                 INSERT INTO rl_orderbook_deltas (
-                    market_ticker, timestamp_ms, sequence_number,
+                    session_id, market_ticker, timestamp_ms, sequence_number,
                     side, action, price, old_size, new_size
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
             '''
             
             await conn.executemany(query, records)
             return len(records)
     
-    async def get_latest_snapshot(self, market_ticker: str) -> Optional[Dict[str, Any]]:
-        """Get the latest orderbook snapshot for a market."""
+    async def get_latest_snapshot(self, market_ticker: str, session_id: int = None) -> Optional[Dict[str, Any]]:
+        """Get the latest orderbook snapshot for a market, optionally within a session."""
         async with self.get_connection() as conn:
-            row = await conn.fetchrow('''
-                SELECT * FROM rl_orderbook_snapshots 
-                WHERE market_ticker = $1 
-                ORDER BY sequence_number DESC 
-                LIMIT 1
-            ''', market_ticker)
+            if session_id:
+                row = await conn.fetchrow('''
+                    SELECT * FROM rl_orderbook_snapshots 
+                    WHERE market_ticker = $1 AND session_id = $2
+                    ORDER BY sequence_number DESC 
+                    LIMIT 1
+                ''', market_ticker, session_id)
+            else:
+                row = await conn.fetchrow('''
+                    SELECT * FROM rl_orderbook_snapshots 
+                    WHERE market_ticker = $1 
+                    ORDER BY session_id DESC, sequence_number DESC 
+                    LIMIT 1
+                ''', market_ticker)
             
             if row:
                 return dict(row)
             return None
     
-    async def get_deltas_since_sequence(self, market_ticker: str, sequence_number: int) -> List[Dict[str, Any]]:
-        """Get all deltas since a given sequence number."""
+    async def get_deltas_since_sequence(self, market_ticker: str, sequence_number: int, session_id: int) -> List[Dict[str, Any]]:
+        """Get all deltas since a given sequence number within a session."""
         async with self.get_connection() as conn:
             rows = await conn.fetch('''
                 SELECT * FROM rl_orderbook_deltas 
-                WHERE market_ticker = $1 AND sequence_number > $2 
+                WHERE market_ticker = $1 AND sequence_number > $2 AND session_id = $3
                 ORDER BY sequence_number ASC
-            ''', market_ticker, sequence_number)
+            ''', market_ticker, sequence_number, session_id)
+            
+            return [dict(row) for row in rows]
+    
+    async def get_session_snapshots(self, session_id: int, market_ticker: str = None) -> List[Dict[str, Any]]:
+        """Get all snapshots for a session, optionally filtered by market."""
+        async with self.get_connection() as conn:
+            if market_ticker:
+                rows = await conn.fetch('''
+                    SELECT * FROM rl_orderbook_snapshots 
+                    WHERE session_id = $1 AND market_ticker = $2
+                    ORDER BY sequence_number ASC
+                ''', session_id, market_ticker)
+            else:
+                rows = await conn.fetch('''
+                    SELECT * FROM rl_orderbook_snapshots 
+                    WHERE session_id = $1
+                    ORDER BY market_ticker, sequence_number ASC
+                ''', session_id)
+            
+            return [dict(row) for row in rows]
+    
+    async def get_session_deltas(self, session_id: int, market_ticker: str = None) -> List[Dict[str, Any]]:
+        """Get all deltas for a session, optionally filtered by market."""
+        async with self.get_connection() as conn:
+            if market_ticker:
+                rows = await conn.fetch('''
+                    SELECT * FROM rl_orderbook_deltas 
+                    WHERE session_id = $1 AND market_ticker = $2
+                    ORDER BY sequence_number ASC
+                ''', session_id, market_ticker)
+            else:
+                rows = await conn.fetch('''
+                    SELECT * FROM rl_orderbook_deltas 
+                    WHERE session_id = $1
+                    ORDER BY market_ticker, sequence_number ASC
+                ''', session_id)
             
             return [dict(row) for row in rows]
     

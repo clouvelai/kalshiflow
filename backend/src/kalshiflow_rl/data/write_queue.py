@@ -64,6 +64,9 @@ class OrderbookWriteQueue:
         self._running = False
         self._shutdown_event = asyncio.Event()
         
+        # Session tracking
+        self._session_id: Optional[int] = None
+        
         # Metrics and monitoring
         self._messages_enqueued = 0
         self._messages_written = 0
@@ -77,6 +80,11 @@ class OrderbookWriteQueue:
             f"OrderbookWriteQueue initialized: batch_size={self.batch_size}, "
             f"flush_interval={self.flush_interval}s, max_queue_size={self.max_queue_size}"
         )
+    
+    def set_session_id(self, session_id: int) -> None:
+        """Set the current session ID for all writes."""
+        self._session_id = session_id
+        logger.info(f"OrderbookWriteQueue session set to {session_id}")
     
     async def start(self) -> None:
         """Start the background flush loop."""
@@ -225,9 +233,9 @@ class OrderbookWriteQueue:
             except asyncio.QueueEmpty:
                 break
         
-        if snapshots:
+        if snapshots and self._session_id:
             try:
-                count = await rl_db.batch_insert_snapshots(snapshots)
+                count = await rl_db.batch_insert_snapshots(snapshots, self._session_id)
                 self._snapshots_written += count
                 self._messages_written += count
                 
@@ -242,6 +250,8 @@ class OrderbookWriteQueue:
                         await self.enqueue_snapshot(snapshot)
                     except Exception:
                         pass  # Drop message if re-queue fails
+        elif snapshots and not self._session_id:
+            logger.warning(f"Cannot write {len(snapshots)} snapshots: no session ID set")
     
     async def _flush_delta_queue(self) -> None:
         """Flush delta queue in batches."""
@@ -255,9 +265,9 @@ class OrderbookWriteQueue:
             except asyncio.QueueEmpty:
                 break
         
-        if deltas:
+        if deltas and self._session_id:
             try:
-                count = await rl_db.batch_insert_deltas(deltas)
+                count = await rl_db.batch_insert_deltas(deltas, self._session_id)
                 self._deltas_written += count
                 self._messages_written += count
                 
@@ -272,6 +282,8 @@ class OrderbookWriteQueue:
                         await self.enqueue_delta(delta)
                     except Exception:
                         pass  # Drop message if re-queue fails
+        elif deltas and not self._session_id:
+            logger.warning(f"Cannot write {len(deltas)} deltas: no session ID set")
     
     # Monitoring and diagnostics
     
@@ -291,7 +303,8 @@ class OrderbookWriteQueue:
                 "batch_size": self.batch_size,
                 "flush_interval": self.flush_interval,
                 "max_queue_size": self.max_queue_size
-            }
+            },
+            "session_id": self._session_id
         }
     
     def is_healthy(self) -> bool:
