@@ -178,37 +178,58 @@ class SessionDataLoader:
             logger.error(f"Error loading session {session_id}: {e}")
             return None
     
-    async def get_available_sessions(self) -> List[int]:
+    async def get_available_sessions(self) -> List[Dict[str, Any]]:
         """
-        Get list of all available session_ids.
+        Get list of all available sessions with metadata.
         
         Returns:
-            List of session identifiers available for loading
+            List of dictionaries containing session metadata:
+                - session_id: Unique session identifier
+                - started_at: Session start timestamp
+                - ended_at: Session end timestamp
+                - status: Session status (closed/active)
+                - market_tickers: List of market tickers
+                - num_markets: Number of markets in session
+                - snapshots_count: Number of orderbook snapshots
+                - deltas_count: Number of orderbook deltas
+                - duration: Session duration (timedelta)
         """
         try:
             if not self._db._initialized:
                 await self._db.initialize()
             
-            # Get all sessions that have ended (complete data)
+            # Get all closed sessions with full metadata (no filtering)
             async with self._db.get_connection() as conn:
                 rows = await conn.fetch("""
                     SELECT session_id, started_at, ended_at, status, 
+                           market_tickers,
                            array_length(market_tickers, 1) as num_markets,
-                           snapshots_count, deltas_count
+                           snapshots_count, deltas_count,
+                           ended_at - started_at as duration
                     FROM rl_orderbook_sessions 
                     WHERE ended_at IS NOT NULL 
                     AND status = 'closed'
-                    AND snapshots_count > 10  -- Minimum data requirement
                     ORDER BY started_at DESC
                 """)
                 
-                available_sessions = [row['session_id'] for row in rows]
+                # Convert rows to dictionaries with all metadata
+                available_sessions = [dict(row) for row in rows]
                 logger.info(f"Found {len(available_sessions)} available sessions")
                 return available_sessions
                 
         except Exception as e:
             logger.error(f"Error getting available sessions: {e}")
             return []
+    
+    async def get_available_session_ids(self) -> List[int]:
+        """
+        Get list of available session IDs (convenience method).
+        
+        Returns:
+            List of session IDs available for loading
+        """
+        sessions = await self.get_available_sessions()
+        return [s['session_id'] for s in sessions]
     
     async def validate_session_quality(self, session_id: int) -> float:
         """

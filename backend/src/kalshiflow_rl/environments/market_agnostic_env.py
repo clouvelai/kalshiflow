@@ -20,7 +20,7 @@ from ..trading.unified_metrics import UnifiedPositionTracker, UnifiedRewardCalcu
 @dataclass
 class SessionConfig:
     """Configuration for session-based episode generation."""
-    session_pool: List[str]  # List of session_ids to sample from
+    session_pool: List[str]  # List of session_ids to sample from (extract from get_available_sessions)
     max_markets: int = 5     # Maximum markets per episode
     temporal_features: bool = True  # Include time gap and activity analysis
     cash_start: float = 1000.0      # Starting cash per episode

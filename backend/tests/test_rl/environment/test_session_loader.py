@@ -98,7 +98,17 @@ def mock_database():
     
     # Mock the async context manager
     mock_conn = AsyncMock()
-    mock_conn.fetch = AsyncMock(return_value=[{'session_id': 123}])
+    mock_conn.fetch = AsyncMock(return_value=[{
+        'session_id': 123,
+        'started_at': datetime.now(),
+        'ended_at': datetime.now() + timedelta(hours=1),
+        'status': 'closed',
+        'market_tickers': ['MARKET1', 'MARKET2'],
+        'num_markets': 2,
+        'snapshots_count': 100,
+        'deltas_count': 500,
+        'duration': timedelta(hours=1)
+    }])
     
     mock_db.get_connection = MagicMock()
     mock_db.get_connection.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
@@ -211,11 +221,24 @@ class TestSessionDataLoader:
     
     @pytest.mark.asyncio
     async def test_get_available_sessions(self, session_loader, mock_database):
-        """Test fetching available session IDs."""
+        """Test fetching available sessions with metadata."""
         sessions = await session_loader.get_available_sessions()
         
         assert isinstance(sessions, list)
-        assert sessions == [123]
+        assert len(sessions) == 1
+        
+        # Check that we get full session metadata
+        session = sessions[0]
+        assert isinstance(session, dict)
+        assert session['session_id'] == 123
+        assert session['status'] == 'closed'
+        assert session['num_markets'] == 2
+        assert session['snapshots_count'] == 100
+        assert session['deltas_count'] == 500
+        assert 'started_at' in session
+        assert 'ended_at' in session
+        assert 'duration' in session
+        
         mock_database.get_connection.assert_called()
     
     @pytest.mark.asyncio
