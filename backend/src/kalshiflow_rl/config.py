@@ -40,10 +40,13 @@ class RLConfig:
         # Parse RL_MARKET_TICKERS environment variable for multiple markets
         self.RL_MARKET_TICKERS: List[str] = self._parse_market_tickers()
         
+        # Market Discovery Settings
+        self.RL_MARKET_MODE: str = os.getenv("RL_MARKET_MODE", "discovery")  # "discovery" or "config"
+        self.ORDERBOOK_MARKET_LIMIT: int = int(os.getenv("ORDERBOOK_MARKET_LIMIT", "100"))  # Max markets for discovery mode
+        
         # Orderbook Ingestion Settings
         self.ORDERBOOK_QUEUE_BATCH_SIZE: int = int(os.getenv("RL_ORDERBOOK_BATCH_SIZE", "100"))
         self.ORDERBOOK_QUEUE_FLUSH_INTERVAL: float = float(os.getenv("RL_ORDERBOOK_FLUSH_INTERVAL", "1.0"))
-        self.ORDERBOOK_DELTA_SAMPLE_RATE: int = int(os.getenv("RL_ORDERBOOK_SAMPLE_RATE", "1"))  # Keep 1 out of N deltas
         self.ORDERBOOK_MAX_QUEUE_SIZE: int = int(os.getenv("RL_ORDERBOOK_MAX_QUEUE_SIZE", "10000"))
         
         # WebSocket and Performance Settings
@@ -128,8 +131,13 @@ class RLConfig:
         if self.ORDERBOOK_QUEUE_FLUSH_INTERVAL <= 0:
             raise ValueError("ORDERBOOK_QUEUE_FLUSH_INTERVAL must be positive")
         
-        if self.ORDERBOOK_DELTA_SAMPLE_RATE < 1:
-            raise ValueError("ORDERBOOK_DELTA_SAMPLE_RATE must be >= 1")
+        
+        # Validate market discovery settings
+        if self.RL_MARKET_MODE not in ["discovery", "config"]:
+            raise ValueError("RL_MARKET_MODE must be 'discovery' or 'config'")
+        
+        if self.ORDERBOOK_MARKET_LIMIT <= 0:
+            raise ValueError("ORDERBOOK_MARKET_LIMIT must be positive")
         
         # Validate market tickers
         if not self.RL_MARKET_TICKERS:

@@ -20,7 +20,6 @@ async def write_queue():
     queue = OrderbookWriteQueue(
         batch_size=5,
         flush_interval=0.1,
-        delta_sample_rate=2,  # Keep 1 out of 2 deltas
         max_queue_size=100
     )
     yield queue
@@ -67,7 +66,6 @@ class TestOrderbookWriteQueue:
         
         assert queue.batch_size > 0
         assert queue.flush_interval > 0
-        assert queue.delta_sample_rate >= 1
         assert queue.max_queue_size > 0
         assert not queue._running
     
@@ -110,15 +108,16 @@ class TestOrderbookWriteQueue:
         
         assert result is True
         assert enqueue_time < 0.001  # Should be sub-millisecond
-        # First delta with sample_rate=2 gets sampled out, second delta gets queued
-        first_result = await write_queue.enqueue_delta(sample_delta)
-        assert first_result is True
-        # With sample_rate=2, only every 2nd delta is queued
         assert write_queue._messages_enqueued == 1
+        
+        # Test second enqueue
+        second_result = await write_queue.enqueue_delta(sample_delta)
+        assert second_result is True
+        assert write_queue._messages_enqueued == 2
     
     @pytest.mark.asyncio
-    async def test_delta_sampling(self, write_queue, sample_delta):
-        """Test delta sampling reduces message volume."""
+    async def test_delta_queuing(self, write_queue, sample_delta):
+        """Test that all deltas are queued without sampling."""
         await write_queue.start()
         
         # Enqueue multiple deltas
@@ -128,10 +127,8 @@ class TestOrderbookWriteQueue:
             result = await write_queue.enqueue_delta(delta)
             assert result is True  # All calls return True (success)
         
-        # With sample_rate=2, should have 5 messages enqueued and 5 sampled
-        assert write_queue._messages_enqueued == 5  # Every 2nd message is queued
-        assert write_queue._deltas_sampled == 5     # Every other message is sampled out
-        assert write_queue._messages_enqueued + write_queue._deltas_sampled == 10
+        # With no sampling, all 10 deltas should be enqueued
+        assert write_queue._messages_enqueued == 10  # All messages are queued
     
     @pytest.mark.asyncio
     @patch('kalshiflow_rl.data.write_queue.rl_db')
@@ -207,7 +204,6 @@ class TestOrderbookWriteQueue:
         queue = OrderbookWriteQueue(
             batch_size=100,
             flush_interval=0.1,
-            delta_sample_rate=1,  # No sampling
             max_queue_size=10000
         )
         await queue.start()

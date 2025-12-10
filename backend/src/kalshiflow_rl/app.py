@@ -25,6 +25,7 @@ from .data.write_queue import write_queue
 from .data.orderbook_client import OrderbookClient
 from .data.orderbook_state import get_all_orderbook_states, SharedOrderbookState
 from .data.auth import validate_rl_auth
+from .data.market_discovery import fetch_active_markets
 from .websocket_manager import websocket_manager
 from .stats_collector import stats_collector
 
@@ -34,6 +35,40 @@ _shutdown_event = asyncio.Event()
 
 # Global orderbook client instance (initialized in lifespan)
 orderbook_client: Optional[OrderbookClient] = None
+
+# Global market tickers (determined at startup)
+active_market_tickers: Optional[list] = None
+
+
+async def select_market_tickers() -> list[str]:
+    """
+    Select market tickers based on configuration mode.
+    
+    Returns:
+        List of market tickers to monitor
+    """
+    global active_market_tickers
+    
+    if config.RL_MARKET_MODE == "discovery":
+        logger.info(f"Using discovery mode to fetch {config.ORDERBOOK_MARKET_LIMIT} active markets...")
+        try:
+            discovered_tickers = await fetch_active_markets(limit=config.ORDERBOOK_MARKET_LIMIT)
+            if discovered_tickers:
+                active_market_tickers = discovered_tickers
+                logger.info(f"Discovered {len(discovered_tickers)} active markets")
+                return discovered_tickers
+            else:
+                logger.warning("No active markets discovered, falling back to config mode")
+                active_market_tickers = config.RL_MARKET_TICKERS
+                return config.RL_MARKET_TICKERS
+        except Exception as e:
+            logger.error(f"Market discovery failed: {e}, falling back to config mode")
+            active_market_tickers = config.RL_MARKET_TICKERS
+            return config.RL_MARKET_TICKERS
+    else:
+        logger.info(f"Using config mode with {len(config.RL_MARKET_TICKERS)} configured markets")
+        active_market_tickers = config.RL_MARKET_TICKERS
+        return config.RL_MARKET_TICKERS
 
 
 @asynccontextmanager
@@ -62,9 +97,12 @@ async def lifespan(app: Starlette):
         await write_queue.start()
         logger.info("Write queue started")
         
-        # Initialize OrderbookClient with multiple markets
+        # Select market tickers (either from discovery or config)
+        market_tickers = await select_market_tickers()
+        
+        # Initialize OrderbookClient with selected markets
         global orderbook_client
-        orderbook_client = OrderbookClient(market_tickers=config.RL_MARKET_TICKERS)
+        orderbook_client = OrderbookClient(market_tickers=market_tickers)
         orderbook_client.on_connected(_on_orderbook_connected)
         orderbook_client.on_disconnected(_on_orderbook_disconnected)
         orderbook_client.on_error(_on_orderbook_error)
@@ -96,8 +134,13 @@ async def lifespan(app: Starlette):
             
             state.add_subscriber(create_stats_callback(market_ticker))
         
-        markets_str = ', '.join(config.RL_MARKET_TICKERS)
-        logger.info(f"RL Trading Subsystem started successfully for {len(config.RL_MARKET_TICKERS)} markets: {markets_str}")
+        # Log startup summary
+        logger.info(f"RL Trading Subsystem started successfully for {len(market_tickers)} markets")
+        
+        # Show sample of markets if there are many (for production logging)
+        if len(market_tickers) > 10:
+            sample_markets = ', '.join(market_tickers[:5])
+            logger.info(f"Monitoring markets (sample): {sample_markets} ... and {len(market_tickers) - 5} more")
         
         # Wait for shutdown signal
         yield
@@ -177,8 +220,9 @@ async def health_check(request):
             "timestamp": asyncio.get_event_loop().time(),
             "service": "kalshiflow_rl",
             "version": "0.1.0",
-            "market_tickers": config.RL_MARKET_TICKERS,
-            "markets_count": len(config.RL_MARKET_TICKERS),
+            "market_tickers": active_market_tickers or config.RL_MARKET_TICKERS,
+            "markets_count": len(active_market_tickers or config.RL_MARKET_TICKERS),
+            "market_mode": config.RL_MARKET_MODE,
             "components": {}
         }
         
@@ -269,8 +313,11 @@ async def status_endpoint(request):
             "service": "kalshiflow_rl",
             "timestamp": asyncio.get_event_loop().time(),
             "config": {
-                "market_tickers": config.RL_MARKET_TICKERS,
-                "markets_count": len(config.RL_MARKET_TICKERS),
+                "market_tickers": active_market_tickers or config.RL_MARKET_TICKERS,
+                "markets_count": len(active_market_tickers or config.RL_MARKET_TICKERS),
+                "market_mode": config.RL_MARKET_MODE,
+                "market_limit": config.ORDERBOOK_MARKET_LIMIT,
+                "configured_tickers": config.RL_MARKET_TICKERS,
                 "environment": config.ENVIRONMENT,
                 "debug": config.DEBUG
             },
@@ -301,9 +348,10 @@ async def orderbook_snapshot_endpoint(request):
     try:
         orderbook_states = await get_all_orderbook_states()
         
-        # Get snapshots for all configured markets
+        # Get snapshots for all active markets
+        market_tickers = active_market_tickers or config.RL_MARKET_TICKERS
         snapshots = {}
-        for market_ticker in config.RL_MARKET_TICKERS:
+        for market_ticker in market_tickers:
             if market_ticker in orderbook_states:
                 state = orderbook_states[market_ticker]
                 snapshot = await state.get_snapshot()
@@ -317,7 +365,8 @@ async def orderbook_snapshot_endpoint(request):
             })
         else:
             return JSONResponse({
-                "error": "No orderbook states found for configured markets",
+                "error": "No orderbook states found for active markets",
+                "active_markets": market_tickers,
                 "configured_markets": config.RL_MARKET_TICKERS,
                 "available_markets": list(orderbook_states.keys())
             }, status_code=404)

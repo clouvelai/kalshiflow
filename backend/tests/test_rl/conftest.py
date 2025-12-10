@@ -18,7 +18,6 @@ os.environ.update({
     "RL_MARKET_TICKER": "TEST-MARKET",
     "RL_ORDERBOOK_BATCH_SIZE": "5",
     "RL_ORDERBOOK_FLUSH_INTERVAL": "0.1",
-    "RL_ORDERBOOK_SAMPLE_RATE": "1",
     "ENVIRONMENT": "test",
     "DEBUG": "true"
 })

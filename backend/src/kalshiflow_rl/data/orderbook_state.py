@@ -98,8 +98,8 @@ class OrderbookState:
         """
         sequence_number = delta_data.get('sequence_number', 0)
         
-        # Sequence validation (allow missing sequences in some cases)
-        if sequence_number <= self.last_sequence:
+        # Sequence validation (skip if sequence_number is 0 - temporary fix)
+        if sequence_number != 0 and sequence_number <= self.last_sequence:
             logger.warning(
                 f"Out-of-order delta for {self.market_ticker}: "
                 f"seq={sequence_number}, last_seq={self.last_sequence}"

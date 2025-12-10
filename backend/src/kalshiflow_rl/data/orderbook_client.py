@@ -172,13 +172,13 @@ class OrderbookClient:
     
     async def _subscribe_to_orderbook(self) -> None:
         """Subscribe to orderbook channels for all markets."""
-        # According to Kalshi docs: use single "orderbook_delta" channel with market_tickers parameter
+        # Use same format as trades subscription but with orderbook_delta channel
         subscription_message = {
-            "id": f"sub_multi_{int(time.time())}",
+            "id": 1,
             "cmd": "subscribe",
             "params": {
                 "channels": ["orderbook_delta"],
-                "market_tickers": self.market_tickers
+                "market_tickers": self.market_tickers  # Array of market ticker strings
             }
         }
         
@@ -221,9 +221,15 @@ class OrderbookClient:
             self._messages_received += 1
             self._last_message_time = time.time()
             
-            # Log first few messages for debugging
-            if self._messages_received <= 5:
-                logger.debug(f"Received message {self._messages_received}: {message}")
+            # Log first snapshot for each market (useful for prod debugging)
+            if message.get("type") == "orderbook_snapshot":
+                msg_data = message.get('msg', {})
+                market_ticker = msg_data.get('market_ticker')
+                if market_ticker and market_ticker not in getattr(self, '_logged_first_snapshot', set()):
+                    if not hasattr(self, '_logged_first_snapshot'):
+                        self._logged_first_snapshot = set()
+                    self._logged_first_snapshot.add(market_ticker)
+                    logger.info(f"First snapshot for {market_ticker}: seq={message.get('seq', 0)}")
             
             # Determine message type
             msg_type = self._get_message_type(message)
@@ -235,9 +241,10 @@ class OrderbookClient:
             elif msg_type == "subscription_ack":
                 logger.info("Subscription acknowledged for multi-market orderbook")
             elif msg_type == "heartbeat":
-                logger.debug("Received heartbeat")
+                pass  # Silently ignore heartbeats
             else:
-                logger.debug(f"Unhandled message type: {msg_type}")
+                if self._messages_received % 100 == 0:  # Only log unhandled messages occasionally
+                    logger.debug(f"Unhandled message type: {msg_type}")
         
         except json.JSONDecodeError as e:
             logger.error(f"Failed to parse message as JSON: {e}")
@@ -254,8 +261,8 @@ class OrderbookClient:
         elif msg_type == "orderbook_delta":
             return "delta"
         
-        # Check for acknowledgment
-        if message.get("msg") == "ack":
+        # Check for acknowledgment (Kalshi uses type: "subscribed")
+        if message.get("type") == "subscribed":
             return "subscription_ack"
         
         # Check for heartbeat
@@ -292,15 +299,16 @@ class OrderbookClient:
     async def _process_snapshot(self, message: Dict[str, Any]) -> None:
         """Process orderbook snapshot message."""
         try:
-            # Get market ticker directly from message (Kalshi format)
-            market_ticker = message.get("market_ticker")
+            # Get the message data (Kalshi puts content in 'msg' field)
+            msg_data = message.get("msg", {})
+            market_ticker = msg_data.get("market_ticker")
             
             if not market_ticker or market_ticker not in self.market_tickers:
                 logger.warning(f"Received snapshot for unknown market: {market_ticker}")
                 return
             
-            # Snapshot data is at top level of message, not in a 'data' field
-            data = message
+            # Extract orderbook data from msg field
+            data = msg_data
             
             # Parse Kalshi array format [[price, qty], ...] into separate bid/ask dicts
             yes_bids = {}
@@ -330,10 +338,13 @@ class OrderbookClient:
                         else:
                             no_asks[price_int] = int(qty)
             
+            # Get sequence from the outer message (not from msg data)
+            sequence_number = message.get("seq", 0)
+            
             snapshot_data = {
                 "market_ticker": market_ticker,
                 "timestamp_ms": int(time.time() * 1000),
-                "sequence_number": data.get("seq", 0),
+                "sequence_number": sequence_number,
                 "yes_bids": yes_bids,
                 "yes_asks": yes_asks,
                 "no_bids": no_bids,
@@ -350,10 +361,11 @@ class OrderbookClient:
             # Queue for database persistence (non-blocking)
             await write_queue.enqueue_snapshot(snapshot_data)
             
+            # Log snapshot processing (less verbose for production)
             total_levels = (len(snapshot_data['yes_bids']) + len(snapshot_data['yes_asks']) + 
                            len(snapshot_data['no_bids']) + len(snapshot_data['no_asks']))
             logger.info(
-                f"Processed snapshot for {market_ticker}: seq={self._last_sequences[market_ticker]}, "
+                f"Snapshot processed: {market_ticker} seq={self._last_sequences[market_ticker]} "
                 f"levels={total_levels}"
             )
             
@@ -363,16 +375,17 @@ class OrderbookClient:
     async def _process_delta(self, message: Dict[str, Any]) -> None:
         """Process orderbook delta message."""
         try:
-            # Get market ticker directly from message (Kalshi format)
-            market_ticker = message.get("market_ticker")
+            # Get the message data (Kalshi puts content in 'msg' field, same as snapshots)
+            msg_data = message.get("msg", {})
+            market_ticker = msg_data.get("market_ticker")
             
             if not market_ticker or market_ticker not in self.market_tickers:
                 logger.warning(f"Received delta for unknown market: {market_ticker}")
                 return
             
-            # Delta data is at top level of message
-            delta_val = message.get("delta", 0)
-            price = message.get("price", 0)
+            # Delta data is in msg field
+            delta_val = msg_data.get("delta", 0)
+            price = msg_data.get("price", 0)
             
             # Determine old and new size based on delta
             # Positive delta means size increased, negative means decreased
@@ -393,7 +406,7 @@ class OrderbookClient:
                 "market_ticker": market_ticker,
                 "timestamp_ms": int(time.time() * 1000),
                 "sequence_number": 0,  # Kalshi doesn't provide sequence in delta
-                "side": message.get("side"),  # "yes" or "no"
+                "side": msg_data.get("side"),  # "yes" or "no"
                 "action": action,
                 "price": int(price),  # Ensure price is int
                 "old_size": old_size,
@@ -416,9 +429,9 @@ class OrderbookClient:
             # Queue for database persistence (non-blocking)
             await write_queue.enqueue_delta(delta_data)
             
-            # Log periodically
-            if self._deltas_received % 100 == 0:
-                logger.debug(f"Processed {self._deltas_received} deltas across {len(self.market_tickers)} markets")
+            # Log periodically at info level for production monitoring
+            if self._deltas_received % 1000 == 0:
+                logger.info(f"Delta checkpoint: {self._deltas_received} deltas processed across {len(self.market_tickers)} markets")
             
         except Exception as e:
             logger.error(f"Error processing delta: {e}\n{traceback.format_exc()}")

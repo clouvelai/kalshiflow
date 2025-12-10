@@ -24,9 +24,10 @@ class TestOrderbookParsing:
     def kalshi_snapshot_message(self) -> Dict[str, Any]:
         """Example snapshot message as sent by Kalshi WebSocket."""
         return {
-            "channel": "orderbook_delta.TEST-MARKET",
-            "type": "snapshot",
-            "data": {
+            "type": "orderbook_snapshot",
+            "seq": 12345,
+            "msg": {
+                "market_ticker": "TEST-MARKET",
                 "yes": [
                     [45, 100],  # Bid at 45 cents
                     [44, 200],  # Bid at 44 cents
@@ -38,8 +39,7 @@ class TestOrderbookParsing:
                     [39, 175],  # Bid at 39 cents
                     [60, 225],  # Ask at 60 cents
                     [61, 400]   # Ask at 61 cents
-                ],
-                "seq": 12345
+                ]
             }
         }
     
@@ -47,14 +47,13 @@ class TestOrderbookParsing:
     def kalshi_delta_message(self) -> Dict[str, Any]:
         """Example delta message as sent by Kalshi WebSocket."""
         return {
-            "channel": "orderbook_delta.TEST-MARKET",
-            "type": "delta",
-            "data": {
+            "type": "orderbook_delta",
+            "seq": 12346,
+            "msg": {
+                "market_ticker": "TEST-MARKET",
                 "side": "yes",
                 "price": 46,
-                "old_size": 0,
-                "new_size": 50,
-                "seq": 12346
+                "delta": 50
             }
         }
     
@@ -123,11 +122,11 @@ class TestOrderbookParsing:
             delta_data = mock_queue.enqueue_delta.call_args[0][0]
             
             assert delta_data["market_ticker"] == "TEST-MARKET"
-            assert delta_data["sequence_number"] == 12346
+            assert delta_data["sequence_number"] == 0  # Kalshi doesn't provide seq in delta
             assert delta_data["side"] == "yes"
             assert delta_data["price"] == 46  # Should be int
             assert delta_data["old_size"] == 0  # Should be int
-            assert delta_data["new_size"] == 50  # Should be int
+            assert delta_data["new_size"] == 50  # Should be int (abs(delta))
             assert delta_data["action"] == "add"  # old_size=0, new_size>0
             
             # Verify price is integer
@@ -140,12 +139,12 @@ class TestOrderbookParsing:
         """Test edge cases in orderbook parsing."""
         # Test snapshot with price exactly at 50 (should be bid)
         edge_snapshot = {
-            "channel": "orderbook_delta.TEST-MARKET",
-            "type": "snapshot",
-            "data": {
+            "type": "orderbook_snapshot",
+            "seq": 99999,
+            "msg": {
+                "market_ticker": "TEST-MARKET",
                 "yes": [[50, 100], [51, 200]],
-                "no": [],
-                "seq": 99999
+                "no": []
             }
         }
         
@@ -198,22 +197,20 @@ class TestOrderbookParsing:
         """Test correct detection of message types."""
         # Snapshot message
         snapshot_msg = {
-            "channel": "orderbook_delta.TEST",
-            "type": "snapshot",
-            "data": {"seq": 1}
+            "type": "orderbook_snapshot",
+            "msg": {"market_ticker": "TEST"}
         }
         assert orderbook_client._get_message_type(snapshot_msg) == "snapshot"
         
         # Delta message
         delta_msg = {
-            "channel": "orderbook_delta.TEST",
-            "type": "delta",
-            "data": {"seq": 2}
+            "type": "orderbook_delta",
+            "msg": {"market_ticker": "TEST"}
         }
         assert orderbook_client._get_message_type(delta_msg) == "delta"
         
         # Subscription acknowledgment
-        ack_msg = {"msg": "ack"}
+        ack_msg = {"type": "subscribed"}
         assert orderbook_client._get_message_type(ack_msg) == "subscription_ack"
         
         # Heartbeat
