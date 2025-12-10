@@ -642,19 +642,6 @@ def build_observation_from_session_data(
     portfolio_features = extract_portfolio_features(position_data, portfolio_value, cash_balance)
     observation_parts.extend(list(portfolio_features.values()))
     
-    # === GLOBAL STATE FEATURES ===
-    
-    # Add global state information that's market-agnostic
-    global_features = {
-        # Market environment state
-        'total_markets_active': min(len(session_data.markets_data) / 10.0, 1.0),  # Normalize by max expected
-        'session_timestamp_norm': session_data.timestamp.hour / 24.0,  # Hour of day [0,1]
-        'weekday_norm': session_data.timestamp.weekday() / 6.0,  # Day of week [0,1]
-    }
-    
-    # No cross-market calculations needed for single-market architecture
-    
-    observation_parts.extend(list(global_features.values()))
     
     # === FINAL OBSERVATION VECTOR ===
     
@@ -668,7 +655,7 @@ def build_observation_from_session_data(
     logger.debug(
         f"Built observation vector with {len(observation)} features: "
         f"{market_count} markets × {features_per_market} + {len(temporal_features)} temporal + "
-        f"{len(portfolio_features)} portfolio + {len(global_features)} global"
+        f"{len(portfolio_features)} portfolio"
     )
     
     return observation
@@ -700,8 +687,8 @@ def calculate_observation_space_size(max_markets: int = 1) -> int:
     
     portfolio_features = len(extract_portfolio_features({}, 1000.0, 800.0))
     
-    # Global features (from build_observation_from_session_data)
-    global_features = 3  # Hard-coded count from global_features dict (single-market architecture)
+    # Global features removed - were redundant with temporal features
+    global_features = 0
     
     total_size = (max_markets * market_features) + temporal_features + portfolio_features + global_features
     

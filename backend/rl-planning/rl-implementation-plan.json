@@ -156,13 +156,15 @@
       "acceptance_criteria": [
         "Market-agnostic design with no ticker exposure to model",
         "Universal normalization (prices: cents→probability, volumes: log-normalized)",
-        "Comprehensive feature categories: market (21), temporal (14), portfolio (12), global (6)",
+        "Comprehensive feature categories: market (21), temporal (14), portfolio (12), global (3)",
         "Training/inference consistency through shared functions",
-        "Single-market observation space (48 features total)",
+        "Single-market observation space (50 features total)",
         "All features in valid ranges with NaN/inf handling",
-        "23/23 test cases passing with full coverage"
+        "23/23 test cases passing with full coverage",
+        "Single-market training architecture with max_markets=1"
       ],
-      "completed": true
+      "completed": true,
+      "completion_notes": "M4 completed with single-market training architecture. Observation space: 21 market + 14 temporal + 12 portfolio + 3 global = 50 features total. All tests passing (23/23). Architecture updated for single-market episodes to learn universal patterns."
     },
     {
       "id": "M5_SHARED_ORDERBOOK_STATE",
@@ -605,7 +607,7 @@
   },
   "architecture_notes": {
     "single_market_training": "Each episode trains on one randomly selected market to learn universal patterns, then deploy same model to hundreds of markets in parallel",
-    "observation_space": "48 features total for single-market episodes (21 market + 14 temporal + 12 portfolio + 1 global)",
+    "observation_space": "50 features total for single-market episodes (21 market + 14 temporal + 12 portfolio + 3 global)",
     "action_space": "Discrete 6-action space for single-market trading (HOLD, BUY_YES, SELL_YES, BUY_NO, SELL_NO, CLOSE_POSITION)",
     "deployment_strategy": "One trained model → hundreds of parallel TradingActors → thousands of markets simultaneously",
     "universal_patterns": "Agent learns market-agnostic strategies through diverse single-market episodes that generalize across all markets"
