@@ -15,21 +15,28 @@ Classes:
     MarketAgnosticKalshiEnv: Core RL environment using session-based episodes
     SessionDataLoader: Loads historical data by session_id for episode generation
     SessionData: Data structure holding session orderbook data and metadata
+    PrimitiveActionSpace: 5-action stateless action space for immediate market orders
+    PrimitiveActions: Enumeration of the 5 primitive actions (HOLD + 4 NOW)
 """
 
-from .market_agnostic_env import MarketAgnosticKalshiEnv
+from .market_agnostic_env import MarketAgnosticKalshiEnv, SessionConfig
 from .session_data_loader import SessionDataLoader, SessionData
 from .feature_extractors import (
     extract_market_agnostic_features,
     extract_temporal_features,
     build_observation_from_session_data,
 )
+from .action_space import PrimitiveActionSpace, PrimitiveActions, primitive_action_space
 
 __all__ = [
     'MarketAgnosticKalshiEnv',
+    'SessionConfig',
     'SessionDataLoader', 
     'SessionData',
     'extract_market_agnostic_features',
     'extract_temporal_features',
     'build_observation_from_session_data',
+    'PrimitiveActionSpace',
+    'PrimitiveActions',
+    'primitive_action_space',
 ]
