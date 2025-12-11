@@ -26,7 +26,7 @@ from kalshiflow_rl.environments.market_agnostic_env import (
     EnvConfig, 
     convert_session_data_to_orderbook
 )
-from kalshiflow_rl.environments.session_data_loader import SessionData, SessionDataPoint
+from kalshiflow_rl.environments.session_data_loader import SessionData, SessionDataPoint, MarketSessionView
 from kalshiflow_rl.data.orderbook_state import OrderbookState
 
 
@@ -172,6 +172,59 @@ class MockSessionData:
             num_steps=15,
             markets=["MARKET_A", "MARKET_B", "MARKET_C"]
         )
+    
+    @staticmethod
+    def create_market_view(
+        session_data: SessionData = None,
+        target_market: str = "MARKET1"
+    ) -> MarketSessionView:
+        """
+        Create a MarketSessionView from session data.
+        
+        Args:
+            session_data: Base session data (creates default if None)
+            target_market: Market to extract
+            
+        Returns:
+            MarketSessionView with single market data
+        """
+        if session_data is None:
+            session_data = MockSessionData.create_basic_session()
+        
+        # Filter data points to only include target market
+        filtered_points = []
+        for dp in session_data.data_points:
+            if target_market in dp.markets_data:
+                # Create new data point with only target market
+                filtered_dp = SessionDataPoint(
+                    timestamp=dp.timestamp,
+                    timestamp_ms=dp.timestamp_ms,
+                    markets_data={target_market: dp.markets_data[target_market]},
+                    spreads={target_market: dp.spreads.get(target_market, (2, 2))},
+                    mid_prices={target_market: dp.mid_prices.get(target_market, (Decimal("50"), Decimal("50")))},
+                    depths={target_market: dp.depths.get(target_market, {})},
+                    imbalances={target_market: dp.imbalances.get(target_market, {})}
+                )
+                # Copy temporal features
+                for attr in ['time_gap', 'activity_score', 'momentum', 'volatility_indicator']:
+                    if hasattr(dp, attr):
+                        setattr(filtered_dp, attr, getattr(dp, attr))
+                filtered_points.append(filtered_dp)
+        
+        # Create MarketSessionView
+        return MarketSessionView(
+            session_id=session_data.session_id,
+            start_time=session_data.start_time,
+            end_time=session_data.end_time,
+            target_market=target_market,
+            data_points=filtered_points,
+            data_quality_score=1.0,
+            temporal_gaps=[0.0] * len(filtered_points),
+            activity_bursts=[],
+            quiet_periods=[],
+            avg_spread=2.0,
+            volatility_score=0.1
+        )
 
 
 class TestMarketAgnosticEnv:
@@ -180,14 +233,15 @@ class TestMarketAgnosticEnv:
     # Fixtures
     
     @pytest.fixture
-    def basic_session_data(self) -> SessionData:
-        """Basic session data for standard testing."""
-        return MockSessionData.create_basic_session()
+    def basic_market_view(self) -> MarketSessionView:
+        """Basic market view for standard testing."""
+        return MockSessionData.create_market_view()
     
     @pytest.fixture
-    def multi_market_session_data(self) -> SessionData:
-        """Multi-market session data for testing market selection."""
-        return MockSessionData.create_multi_market_session()
+    def market_view_b(self) -> MarketSessionView:
+        """Market view for MARKET_B from multi-market session."""
+        multi_session = MockSessionData.create_multi_market_session()
+        return MockSessionData.create_market_view(multi_session, "MARKET_B")
     
     @pytest.fixture
     def basic_env_config(self) -> EnvConfig:
@@ -199,15 +253,15 @@ class TestMarketAgnosticEnv:
         )
     
     @pytest.fixture
-    def env(self, basic_session_data, basic_env_config) -> MarketAgnosticKalshiEnv:
+    def env(self, basic_market_view, basic_env_config) -> MarketAgnosticKalshiEnv:
         """Standard environment instance for testing."""
-        return MarketAgnosticKalshiEnv(basic_session_data, basic_env_config)
+        return MarketAgnosticKalshiEnv(basic_market_view, basic_env_config)
     
     # Core Functionality Tests
     
-    def test_environment_initialization(self, basic_session_data, basic_env_config):
-        """Test environment initializes correctly with valid session data."""
-        env = MarketAgnosticKalshiEnv(basic_session_data, basic_env_config)
+    def test_environment_initialization(self, basic_market_view, basic_env_config):
+        """Test environment initializes correctly with market view."""
+        env = MarketAgnosticKalshiEnv(basic_market_view, basic_env_config)
         
         # Check gym spaces
         assert env.observation_space.shape == (52,)
@@ -216,11 +270,11 @@ class TestMarketAgnosticEnv:
         
         # Check configuration
         assert env.config == basic_env_config
-        assert env.session_data == basic_session_data
+        assert env.market_view == basic_market_view
         
         # Check initial state
         assert env.current_step == 0
-        assert env.current_market is None
+        assert env.current_market == "MARKET1"  # Pre-selected from view
         assert env.episode_length == 10  # From mock data
         
         # Check components not initialized until reset
@@ -229,9 +283,9 @@ class TestMarketAgnosticEnv:
         assert env.order_manager is None
         assert env.action_space_handler is None
     
-    def test_environment_initialization_with_defaults(self, basic_session_data):
+    def test_environment_initialization_with_defaults(self, basic_market_view):
         """Test environment initializes with default config when none provided."""
-        env = MarketAgnosticKalshiEnv(basic_session_data)
+        env = MarketAgnosticKalshiEnv(basic_market_view)
         
         # Should use default config
         assert env.config.max_markets == 1
@@ -252,13 +306,13 @@ class TestMarketAgnosticEnv:
         # Check info dictionary
         expected_info_keys = {
             'session_id', 'market_ticker', 'episode_length', 
-            'markets_available', 'initial_cash'
+            'initial_cash', 'coverage_pct'
         }
         assert set(info.keys()) >= expected_info_keys
         assert info['session_id'] == 1
         assert info['market_ticker'] == "MARKET1"  # From mock data
+        assert info['coverage_pct'] == 100.0  # MarketSessionView always has 100% coverage
         assert info['episode_length'] == 10
-        assert info['markets_available'] == 1
         assert info['initial_cash'] == 10000
         
         # Check internal state after reset
@@ -487,74 +541,82 @@ class TestMarketAgnosticEnv:
             if terminated:
                 break
     
-    def test_market_selection_multi_market(self, multi_market_session_data, basic_env_config):
-        """Test market selection works correctly with multiple markets."""
-        env = MarketAgnosticKalshiEnv(multi_market_session_data, basic_env_config)
+    def test_market_view_for_different_markets(self, basic_market_view, market_view_b, basic_env_config):
+        """Test environment works with different market views."""
+        # Test with MARKET1 view
+        env1 = MarketAgnosticKalshiEnv(basic_market_view, basic_env_config)
+        obs1, info1 = env1.reset()
+        assert info1['market_ticker'] == "MARKET1"
+        assert env1.current_market == "MARKET1"
         
-        observation, info = env.reset()
-        
-        # Should select one market from available markets
-        assert info['market_ticker'] in ["MARKET_A", "MARKET_B", "MARKET_C"]
-        assert info['markets_available'] == 3
-        assert env.current_market in multi_market_session_data.markets_involved
+        # Test with MARKET_B view
+        env2 = MarketAgnosticKalshiEnv(market_view_b, basic_env_config)
+        obs2, info2 = env2.reset()
+        assert info2['market_ticker'] == "MARKET_B"
+        assert env2.current_market == "MARKET_B"
     
-    def test_session_data_setting_for_curriculum(self, env, multi_market_session_data):
-        """Test manual session setting for curriculum learning."""
-        # Initially using basic session
+    def test_market_view_setting_for_curriculum(self, env, market_view_b):
+        """Test manual market view setting for curriculum learning."""
+        # Initially using basic market view (MARKET1)
         env.reset()
-        initial_session_id = env.session_data.session_id
+        initial_market = env.current_market
+        assert initial_market == "MARKET1"
         
-        # Set new session data
-        env.set_session_data(multi_market_session_data)
+        # Set new market view
+        env.set_market_view(market_view_b)
         
-        # Session should be updated
-        assert env.session_data.session_id == multi_market_session_data.session_id
-        assert env.session_data.session_id != initial_session_id
+        # Market should be updated
+        assert env.current_market == "MARKET_B"
+        assert env.market_view == market_view_b
         
-        # Reset should use new session
+        # Reset should use new market view
         observation, info = env.reset()
-        assert info['session_id'] == multi_market_session_data.session_id
-        assert info['markets_available'] == 3
+        assert info['market_ticker'] == "MARKET_B"
+        assert env.current_market == "MARKET_B"
     
     # Error Handling Tests
     
-    def test_initialization_with_empty_session_data(self):
-        """Test error handling with empty session data."""
+    def test_initialization_with_empty_market_view(self):
+        """Test error handling with empty market view."""
         empty_session = MockSessionData.create_empty_session()
+        empty_view = MockSessionData.create_market_view(empty_session)
         
-        with pytest.raises(ValueError, match="Session data must have at least 3 data points"):
-            MarketAgnosticKalshiEnv(empty_session)
+        with pytest.raises(ValueError, match="Market view must have at least 3 data points"):
+            MarketAgnosticKalshiEnv(empty_view)
     
     def test_initialization_with_insufficient_data(self):
-        """Test error handling with insufficient session data."""
+        """Test error handling with insufficient market view data."""
         insufficient_session = MockSessionData.create_insufficient_data_session()
+        insufficient_view = MockSessionData.create_market_view(insufficient_session)
         
-        with pytest.raises(ValueError, match="Session data must have at least 3 data points"):
-            MarketAgnosticKalshiEnv(insufficient_session)
+        with pytest.raises(ValueError, match="Market view must have at least 3 data points"):
+            MarketAgnosticKalshiEnv(insufficient_view)
     
-    def test_step_before_reset_error(self, basic_session_data):
+    def test_step_before_reset_error(self, basic_market_view):
         """Test error when step is called before reset."""
-        env = MarketAgnosticKalshiEnv(basic_session_data)
+        env = MarketAgnosticKalshiEnv(basic_market_view)
         
         # Should raise error if step called before reset
         with pytest.raises(ValueError, match="Environment not properly reset"):
             env.step(0)
     
-    def test_invalid_session_data_setting(self, env):
-        """Test error handling when setting invalid session data."""
+    def test_invalid_market_view_setting(self, env):
+        """Test error handling when setting invalid market view."""
         empty_session = MockSessionData.create_empty_session()
+        empty_view = MockSessionData.create_market_view(empty_session)
         
-        with pytest.raises(ValueError, match="Session data must have at least 3 data points"):
-            env.set_session_data(empty_session)
+        with pytest.raises(ValueError, match="Market view must have at least 3 data points"):
+            env.set_market_view(empty_view)
         
         insufficient_session = MockSessionData.create_insufficient_data_session()
+        insufficient_view = MockSessionData.create_market_view(insufficient_session)
         
-        with pytest.raises(ValueError, match="Session data must have at least 3 data points"):
-            env.set_session_data(insufficient_session)
+        with pytest.raises(ValueError, match="Market view must have at least 3 data points"):
+            env.set_market_view(insufficient_view)
     
     # Edge Cases
     
-    def test_environment_with_custom_config(self, basic_session_data):
+    def test_environment_with_custom_config(self, basic_market_view):
         """Test environment with custom configuration."""
         custom_config = EnvConfig(
             max_markets=2,
@@ -562,7 +624,7 @@ class TestMarketAgnosticEnv:
             cash_start=50000  # $500
         )
         
-        env = MarketAgnosticKalshiEnv(basic_session_data, custom_config)
+        env = MarketAgnosticKalshiEnv(basic_market_view, custom_config)
         observation, info = env.reset()
         
         # Should respect custom configuration
@@ -592,10 +654,10 @@ class TestMarketAgnosticEnv:
     
     # Utility Function Tests
     
-    def test_convert_session_data_to_orderbook(self, basic_session_data):
+    def test_convert_session_data_to_orderbook(self, basic_market_view):
         """Test conversion function from session data to OrderbookState."""
         # Get first data point
-        data_point = basic_session_data.data_points[0]
+        data_point = basic_market_view.data_points[0]
         market_ticker = "MARKET1"
         market_data = data_point.markets_data[market_ticker]
         
@@ -639,8 +701,16 @@ class TestMarketAgnosticEnvIntegration:
             if not session_data:
                 pytest.skip("Could not load real session data")
             
-            # Test environment with real data
-            env = MarketAgnosticKalshiEnv(session_data)
+            # Create market view from session data for first available market
+            if not session_data.markets_involved:
+                pytest.skip("Session has no active markets")
+            
+            market_view = session_data.create_market_view(session_data.markets_involved[0])
+            if not market_view:
+                pytest.skip("Could not create market view from session data")
+            
+            # Test environment with real data via market view
+            env = MarketAgnosticKalshiEnv(market_view)
             observation, info = env.reset()
             
             # Basic validation
@@ -703,8 +773,9 @@ if __name__ == "__main__":
     
     # Create mock session and environment
     session_data = MockSessionData.create_basic_session(num_steps=15)
+    market_view = MockSessionData.create_market_view(session_data, "MARKET1")
     config = EnvConfig(cash_start=20000)  # $200 starting cash
-    env = MarketAgnosticKalshiEnv(session_data, config)
+    env = MarketAgnosticKalshiEnv(market_view, config)
     
     # Test reset
     observation, info = env.reset(seed=123)

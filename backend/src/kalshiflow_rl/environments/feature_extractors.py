@@ -307,84 +307,63 @@ def extract_temporal_features(
     else:
         features['volatility_regime'] = 0.1
     
-    # === MULTI-MARKET COORDINATION FEATURES ===
+    # === SINGLE-MARKET ACTIVITY FEATURES ===
     
-    # Number of active markets (normalized)
-    num_markets = len(current_data.markets_data)
-    max_markets_ref = 10.0  # Reference maximum markets
-    features['active_markets_norm'] = min(num_markets / max_markets_ref, 1.0)
+    # For single-market training, we focus on the target market's activity patterns
+    # rather than cross-market correlations which don't apply
     
-    # Cross-market activity coordination
-    if len(historical_data) >= 2:
-        # Check if multiple markets updated simultaneously
-        prev_point = historical_data[-1]
-        
-        # Markets active in both current and previous points
-        common_markets = set(current_data.markets_data.keys()) & set(prev_point.markets_data.keys())
-        
-        if common_markets:
-            # Calculate how synchronized the price movements are
-            price_correlations = []
-            
-            for market in common_markets:
-                curr_yes_mid, _ = current_data.mid_prices.get(market, (None, None))
-                prev_yes_mid, _ = prev_point.mid_prices.get(market, (None, None))
+    # Market activity consistency (how stable the activity level is)
+    if len(historical_data) >= 5:
+        recent_activities = [point.activity_score for point in historical_data[-5:]] + [current_activity]
+        activity_std = np.std(recent_activities)
+        max_activity_std_ref = 0.3  # Reference maximum activity standard deviation
+        features['activity_consistency'] = max(0.0, 1.0 - (activity_std / max_activity_std_ref))
+    else:
+        features['activity_consistency'] = 0.5
+    
+    # Price stability (how much prices are changing recently)
+    if len(historical_data) >= 3:
+        price_changes = []
+        for i in range(max(0, len(historical_data) - 3), len(historical_data)):
+            if i > 0:
+                curr_point = historical_data[i]
+                prev_point = historical_data[i-1]
                 
-                if curr_yes_mid is not None and prev_yes_mid is not None:
-                    price_change = float(curr_yes_mid) - float(prev_yes_mid)
-                    price_correlations.append(price_change)
-            
-            if len(price_correlations) >= 2:
-                # High correlation = high synchronization
-                try:
-                    correlation_matrix = np.corrcoef(price_correlations)
-                    if correlation_matrix.ndim == 0:  # Single correlation value
-                        avg_correlation = float(correlation_matrix)
-                    elif correlation_matrix.ndim == 2:  # Correlation matrix
-                        upper_tri_indices = np.triu_indices_from(correlation_matrix, k=1)
-                        if len(upper_tri_indices[0]) > 0:
-                            avg_correlation = np.mean(correlation_matrix[upper_tri_indices])
-                        else:
-                            avg_correlation = 0.0
-                    else:
-                        avg_correlation = 0.0
-                    
-                    if np.isfinite(avg_correlation):
-                        features['market_synchronization'] = (avg_correlation + 1.0) / 2.0  # Map [-1,1] to [0,1]
-                    else:
-                        features['market_synchronization'] = 0.5
-                except (ValueError, np.linalg.LinAlgError):
-                    features['market_synchronization'] = 0.5
+                # Look at any market's price changes (should be single market in MarketSessionView)
+                for market in curr_point.mid_prices:
+                    if market in prev_point.mid_prices:
+                        curr_mid = curr_point.mid_prices[market][0]  # YES mid price
+                        prev_mid = prev_point.mid_prices[market][0]
+                        
+                        if curr_mid is not None and prev_mid is not None:
+                            change = abs(float(curr_mid) - float(prev_mid))
+                            price_changes.append(change)
+        
+        if price_changes:
+            avg_price_change = np.mean(price_changes)
+            max_change_ref = 5.0  # 5 cents as reference maximum
+            features['price_stability'] = max(0.0, 1.0 - (avg_price_change / max_change_ref))
+        else:
+            features['price_stability'] = 0.5
+    else:
+        features['price_stability'] = 0.5
+    
+    # Activity persistence (how long current activity level has been maintained)
+    if len(historical_data) >= 3:
+        # Count consecutive periods with similar activity
+        consecutive_similar = 1  # Current period
+        activity_threshold = 0.1  # Similarity threshold
+        
+        for i in range(len(historical_data) - 1, max(-1, len(historical_data) - 10), -1):
+            if abs(historical_data[i].activity_score - current_activity) <= activity_threshold:
+                consecutive_similar += 1
             else:
-                features['market_synchronization'] = 0.5
-        else:
-            features['market_synchronization'] = 0.5
-    else:
-        features['market_synchronization'] = 0.5
-    
-    # Market divergence: how much markets are moving in different directions
-    if len(historical_data) >= 1:
-        prev_point = historical_data[-1]
-        price_movements = []
+                break
         
-        for market in current_data.markets_data:
-            if market in prev_point.markets_data:
-                curr_mid = current_data.mid_prices.get(market, (None, None))[0]
-                prev_mid = prev_point.mid_prices.get(market, (None, None))[0]
-                
-                if curr_mid is not None and prev_mid is not None:
-                    movement = float(curr_mid) - float(prev_mid)
-                    price_movements.append(movement)
-        
-        if len(price_movements) >= 2:
-            # High variance in movements = high divergence
-            movement_std = np.std(price_movements)
-            max_divergence_ref = 5.0  # 5 cents as reference maximum
-            features['market_divergence'] = min(movement_std / max_divergence_ref, 1.0)
-        else:
-            features['market_divergence'] = 0.0
+        # Normalize to [0,1] with max persistence of 10 periods
+        features['activity_persistence'] = min(consecutive_similar / 10.0, 1.0)
     else:
-        features['market_divergence'] = 0.0
+        features['activity_persistence'] = 0.0
     
     logger.debug(f"Extracted {len(features)} temporal features for timestamp {current_data.timestamp_ms}")
     return features

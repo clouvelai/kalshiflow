@@ -163,32 +163,100 @@ class LimitOrderActionSpace:
         """
         import asyncio
         
-        # For training environments, we can run async code synchronously
+        # For training environments, execute actions properly regardless of async context
         try:
-            # Try to get current running loop
-            try:
-                current_loop = asyncio.get_running_loop()
-                # If we're already in an async context, just create a result
-                # without executing orders (training doesn't need real orders)
-                logger.debug(f"Running in async context, skipping order execution for action {action}")
+            # Check if this is a SimulatedOrderManager (training) vs real OrderManager
+            if hasattr(self.order_manager, '__class__') and 'SimulatedOrderManager' in str(self.order_manager.__class__):
+                # For SimulatedOrderManager, we can safely execute synchronously
+                # even in async context since it's just pure Python simulation
+                return self._execute_action_sync_simulated(action, ticker, orderbook)
+            else:
+                # For real OrderManager, handle async properly
+                try:
+                    current_loop = asyncio.get_running_loop()
+                    # Real OrderManager in async context - might not be safe
+                    logger.debug(f"Real OrderManager in async context, might skip execution for action {action}")
+                    return ActionExecutionResult(
+                        action_taken=LimitOrderActions(action) if 0 <= action <= 4 else LimitOrderActions.HOLD,
+                        order_placed=False,
+                        order_cancelled=False,
+                        order_amended=False,
+                        order_id=None,
+                        error_message="Skipped real order execution in async context"
+                    )
+                except RuntimeError:
+                    # No running loop, create new one for real OrderManager
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    try:
+                        return loop.run_until_complete(self.execute_action(action, ticker, orderbook))
+                    finally:
+                        loop.close()
+        except Exception as e:
+            logger.error(f"Error in synchronous action execution: {e}")
+            return ActionExecutionResult(
+                action_taken=LimitOrderActions(action) if 0 <= action <= 4 else LimitOrderActions.HOLD,
+                order_placed=False,
+                order_cancelled=False,
+                order_amended=False,
+                order_id=None,
+                error_message=str(e)
+            )
+    
+    def _execute_action_sync_simulated(
+        self,
+        action: int,
+        ticker: str,
+        orderbook: OrderbookState
+    ) -> ActionExecutionResult:
+        """
+        Execute action synchronously for SimulatedOrderManager.
+        
+        This bypasses async/await and directly calls the simulated order operations
+        since they don't actually need to be async.
+        """
+        try:
+            if not (0 <= action <= 4):
                 return ActionExecutionResult(
-                    action_taken=LimitOrderActions(action) if 0 <= action <= 4 else LimitOrderActions.HOLD,
+                    action_taken=LimitOrderActions(action),
                     order_placed=False,
                     order_cancelled=False,
                     order_amended=False,
                     order_id=None,
-                    error_message=None  # No error, just skipped
+                    error_message=f"Invalid action: {action}"
                 )
-            except RuntimeError:
-                # No running loop, create new one
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                try:
-                    return loop.run_until_complete(self.execute_action(action, ticker, orderbook))
-                finally:
-                    loop.close()
+            
+            action_enum = LimitOrderActions(action)
+            
+            # Handle HOLD action
+            if action_enum == LimitOrderActions.HOLD:
+                return self._execute_hold_action_sync(ticker, orderbook)
+            
+            # Handle trading actions
+            elif action_enum == LimitOrderActions.BUY_YES_LIMIT:
+                return self._execute_buy_action_sync(ticker, ContractSide.YES, orderbook)
+            
+            elif action_enum == LimitOrderActions.SELL_YES_LIMIT:
+                return self._execute_sell_action_sync(ticker, ContractSide.YES, orderbook)
+            
+            elif action_enum == LimitOrderActions.BUY_NO_LIMIT:
+                return self._execute_buy_action_sync(ticker, ContractSide.NO, orderbook)
+            
+            elif action_enum == LimitOrderActions.SELL_NO_LIMIT:
+                return self._execute_sell_action_sync(ticker, ContractSide.NO, orderbook)
+            
+            else:
+                return ActionExecutionResult(
+                    action_taken=action_enum,
+                    order_placed=False,
+                    order_cancelled=False,
+                    order_amended=False,
+                    order_id=None,
+                    error_message=f"Unhandled action: {action_enum}"
+                )
+                
         except Exception as e:
-            logger.error(f"Error in synchronous action execution: {e}")
+            logger.error(f"Error executing simulated action {action}: {e}")
             return ActionExecutionResult(
                 action_taken=LimitOrderActions(action) if 0 <= action <= 4 else LimitOrderActions.HOLD,
                 order_placed=False,
@@ -734,3 +802,142 @@ class LimitOrderActionSpace:
                 "websocket_integration": "Fill tracking ready"
             }
         }
+    
+    def _execute_hold_action_sync(
+        self,
+        ticker: str,
+        orderbook: OrderbookState
+    ) -> ActionExecutionResult:
+        """Synchronous version of _execute_hold_action for SimulatedOrderManager."""
+        # For now, just return no action taken (can be enhanced later)
+        return ActionExecutionResult(
+            action_taken=LimitOrderActions.HOLD,
+            order_placed=False,
+            order_cancelled=False,
+            order_amended=False,
+            order_id=None
+        )
+    
+    def _execute_buy_action_sync(
+        self,
+        ticker: str,
+        contract_side: ContractSide,
+        orderbook: OrderbookState
+    ) -> ActionExecutionResult:
+        """Synchronous version of _execute_buy_action for SimulatedOrderManager."""
+        try:
+            # Calculate limit price using SimulatedOrderManager's method
+            limit_price = self.order_manager._calculate_limit_price(
+                OrderSide.BUY, contract_side, orderbook, self.pricing_strategy
+            )
+            
+            # Create order info directly (bypassing async place_order)
+            from ..trading.order_manager import OrderInfo, OrderStatus
+            import time
+            
+            order = OrderInfo(
+                order_id=self.order_manager._generate_order_id(),
+                ticker=ticker,
+                side=OrderSide.BUY,
+                contract_side=contract_side,
+                quantity=self.contract_size,
+                limit_price=limit_price,
+                status=OrderStatus.PENDING,
+                placed_at=time.time()
+            )
+            
+            # Check if order can fill immediately
+            can_fill = self.order_manager._can_fill_immediately(order, orderbook)
+            
+            if can_fill:
+                # Execute immediate fill
+                fill_price = self.order_manager._get_fill_price(order, orderbook)
+                self.order_manager._process_fill(order, fill_price)
+                logger.debug(f"Sync buy order filled immediately: {order.order_id} at {fill_price}¢")
+            else:
+                # Add to open orders
+                self.order_manager.open_orders[order.order_id] = order
+                logger.debug(f"Sync buy order placed: {order.order_id} at {limit_price}¢")
+            
+            return ActionExecutionResult(
+                action_taken=LimitOrderActions.BUY_YES_LIMIT if contract_side == ContractSide.YES 
+                            else LimitOrderActions.BUY_NO_LIMIT,
+                order_placed=True,
+                order_cancelled=False,
+                order_amended=False,
+                order_id=order.order_id
+            )
+            
+        except Exception as e:
+            logger.error(f"Error in sync buy action: {e}")
+            return ActionExecutionResult(
+                action_taken=LimitOrderActions.BUY_YES_LIMIT if contract_side == ContractSide.YES 
+                            else LimitOrderActions.BUY_NO_LIMIT,
+                order_placed=False,
+                order_cancelled=False,
+                order_amended=False,
+                order_id=None,
+                error_message=str(e)
+            )
+    
+    def _execute_sell_action_sync(
+        self,
+        ticker: str,
+        contract_side: ContractSide,
+        orderbook: OrderbookState
+    ) -> ActionExecutionResult:
+        """Synchronous version of _execute_sell_action for SimulatedOrderManager."""
+        try:
+            # Calculate limit price using SimulatedOrderManager's method
+            limit_price = self.order_manager._calculate_limit_price(
+                OrderSide.SELL, contract_side, orderbook, self.pricing_strategy
+            )
+            
+            # Create order info directly (bypassing async place_order)
+            from ..trading.order_manager import OrderInfo, OrderStatus
+            import time
+            
+            order = OrderInfo(
+                order_id=self.order_manager._generate_order_id(),
+                ticker=ticker,
+                side=OrderSide.SELL,
+                contract_side=contract_side,
+                quantity=self.contract_size,
+                limit_price=limit_price,
+                status=OrderStatus.PENDING,
+                placed_at=time.time()
+            )
+            
+            # Check if order can fill immediately
+            can_fill = self.order_manager._can_fill_immediately(order, orderbook)
+            
+            if can_fill:
+                # Execute immediate fill
+                fill_price = self.order_manager._get_fill_price(order, orderbook)
+                self.order_manager._process_fill(order, fill_price)
+                logger.debug(f"Sync sell order filled immediately: {order.order_id} at {fill_price}¢")
+            else:
+                # Add to open orders
+                self.order_manager.open_orders[order.order_id] = order
+                logger.debug(f"Sync sell order placed: {order.order_id} at {limit_price}¢")
+            
+            return ActionExecutionResult(
+                action_taken=LimitOrderActions.SELL_YES_LIMIT if contract_side == ContractSide.YES 
+                            else LimitOrderActions.SELL_NO_LIMIT,
+                order_placed=True,
+                order_cancelled=False,
+                order_amended=False,
+                order_id=order.order_id
+            )
+            
+        except Exception as e:
+            logger.error(f"Error in sync sell action: {e}")
+            return ActionExecutionResult(
+                action_taken=LimitOrderActions.SELL_YES_LIMIT if contract_side == ContractSide.YES 
+                            else LimitOrderActions.SELL_NO_LIMIT,
+                order_placed=False,
+                order_cancelled=False,
+                order_amended=False,
+                order_id=None,
+                error_message=str(e)
+            )

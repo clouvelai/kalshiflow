@@ -7,13 +7,13 @@ session data with guaranteed data continuity.
 """
 
 import logging
-from typing import Dict, Any, Optional, Tuple, Union, List
+from typing import Dict, Any, Optional, Tuple, List, Union
 from dataclasses import dataclass
 import numpy as np
 import gymnasium as gym
 from gymnasium import spaces
 
-from .session_data_loader import SessionData, SessionDataPoint
+from .session_data_loader import SessionDataPoint, MarketSessionView
 from .feature_extractors import build_observation_from_session_data
 from .limit_order_action_space import LimitOrderActionSpace
 from ..trading.unified_metrics import UnifiedPositionTracker, UnifiedRewardCalculator
@@ -51,23 +51,22 @@ class EnvConfig:
 
 class MarketAgnosticKalshiEnv(gym.Env):
     """
-    Market-agnostic Kalshi RL environment using pre-loaded session data.
+    Market-agnostic Kalshi RL environment using single-market session views.
     
-    This environment operates on pre-loaded session data without database dependencies.
-    It generates episodes from session data without exposing market tickers or 
-    market-specific metadata to the model. The agent learns universal trading
-    strategies that work across all Kalshi markets.
+    This environment operates exclusively on MarketSessionView data, which provides
+    an efficient pre-filtered view of a single market from a larger session.
+    No runtime market selection or filtering is needed.
     
     Key features:
-    - Session-based episodes with guaranteed data continuity
+    - Single-market focus via MarketSessionView
+    - No market selection logic (handled by CurriculumService upstream)
     - Market-agnostic feature extraction (model never sees tickers)
     - Unified position tracking matching Kalshi API conventions
     - Primitive action space enabling strategy discovery
     - Simple reward = portfolio value change only
-    - No database dependencies (data pre-loaded)
     
     Args:
-        session_data: Pre-loaded session data for episodes
+        market_view: Pre-filtered single-market view from SessionData
         config: Environment configuration
     """
     
@@ -77,26 +76,27 @@ class MarketAgnosticKalshiEnv(gym.Env):
     
     def __init__(
         self,
-        session_data: SessionData,
+        market_view: MarketSessionView,
         config: Optional[EnvConfig] = None
     ):
         super().__init__()
         
-        self.session_data = session_data
+        self.market_view = market_view
         self.config = config or EnvConfig()
         
-        # Validate session data
-        if not self.session_data or self.session_data.get_episode_length() < 3:
-            raise ValueError("Session data must have at least 3 data points")
-        logger.info(f"MarketAgnosticKalshiEnv initialized with session {self.session_data.session_id}, {self.session_data.get_episode_length()} steps")
+        # Validate market view
+        if not self.market_view or self.market_view.get_episode_length() < 3:
+            raise ValueError("Market view must have at least 3 data points")
+        logger.info(f"MarketAgnosticKalshiEnv initialized with market {self.market_view.target_market}, session {self.market_view.session_id}, {self.market_view.get_episode_length()} steps")
         
         # Episode state
         self.current_step: int = 0
-        self.current_market: Optional[str] = None
-        self.episode_length: int = self.session_data.get_episode_length()
+        self.current_market: str = self.market_view.target_market  # Pre-selected from view
+        self.episode_length: int = self.market_view.get_episode_length()
         
         # Core components (initialized fresh on each reset)
         self.position_tracker: Optional[UnifiedPositionTracker] = None
+        self._is_reset: bool = False  # Track if environment has been reset
         self.reward_calculator: Optional[UnifiedRewardCalculator] = None
         self.order_manager: Optional[SimulatedOrderManager] = None
         self.action_space_handler: Optional[LimitOrderActionSpace] = None
@@ -124,21 +124,21 @@ class MarketAgnosticKalshiEnv(gym.Env):
         options: Optional[Dict[str, Any]] = None
     ) -> Tuple[np.ndarray, Dict[str, Any]]:
         """
-        Reset environment for new episode using pre-loaded session data.
+        Reset environment for new episode using the market view.
         
-        Initializes fresh components and selects the most active market for single-market training.
+        Since we're using MarketSessionView, the market is pre-selected and
+        no market selection logic is needed.
         """
         super().reset(seed=seed)
         
-        # Select most active market for single-market training
-        self.current_market = self._select_most_active_market(self.session_data)
-        if not self.current_market:
-            raise ValueError(f"No valid markets found in session {self.session_data.session_id}")
+        # Market is pre-selected in the view - no selection needed!
+        # This is the key simplification from using MarketSessionView
         
         # Reset episode state
         self.current_step = 0
-        self.episode_length = self.session_data.get_episode_length()
+        self.episode_length = self.market_view.get_episode_length()
         self.observation_history = []
+        self._is_reset = True  # Mark environment as reset
         
         # Initialize fresh components for this episode
         self.position_tracker = UnifiedPositionTracker(initial_cash=self.config.cash_start)
@@ -153,14 +153,14 @@ class MarketAgnosticKalshiEnv(gym.Env):
         observation = self._build_observation()
         
         info = {
-            "session_id": self.session_data.session_id,
+            "session_id": self.market_view.session_id,
             "market_ticker": self.current_market,
             "episode_length": self.episode_length,
-            "markets_available": len(self.session_data.data_points[0].markets_data) if self.session_data.data_points else 0,
-            "initial_cash": self.config.cash_start
+            "initial_cash": self.config.cash_start,
+            "coverage_pct": 100.0  # MarketSessionView always has 100% coverage for its market
         }
         
-        logger.info(f"Reset episode: session={self.session_data.session_id}, market={self.current_market}, length={self.episode_length}")
+        logger.info(f"Reset episode: session={self.market_view.session_id}, market={self.current_market}, length={self.episode_length}")
         
         return observation, info
     
@@ -178,7 +178,7 @@ class MarketAgnosticKalshiEnv(gym.Env):
             truncated: Episode cut short due to limits  
             info: Additional episode information
         """
-        if self.current_market is None:
+        if not self._is_reset:
             raise ValueError("Environment not properly reset")
         
         # Get current portfolio value before action
@@ -187,7 +187,7 @@ class MarketAgnosticKalshiEnv(gym.Env):
         )
         
         # Get current session data point
-        current_data = self.session_data.get_timestep_data(self.current_step)
+        current_data = self.market_view.get_timestep_data(self.current_step)
         if current_data is None:
             # End of session
             terminated = True
@@ -242,25 +242,29 @@ class MarketAgnosticKalshiEnv(gym.Env):
             "cash_balance": self.position_tracker.cash_balance,
             "position": self.position_tracker.positions.get(self.current_market, {}).get('position', 0),
             "market_ticker": self.current_market,
-            "session_id": self.session_data.session_id,
+            "session_id": self.market_view.session_id,
             "episode_progress": self.current_step / self.episode_length if self.episode_length > 0 else 0.0
         }
         
         return observation, reward, terminated, truncated, info
     
-    def set_session_data(self, session_data: SessionData) -> None:
+    def set_market_view(self, market_view: MarketSessionView) -> None:
         """
-        Manually set the session data for curriculum learning.
+        Manually set a new market view for curriculum learning.
+        
+        This allows switching between markets without recreating the environment.
         
         Args:
-            session_data: New session data to use for next episode
+            market_view: New market view to use for next episode
         """
-        if not session_data or session_data.get_episode_length() < 3:
-            raise ValueError("Session data must have at least 3 data points")
+        if not market_view or market_view.get_episode_length() < 3:
+            raise ValueError("Market view must have at least 3 data points")
         
-        self.session_data = session_data
-        self.episode_length = session_data.get_episode_length()
-        logger.info(f"Session data set to {session_data.session_id} for curriculum learning")
+        self.market_view = market_view
+        self.current_market = market_view.target_market
+        self.episode_length = market_view.get_episode_length()
+        
+        logger.info(f"Market view updated to {market_view.target_market} from session {market_view.session_id} for curriculum learning")
     
     def _build_observation(self) -> np.ndarray:
         """
@@ -274,7 +278,7 @@ class MarketAgnosticKalshiEnv(gym.Env):
             return np.zeros(self.OBSERVATION_DIM, dtype=np.float32)
         
         # Get current data point
-        current_data = self.session_data.get_timestep_data(self.current_step)
+        current_data = self.market_view.get_timestep_data(self.current_step)
         if current_data is None:
             logger.warning(f"No session data for step {self.current_step} - returning zeros")
             return np.zeros(self.OBSERVATION_DIM, dtype=np.float32)
@@ -325,45 +329,6 @@ class MarketAgnosticKalshiEnv(gym.Env):
         
         return observation
     
-    def _select_most_active_market(self, session_data: SessionData) -> Optional[str]:
-        """
-        Select the most active market by total volume for single-market training.
-        
-        Args:
-            session_data: Loaded session data
-            
-        Returns:
-            Market ticker with highest total volume, or None if no markets
-        """
-        if not session_data.data_points:
-            return None
-            
-        # Count total activity across all data points for each market
-        market_activity = {}
-        for data_point in session_data.data_points:
-            for market_ticker, market_data in data_point.markets_data.items():
-                if market_ticker not in market_activity:
-                    market_activity[market_ticker] = 0
-                # Use total orderbook depth as activity metric
-                total_depth = 0
-                if 'yes_bids' in market_data:
-                    total_depth += sum(market_data['yes_bids'].values())
-                if 'yes_asks' in market_data:
-                    total_depth += sum(market_data['yes_asks'].values())
-                if 'no_bids' in market_data:
-                    total_depth += sum(market_data['no_bids'].values())
-                if 'no_asks' in market_data:
-                    total_depth += sum(market_data['no_asks'].values())
-                market_activity[market_ticker] += total_depth
-        
-        if not market_activity:
-            return None
-            
-        # Return market with highest total activity
-        most_active_market = max(market_activity.items(), key=lambda x: x[1])[0]
-        logger.info(f"Selected most active market: {most_active_market} (activity: {market_activity[most_active_market]})")
-        return most_active_market
-    
     def _get_current_market_prices(self) -> Dict[str, Tuple[float, float]]:
         """
         Extract current market prices for portfolio value calculation.
@@ -372,10 +337,10 @@ class MarketAgnosticKalshiEnv(gym.Env):
             Dict mapping market ticker to (yes_mid_price, no_mid_price) in cents
         """
         if (self.current_market is None or
-            self.current_step >= len(self.session_data.data_points)):
+            self.current_step >= len(self.market_view.data_points)):
             return {}
         
-        current_data = self.session_data.data_points[self.current_step]
+        current_data = self.market_view.data_points[self.current_step]
         prices = {}
         
         if self.current_market in current_data.mid_prices:

@@ -49,6 +49,67 @@ class SessionDataPoint:
     
 
 @dataclass
+class MarketSessionView:
+    """
+    Single-market view of a multi-market session for efficient training.
+    
+    This provides an efficient single-market view of SessionData by pre-filtering
+    data to only include one market at load time. It maintains the same API as
+    SessionData but only operates on a single market's data.
+    
+    Benefits:
+    - Eliminates need for runtime market filtering during training
+    - Maintains sparse-to-dense index mapping for efficient access
+    - Same SessionData API for drop-in replacement
+    - Pre-computed temporal features specific to the target market
+    """
+    session_id: int
+    start_time: datetime
+    end_time: datetime
+    target_market: str
+    
+    # Filtered data points containing only target market
+    data_points: List[SessionDataPoint]
+    
+    # Session metadata (same as SessionData)
+    total_duration: timedelta = field(init=False)
+    data_quality_score: float = 1.0
+    
+    # Pre-computed temporal analysis for target market only
+    temporal_gaps: List[float] = field(default_factory=list)
+    activity_bursts: List[Tuple[int, int]] = field(default_factory=list)
+    quiet_periods: List[Tuple[int, int]] = field(default_factory=list)
+    
+    # Target market statistics
+    avg_spread: float = 0.0
+    volatility_score: float = 0.0
+    market_coverage: float = 0.0  # Fraction of session where market was active
+    
+    # Sparse-to-dense mapping for original session indices
+    original_indices: List[int] = field(default_factory=list)
+    
+    def __post_init__(self):
+        """Calculate derived fields after initialization."""
+        self.total_duration = self.end_time - self.start_time
+        
+    def get_timestep_data(self, step: int) -> Optional[SessionDataPoint]:
+        """Get data for specific timestep in episode (market-filtered)."""
+        if 0 <= step < len(self.data_points):
+            return self.data_points[step]
+        return None
+        
+    def get_episode_length(self) -> int:
+        """Total number of steps available for target market."""
+        return len(self.data_points)
+    
+    def get_original_session_index(self, view_step: int) -> Optional[int]:
+        """Get original session index for a given view step."""
+        if 0 <= view_step < len(self.original_indices):
+            return self.original_indices[view_step]
+        return None
+
+
+@dataclass
 class SessionData:
     """
     Complete session data for episode generation.
@@ -89,6 +150,156 @@ class SessionData:
     def get_episode_length(self) -> int:
         """Total number of steps available in this session."""
         return len(self.data_points)
+    
+    def create_market_view(self, target_market: str) -> Optional[MarketSessionView]:
+        """
+        Create a single-market view of this session for efficient training.
+        
+        This method filters the session data to only include timesteps where
+        the target market is active, creating an efficient single-market view
+        for training.
+        
+        Args:
+            target_market: Market ticker to create view for
+            
+        Returns:
+            MarketSessionView containing only target market data, or None if
+            market not found in session
+        """
+        if not target_market or target_market not in self.markets_involved:
+            logger.warning(f"Market '{target_market}' not found in session {self.session_id}")
+            return None
+        
+        # Filter data points to only include target market
+        filtered_points = []
+        original_indices = []
+        
+        for i, data_point in enumerate(self.data_points):
+            if target_market in data_point.markets_data:
+                # Create filtered data point with only target market
+                filtered_markets_data = {target_market: data_point.markets_data[target_market]}
+                filtered_spreads = {target_market: data_point.spreads.get(target_market, (None, None))}
+                filtered_mid_prices = {target_market: data_point.mid_prices.get(target_market, (None, None))}
+                filtered_depths = {target_market: data_point.depths.get(target_market, {})}
+                filtered_imbalances = {target_market: data_point.imbalances.get(target_market, {})}
+                
+                filtered_point = SessionDataPoint(
+                    timestamp=data_point.timestamp,
+                    timestamp_ms=data_point.timestamp_ms,
+                    markets_data=filtered_markets_data,
+                    spreads=filtered_spreads,
+                    mid_prices=filtered_mid_prices,
+                    depths=filtered_depths,
+                    imbalances=filtered_imbalances,
+                    time_gap=data_point.time_gap,
+                    activity_score=data_point.activity_score,
+                    momentum=data_point.momentum
+                )
+                
+                filtered_points.append(filtered_point)
+                original_indices.append(i)
+        
+        if not filtered_points:
+            logger.warning(f"No active data points found for market '{target_market}' in session {self.session_id}")
+            return None
+        
+        # Create market session view
+        market_view = MarketSessionView(
+            session_id=self.session_id,
+            start_time=self.start_time,
+            end_time=self.end_time,
+            target_market=target_market,
+            data_points=filtered_points,
+            original_indices=original_indices,
+            data_quality_score=self.data_quality_score
+        )
+        
+        # Compute single-market statistics
+        self._compute_market_view_stats(market_view)
+        
+        logger.info(f"Created market view for '{target_market}': {len(filtered_points)} steps "
+                   f"({len(filtered_points)/len(self.data_points):.1%} coverage)")
+        
+        return market_view
+    
+    def _compute_market_view_stats(self, market_view: MarketSessionView) -> None:
+        """
+        Compute statistics for a single-market view.
+        
+        Args:
+            market_view: MarketSessionView to analyze
+        """
+        if not market_view.data_points:
+            return
+        
+        target_market = market_view.target_market
+        spreads = []
+        volatilities = []
+        
+        for point in market_view.data_points:
+            # Extract spreads for this market
+            if target_market in point.spreads:
+                yes_spread, no_spread = point.spreads[target_market]
+                if yes_spread is not None:
+                    spreads.append(yes_spread)
+                if no_spread is not None:
+                    spreads.append(no_spread)
+            
+            # Track price volatility via momentum
+            volatilities.append(abs(point.momentum))
+        
+        market_view.avg_spread = np.mean(spreads) if spreads else 0.0
+        market_view.volatility_score = np.mean(volatilities) if volatilities else 0.0
+        
+        # Calculate market coverage (fraction of original session where market was active)
+        market_view.market_coverage = len(market_view.data_points) / len(self.data_points) if self.data_points else 0.0
+        
+        # Identify activity bursts and quiet periods for this market only
+        activity_scores = [point.activity_score for point in market_view.data_points]
+        if activity_scores:
+            activity_threshold = np.percentile(activity_scores, 75)
+            quiet_threshold = np.percentile(activity_scores, 25)
+            
+            # Find bursts (consecutive high activity periods)
+            in_burst = False
+            burst_start = 0
+            
+            for i, score in enumerate(activity_scores):
+                if score >= activity_threshold and not in_burst:
+                    in_burst = True
+                    burst_start = i
+                elif score < activity_threshold and in_burst:
+                    in_burst = False
+                    market_view.activity_bursts.append((burst_start, i-1))
+            
+            if in_burst:  # Close final burst
+                market_view.activity_bursts.append((burst_start, len(activity_scores)-1))
+            
+            # Find quiet periods
+            in_quiet = False
+            quiet_start = 0
+            
+            for i, score in enumerate(activity_scores):
+                if score <= quiet_threshold and not in_quiet:
+                    in_quiet = True
+                    quiet_start = i
+                elif score > quiet_threshold and in_quiet:
+                    in_quiet = False
+                    market_view.quiet_periods.append((quiet_start, i-1))
+            
+            if in_quiet:  # Close final quiet period
+                market_view.quiet_periods.append((quiet_start, len(activity_scores)-1))
+        
+        # Compute temporal gaps for this market
+        market_view.temporal_gaps = [point.time_gap for point in market_view.data_points]
+        
+        logger.info(
+            f"Market view stats for {target_market} - Avg spread: {market_view.avg_spread:.2f}, "
+            f"Volatility: {market_view.volatility_score:.3f}, "
+            f"Coverage: {market_view.market_coverage:.1%}, "
+            f"Bursts: {len(market_view.activity_bursts)}, "
+            f"Quiet periods: {len(market_view.quiet_periods)}"
+        )
 
 
 class SessionDataLoader:
