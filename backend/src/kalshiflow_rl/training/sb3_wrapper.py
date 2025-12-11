@@ -23,13 +23,8 @@ from gymnasium import spaces
 
 from ..environments.market_agnostic_env import MarketAgnosticKalshiEnv, EnvConfig
 from ..environments.session_data_loader import SessionDataLoader, MarketSessionView
-from .curriculum import (
-    SimpleSessionCurriculum, 
-    MarketTrainingResult, 
-    SessionTrainingResults,
-    train_single_session,
-    train_multiple_sessions
-)
+# Note: Simple curriculum functionality is handled directly in train_with_sb3.py
+# The complex curriculum system has been replaced with SimpleMarketCurriculum
 
 logger = logging.getLogger("kalshiflow_rl.training.sb3_wrapper")
 
@@ -46,7 +41,7 @@ class SB3TrainingConfig:
     min_episode_length: int = 10
     
     # Training parameters
-    max_episode_steps: Optional[int] = None  # If set, truncate long episodes
+    max_episode_steps: Optional[int] = None  # DEPRECATED: Episodes run to natural completion
     
     # Error handling
     skip_failed_markets: bool = True  # Skip markets that fail to initialize
@@ -93,11 +88,11 @@ class SessionBasedEnvironment(gym.Env):
         self.session_ids = [session_ids] if isinstance(session_ids, int) else session_ids
         self.config = config or SB3TrainingConfig()
         
-        # Initialize curriculum system
-        self.curriculum = SimpleSessionCurriculum(
-            database_url=database_url,
-            env_config=self.config.env_config
-        )
+        # Note: Curriculum system disabled - using SimpleMarketCurriculum in train_with_sb3.py
+        # self.curriculum = SimpleSessionCurriculum(
+        #     database_url=database_url,
+        #     env_config=self.config.env_config
+        # )
         
         # Market view management
         self.market_views: List[MarketSessionView] = []
@@ -254,11 +249,9 @@ class SessionBasedEnvironment(gym.Env):
         
         obs, reward, terminated, truncated, info = self.current_env.step(action)
         
-        # Apply episode length truncation if configured
-        if (self.config.max_episode_steps and 
-            self.current_env.current_step >= self.config.max_episode_steps):
-            truncated = True
-            info['truncation_reason'] = 'max_episode_steps'
+        # REMOVED: Artificial episode length truncation 
+        # Episodes now run to natural completion (end of session data or bankruptcy)
+        # This ensures full market data utilization and natural strategy learning
         
         return obs, reward, terminated, truncated, info
     

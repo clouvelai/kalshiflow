@@ -1,37 +1,16 @@
 #!/usr/bin/env python3
 """
-Comprehensive SB3 training script for MarketAgnosticKalshiEnv.
+Basic SB3 training script for MarketAgnosticKalshiEnv.
 
-This script provides a complete training pipeline integrating MarketAgnosticKalshiEnv
-with Stable Baselines3 using SimpleSessionCurriculum for curriculum learning.
-
-Features:
-- PPO and A2C training support
-- Session-based curriculum learning using train_single_session() and train_multiple_sessions()
-- Model persistence with checkpointing and resumption
-- Training metrics extraction using OrderManager API
-- Progress monitoring with episode rewards and portfolio performance
-- Comprehensive error handling and logging
+This script provides a simple training pipeline using Stable Baselines3.
 
 Usage:
     # Train on single session
-    python train_with_sb3.py --session 9 --algorithm ppo --total-timesteps 10000
-    
-    # Train on multiple sessions with curriculum learning  
-    python train_with_sb3.py --sessions 6,7,8,9 --algorithm a2c --total-timesteps 50000
-    
-    # Resume from checkpoint
-    python train_with_sb3.py --sessions 6,7,8,9 --algorithm ppo --resume-from models/ppo_checkpoint.zip
-    
-    # Train with custom configuration
-    python train_with_sb3.py --session 9 --algorithm ppo --total-timesteps 20000 --save-freq 5000 --eval-freq 2500
+    python train_with_sb3.py --session 9 --algorithm ppo --total-timesteps 100000
 
 Examples:
-    $ python train_with_sb3.py --session 9 --algorithm ppo --total-timesteps 10000
-    Trains PPO agent on session 9 for 10k timesteps
-    
-    $ python train_with_sb3.py --sessions 6,7,8,9 --algorithm a2c --total-timesteps 50000 --curriculum
-    Trains A2C with curriculum learning across multiple sessions
+    $ python train_with_sb3.py --session 9 --algorithm ppo --total-timesteps 100000
+    Trains PPO agent on session 9 data
 """
 
 import asyncio
@@ -64,8 +43,8 @@ from kalshiflow_rl.training.sb3_wrapper import (
     SessionBasedEnvironment, SB3TrainingConfig, CurriculumEnvironmentFactory,
     create_sb3_env, create_env_config, create_training_config
 )
+from kalshiflow_rl.training.simple_curriculum import SimpleMarketCurriculum
 from kalshiflow_rl.environments.market_agnostic_env import EnvConfig
-from kalshiflow_rl.training.curriculum import train_single_session, train_multiple_sessions
 
 
 class PortfolioMetricsCallback(BaseCallback):
@@ -404,6 +383,204 @@ def create_callbacks(model_save_path: str,
     return CallbackList(callbacks)
 
 
+async def train_with_curriculum(args) -> Dict[str, Any]:
+    """
+    Train model using SimpleMarketCurriculum - trains on each viable market once.
+    
+    Args:
+        args: Parsed command-line arguments with curriculum enabled
+        
+    Returns:
+        Dictionary with curriculum training results
+    """
+    # Setup logging
+    log_file = f"curriculum_training_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log" if args.log_file else None
+    setup_logging(args.log_level, log_file)
+    logger = logging.getLogger(__name__)
+    
+    logger.info("Starting SB3 curriculum training pipeline...")
+    logger.info(f"Arguments: {vars(args)}")
+    
+    # Get database URL
+    database_url = os.getenv("DATABASE_URL")
+    if not database_url:
+        raise ValueError("DATABASE_URL not set in environment")
+    
+    # Initialize curriculum
+    curriculum = SimpleMarketCurriculum(
+        database_url=database_url,
+        session_id=args.session,
+        min_timesteps=args.min_episode_length
+    )
+    await curriculum.initialize()
+    
+    logger.info(f"Curriculum initialized: {len(curriculum.viable_markets)} viable markets")
+    
+    # Get model parameters
+    model_params = get_default_model_params(args.algorithm)
+    if args.learning_rate:
+        model_params['learning_rate'] = args.learning_rate
+    
+    # Initialize model as None - will be created for first market
+    model = None
+    
+    # Setup model save paths
+    models_dir = Path(args.model_save_path).parent
+    models_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Track curriculum results
+    curriculum_results = {
+        'session_id': args.session,
+        'total_markets': len(curriculum.viable_markets),
+        'markets_trained': [],
+        'market_results': {},
+        'training_start': datetime.now(),
+        'algorithm': args.algorithm,
+        'total_timesteps_per_market': args.total_timesteps or 'full_episode'
+    }
+    
+    # Train on each market exactly once
+    market_ticker = curriculum.get_next_market()
+    market_count = 0
+    
+    while market_ticker is not None:
+        market_count += 1
+        market_timesteps = curriculum.viable_markets[curriculum.current_market_index][1]
+        
+        logger.info(f"\n{'='*80}")
+        logger.info(f"TRAINING MARKET {market_count}/{len(curriculum.viable_markets)}: {market_ticker}")
+        logger.info(f"Market has {market_timesteps} timesteps")
+        logger.info(f"{'='*80}")
+        
+        try:
+            # Create market view
+            market_view = curriculum.create_market_view(market_ticker)
+            if market_view is None:
+                logger.error(f"Failed to create market view for {market_ticker}")
+                curriculum.advance_to_next_market()
+                market_ticker = curriculum.get_next_market()
+                continue
+            
+            # Create environment for this market
+            env_config = create_env_config(
+                cash_start=args.cash_start,
+                max_markets=1,
+                temporal_features=True
+            )
+            
+            # Create MarketAgnosticKalshiEnv with this market view
+            from kalshiflow_rl.environments.market_agnostic_env import MarketAgnosticKalshiEnv
+            
+            market_env = MarketAgnosticKalshiEnv(
+                market_view=market_view,
+                config=env_config
+            )
+            
+            # Wrap and vectorize
+            market_env = Monitor(market_env, filename=None)
+            vec_env = DummyVecEnv([lambda: market_env])
+            
+            # Create or reuse model
+            if model is None:
+                logger.info(f"Creating initial {args.algorithm.upper()} model...")
+                model = create_model(args.algorithm, vec_env, model_params, args.device)
+            else:
+                logger.info(f"Reusing existing {args.algorithm.upper()} model...")
+                # Update environment for existing model
+                model.set_env(vec_env)
+            
+            # Create callbacks for this market
+            market_callbacks = create_callbacks(
+                model_save_path=str(models_dir / f"market_{market_count}_{market_ticker}_model.zip"),
+                save_freq=args.save_freq,
+                eval_freq=args.eval_freq,
+                portfolio_log_freq=args.portfolio_log_freq
+            )
+            
+            # Determine timesteps for this market (full episode or user override)
+            if args.total_timesteps and args.total_timesteps > 0:
+                # User specified limit per market
+                timesteps_to_train = args.total_timesteps
+                logger.info(f"Training on {market_ticker} for {timesteps_to_train} timesteps (user override)...")
+            else:
+                # Use full episode length
+                timesteps_to_train = market_timesteps
+                logger.info(f"Training on {market_ticker} for {timesteps_to_train} timesteps (full episode)...")
+            
+            training_start = time.time()
+            
+            model.learn(
+                total_timesteps=timesteps_to_train,
+                callback=market_callbacks,
+                log_interval=args.log_interval,
+                reset_num_timesteps=False  # Keep accumulating timesteps across markets
+            )
+            
+            training_duration = time.time() - training_start
+            
+            # Get portfolio callback for statistics
+            portfolio_callback = next(
+                (cb for cb in market_callbacks.callbacks if isinstance(cb, PortfolioMetricsCallback)),
+                None
+            )
+            
+            # Store market results
+            market_result = {
+                'market_ticker': market_ticker,
+                'market_timesteps': market_timesteps,
+                'training_duration_seconds': training_duration,
+                'timesteps_trained': timesteps_to_train,
+                'timesteps_per_second': timesteps_to_train / training_duration,
+                'full_episode': timesteps_to_train == market_timesteps,
+                'portfolio_statistics': portfolio_callback.get_episode_statistics() if portfolio_callback else {}
+            }
+            
+            curriculum_results['markets_trained'].append(market_ticker)
+            curriculum_results['market_results'][market_ticker] = market_result
+            
+            logger.info(f"✅ Training completed for {market_ticker} in {training_duration:.2f}s")
+            
+            # Close environment
+            vec_env.close()
+            
+        except Exception as e:
+            logger.error(f"❌ Training failed for {market_ticker}: {e}")
+            curriculum_results['market_results'][market_ticker] = {'error': str(e)}
+            import traceback
+            traceback.print_exc()
+        
+        # Move to next market
+        curriculum.advance_to_next_market()
+        market_ticker = curriculum.get_next_market()
+    
+    # Save final model after all markets
+    if model is not None:
+        logger.info(f"Saving final curriculum-trained model to {args.model_save_path}")
+        model.save(args.model_save_path)
+        curriculum_results['final_model_path'] = args.model_save_path
+    
+    # Finalize results
+    curriculum_results['training_end'] = datetime.now()
+    curriculum_results['total_duration'] = (
+        curriculum_results['training_end'] - curriculum_results['training_start']
+    ).total_seconds()
+    
+    # Save curriculum results
+    results_path = models_dir / "curriculum_training_results.json"
+    with open(results_path, 'w') as f:
+        json.dump(curriculum_results, f, indent=2, default=str)
+    
+    logger.info(f"\n{'='*80}")
+    logger.info(f"CURRICULUM TRAINING COMPLETE")
+    logger.info(f"{'='*80}")
+    logger.info(f"Session {args.session}: Trained on {len(curriculum_results['markets_trained'])} markets")
+    logger.info(f"Total duration: {curriculum_results['total_duration']:.2f} seconds")
+    logger.info(f"Results saved to: {results_path}")
+    logger.info(f"Final model saved to: {args.model_save_path}")
+    
+    return curriculum_results
+
+
 async def train_model(args) -> Dict[str, Any]:
     """
     Main training function that coordinates the entire training pipeline.
@@ -444,7 +621,7 @@ async def train_model(args) -> Dict[str, Any]:
     
     training_config = create_training_config(
         min_episode_length=args.min_episode_length,
-        max_episode_steps=args.max_episode_steps,
+        max_episode_steps=None,  # Always None - episodes run to completion
         skip_failed_markets=True
     )
     
@@ -455,7 +632,7 @@ async def train_model(args) -> Dict[str, Any]:
     full_config = SB3TrainingConfig(
         env_config=env_config,
         min_episode_length=training_config.min_episode_length,
-        max_episode_steps=training_config.max_episode_steps,
+        max_episode_steps=None,  # Force no artificial limits - episodes run to completion
         skip_failed_markets=training_config.skip_failed_markets
     )
     
@@ -568,9 +745,17 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
+  # Regular training on session with 10k timesteps
   python train_with_sb3.py --session 9 --algorithm ppo --total-timesteps 10000
+  
+  # Curriculum training - each market gets its FULL episode length
+  python train_with_sb3.py --session 9 --curriculum --algorithm ppo
+  
+  # Curriculum training with timestep limit per market (testing only)
+  python train_with_sb3.py --session 9 --curriculum --algorithm ppo --total-timesteps 100
+  
+  # Multiple sessions for regular training
   python train_with_sb3.py --sessions 6,7,8,9 --algorithm a2c --total-timesteps 50000
-  python train_with_sb3.py --session 9 --algorithm ppo --resume-from models/ppo_checkpoint.zip
         """
     )
     
@@ -584,18 +769,22 @@ Examples:
     # Algorithm configuration
     parser.add_argument('--algorithm', choices=['ppo', 'a2c'], default='ppo',
                        help='RL algorithm to use (default: ppo)')
-    parser.add_argument('--total-timesteps', type=int, default=10000,
-                       help='Total training timesteps (default: 10000)')
+    parser.add_argument('--total-timesteps', type=int, default=None,
+                       help='Training timesteps per market (default: None = full episode length). Use for testing/debugging only.')
     parser.add_argument('--learning-rate', type=float,
                        help='Learning rate (uses algorithm default if not specified)')
+    
+    # Curriculum learning
+    parser.add_argument('--curriculum', action='store_true',
+                       help='Enable curriculum learning: train on each viable market in session exactly once')
     
     # Environment configuration
     parser.add_argument('--cash-start', type=int, default=10000,
                        help='Starting cash in cents (default: 10000 = $100)')
     parser.add_argument('--min-episode-length', type=int, default=10,
                        help='Minimum episode length for valid markets (default: 10)')
-    parser.add_argument('--max-episode-steps', type=int,
-                       help='Maximum steps per episode (no limit if not specified)')
+    # REMOVED: --max-episode-steps parameter 
+    # Episodes now run to natural completion (end of session data)
     
     # Model persistence
     parser.add_argument('--model-save-path', default='backend/src/kalshiflow_rl/trained_models/trained_model.zip',
@@ -623,29 +812,71 @@ Examples:
     
     args = parser.parse_args()
     
+    # Validate curriculum arguments
+    if args.curriculum:
+        if args.sessions:
+            print("❌ Error: --curriculum mode only supports single session (--session), not multiple sessions (--sessions)")
+            sys.exit(1)
+        if not args.session:
+            print("❌ Error: --curriculum mode requires --session to be specified")
+            sys.exit(1)
+    
     # Run training
     try:
-        results = asyncio.run(train_model(args))
+        if args.curriculum:
+            print(f"🎓 Starting curriculum training on session {args.session}")
+            results = asyncio.run(train_with_curriculum(args))
+        else:
+            results = asyncio.run(train_model(args))
         
         print("\n" + "="*80)
         print("TRAINING COMPLETED SUCCESSFULLY")
         print("="*80)
-        print(f"Algorithm: {results['algorithm'].upper()}")
-        print(f"Total timesteps: {results['total_timesteps']:,}")
-        print(f"Training duration: {results['training_duration_seconds']:.2f} seconds")
-        print(f"Timesteps per second: {results['timesteps_per_second']:.2f}")
-        print(f"Sessions trained: {len(results['session_ids'])}")
-        print(f"Model saved to: {results['final_model_path']}")
         
-        if results.get('portfolio_statistics'):
-            stats = results['portfolio_statistics']
-            print(f"\nPortfolio Statistics:")
-            print(f"  Episodes completed: {stats['total_episodes']}")
-            print(f"  Unique markets: {stats['unique_markets']}")
-            if stats.get('portfolio_stats'):
-                port_stats = stats['portfolio_stats']
-                print(f"  Avg portfolio value: {port_stats['mean']:.2f} cents")
-                print(f"  Portfolio range: {port_stats['min']:.2f} - {port_stats['max']:.2f}")
+        if args.curriculum:
+            # Curriculum training results
+            print(f"🎓 CURRICULUM TRAINING RESULTS")
+            print(f"Algorithm: {results['algorithm'].upper()}")
+            print(f"Session: {results['session_id']}")
+            print(f"Markets trained: {len(results['markets_trained'])}/{results['total_markets']}")
+            if isinstance(results['total_timesteps_per_market'], int):
+                print(f"Timesteps per market: {results['total_timesteps_per_market']:,} (user override)")
+            else:
+                print(f"Timesteps per market: {results['total_timesteps_per_market']} (varies by market)")
+            print(f"Total training duration: {results['total_duration']:.2f} seconds")
+            print(f"Model saved to: {results['final_model_path']}")
+            
+            print(f"\n📊 MARKET BREAKDOWN:")
+            for market in results['markets_trained'][:5]:  # Show first 5
+                market_result = results['market_results'][market]
+                if 'error' not in market_result:
+                    episode_type = "FULL" if market_result.get('full_episode', False) else "LIMITED"
+                    print(f"  ✅ {market}: {market_result['timesteps_trained']:,} steps ({episode_type}), "
+                          f"{market_result['training_duration_seconds']:.1f}s, {market_result['timesteps_per_second']:.1f} ts/s")
+                else:
+                    print(f"  ❌ {market}: {market_result['error']}")
+            
+            if len(results['markets_trained']) > 5:
+                print(f"  ... and {len(results['markets_trained']) - 5} more markets")
+        
+        else:
+            # Regular training results
+            print(f"Algorithm: {results['algorithm'].upper()}")
+            print(f"Total timesteps: {results['total_timesteps']:,}")
+            print(f"Training duration: {results['training_duration_seconds']:.2f} seconds")
+            print(f"Timesteps per second: {results['timesteps_per_second']:.2f}")
+            print(f"Sessions trained: {len(results['session_ids'])}")
+            print(f"Model saved to: {results['final_model_path']}")
+            
+            if results.get('portfolio_statistics'):
+                stats = results['portfolio_statistics']
+                print(f"\nPortfolio Statistics:")
+                print(f"  Episodes completed: {stats['total_episodes']}")
+                print(f"  Unique markets: {stats['unique_markets']}")
+                if stats.get('portfolio_stats'):
+                    port_stats = stats['portfolio_stats']
+                    print(f"  Avg portfolio value: {port_stats['mean']:.2f} cents")
+                    print(f"  Portfolio range: {port_stats['min']:.2f} - {port_stats['max']:.2f}")
         
         print("="*80)
         
