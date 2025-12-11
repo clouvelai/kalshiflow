@@ -14,7 +14,7 @@ from gymnasium import spaces
 
 from .session_data_loader import SessionDataLoader, SessionData
 from .feature_extractors import build_observation_from_session_data
-from .action_space import PrimitiveActionSpace
+from .limit_order_action_space import LimitOrderActionSpace
 from ..trading.unified_metrics import UnifiedPositionTracker, UnifiedRewardCalculator
 
 
@@ -57,8 +57,9 @@ class MarketAgnosticKalshiEnv(gym.Env):
         self.session_config = session_config
         self.session_loader = session_loader or SessionDataLoader()
         
-        # Initialize primitive action space
-        self.primitive_action_space = PrimitiveActionSpace()
+        # Initialize limit order action space (placeholder - will need OrderManager in M7)
+        # For now, we'll use a placeholder until the environment is fully implemented
+        self.action_space_handler = None  # Will be LimitOrderActionSpace with SimulatedOrderManager
         
         # Initialize core components (to be implemented in M7)
         self.position_tracker: Optional[UnifiedPositionTracker] = None
@@ -79,9 +80,9 @@ class MarketAgnosticKalshiEnv(gym.Env):
         )
         
         # Single market action space with 5 discrete actions
-        # HOLD(0) + 4 NOW actions for truly stateless single market trading
-        # NO WAIT actions - only immediate market orders for stateless operation
-        self.action_space = self.primitive_action_space.get_gym_space()
+        # HOLD(0) + 4 limit order actions for single market trading
+        # Actions: HOLD, BUY_YES_LIMIT, SELL_YES_LIMIT, BUY_NO_LIMIT, SELL_NO_LIMIT
+        self.action_space = spaces.Discrete(5)
         
     def reset(
         self, 

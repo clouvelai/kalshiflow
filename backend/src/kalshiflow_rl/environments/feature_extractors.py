@@ -590,7 +590,8 @@ def build_observation_from_session_data(
     position_data: Dict[str, Any],
     portfolio_value: float,
     cash_balance: float,
-    max_markets: int = 1
+    max_markets: int = 1,
+    order_features: Optional[np.ndarray] = None
 ) -> np.ndarray:
     """
     Build complete observation vector from session data.
@@ -610,6 +611,7 @@ def build_observation_from_session_data(
         portfolio_value: Total portfolio value in dollars
         cash_balance: Available cash in dollars
         max_markets: Maximum markets to include in observation
+        order_features: Optional order state features (5 elements)
         
     Returns:
         Observation vector as numpy array with all features in [0,1] or [-1,1] range
@@ -677,6 +679,15 @@ def build_observation_from_session_data(
     portfolio_features = extract_portfolio_features(position_data, portfolio_value, cash_balance, current_prices)
     observation_parts.extend(list(portfolio_features.values()))
     
+    # === ORDER FEATURES ===
+    
+    # Add order state features if provided (from OrderManager)
+    if order_features is not None:
+        observation_parts.extend(order_features.tolist())
+    else:
+        # Default order features (no open orders)
+        default_order_features = [0.0, 0.0, 0.0, 0.0, 0.0]  # [has_open_buy, has_open_sell, buy_distance, sell_distance, time_since_order]
+        observation_parts.extend(default_order_features)
     
     # === FINAL OBSERVATION VECTOR ===
     
@@ -687,10 +698,11 @@ def build_observation_from_session_data(
     observation = np.nan_to_num(observation, nan=0.0, posinf=1.0, neginf=-1.0)
     observation = np.clip(observation, -2.0, 2.0)  # Clip extreme values
     
+    order_feature_count = 5 if order_features is not None else 5  # Always 5 order features
     logger.debug(
         f"Built observation vector with {len(observation)} features: "
         f"{market_count} markets × {features_per_market} + {len(temporal_features)} temporal + "
-        f"{len(portfolio_features)} portfolio"
+        f"{len(portfolio_features)} portfolio + {order_feature_count} order"
     )
     
     return observation
@@ -722,15 +734,18 @@ def calculate_observation_space_size(max_markets: int = 1) -> int:
     
     portfolio_features = len(extract_portfolio_features({}, 1000.0, 800.0, {}))
     
+    # Order features (5 features: has_open_buy, has_open_sell, buy_distance, sell_distance, time_since_order)
+    order_features = 5
+    
     # Global features removed - were redundant with temporal features
     global_features = 0
     
-    total_size = (max_markets * market_features) + temporal_features + portfolio_features + global_features
+    total_size = (max_markets * market_features) + temporal_features + portfolio_features + order_features + global_features
     
     logger.info(
         f"Observation space size: {total_size} "
         f"({max_markets} markets × {market_features} + {temporal_features} temporal + "
-        f"{portfolio_features} portfolio + {global_features} global)"
+        f"{portfolio_features} portfolio + {order_features} order + {global_features} global)"
     )
     return total_size
 

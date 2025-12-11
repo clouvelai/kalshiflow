@@ -19,7 +19,7 @@ from .action_write_queue import ActionWriteQueue
 from .trading_metrics import TradingMetricsCalculator
 from ..data.database import RLDatabase
 from ..data.orderbook_state import SharedOrderbookState
-from ..environments.action_space import ActionType
+from ..environments.limit_order_action_space import ActionType
 from ..config import config
 
 logger = logging.getLogger("kalshiflow_rl.trading.integration")

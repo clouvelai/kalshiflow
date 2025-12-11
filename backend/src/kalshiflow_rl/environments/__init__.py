@@ -26,7 +26,7 @@ from .feature_extractors import (
     extract_temporal_features,
     build_observation_from_session_data,
 )
-from .action_space import PrimitiveActionSpace, PrimitiveActions, primitive_action_space
+from .limit_order_action_space import LimitOrderActionSpace, LimitOrderActions, ActionType
 
 __all__ = [
     'MarketAgnosticKalshiEnv',
@@ -36,7 +36,7 @@ __all__ = [
     'extract_market_agnostic_features',
     'extract_temporal_features',
     'build_observation_from_session_data',
-    'PrimitiveActionSpace',
-    'PrimitiveActions',
-    'primitive_action_space',
+    'LimitOrderActionSpace',
+    'LimitOrderActions', 
+    'ActionType',
 ]
