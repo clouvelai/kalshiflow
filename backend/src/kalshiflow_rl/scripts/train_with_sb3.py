@@ -787,8 +787,8 @@ Examples:
     # Episodes now run to natural completion (end of session data)
     
     # Model persistence
-    parser.add_argument('--model-save-path', default='backend/src/kalshiflow_rl/trained_models/trained_model.zip',
-                       help='Path to save final trained model (default: backend/src/kalshiflow_rl/trained_models/trained_model.zip)')
+    parser.add_argument('--model-save-path', default='src/kalshiflow_rl/trained_models/trained_model.zip',
+                       help='Path to save final trained model (default: src/kalshiflow_rl/trained_models/trained_model.zip)')
     parser.add_argument('--resume-from', type=str,
                        help='Path to model checkpoint to resume training from')
     parser.add_argument('--save-freq', type=int, default=10000,
