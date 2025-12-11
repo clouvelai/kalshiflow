@@ -288,7 +288,7 @@ class TestSessionDataLoader:
         assert session_data is None
     
     @pytest.mark.asyncio
-    @patch('kalshiflow_rl.environments.session_data_loader.OrderbookState')
+    @patch('kalshiflow_rl.data.orderbook_state.OrderbookState')
     async def test_orderbook_reconstruction(self, mock_orderbook_class, session_loader):
         """Test orderbook state reconstruction."""
         # Mock OrderbookState
@@ -480,7 +480,7 @@ class TestIntegration:
     """Integration tests for complete pipeline."""
     
     @pytest.mark.asyncio
-    @patch('kalshiflow_rl.environments.session_data_loader.OrderbookState')
+    @patch('kalshiflow_rl.data.orderbook_state.OrderbookState')
     async def test_complete_pipeline(self, mock_orderbook_class, mock_database):
         """Test complete pipeline from database to episode data."""
         # Setup mock orderbook
