@@ -141,6 +141,63 @@ class LimitOrderActionSpace:
         """
         return spaces.Discrete(5)
     
+    def execute_action_sync(
+        self,
+        action: int,
+        ticker: str,
+        orderbook: OrderbookState
+    ) -> ActionExecutionResult:
+        """
+        Execute a trading action synchronously (for training environments).
+        
+        This is a synchronous wrapper around execute_action for use in
+        training environments where async operations are not needed.
+        
+        Args:
+            action: Integer action from 0-4
+            ticker: Market ticker for the order
+            orderbook: Current orderbook state for pricing
+            
+        Returns:
+            ActionExecutionResult with details of what was executed
+        """
+        import asyncio
+        
+        # For training environments, we can run async code synchronously
+        try:
+            # Try to get current running loop
+            try:
+                current_loop = asyncio.get_running_loop()
+                # If we're already in an async context, just create a result
+                # without executing orders (training doesn't need real orders)
+                logger.debug(f"Running in async context, skipping order execution for action {action}")
+                return ActionExecutionResult(
+                    action_taken=LimitOrderActions(action) if 0 <= action <= 4 else LimitOrderActions.HOLD,
+                    order_placed=False,
+                    order_cancelled=False,
+                    order_amended=False,
+                    order_id=None,
+                    error_message=None  # No error, just skipped
+                )
+            except RuntimeError:
+                # No running loop, create new one
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    return loop.run_until_complete(self.execute_action(action, ticker, orderbook))
+                finally:
+                    loop.close()
+        except Exception as e:
+            logger.error(f"Error in synchronous action execution: {e}")
+            return ActionExecutionResult(
+                action_taken=LimitOrderActions(action) if 0 <= action <= 4 else LimitOrderActions.HOLD,
+                order_placed=False,
+                order_cancelled=False,
+                order_amended=False,
+                order_id=None,
+                error_message=str(e)
+            )
+
     async def execute_action(
         self,
         action: int,

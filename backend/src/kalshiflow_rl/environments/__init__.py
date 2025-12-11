@@ -19,7 +19,7 @@ Classes:
     PrimitiveActions: Enumeration of the 5 primitive actions (HOLD + 4 NOW)
 """
 
-from .market_agnostic_env import MarketAgnosticKalshiEnv, SessionConfig
+from .market_agnostic_env import MarketAgnosticKalshiEnv, EnvConfig
 from .session_data_loader import SessionDataLoader, SessionData
 from .feature_extractors import (
     extract_market_agnostic_features,
@@ -30,7 +30,7 @@ from .limit_order_action_space import LimitOrderActionSpace, LimitOrderActions, 
 
 __all__ = [
     'MarketAgnosticKalshiEnv',
-    'SessionConfig',
+    'EnvConfig',
     'SessionDataLoader', 
     'SessionData',
     'extract_market_agnostic_features',
