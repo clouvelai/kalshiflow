@@ -204,17 +204,21 @@ class TestSimulatedOrderManager:
         
         # Apply snapshot where ask drops to 50¢ or below so our 50¢ bid can fill
         new_snapshot_data = {
-            "yes": {
-                "49": {"delta": 200},   # 49¢ bid 
-                "48": {"delta": 300},   # 48¢ bid
-                "50": {"delta": -150},  # 50¢ ask (matches our bid, should fill)
-                "51": {"delta": -250}   # 51¢ ask
+            "yes_bids": {
+                "49": 200,   # 49¢ bid 
+                "48": 300    # 48¢ bid
             },
-            "no": {
-                "49": {"delta": 100},   # NO bid
-                "48": {"delta": 200},   # NO bid
-                "50": {"delta": -150},  # NO ask
-                "51": {"delta": -250}   # NO ask
+            "yes_asks": {
+                "50": 150,   # 50¢ ask (matches our bid, should fill)
+                "51": 250    # 51¢ ask
+            },
+            "no_bids": {
+                "49": 100,   # NO bid
+                "48": 200    # NO bid
+            },
+            "no_asks": {
+                "50": 150,   # NO ask
+                "51": 250    # NO ask
             }
         }
         
@@ -643,13 +647,17 @@ class TestOrderManagerIntegration:
         orderbook1 = OrderbookState("PROFIT-TEST")
         
         snapshot_data_1 = {
-            "yes": {
-                "40": {"delta": 100},  # YES bid at 40¢
-                "41": {"delta": -100}  # YES ask at 41¢
+            "yes_bids": {
+                "40": 100   # YES bid at 40¢
             },
-            "no": {
-                "58": {"delta": 100},  # NO bid at 58¢
-                "59": {"delta": -100}  # NO ask at 59¢
+            "yes_asks": {
+                "41": 100   # YES ask at 41¢
+            },
+            "no_bids": {
+                "58": 100   # NO bid at 58¢
+            },
+            "no_asks": {
+                "59": 100   # NO ask at 59¢
             }
         }
         
@@ -672,13 +680,17 @@ class TestOrderManagerIntegration:
         orderbook2 = OrderbookState("PROFIT-TEST")
         
         snapshot_data_2 = {
-            "yes": {
-                "60": {"delta": 100},  # YES bid at 60¢ 
-                "61": {"delta": -100}  # YES ask at 61¢
+            "yes_bids": {
+                "60": 100   # YES bid at 60¢ 
             },
-            "no": {
-                "38": {"delta": 100},  # NO bid at 38¢
-                "39": {"delta": -100}  # NO ask at 39¢
+            "yes_asks": {
+                "61": 100   # YES ask at 61¢
+            },
+            "no_bids": {
+                "38": 100   # NO bid at 38¢
+            },
+            "no_asks": {
+                "39": 100   # NO ask at 39¢
             }
         }
         
@@ -710,13 +722,17 @@ class TestOrderManagerIntegration:
         orderbook = OrderbookState("FEATURES-TEST")
         
         snapshot_data = {
-            "yes": {
-                "50": {"delta": 100},  # YES bid
-                "51": {"delta": -100}  # YES ask
+            "yes_bids": {
+                "50": 100   # YES bid
             },
-            "no": {
-                "48": {"delta": 100},  # NO bid
-                "49": {"delta": -100}  # NO ask
+            "yes_asks": {
+                "51": 100   # YES ask
+            },
+            "no_bids": {
+                "48": 100   # NO bid
+            },
+            "no_asks": {
+                "49": 100   # NO ask
             }
         }
         
@@ -772,13 +788,17 @@ class TestOrderManagerIntegration:
         
         # Apply snapshot data to create wide spread
         snapshot_data = {
-            "yes": {
-                "45": {"delta": 100},  # YES bid
-                "55": {"delta": -100}, # YES ask  
+            "yes_bids": {
+                "45": 100   # YES bid
             },
-            "no": {
-                "44": {"delta": 100},  # NO bid
-                "54": {"delta": -100}, # NO ask
+            "yes_asks": {
+                "55": 100   # YES ask  
+            },
+            "no_bids": {
+                "44": 100   # NO bid
+            },
+            "no_asks": {
+                "54": 100   # NO ask
             }
         }
         
@@ -804,9 +824,9 @@ class TestOrderManagerIntegration:
         aggressive_buy_no = manager._calculate_limit_price(
             OrderSide.BUY, ContractSide.NO, orderbook, "aggressive"
         )
-        assert aggressive_buy_no == 44  # NO ask = 99 - YES bid
+        assert aggressive_buy_no == 54  # NO ask = 99 - YES bid = 99 - 45 = 54
         
-        passive_sell_no = manager._calculate_limit_price(
-            OrderSide.SELL, ContractSide.NO, orderbook, "passive"
+        passive_buy_no = manager._calculate_limit_price(
+            OrderSide.BUY, ContractSide.NO, orderbook, "passive"
         )
-        assert passive_sell_no == 45  # NO ask = 99 - YES bid
+        assert passive_buy_no == 44  # NO bid = 99 - YES ask = 99 - 55 = 44

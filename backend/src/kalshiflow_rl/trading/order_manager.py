@@ -943,8 +943,8 @@ class KalshiOrderManager(OrderManager):
                                 self._process_fill(our_order, fill_price)
                                 filled_orders.append(our_order)
                                 
-                                # Clean up mappings
-                                del self.open_orders[our_order_id]
+                                # Clean up Kalshi-specific mappings
+                                # Note: _process_fill already removed from open_orders
                                 del self._kalshi_order_mapping[our_order_id]
                                 del self._reverse_mapping[kalshi_order_id]
         
@@ -1085,9 +1085,11 @@ class KalshiOrderManager(OrderManager):
             # Clean up tracking for fully filled orders
             if filled_quantity >= order.quantity:
                 # Order fully filled - remove from tracking
-                del self.open_orders[our_order_id]
-                del self._kalshi_order_mapping[our_order_id]
-                del self._reverse_mapping[kalshi_order_id]
+                # Note: _process_fill already removed from open_orders
+                if our_order_id in self._kalshi_order_mapping:
+                    del self._kalshi_order_mapping[our_order_id]
+                if kalshi_order_id in self._reverse_mapping:
+                    del self._reverse_mapping[kalshi_order_id]
                 
                 logger.info(f"Order fully filled and removed from tracking: {our_order_id}")
             else:

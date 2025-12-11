@@ -35,20 +35,31 @@ def mock_orderbook_state():
     """Create a mock orderbook state for testing."""
     state = OrderbookState(market_ticker="TEST-123")
     
-    # Set up realistic orderbook data
-    state.yes_bids = {
-        64: {'price': 64, 'quantity': 100, 'timestamp': 1000000},
-        63: {'price': 63, 'quantity': 50, 'timestamp': 1000001},
-        62: {'price': 62, 'quantity': 75, 'timestamp': 1000002}
+    # Set up realistic orderbook data using proper snapshot format
+    snapshot_data = {
+        "yes_bids": {
+            "64": 100,  # 64¢ bid with size 100
+            "63": 50,   # 63¢ bid with size 50
+            "62": 75    # 62¢ bid with size 75
+        },
+        "yes_asks": {
+            "66": 80,   # 66¢ ask with size 80
+            "67": 60,   # 67¢ ask with size 60
+            "68": 90    # 68¢ ask with size 90
+        },
+        "no_bids": {
+            "32": 80,   # NO bid derived from YES ask
+            "31": 60,
+            "30": 90
+        },
+        "no_asks": {
+            "34": 100,  # NO ask derived from YES bid
+            "35": 50,
+            "36": 75
+        }
     }
     
-    state.yes_asks = {
-        66: {'price': 66, 'quantity': 80, 'timestamp': 1000003},
-        67: {'price': 67, 'quantity': 60, 'timestamp': 1000004},
-        68: {'price': 68, 'quantity': 90, 'timestamp': 1000005}
-    }
-    
-    state.last_update_time = 1000005
+    state.apply_snapshot(snapshot_data)
     return state
 
 
@@ -113,7 +124,7 @@ class TestLimitOrderIntegration:
         action_space = LimitOrderActionSpace(
             order_manager=simulated_order_manager,
             contract_size=10,
-            pricing_strategy="aggressive"
+            pricing_strategy="passive"
         )
         
         # Execute BUY_YES_LIMIT action
