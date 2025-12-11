@@ -59,8 +59,13 @@ class OrderbookState:
         """
         Apply a full orderbook snapshot.
         
+        Kalshi only provides bids due to the reciprocal nature of binary markets.
+        We derive asks from bids using the relationships:
+        - YES_BID at price X → NO_ASK at price (99 - X)
+        - NO_BID at price Y → YES_ASK at price (99 - Y)
+        
         Args:
-            snapshot_data: Dict with yes_bids, yes_asks, no_bids, no_asks, sequence
+            snapshot_data: Dict with yes_bids, no_bids (asks are derived)
         """
         self.last_sequence = snapshot_data.get('sequence_number', 0)
         self.last_update_time = snapshot_data.get('timestamp_ms', int(time.time() * 1000))
@@ -71,11 +76,27 @@ class OrderbookState:
         self.no_bids.clear()
         self.no_asks.clear()
         
-        # Apply new snapshot
-        self._apply_price_levels(self.yes_bids, snapshot_data.get('yes_bids', {}))
-        self._apply_price_levels(self.yes_asks, snapshot_data.get('yes_asks', {}))
-        self._apply_price_levels(self.no_bids, snapshot_data.get('no_bids', {}))
-        self._apply_price_levels(self.no_asks, snapshot_data.get('no_asks', {}))
+        # Apply bid data from snapshot
+        yes_bids_data = snapshot_data.get('yes_bids', {})
+        no_bids_data = snapshot_data.get('no_bids', {})
+        
+        self._apply_price_levels(self.yes_bids, yes_bids_data)
+        self._apply_price_levels(self.no_bids, no_bids_data)
+        
+        # Derive asks from bids using Kalshi's reciprocal relationships
+        # NO_BID at Y → YES_ASK at (99 - Y)
+        for price_str, size in no_bids_data.items():
+            price = int(price_str)
+            ask_price = 99 - price
+            if 1 <= ask_price <= 99:  # Ensure valid price range
+                self.yes_asks[ask_price] = size
+        
+        # YES_BID at X → NO_ASK at (99 - X)
+        for price_str, size in yes_bids_data.items():
+            price = int(price_str)
+            ask_price = 99 - price
+            if 1 <= ask_price <= 99:  # Ensure valid price range
+                self.no_asks[ask_price] = size
         
         # Invalidate cache
         self._invalidate_cache()
@@ -89,6 +110,11 @@ class OrderbookState:
     def apply_delta(self, delta_data: Dict[str, Any]) -> bool:
         """
         Apply an orderbook delta update.
+        
+        Kalshi only provides bid-side deltas. We apply the delta to the bid side
+        and then update the corresponding ask side using the reciprocal relationship:
+        - YES_BID at X → NO_ASK at (99 - X)
+        - NO_BID at Y → YES_ASK at (99 - Y)
         
         Args:
             delta_data: Dict with side, action, price, old_size, new_size, sequence
@@ -115,56 +141,57 @@ class OrderbookState:
             logger.error(f"Invalid delta data: {delta_data}")
             return False
         
-        # Select the appropriate order book based on side and price
-        # For remove actions, we need to determine which book by checking existing price levels
+        # Kalshi sends deltas for bids only. We update the bid side
+        # and derive the corresponding ask update.
         if side == 'yes':
-            if action == 'remove':
-                # For remove, check which book has this price level
-                if price in self.yes_bids:
-                    book = self.yes_bids
-                elif price in self.yes_asks:
-                    book = self.yes_asks
+            # Apply to YES bid
+            if action in ['add', 'update']:
+                if new_size > 0:
+                    self.yes_bids[price] = new_size
+                    # Derive NO ask at (99 - price)
+                    derived_ask_price = 99 - price
+                    if 1 <= derived_ask_price <= 99:
+                        self.no_asks[derived_ask_price] = new_size
                 else:
-                    # Price not found in either book, that's OK for remove
-                    return True
-            elif price <= 50:  # Yes bids
-                book = self.yes_bids
-            elif price > 50:  # Yes asks
-                book = self.yes_asks
+                    # Remove if size is 0
+                    self.yes_bids.pop(price, None)
+                    derived_ask_price = 99 - price
+                    self.no_asks.pop(derived_ask_price, None)
+            elif action == 'remove':
+                # Remove from YES bids
+                self.yes_bids.pop(price, None)
+                # Remove corresponding NO ask
+                derived_ask_price = 99 - price
+                self.no_asks.pop(derived_ask_price, None)
             else:
-                logger.error(f"Invalid yes side price/action: {price}/{action}")
+                logger.error(f"Unknown action: {action}")
                 return False
+                
         elif side == 'no':
-            if action == 'remove':
-                # For remove, check which book has this price level
-                if price in self.no_bids:
-                    book = self.no_bids
-                elif price in self.no_asks:
-                    book = self.no_asks
+            # Apply to NO bid
+            if action in ['add', 'update']:
+                if new_size > 0:
+                    self.no_bids[price] = new_size
+                    # Derive YES ask at (99 - price)
+                    derived_ask_price = 99 - price
+                    if 1 <= derived_ask_price <= 99:
+                        self.yes_asks[derived_ask_price] = new_size
                 else:
-                    # Price not found in either book, that's OK for remove
-                    return True
-            elif price <= 50:  # No bids
-                book = self.no_bids
-            elif price > 50:  # No asks
-                book = self.no_asks
+                    # Remove if size is 0
+                    self.no_bids.pop(price, None)
+                    derived_ask_price = 99 - price
+                    self.yes_asks.pop(derived_ask_price, None)
+            elif action == 'remove':
+                # Remove from NO bids
+                self.no_bids.pop(price, None)
+                # Remove corresponding YES ask
+                derived_ask_price = 99 - price
+                self.yes_asks.pop(derived_ask_price, None)
             else:
-                logger.error(f"Invalid no side price/action: {price}/{action}")
+                logger.error(f"Unknown action: {action}")
                 return False
         else:
             logger.error(f"Invalid side: {side}")
-            return False
-        
-        # Apply the delta
-        if action in ['add', 'update']:
-            if new_size > 0:
-                book[price] = new_size
-            else:
-                book.pop(price, None)  # Remove if size is 0
-        elif action == 'remove':
-            book.pop(price, None)
-        else:
-            logger.error(f"Unknown action: {action}")
             return False
         
         self.last_sequence = sequence_number

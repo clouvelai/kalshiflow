@@ -363,6 +363,55 @@ class OrderManager(ABC):
         
         return total_value
     
+    def get_portfolio_value_cents(self, current_prices: Dict[str, Tuple[float, float]]) -> int:
+        """
+        Calculate total portfolio value in cents for RL environment compatibility.
+        
+        Args:
+            current_prices: Dictionary mapping ticker to (yes_mid_price, no_mid_price) in cents
+            
+        Returns:
+            Total portfolio value in cents
+        """
+        # Convert current_prices format from (yes_mid, no_mid) to just yes_mid
+        simple_prices = {}
+        for ticker, (yes_mid, no_mid) in current_prices.items():
+            simple_prices[ticker] = yes_mid / 100.0  # Convert cents to probability
+        
+        # Get total value in dollars and convert to cents
+        total_value_dollars = self.get_total_portfolio_value(simple_prices)
+        return int(total_value_dollars * 100)
+    
+    def get_cash_balance_cents(self) -> int:
+        """
+        Get cash balance in cents for RL environment compatibility.
+        
+        Returns:
+            Cash balance in cents
+        """
+        return int(self.cash_balance * 100)
+    
+    def get_position_info(self) -> Dict[str, Any]:
+        """
+        Get position data in the format expected by feature extraction.
+        
+        Returns:
+            Dictionary mapping ticker to position info compatible with UnifiedPositionTracker format
+        """
+        position_data = {}
+        
+        for ticker, position in self.positions.items():
+            if not position.is_flat:
+                # Convert OrderManager Position to UnifiedPositionTracker format
+                position_data[ticker] = {
+                    'position': position.contracts,  # +YES/-NO contracts (Kalshi convention)
+                    'cost_basis': int(position.cost_basis * 100),  # Convert to cents
+                    'realized_pnl': int(position.realized_pnl * 100),  # Convert to cents
+                    'last_price': 50.0  # Default price if not available
+                }
+        
+        return position_data
+    
     def _generate_order_id(self) -> str:
         """Generate unique order ID."""
         self._order_counter += 1
@@ -452,40 +501,11 @@ class OrderManager(ABC):
         # Calculate fill cost in dollars
         fill_cost = (fill_price / 100.0) * order.quantity
         
-        # If we have a position_tracker (RL environment), update it
-        if self.position_tracker is not None:
-            # Convert order to position tracker format
-            # position_tracker.update_position expects: market_ticker, side, quantity, price
-            
-            if order.side == OrderSide.BUY:
-                # Buying contracts
-                self.position_tracker.update_position(
-                    market_ticker=order.ticker,
-                    side=order.contract_side.value,  # "YES" or "NO"
-                    quantity=order.quantity,  # Positive for buy
-                    price=float(fill_price)  # Price in cents
-                )
-            else:
-                # Selling contracts
-                self.position_tracker.update_position(
-                    market_ticker=order.ticker,
-                    side=order.contract_side.value,  # "YES" or "NO"
-                    quantity=-order.quantity,  # Negative for sell
-                    price=float(fill_price)  # Price in cents
-                )
-        
-        # Update cash balance (use position_tracker if available, otherwise internal)
-        # Fix #4: Use single cash source when position_tracker is available
-        if self.position_tracker is not None:
-            # Let position_tracker handle cash through update_position
-            # Cash will be updated automatically by position_tracker.update_position()
-            pass  # Cash handled by position_tracker
+        # Update cash balance
+        if order.side == OrderSide.BUY:
+            self.cash_balance -= fill_cost  # Pay for bought contracts
         else:
-            # Fall back to internal cash tracking for non-RL usage
-            if order.side == OrderSide.BUY:
-                self.cash_balance -= fill_cost  # Pay for bought contracts
-            else:
-                self.cash_balance += fill_cost  # Receive for sold contracts
+            self.cash_balance += fill_cost  # Receive for sold contracts
         
         # Update position
         ticker = order.ticker
@@ -568,41 +588,18 @@ class SimulatedOrderManager(OrderManager):
     - No network latency or API dependencies
     """
     
-    def __init__(self, initial_cash: float = 1000.0, position_tracker=None):
+    def __init__(self, initial_cash: int = 100000):
         """
         Initialize simulated order manager.
         
         Args:
-            initial_cash: Starting cash balance in cents (or dollars if < 1000)
-            position_tracker: Optional UnifiedPositionTracker to sync with (for RL environments)
+            initial_cash: Starting cash balance in cents
         """
-        # Convert cents to dollars if needed (for backward compatibility)
-        if initial_cash >= 1000:
-            # Assume it's in cents, convert to dollars
-            initial_cash_dollars = initial_cash / 100.0
-        else:
-            # Assume it's already in dollars
-            initial_cash_dollars = initial_cash
-        
-        # Set position_tracker BEFORE calling super().__init__
-        self.position_tracker = position_tracker  # For RL environment position sync
-        self._internal_cash_balance = initial_cash_dollars  # Store internally
+        # Work entirely in cents now - convert to dollars for base class compatibility
+        initial_cash_dollars = initial_cash / 100.0
         super().__init__(initial_cash_dollars)
-        logger.info(f"SimulatedOrderManager initialized for training with ${initial_cash_dollars:.2f}")
+        logger.info(f"SimulatedOrderManager initialized for training with {initial_cash}¢ (${initial_cash_dollars:.2f})")
     
-    @property
-    def cash_balance(self):
-        """Get current cash balance, using position_tracker if available."""
-        if self.position_tracker is not None:
-            # Fix #4: Use position_tracker as single cash source
-            # Convert from cents to dollars for internal consistency
-            return self.position_tracker.cash_balance / 100.0
-        return self._internal_cash_balance
-    
-    @cash_balance.setter
-    def cash_balance(self, value):
-        """Set cash balance (for backward compatibility)."""
-        self._internal_cash_balance = value
     
     async def place_order(
         self,

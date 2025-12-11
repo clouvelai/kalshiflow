@@ -13,9 +13,16 @@ from kalshiflow_rl.environments.market_agnostic_env import MarketAgnosticKalshiE
 from kalshiflow_rl.environments.session_data_loader import SessionDataLoader
 from kalshiflow_rl.data.orderbook_state import OrderbookState
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
+# Configure logging with DEBUG for order execution
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
+# Enable debug logging for key modules
+logging.getLogger("kalshiflow_rl.environments.limit_order_action_space").setLevel(logging.DEBUG)
+logging.getLogger("kalshiflow_rl.trading.order_manager").setLevel(logging.DEBUG)
+logging.getLogger("kalshiflow_rl.environments.market_agnostic_env").setLevel(logging.DEBUG)
 
 
 async def test_conversion_function():
@@ -73,21 +80,27 @@ async def test_environment_basic():
         print("No session data available for testing")
         return False
     
-    # Create session config
-    session_config = SessionConfig(
-        session_pool=available_sessions[:2],  # Use first 2 sessions
+    # Load first session and create market view
+    session_id = available_sessions[0]
+    session_data = await session_loader.load_session(session_id)
+    
+    # Get first market with sufficient data
+    market_ticker = list(session_data.markets_involved)[0]
+    market_view = session_data.create_market_view(market_ticker)
+    
+    # Create config
+    config = EnvConfig(
         max_markets=1,
         temporal_features=True,
         cash_start=10000  # $100 in cents
     )
     
-    # Initialize environment
-    env = MarketAgnosticKalshiEnv(session_config, session_loader)
+    # Initialize environment with market view
+    env = MarketAgnosticKalshiEnv(market_view, config)
     
-    # Check basic properties
-    assert env.observation_space.shape == (50,)
+    # Check basic properties (52 features based on MarketAgnosticKalshiEnv.OBSERVATION_DIM)
+    assert env.observation_space.shape == (52,)
     assert env.action_space.n == 5
-    assert len(env.valid_sessions) > 0
     
     print(f"✅ Environment initialized: {env.observation_space.shape} obs, {env.action_space.n} actions")
     
@@ -109,7 +122,7 @@ async def test_environment_episode():
         
         # Check reset output
         assert isinstance(observation, np.ndarray)
-        assert observation.shape == (50,)
+        assert observation.shape == (52,)
         assert observation.dtype == np.float32
         
         print(f"✅ Reset successful:")
@@ -126,9 +139,9 @@ async def test_environment_episode():
             observation, reward, terminated, truncated, step_info = env.step(action)
             total_reward += reward
             
-            # Check step output
+            # Check step output  
             assert isinstance(observation, np.ndarray)
-            assert observation.shape == (50,)
+            assert observation.shape == (52,)
             assert isinstance(reward, float)
             assert isinstance(terminated, bool)
             assert isinstance(truncated, bool)
@@ -150,6 +163,8 @@ async def test_environment_episode():
         
     except Exception as e:
         print(f"❌ Episode test failed: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
 

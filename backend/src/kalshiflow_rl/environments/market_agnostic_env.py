@@ -16,7 +16,7 @@ from gymnasium import spaces
 from .session_data_loader import SessionDataPoint, MarketSessionView
 from .feature_extractors import build_observation_from_session_data
 from .limit_order_action_space import LimitOrderActionSpace
-from ..trading.unified_metrics import UnifiedPositionTracker, UnifiedRewardCalculator
+from ..trading.unified_metrics import UnifiedRewardCalculator
 from ..trading.order_manager import SimulatedOrderManager
 from ..data.orderbook_state import OrderbookState
 
@@ -95,7 +95,6 @@ class MarketAgnosticKalshiEnv(gym.Env):
         self.episode_length: int = self.market_view.get_episode_length()
         
         # Core components (initialized fresh on each reset)
-        self.position_tracker: Optional[UnifiedPositionTracker] = None
         self._is_reset: bool = False  # Track if environment has been reset
         self.reward_calculator: Optional[UnifiedRewardCalculator] = None
         self.order_manager: Optional[SimulatedOrderManager] = None
@@ -141,12 +140,8 @@ class MarketAgnosticKalshiEnv(gym.Env):
         self._is_reset = True  # Mark environment as reset
         
         # Initialize fresh components for this episode
-        self.position_tracker = UnifiedPositionTracker(initial_cash=self.config.cash_start)
-        self.reward_calculator = UnifiedRewardCalculator()
-        # Pass position_tracker to order_manager for syncing, and keep in cents (Fix #2)
         self.order_manager = SimulatedOrderManager(
-            initial_cash=self.config.cash_start,  # Now in cents (Fix #2: removed /100.0)
-            position_tracker=self.position_tracker  # Fix #1: Pass position tracker for sync
+            initial_cash=self.config.cash_start  # Now in cents
         )
         self.action_space_handler = LimitOrderActionSpace(
             order_manager=self.order_manager,
@@ -186,7 +181,7 @@ class MarketAgnosticKalshiEnv(gym.Env):
             raise ValueError("Environment not properly reset")
         
         # Get current portfolio value before action
-        prev_portfolio_value = self.position_tracker.get_total_portfolio_value(
+        prev_portfolio_value = self.order_manager.get_portfolio_value_cents(
             self._get_current_market_prices()
         )
         
@@ -240,12 +235,11 @@ class MarketAgnosticKalshiEnv(gym.Env):
             observation = self._build_observation()
             
             # Calculate reward using portfolio value change
-            new_portfolio_value = self.position_tracker.get_total_portfolio_value(
+            new_portfolio_value = self.order_manager.get_portfolio_value_cents(
                 self._get_current_market_prices()
             )
-            reward = self.reward_calculator.calculate_reward(
-                prev_portfolio_value, new_portfolio_value
-            )
+            # Simple reward: portfolio value change in cents
+            reward = float(new_portfolio_value - prev_portfolio_value)
             
             # Check termination conditions
             terminated = (
@@ -255,11 +249,14 @@ class MarketAgnosticKalshiEnv(gym.Env):
         
         truncated = False  # No truncation conditions for now
         
+        position_info = self.order_manager.get_position_info()
+        current_position = position_info.get(self.current_market, {}).get('position', 0)
+        
         info = {
             "step": self.current_step,
-            "portfolio_value": self.position_tracker.get_total_portfolio_value(self._get_current_market_prices()),
-            "cash_balance": self.position_tracker.cash_balance,
-            "position": getattr(self.position_tracker.positions.get(self.current_market, None), 'position', 0),
+            "portfolio_value": self.order_manager.get_portfolio_value_cents(self._get_current_market_prices()),
+            "cash_balance": self.order_manager.get_cash_balance_cents(),
+            "position": current_position,
             "market_ticker": self.current_market,
             "session_id": self.market_view.session_id,
             "episode_progress": self.current_step / self.episode_length if self.episode_length > 0 else 0.0
@@ -306,14 +303,12 @@ class MarketAgnosticKalshiEnv(gym.Env):
         current_prices = self._get_current_market_prices()
         
         # Extract position data for portfolio features
-        # Position data should map ticker to position info dict
-        position_data = {}
-        if self.current_market in self.position_tracker.positions:
-            position_data[self.current_market] = self.position_tracker.positions[self.current_market]
+        # Get position data from OrderManager in UnifiedPositionTracker format
+        position_data = self.order_manager.get_position_info()
         
         # Get portfolio value and cash balance
-        portfolio_value = self.position_tracker.get_total_portfolio_value(current_prices)
-        cash_balance = self.position_tracker.cash_balance
+        portfolio_value = self.order_manager.get_portfolio_value_cents(current_prices)
+        cash_balance = self.order_manager.get_cash_balance_cents()
         
         # Build observation using shared feature extractor
         observation = build_observation_from_session_data(
@@ -372,7 +367,6 @@ class MarketAgnosticKalshiEnv(gym.Env):
     
     def close(self) -> None:
         """Clean up resources."""
-        self.position_tracker = None
         self.reward_calculator = None
         self.order_manager = None
         self.action_space_handler = None

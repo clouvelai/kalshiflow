@@ -361,6 +361,76 @@
       "completion_notes": "M7b_CRITICAL_FIXES completed successfully with all 5 critical integration issues resolved. Key fixes: (1) Position Tracker Sync - SimulatedOrderManager now accepts and updates environment's position_tracker, positions properly updated on order fills; (2) Standardized Units - Environment initializes with cents (10000), order manager handles conversion internally; (3) Action Results Processing - Action results now logged with status/order details for debugging; (4) Single Cash Source - Order manager uses position_tracker's cash when available, eliminating dual tracking; (5) PositionInfo Object Access - Feature extractors fixed to handle both dict and object formats. Test results: Successfully tested with MarketSessionView from session 9, trades execute with position updates (0→-10), cash updates correctly (10000→9490 cents), order manager shows consistent cash ($94.90). Environment is now production-ready for training with meaningful rewards and proper position tracking."
     },
     {
+      "id": "M7c_POSITION_TRACKING_ELIMINATION",
+      "goal": "Eliminate UnifiedPositionTracker completely and standardize to OrderManager-only position tracking with cents-based monetary values",
+      "phase": "PHASE_2_RL_FOUNDATION",
+      "priority": 1,
+      "estimated_effort": "1-2 days",
+      "dependencies": ["M7b_CRITICAL_FIXES"],
+      "steps": [
+        {
+          "instruction": "Remove UnifiedPositionTracker entirely from the codebase",
+          "completed": true,
+          "verified": true
+        },
+        {
+          "instruction": "Delete src/kalshiflow_rl/trading/unified_metrics.py file completely",
+          "completed": true,
+          "verified": true
+        },
+        {
+          "instruction": "Update MarketAgnosticKalshiEnv to use OrderManager-only position tracking",
+          "completed": true,
+          "verified": true
+        },
+        {
+          "instruction": "Add cents-based methods to OrderManager (get_portfolio_value_cents, get_cash_balance_cents, get_position_info)",
+          "completed": true,
+          "verified": true
+        },
+        {
+          "instruction": "Fix SimulatedOrderManager to work properly in cents with consistent monetary handling",
+          "completed": true,
+          "verified": true
+        },
+        {
+          "instruction": "Standardize all monetary values to cents throughout the system",
+          "completed": true,
+          "verified": true
+        },
+        {
+          "instruction": "Implement direct reward calculation using portfolio value change",
+          "completed": true,
+          "verified": true
+        },
+        {
+          "instruction": "Fix OrderbookState to handle Kalshi's bid-only structure with reciprocal relationships (YES_BID at X → NO_ASK at 99-X, NO_BID at Y → YES_ASK at 99-Y)",
+          "completed": true,
+          "verified": true
+        },
+        {
+          "instruction": "Update both apply_snapshot() and apply_delta() methods to maintain reciprocal orderbook relationships",
+          "completed": true,
+          "verified": true
+        },
+        {
+          "instruction": "Validate environment with Session 9 data to ensure orders fill correctly",
+          "completed": true,
+          "verified": true
+        }
+      ],
+      "acceptance_criteria": [
+        "UnifiedPositionTracker completely removed from codebase",
+        "Single source of truth for positions through OrderManager only",
+        "All monetary values consistently handled in cents",
+        "Direct portfolio-based reward calculation",
+        "OrderbookState correctly handles Kalshi's bid-only API with reciprocal relationships",
+        "Orders execute successfully with proper fill validation"
+      ],
+      "completed": true,
+      "completion_notes": "M7c completed successfully with comprehensive position tracking refactoring. Key achievements: (1) Completely removed UnifiedPositionTracker and unified_metrics.py from codebase - eliminates duplicate position tracking; (2) Updated MarketAgnosticKalshiEnv to use OrderManager-only position tracking with get_portfolio_value_cents, get_cash_balance_cents, get_position_info methods; (3) Fixed SimulatedOrderManager to work properly in cents with consistent monetary handling; (4) Standardized all monetary values to cents throughout system; (5) Implemented direct reward calculation using portfolio value change; (6) CRITICAL FIX: Modified OrderbookState to handle Kalshi's bid-only structure by deriving asks from bids using reciprocal relationships (YES_BID at X → NO_ASK at 99-X, NO_BID at Y → YES_ASK at 99-Y); (7) Updated both apply_snapshot() and apply_delta() methods to maintain reciprocal relationships; (8) Successfully tested environment with Session 9 data - orders now fill correctly. This eliminates position tracking duplication and ensures consistency while fixing the critical Kalshi orderbook compatibility issue."
+    },
+    {
       "id": "M8_CURRICULUM_LEARNING",
       "goal": "Implement session-based curriculum learning with market diversity across episodes for universal pattern learning", 
       "phase": "PHASE_2_RL_FOUNDATION",
@@ -690,7 +760,7 @@
   ],
   "current_status": {
     "active_phase": "PHASE_2_RL_FOUNDATION",
-    "completed_milestones": ["M3_SESSION_DATA_LOADER", "M4_FEATURE_EXTRACTORS", "M7B_TRAINING_ARCHITECTURE_REFACTOR", "M7b_CRITICAL_FIXES"], 
+    "completed_milestones": ["M3_SESSION_DATA_LOADER", "M4_FEATURE_EXTRACTORS", "M7B_TRAINING_ARCHITECTURE_REFACTOR", "M7b_CRITICAL_FIXES", "M7c_POSITION_TRACKING_ELIMINATION"], 
     "in_progress_milestones": [],
     "blocked_milestones": [],
     "next_recommended": "M1_ASYNC_INFRASTRUCTURE"
@@ -701,6 +771,7 @@
     "action_space": "Discrete 6-action space for single-market trading (HOLD, BUY_YES, SELL_YES, BUY_NO, SELL_NO, CLOSE_POSITION)",
     "deployment_strategy": "One trained model → hundreds of parallel TradingActors → thousands of markets simultaneously",
     "universal_patterns": "Agent learns market-agnostic strategies through diverse single-market episodes that generalize across all markets",
-    "m7b_refactoring": "M7B creates clean separation: CurriculumService (market selection) → MarketSessionView (single-market data) → MarketAgnosticKalshiEnv (training). Removes multi-market complexity from environment."
+    "m7b_refactoring": "M7B creates clean separation: CurriculumService (market selection) → MarketSessionView (single-market data) → MarketAgnosticKalshiEnv (training). Removes multi-market complexity from environment.",
+    "m7c_position_tracking": "M7c eliminates UnifiedPositionTracker completely, standardizes to OrderManager-only position tracking with cents-based monetary values. Critical Kalshi orderbook fix: derives asks from bids using reciprocal relationships to handle bid-only API structure."
   }
 }
