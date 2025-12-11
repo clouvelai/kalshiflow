@@ -97,3 +97,7 @@ test-results/
 
 # keys
 *.pem
+
+# RL Training artifacts
+backend/src/kalshiflow_rl/trained_models/
+models/
