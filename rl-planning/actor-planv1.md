@@ -408,3 +408,273 @@ def test_live_observation_matches_training():
     assert training_obs.shape == live_obs.shape == (52,)
     # Feature-by-feature validation for temporal features especially
 ```
+
+---
+
+## 🔧 Unified Trading Client & Environment Tracking
+
+### Problem Statement
+
+Currently, `KalshiDemoTradingClient` is hardcoded for demo/paper trading only:
+
+```python
+# Current: demo_client.py
+class KalshiDemoTradingClient:
+    def __init__(self, mode: str = "paper"):
+        if mode != "paper":
+            raise ValueError(...)  # Forces paper-only
+        
+        # Hardcoded demo credentials
+        self.api_key_id = config.KALSHI_PAPER_TRADING_API_KEY_ID
+        self.rest_base_url = config.KALSHI_PAPER_TRADING_API_URL  # demo-api.kalshi.co
+```
+
+This prevents using the same client for production trading without code changes.
+
+### Solution: Unified `KalshiTradingClient`
+
+Refactor to a single `KalshiTradingClient` that selects endpoints based on environment config:
+
+```python
+# Proposed: trading_client.py (replaces demo_client.py)
+
+class KalshiTradingClient:
+    """
+    Unified Kalshi trading client for both demo and production environments.
+    
+    Environment selection is controlled by:
+    1. KALSHI_TRADING_ENVIRONMENT env var ("demo" | "production")
+    2. Or explicit constructor parameter
+    
+    Credentials loaded from:
+    - Demo: KALSHI_PAPER_TRADING_API_KEY_ID, KALSHI_PAPER_TRADING_PRIVATE_KEY_CONTENT
+    - Prod: KALSHI_TRADING_API_KEY_ID, KALSHI_TRADING_PRIVATE_KEY_CONTENT
+    """
+    
+    # Environment-specific endpoints
+    ENDPOINTS = {
+        "demo": {
+            "rest_url": "https://demo-api.kalshi.co/trade-api/v2",
+            "ws_url": "wss://demo-api.kalshi.co/trade-api/ws/v2"
+        },
+        "production": {
+            "rest_url": "https://trading-api.kalshi.com/trade-api/v2",
+            "ws_url": "wss://trading-api.kalshi.com/trade-api/ws/v2"
+        }
+    }
+    
+    def __init__(self, environment: str = None):
+        """
+        Initialize trading client.
+        
+        Args:
+            environment: "demo" or "production" (defaults to KALSHI_TRADING_ENVIRONMENT)
+        """
+        self.environment = environment or os.getenv("KALSHI_TRADING_ENVIRONMENT", "demo")
+        
+        if self.environment not in self.ENDPOINTS:
+            raise ValueError(f"Invalid environment: {self.environment}. Must be 'demo' or 'production'")
+        
+        # Select credentials based on environment
+        if self.environment == "demo":
+            self.api_key_id = config.KALSHI_PAPER_TRADING_API_KEY_ID
+            self.private_key_content = config.KALSHI_PAPER_TRADING_PRIVATE_KEY_CONTENT
+        else:
+            self.api_key_id = config.KALSHI_TRADING_API_KEY_ID
+            self.private_key_content = config.KALSHI_TRADING_PRIVATE_KEY_CONTENT
+        
+        # Set endpoints
+        self.rest_base_url = self.ENDPOINTS[self.environment]["rest_url"]
+        self.ws_url = self.ENDPOINTS[self.environment]["ws_url"]
+        
+        # ... rest of initialization
+        
+        logger.info(f"KalshiTradingClient initialized for {self.environment} environment")
+```
+
+### Config Changes Required
+
+Add to `config.py`:
+
+```python
+# Trading Environment Selection
+self.KALSHI_TRADING_ENVIRONMENT: str = os.getenv("KALSHI_TRADING_ENVIRONMENT", "demo")
+
+# Production Trading Credentials (separate from paper trading)
+self.KALSHI_TRADING_API_KEY_ID: Optional[str] = os.getenv("KALSHI_TRADING_API_KEY_ID")
+self.KALSHI_TRADING_PRIVATE_KEY_CONTENT: Optional[str] = os.getenv("KALSHI_TRADING_PRIVATE_KEY_CONTENT")
+```
+
+### Environment Files
+
+**.env.demo** (paper trading):
+```bash
+KALSHI_TRADING_ENVIRONMENT=demo
+KALSHI_PAPER_TRADING_API_KEY_ID=your_demo_key
+KALSHI_PAPER_TRADING_PRIVATE_KEY_CONTENT=your_demo_private_key
+```
+
+**.env.production** (real trading):
+```bash
+KALSHI_TRADING_ENVIRONMENT=production
+KALSHI_TRADING_API_KEY_ID=your_production_key
+KALSHI_TRADING_PRIVATE_KEY_CONTENT=your_production_private_key
+```
+
+### Safety Guards
+
+```python
+class KalshiTradingClient:
+    def __init__(self, environment: str = None):
+        # ...
+        
+        # SAFETY: Require explicit confirmation for production
+        if self.environment == "production":
+            if not os.getenv("KALSHI_PRODUCTION_CONFIRMED", "").lower() == "true":
+                raise ValueError(
+                    "Production trading requires KALSHI_PRODUCTION_CONFIRMED=true. "
+                    "This is a safety check to prevent accidental production trades."
+                )
+            logger.warning("⚠️ PRODUCTION TRADING ENABLED - Real money at risk!")
+```
+
+---
+
+## 📊 Environment Tracking for Orderbook Sessions
+
+### Problem Statement
+
+Currently, `rl_orderbook_sessions` table doesn't track which Kalshi environment the data was collected from. This matters because:
+
+1. Demo and production orderbooks may have different liquidity/spread characteristics
+2. Training on demo data vs production data could affect model performance
+3. We need to know data provenance for debugging and analysis
+
+### Current Session Schema
+
+```sql
+CREATE TABLE rl_orderbook_sessions (
+    session_id BIGSERIAL PRIMARY KEY,
+    market_tickers TEXT[] NOT NULL,
+    started_at TIMESTAMPTZ NOT NULL,
+    ended_at TIMESTAMPTZ,
+    status VARCHAR(20) NOT NULL,
+    websocket_url TEXT,  -- Currently stores the URL but not parsed
+    connection_metadata JSONB,
+    -- ...
+);
+```
+
+### Solution: Add Environment Column
+
+**Schema Migration:**
+
+```sql
+-- Add environment column to existing sessions table
+ALTER TABLE rl_orderbook_sessions 
+    ADD COLUMN IF NOT EXISTS environment VARCHAR(20) DEFAULT 'demo';
+
+-- Add constraint for valid environments
+ALTER TABLE rl_orderbook_sessions 
+    ADD CONSTRAINT chk_sessions_environment 
+    CHECK (environment IN ('demo', 'production', 'unknown'));
+
+-- Backfill existing sessions based on websocket_url
+UPDATE rl_orderbook_sessions 
+SET environment = CASE 
+    WHEN websocket_url LIKE '%demo-api%' THEN 'demo'
+    WHEN websocket_url LIKE '%trading-api.kalshi.com%' THEN 'production'
+    ELSE 'unknown'
+END
+WHERE environment IS NULL OR environment = 'demo';
+
+-- Add index for environment filtering
+CREATE INDEX IF NOT EXISTS idx_sessions_environment 
+    ON rl_orderbook_sessions(environment);
+```
+
+**Database Code Update (`database.py`):**
+
+```python
+async def create_session(
+    self, 
+    market_tickers: List[str], 
+    websocket_url: str = None,
+    environment: str = "demo"  # NEW PARAMETER
+) -> int:
+    """Create a new orderbook session and return its ID."""
+    async with self.get_connection() as conn:
+        session_id = await conn.fetchval('''
+            INSERT INTO rl_orderbook_sessions (
+                market_tickers, websocket_url, environment, status, started_at
+            ) VALUES ($1, $2, $3, 'active', CURRENT_TIMESTAMP)
+            RETURNING session_id
+        ''', market_tickers, websocket_url, environment)
+        
+        logger.info(f"Created orderbook session {session_id} ({environment}) for {len(market_tickers)} markets")
+        return session_id
+```
+
+**OrderbookClient Update:**
+
+```python
+class OrderbookClient:
+    def __init__(self, market_tickers: Optional[List[str]] = None):
+        # ...
+        self.ws_url = config.KALSHI_WS_URL
+        
+        # Determine environment from URL
+        self.environment = self._detect_environment(self.ws_url)
+    
+    def _detect_environment(self, ws_url: str) -> str:
+        """Detect environment from WebSocket URL."""
+        if "demo-api" in ws_url:
+            return "demo"
+        elif "trading-api.kalshi.com" in ws_url or "api.elections.kalshi.com" in ws_url:
+            return "production"
+        else:
+            return "unknown"
+    
+    async def _connect_and_subscribe(self) -> None:
+        # ...
+        
+        # Create new session with environment
+        self._session_id = await rl_db.create_session(
+            market_tickers=self.market_tickers,
+            websocket_url=self.ws_url,
+            environment=self.environment  # Pass environment
+        )
+```
+
+### Querying by Environment
+
+```python
+# Get only production sessions for analysis
+async def get_production_sessions() -> List[Dict]:
+    async with rl_db.get_connection() as conn:
+        rows = await conn.fetch("""
+            SELECT * FROM rl_orderbook_sessions 
+            WHERE environment = 'production' AND status = 'closed'
+            ORDER BY started_at DESC
+        """)
+        return [dict(row) for row in rows]
+
+# Filter training data by environment
+async def load_session(self, session_id: int) -> Optional[SessionData]:
+    session_info = await self._db.get_session(session_id)
+    
+    # Log environment for debugging
+    logger.info(f"Loading session {session_id} from {session_info.get('environment', 'unknown')} environment")
+    # ...
+```
+
+### Implementation Order
+
+1. [ ] Run schema migration to add `environment` column
+2. [ ] Backfill existing sessions based on `websocket_url`
+3. [ ] Update `create_session()` to accept environment parameter
+4. [ ] Update `OrderbookClient` to detect and pass environment
+5. [ ] Update session listing scripts to show environment
+6. [ ] Refactor `KalshiDemoTradingClient` → `KalshiTradingClient`
+7. [ ] Add safety guards for production trading
+8. [ ] Update `.env.example` with new config variables
