@@ -189,7 +189,8 @@ class TestLimitOrderIntegration:
         """Test that conflicting orders are cancelled when switching sides."""
         action_space = LimitOrderActionSpace(
             order_manager=simulated_order_manager,
-            contract_size=10
+            contract_size=10,
+            pricing_strategy="passive"  # Use passive to avoid immediate fills
         )
         
         # First place a BUY YES order
@@ -201,7 +202,7 @@ class TestLimitOrderIntegration:
         assert result1.was_successful()
         assert result1.order_placed
         
-        # Verify we have one open order
+        # Verify we have one open order (passive order shouldn't fill immediately)
         open_orders = simulated_order_manager.get_open_orders("TEST-123")
         assert len(open_orders) == 1
         assert open_orders[0].side == OrderSide.BUY
@@ -229,7 +230,8 @@ class TestLimitOrderIntegration:
         """Test all five limit order actions work correctly."""
         action_space = LimitOrderActionSpace(
             order_manager=simulated_order_manager,
-            contract_size=10
+            contract_size=10,
+            pricing_strategy="passive"  # Use passive to avoid immediate fills
         )
         
         actions_to_test = [
@@ -261,7 +263,7 @@ class TestLimitOrderIntegration:
                 open_orders = simulated_order_manager.get_open_orders("TEST-123")
                 assert len(open_orders) == 0
             else:
-                # Trading actions should place orders
+                # Trading actions should place orders (passive should remain open)
                 assert result.order_placed
                 assert result.order_id is not None
                 
@@ -310,7 +312,8 @@ class TestLimitOrderIntegration:
         """Test different pricing strategies produce different prices."""
         prices_by_strategy = {}
         
-        for strategy in ["aggressive", "passive", "mid"]:
+        # Test passive and mid strategies (aggressive will fill immediately)
+        for strategy in ["passive", "mid"]:
             action_space = LimitOrderActionSpace(
                 order_manager=simulated_order_manager,
                 contract_size=10,
@@ -332,13 +335,59 @@ class TestLimitOrderIntegration:
             # Get the order price
             open_orders = simulated_order_manager.get_open_orders("TEST-123")
             assert len(open_orders) == 1
-            prices_by_strategy[strategy] = open_orders[0].limit_price
+            
+            order = open_orders[0]
+            prices_by_strategy[strategy] = order.limit_price
+            
+            # Verify basic order properties
+            assert order.side == OrderSide.BUY
+            assert order.contract_side == ContractSide.YES
+            assert order.quantity == 10
+            
+        # Test aggressive strategy (should fill immediately)
+        action_space_aggressive = LimitOrderActionSpace(
+            order_manager=simulated_order_manager,
+            contract_size=10,
+            pricing_strategy="aggressive"
+        )
         
-        # Verify we got different prices (at minimum, aggressive should be highest)
-        # Aggressive should be willing to pay more (hit the ask)
-        # Passive should bid lower 
-        # Mid should be in between
-        assert len(set(prices_by_strategy.values())) > 1, "Different strategies should produce different prices"
+        await simulated_order_manager.cancel_all_orders("TEST-123")
+        
+        # Check positions before aggressive order
+        positions = simulated_order_manager.get_positions()
+        initial_position = positions.get("TEST-123")
+        initial_contracts = initial_position.contracts if initial_position else 0
+        
+        result_aggressive = await action_space_aggressive.execute_action(
+            action=LimitOrderActions.BUY_YES_LIMIT,
+            ticker="TEST-123",
+            orderbook=mock_orderbook_state
+        )
+        
+        assert result_aggressive.was_successful()
+        
+        # Aggressive order should fill immediately (no open orders)
+        open_orders = simulated_order_manager.get_open_orders("TEST-123")
+        assert len(open_orders) == 0  # Should be filled immediately
+        
+        # Position should have changed
+        final_positions = simulated_order_manager.get_positions()
+        final_position = final_positions.get("TEST-123")
+        final_contracts = final_position.contracts if final_position else 0
+        assert final_contracts == initial_contracts + 10  # 10 YES contracts added
+        
+        # Verify strategies produce different prices
+        assert len(set(prices_by_strategy.values())) > 1, "Strategies should produce different prices"
+        
+        # Verify price relationships
+        best_bid = 64  # From mock setup
+        best_ask = 66  # From mock setup
+        
+        # Passive should be at bid for buy orders
+        assert prices_by_strategy["passive"] == best_bid
+        
+        # Mid should be between bid and ask
+        assert best_bid <= prices_by_strategy["mid"] <= best_ask
 
     @patch('src.kalshiflow_rl.trading.demo_client.KalshiDemoTradingClient')
     async def test_kalshi_order_manager_integration(
@@ -528,7 +577,8 @@ class TestPerformanceAndReliability:
         """Test that order operations work correctly under concurrent execution."""
         action_space = LimitOrderActionSpace(
             order_manager=simulated_order_manager,
-            contract_size=10
+            contract_size=10,
+            pricing_strategy="passive"  # Use passive to avoid immediate fills
         )
         
         # Create multiple concurrent operations
@@ -549,7 +599,7 @@ class TestPerformanceAndReliability:
             assert result.was_successful(), f"Task {i} failed"
             assert result.order_placed
         
-        # Verify we have the expected number of orders
+        # Verify we have the expected number of orders (passive orders should remain open)
         total_orders = sum(
             len(simulated_order_manager.get_open_orders(f"TEST-{i}"))
             for i in range(5)
