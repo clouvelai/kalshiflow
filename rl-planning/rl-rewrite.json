@@ -206,6 +206,23 @@
         },
         "next_steps": "Environment is production-ready for M8 curriculum learning and M9 SB3 integration"
       },
+      "M7b_CRITICAL_FIXES": {
+        "status": "IN_PROGRESS",
+        "discovery_date": "2025-12-11",
+        "critical_issues_confirmed": {
+          "position_sync_broken": "SimulatedOrderManager and UnifiedPositionTracker operate independently - trades execute but positions never update",
+          "units_mismatch": "Mixed cents/dollars causing silent calculation errors (position_tracker: 10000 cents, order_manager: 100.0 dollars)",
+          "action_results_discarded": "Execution results captured but ignored, no feedback or debugging info",
+          "dual_cash_tracking": "Two separate cash balance systems that diverge immediately"
+        },
+        "fix_strategy": {
+          "approach": "Surgical fixes only - no architectural changes",
+          "priority_order": "1) Position sync, 2) Units to cents, 3) Process results, 4) Single cash source",
+          "estimated_lines_changed": "~50-100 lines total across 2 files",
+          "backward_compatibility": "All MarketSessionView functionality preserved"
+        },
+        "expected_outcome": "Training will work with meaningful rewards, proper position updates, and agent feedback loop"
+      },
       "M5_UNIFIED_METRICS": {
         "completion_date": "2025-12-10",
         "lines_implemented": 380,
@@ -910,12 +927,60 @@
       "completed": true
     },
     {
+      "id": "M7b_CRITICAL_FIXES",
+      "goal": "Fix critical training issues in MarketAgnosticKalshiEnv to enable actual learning",
+      "phase": "CORE_IMPLEMENTATION",
+      "priority": 1,
+      "estimated_effort": "0.5 days",
+      "dependencies": ["M7_MARKET_AGNOSTIC_ENV"],
+      "critical_issues_identified": {
+        "position_tracker_never_syncs": "SimulatedOrderManager executes trades but never updates position_tracker, causing zero rewards",
+        "cents_dollars_confusion": "Mixed units - position_tracker uses cents (10000), order_manager uses dollars (100.0)",
+        "action_results_ignored": "Order execution results captured but thrown away",
+        "dual_cash_systems": "position_tracker.cash_balance and order_manager.cash_balance never synchronize"
+      },
+      "steps": [
+        {
+          "instruction": "Fix position tracker sync - Pass position_tracker to SimulatedOrderManager and update _process_fill() to call position_tracker.update_position()",
+          "file_paths": ["backend/src/kalshiflow_rl/environments/market_agnostic_env.py", "backend/src/kalshiflow_rl/trading/order_manager.py"],
+          "completed": false,
+          "verified": false
+        },
+        {
+          "instruction": "Standardize to cents - Remove /100.0 conversion at line 146, keep all monetary values in cents",
+          "file_paths": ["backend/src/kalshiflow_rl/environments/market_agnostic_env.py"],
+          "completed": false,
+          "verified": false
+        },
+        {
+          "instruction": "Process action results - Use action_result return value for logging and debugging",
+          "file_paths": ["backend/src/kalshiflow_rl/environments/market_agnostic_env.py"],
+          "completed": false,
+          "verified": false
+        },
+        {
+          "instruction": "Eliminate dual cash systems - Modify SimulatedOrderManager to use environment's position_tracker for cash",
+          "file_paths": ["backend/src/kalshiflow_rl/trading/order_manager.py"],
+          "completed": false,
+          "verified": false
+        }
+      ],
+      "acceptance_criteria": [
+        "Position tracker properly synced with order manager - non-zero rewards achieved",
+        "Consistent monetary units (cents) throughout system",
+        "Action results properly processed and logged",
+        "Single cash balance source eliminates divergence",
+        "Environment can train with MarketSessionView data and agent receives meaningful feedback"
+      ],
+      "completed": false
+    },
+    {
       "id": "M8_CURRICULUM_LEARNING",
       "goal": "Implement session-based curriculum learning for progressive training complexity",
       "phase": "CORE_IMPLEMENTATION",
       "priority": 3,
       "estimated_effort": "1.5 days", 
-      "dependencies": ["M7_MARKET_AGNOSTIC_ENV"],
+      "dependencies": ["M7b_CRITICAL_FIXES"],
       "steps": [
         {
           "instruction": "Implement SessionBasedCurriculum class with complexity categorization",

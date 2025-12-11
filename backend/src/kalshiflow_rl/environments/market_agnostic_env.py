@@ -143,7 +143,11 @@ class MarketAgnosticKalshiEnv(gym.Env):
         # Initialize fresh components for this episode
         self.position_tracker = UnifiedPositionTracker(initial_cash=self.config.cash_start)
         self.reward_calculator = UnifiedRewardCalculator()
-        self.order_manager = SimulatedOrderManager(initial_cash=self.config.cash_start / 100.0)  # Convert cents to dollars
+        # Pass position_tracker to order_manager for syncing, and keep in cents (Fix #2)
+        self.order_manager = SimulatedOrderManager(
+            initial_cash=self.config.cash_start,  # Now in cents (Fix #2: removed /100.0)
+            position_tracker=self.position_tracker  # Fix #1: Pass position tracker for sync
+        )
         self.action_space_handler = LimitOrderActionSpace(
             order_manager=self.order_manager,
             contract_size=10  # Fixed contract size
@@ -206,8 +210,23 @@ class MarketAgnosticKalshiEnv(gym.Env):
                     action_result = self.action_space_handler.execute_action_sync(
                         action, self.current_market, orderbook
                     )
+                    # Fix #3: Process action results for better debugging and feedback
                     if action_result is None:
                         logger.debug(f"Invalid action {action} at step {self.current_step}")
+                    elif hasattr(action_result, 'status'):
+                        if action_result.status == 'success':
+                            if hasattr(action_result, 'order') and action_result.order:
+                                order = action_result.order
+                                logger.debug(
+                                    f"Action {action} executed: {order.side.value if hasattr(order, 'side') else 'N/A'} "
+                                    f"{order.quantity if hasattr(order, 'quantity') else 0} contracts"
+                                )
+                        elif action_result.status == 'hold':
+                            logger.debug(f"Action {action}: HOLD - no order placed")
+                        else:
+                            logger.debug(f"Action {action} status: {action_result.status}")
+                    else:
+                        logger.debug(f"Action {action} result received")
                 except Exception as e:
                     logger.warning(f"Action execution failed: {e}")
                     
@@ -240,7 +259,7 @@ class MarketAgnosticKalshiEnv(gym.Env):
             "step": self.current_step,
             "portfolio_value": self.position_tracker.get_total_portfolio_value(self._get_current_market_prices()),
             "cash_balance": self.position_tracker.cash_balance,
-            "position": self.position_tracker.positions.get(self.current_market, {}).get('position', 0),
+            "position": getattr(self.position_tracker.positions.get(self.current_market, None), 'position', 0),
             "market_ticker": self.current_market,
             "session_id": self.market_view.session_id,
             "episode_progress": self.current_step / self.episode_length if self.episode_length > 0 else 0.0

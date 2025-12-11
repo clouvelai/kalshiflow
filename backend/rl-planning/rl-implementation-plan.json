@@ -3,7 +3,7 @@
     "title": "Kalshi Flow RL Trading Subsystem Implementation Plan",
     "version": "2.1",
     "created": "2024-12-10",
-    "last_updated": "2024-12-11",
+    "last_updated": "2025-12-11",
     "architecture": "single-market-training",
     "description": "Single-market episode training to learn universal patterns, then deploy to hundreds of markets in parallel"
   },
@@ -314,6 +314,51 @@
       ],
       "completed": true,
       "completion_notes": "M7B completed successfully with comprehensive architectural refactoring. Key achievements: (1) Created MarketSessionView class for efficient single-market data access with pre-filtered market data - eliminates runtime filtering overhead; (2) Created CurriculumService for managing market selection and training progression with clean API; (3) Refactored MarketAgnosticKalshiEnv to work exclusively with MarketSessionView - no more multi-market complexity exposure; (4) Removed multi-market temporal features (market_synchronization, market_divergence, active_markets_norm) from observation space; (5) Created comprehensive training example demonstrating curriculum flow: market selection → view creation → training. Clean separation achieved: CurriculumService (which markets) → MarketSessionView (market data) → Environment (training). Memory efficient with type-safe error handling. All 20/20 unit tests passing. Production-ready architecture."
+    },
+    {
+      "id": "M7b_CRITICAL_FIXES",
+      "goal": "Fix critical integration issues between MarketAgnosticKalshiEnv and SimulatedOrderManager",
+      "phase": "PHASE_2_RL_FOUNDATION",
+      "priority": 1,
+      "estimated_effort": "1-2 days",
+      "dependencies": ["M7B_TRAINING_ARCHITECTURE_REFACTOR"],
+      "steps": [
+        {
+          "instruction": "Fix position tracker sync: SimulatedOrderManager must accept and update environment's position_tracker",
+          "completed": true,
+          "verified": true
+        },
+        {
+          "instruction": "Standardize units to cents: Environment initializes order_manager with cents (10000), with internal conversion",
+          "completed": true,
+          "verified": true
+        },
+        {
+          "instruction": "Process action results: Log action results with status and order details for debugging",
+          "completed": true,
+          "verified": true
+        },
+        {
+          "instruction": "Single cash source: SimulatedOrderManager uses position_tracker's cash when available",
+          "completed": true,
+          "verified": true
+        },
+        {
+          "instruction": "Fix PositionInfo object access throughout feature extractors to handle dict and object formats",
+          "completed": true,
+          "verified": true
+        }
+      ],
+      "acceptance_criteria": [
+        "Position tracker properly synchronized between environment and order manager",
+        "Consistent units handling (cents) throughout the trading pipeline",
+        "Action results properly logged for debugging and validation",
+        "Single source of truth for cash balance",
+        "Feature extractors handle both dict and object position formats",
+        "Environment ready for training with meaningful rewards and position tracking"
+      ],
+      "completed": true,
+      "completion_notes": "M7b_CRITICAL_FIXES completed successfully with all 5 critical integration issues resolved. Key fixes: (1) Position Tracker Sync - SimulatedOrderManager now accepts and updates environment's position_tracker, positions properly updated on order fills; (2) Standardized Units - Environment initializes with cents (10000), order manager handles conversion internally; (3) Action Results Processing - Action results now logged with status/order details for debugging; (4) Single Cash Source - Order manager uses position_tracker's cash when available, eliminating dual tracking; (5) PositionInfo Object Access - Feature extractors fixed to handle both dict and object formats. Test results: Successfully tested with MarketSessionView from session 9, trades execute with position updates (0→-10), cash updates correctly (10000→9490 cents), order manager shows consistent cash ($94.90). Environment is now production-ready for training with meaningful rewards and proper position tracking."
     },
     {
       "id": "M8_CURRICULUM_LEARNING",
@@ -645,7 +690,7 @@
   ],
   "current_status": {
     "active_phase": "PHASE_2_RL_FOUNDATION",
-    "completed_milestones": ["M3_SESSION_DATA_LOADER", "M4_FEATURE_EXTRACTORS", "M7B_TRAINING_ARCHITECTURE_REFACTOR"], 
+    "completed_milestones": ["M3_SESSION_DATA_LOADER", "M4_FEATURE_EXTRACTORS", "M7B_TRAINING_ARCHITECTURE_REFACTOR", "M7b_CRITICAL_FIXES"], 
     "in_progress_milestones": [],
     "blocked_milestones": [],
     "next_recommended": "M1_ASYNC_INFRASTRUCTURE"

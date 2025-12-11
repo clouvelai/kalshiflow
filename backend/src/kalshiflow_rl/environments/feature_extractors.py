@@ -428,9 +428,15 @@ def extract_portfolio_features(
         unrealized_pnl = 0.0
         
         for ticker, pos_info in position_data.items():
-            position = pos_info.get('position', 0)  # +YES/-NO contracts
-            cost_basis = pos_info.get('cost_basis', 0.0)
-            realized_pnl = pos_info.get('realized_pnl', 0.0)
+            # Handle both dict and PositionInfo objects
+            if hasattr(pos_info, 'position'):  # PositionInfo object
+                position = pos_info.position
+                cost_basis = pos_info.cost_basis
+                realized_pnl = pos_info.realized_pnl
+            else:  # Dict format (backward compatibility)
+                position = pos_info.get('position', 0)
+                cost_basis = pos_info.get('cost_basis', 0.0)
+                realized_pnl = pos_info.get('realized_pnl', 0.0)
             
             if position != 0:
                 positions.append(position)
@@ -499,7 +505,12 @@ def extract_portfolio_features(
     
     # Position diversity (using Herfindahl index)
     if position_data:
-        position_sizes = [abs(pos_info.get('position', 0)) for pos_info in position_data.values()]
+        position_sizes = []
+        for pos_info in position_data.values():
+            if hasattr(pos_info, 'position'):  # PositionInfo object
+                position_sizes.append(abs(pos_info.position))
+            else:  # Dict format
+                position_sizes.append(abs(pos_info.get('position', 0)))
         total_size = sum(position_sizes)
         
         if total_size > 0:
@@ -523,7 +534,11 @@ def extract_portfolio_features(
     if position_data:
         total_position_value = 0.0
         for ticker, pos_info in position_data.items():
-            position = abs(pos_info.get('position', 0))
+            # Handle both dict and PositionInfo objects
+            if hasattr(pos_info, 'position'):  # PositionInfo object
+                position = abs(pos_info.position)
+            else:  # Dict format
+                position = abs(pos_info.get('position', 0))
             if current_prices and ticker in current_prices:
                 mid_price_probability = current_prices[ticker]
                 position_val = position * (mid_price_probability * 100.0)  # Convert back to cents
