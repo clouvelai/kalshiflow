@@ -1067,57 +1067,65 @@
     },
     {
       "id": "M8_CURRICULUM_LEARNING",
-      "goal": "Implement session-based curriculum learning for progressive training complexity",
+      "goal": "Implement market-based curriculum learning to train on all valid markets from session data using MarketSessionView approach",
       "phase": "CORE_IMPLEMENTATION",
       "priority": 3,
       "estimated_effort": "1.5 days", 
       "dependencies": ["M7c_ELIMINATE_POSITION_TRACKER_DUPLICATION"],
       "steps": [
         {
-          "instruction": "Implement SessionBasedCurriculum class with complexity categorization",
+          "instruction": "Implement SessionCurriculumManager class that loads session data and creates MarketSessionViews for all markets with valid data (snapshots + deltas)",
           "file_paths": ["backend/src/kalshiflow_rl/training/curriculum.py"],
-          "completed": false,
-          "verified": false
+          "completed": true,
+          "verified": true
         },
         {
-          "instruction": "Add session categorization by market diversity and volatility",
+          "instruction": "Add get_market_views(session_id) method that returns list of MarketTrainingView objects, one per valid market in the session",
           "file_paths": ["backend/src/kalshiflow_rl/training/curriculum.py"],
-          "completed": false,
-          "verified": false
+          "completed": true,
+          "verified": true
         },
         {
-          "instruction": "Implement select_training_session() with progressive difficulty",
+          "instruction": "Implement MarketTrainingView wrapper class that contains market_ticker, session_view, and basic metadata for training organization",
           "file_paths": ["backend/src/kalshiflow_rl/training/curriculum.py"],
-          "completed": false,
-          "verified": false
+          "completed": true,
+          "verified": true
         },
         {
-          "instruction": "Add session pool management and validation metrics",
+          "instruction": "Add run_market_episode() method that configures MarketAgnosticKalshiEnv with a specific MarketSessionView and runs full episode",
           "file_paths": ["backend/src/kalshiflow_rl/training/curriculum.py"],
-          "completed": false,
-          "verified": false
+          "completed": true,
+          "verified": true
         },
         {
-          "instruction": "Integrate curriculum with environment via set_session() calls",
+          "instruction": "Implement TrainingResult class to track simple success/fail/no-data status per market training attempt",
           "file_paths": ["backend/src/kalshiflow_rl/training/curriculum.py"],
-          "completed": false,
-          "verified": false
+          "completed": true,
+          "verified": true
         },
         {
-          "instruction": "Write tests for curriculum progression and session selection",
+          "instruction": "Add train_on_session() method that iterates through all valid markets, creates market views, and runs training episodes with result tracking",
+          "file_paths": ["backend/src/kalshiflow_rl/training/curriculum.py"],
+          "completed": true,
+          "verified": true
+        },
+        {
+          "instruction": "Write comprehensive tests validating session loading, market view creation, and training result tracking",
           "file_paths": ["backend/tests/test_rl/training/test_curriculum.py"],
-          "completed": false,
-          "verified": false
+          "completed": true,
+          "verified": true
         }
       ],
       "acceptance_criteria": [
-        "Sessions categorized by complexity (single-market → multi-market)",
-        "Progressive training from stable to volatile sessions",  
-        "Curriculum adapts based on episode number/progress",
-        "Integration with environment works smoothly",
-        "Test validates curriculum progression logic"
+        "SessionCurriculumManager can load any session and identify all markets with valid training data",
+        "MarketSessionView creation works for individual markets extracted from multi-market sessions",
+        "MarketAgnosticKalshiEnv successfully trains on MarketSessionView data",
+        "TrainingResult tracking captures success/failure status per market attempt",
+        "train_on_session() method provides complete curriculum for any given session_id",
+        "Simple 'train on all valid markets' approach without complex heuristics or difficulty progression",
+        "Integration test validates end-to-end training pipeline from session_id to training results"
       ],
-      "completed": false
+      "completed": true
     },
     {
       "id": "M9_SB3_INTEGRATION",
@@ -1172,167 +1180,6 @@
         "Integration with curriculum learning functional"
       ],
       "completed": false
-    },
-    {
-      "id": "M10_E2E_VALIDATION",
-      "goal": "Create comprehensive end-to-end validation script for the new environment",
-      "phase": "INTEGRATION_VALIDATION",
-      "priority": 1,
-      "estimated_effort": "1 day",
-      "dependencies": ["M9_SB3_INTEGRATION"],
-      "steps": [
-        {
-          "instruction": "Create validate_new_environment.py script for end-to-end testing",
-          "file_paths": ["backend/scripts/validate_new_environment.py"],
-          "completed": false,
-          "verified": false
-        },
-        {
-          "instruction": "Add session data loading validation across multiple sessions", 
-          "file_paths": ["backend/scripts/validate_new_environment.py"],
-          "completed": false,
-          "verified": false
-        },
-        {
-          "instruction": "Validate feature extraction consistency across different market types",
-          "file_paths": ["backend/scripts/validate_new_environment.py"],
-          "completed": false,
-          "verified": false
-        },
-        {
-          "instruction": "Test training/inference observation consistency",
-          "file_paths": ["backend/scripts/validate_new_environment.py"],
-          "completed": false,
-          "verified": false
-        },
-        {
-          "instruction": "Validate position tracking with various trade scenarios",
-          "file_paths": ["backend/scripts/validate_new_environment.py"],
-          "completed": false,
-          "verified": false
-        },
-        {
-          "instruction": "Add performance benchmarks (step/reset times, memory usage)",
-          "file_paths": ["backend/scripts/validate_new_environment.py"],
-          "completed": false,
-          "verified": false
-        }
-      ],
-      "acceptance_criteria": [
-        "Can run 100+ episodes without errors",
-        "Feature consistency validated across markets",
-        "Position tracking matches expected behavior",
-        "Performance meets targets (<1ms step/reset)",
-        "Memory usage within acceptable bounds (<4GB)"
-      ],
-      "completed": false
-    },
-    {
-      "id": "M11_INFERENCE_INTEGRATION",
-      "goal": "Integrate new environment with existing inference/actor pipeline",
-      "phase": "INTEGRATION_VALIDATION", 
-      "priority": 3,
-      "estimated_effort": "1.5 days",
-      "dependencies": ["M10_E2E_VALIDATION"],
-      "steps": [
-        {
-          "instruction": "Update TradingActor to use shared observation builder from feature_extractors.py",
-          "file_paths": ["backend/src/kalshiflow_rl/inference/trading_actor.py"],
-          "completed": false,
-          "verified": false
-        },
-        {
-          "instruction": "Integrate UnifiedPositionTracker with inference pipeline",
-          "file_paths": ["backend/src/kalshiflow_rl/inference/trading_actor.py"],
-          "completed": false,
-          "verified": false
-        },
-        {
-          "instruction": "Update model loading to support new environment architecture",
-          "file_paths": ["backend/src/kalshiflow_rl/inference/model_registry.py"],
-          "completed": false,
-          "verified": false
-        },
-        {
-          "instruction": "Test hot-reload protocol with new model format",
-          "file_paths": ["backend/src/kalshiflow_rl/inference/"],
-          "completed": false,
-          "verified": false
-        },
-        {
-          "instruction": "Add inference validation script using trained models",
-          "file_paths": ["backend/scripts/validate_inference.py"],
-          "completed": false,
-          "verified": false
-        },
-        {
-          "instruction": "Write inference integration tests",
-          "file_paths": ["backend/tests/test_rl/integration/test_inference_integration.py"],
-          "completed": false,
-          "verified": false
-        }
-      ],
-      "acceptance_criteria": [
-        "TradingActor uses same observation builder as environment",
-        "Position tracking synchronized between training and inference", 
-        "Model loading/saving compatible with new architecture",
-        "Hot-reload works with new model format",
-        "Inference produces valid actions in production format"
-      ],
-      "completed": false
-    },
-    {
-      "id": "M12_DOCUMENTATION_CLEANUP",
-      "goal": "Update documentation and create migration guide for the new environment",
-      "phase": "INTEGRATION_VALIDATION",
-      "priority": 4,
-      "estimated_effort": "0.5 days",
-      "dependencies": ["M11_INFERENCE_INTEGRATION"],
-      "steps": [
-        {
-          "instruction": "Update README with new environment architecture and usage examples",
-          "file_paths": ["backend/src/kalshiflow_rl/README.md"],
-          "completed": false,
-          "verified": false
-        },
-        {
-          "instruction": "Create migration guide explaining changes from old environment",
-          "file_paths": ["rl-planning/migration-guide.md"],
-          "completed": false,
-          "verified": false
-        },
-        {
-          "instruction": "Add docstrings to all major classes and functions",
-          "file_paths": [
-            "backend/src/kalshiflow_rl/environments/market_agnostic_env.py",
-            "backend/src/kalshiflow_rl/environments/session_data_loader.py",
-            "backend/src/kalshiflow_rl/environments/feature_extractors.py",
-            "backend/src/kalshiflow_rl/trading/unified_metrics.py"
-          ],
-          "completed": false,
-          "verified": false
-        },
-        {
-          "instruction": "Update training examples and scripts documentation",
-          "file_paths": ["backend/scripts/"],
-          "completed": false,
-          "verified": false
-        },
-        {
-          "instruction": "Clean up any remaining references to old environment in comments/docs",
-          "file_paths": ["backend/src/kalshiflow_rl/"],
-          "completed": false,
-          "verified": false
-        }
-      ],
-      "acceptance_criteria": [
-        "Clear documentation of new architecture and concepts",
-        "Migration guide explains key changes and benefits",
-        "All public APIs properly documented",
-        "Examples demonstrate market-agnostic training",
-        "No references to deleted old environment"
-      ],
-      "completed": false
     }
   ],
   "phase_summary": {
@@ -1353,7 +1200,7 @@
     },
     "INTEGRATION_VALIDATION": {
       "description": "Integrate with existing systems and validate production readiness",
-      "milestones": ["M9_SB3_INTEGRATION", "M10_E2E_VALIDATION", "M11_INFERENCE_INTEGRATION", "M12_DOCUMENTATION_CLEANUP"],
+      "milestones": ["M9_SB3_INTEGRATION"],
       "key_principle": "Comprehensive testing before deployment, no comparison to old code needed"
     }
   },
@@ -1385,8 +1232,7 @@
   "implementation_timeline": {
     "week_1": ["M1_SURGICAL_DELETION", "M2_FRESH_STRUCTURE", "M3_SESSION_DATA_LOADER", "M4_FEATURE_EXTRACTORS", "M4b_LIMIT_ORDER_ACTION_SPACE"],
     "week_2": ["M5_UNIFIED_METRICS", "M6_PRIMITIVE_ACTION_SPACE", "M7_MARKET_AGNOSTIC_ENV", "M7b_CRITICAL_FIXES", "M7c_ELIMINATE_POSITION_TRACKER_DUPLICATION"],
-    "week_3": ["M8_CURRICULUM_LEARNING", "M9_SB3_INTEGRATION", "M10_E2E_VALIDATION"],
-    "week_4": ["M11_INFERENCE_INTEGRATION", "M12_DOCUMENTATION_CLEANUP", "Final validation and deployment"]
+    "week_3": ["M8_CURRICULUM_LEARNING", "M9_SB3_INTEGRATION"]
   },
   "risk_mitigation": {
     "rollback_plan": "All code in git, can revert with `git checkout main -- backend/src/kalshiflow_rl/`",

@@ -278,8 +278,6 @@ class TestMarketAgnosticEnv:
         assert env.episode_length == 10  # From mock data
         
         # Check components not initialized until reset
-        assert env.position_tracker is None
-        assert env.reward_calculator is None
         assert env.order_manager is None
         assert env.action_space_handler is None
     
@@ -321,14 +319,11 @@ class TestMarketAgnosticEnv:
         assert env.observation_history == []
         
         # Check components are initialized
-        assert env.position_tracker is not None
-        assert env.reward_calculator is not None
         assert env.order_manager is not None
         assert env.action_space_handler is not None
         
-        # Check initial cash is set correctly
-        assert env.position_tracker.cash_balance == 10000
-        assert env.order_manager.cash_balance == 100.0  # OrderManager uses dollars
+        # Check initial cash is set correctly (OrderManager uses cents)
+        assert env.order_manager.get_cash_balance_cents() == 10000
     
     def test_environment_step_basic(self, env):
         """Test basic step functionality."""
@@ -399,7 +394,7 @@ class TestMarketAgnosticEnv:
     def test_cash_changes_with_trading_actions(self, env):
         """Test that trading actions are processed and cash can change."""
         env.reset()
-        initial_cash = env.position_tracker.cash_balance
+        initial_cash = env.order_manager.get_cash_balance_cents()
         
         # Execute several trading actions
         trading_actions = [1, 2, 3, 4]  # BUY_YES, SELL_YES, BUY_NO, SELL_NO
@@ -630,15 +625,13 @@ class TestMarketAgnosticEnv:
         # Should respect custom configuration
         assert env.config == custom_config
         assert info['initial_cash'] == 50000
-        assert env.position_tracker.cash_balance == 50000
+        assert env.order_manager.get_cash_balance_cents() == 50000
     
     def test_close_cleanup(self, env):
         """Test environment cleanup on close."""
         env.reset()
         
         # Verify components are initialized
-        assert env.position_tracker is not None
-        assert env.reward_calculator is not None
         assert env.order_manager is not None
         assert env.action_space_handler is not None
         
@@ -646,8 +639,6 @@ class TestMarketAgnosticEnv:
         env.close()
         
         # Components should be cleaned up
-        assert env.position_tracker is None
-        assert env.reward_calculator is None
         assert env.order_manager is None
         assert env.action_space_handler is None
         assert env.observation_history == []
