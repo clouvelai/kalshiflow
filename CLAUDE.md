@@ -435,10 +435,10 @@ cd frontend && railway up --service kalshi-flowboard
 - IMPORTANT: Only deploy to production when explicitly requested by the user. Never deploy autonomously.
 
 ## Checking Orderbook Session Data
-- use @backend/scripts/fetch_session_data.py to lookup session collection status / metadata
+- use @backend/src/kalshiflow_rl/scripts/fetch_session_data.py to lookup session collection status / metadata
 -   You can now use:
   # Analyze any session
-  uv run python scripts/fetch_session_data.py --analyze 9
+  uv run python backend/src/kalshiflow_rl/scripts/fetch_session_data.py --analyze 9
 
   # Or analyze the most recent session
-  uv run python scripts/fetch_session_data.py --analyze
+  uv run pythonbackend/src/kalshiflow_rl/scripts/fetch_session_data.py --analyze
