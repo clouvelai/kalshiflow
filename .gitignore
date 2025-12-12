@@ -97,3 +97,7 @@ test-results/
 
 # keys
 *.pem
+
+# RL Training artifacts
+backend/trained_models/
+models/
