@@ -418,11 +418,12 @@ class HardcodedSelector(ActionSelector):
 
 ## Scalability & Performance Targets
 
-### MVP Target: 1k Markets
-- **Current Load**: 2-3 orderbook events/sec across 2k markets  
+### MVP Target: 10 Markets (Starting with 1)
+- **Initial Scale**: 1 market for testing, then 10 markets for multi-market validation
 - **Processing Time**: ~9ms per market update (obs + predict + execute + position)
-- **Expected Load**: 1.25 events/sec for 1k markets
-- **CPU Usage**: ~1.125% (well within limits)
+- **Expected Load**: 0.0125 events/sec for 10 markets (75 updates/hour per market)
+- **CPU Usage**: <0.02% (negligible with serial processing)
+- **Philosophy**: Functional trader first, optimize performance later
 
 ### Serial Processing Benefits
 - **Simple Debugging**: Linear execution flow
@@ -431,7 +432,7 @@ class HardcodedSelector(ActionSelector):
 - **Predictable Performance**: 9ms × queue_size = processing lag
 
 ### Performance Circuit Breakers
-- **Queue Overflow**: Drop updates if queue exceeds 10k (prevent memory explosion)
+- **Queue Overflow**: Drop updates if queue exceeds 1k (sufficient for 10 markets)
 - **Slow Processing**: Alert if individual updates exceed 50ms
 - **Model Performance**: Circuit breaker if prediction >5ms consistently
 - **Cash Exhaustion**: Stop trading when insufficient cash globally

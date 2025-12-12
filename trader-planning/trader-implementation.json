@@ -1,0 +1,598 @@
+{
+  "plan_metadata": {
+    "created_date": "2025-12-12",
+    "last_updated": "2025-12-12",
+    "version": "1.0",
+    "description": "Complete Kalshi Trading Actor MVP implementation - multi-market live trading system with model caching and orderbook integration",
+    "strategy": "BUILD_ON_EXISTING_INFRASTRUCTURE",
+    "total_milestones": 5,
+    "estimated_duration": "3-4 weeks",
+    "phases": [
+      "DATABASE_SAFETY_AND_FOUNDATION",
+      "LIVE_OBSERVATION_PIPELINE", 
+      "TRADING_EXECUTION_SYSTEM",
+      "DEPLOYMENT_AND_VALIDATION"
+    ],
+    "completion_notes": {}
+  },
+  "architectural_constraints": {
+    "integrate_with_orderbook_collector": "MANDATORY - Actor triggers AFTER write_queue.enqueue_*() returns True",
+    "model_caching_required": "Model MUST be loaded once at startup and cached for all predictions (performance critical)",
+    "serial_processing": "Single queue-based processing for 10 markets using market-aware OrderManager",
+    "orderbook_state_access": "OrderManager uses global registry via await get_shared_orderbook_state(market_ticker)",
+    "contract_size_consistency": "MUST use 10 contracts matching training exactly",
+    "non_blocking_triggers": "Actor triggers must not block WebSocket orderbook processing",
+    "paper_trading_only": "MVP uses demo environment only, no live trading",
+    "database_safety_first": "Complete backup protocol before any schema changes",
+    "performance_targets": {
+      "model_prediction": "<1ms using cached model",
+      "observation_building": "<1ms",
+      "total_actor_loop": "<50ms",
+      "queue_processing": "Handle 10 markets at 0.0125 events/sec"
+    }
+  },
+  "critical_success_factors": [
+    "Database safety protocol completed before any implementation",
+    "Model caching architecture prevents performance disasters",
+    "LiveObservationAdapter ensures training/inference consistency", 
+    "Serial processing eliminates race conditions and complexity",
+    "Market-aware OrderManager handles multi-market portfolio tracking",
+    "Integration with proven orderbook collector infrastructure"
+  ],
+  "milestones": [
+    {
+      "id": "M1_DATABASE_SAFETY_AND_ACTOR_FRAMEWORK",
+      "goal": "Establish database safety protocol and implement core ActorService framework with model caching",
+      "phase": "DATABASE_SAFETY_AND_FOUNDATION",
+      "priority": 1,
+      "estimated_effort": "3-4 days",
+      "dependencies": [],
+      "critical_requirements": {
+        "database_backup": "Simple pg_dump backup of local dev database containing all orderbook training data",
+        "model_caching": "Model loaded ONCE at startup and cached for all predictions",
+        "serial_processing": "Queue-based architecture for processing 10 markets sequentially",
+        "orderbook_state_access": "Use global registry pattern - no duplicate state management",
+        "trigger_integration": "Non-blocking integration with OrderbookClient after successful enqueue operations"
+      },
+      "steps": [
+        {
+          "instruction": "FIRST PRIORITY: Execute database safety protocol with simple pg_dump backup of local development database",
+          "details": "Create timestamped backup with command: pg_dump $DATABASE_URL > kalshiflow_backup_$(date +%Y%m%d_%H%M%S).sql and verify backup integrity",
+          "file_paths": ["/Users/samuelclark/Desktop/kalshiflow/scripts/backup_database.sh"],
+          "completed": false,
+          "verified": false
+        },
+        {
+          "instruction": "Verify backup contains critical RL training data (rl_orderbook_sessions, rl_orderbook_snapshots, rl_orderbook_deltas tables)",
+          "details": "Run queries to confirm 200-300k+ training datapoints are preserved in backup",
+          "file_paths": [],
+          "completed": false,
+          "verified": false
+        },
+        {
+          "instruction": "Create ActorService core class with async queue-based architecture for serial processing",
+          "details": "Implement ActorService with asyncio.Queue(maxsize=1000) for 10 markets, model caching initialization, and basic event processing loop",
+          "file_paths": ["/Users/samuelclark/Desktop/kalshiflow/backend/src/kalshiflow_rl/trading/actor_service.py"],
+          "completed": false,
+          "verified": false
+        },
+        {
+          "instruction": "Implement model caching infrastructure in ActorService.__init__() to load RL model once at startup",
+          "details": "Load PPO model from model_path in constructor, store in self._cached_model, prevent any hot-path model loading",
+          "file_paths": ["/Users/samuelclark/Desktop/kalshiflow/backend/src/kalshiflow_rl/trading/actor_service.py"],
+          "completed": false,
+          "verified": false
+        },
+        {
+          "instruction": "Create ActorEventTrigger callback mechanism for integration with OrderbookClient",
+          "details": "Implement callback function that captures market_ticker, update_type, sequence_number, and timestamp for queuing",
+          "file_paths": ["/Users/samuelclark/Desktop/kalshiflow/backend/src/kalshiflow_rl/trading/actor_service.py"],
+          "completed": false,
+          "verified": false
+        },
+        {
+          "instruction": "Add trigger integration to OrderbookClient._process_snapshot() and _process_delta() methods",
+          "details": "Modify OrderbookClient to call actor trigger callback AFTER write_queue.enqueue_*() returns True, ensuring non-blocking operation for 10 markets",
+          "file_paths": ["/Users/samuelclark/Desktop/kalshiflow/backend/src/kalshiflow_rl/data/orderbook_client.py"],
+          "completed": false,
+          "verified": false
+        },
+        {
+          "instruction": "Implement basic ActorService.process_market_update() with 4-step pipeline structure",
+          "details": "Create serial pipeline: 1) build_observation, 2) select_action, 3) safe_execute_action, 4) update_positions with comprehensive error handling",
+          "file_paths": ["/Users/samuelclark/Desktop/kalshiflow/backend/src/kalshiflow_rl/trading/actor_service.py"],
+          "completed": false,
+          "verified": false
+        },
+        {
+          "instruction": "Add performance monitoring and circuit breakers for queue overflow and slow processing",
+          "details": "Implement queue depth monitoring, processing time alerts (>50ms), and graceful degradation for system overload",
+          "file_paths": ["/Users/samuelclark/Desktop/kalshiflow/backend/src/kalshiflow_rl/trading/actor_service.py"],
+          "completed": false,
+          "verified": false
+        },
+        {
+          "instruction": "Create basic testing infrastructure with mock SharedOrderbookState and trigger validation",
+          "details": "Write tests to validate actor triggering mechanism, event queuing, and basic pipeline execution without blocking WebSocket",
+          "file_paths": ["/Users/samuelclark/Desktop/kalshiflow/backend/tests/test_rl/trading/test_actor_service.py"],
+          "completed": false,
+          "verified": false
+        }
+      ],
+      "acceptance_criteria": [
+        "Database backup completed and verified with 200-300k+ training datapoints preserved",
+        "ActorService triggers on orderbook updates without blocking WebSocket processing",
+        "Model loaded once at startup and cached in memory for all subsequent predictions",
+        "Serial queue processes events without race conditions for 10 markets",
+        "Events queued and processed with <50ms total processing time per market update",
+        "Basic logging and error handling working with performance monitoring",
+        "Integration tests validate non-blocking trigger mechanism and event flow"
+      ],
+      "completed": false
+    },
+    {
+      "id": "M2_LIVE_OBSERVATION_ADAPTER",
+      "goal": "Implement LiveObservationAdapter to convert persisted orderbook data to training-consistent observations",
+      "phase": "LIVE_OBSERVATION_PIPELINE",
+      "priority": 1,
+      "estimated_effort": "4-5 days",
+      "dependencies": ["M1_DATABASE_SAFETY_AND_ACTOR_FRAMEWORK"],
+      "critical_requirements": {
+        "training_consistency": "Live observations MUST match training format exactly (52 features)",
+        "temporal_features": "Compute activity_score, momentum, time_gap on-the-fly from live data",
+        "performance": "Observation building must complete in <1ms",
+        "shared_observation_logic": "Use same build_observation_from_orderbook() function as training"
+      },
+      "steps": [
+        {
+          "instruction": "Create LiveObservationAdapter class with sliding window history management and global registry access",
+          "details": "Implement adapter with deque(maxlen=10) for recent snapshots, access SharedOrderbookState via await get_shared_orderbook_state(market_ticker)",
+          "file_paths": ["/Users/samuelclark/Desktop/kalshiflow/backend/src/kalshiflow_rl/trading/live_observation_adapter.py"],
+          "completed": false,
+          "verified": false
+        },
+        {
+          "instruction": "Implement async build_observation() method with SharedOrderbookState integration",
+          "details": "Create method that takes market_ticker, shared_state, and order_manager to build 52-feature observation matching training exactly",
+          "file_paths": ["/Users/samuelclark/Desktop/kalshiflow/backend/src/kalshiflow_rl/trading/live_observation_adapter.py"],
+          "completed": false,
+          "verified": false
+        },
+        {
+          "instruction": "Port temporal feature computation from session_data_loader.py for on-the-fly calculation",
+          "details": "Implement _calculate_time_gap(), _compute_activity_score(), and _compute_momentum() methods for live temporal features",
+          "file_paths": ["/Users/samuelclark/Desktop/kalshiflow/backend/src/kalshiflow_rl/trading/live_observation_adapter.py"],
+          "completed": false,
+          "verified": false
+        },
+        {
+          "instruction": "Implement SharedOrderbookState to SessionDataPoint conversion layer",
+          "details": "Create conversion logic that transforms SharedOrderbookState.get_snapshot() into SessionDataPoint format for feature extraction",
+          "file_paths": ["/Users/samuelclark/Desktop/kalshiflow/backend/src/kalshiflow_rl/trading/live_observation_adapter.py"],
+          "completed": false,
+          "verified": false
+        },
+        {
+          "instruction": "Add per-market sliding history windows for temporal feature computation",
+          "details": "Maintain per-market deques for price history, activity tracking, and momentum calculation with proper cleanup",
+          "file_paths": ["/Users/samuelclark/Desktop/kalshiflow/backend/src/kalshiflow_rl/trading/live_observation_adapter.py"],
+          "completed": false,
+          "verified": false
+        },
+        {
+          "instruction": "Integrate with shared build_observation_from_session_data() function for consistency",
+          "details": "Use existing feature extraction function from training to ensure identical observation format between training and inference",
+          "file_paths": ["/Users/samuelclark/Desktop/kalshiflow/backend/src/kalshiflow_rl/trading/live_observation_adapter.py"],
+          "completed": false,
+          "verified": false
+        },
+        {
+          "instruction": "Add edge case handling for insufficient data and missing features",
+          "details": "Handle cold start scenarios, missing price history, and temporal gaps gracefully with sensible defaults",
+          "file_paths": ["/Users/samuelclark/Desktop/kalshiflow/backend/src/kalshiflow_rl/trading/live_observation_adapter.py"],
+          "completed": false,
+          "verified": false
+        },
+        {
+          "instruction": "Create comprehensive tests validating observation format consistency with training",
+          "details": "Write tests comparing live vs training observations, performance benchmarks, and edge case handling",
+          "file_paths": ["/Users/samuelclark/Desktop/kalshiflow/backend/tests/test_rl/trading/test_live_observation_adapter.py"],
+          "completed": false,
+          "verified": false
+        }
+      ],
+      "acceptance_criteria": [
+        "Live observations match training format exactly (52 features) with np.testing.assert_allclose validation",
+        "Temporal features (activity_score, momentum, time_gap) computed correctly on-the-fly",
+        "Performance target met: observation building completes in <1ms",
+        "SharedOrderbookState to SessionDataPoint conversion works reliably",
+        "Per-market sliding windows maintain proper temporal context",
+        "Edge cases handled gracefully (cold start, missing data, temporal gaps)",
+        "Integration tests validate consistency between live and training observations",
+        "Memory usage bounded with proper cleanup of historical data"
+      ],
+      "completed": false
+    },
+    {
+      "id": "M3_MODULAR_ACTION_SELECTION",
+      "goal": "Implement modular ActionSelector interface with cached model inference and hardcoded strategies",
+      "phase": "LIVE_OBSERVATION_PIPELINE", 
+      "priority": 2,
+      "estimated_effort": "2-3 days",
+      "dependencies": ["M2_LIVE_OBSERVATION_ADAPTER"],
+      "critical_requirements": {
+        "cached_model_inference": "Use cached model from startup, never load model in hot path",
+        "strategy_modularity": "Abstract interface allows RL models and hardcoded strategies",
+        "contract_size_validation": "Ensure 10-contract size consistency with training",
+        "performance": "Model prediction must complete in <1ms using cached model"
+      },
+      "steps": [
+        {
+          "instruction": "Create ActionSelector abstract base class with select_action() and get_strategy_name() methods",
+          "details": "Define interface that takes observation and market_ticker, returns action (0-4), market_ticker for context only",
+          "file_paths": ["/Users/samuelclark/Desktop/kalshiflow/backend/src/kalshiflow_rl/trading/action_selector.py"],
+          "completed": false,
+          "verified": false
+        },
+        {
+          "instruction": "Implement RLModelSelector with cached model inference (no model loading in hot path)",
+          "details": "Create selector that uses pre-loaded cached model from ActorService initialization for fast predictions",
+          "file_paths": ["/Users/samuelclark/Desktop/kalshiflow/backend/src/kalshiflow_rl/trading/action_selector.py"],
+          "completed": false,
+          "verified": false
+        },
+        {
+          "instruction": "Add HardcodedSelector with simple mean reversion strategy for testing",
+          "details": "Implement rule-based strategy using mid_price thresholds (buy <0.4, sell >0.6, hold otherwise)",
+          "file_paths": ["/Users/samuelclark/Desktop/kalshiflow/backend/src/kalshiflow_rl/trading/action_selector.py"],
+          "completed": false,
+          "verified": false
+        },
+        {
+          "instruction": "Implement model validation and error handling for cached inference",
+          "details": "Add model state validation, prediction error handling, and fallback to HOLD action on failures",
+          "file_paths": ["/Users/samuelclark/Desktop/kalshiflow/backend/src/kalshiflow_rl/trading/action_selector.py"],
+          "completed": false,
+          "verified": false
+        },
+        {
+          "instruction": "Add prediction timing monitoring with circuit breaker for slow predictions",
+          "details": "Monitor prediction times, alert if >1ms consistently, circuit breaker if >5ms to prevent performance degradation",
+          "file_paths": ["/Users/samuelclark/Desktop/kalshiflow/backend/src/kalshiflow_rl/trading/action_selector.py"],
+          "completed": false,
+          "verified": false
+        },
+        {
+          "instruction": "Add contract size validation to ensure 10-contract consistency with training",
+          "details": "Validate that action execution will use 10 contracts matching training, raise error on mismatch",
+          "file_paths": ["/Users/samuelclark/Desktop/kalshiflow/backend/src/kalshiflow_rl/trading/action_selector.py"],
+          "completed": false,
+          "verified": false
+        },
+        {
+          "instruction": "Implement strategy configuration and environment-based selection",
+          "details": "Add configuration management for strategy selection (RL_ACTOR_STRATEGY env var) and runtime strategy switching",
+          "file_paths": ["/Users/samuelclark/Desktop/kalshiflow/backend/src/kalshiflow_rl/trading/action_selector.py"],
+          "completed": false,
+          "verified": false
+        },
+        {
+          "instruction": "Create comprehensive tests for both RL and hardcoded strategies with performance validation",
+          "details": "Test model prediction accuracy, hardcoded strategy logic, performance benchmarks, and error handling",
+          "file_paths": ["/Users/samuelclark/Desktop/kalshiflow/backend/tests/test_rl/trading/test_action_selector.py"],
+          "completed": false,
+          "verified": false
+        }
+      ],
+      "acceptance_criteria": [
+        "ActionSelector interface enables both RL and hardcoded strategies with consistent API",
+        "RLModelSelector uses cached model achieving <1ms prediction times consistently",
+        "HardcodedSelector provides functional rule-based strategy for testing and comparison",
+        "Model validation prevents prediction failures from crashing actor pipeline",
+        "Prediction timing monitoring with circuit breaker protects system performance",
+        "Contract size validation ensures 10-contract consistency with training",
+        "Strategy configuration allows runtime switching without restart",
+        "Performance benchmarks confirm <1ms target met for model inference",
+        "Error handling gracefully manages prediction failures with fallback to HOLD"
+      ],
+      "completed": false
+    },
+    {
+      "id": "M4_MULTI_MARKET_ORDER_MANAGER",
+      "goal": "Enhance OrderManager for multi-market live trading with global portfolio tracking and execution safety",
+      "phase": "TRADING_EXECUTION_SYSTEM",
+      "priority": 1,
+      "estimated_effort": "3-4 days", 
+      "dependencies": ["M1_DATABASE_SAFETY_AND_ACTOR_FRAMEWORK", "M3_MODULAR_ACTION_SELECTION"],
+      "critical_requirements": {
+        "multi_market_awareness": "Single OrderManager handles portfolio across all 1000 markets",
+        "global_portfolio_tracking": "Track positions and cash across all markets in single system",
+        "market_specific_throttling": "Per-market throttling (250ms) while maintaining global constraints",
+        "execution_safety": "Comprehensive safety checks before order execution"
+      },
+      "steps": [
+        {
+          "instruction": "Create KalshiOrderManager extending base OrderManager with multi-market capabilities",
+          "details": "Implement market-aware OrderManager with per_market_throttle dict, active_markets set, and global portfolio state",
+          "file_paths": ["/Users/samuelclark/Desktop/kalshiflow/backend/src/kalshiflow_rl/trading/kalshi_order_manager.py"],
+          "completed": false,
+          "verified": false
+        },
+        {
+          "instruction": "Add market-aware methods: get_position_for_market(), get_orders_for_market(), can_trade_market()",
+          "details": "Implement market-specific query methods that filter global state by market_ticker for trading decisions",
+          "file_paths": ["/Users/samuelclark/Desktop/kalshiflow/backend/src/kalshiflow_rl/trading/kalshi_order_manager.py"],
+          "completed": false,
+          "verified": false
+        },
+        {
+          "instruction": "Implement execute_limit_order_action() with market context and global portfolio constraints",
+          "details": "Add method taking action, market_ticker, orderbook_snapshot with per-market throttling and global cash checks",
+          "file_paths": ["/Users/samuelclark/Desktop/kalshiflow/backend/src/kalshiflow_rl/trading/kalshi_order_manager.py"],
+          "completed": false,
+          "verified": false
+        },
+        {
+          "instruction": "Add per-market throttling system with 250ms minimum between actions per market",
+          "details": "Implement throttling that allows concurrent trading across markets while preventing over-trading individual markets",
+          "file_paths": ["/Users/samuelclark/Desktop/kalshiflow/backend/src/kalshiflow_rl/trading/kalshi_order_manager.py"],
+          "completed": false,
+          "verified": false
+        },
+        {
+          "instruction": "Implement global portfolio value calculation across all markets",
+          "details": "Add get_total_portfolio_value() method that sums cash + positions across all active markets",
+          "file_paths": ["/Users/samuelclark/Desktop/kalshiflow/backend/src/kalshiflow_rl/trading/kalshi_order_manager.py"],
+          "completed": false,
+          "verified": false
+        },
+        {
+          "instruction": "Add execution safety checks: cash availability, position limits, market state validation",
+          "details": "Implement comprehensive safety checks before order placement including minimum cash (100 cents), position limits",
+          "file_paths": ["/Users/samuelclark/Desktop/kalshiflow/backend/src/kalshiflow_rl/trading/kalshi_order_manager.py"],
+          "completed": false,
+          "verified": false
+        },
+        {
+          "instruction": "Integrate with KalshiDemoTradingClient for actual order execution",
+          "details": "Connect OrderManager to demo trading client with proper error handling and order state tracking",
+          "file_paths": ["/Users/samuelclark/Desktop/kalshiflow/backend/src/kalshiflow_rl/trading/kalshi_order_manager.py"],
+          "completed": false,
+          "verified": false
+        },
+        {
+          "instruction": "Create comprehensive tests for multi-market scenarios and safety systems",
+          "details": "Test concurrent market trading, throttling behavior, portfolio calculations, and safety check enforcement",
+          "file_paths": ["/Users/samuelclark/Desktop/kalshiflow/backend/tests/test_rl/trading/test_kalshi_order_manager.py"],
+          "completed": false,
+          "verified": false
+        }
+      ],
+      "acceptance_criteria": [
+        "Single KalshiOrderManager handles portfolio tracking across 1000+ markets",
+        "Per-market throttling (250ms) prevents over-trading while allowing concurrent market access",
+        "Global portfolio value calculation includes cash + positions across all markets",
+        "Market-specific methods enable targeted queries (positions, orders, trading eligibility)",
+        "Execution safety checks prevent invalid trades (insufficient cash, bad spreads, etc.)",
+        "Integration with KalshiDemoTradingClient successfully places and tracks orders",
+        "Performance handles 1k markets at 1.25 events/sec target load",
+        "Comprehensive test coverage validates multi-market scenarios and edge cases",
+        "Order state tracking maintains consistency across all markets"
+      ],
+      "completed": false
+    },
+    {
+      "id": "M5_PRODUCTION_DEPLOYMENT_AND_VALIDATION",
+      "goal": "Deploy complete trading actor system and validate end-to-end functionality with real market data",
+      "phase": "DEPLOYMENT_AND_VALIDATION",
+      "priority": 1, 
+      "estimated_effort": "2-3 days",
+      "dependencies": ["M2_LIVE_OBSERVATION_ADAPTER", "M3_MODULAR_ACTION_SELECTION", "M4_MULTI_MARKET_ORDER_MANAGER"],
+      "critical_requirements": {
+        "end_to_end_integration": "Complete pipeline from orderbook updates to trade execution", 
+        "performance_validation": "Confirm <50ms total actor loop with 1k markets",
+        "safety_systems": "All risk controls and circuit breakers functional",
+        "monitoring_and_observability": "Comprehensive metrics and debugging capabilities"
+      },
+      "steps": [
+        {
+          "instruction": "Integrate all components into complete ActorService with full pipeline execution",
+          "details": "Complete integration of LiveObservationAdapter, ActionSelector, and KalshiOrderManager in ActorService.process_market_update()",
+          "file_paths": ["/Users/samuelclark/Desktop/kalshiflow/backend/src/kalshiflow_rl/trading/actor_service.py"],
+          "completed": false,
+          "verified": false
+        },
+        {
+          "instruction": "Add comprehensive ActorEvent logging and persistence system",
+          "details": "Create ActorEvent database table and logging system tracking all actions, portfolio states, and execution results",
+          "file_paths": [
+            "/Users/samuelclark/Desktop/kalshiflow/backend/src/kalshiflow_rl/trading/actor_event_logger.py",
+            "/Users/samuelclark/Desktop/kalshiflow/backend/migrations/create_actor_events_table.sql"
+          ],
+          "completed": false,
+          "verified": false
+        },
+        {
+          "instruction": "Implement ActorEventBroadcaster for WebSocket updates to frontend",
+          "details": "Create broadcaster that sends action decisions, order details, position updates, and P&L changes to frontend via WebSocket",
+          "file_paths": ["/Users/samuelclark/Desktop/kalshiflow/backend/src/kalshiflow_rl/trading/actor_event_broadcaster.py"],
+          "completed": false,
+          "verified": false
+        },
+        {
+          "instruction": "Add complete configuration management with environment variables",
+          "details": "Implement ActorConfig class with all environment variables: enabled, strategy, model_path, throttle_ms, contract_size validation",
+          "file_paths": ["/Users/samuelclark/Desktop/kalshiflow/backend/src/kalshiflow_rl/trading/actor_config.py"],
+          "completed": false,
+          "verified": false
+        },
+        {
+          "instruction": "Implement comprehensive risk controls and circuit breakers",
+          "details": "Add kill switch, position limits, error circuit breaker, performance monitoring, and rate limiting systems",
+          "file_paths": ["/Users/samuelclark/Desktop/kalshiflow/backend/src/kalshiflow_rl/trading/risk_controls.py"],
+          "completed": false,
+          "verified": false
+        },
+        {
+          "instruction": "Create monitoring and metrics collection system",
+          "details": "Implement metrics tracking: actions_per_minute, portfolio_value, prediction_time, queue_depth, error_counts",
+          "file_paths": ["/Users/samuelclark/Desktop/kalshiflow/backend/src/kalshiflow_rl/trading/actor_metrics.py"],
+          "completed": false,
+          "verified": false
+        },
+        {
+          "instruction": "Add WebSocket endpoints for real-time actor monitoring (/rl/ws/actor)",
+          "details": "Create WebSocket endpoints that broadcast actor events, portfolio updates, and performance metrics to frontend",
+          "file_paths": ["/Users/samuelclark/Desktop/kalshiflow/backend/src/kalshiflow_rl/websocket/actor_websocket.py"],
+          "completed": false,
+          "verified": false
+        },
+        {
+          "instruction": "Create end-to-end integration tests with real orderbook data",
+          "details": "Write tests that validate complete pipeline: orderbook update → trigger → observation → action → execution → broadcast",
+          "file_paths": ["/Users/samuelclark/Desktop/kalshiflow/backend/tests/test_rl/integration/test_actor_e2e.py"],
+          "completed": false,
+          "verified": false
+        },
+        {
+          "instruction": "Deploy to demo environment and validate performance targets",
+          "details": "Deploy complete system, validate <50ms total loop time, 1k market handling, and all safety systems functional",
+          "file_paths": [],
+          "completed": false,
+          "verified": false
+        }
+      ],
+      "acceptance_criteria": [
+        "Complete end-to-end pipeline functional: orderbook → observation → action → execution → broadcast",
+        "Performance targets met: <50ms total actor loop, <1ms observation building, <1ms model prediction",
+        "1k market processing at 1.25 events/sec load without degradation",
+        "All risk controls functional: kill switch, position limits, circuit breakers, rate limiting",
+        "ActorEvent persistence captures all actions with portfolio state and execution results",
+        "WebSocket broadcasting provides real-time updates to frontend monitoring",
+        "Configuration management allows runtime control via environment variables",
+        "Monitoring system tracks all critical metrics: performance, portfolio, errors, queue health",
+        "Integration tests validate complete pipeline with real market data",
+        "Demo environment deployment successful with edge case discovery goals met"
+      ],
+      "completed": false
+    }
+  ],
+  "phase_summary": {
+    "DATABASE_SAFETY_AND_FOUNDATION": {
+      "description": "Establish data safety and core actor service infrastructure with model caching",
+      "milestones": ["M1_DATABASE_SAFETY_AND_ACTOR_FRAMEWORK"],
+      "key_principle": "Safety first - protect training data, then build performance-critical foundation"
+    },
+    "LIVE_OBSERVATION_PIPELINE": {
+      "description": "Build live observation generation and modular action selection systems", 
+      "milestones": ["M2_LIVE_OBSERVATION_ADAPTER", "M3_MODULAR_ACTION_SELECTION"],
+      "key_principle": "Training/inference consistency - ensure live observations match training exactly"
+    },
+    "TRADING_EXECUTION_SYSTEM": {
+      "description": "Implement multi-market order management and execution safety systems",
+      "milestones": ["M4_MULTI_MARKET_ORDER_MANAGER"],
+      "key_principle": "Multi-market portfolio tracking with comprehensive safety controls"
+    },
+    "DEPLOYMENT_AND_VALIDATION": {
+      "description": "Complete integration, monitoring systems, and production deployment",
+      "milestones": ["M5_PRODUCTION_DEPLOYMENT_AND_VALIDATION"],
+      "key_principle": "End-to-end validation with real market data and comprehensive observability"
+    }
+  },
+  "key_technical_decisions": {
+    "integrate_with_orderbook_collector": "Leverage proven WebSocket infrastructure instead of building parallel system",
+    "model_caching_mandatory": "Load model once at startup to prevent performance disasters in hot path",
+    "serial_processing": "Single queue eliminates race conditions and simplifies portfolio state management",
+    "market_aware_order_manager": "Single OrderManager handles 10 markets with global registry state access and per-market throttling", 
+    "trigger_after_persistence": "Actor triggers only after successful database write to ensure data consistency",
+    "contract_size_consistency": "Hardcode 10 contracts matching training to prevent strategy inconsistencies",
+    "performance_circuit_breakers": "Multiple layers of protection against slow processing and system overload",
+    "paper_trading_only": "MVP focuses on demo environment for safe iteration on edge cases"
+  },
+  "performance_targets": {
+    "model_prediction": "<1ms using cached model (not hot-reloaded)",
+    "observation_building": "<1ms for live temporal feature computation",
+    "total_actor_loop": "<50ms for complete orderbook update to trade execution",
+    "queue_processing": "Handle 10 markets at 0.0125 events/sec (functional first, optimize later)",
+    "memory_usage": "Bounded sliding windows prevent memory leaks during operation",
+    "cpu_usage": "Expected <0.02% for 10 markets with serial processing"
+  },
+  "risk_controls": {
+    "database_safety": "Complete pg_dump backup before any schema changes",
+    "paper_trading_only": "No real money at risk during MVP iteration",
+    "position_limits": "Max 100 contracts per market, global portfolio constraints",
+    "rate_limiting": "250ms minimum between actions per market",
+    "kill_switch": "Immediate disable via RL_ACTOR_ENABLED=false",
+    "error_circuit_breaker": "Disable after N consecutive errors per market",
+    "performance_circuit_breaker": "Disable if prediction >5ms consistently",
+    "queue_overflow_protection": "Drop events if queue exceeds 1k items (sufficient for 10 markets)"
+  },
+  "monitoring_and_observability": {
+    "actor_metrics": [
+      "actions_per_minute",
+      "position_count_by_market", 
+      "orders_placed_count",
+      "orders_filled_count",
+      "current_portfolio_value",
+      "last_action_timestamp",
+      "errors_count_by_type",
+      "strategy_active",
+      "model_prediction_time_ms",
+      "observation_build_time_ms",
+      "total_actor_loop_time_ms",
+      "model_cache_hit_rate",
+      "queue_depth_current",
+      "queue_depth_max"
+    ],
+    "websocket_endpoints": [
+      "/rl/ws/actor - Real-time actor events and portfolio updates",
+      "/rl/ws/performance - Performance metrics and system health",
+      "/rl/ws/errors - Error events and circuit breaker status"
+    ],
+    "database_tables": [
+      "rl_actor_events - Action decisions, execution results, portfolio state",
+      "rl_actor_metrics - Performance metrics and system health snapshots"
+    ]
+  },
+  "deployment_configuration": {
+    "environment_variables": {
+      "RL_ACTOR_ENABLED": "true/false - Master kill switch",
+      "RL_ACTOR_STRATEGY": "rl_model/hardcoded/disabled - Strategy selection",
+      "RL_ACTOR_MODEL_PATH": "/path/to/trained_model.zip - Model file location",
+      "RL_ACTOR_THROTTLE_MS": "250 - Minimum time between actions per market",
+      "RL_ACTOR_TARGET_MARKET_MODE": "hot/config/first - Market selection strategy",
+      "RL_ACTOR_CONTRACT_SIZE": "10 - Must match training exactly",
+      "RL_ACTOR_QUEUE_SIZE": "1000 - Maximum events in processing queue (for 10 markets)",
+      "RL_ACTOR_CONSOLE_LOG_LEVEL": "INFO/DEBUG/ERROR - Console logging level"
+    },
+    "demo_trading_config": {
+      "KALSHI_PAPER_TRADING_API_KEY_ID": "Demo environment API key",
+      "KALSHI_PAPER_TRADING_PRIVATE_KEY_CONTENT": "Demo environment private key",
+      "KALSHI_DEMO_BASE_URL": "Demo API endpoint URL"
+    }
+  },
+  "success_metrics": {
+    "deployment_speed": "MVP deployed to demo environment within 5 weeks",
+    "data_consistency": "Live observations match training format exactly (52 features)",
+    "strategy_flexibility": "Both RL and hardcoded strategies functional",
+    "execution_reliability": "Orders execute successfully via KalshiDemoTradingClient", 
+    "real_time_performance": "Actor loop completes within 50ms of trigger",
+    "error_resilience": "Actor continues operating despite individual action failures",
+    "edge_case_discovery": "Successful iteration on market conditions and connection issues",
+    "contract_consistency": "10-contract size maintained throughout system",
+    "database_protection": "All training data preserved with verified backups"
+  },
+  "implementation_timeline": {
+    "week_1": ["M1_DATABASE_SAFETY_AND_ACTOR_FRAMEWORK"],
+    "week_2": ["M2_LIVE_OBSERVATION_ADAPTER"],
+    "week_3": ["M3_MODULAR_ACTION_SELECTION", "M4_MULTI_MARKET_ORDER_MANAGER"],
+    "week_4": ["M5_PRODUCTION_DEPLOYMENT_AND_VALIDATION"]
+  },
+  "critical_architectural_validations": {
+    "training_inference_consistency": "Validate live observations exactly match training using np.testing.assert_allclose",
+    "model_performance": "Confirm <1ms prediction times with cached model vs >100ms with hot loading",
+    "multi_market_portfolio": "Validate global portfolio tracking across 10 markets with serial processing",
+    "non_blocking_integration": "Confirm WebSocket processing unaffected by actor pipeline",
+    "performance_under_load": "Validate 10 markets with serial processing meets performance targets"
+  }
+}
