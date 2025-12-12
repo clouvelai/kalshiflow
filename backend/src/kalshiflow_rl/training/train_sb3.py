@@ -1,16 +1,23 @@
 #!/usr/bin/env python3
 """
-Basic SB3 training script for MarketAgnosticKalshiEnv.
+SB3 Training Module for MarketAgnosticKalshiEnv.
 
-This script provides a simple training pipeline using Stable Baselines3.
+This module provides a comprehensive training pipeline using Stable Baselines3
+with enhanced portfolio metrics tracking and curriculum learning capabilities.
 
 Usage:
-    # Train on single session
-    python train_with_sb3.py --session 9 --algorithm ppo --total-timesteps 100000
+    # Regular training on single session
+    python train_sb3.py --session 9 --algorithm ppo --total-timesteps 100000
+    
+    # Curriculum training - each market gets full episode
+    python train_sb3.py --session 9 --curriculum --algorithm ppo
 
 Examples:
-    $ python train_with_sb3.py --session 9 --algorithm ppo --total-timesteps 100000
+    $ python train_sb3.py --session 9 --algorithm ppo --total-timesteps 100000
     Trains PPO agent on session 9 data
+    
+    $ python train_sb3.py --session 9 --curriculum --algorithm ppo
+    Trains PPO using curriculum learning on all viable markets in session 9
 """
 
 import asyncio
@@ -18,12 +25,12 @@ import argparse
 import os
 import sys
 import logging
-from pathlib import Path
-from typing import Optional, List, Dict, Any, Union
-from datetime import datetime, timedelta
 import json
 import time
 import numpy as np
+from pathlib import Path
+from typing import Optional, List, Dict, Any, Union
+from datetime import datetime, timedelta
 
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
@@ -49,54 +56,195 @@ from kalshiflow_rl.environments.market_agnostic_env import EnvConfig
 
 class PortfolioMetricsCallback(BaseCallback):
     """
-    Custom callback to track portfolio metrics during training.
+    Enhanced callback to track portfolio metrics during training episodes.
     
-    This callback extracts training metrics using OrderManager API methods
-    and logs portfolio performance statistics.
+    This callback captures portfolio dynamics DURING episodes (not just at end)
+    by sampling portfolio state every N steps, providing better insight into
+    trading behavior and portfolio fluctuations throughout episodes.
     """
     
-    def __init__(self, log_freq: int = 1000, verbose: int = 0):
+    def __init__(self, 
+                 log_freq: int = 1000, 
+                 sample_freq: int = 100,
+                 verbose: int = 0):
+        """
+        Initialize portfolio metrics callback.
+        
+        Args:
+            log_freq: Frequency of episode summary logging (episodes)
+            sample_freq: Frequency of portfolio sampling during episodes (steps)
+            verbose: Verbosity level
+        """
         super().__init__(verbose)
         self.log_freq = log_freq
+        self.sample_freq = sample_freq
+        
+        # Episode-level tracking
         self.episode_portfolios = []
         self.episode_rewards = []
         self.episode_lengths = []
         self.episode_count = 0
         
+        # Intra-episode tracking
+        self.current_episode_samples = []
+        self.current_episode_start_value = None
+        self.step_count = 0
+        
     def _on_step(self) -> bool:
+        """Called on each environment step."""
+        self.step_count += 1
+        
+        # Sample portfolio state periodically during episode
+        if self.step_count % self.sample_freq == 0:
+            self._sample_portfolio_state()
+        
         # Check if episode ended
         if self.locals.get('dones', [False])[0]:
-            self.episode_count += 1
-            
-            # Extract portfolio metrics from environment
+            self._on_episode_end()
+        
+        return True
+    
+    def _sample_portfolio_state(self):
+        """Sample current portfolio state during episode."""
+        try:
             env = self.training_env.envs[0]
             if hasattr(env, 'unwrapped') and hasattr(env.unwrapped, 'order_manager'):
                 order_manager = env.unwrapped.order_manager
                 
-                # Get portfolio metrics using OrderManager API
-                portfolio_value = order_manager.get_portfolio_value_cents(env.unwrapped._get_current_market_prices())
+                # Get current portfolio metrics
+                current_prices = env.unwrapped._get_current_market_prices()
+                portfolio_value = order_manager.get_portfolio_value_cents(current_prices)
                 cash_balance = order_manager.get_cash_balance_cents()
                 position_info = order_manager.get_position_info()
                 
-                portfolio_metrics = {
-                    'episode': self.episode_count,
+                # Store sample point
+                sample = {
+                    'step': env.unwrapped.current_step,
+                    'global_step': self.step_count,
                     'portfolio_value_cents': portfolio_value,
                     'cash_balance_cents': cash_balance,
                     'position_count': len(position_info),
                     'total_position_value_cents': sum(
                         pos.get('current_value_cents', 0) for pos in position_info.values()
                     ),
-                    'episode_length': env.unwrapped.current_step,
-                    'market_ticker': getattr(env.unwrapped, 'current_market', 'unknown')
+                    'timestamp': time.time()
                 }
                 
-                self.episode_portfolios.append(portfolio_metrics)
+                self.current_episode_samples.append(sample)
+                
+                # Record episode start value for reference
+                if self.current_episode_start_value is None:
+                    self.current_episode_start_value = portfolio_value
+                    
+        except Exception as e:
+            # Don't fail training due to metrics collection issues
+            if self.verbose > 0:
+                print(f"Warning: Failed to sample portfolio state: {e}")
+    
+    def _on_episode_end(self):
+        """Process episode completion and extract portfolio dynamics."""
+        self.episode_count += 1
+        
+        try:
+            env = self.training_env.envs[0]
+            if hasattr(env, 'unwrapped') and hasattr(env.unwrapped, 'order_manager'):
+                order_manager = env.unwrapped.order_manager
+                
+                # Get final portfolio metrics
+                current_prices = env.unwrapped._get_current_market_prices()
+                final_portfolio_value = order_manager.get_portfolio_value_cents(current_prices)
+                cash_balance = order_manager.get_cash_balance_cents()
+                position_info = order_manager.get_position_info()
+                
+                # Analyze portfolio dynamics during episode
+                portfolio_dynamics = self._analyze_episode_dynamics()
+                
+                # Complete episode metrics
+                episode_metrics = {
+                    'episode': self.episode_count,
+                    'episode_length': env.unwrapped.current_step,
+                    'market_ticker': getattr(env.unwrapped, 'current_market', 'unknown'),
+                    
+                    # Final state
+                    'final_portfolio_value_cents': final_portfolio_value,
+                    'final_cash_balance_cents': cash_balance,
+                    'position_count': len(position_info),
+                    'total_position_value_cents': sum(
+                        pos.get('current_value_cents', 0) for pos in position_info.values()
+                    ),
+                    
+                    # Episode dynamics
+                    'portfolio_dynamics': portfolio_dynamics,
+                    
+                    # Sample metadata
+                    'samples_collected': len(self.current_episode_samples),
+                    'sample_frequency': self.sample_freq
+                }
+                
+                self.episode_portfolios.append(episode_metrics)
                 
                 # Log summary statistics periodically
                 if self.episode_count % self.log_freq == 0:
                     self._log_portfolio_summary()
+            
+        except Exception as e:
+            # Don't fail training due to metrics collection issues
+            if self.verbose > 0:
+                print(f"Warning: Failed to process episode end: {e}")
         
-        return True
+        finally:
+            # Reset episode tracking
+            self._reset_episode_tracking()
+    
+    def _analyze_episode_dynamics(self) -> Dict[str, Any]:
+        """Analyze portfolio dynamics during the completed episode."""
+        if not self.current_episode_samples:
+            return {}
+        
+        # Extract portfolio values from samples
+        portfolio_values = [s['portfolio_value_cents'] for s in self.current_episode_samples]
+        
+        if not portfolio_values:
+            return {}
+        
+        # Basic statistics
+        dynamics = {
+            'min_value_cents': float(np.min(portfolio_values)),
+            'max_value_cents': float(np.max(portfolio_values)),
+            'start_value_cents': portfolio_values[0],
+            'end_value_cents': portfolio_values[-1],
+            'value_range_cents': float(np.max(portfolio_values) - np.min(portfolio_values)),
+            'volatility': float(np.std(portfolio_values)) if len(portfolio_values) > 1 else 0.0,
+            'mean_value_cents': float(np.mean(portfolio_values)),
+        }
+        
+        # Calculate changes
+        if len(portfolio_values) > 1:
+            changes = np.diff(portfolio_values)
+            dynamics.update({
+                'total_change_cents': float(portfolio_values[-1] - portfolio_values[0]),
+                'max_gain_cents': float(np.max(changes)) if len(changes) > 0 else 0.0,
+                'max_loss_cents': float(np.min(changes)) if len(changes) > 0 else 0.0,
+                'positive_changes': int(np.sum(changes > 0)),
+                'negative_changes': int(np.sum(changes < 0)),
+                'zero_changes': int(np.sum(changes == 0))
+            })
+        else:
+            dynamics.update({
+                'total_change_cents': 0.0,
+                'max_gain_cents': 0.0,
+                'max_loss_cents': 0.0,
+                'positive_changes': 0,
+                'negative_changes': 0,
+                'zero_changes': 0
+            })
+        
+        return dynamics
+    
+    def _reset_episode_tracking(self):
+        """Reset tracking for next episode."""
+        self.current_episode_samples = []
+        self.current_episode_start_value = None
     
     def _log_portfolio_summary(self):
         """Log portfolio performance summary."""
@@ -105,46 +253,120 @@ class PortfolioMetricsCallback(BaseCallback):
         
         recent_episodes = self.episode_portfolios[-self.log_freq:]
         
-        portfolio_values = [ep['portfolio_value_cents'] for ep in recent_episodes]
+        # Extract values for analysis
+        final_values = [ep['final_portfolio_value_cents'] for ep in recent_episodes]
         episode_lengths = [ep['episode_length'] for ep in recent_episodes]
         
+        # Analyze dynamics across episodes
+        dynamics_data = [ep['portfolio_dynamics'] for ep in recent_episodes if ep['portfolio_dynamics']]
+        
+        if dynamics_data:
+            total_changes = [d.get('total_change_cents', 0) for d in dynamics_data]
+            volatilities = [d.get('volatility', 0) for d in dynamics_data]
+            value_ranges = [d.get('value_range_cents', 0) for d in dynamics_data]
+            
+            dynamics_summary = {
+                'avg_episode_change_cents': np.mean(total_changes),
+                'avg_volatility': np.mean(volatilities),
+                'avg_value_range_cents': np.mean(value_ranges),
+                'episodes_with_positive_change': sum(1 for c in total_changes if c > 0),
+                'episodes_with_negative_change': sum(1 for c in total_changes if c < 0),
+                'episodes_with_no_change': sum(1 for c in total_changes if c == 0)
+            }
+        else:
+            dynamics_summary = {}
+        
+        # Overall summary
         summary = {
             'episodes_completed': len(recent_episodes),
-            'avg_portfolio_value_cents': np.mean(portfolio_values),
-            'std_portfolio_value_cents': np.std(portfolio_values),
-            'min_portfolio_value_cents': np.min(portfolio_values),
-            'max_portfolio_value_cents': np.max(portfolio_values),
+            'avg_final_portfolio_value_cents': np.mean(final_values),
+            'std_final_portfolio_value_cents': np.std(final_values),
+            'min_final_portfolio_value_cents': np.min(final_values),
+            'max_final_portfolio_value_cents': np.max(final_values),
             'avg_episode_length': np.mean(episode_lengths),
-            'unique_markets_trained': len(set(ep['market_ticker'] for ep in recent_episodes))
+            'unique_markets_trained': len(set(ep['market_ticker'] for ep in recent_episodes)),
+            **dynamics_summary
         }
         
+        # Log summary
+        self.logger.info(f"\n{'='*60}")
         self.logger.info(f"Portfolio Summary (last {len(recent_episodes)} episodes):")
-        self.logger.info(f"  Avg portfolio value: {summary['avg_portfolio_value_cents']:.2f} cents")
-        self.logger.info(f"  Portfolio range: {summary['min_portfolio_value_cents']:.2f} - {summary['max_portfolio_value_cents']:.2f}")
-        self.logger.info(f"  Avg episode length: {summary['avg_episode_length']:.1f} steps")
-        self.logger.info(f"  Markets trained on: {summary['unique_markets_trained']}")
+        self.logger.info(f"  Final portfolio values:")
+        self.logger.info(f"    Average: {summary['avg_final_portfolio_value_cents']:.2f} cents")
+        self.logger.info(f"    Range: {summary['min_final_portfolio_value_cents']:.2f} - {summary['max_final_portfolio_value_cents']:.2f}")
+        self.logger.info(f"    Std dev: {summary['std_final_portfolio_value_cents']:.2f}")
+        
+        if dynamics_summary:
+            self.logger.info(f"  Episode dynamics:")
+            self.logger.info(f"    Avg change per episode: {dynamics_summary['avg_episode_change_cents']:.2f} cents")
+            self.logger.info(f"    Avg volatility: {dynamics_summary['avg_volatility']:.2f}")
+            self.logger.info(f"    Avg intra-episode range: {dynamics_summary['avg_value_range_cents']:.2f} cents")
+            self.logger.info(f"    Episodes with gains: {dynamics_summary['episodes_with_positive_change']}")
+            self.logger.info(f"    Episodes with losses: {dynamics_summary['episodes_with_negative_change']}")
+        
+        self.logger.info(f"  Training efficiency:")
+        self.logger.info(f"    Avg episode length: {summary['avg_episode_length']:.1f} steps")
+        self.logger.info(f"    Markets trained on: {summary['unique_markets_trained']}")
+        self.logger.info(f"{'='*60}")
         
         # Log to tensorboard if available
         if hasattr(self, 'logger') and hasattr(self.logger, 'record'):
             for key, value in summary.items():
-                self.logger.record(f"portfolio/{key}", value)
+                if isinstance(value, (int, float)):
+                    self.logger.record(f"portfolio/{key}", value)
     
     def get_episode_statistics(self) -> Dict[str, Any]:
-        """Get complete episode statistics."""
+        """Get complete episode statistics including dynamics analysis."""
         if not self.episode_portfolios:
             return {}
         
-        portfolio_values = [ep['portfolio_value_cents'] for ep in self.episode_portfolios]
+        final_values = [ep['final_portfolio_value_cents'] for ep in self.episode_portfolios]
         episode_lengths = [ep['episode_length'] for ep in self.episode_portfolios]
+        
+        # Analyze dynamics across all episodes
+        dynamics_data = [ep['portfolio_dynamics'] for ep in self.episode_portfolios if ep['portfolio_dynamics']]
+        
+        dynamics_stats = {}
+        if dynamics_data:
+            total_changes = [d.get('total_change_cents', 0) for d in dynamics_data]
+            volatilities = [d.get('volatility', 0) for d in dynamics_data]
+            value_ranges = [d.get('value_range_cents', 0) for d in dynamics_data]
+            
+            dynamics_stats = {
+                'total_change_stats': {
+                    'mean': np.mean(total_changes),
+                    'std': np.std(total_changes),
+                    'min': np.min(total_changes),
+                    'max': np.max(total_changes)
+                },
+                'volatility_stats': {
+                    'mean': np.mean(volatilities),
+                    'std': np.std(volatilities),
+                    'min': np.min(volatilities),
+                    'max': np.max(volatilities)
+                },
+                'value_range_stats': {
+                    'mean': np.mean(value_ranges),
+                    'std': np.std(value_ranges),
+                    'min': np.min(value_ranges),
+                    'max': np.max(value_ranges)
+                },
+                'trading_outcomes': {
+                    'positive_episodes': sum(1 for c in total_changes if c > 0),
+                    'negative_episodes': sum(1 for c in total_changes if c < 0),
+                    'neutral_episodes': sum(1 for c in total_changes if c == 0),
+                    'win_rate': sum(1 for c in total_changes if c > 0) / len(total_changes) if total_changes else 0.0
+                }
+            }
         
         return {
             'total_episodes': len(self.episode_portfolios),
             'portfolio_stats': {
-                'mean': np.mean(portfolio_values),
-                'std': np.std(portfolio_values),
-                'min': np.min(portfolio_values),
-                'max': np.max(portfolio_values),
-                'median': np.median(portfolio_values)
+                'mean': np.mean(final_values),
+                'std': np.std(final_values),
+                'min': np.min(final_values),
+                'max': np.max(final_values),
+                'median': np.median(final_values)
             },
             'episode_length_stats': {
                 'mean': np.mean(episode_lengths),
@@ -156,6 +378,12 @@ class PortfolioMetricsCallback(BaseCallback):
             'episodes_by_market': {
                 market: sum(1 for ep in self.episode_portfolios if ep['market_ticker'] == market)
                 for market in set(ep['market_ticker'] for ep in self.episode_portfolios)
+            },
+            'dynamics_statistics': dynamics_stats,
+            'sample_metadata': {
+                'sample_frequency': self.sample_freq,
+                'total_samples_collected': sum(ep['samples_collected'] for ep in self.episode_portfolios),
+                'avg_samples_per_episode': np.mean([ep['samples_collected'] for ep in self.episode_portfolios])
             }
         }
 
@@ -340,7 +568,8 @@ def create_callbacks(model_save_path: str,
                     save_freq: int = 10000,
                     eval_freq: int = 5000,
                     eval_env = None,
-                    portfolio_log_freq: int = 1000) -> CallbackList:
+                    portfolio_log_freq: int = 1000,
+                    portfolio_sample_freq: int = 100) -> CallbackList:
     """
     Create training callbacks for monitoring and checkpointing.
     
@@ -350,6 +579,7 @@ def create_callbacks(model_save_path: str,
         eval_freq: Frequency of model evaluation (timesteps)
         eval_env: Environment for evaluation (optional)
         portfolio_log_freq: Frequency of portfolio metrics logging (episodes)
+        portfolio_sample_freq: Frequency of portfolio sampling during episodes (steps)
         
     Returns:
         CallbackList with configured callbacks
@@ -364,8 +594,11 @@ def create_callbacks(model_save_path: str,
     )
     callbacks.append(checkpoint_callback)
     
-    # Portfolio metrics callback
-    portfolio_callback = PortfolioMetricsCallback(log_freq=portfolio_log_freq)
+    # Enhanced portfolio metrics callback
+    portfolio_callback = PortfolioMetricsCallback(
+        log_freq=portfolio_log_freq,
+        sample_freq=portfolio_sample_freq
+    )
     callbacks.append(portfolio_callback)
     
     # Evaluation callback (if eval environment provided)
@@ -494,7 +727,8 @@ async def train_with_curriculum(args) -> Dict[str, Any]:
                 model_save_path=str(models_dir / f"market_{market_count}_{market_ticker}_model.zip"),
                 save_freq=args.save_freq,
                 eval_freq=args.eval_freq,
-                portfolio_log_freq=args.portfolio_log_freq
+                portfolio_log_freq=args.portfolio_log_freq,
+                portfolio_sample_freq=args.portfolio_sample_freq
             )
             
             # Determine timesteps for this market (full episode or user override)
@@ -677,7 +911,8 @@ async def train_model(args) -> Dict[str, Any]:
         model_save_path=args.model_save_path,
         save_freq=args.save_freq,
         eval_freq=args.eval_freq,
-        portfolio_log_freq=args.portfolio_log_freq
+        portfolio_log_freq=args.portfolio_log_freq,
+        portfolio_sample_freq=args.portfolio_sample_freq
     )
     
     # Training loop
@@ -746,16 +981,16 @@ def main():
         epilog="""
 Examples:
   # Regular training on session with 10k timesteps
-  python train_with_sb3.py --session 9 --algorithm ppo --total-timesteps 10000
+  python train_sb3.py --session 9 --algorithm ppo --total-timesteps 10000
   
   # Curriculum training - each market gets its FULL episode length
-  python train_with_sb3.py --session 9 --curriculum --algorithm ppo
+  python train_sb3.py --session 9 --curriculum --algorithm ppo
   
   # Curriculum training with timestep limit per market (testing only)
-  python train_with_sb3.py --session 9 --curriculum --algorithm ppo --total-timesteps 100
+  python train_sb3.py --session 9 --curriculum --algorithm ppo --total-timesteps 100
   
   # Multiple sessions for regular training
-  python train_with_sb3.py --sessions 6,7,8,9 --algorithm a2c --total-timesteps 50000
+  python train_sb3.py --sessions 6,7,8,9 --algorithm a2c --total-timesteps 50000
         """
     )
     
@@ -783,8 +1018,6 @@ Examples:
                        help='Starting cash in cents (default: 10000 = $100)')
     parser.add_argument('--min-episode-length', type=int, default=10,
                        help='Minimum episode length for valid markets (default: 10)')
-    # REMOVED: --max-episode-steps parameter 
-    # Episodes now run to natural completion (end of session data)
     
     # Model persistence
     parser.add_argument('--model-save-path', default='src/kalshiflow_rl/trained_models/trained_model.zip',
@@ -799,6 +1032,8 @@ Examples:
                        help='Frequency of model evaluation in timesteps (default: 5000)')
     parser.add_argument('--portfolio-log-freq', type=int, default=1000,
                        help='Frequency of portfolio metrics logging in episodes (default: 1000)')
+    parser.add_argument('--portfolio-sample-freq', type=int, default=1,
+                       help='Frequency of portfolio sampling during episodes in steps (default: 100)')
     parser.add_argument('--log-interval', type=int, default=100,
                        help='Frequency of training log output in timesteps (default: 100)')
     
@@ -877,6 +1112,14 @@ Examples:
                     port_stats = stats['portfolio_stats']
                     print(f"  Avg portfolio value: {port_stats['mean']:.2f} cents")
                     print(f"  Portfolio range: {port_stats['min']:.2f} - {port_stats['max']:.2f}")
+                
+                # Show dynamics statistics if available
+                if stats.get('dynamics_statistics'):
+                    dyn_stats = stats['dynamics_statistics']
+                    if dyn_stats.get('trading_outcomes'):
+                        outcomes = dyn_stats['trading_outcomes']
+                        print(f"  Trading win rate: {outcomes['win_rate']:.2%}")
+                        print(f"  Episodes with gains: {outcomes['positive_episodes']}")
         
         print("="*80)
         
