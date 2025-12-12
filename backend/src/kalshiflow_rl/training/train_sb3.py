@@ -52,6 +52,7 @@ from kalshiflow_rl.training.sb3_wrapper import (
 )
 from kalshiflow_rl.training.simple_curriculum import SimpleMarketCurriculum
 from kalshiflow_rl.environments.market_agnostic_env import EnvConfig
+from kalshiflow_rl.diagnostics import M10DiagnosticsCallback
 
 
 class PortfolioMetricsCallback(BaseCallback):
@@ -569,7 +570,12 @@ def create_callbacks(model_save_path: str,
                     eval_freq: int = 5000,
                     eval_env = None,
                     portfolio_log_freq: int = 1000,
-                    portfolio_sample_freq: int = 100) -> CallbackList:
+                    portfolio_sample_freq: int = 100,
+                    # M10 Diagnostics parameters
+                    enable_m10_diagnostics: bool = True,
+                    session_id: Optional[int] = None,
+                    algorithm: str = "unknown",
+                    m10_console_freq: int = 500) -> CallbackList:
     """
     Create training callbacks for monitoring and checkpointing.
     
@@ -580,11 +586,34 @@ def create_callbacks(model_save_path: str,
         eval_env: Environment for evaluation (optional)
         portfolio_log_freq: Frequency of portfolio metrics logging (episodes)
         portfolio_sample_freq: Frequency of portfolio sampling during episodes (steps)
+        enable_m10_diagnostics: Enable M10 comprehensive diagnostics
+        session_id: Session ID for organized diagnostics output
+        algorithm: Algorithm name for diagnostics organization
         
     Returns:
         CallbackList with configured callbacks
     """
     callbacks = []
+    
+    # M10 Diagnostics callback (highest priority for HOLD behavior analysis)
+    if enable_m10_diagnostics:
+        models_dir = Path(model_save_path).parent
+        m10_callback = M10DiagnosticsCallback(
+            output_dir=str(models_dir),
+            session_id=session_id,
+            algorithm=algorithm,
+            action_tracking=True,
+            reward_analysis=True,
+            observation_validation=True,
+            console_output=True,
+            detailed_logging=True,
+            step_log_freq=1000,
+            episode_log_freq=100,
+            validation_freq=100,
+            console_summary_freq=m10_console_freq,
+            verbose=1
+        )
+        callbacks.append(m10_callback)
     
     # Checkpoint callback
     checkpoint_callback = CheckpointCallback(
@@ -594,7 +623,7 @@ def create_callbacks(model_save_path: str,
     )
     callbacks.append(checkpoint_callback)
     
-    # Enhanced portfolio metrics callback
+    # Enhanced portfolio metrics callback (for backward compatibility)
     portfolio_callback = PortfolioMetricsCallback(
         log_freq=portfolio_log_freq,
         sample_freq=portfolio_sample_freq
@@ -728,7 +757,11 @@ async def train_with_curriculum(args) -> Dict[str, Any]:
                 save_freq=args.save_freq,
                 eval_freq=args.eval_freq,
                 portfolio_log_freq=args.portfolio_log_freq,
-                portfolio_sample_freq=args.portfolio_sample_freq
+                portfolio_sample_freq=args.portfolio_sample_freq,
+                enable_m10_diagnostics=not args.disable_m10_diagnostics,
+                session_id=args.session,
+                algorithm=args.algorithm,
+                m10_console_freq=args.m10_console_freq
             )
             
             # Determine timesteps for this market (full episode or user override)
@@ -912,7 +945,11 @@ async def train_model(args) -> Dict[str, Any]:
         save_freq=args.save_freq,
         eval_freq=args.eval_freq,
         portfolio_log_freq=args.portfolio_log_freq,
-        portfolio_sample_freq=args.portfolio_sample_freq
+        portfolio_sample_freq=args.portfolio_sample_freq,
+        enable_m10_diagnostics=not args.disable_m10_diagnostics,
+        session_id=session_ids[0] if len(session_ids) == 1 else None,  # Single session for diagnostics
+        algorithm=args.algorithm,
+        m10_console_freq=args.m10_console_freq
     )
     
     # Training loop
@@ -980,14 +1017,17 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Regular training on session with 10k timesteps
+  # Regular training with M10 diagnostics (default)
   python train_sb3.py --session 9 --algorithm ppo --total-timesteps 10000
   
   # Curriculum training - each market gets its FULL episode length
   python train_sb3.py --session 9 --curriculum --algorithm ppo
   
-  # Curriculum training with timestep limit per market (testing only)
-  python train_sb3.py --session 9 --curriculum --algorithm ppo --total-timesteps 100
+  # Training with M10 diagnostics disabled for speed
+  python train_sb3.py --session 9 --algorithm ppo --disable-m10-diagnostics
+  
+  # Training with custom M10 console frequency
+  python train_sb3.py --session 9 --algorithm ppo --m10-console-freq 1000
   
   # Multiple sessions for regular training
   python train_sb3.py --sessions 6,7,8,9 --algorithm a2c --total-timesteps 50000
@@ -1020,8 +1060,8 @@ Examples:
                        help='Minimum episode length for valid markets (default: 10)')
     
     # Model persistence
-    parser.add_argument('--model-save-path', default='src/kalshiflow_rl/trained_models/trained_model.zip',
-                       help='Path to save final trained model (default: src/kalshiflow_rl/trained_models/trained_model.zip)')
+    parser.add_argument('--model-save-path', default='backend/src/kalshiflow_rl/trained_models/trained_model.zip',
+                       help='Path to save final trained model (default: backend/src/kalshiflow_rl/trained_models/trained_model.zip)')
     parser.add_argument('--resume-from', type=str,
                        help='Path to model checkpoint to resume training from')
     parser.add_argument('--save-freq', type=int, default=10000,
@@ -1036,6 +1076,12 @@ Examples:
                        help='Frequency of portfolio sampling during episodes in steps (default: 100)')
     parser.add_argument('--log-interval', type=int, default=100,
                        help='Frequency of training log output in timesteps (default: 100)')
+    
+    # M10 Diagnostics
+    parser.add_argument('--disable-m10-diagnostics', action='store_true',
+                       help='Disable M10 comprehensive diagnostics (action/reward/observation tracking)')
+    parser.add_argument('--m10-console-freq', type=int, default=500,
+                       help='Frequency of M10 console diagnostic summaries in steps (default: 500)')
     
     # Technical configuration  
     parser.add_argument('--device', default='auto',

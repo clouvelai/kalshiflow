@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv
+
+# Training artifacts
+src/kalshiflow_rl/trained_models/
+*.zip
+*.pkl
+*.pth
+
+# Logs
+*.log
+*.jsonl
+diagnostics.log
+diagnostics.jsonl
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
