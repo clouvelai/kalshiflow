@@ -1,153 +1,192 @@
-# RL System Defects and Fixes
+# RL System Defects - Severity Ranked
 
-This document tracks ML/environment bugs and their resolutions, ordered by severity.
+Last Updated: 2025-12-11 21:40
 
-## Fixed Issues
+## Critical Defects (Training Blockers)
 
-### 1. [FIXED] M10DiagnosticsCallback Logger Property Conflict
-**Severity**: Critical - Prevents training from starting
-**Date Found**: 2025-12-11
-**Date Fixed**: 2025-12-11
-
-**Bug Description**: 
-The M10DiagnosticsCallback was trying to set `self.logger` which conflicts with the read-only `logger` property from SB3's BaseCallback class. This caused an AttributeError: "property 'logger' of 'M10DiagnosticsCallback' object has no setter".
-
-**Reproduction Steps**:
-1. Create M10DiagnosticsCallback instance
-2. Attempt to train any SB3 model with the callback
-3. Training fails immediately with AttributeError
-
-**Impact Assessment**: 
-- Completely blocks M10 instrumented training
-- Prevents collection of critical diagnostics for debugging HOLD-only behavior
-- No workaround possible without code changes
-
-**Fix Applied**:
-Renamed the internal logger from `self.logger` to `self.diagnostics_logger` throughout the callback class to avoid conflict with SB3's BaseCallback property.
-
-**Files Modified**:
-- `/src/kalshiflow_rl/diagnostics/m10_callback.py`
-  - Line 115: Changed `self.logger` to `self.diagnostics_logger`
-  - Updated all 11 references throughout the file
-
-**Verification**:
-```python
-# Test that callback can be instantiated
-callback = M10DiagnosticsCallback(output_dir="./test", session_id=1, algorithm="PPO")
-assert hasattr(callback, 'diagnostics_logger')  # Our logger
-# callback.logger now accesses SB3's property without conflict
+### 1. HOLD-Only Agent Behavior
+**Severity**: CRITICAL
+**Component**: MarketAgnosticKalshiEnv / Training Loop
+**Description**: Agent converges to only taking HOLD action (action 0), never placing trades
+**Reproduction**:
+```bash
+python train_sb3.py --session 9 --algorithm ppo --total-timesteps 10000
+# Observe action distribution in logs - 99%+ HOLD actions
 ```
+**Impact**: No trading = no learning signal = no profitability
+**Root Cause**: 
+- Sparse reward signal (only on portfolio value change)
+- Low entropy coefficient (0.01) discourages exploration
+- No exploration bonuses in reward function
+**Suggested Fix**:
+1. Add exploration bonus to reward function in `market_agnostic_env.py`:
+   ```python
+   # In step() method after calculating reward
+   if action != 0:  # Non-HOLD action
+       reward += 0.001  # Small exploration bonus
+   ```
+2. Increase entropy coefficient in `train_sb3.py` get_default_model_params():
+   ```python
+   "ent_coef": 0.1,  # Was 0.01
+   ```
 
----
+### 2. Episode Boundaries Not Respecting Market Sessions
+**Severity**: HIGH
+**Component**: SessionBasedEnvironment
+**Description**: Episodes may span multiple markets, leaking future information
+**Reproduction**:
+```bash
+python train_sb3.py --session 9 --algorithm ppo --total-timesteps 5000
+# Check logs for market switches mid-episode
+```
+**Impact**: Agent learns from future data it shouldn't have access to
+**Root Cause**: Episode length based on timesteps, not market boundaries
+**Suggested Fix**:
+- Already fixed in curriculum mode - use that as default
+- Or modify SessionBasedEnvironment to force reset on market change
 
-## Open Issues
+## High Severity (Performance Issues)
 
-### 2. [CRITICAL] Feature Health POOR During Early Training
-**Severity**: Critical - Severely impacts early learning
-**Date Found**: 2025-12-12
+### 3. Insufficient Training Duration Default
+**Severity**: HIGH
+**Component**: train_sb3.py defaults
+**Description**: Default training timesteps too low for convergence
+**Reproduction**: Run training with default settings
+**Impact**: Agent doesn't learn meaningful patterns
+**Root Cause**: Conservative defaults for testing
+**Suggested Fix**:
+- Change default --total-timesteps from None to 100000
+- Add warning if timesteps < 50000
 
-**Bug Description**:
-M10 diagnostics show "Feature health: POOR" during early training, improving to "GOOD" later. This indicates unstable or invalid features during the critical early learning phase.
-
-**Reproduction Steps**:
-1. Run training with M10 diagnostics enabled
-2. Monitor feature health status in console output
-3. Observe transition from POOR → GOOD during training
-
-**Impact Assessment**:
-- Critical impact on early learning when agent forms initial policies
-- May cause agent to learn from corrupted/invalid features
-- Could lead to poor local optima or unstable training
-- Difficult to recover from bad initial learning
-
-**Root Cause Hypotheses**:
-1. **Uninitialized orderbook data**: Empty orderbooks at episode start causing NaN/Inf in calculations
-2. **Division by zero**: Price/spread calculations when no orders exist
-3. **Extreme outliers**: Temporal features with undefined gaps
-4. **Portfolio initialization**: Uninitialized position features
-
+### 4. Fixed Hyperparameters Not Tuned for Trading
+**Severity**: HIGH
+**Component**: get_default_model_params()
+**Description**: PPO hyperparameters use generic defaults not optimized for trading
+**Reproduction**: Compare training performance with different hyperparameters
+**Impact**: Slow or failed convergence
+**Root Cause**: Using Stable Baselines3 defaults
 **Suggested Fix**:
 ```python
-# In environment's _get_observation():
-1. Add feature validation and clipping:
-   features = np.clip(features, -1e6, 1e6)
-   features = np.nan_to_num(features, nan=0.0, posinf=1e6, neginf=-1e6)
-
-2. Add normalization layer:
-   features = (features - self.feature_mean) / (self.feature_std + 1e-8)
-
-3. Add warm-up handling:
-   if self.current_step < 5:  # Warm-up period
-       return self._get_stable_initial_observation()
-
-4. Add detailed logging:
-   if np.any(np.isnan(features)) or np.any(np.isinf(features)):
-       log.warning(f"Invalid features detected at step {self.current_step}")
+def get_default_model_params(algorithm: str) -> Dict[str, Any]:
+    if algorithm.lower() == "ppo":
+        return {
+            "learning_rate": 1e-4,  # Was 3e-4
+            "n_steps": 8192,  # Was 2048
+            "batch_size": 256,  # Was 64
+            "n_epochs": 10,
+            "gamma": 0.99,
+            "gae_lambda": 0.95,
+            "clip_range": 0.2,
+            "ent_coef": 0.1,  # Was 0.01
+            "vf_coef": 0.5,
+            "max_grad_norm": 0.5,
+            "verbose": 1
+        }
 ```
 
-**Verification**:
-- Check feature statistics at each step
-- Monitor for NaN/Inf values
-- Validate feature ranges
-- Test with synthetic stable data first
+## Medium Severity (Feature Gaps)
 
----
-
-### 3. [OPEN] Environment Observation Space Mismatch
-**Severity**: High - May cause training instability
-**Date Found**: 2025-12-11
-
-**Bug Description**:
-Potential mismatch between declared observation space shape and actual observations returned by the environment.
-
-**Reproduction Steps**:
-1. Create MarketAgnosticKalshiEnv
-2. Call reset() and step()
-3. Compare observation shape with env.observation_space
-
-**Impact Assessment**:
-- Could cause silent training failures
-- May lead to poor model performance
-- Difficult to diagnose without explicit validation
-
+### 5. No Order Imbalance Features
+**Severity**: MEDIUM
+**Component**: feature_extractors.py
+**Description**: Missing orderbook imbalance signals crucial for price prediction
+**Reproduction**: Check observation features - no imbalance metrics
+**Impact**: Agent misses key microstructure signals
+**Root Cause**: Not implemented in initial feature set
 **Suggested Fix**:
-Add observation shape validation in environment's step() and reset() methods. Ensure consistency between declared space and actual observations.
+```python
+def extract_market_features():
+    # Add after existing features
+    total_bid_volume = sum(orderbook.yes_bids.values()) + sum(orderbook.no_bids.values())
+    total_ask_volume = sum(orderbook.yes_asks.values()) + sum(orderbook.no_asks.values())
+    imbalance = (total_bid_volume - total_ask_volume) / (total_bid_volume + total_ask_volume + 1e-8)
+    features.append(np.clip(imbalance, -1, 1))
+```
+
+### 6. Fixed Contract Size Limitation
+**Severity**: MEDIUM
+**Component**: LimitOrderActionSpace
+**Description**: Hardcoded 10 contract size limits position flexibility
+**Reproduction**: Check order placement - always 10 contracts
+**Impact**: Can't scale positions based on confidence
+**Root Cause**: Simplification for initial implementation
+**Suggested Fix**:
+- Add position_size parameter to action space
+- Or implement multiple size levels (5, 10, 20 contracts)
+
+### 7. No Momentum Indicators
+**Severity**: MEDIUM
+**Component**: feature_extractors.py
+**Description**: Missing price momentum features for trend detection
+**Reproduction**: Check temporal features - no momentum metrics
+**Impact**: Agent can't detect trends effectively
+**Root Cause**: Not in initial feature design
+**Suggested Fix**:
+- Add rolling price changes over multiple windows
+- Include RSI-like indicators
+
+## Low Severity (Nice to Have)
+
+### 8. M10 Diagnostics Not Enabled by Default
+**Severity**: LOW
+**Component**: train_sb3.py
+**Description**: Diagnostic callbacks disabled by default
+**Reproduction**: Run training without --disable-m10-diagnostics flag
+**Impact**: Harder to debug training issues
+**Root Cause**: Performance consideration
+**Suggested Fix**: Enable by default, add --disable flag for production
+
+### 9. No Learning Rate Scheduling
+**Severity**: LOW
+**Component**: Model creation in train_sb3.py
+**Description**: Fixed learning rate throughout training
+**Reproduction**: Check model parameters during training
+**Impact**: Suboptimal convergence
+**Root Cause**: Not implemented
+**Suggested Fix**: Add learning rate scheduler callback
+
+### 10. Missing Sharpe Ratio in Episode Metrics
+**Severity**: LOW
+**Component**: PortfolioMetricsCallback
+**Description**: No Sharpe ratio calculation during training
+**Reproduction**: Check episode statistics output
+**Impact**: Harder to evaluate risk-adjusted returns
+**Root Cause**: Not implemented in initial version
+**Suggested Fix**: Add Sharpe calculation to episode statistics
+
+## Known Issues (Won't Fix)
+
+### 11. Async Warning in Action Execution
+**Severity**: MINIMAL
+**Component**: LimitOrderActionSpace
+**Description**: "asyncio.run() cannot be called from running event loop" warning
+**Reproduction**: Run any training
+**Impact**: Cosmetic warning only, functionality works
+**Root Cause**: Sync wrapper for async code
+**Note**: Doesn't affect training, safe to ignore
 
 ---
 
-### 3. [RESOLVED] Reward Signal NOT Sparse
-**Severity**: Medium - Affects learning efficiency
-**Date Found**: 2025-12-11
-**Date Resolved**: 2025-12-12
+## Priority Fix Order
 
-**Bug Description**:
-Reward signal was suspected to be extremely sparse, potentially causing HOLD-only behavior.
+1. **Fix HOLD-only behavior** (Critical - prevents any learning)
+2. **Increase default training duration** (Easy fix, high impact)
+3. **Tune hyperparameters** (Simple config change, major improvement)
+4. **Add exploration features** (Medium effort, good impact)
+5. **Enable M10 diagnostics by default** (Help debugging)
 
-**Resolution**: 
-M10 diagnostics revealed this was a misdiagnosis:
-- Only ~17% zero rewards (much better than expected)
-- Strong learning signal detected
-- Agent shows 79% trading actions (NOT HOLD-only)
-- Reward progression: -39.74 → +66.36 during training
+## Testing After Fixes
 
-**Key Finding**:
-The reward signal is actually quite rich. The issue was incorrect assumptions about agent behavior. The system is learning appropriately.
+After implementing fixes, validate with:
+```bash
+# Test exploration fix
+python train_sb3.py --session 9 --curriculum --algorithm ppo \
+  --learning-rate 0.0001 --total-timesteps 100000 \
+  --m10-console-freq 100
 
-**No Fix Needed**: Reward signal quality is good. Focus should shift to feature quality issues instead.
-
----
-
-## Testing Protocol
-
-For each defect fix:
-1. Write unit test to verify the specific bug is fixed
-2. Run integration test with actual training
-3. Monitor for regression in future changes
-4. Document verification steps
-
-## Notes
-
-- Defects are ordered by severity (Critical > High > Medium > Low)
-- Each fix should be verified with automated tests when possible
-- Keep reproduction steps minimal but complete
-- Track both the symptom and root cause
+# Check diagnostics for:
+# - Action distribution (should show non-HOLD actions)
+# - Reward signal strength
+# - Portfolio value changes
+# - Episode boundaries
+```
