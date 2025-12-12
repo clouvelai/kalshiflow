@@ -55,6 +55,41 @@ from kalshiflow_rl.environments.market_agnostic_env import EnvConfig
 from kalshiflow_rl.diagnostics import M10DiagnosticsCallback
 
 
+def generate_safe_model_path(session_ids: List[int], algorithm: str, is_curriculum: bool = False, 
+                           base_dir: str = "trained_models") -> str:
+    """
+    Generate a safe, timestamped model save path to prevent overwriting checkpoints.
+    
+    Args:
+        session_ids: List of session IDs being trained on
+        algorithm: RL algorithm name (ppo, a2c)
+        is_curriculum: Whether this is curriculum training
+        base_dir: Base directory for saving models
+        
+    Returns:
+        Safe path like: trained_models/session10_ppo_20251212_031500/model.zip
+    """
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    
+    if is_curriculum:
+        if len(session_ids) == 1:
+            dir_name = f"curriculum_session{session_ids[0]}_{algorithm}_{timestamp}"
+        else:
+            session_str = "_".join(map(str, session_ids))
+            dir_name = f"curriculum_sessions{session_str}_{algorithm}_{timestamp}"
+    else:
+        if len(session_ids) == 1:
+            dir_name = f"session{session_ids[0]}_{algorithm}_{timestamp}"
+        else:
+            session_str = "_".join(map(str, session_ids))
+            dir_name = f"sessions{session_str}_{algorithm}_{timestamp}"
+    
+    safe_dir = Path(base_dir) / dir_name
+    safe_dir.mkdir(parents=True, exist_ok=True)
+    
+    return str(safe_dir / "model.zip")
+
+
 class PortfolioMetricsCallback(BaseCallback):
     """
     Enhanced callback to track portfolio metrics during training episodes.
@@ -535,17 +570,17 @@ def create_model(algorithm: str, env, model_params: Dict[str, Any], device: str 
 
 
 def get_default_model_params(algorithm: str) -> Dict[str, Any]:
-    """Get default parameters for SB3 algorithms."""
+    """Get default parameters for SB3 algorithms - tuned for trading."""
     if algorithm.lower() == "ppo":
         return {
-            "learning_rate": 3e-4,
-            "n_steps": 2048,
-            "batch_size": 64,
+            "learning_rate": 1e-4,  # Reduced from 3e-4 for more stable updates
+            "n_steps": 4096,  # Increased from 2048 for better advantage estimation
+            "batch_size": 256,  # Increased from 64 for more stable gradients
             "n_epochs": 10,
             "gamma": 0.99,
             "gae_lambda": 0.95,
             "clip_range": 0.2,
-            "ent_coef": 0.01,
+            "ent_coef": 0.05,  # Increased from 0.01 to encourage exploration
             "vf_coef": 0.5,
             "max_grad_norm": 0.5,
             "verbose": 1
@@ -683,8 +718,34 @@ async def train_with_curriculum(args) -> Dict[str, Any]:
     if args.learning_rate:
         model_params['learning_rate'] = args.learning_rate
     
-    # Initialize model as None - will be created for first market
+    # Initialize model - either load from checkpoint or create later
     model = None
+    
+    # Load pre-trained model if specified
+    if args.from_model_checkpoint and Path(args.from_model_checkpoint).exists():
+        logger.info(f"Loading pre-trained model from: {args.from_model_checkpoint}")
+        logger.info("Note: Using pre-trained policy for curriculum learning on new session")
+        # Create dummy env to load model (will be replaced with actual market env)
+        from kalshiflow_rl.environments.market_agnostic_env import MarketAgnosticKalshiEnv
+        # Get first viable market to create dummy env
+        first_market_ticker = curriculum.viable_markets[0][0] if curriculum.viable_markets else None
+        if first_market_ticker:
+            first_market_view = curriculum.create_market_view(first_market_ticker)
+            dummy_env = DummyVecEnv([lambda: Monitor(MarketAgnosticKalshiEnv(
+                market_view=first_market_view,
+                config=create_env_config(cash_start=args.cash_start, max_markets=1, temporal_features=True)
+            ), filename=None)])
+            
+            if args.algorithm.lower() == "ppo":
+                model = PPO.load(args.from_model_checkpoint, env=dummy_env, device=args.device,
+                               custom_objects={'learning_rate': model_params.get('learning_rate', 3e-4)})
+            else:  # a2c
+                model = A2C.load(args.from_model_checkpoint, env=dummy_env, device=args.device,
+                               custom_objects={'learning_rate': model_params.get('learning_rate', 7e-4)})
+            model.num_timesteps = 0  # Reset timestep counter for fresh curriculum
+            logger.info(f"Pre-trained model loaded, starting curriculum on session {args.session}")
+        else:
+            logger.warning("No viable markets found, cannot load pre-trained model")
     
     # Setup model save paths
     models_dir = Path(args.model_save_path).parent
@@ -822,9 +883,28 @@ async def train_with_curriculum(args) -> Dict[str, Any]:
     
     # Save final model after all markets
     if model is not None:
-        logger.info(f"Saving final curriculum-trained model to {args.model_save_path}")
-        model.save(args.model_save_path)
-        curriculum_results['final_model_path'] = args.model_save_path
+        # Auto-generate safe save path if loading from checkpoint
+        final_model_save_path = args.model_save_path
+        if args.from_model_checkpoint:
+            # Check if user explicitly provided a different save path
+            default_save_path = 'trained_models/trained_model.zip'
+            
+            if args.model_save_path == default_save_path:
+                # User didn't override save path, so generate a safe one for curriculum
+                final_model_save_path = generate_safe_model_path(
+                    session_ids=[args.session], 
+                    algorithm=args.algorithm, 
+                    is_curriculum=True
+                )
+                logger.info(f"Auto-generated safe save path for curriculum training:")
+                logger.info(f"  Source checkpoint: {args.from_model_checkpoint}")
+                logger.info(f"  New save location: {final_model_save_path}")
+            else:
+                logger.info(f"Using user-specified save path: {final_model_save_path}")
+        
+        logger.info(f"Saving final curriculum-trained model to {final_model_save_path}")
+        model.save(final_model_save_path)
+        curriculum_results['final_model_path'] = final_model_save_path
     
     # Finalize results
     curriculum_results['training_end'] = datetime.now()
@@ -843,7 +923,7 @@ async def train_with_curriculum(args) -> Dict[str, Any]:
     logger.info(f"Session {args.session}: Trained on {len(curriculum_results['markets_trained'])} markets")
     logger.info(f"Total duration: {curriculum_results['total_duration']:.2f} seconds")
     logger.info(f"Results saved to: {results_path}")
-    logger.info(f"Final model saved to: {args.model_save_path}")
+    logger.info(f"Final model saved to: {curriculum_results['final_model_path']}")
     
     return curriculum_results
 
@@ -921,17 +1001,53 @@ async def train_model(args) -> Dict[str, Any]:
     # Create or load model
     logger.info(f"Creating {args.algorithm.upper()} model...")
     
+    # Handle model loading with two different modes
     if args.resume_from and Path(args.resume_from).exists():
-        logger.info(f"Loading model from {args.resume_from}")
+        # Resume training (same session/environment) - preserves optimizer state
+        logger.info(f"Resuming training from checkpoint: {args.resume_from}")
         if args.algorithm.lower() == "ppo":
             model = PPO.load(args.resume_from, env=vec_env, device=args.device)
         else:  # a2c
             model = A2C.load(args.resume_from, env=vec_env, device=args.device)
+    elif args.from_model_checkpoint and Path(args.from_model_checkpoint).exists():
+        # Transfer learning (different session/environment) - loads policy but resets optimizer
+        logger.info(f"Loading pre-trained model from: {args.from_model_checkpoint}")
+        logger.info("Note: Transferring learned policy to new environment, optimizer state reset")
+        if args.algorithm.lower() == "ppo":
+            model = PPO.load(args.from_model_checkpoint, env=vec_env, device=args.device, 
+                           custom_objects={'learning_rate': model_params.get('learning_rate', 3e-4)})
+        else:  # a2c
+            model = A2C.load(args.from_model_checkpoint, env=vec_env, device=args.device,
+                           custom_objects={'learning_rate': model_params.get('learning_rate', 7e-4)})
+        # Reset num timesteps for fresh training on new session
+        model.num_timesteps = 0
+        logger.info(f"Model loaded successfully, starting fresh training on session(s): {session_ids}")
     else:
         model = create_model(args.algorithm, vec_env, model_params, args.device)
     
+    # Auto-generate safe save path if loading from checkpoint
+    final_model_save_path = args.model_save_path
+    if args.resume_from or args.from_model_checkpoint:
+        # Check if user explicitly provided a different save path
+        parser_defaults = argparse.ArgumentParser().parse_args([])
+        default_save_path = 'trained_models/trained_model.zip'
+        
+        if args.model_save_path == default_save_path:
+            # User didn't override save path, so generate a safe one
+            checkpoint_source = args.resume_from if args.resume_from else args.from_model_checkpoint
+            final_model_save_path = generate_safe_model_path(
+                session_ids=session_ids, 
+                algorithm=args.algorithm, 
+                is_curriculum=False
+            )
+            logger.info(f"Auto-generated safe save path to prevent overwriting checkpoint:")
+            logger.info(f"  Source checkpoint: {checkpoint_source}")
+            logger.info(f"  New save location: {final_model_save_path}")
+        else:
+            logger.info(f"Using user-specified save path: {final_model_save_path}")
+    
     # Setup model save paths
-    models_dir = Path(args.model_save_path).parent
+    models_dir = Path(final_model_save_path).parent
     models_dir.mkdir(parents=True, exist_ok=True)
     
     # Create progress monitor
@@ -941,7 +1057,7 @@ async def train_model(args) -> Dict[str, Any]:
     
     # Create callbacks
     callbacks = create_callbacks(
-        model_save_path=args.model_save_path,
+        model_save_path=final_model_save_path,
         save_freq=args.save_freq,
         eval_freq=args.eval_freq,
         portfolio_log_freq=args.portfolio_log_freq,
@@ -968,8 +1084,8 @@ async def train_model(args) -> Dict[str, Any]:
         logger.info(f"Training completed in {training_duration:.2f} seconds")
         
         # Save final model
-        logger.info(f"Saving final model to {args.model_save_path}")
-        model.save(args.model_save_path)
+        logger.info(f"Saving final model to {final_model_save_path}")
+        model.save(final_model_save_path)
         
         # Get portfolio callback for statistics
         portfolio_callback = next(
@@ -985,7 +1101,7 @@ async def train_model(args) -> Dict[str, Any]:
             'timesteps_per_second': args.total_timesteps / training_duration,
             'algorithm': args.algorithm,
             'session_ids': session_ids,
-            'final_model_path': args.model_save_path,
+            'final_model_path': final_model_save_path,
             'environment_info': env.unwrapped.get_market_rotation_info() if hasattr(env.unwrapped, 'get_market_rotation_info') else {},
             'portfolio_statistics': portfolio_callback.get_episode_statistics() if portfolio_callback else {},
             'progress_summary': progress_monitor.get_progress_summary()
@@ -1060,10 +1176,13 @@ Examples:
                        help='Minimum episode length for valid markets (default: 10)')
     
     # Model persistence
-    parser.add_argument('--model-save-path', default='backend/src/kalshiflow_rl/trained_models/trained_model.zip',
-                       help='Path to save final trained model (default: backend/src/kalshiflow_rl/trained_models/trained_model.zip)')
+    parser.add_argument('--model-save-path', default='trained_models/trained_model.zip',
+                       help='Path to save final trained model (default: trained_models/trained_model.zip)')
     parser.add_argument('--resume-from', type=str,
-                       help='Path to model checkpoint to resume training from')
+                       help='Path to model checkpoint to resume training from (same session/environment)')
+    parser.add_argument('--from-model-checkpoint', type=str,
+                       help='Path to model checkpoint to continue training from (different session/environment). ' + 
+                            'Use this to transfer learned knowledge from one session to another.')
     parser.add_argument('--save-freq', type=int, default=10000,
                        help='Frequency of model checkpointing in timesteps (default: 10000)')
     
@@ -1101,6 +1220,13 @@ Examples:
         if not args.session:
             print("❌ Error: --curriculum mode requires --session to be specified")
             sys.exit(1)
+    
+    # Validate model loading arguments
+    if args.resume_from and args.from_model_checkpoint:
+        print("❌ Error: Cannot use both --resume-from and --from-model-checkpoint")
+        print("  --resume-from: Continue training on same session (preserves optimizer state)")
+        print("  --from-model-checkpoint: Transfer learning to new session (resets optimizer)")
+        sys.exit(1)
     
     # Run training
     try:

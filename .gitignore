@@ -99,5 +99,5 @@ test-results/
 *.pem
 
 # RL Training artifacts
-backend/src/kalshiflow_rl/trained_models/
+backend/trained_models/
 models/
