@@ -177,35 +177,47 @@ async def lifespan(app: Starlette):
             )
             logger.info("LiveObservationAdapter created")
             
-            # Create KalshiMultiMarketOrderManager (skip demo client init for now)
+            # Create KalshiMultiMarketOrderManager
             global order_manager
             order_manager = KalshiMultiMarketOrderManager(initial_cash=10000.0)
-            # Skip initialize() to avoid demo client credential issues for now
-            # We'll just test the pipeline without actual trading
-            logger.info("KalshiMultiMarketOrderManager created (demo client skipped)")
             
-            # Create ActorService
-            global actor_service
-            actor_service = ActorService(
-                market_tickers=market_tickers,
-                model_path=config.RL_ACTOR_MODEL_PATH,  # Use config value
-                queue_size=1000,
-                throttle_ms=config.RL_ACTOR_THROTTLE_MS,
-                event_bus=event_bus,
-                observation_adapter=observation_adapter
-            )
+            # Initialize OrderManager (requires credentials - fail fast if missing)
+            try:
+                await order_manager.initialize()
+                logger.info("✅ KalshiMultiMarketOrderManager initialized successfully")
+            except Exception as e:
+                logger.error(f"❌ Failed to initialize OrderManager: {e}")
+                logger.error("ActorService disabled - OrderManager requires valid credentials")
+                order_manager = None
+                actor_service = None
+                observation_adapter = None
+                # Continue without ActorService - orderbook collector still works
+                logger.info("Continuing without ActorService (orderbook collection only)")
             
-            # Set action selector stub (returns HOLD)
-            actor_service.set_action_selector(select_action_stub)
-            logger.info("Action selector stub configured")
-            
-            # Set order manager
-            actor_service.set_order_manager(order_manager)
-            logger.info("Order manager configured")
-            
-            # Initialize ActorService (subscribes to event bus and starts processing loop)
-            await actor_service.initialize()
-            logger.info("✅ ActorService initialized and ready")
+            # Only proceed with ActorService if OrderManager initialized successfully
+            if order_manager:
+                # Create ActorService
+                global actor_service
+                actor_service = ActorService(
+                    market_tickers=market_tickers,
+                    model_path=config.RL_ACTOR_MODEL_PATH,  # Use config value
+                    queue_size=1000,
+                    throttle_ms=config.RL_ACTOR_THROTTLE_MS,
+                    event_bus=event_bus,
+                    observation_adapter=observation_adapter
+                )
+                
+                # Set action selector stub (returns HOLD)
+                actor_service.set_action_selector(select_action_stub)
+                logger.info("Action selector stub configured")
+                
+                # Set order manager
+                actor_service.set_order_manager(order_manager)
+                logger.info("Order manager configured")
+                
+                # Initialize ActorService (subscribes to event bus and starts processing loop)
+                await actor_service.initialize()
+                logger.info("✅ ActorService initialized and ready")
         else:
             logger.info("ActorService disabled - orderbook collector only mode")
             actor_service = None

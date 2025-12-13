@@ -297,14 +297,10 @@ class ActorService:
         if market_ticker not in self.market_tickers:
             return False
         
-        # Apply per-market throttling
+        # Note: Throttling happens at execution time, not queue time
+        # This allows events to queue up but ensures actions are throttled based on actual execution
+        
         current_time = time.time()
-        last_action_time = self._per_market_throttle.get(market_ticker, 0)
-        
-        if (current_time - last_action_time) * 1000 < self.throttle_ms:
-            # Still in throttle period, skip this update
-            return False
-        
         event = ActorEvent(
             market_ticker=market_ticker,
             update_type=update_type,
@@ -317,8 +313,8 @@ class ActorService:
             # Non-blocking queue put with immediate return
             self._event_queue.put_nowait(event)
             
-            # Update throttling timestamp on successful queue
-            self._per_market_throttle[market_ticker] = current_time
+            # Note: Throttle timestamp updated after execution, not on queue
+            # This ensures throttling is based on actual action execution time
             
             self.metrics.events_queued += 1
             self.metrics.queue_depth = self._event_queue.qsize()
@@ -574,6 +570,22 @@ class ActorService:
                     except Exception as e2:
                         logger.warning(f"Could not get orderbook snapshot from global registry: {e2}")
             
+            # Validate orderbook snapshot is available for non-HOLD actions
+            # Fail fast if missing - don't proceed with default price
+            if action != 0 and orderbook_snapshot is None:
+                logger.error(
+                    f"Cannot execute action {action} for {market_ticker}: "
+                    f"orderbook snapshot unavailable. Skipping execution."
+                )
+                self._error_counts[market_ticker] += 1
+                self.metrics.errors += 1
+                self.metrics.last_error = f"Missing orderbook snapshot for {market_ticker}"
+                return {
+                    "status": "error",
+                    "error": "orderbook_snapshot_unavailable",
+                    "executed": False
+                }
+            
             # Check if order manager is a KalshiMultiMarketOrderManager instance or a callable
             if hasattr(self._order_manager, 'execute_limit_order_action'):
                 # Use KalshiMultiMarketOrderManager instance
@@ -586,6 +598,9 @@ class ActorService:
             
             if result and result.get("executed"):
                 self.metrics.orders_executed += 1
+                # Update throttle timestamp after successful execution
+                # This ensures throttling is based on actual action execution time, not queue time
+                self._per_market_throttle[market_ticker] = time.time()
             
             return result
         except Exception as e:

@@ -94,7 +94,7 @@ class TestActorService:
         assert service.metrics.events_queued == 1
         assert service.metrics.queue_depth == 1
         
-        # Test throttling
+        # Test that events can be queued immediately (throttling happens at execution time)
         immediate_success = await service.trigger_event(
             market_ticker="TEST-MARKET-1",
             update_type="delta",
@@ -102,34 +102,32 @@ class TestActorService:
             timestamp_ms=int(time.time() * 1000)
         )
         
-        # Should be throttled (50ms minimum)
-        assert not immediate_success
-        assert service.metrics.events_queued == 1  # No new event added
+        # Events can be queued immediately - throttling happens at execution time
+        assert immediate_success
+        assert service.metrics.events_queued == 2  # Both events queued
     
     @pytest.mark.asyncio
     async def test_throttling_behavior(self, mock_actor_service):
-        """Test per-market throttling behavior."""
+        """Test per-market throttling behavior at execution time."""
         service = mock_actor_service
         
         market1 = "TEST-MARKET-1"
         market2 = "TEST-MARKET-2"
         
-        # First event should succeed
+        # Events can be queued immediately - throttling happens at execution time
         success1 = await service.trigger_event(market1, "snapshot", 100, int(time.time() * 1000))
         assert success1
         
-        # Immediate second event for same market should be throttled
+        # Immediate second event for same market can also be queued
         success2 = await service.trigger_event(market1, "delta", 101, int(time.time() * 1000))
-        assert not success2
+        assert success2
         
-        # Different market should not be throttled
+        # Different market can also be queued
         success3 = await service.trigger_event(market2, "snapshot", 102, int(time.time() * 1000))
         assert success3
         
-        # After throttle period, same market should work again
-        await asyncio.sleep(0.06)  # Wait longer than 50ms throttle
-        success4 = await service.trigger_event(market1, "delta", 103, int(time.time() * 1000))
-        assert success4
+        # Note: Actual throttling happens during execution in _safe_execute_action()
+        # This test verifies that events can be queued without throttling at queue time
     
     @pytest.mark.asyncio
     async def test_error_handling(self, mock_actor_service):

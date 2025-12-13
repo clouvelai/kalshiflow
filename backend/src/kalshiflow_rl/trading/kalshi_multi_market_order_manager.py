@@ -168,15 +168,37 @@ class KalshiMultiMarketOrderManager:
         logger.info(f"KalshiMultiMarketOrderManager initialized with ${initial_cash:.2f}")
     
     async def initialize(self) -> None:
-        """Initialize the order manager and start fill processing."""
+        """
+        Initialize the order manager and start fill processing.
+        
+        Requires valid Kalshi API credentials. Validates credentials before
+        attempting connection and fails fast if missing.
+        
+        Raises:
+            KalshiDemoAuthError: If credentials are missing or invalid
+            Exception: If client connection fails
+        """
         logger.info("Initializing KalshiMultiMarketOrderManager...")
         
-        # Initialize trading client
+        # Validate credentials are available before attempting connection
+        from ..config import config
+        from .demo_client import KalshiDemoAuthError
+        
+        if not config.KALSHI_API_KEY_ID:
+            raise KalshiDemoAuthError(
+                "KALSHI_API_KEY_ID not configured. OrderManager requires valid credentials to function."
+            )
+        if not config.KALSHI_PRIVATE_KEY_CONTENT:
+            raise KalshiDemoAuthError(
+                "KALSHI_PRIVATE_KEY_CONTENT not configured. OrderManager requires valid credentials to function."
+            )
+        
+        # Initialize trading client (will validate credentials again internally)
         self.trading_client = KalshiDemoTradingClient()
         await self.trading_client.connect()
         logger.info("✅ Demo trading client connected")
         
-        # Start fill processor
+        # Start fill processor only after successful client connection
         self._fill_processor_task = asyncio.create_task(self._process_fills())
         logger.info("✅ Fill processor started")
         
