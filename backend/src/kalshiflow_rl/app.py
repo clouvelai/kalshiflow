@@ -23,11 +23,16 @@ from .config import config, logger
 from .data.database import rl_db
 from .data.write_queue import write_queue
 from .data.orderbook_client import OrderbookClient
-from .data.orderbook_state import get_all_orderbook_states, SharedOrderbookState
+from .data.orderbook_state import get_all_orderbook_states, get_shared_orderbook_state
 from .data.auth import validate_rl_auth
 from .data.market_discovery import fetch_active_markets
 from .websocket_manager import websocket_manager
 from .stats_collector import stats_collector
+from .trading.event_bus import get_event_bus
+from .trading.actor_service import ActorService
+from .trading.kalshi_multi_market_order_manager import KalshiMultiMarketOrderManager
+from .trading.live_observation_adapter import LiveObservationAdapter
+from .trading.action_selector import select_action_stub
 
 # Background task management
 _background_tasks = []
@@ -35,6 +40,12 @@ _shutdown_event = asyncio.Event()
 
 # Global orderbook client instance (initialized in lifespan)
 orderbook_client: Optional[OrderbookClient] = None
+
+# Global ActorService components (initialized in lifespan)
+event_bus = None
+actor_service: Optional[ActorService] = None
+order_manager: Optional[KalshiMultiMarketOrderManager] = None
+observation_adapter: Optional[LiveObservationAdapter] = None
 
 # Global market tickers (determined at startup)
 active_market_tickers: Optional[list] = None
@@ -97,6 +108,12 @@ async def lifespan(app: Starlette):
         await write_queue.start()
         logger.info("Write queue started")
         
+        # Start EventBus (must be before OrderbookClient emits events)
+        global event_bus
+        event_bus = await get_event_bus()
+        await event_bus.start()
+        logger.info("EventBus started")
+        
         # Select market tickers (either from discovery or config)
         market_tickers = await select_market_tickers()
         
@@ -134,6 +151,57 @@ async def lifespan(app: Starlette):
             
             state.add_subscriber(create_stats_callback(market_ticker))
         
+        # Initialize ActorService components for trading
+        logger.info("Initializing ActorService components...")
+        
+        # Create OrderbookStateRegistry wrapper (uses global get_shared_orderbook_state)
+        class OrderbookStateRegistryWrapper:
+            """Simple wrapper that uses global get_shared_orderbook_state."""
+            async def get_shared_orderbook_state(self, market_ticker: str):
+                return await get_shared_orderbook_state(market_ticker)
+        
+        registry = OrderbookStateRegistryWrapper()
+        
+        # Create LiveObservationAdapter
+        global observation_adapter
+        observation_adapter = LiveObservationAdapter(
+            window_size=10,
+            max_markets=1,
+            temporal_context_minutes=30,
+            orderbook_state_registry=registry
+        )
+        logger.info("LiveObservationAdapter created")
+        
+        # Create KalshiMultiMarketOrderManager (skip demo client init for now)
+        global order_manager
+        order_manager = KalshiMultiMarketOrderManager(initial_cash=10000.0)
+        # Skip initialize() to avoid demo client credential issues for now
+        # We'll just test the pipeline without actual trading
+        logger.info("KalshiMultiMarketOrderManager created (demo client skipped)")
+        
+        # Create ActorService
+        global actor_service
+        actor_service = ActorService(
+            market_tickers=market_tickers,
+            model_path=None,  # No model for M1-M2 testing
+            queue_size=1000,
+            throttle_ms=250,
+            event_bus=event_bus,
+            observation_adapter=observation_adapter
+        )
+        
+        # Set action selector stub (returns HOLD)
+        actor_service.set_action_selector(select_action_stub)
+        logger.info("Action selector stub configured")
+        
+        # Set order manager
+        actor_service.set_order_manager(order_manager)
+        logger.info("Order manager configured")
+        
+        # Initialize ActorService (subscribes to event bus and starts processing loop)
+        await actor_service.initialize()
+        logger.info("✅ ActorService initialized and ready")
+        
         # Log startup summary
         logger.info(f"RL Trading Subsystem started successfully for {len(market_tickers)} markets")
         
@@ -154,12 +222,36 @@ async def lifespan(app: Starlette):
         logger.info("Shutting down RL Trading Subsystem...")
         _shutdown_event.set()
         
+        # Shutdown ActorService first
+        if actor_service:
+            try:
+                await actor_service.shutdown()
+                logger.info("ActorService shutdown complete")
+            except Exception as e:
+                logger.error(f"Error shutting down ActorService: {e}")
+        
+        # Shutdown OrderManager
+        if order_manager:
+            try:
+                await order_manager.shutdown()
+                logger.info("OrderManager shutdown complete")
+            except Exception as e:
+                logger.error(f"Error shutting down OrderManager: {e}")
+        
         # Stop WebSocket manager first (stops broadcasting)
         await websocket_manager.stop()
         
         # Stop orderbook client
         if orderbook_client:
             await orderbook_client.stop()
+        
+        # Stop EventBus
+        if event_bus:
+            try:
+                await event_bus.stop()
+                logger.info("EventBus shutdown complete")
+            except Exception as e:
+                logger.error(f"Error shutting down EventBus: {e}")
         
         # Stop stats collector
         await stats_collector.stop()
