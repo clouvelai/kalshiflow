@@ -159,11 +159,43 @@ class KalshiDemoTradingClient:
             with os.fdopen(temp_fd, 'w') as temp_file:
                 # Ensure proper key format with line breaks
                 private_key_content = config.KALSHI_PRIVATE_KEY_CONTENT
+                
+                if not private_key_content:
+                    raise KalshiDemoAuthError("KALSHI_PRIVATE_KEY_CONTENT is empty or None")
+                
                 if not private_key_content.startswith('-----BEGIN'):
                     # Add PKCS8 headers if missing
                     formatted_key = f"-----BEGIN PRIVATE KEY-----\n{private_key_content}\n-----END PRIVATE KEY-----"
                 else:
+                    # Key already has headers - ensure proper PEM format with newlines
+                    # Handle case where newlines might be lost by dotenv
                     formatted_key = private_key_content
+                    
+                    # Replace escaped newlines with actual newlines (dotenv may escape them)
+                    formatted_key = formatted_key.replace('\\n', '\n')
+                    
+                    # If key doesn't have newlines but has headers, normalize the format
+                    # PEM format requires: BEGIN line\ncontent\nEND line
+                    if '\n' not in formatted_key and '-----BEGIN' in formatted_key:
+                        # Find BEGIN and END markers
+                        begin_marker = '-----BEGIN'
+                        end_marker = '-----END'
+                        begin_idx = formatted_key.find(begin_marker)
+                        end_idx = formatted_key.find(end_marker)
+                        
+                        if begin_idx != -1 and end_idx != -1:
+                            # Find where BEGIN line ends (after the second '-----')
+                            begin_end = formatted_key.find('-----', begin_idx + len(begin_marker))
+                            if begin_end != -1:
+                                begin_end += 5  # Length of '-----'
+                                # Extract content between headers
+                                content = formatted_key[begin_end:end_idx].strip()
+                                # Reconstruct with proper newlines
+                                formatted_key = (
+                                    formatted_key[:begin_end] + '\n' +
+                                    content + '\n' +
+                                    formatted_key[end_idx:]
+                                )
                     
                 temp_file.write(formatted_key)
                 

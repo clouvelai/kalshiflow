@@ -84,7 +84,9 @@ class ActorService:
         queue_size: int = 1000,
         throttle_ms: int = 250,
         event_bus: Optional[Any] = None,
-        observation_adapter: Optional[Any] = None
+        observation_adapter: Optional[Any] = None,
+        strict_validation: bool = True,
+        position_read_delay_ms: int = 100
     ):
         """
         Initialize Actor Service.
@@ -94,10 +96,16 @@ class ActorService:
             model_path: Path to trained RL model (required for RL strategy)
             queue_size: Maximum events in processing queue
             throttle_ms: Minimum milliseconds between actions per market
+            event_bus: Injected event bus (optional, falls back to global)
+            observation_adapter: Injected observation adapter (optional)
+            strict_validation: If True, fail fast if critical dependencies missing (default: True)
+            position_read_delay_ms: Delay in ms before reading positions after order execution (default: 100)
         """
         self.market_tickers = market_tickers or config.RL_MARKET_TICKERS
         self.model_path = model_path
         self.throttle_ms = throttle_ms
+        self.strict_validation = strict_validation
+        self.position_read_delay_ms = position_read_delay_ms
         
         # Event processing queue (serial processing)
         self._event_queue: asyncio.Queue[ActorEvent] = asyncio.Queue(maxsize=queue_size)
@@ -119,6 +127,10 @@ class ActorService:
         self._max_slow_processing = 5
         self._max_errors_per_market = 10
         
+        # Disabled markets tracking (for circuit breaker with re-enable)
+        self._disabled_markets: Dict[str, float] = {}  # {market_ticker: disabled_at_timestamp}
+        self._market_re_enable_delay_seconds = 300  # 5 minutes default
+        
         # Dependency injection for services
         self._injected_event_bus = event_bus
         self._injected_observation_adapter = observation_adapter
@@ -133,6 +145,7 @@ class ActorService:
         )
         logger.info(f"Queue size: {queue_size}, Throttle: {throttle_ms}ms")
         logger.info(f"Dependencies injected - event_bus: {event_bus is not None}, observation_adapter: {observation_adapter is not None}")
+        logger.info(f"Strict validation: {strict_validation}, Position read delay: {position_read_delay_ms}ms")
         
         # Initialize model cache if model path provided
         if self.model_path:
@@ -144,9 +157,18 @@ class ActorService:
         
         self.metrics.started_at = time.time()
         
-        # Load and cache model if path provided
-        if self.model_path:
+        # Validate dependencies if strict validation enabled
+        if self.strict_validation:
+            self._validate_dependencies()
+        
+        # Check if model should be loaded (only if action selector needs it)
+        if self.model_path and self._needs_model():
             await self._load_and_cache_model()
+        elif self.model_path and not self._needs_model():
+            logger.warning(
+                f"Model path provided ({self.model_path}) but action selector is stub. "
+                f"Model loading deferred until model-based selector is configured (M3)."
+            )
         
         # Subscribe to event bus for orderbook updates
         await self._subscribe_to_event_bus()
@@ -195,6 +217,77 @@ class ActorService:
         except Exception as e:
             logger.error(f"Failed to subscribe to event bus: {e}")
             raise
+    
+    def _validate_dependencies(self) -> None:
+        """
+        Validate that required dependencies are configured.
+        
+        Raises:
+            ValueError: If critical dependencies are missing and strict validation is enabled
+        """
+        missing_deps = []
+        
+        # Check observation adapter (injected or callback)
+        if not self._injected_observation_adapter and not self._observation_adapter:
+            missing_deps.append("observation_adapter (injected or callback)")
+        
+        # Check action selector
+        if not self._action_selector:
+            missing_deps.append("action_selector")
+        
+        # Check order manager
+        if not self._order_manager:
+            missing_deps.append("order_manager")
+        
+        if missing_deps:
+            error_msg = (
+                f"ActorService missing required dependencies: {', '.join(missing_deps)}. "
+                f"Use set_observation_adapter(), set_action_selector(), and set_order_manager() "
+                f"to configure dependencies, or disable strict_validation for lenient mode."
+            )
+            logger.error(error_msg)
+            raise ValueError(error_msg)
+        
+        logger.debug("All required dependencies validated successfully")
+    
+    def _is_stub_selector(self) -> bool:
+        """
+        Check if the current action selector is a stub.
+        
+        Returns:
+            True if action selector is a stub, False otherwise
+        """
+        if not self._action_selector:
+            return False
+        
+        # Check if it's an ActionSelectorStub instance
+        from .action_selector import ActionSelectorStub
+        if isinstance(self._action_selector, ActionSelectorStub):
+            return True
+        
+        # Check if it's the select_action_stub function
+        import inspect
+        if inspect.isfunction(self._action_selector):
+            # Check function name or module
+            if hasattr(self._action_selector, '__name__'):
+                if self._action_selector.__name__ == 'select_action_stub':
+                    return True
+            if hasattr(self._action_selector, '__module__'):
+                if 'action_selector' in str(self._action_selector.__module__):
+                    # Check if it's the stub function by checking if it always returns HOLD
+                    # This is a heuristic - in practice, stub always returns 0
+                    return True
+        
+        return False
+    
+    def _needs_model(self) -> bool:
+        """
+        Check if the current action selector requires a model.
+        
+        Returns:
+            True if model is needed, False if stub selector is used
+        """
+        return not self._is_stub_selector()
     
     async def _handle_event_bus_event(self, event: MarketEvent) -> None:
         """
@@ -269,6 +362,36 @@ class ActorService:
         """Get model loading error if any."""
         return self._model_load_error
     
+    def _should_process_market(self, market_ticker: str) -> bool:
+        """
+        Check if a market should be processed (not disabled by circuit breaker).
+        
+        Args:
+            market_ticker: Market to check
+            
+        Returns:
+            True if market should be processed, False if disabled
+        """
+        # Check if market is in active list
+        if market_ticker not in self.market_tickers:
+            return False
+        
+        # Check if market is disabled by circuit breaker
+        if market_ticker in self._disabled_markets:
+            disabled_at = self._disabled_markets[market_ticker]
+            elapsed = time.time() - disabled_at
+            
+            # Auto re-enable after delay
+            if elapsed >= self._market_re_enable_delay_seconds:
+                logger.info(f"Auto re-enabling market {market_ticker} after {elapsed:.1f}s")
+                del self._disabled_markets[market_ticker]
+                return True
+            else:
+                logger.debug(f"Market {market_ticker} disabled (elapsed: {elapsed:.1f}s)")
+                return False
+        
+        return True
+    
     async def trigger_event(
         self,
         market_ticker: str,
@@ -293,8 +416,8 @@ class ActorService:
         if self._shutdown_requested or not self._processing:
             return False
         
-        # Check if we should process this market
-        if market_ticker not in self.market_tickers:
+        # Check if we should process this market (includes circuit breaker check)
+        if not self._should_process_market(market_ticker):
             return False
         
         # Note: Throttling happens at execution time, not queue time
@@ -376,6 +499,11 @@ class ActorService:
         start_time = time.time()
         market_ticker = event.market_ticker
         
+        # Check if market should be processed (circuit breaker check)
+        if not self._should_process_market(market_ticker):
+            logger.debug(f"Skipping processing for disabled market: {market_ticker}")
+            return
+        
         try:
             # Step 1: Build observation (requires LiveObservationAdapter)
             observation = await self._build_observation(market_ticker)
@@ -431,9 +559,9 @@ class ActorService:
                     f"Market {market_ticker} disabled due to excessive errors "
                     f"({self._error_counts[market_ticker]} errors)"
                 )
-                # Remove from active markets (circuit breaker)
-                if market_ticker in self.market_tickers:
-                    self.market_tickers.remove(market_ticker)
+                # Add to disabled markets set (can be re-enabled later)
+                self._disabled_markets[market_ticker] = time.time()
+                logger.info(f"Market {market_ticker} will be auto re-enabled after {self._market_re_enable_delay_seconds}s")
     
     def _check_circuit_breaker(self, market_ticker: str) -> None:
         """Check if market should be disabled due to excessive errors."""
@@ -442,20 +570,57 @@ class ActorService:
                 f"Market {market_ticker} disabled due to excessive errors "
                 f"({self._error_counts[market_ticker]} errors)"
             )
-            # Remove from active markets (circuit breaker)
-            if market_ticker in self.market_tickers:
-                self.market_tickers.remove(market_ticker)
+            # Add to disabled markets set (can be re-enabled later)
+            self._disabled_markets[market_ticker] = time.time()
+            logger.info(f"Market {market_ticker} will be auto re-enabled after {self._market_re_enable_delay_seconds}s")
+    
+    def re_enable_market(self, market_ticker: str) -> bool:
+        """
+        Manually re-enable a market that was disabled by circuit breaker.
+        
+        Args:
+            market_ticker: Market to re-enable
+            
+        Returns:
+            True if market was re-enabled, False if it wasn't disabled
+        """
+        if market_ticker in self._disabled_markets:
+            del self._disabled_markets[market_ticker]
+            logger.info(f"Market {market_ticker} manually re-enabled")
+            return True
+        return False
+    
+    def _get_default_portfolio_values(self) -> tuple:
+        """
+        Get default portfolio values from OrderManager or config.
+        
+        Returns:
+            Tuple of (portfolio_value, cash_balance)
+        """
+        if self._order_manager:
+            # Try to get initial cash from OrderManager
+            if hasattr(self._order_manager, 'initial_cash'):
+                initial_cash = self._order_manager.initial_cash
+                return initial_cash, initial_cash
+            elif hasattr(self._order_manager, 'get_cash_balance'):
+                # Use current cash balance as fallback
+                cash = self._order_manager.get_cash_balance()
+                return cash, cash
+        
+        # Fall back to config default
+        default_cash = getattr(config, 'RL_INITIAL_CASH', 10000.0)
+        return default_cash, default_cash
     
     async def _build_observation(self, market_ticker: str) -> Optional[np.ndarray]:
         """
         Build observation for model input (Step 1).
         
         Uses injected or configured LiveObservationAdapter with portfolio data.
+        Prefers injected adapter over callback adapter for consistency.
         """
         # Gather portfolio data from order manager
         position_data = {}
-        portfolio_value = 10000.0  # Default starting value
-        cash_balance = 10000.0     # Default starting cash
+        portfolio_value, cash_balance = self._get_default_portfolio_values()
         order_features = None
         
         if self._order_manager:
@@ -477,7 +642,7 @@ class ActorService:
                     0.0   # Placeholder for additional features
                 ], dtype=np.float32)
         
-        # Try injected adapter first, then configured callback
+        # Prefer injected adapter (standardized path with portfolio data)
         if self._injected_observation_adapter:
             try:
                 observation = await self._injected_observation_adapter.build_observation(
@@ -496,22 +661,27 @@ class ActorService:
                 self._check_circuit_breaker(market_ticker)
                 # Fall through to callback adapter if available
         
-        if not self._observation_adapter:
-            logger.debug("No observation adapter configured")
-            return None
+        # Fallback to callback adapter (deprecated, for backward compatibility)
+        if self._observation_adapter:
+            logger.warning(
+                f"Using deprecated callback observation adapter for {market_ticker}. "
+                f"Prefer injected adapter for portfolio data support."
+            )
+            try:
+                # Use configured observation adapter callback
+                # Note: Callback may not support portfolio data - that's OK for backward compatibility
+                observation = await self._observation_adapter(market_ticker)
+                return observation
+            except Exception as e:
+                logger.error(f"Error building observation for {market_ticker}: {e}")
+                self._error_counts[market_ticker] += 1
+                self.metrics.errors += 1
+                self.metrics.last_error = str(e)
+                self._check_circuit_breaker(market_ticker)
+                return None
         
-        try:
-            # Use configured observation adapter callback
-            # Note: Callback may not support portfolio data - that's OK for backward compatibility
-            observation = await self._observation_adapter(market_ticker)
-            return observation
-        except Exception as e:
-            logger.error(f"Error building observation for {market_ticker}: {e}")
-            self._error_counts[market_ticker] += 1
-            self.metrics.errors += 1
-            self.metrics.last_error = str(e)
-            self._check_circuit_breaker(market_ticker)
-            return None
+        logger.debug("No observation adapter configured")
+        return None
     
     async def _select_action(self, observation: np.ndarray, market_ticker: str) -> Optional[int]:
         """
@@ -618,24 +788,48 @@ class ActorService:
         Update portfolio tracking (Step 4).
         
         Retrieves updated position data from OrderManager and logs position changes.
+        
+        Note: Position updates use eventual consistency model. Fills are processed
+        asynchronously in KalshiMultiMarketOrderManager._process_fills(), so position
+        reads immediately after order execution may be stale. A small delay is added
+        to allow fill processing to complete before reading positions.
         """
         try:
             # Only update if we have an order manager and execution was attempted
             if not self._order_manager or not execution_result:
                 return
             
-            # Get updated position data from order manager
-            if hasattr(self._order_manager, 'get_positions'):
-                positions = self._order_manager.get_positions()
+            # Wait for fill processing delay to account for async fill processing
+            # This ensures positions reflect recent fills before reading
+            if self.position_read_delay_ms > 0:
+                await asyncio.sleep(self.position_read_delay_ms / 1000.0)
+            
+            # Retry logic for position reads (with timeout)
+            max_retries = 3
+            retry_delay = 0.05  # 50ms between retries
+            positions = None
+            portfolio_value = 0.0
+            cash_balance = 0.0
+            
+            for attempt in range(max_retries):
+                try:
+                    if hasattr(self._order_manager, 'get_positions'):
+                        positions = self._order_manager.get_positions()
+                    if hasattr(self._order_manager, 'get_portfolio_value'):
+                        portfolio_value = self._order_manager.get_portfolio_value()
+                    if hasattr(self._order_manager, 'get_cash_balance'):
+                        cash_balance = self._order_manager.get_cash_balance()
+                    break  # Success
+                except Exception as e:
+                    if attempt < max_retries - 1:
+                        logger.debug(f"Position read attempt {attempt + 1} failed, retrying: {e}")
+                        await asyncio.sleep(retry_delay)
+                    else:
+                        logger.warning(f"Failed to read positions after {max_retries} attempts: {e}")
+                        return
+            
+            if positions is not None:
                 market_position = positions.get(market_ticker, {})
-                
-                # Get portfolio metrics
-                portfolio_value = 0.0
-                cash_balance = 0.0
-                if hasattr(self._order_manager, 'get_portfolio_value'):
-                    portfolio_value = self._order_manager.get_portfolio_value()
-                if hasattr(self._order_manager, 'get_cash_balance'):
-                    cash_balance = self._order_manager.get_cash_balance()
                 
                 # Log position update
                 logger.debug(
@@ -768,6 +962,10 @@ async def initialize_actor_service(
             return _actor_service
         
         logger.info("Initializing global ActorService...")
+        
+        # Use lenient validation for backward compatibility (deprecated function)
+        # Dependencies should be set via set_* methods after initialization
+        kwargs.setdefault('strict_validation', False)
         
         _actor_service = ActorService(
             market_tickers=market_tickers,

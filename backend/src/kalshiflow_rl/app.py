@@ -94,11 +94,23 @@ async def lifespan(app: Starlette):
     """
     logger.info("Starting RL Trading Subsystem...")
     
+    # Initialize module-level variables to avoid UnboundLocalError in finally block
+    global actor_service, order_manager, observation_adapter
+    actor_service = None
+    order_manager = None
+    observation_adapter = None
+    
     try:
-        # Validate authentication first
-        if not validate_rl_auth():
-            logger.error("RL authentication validation failed")
-            raise RuntimeError("Authentication validation failed")
+        # Validate authentication first (skip if ActorService enabled - OrderManager will validate)
+        # OrderManager initialization will validate credentials, so we can defer validation
+        # when ActorService is enabled to allow OrderManager to handle credential validation
+        if not config.RL_ACTOR_ENABLED:
+            # Only validate auth early if ActorService is disabled (orderbook collector only)
+            if not validate_rl_auth():
+                logger.error("RL authentication validation failed")
+                raise RuntimeError("Authentication validation failed")
+        else:
+            logger.info("Skipping early auth validation - OrderManager will validate credentials during initialization")
         
         # Initialize database
         await rl_db.initialize()
@@ -168,7 +180,6 @@ async def lifespan(app: Starlette):
             registry = OrderbookStateRegistryWrapper()
             
             # Create LiveObservationAdapter
-            global observation_adapter
             observation_adapter = LiveObservationAdapter(
                 window_size=10,
                 max_markets=1,
@@ -178,7 +189,6 @@ async def lifespan(app: Starlette):
             logger.info("LiveObservationAdapter created")
             
             # Create KalshiMultiMarketOrderManager
-            global order_manager
             order_manager = KalshiMultiMarketOrderManager(initial_cash=10000.0)
             
             # Initialize OrderManager (requires credentials - fail fast if missing)
@@ -197,7 +207,6 @@ async def lifespan(app: Starlette):
             # Only proceed with ActorService if OrderManager initialized successfully
             if order_manager:
                 # Create ActorService
-                global actor_service
                 actor_service = ActorService(
                     market_tickers=market_tickers,
                     model_path=config.RL_ACTOR_MODEL_PATH,  # Use config value
@@ -245,7 +254,7 @@ async def lifespan(app: Starlette):
         logger.info("Shutting down RL Trading Subsystem...")
         _shutdown_event.set()
         
-        # Shutdown ActorService first
+        # Shutdown ActorService first (check if it was initialized)
         if actor_service:
             try:
                 await actor_service.shutdown()
