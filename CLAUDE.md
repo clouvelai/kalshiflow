@@ -107,8 +107,8 @@ npm run test:e2e-ui
 ### Kalshi Authentication
 - Uses RSA private key file (not API secret)
 - Environment variables:
-  - `KALSHI_API_KEY` - The API key ID
-  - `KALSHI_PRIVATE_KEY_PATH` - Path to RSA private key file
+  - `KALSHI_API_KEY_ID` - The API key ID
+  - `KALSHI_PRIVATE_KEY_CONTENT` - RSA private key content as string (or `KALSHI_PRIVATE_KEY_PATH` for file path)
 - Signature process: `timestamp_ms + method + path` → RSA sign with PSS padding → base64 encode
 - Reference implementation: https://github.com/clouvelai/prophete/blob/main/backend/app/core/auth.py
 
@@ -175,26 +175,114 @@ frontend/
 
 ## Environment Configuration
 
-Required `.env` variables:
+The project uses environment-specific `.env` files for credential management:
+
+### Environment Files
+- **`.env.local`** - Local development environment (default)
+- **`.env.production`** - Production environment
+- **`.env.paper`** - Paper trading environment (demo account)
+
+### Environment Loading Pattern
+The system loads environment variables based on the `ENVIRONMENT` variable:
+1. Loads `.env.{ENVIRONMENT}` first (with override=True)
+2. Falls back to `.env` for any missing variables
+
+**Example:**
+```bash
+# Set environment
+export ENVIRONMENT=paper  # or "local" or "production"
+
+# System will load:
+# 1. .env.paper (override=True)
+# 2. .env (fallback)
 ```
-# Kalshi API Configuration
-KALSHI_API_KEY=<your_api_key>
-KALSHI_PRIVATE_KEY_PATH=<path_to_rsa_key>
+
+### Required Variables by Environment
+
+#### Local Development (`.env.local`)
+```bash
+ENVIRONMENT=local
+
+# Kalshi API Configuration (production API for data collection)
+KALSHI_API_KEY_ID=<your_api_key_id>
+KALSHI_PRIVATE_KEY_CONTENT=<your_private_key_content>
+KALSHI_API_URL=https://api.elections.kalshi.com/trade-api/v2
 KALSHI_WS_URL=wss://api.elections.kalshi.com/trade-api/ws/v2
+
+# PostgreSQL Database Configuration (via Supabase)
+DATABASE_URL=<postgresql_connection_string>
+DATABASE_URL_POOLED=<postgresql_pooled_connection_string>
 
 # Application Settings
 WINDOW_MINUTES=10
 HOT_MARKETS_LIMIT=20
 RECENT_TRADES_LIMIT=200
 
-# PostgreSQL Database Configuration (via Supabase)
-DATABASE_URL=<postgresql_connection_string>
-DATABASE_URL_POOLED=<postgresql_pooled_connection_string>
-
 # Server Configuration
 BACKEND_PORT=8000
 FRONTEND_PORT=5173
 ```
+
+#### Production (`.env.production`)
+```bash
+ENVIRONMENT=production
+
+# Kalshi API Configuration (production API)
+KALSHI_API_KEY_ID=<your_production_api_key_id>
+KALSHI_PRIVATE_KEY_CONTENT=<your_production_private_key_content>
+KALSHI_API_URL=https://api.elections.kalshi.com/trade-api/v2
+KALSHI_WS_URL=wss://api.elections.kalshi.com/trade-api/ws/v2
+
+# PostgreSQL Database Configuration
+DATABASE_URL=<production_postgresql_connection_string>
+DATABASE_URL_POOLED=<production_pooled_connection_string>
+```
+
+#### Paper Trading (`.env.paper`)
+```bash
+ENVIRONMENT=paper
+
+# Kalshi Demo Account API Configuration (demo-api.kalshi.co)
+KALSHI_API_KEY_ID=<your_demo_api_key_id>
+KALSHI_PRIVATE_KEY_CONTENT=<your_demo_private_key_content>
+KALSHI_API_URL=https://demo-api.kalshi.co/trade-api/v2
+KALSHI_WS_URL=wss://demo-api.kalshi.co/trade-api/ws/v2
+
+# Database Configuration (shared with other environments)
+DATABASE_URL=<postgresql_connection_string>
+DATABASE_URL_POOLED=<postgresql_pooled_connection_string>
+
+# RL-Specific Configuration (optional)
+RL_MARKET_TICKERS=INXD-25JAN03,OTHER-TICKER
+RL_LOG_LEVEL=INFO
+```
+
+### Environment Switching
+
+Use the provided script to switch between environments:
+```bash
+# Switch to local development
+./scripts/switch-env.sh local
+
+# Switch to production
+./scripts/switch-env.sh production
+
+# Show current environment
+./scripts/switch-env.sh current
+```
+
+### Paper Trading Safety
+
+The `KalshiDemoTradingClient` includes validation to prevent accidental production trading:
+- ✅ **Validates URLs**: Ensures all URLs point to `demo-api.kalshi.co`
+- ✅ **Blocks Production**: Raises error if production URLs (`api.elections.kalshi.com`) are detected
+- ✅ **Clear Errors**: Provides helpful error messages directing users to use `ENVIRONMENT=paper`
+
+**To use paper trading:**
+1. Copy `.env.paper.example` to `.env.paper`
+2. Fill in your demo account credentials
+3. Set `ENVIRONMENT=paper` or use the environment switcher
+4. The demo client will automatically validate the configuration
 ## Backend E2E Regression Test
 
 **Critical test that MUST pass before any deployment or major changes.**

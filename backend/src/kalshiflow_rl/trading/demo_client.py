@@ -73,16 +73,42 @@ class KalshiDemoTradingClient:
             raise ValueError(f"KalshiDemoTradingClient only supports 'paper' mode, got: {mode}")
         
         # Validate demo credentials are configured
-        if not config.KALSHI_PAPER_TRADING_API_KEY_ID:
-            raise KalshiDemoAuthError("KALSHI_PAPER_TRADING_API_KEY_ID not configured")
+        if not config.KALSHI_API_KEY_ID:
+            raise KalshiDemoAuthError("KALSHI_API_KEY_ID not configured. Use ENVIRONMENT=paper with .env.paper file")
         
-        if not config.KALSHI_PAPER_TRADING_PRIVATE_KEY_CONTENT:
-            raise KalshiDemoAuthError("KALSHI_PAPER_TRADING_PRIVATE_KEY_CONTENT not configured")
+        if not config.KALSHI_PRIVATE_KEY_CONTENT:
+            raise KalshiDemoAuthError("KALSHI_PRIVATE_KEY_CONTENT not configured. Use ENVIRONMENT=paper with .env.paper file")
         
         self.mode = mode
-        self.api_key_id = config.KALSHI_PAPER_TRADING_API_KEY_ID
-        self.rest_base_url = config.KALSHI_PAPER_TRADING_API_URL
-        self.ws_url = config.KALSHI_PAPER_TRADING_WS_URL
+        self.api_key_id = config.KALSHI_API_KEY_ID
+        self.rest_base_url = config.KALSHI_API_URL
+        self.ws_url = config.KALSHI_WS_URL
+        
+        # Validate that URLs point to demo API, not production
+        if "api.elections.kalshi.com" in self.rest_base_url:
+            raise KalshiDemoAuthError(
+                f"Demo client cannot use production API URL: {self.rest_base_url}. "
+                "Use ENVIRONMENT=paper with .env.paper file containing demo-api.kalshi.co URLs"
+            )
+        
+        if "api.elections.kalshi.com" in self.ws_url:
+            raise KalshiDemoAuthError(
+                f"Demo client cannot use production WebSocket URL: {self.ws_url}. "
+                "Use ENVIRONMENT=paper with .env.paper file containing demo-api.kalshi.co URLs"
+            )
+        
+        # Ensure URLs point to demo API
+        if "demo-api.kalshi.co" not in self.rest_base_url:
+            raise KalshiDemoAuthError(
+                f"Demo client must use demo-api.kalshi.co API URL, got: {self.rest_base_url}. "
+                "Use ENVIRONMENT=paper with .env.paper file"
+            )
+        
+        if "demo-api.kalshi.co" not in self.ws_url:
+            raise KalshiDemoAuthError(
+                f"Demo client must use demo-api.kalshi.co WebSocket URL, got: {self.ws_url}. "
+                "Use ENVIRONMENT=paper with .env.paper file"
+            )
         
         # Initialize authentication using proven KalshiAuth class
         try:
@@ -132,7 +158,7 @@ class KalshiDemoTradingClient:
             
             with os.fdopen(temp_fd, 'w') as temp_file:
                 # Ensure proper key format with line breaks
-                private_key_content = config.KALSHI_PAPER_TRADING_PRIVATE_KEY_CONTENT
+                private_key_content = config.KALSHI_PRIVATE_KEY_CONTENT
                 if not private_key_content.startswith('-----BEGIN'):
                     # Add PKCS8 headers if missing
                     formatted_key = f"-----BEGIN PRIVATE KEY-----\n{private_key_content}\n-----END PRIVATE KEY-----"

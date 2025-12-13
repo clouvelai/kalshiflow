@@ -11,8 +11,15 @@ from typing import Optional, List
 from pathlib import Path
 from dotenv import load_dotenv
 
-# Load environment variables from .env file
-load_dotenv()
+# Load environment variables based on ENVIRONMENT variable
+# Try .env.{ENVIRONMENT} first (override=True), then fall back to .env
+# Supported environments: local, production, paper
+# TODO: If test environment needs separate .env.test file, follow the same pattern:
+#   - Create .env.test with ENVIRONMENT=test and test-specific values
+#   - Tests currently work with ENVIRONMENT=test bypassing validation
+env = os.getenv("ENVIRONMENT", "local")
+load_dotenv(f".env.{env}", override=True)
+load_dotenv()  # Fallback to .env
 
 
 class RLConfig:
@@ -21,13 +28,21 @@ class RLConfig:
     def __init__(self):
         # Kalshi API Configuration (shared with main app - auth handled by KalshiAuth.from_env())
         # The auth component reads KALSHI_API_KEY_ID and KALSHI_PRIVATE_KEY_PATH/CONTENT directly
-        self.KALSHI_WS_URL: str = os.getenv("KALSHI_WS_URL", "wss://api.elections.kalshi.com/trade-api/ws/v2")
+        # Environment-specific values are loaded from .env.{ENVIRONMENT} files
+        self.KALSHI_API_KEY_ID: Optional[str] = os.getenv("KALSHI_API_KEY_ID")
+        self.KALSHI_PRIVATE_KEY_CONTENT: Optional[str] = os.getenv("KALSHI_PRIVATE_KEY_CONTENT")
         
-        # Kalshi Demo Account Configuration for Paper Trading (ISOLATED from production)
-        self.KALSHI_PAPER_TRADING_API_KEY_ID: Optional[str] = os.getenv("KALSHI_PAPER_TRADING_API_KEY_ID")
-        self.KALSHI_PAPER_TRADING_PRIVATE_KEY_CONTENT: Optional[str] = os.getenv("KALSHI_PAPER_TRADING_PRIVATE_KEY_CONTENT")
-        self.KALSHI_PAPER_TRADING_WS_URL: str = os.getenv("KALSHI_PAPER_TRADING_WS_URL", "wss://demo-api.kalshi.co/trade-api/ws/v2")
-        self.KALSHI_PAPER_TRADING_API_URL: str = os.getenv("KALSHI_PAPER_TRADING_API_URL", "https://demo-api.kalshi.co/trade-api/v2")
+        # Set default URLs based on environment
+        env = os.getenv("ENVIRONMENT", "local")
+        if env == "paper":
+            default_api_url = "https://demo-api.kalshi.co/trade-api/v2"
+            default_ws_url = "wss://demo-api.kalshi.co/trade-api/ws/v2"
+        else:
+            default_api_url = "https://api.elections.kalshi.com/trade-api/v2"
+            default_ws_url = "wss://api.elections.kalshi.com/trade-api/ws/v2"
+        
+        self.KALSHI_API_URL: str = os.getenv("KALSHI_API_URL", default_api_url)
+        self.KALSHI_WS_URL: str = os.getenv("KALSHI_WS_URL", default_ws_url)
         
         # Database Configuration (shared with main app)
         self.DATABASE_URL: str = self._get_required_env("DATABASE_URL")
