@@ -40,6 +40,7 @@ yarn-error.log*
 .env.production.local
 .env.production
 .env.backup
+.env.paper
 .env.validation.backup
 
 # IDE
@@ -101,3 +102,6 @@ test-results/
 # RL Training artifacts
 backend/trained_models/
 models/
+
+# Project backups
+backups/
