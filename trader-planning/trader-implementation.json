@@ -1,8 +1,8 @@
 {
   "plan_metadata": {
     "created_date": "2025-12-12",
-    "last_updated": "2025-12-12",
-    "version": "1.0",
+    "last_updated": "2025-01-15",
+    "version": "1.1",
     "description": "Complete Kalshi Trading Actor MVP implementation - multi-market live trading system with model caching and orderbook integration",
     "strategy": "BUILD_ON_EXISTING_INFRASTRUCTURE",
     "total_milestones": 5,
@@ -128,7 +128,9 @@
         "Basic logging and error handling working with performance monitoring",
         "Integration tests validate non-blocking trigger mechanism and event flow"
       ],
-      "completed": false
+      "completed": true,
+      "completion_date": "2025-01-15",
+      "completion_notes": "M1 completed with EventBus integration replacing callback mechanism. ActorService uses EventBus for decoupled event processing. All tests passing (86 tests)."
     },
     {
       "id": "M2_LIVE_OBSERVATION_ADAPTER",
@@ -211,7 +213,9 @@
         "Integration tests validate consistency between live and training observations",
         "Memory usage bounded with proper cleanup of historical data"
       ],
-      "completed": false
+      "completed": true,
+      "completion_date": "2025-01-15",
+      "completion_notes": "M2 completed with LiveObservationAdapter fully integrated. Test suite refactored and simplified (86 tests passing). All actor/trader tests consolidated under KalshiMultiMarketOrderManager. SimulatedOrderManager tests preserved for training."
     },
     {
       "id": "M3_MODULAR_ACTION_SELECTION",

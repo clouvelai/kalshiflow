@@ -1,9 +1,10 @@
 """
-Tests for OrderManager implementations.
+Tests for SimulatedOrderManager (Training Order Manager).
 
-This test suite validates both SimulatedOrderManager and KalshiOrderManager
-implementations to ensure they provide consistent interfaces and behavior
-for the RL environment.
+This test suite validates SimulatedOrderManager used in RL training.
+DO NOT MODIFY - These tests are critical for training pipeline validation.
+
+For actor/trader order manager tests, see test_kalshi_multi_market_order_manager.py
 """
 
 import pytest
@@ -16,8 +17,7 @@ import numpy as np
 
 from kalshiflow_rl.trading.order_manager import (
     OrderManager,
-    SimulatedOrderManager, 
-    KalshiOrderManager,
+    SimulatedOrderManager,
     OrderInfo,
     Position,
     OrderFeatures,
@@ -34,9 +34,10 @@ class TestOrderManagerBase:
     def test_order_manager_initialization(self):
         """Test basic initialization of OrderManager base class."""
         # Can't instantiate abstract class directly, but can test via subclass
-        manager = SimulatedOrderManager(initial_cash=500.0)
+        # SimulatedOrderManager expects cents, not dollars
+        manager = SimulatedOrderManager(initial_cash=50000)  # 50000 cents = $500
         
-        assert manager.initial_cash == 500.0
+        assert manager.initial_cash == 500.0  # Base class stores in dollars
         assert manager.cash_balance == 500.0
         assert manager.positions == {}
         assert manager.open_orders == {}
@@ -129,7 +130,7 @@ class TestSimulatedOrderManager:
     @pytest.fixture
     def manager(self):
         """Create a SimulatedOrderManager for testing."""
-        return SimulatedOrderManager(initial_cash=1000.0)
+        return SimulatedOrderManager(initial_cash=100000)  # 100000 cents = $1000
     
     @pytest.mark.asyncio
     async def test_aggressive_buy_immediate_fill(self, manager, orderbook):
@@ -409,239 +410,13 @@ class TestSimulatedOrderManager:
         assert value_at_60 == expected
 
 
-class TestKalshiOrderManager:
-    """Test the KalshiOrderManager implementation."""
-    
-    @pytest.fixture
-    def mock_demo_client(self):
-        """Create a mock KalshiDemoTradingClient."""
-        client = Mock()
-        client.create_order = AsyncMock()
-        client.cancel_order = AsyncMock()
-        client.get_orders = AsyncMock()
-        client.get_positions = AsyncMock()
-        client.get_account_info = AsyncMock()
-        return client
-    
-    @pytest.fixture
-    def orderbook(self):
-        """Create a sample orderbook for testing."""
-        orderbook = OrderbookState("TEST-MARKET")
-        
-        # Apply snapshot data to populate the orderbook
-        snapshot_data = {
-            "yes_bids": {
-                "50": 100,
-                "49": 200
-            },
-            "yes_asks": {
-                "51": 150,
-                "52": 250
-            },
-            "no_bids": {
-                "48": 100,
-                "47": 200
-            },
-            "no_asks": {
-                "49": 150,
-                "50": 250
-            }
-        }
-        
-        orderbook.apply_snapshot(snapshot_data)
-        return orderbook
-    
-    @pytest.fixture
-    def manager(self, mock_demo_client):
-        """Create a KalshiOrderManager for testing."""
-        return KalshiOrderManager(mock_demo_client, initial_cash=1000.0)
-    
-    @pytest.mark.asyncio
-    async def test_place_order_success(self, manager, mock_demo_client, orderbook):
-        """Test successful order placement via Kalshi API."""
-        # Mock successful order creation response
-        mock_demo_client.create_order.return_value = {
-            "order": {"order_id": "kalshi_123", "status": "resting"}
-        }
-        
-        order = await manager.place_order(
-            ticker="TEST-MARKET",
-            side=OrderSide.BUY,
-            contract_side=ContractSide.YES,
-            quantity=10,
-            orderbook=orderbook,
-            pricing_strategy="aggressive"
-        )
-        
-        assert order is not None
-        assert order.status == OrderStatus.PENDING
-        assert order.limit_price == 51  # Aggressive buy at ask
-        
-        # Check that API was called correctly
-        mock_demo_client.create_order.assert_called_once_with(
-            ticker="TEST-MARKET",
-            action="buy",
-            side="yes",
-            count=10,
-            price=51,
-            type="limit"
-        )
-        
-        # Check order tracking
-        assert order.order_id in manager.open_orders
-        assert order.order_id in manager._kalshi_order_mapping
-        assert manager._kalshi_order_mapping[order.order_id] == "kalshi_123"
-    
-    @pytest.mark.asyncio
-    async def test_place_order_failure(self, manager, mock_demo_client, orderbook):
-        """Test order placement failure."""
-        # Mock failed order creation
-        mock_demo_client.create_order.return_value = {"error": "Insufficient balance"}
-        
-        order = await manager.place_order(
-            ticker="TEST-MARKET",
-            side=OrderSide.BUY,
-            contract_side=ContractSide.YES,
-            quantity=10,
-            orderbook=orderbook,
-            pricing_strategy="aggressive"
-        )
-        
-        assert order is None
-    
-    @pytest.mark.asyncio
-    async def test_cancel_order_success(self, manager, mock_demo_client, orderbook):
-        """Test successful order cancellation."""
-        # First place an order
-        mock_demo_client.create_order.return_value = {
-            "order": {"order_id": "kalshi_123", "status": "resting"}
-        }
-        
-        order = await manager.place_order(
-            ticker="TEST-MARKET",
-            side=OrderSide.BUY,
-            contract_side=ContractSide.YES,
-            quantity=10,
-            orderbook=orderbook,
-            pricing_strategy="aggressive"
-        )
-        
-        # Mock successful cancellation
-        mock_demo_client.cancel_order.return_value = {"success": True}
-        
-        # Cancel the order
-        success = await manager.cancel_order(order.order_id)
-        
-        assert success
-        assert order.status == OrderStatus.CANCELLED
-        assert order.order_id not in manager.open_orders
-        assert order.order_id not in manager._kalshi_order_mapping
-        
-        # Check that API was called correctly
-        mock_demo_client.cancel_order.assert_called_once_with("kalshi_123")
-    
-    @pytest.mark.asyncio
-    async def test_check_fills_success(self, manager, mock_demo_client, orderbook):
-        """Test checking for order fills."""
-        # Place an order first
-        mock_demo_client.create_order.return_value = {
-            "order": {"order_id": "kalshi_123", "status": "resting"}
-        }
-        
-        order = await manager.place_order(
-            ticker="TEST-MARKET",
-            side=OrderSide.BUY,
-            contract_side=ContractSide.YES,
-            quantity=10,
-            orderbook=orderbook,
-            pricing_strategy="aggressive"
-        )
-        
-        # Mock filled order response
-        mock_demo_client.get_orders.return_value = {
-            "orders": [{
-                "order_id": "kalshi_123",
-                "status": "filled",
-                "yes_price": 51,
-                "ticker": "TEST-MARKET"
-            }]
-        }
-        
-        # Check for fills
-        filled_orders = await manager.check_fills(orderbook)
-        
-        assert len(filled_orders) == 1
-        assert filled_orders[0].order_id == order.order_id
-        assert filled_orders[0].status == OrderStatus.FILLED
-        assert filled_orders[0].fill_price == 51
-        
-        # Order should be removed from tracking
-        assert order.order_id not in manager.open_orders
-        assert order.order_id not in manager._kalshi_order_mapping
-    
-    @pytest.mark.asyncio
-    async def test_position_sync(self, manager, mock_demo_client):
-        """Test syncing positions with Kalshi API."""
-        mock_demo_client.get_positions.return_value = {
-            "positions": [{
-                "ticker": "TEST-MARKET",
-                "position": 10
-            }]
-        }
-        
-        mock_demo_client.get_account_info.return_value = {
-            "balance": 95000  # $950 in cents
-        }
-        
-        await manager.sync_positions_with_kalshi()
-        
-        # Check positions were synced
-        assert "TEST-MARKET" in manager.positions
-        assert manager.positions["TEST-MARKET"].contracts == 10
-        
-        # Check balance was synced
-        assert manager.cash_balance == 950.0
-    
-    @pytest.mark.asyncio
-    async def test_order_amendment_via_cancel_replace(self, manager, mock_demo_client, orderbook):
-        """Test order amendment via cancel + replace strategy."""
-        # Place initial order
-        mock_demo_client.create_order.return_value = {
-            "order": {"order_id": "kalshi_123", "status": "resting"}
-        }
-        
-        order = await manager.place_order(
-            ticker="TEST-MARKET",
-            side=OrderSide.BUY,
-            contract_side=ContractSide.YES,
-            quantity=10,
-            orderbook=orderbook,
-            pricing_strategy="passive"
-        )
-        
-        # Mock successful cancellation and new order
-        mock_demo_client.cancel_order.return_value = {"success": True}
-        mock_demo_client.create_order.return_value = {
-            "order": {"order_id": "kalshi_124", "status": "resting"}
-        }
-        
-        # Amend order
-        success = await manager.amend_order(order.order_id, 52, orderbook)
-        
-        assert success
-        
-        # Should have cancelled old and placed new order
-        assert mock_demo_client.cancel_order.call_count == 1
-        assert mock_demo_client.create_order.call_count == 2  # Original + replacement
-
-
 class TestOrderManagerIntegration:
     """Integration tests for OrderManager with real scenarios."""
     
     @pytest.mark.asyncio
     async def test_trading_scenario_profit_and_loss(self):
         """Test a complete trading scenario with profit and loss."""
-        manager = SimulatedOrderManager(initial_cash=1000.0)
+        manager = SimulatedOrderManager(initial_cash=100000)  # 100000 cents = $1000
         
         # Initial orderbook
         orderbook1 = OrderbookState("PROFIT-TEST")
@@ -717,7 +492,7 @@ class TestOrderManagerIntegration:
     @pytest.mark.asyncio
     async def test_order_feature_evolution(self):
         """Test how order features evolve during trading."""
-        manager = SimulatedOrderManager(initial_cash=1000.0)
+        manager = SimulatedOrderManager(initial_cash=100000)  # 100000 cents = $1000
         
         orderbook = OrderbookState("FEATURES-TEST")
         
@@ -782,7 +557,7 @@ class TestOrderManagerIntegration:
     
     def test_price_calculation_strategies(self):
         """Test different pricing strategy calculations."""
-        manager = SimulatedOrderManager()
+        manager = SimulatedOrderManager()  # Uses default 100000 cents = $1000
         
         orderbook = OrderbookState("PRICING-TEST")
         
