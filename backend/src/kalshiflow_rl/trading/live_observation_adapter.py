@@ -14,7 +14,6 @@ from typing import Dict, Any, List, Optional, Deque
 from collections import deque, defaultdict
 from datetime import datetime, timedelta
 from dataclasses import dataclass
-from decimal import Decimal
 
 from ..data.orderbook_state import SharedOrderbookState
 from ..environments.feature_extractors import (

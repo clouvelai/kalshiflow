@@ -22,7 +22,7 @@ from typing import Dict, Any, Optional, List
 from dataclasses import dataclass
 from enum import IntEnum
 
-from .demo_client import KalshiDemoTradingClient, KalshiDemoTradingClientError
+from .demo_client import KalshiDemoTradingClient
 
 logger = logging.getLogger("kalshiflow_rl.trading.kalshi_multi_market_order_manager")
 
