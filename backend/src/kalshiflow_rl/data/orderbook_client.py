@@ -393,13 +393,14 @@ class OrderbookClient:
             self._last_sequences[market_ticker] = snapshot_data["sequence_number"]
             self._snapshots_received += 1
             
-            # Update local state immediately (non-blocking)
+            # Apply snapshot to shared state (self._orderbook_states[market_ticker] is the same instance)
+            # No need to apply twice - they're the same object
             if market_ticker in self._orderbook_states:
                 await self._orderbook_states[market_ticker].apply_snapshot(snapshot_data)
-            
-            # Also update global registry for other components to access
-            global_state = await get_shared_orderbook_state(market_ticker)
-            await global_state.apply_snapshot(snapshot_data)
+            else:
+                # Fallback: if somehow not in local dict, get from global registry
+                global_state = await get_shared_orderbook_state(market_ticker)
+                await global_state.apply_snapshot(snapshot_data)
             
             # Queue for database persistence with session ID (non-blocking)
             enqueue_success = await write_queue.enqueue_snapshot(snapshot_data)
@@ -485,18 +486,18 @@ class OrderbookClient:
             self._last_sequences[market_ticker] = delta_data["sequence_number"]
             self._deltas_received += 1
             
-            # Update local state immediately (non-blocking)
-            local_success = False
+            # Apply delta to shared state (self._orderbook_states[market_ticker] is the same instance as get_shared_orderbook_state)
+            # No need to apply twice - they're the same object
             if market_ticker in self._orderbook_states:
-                local_success = await self._orderbook_states[market_ticker].apply_delta(delta_data)
-                if not local_success:
-                    logger.warning(f"Failed to apply delta to local state for {market_ticker}: seq={delta_data['sequence_number']}")
-            
-            # Also update global registry for other components to access
-            global_state = await get_shared_orderbook_state(market_ticker)
-            global_success = await global_state.apply_delta(delta_data)
-            if not global_success:
-                logger.warning(f"Failed to apply delta to global state for {market_ticker}: seq={delta_data['sequence_number']}")
+                success = await self._orderbook_states[market_ticker].apply_delta(delta_data)
+                if not success:
+                    logger.warning(f"Failed to apply delta for {market_ticker}: seq={delta_data['sequence_number']}")
+            else:
+                # Fallback: if somehow not in local dict, get from global registry
+                global_state = await get_shared_orderbook_state(market_ticker)
+                success = await global_state.apply_delta(delta_data)
+                if not success:
+                    logger.warning(f"Failed to apply delta for {market_ticker}: seq={delta_data['sequence_number']}")
             
             # Queue for database persistence with session ID (non-blocking)
             enqueue_success = await write_queue.enqueue_delta(delta_data)
