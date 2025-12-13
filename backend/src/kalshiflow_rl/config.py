@@ -94,6 +94,17 @@ class RLConfig:
         self.TRAINING_DATA_WINDOW_HOURS: int = int(os.getenv("RL_TRAINING_WINDOW_HOURS", "24"))
         self.MAX_EPISODE_STEPS: int = int(os.getenv("RL_MAX_EPISODE_STEPS", "1000"))
         
+        # Actor/Trading Configuration
+        # RL_ACTOR_ENABLED: Master kill switch for trading actor
+        #   - Default: false (actor disabled, orderbook collector only)
+        #   - When false: Orderbook collector runs normally, no trading actions
+        #   - When true: ActorService initialized and processes orderbook events
+        self.RL_ACTOR_ENABLED: bool = os.getenv("RL_ACTOR_ENABLED", "false").lower() == "true"
+        self.RL_ACTOR_STRATEGY: str = os.getenv("RL_ACTOR_STRATEGY", "disabled")  # "rl_model" | "hardcoded" | "disabled"
+        self.RL_ACTOR_MODEL_PATH: Optional[str] = os.getenv("RL_ACTOR_MODEL_PATH")
+        self.RL_ACTOR_THROTTLE_MS: int = int(os.getenv("RL_ACTOR_THROTTLE_MS", "250"))
+        self.RL_ACTOR_CONTRACT_SIZE: int = int(os.getenv("RL_ACTOR_CONTRACT_SIZE", "10"))
+        
         # Validate configuration
         self._validate_config()
     

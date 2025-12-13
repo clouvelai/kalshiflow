@@ -105,7 +105,30 @@ RL_MARKET_TICKER=INXD-25JAN03        # Market to track
 RL_ORDERBOOK_BATCH_SIZE=100          # Messages per batch
 RL_ORDERBOOK_FLUSH_INTERVAL=1.0      # Seconds between flushes
 RL_ORDERBOOK_SAMPLE_RATE=1           # Keep 1 out of N deltas
+
+# Actor/Trading Configuration
+RL_ACTOR_ENABLED=false               # Master kill switch (default: false)
+RL_ACTOR_STRATEGY=disabled            # "rl_model" | "hardcoded" | "disabled"
+RL_ACTOR_MODEL_PATH=/path/to/model   # Path to trained RL model (optional)
+RL_ACTOR_THROTTLE_MS=250             # Minimum time between actions per market
+RL_ACTOR_CONTRACT_SIZE=10            # Contract size (must match training)
 ```
+
+### Actor Service Configuration
+
+**Default Behavior**: The actor service is **disabled by default** (`RL_ACTOR_ENABLED=false`). This means:
+- ✅ Orderbook collector runs normally
+- ✅ Database persistence works
+- ✅ WebSocket broadcasting works
+- ❌ No trading actions are executed
+
+**To Enable Actor Service**:
+1. Set `RL_ACTOR_ENABLED=true`
+2. Configure strategy: `RL_ACTOR_STRATEGY=rl_model` or `hardcoded`
+3. (Optional) Provide model path: `RL_ACTOR_MODEL_PATH=/path/to/trained_model.zip`
+4. Configure throttle: `RL_ACTOR_THROTTLE_MS=250` (minimum ms between actions)
+
+**Important**: The orderbook collector operates independently of the actor service. You can run data collection without any trading functionality enabled.
 
 ## 📊 Price Format Convention
 
@@ -183,10 +206,17 @@ Quick health check with component status:
   "components": {
     "database": {"status": "healthy"},
     "write_queue": {"status": "healthy", "messages_enqueued": 1234},
-    "orderbook_client": {"status": "healthy", "connected": true}
+    "orderbook_client": {"status": "healthy", "connected": true},
+    "actor_service": {"status": "disabled"}
   }
 }
 ```
+
+**Actor Service Status**:
+- `"disabled"` - Actor service is disabled (default)
+- `"healthy"` - Actor service is enabled and running
+- `"unhealthy"` - Actor service is enabled but not processing
+- `"not_initialized"` - Actor service enabled but failed to initialize
 
 ### /rl/status  
 Detailed system statistics and configuration

@@ -151,56 +151,67 @@ async def lifespan(app: Starlette):
             
             state.add_subscriber(create_stats_callback(market_ticker))
         
-        # Initialize ActorService components for trading
-        logger.info("Initializing ActorService components...")
-        
-        # Create OrderbookStateRegistry wrapper (uses global get_shared_orderbook_state)
-        class OrderbookStateRegistryWrapper:
-            """Simple wrapper that uses global get_shared_orderbook_state."""
-            async def get_shared_orderbook_state(self, market_ticker: str):
-                return await get_shared_orderbook_state(market_ticker)
-        
-        registry = OrderbookStateRegistryWrapper()
-        
-        # Create LiveObservationAdapter
-        global observation_adapter
-        observation_adapter = LiveObservationAdapter(
-            window_size=10,
-            max_markets=1,
-            temporal_context_minutes=30,
-            orderbook_state_registry=registry
-        )
-        logger.info("LiveObservationAdapter created")
-        
-        # Create KalshiMultiMarketOrderManager (skip demo client init for now)
-        global order_manager
-        order_manager = KalshiMultiMarketOrderManager(initial_cash=10000.0)
-        # Skip initialize() to avoid demo client credential issues for now
-        # We'll just test the pipeline without actual trading
-        logger.info("KalshiMultiMarketOrderManager created (demo client skipped)")
-        
-        # Create ActorService
-        global actor_service
-        actor_service = ActorService(
-            market_tickers=market_tickers,
-            model_path=None,  # No model for M1-M2 testing
-            queue_size=1000,
-            throttle_ms=250,
-            event_bus=event_bus,
-            observation_adapter=observation_adapter
-        )
-        
-        # Set action selector stub (returns HOLD)
-        actor_service.set_action_selector(select_action_stub)
-        logger.info("Action selector stub configured")
-        
-        # Set order manager
-        actor_service.set_order_manager(order_manager)
-        logger.info("Order manager configured")
-        
-        # Initialize ActorService (subscribes to event bus and starts processing loop)
-        await actor_service.initialize()
-        logger.info("✅ ActorService initialized and ready")
+        # Initialize ActorService components for trading (only if enabled)
+        logger.info("=" * 60)
+        logger.info(f"Actor Service: {'ENABLED' if config.RL_ACTOR_ENABLED else 'DISABLED'}")
+        if config.RL_ACTOR_ENABLED:
+            logger.info("ActorService enabled - initializing trading components...")
+            logger.info(f"  Strategy: {config.RL_ACTOR_STRATEGY}")
+            logger.info(f"  Model Path: {config.RL_ACTOR_MODEL_PATH or 'None (using stub)'}")
+            
+            # Create OrderbookStateRegistry wrapper (uses global get_shared_orderbook_state)
+            class OrderbookStateRegistryWrapper:
+                """Simple wrapper that uses global get_shared_orderbook_state."""
+                async def get_shared_orderbook_state(self, market_ticker: str):
+                    return await get_shared_orderbook_state(market_ticker)
+            
+            registry = OrderbookStateRegistryWrapper()
+            
+            # Create LiveObservationAdapter
+            global observation_adapter
+            observation_adapter = LiveObservationAdapter(
+                window_size=10,
+                max_markets=1,
+                temporal_context_minutes=30,
+                orderbook_state_registry=registry
+            )
+            logger.info("LiveObservationAdapter created")
+            
+            # Create KalshiMultiMarketOrderManager (skip demo client init for now)
+            global order_manager
+            order_manager = KalshiMultiMarketOrderManager(initial_cash=10000.0)
+            # Skip initialize() to avoid demo client credential issues for now
+            # We'll just test the pipeline without actual trading
+            logger.info("KalshiMultiMarketOrderManager created (demo client skipped)")
+            
+            # Create ActorService
+            global actor_service
+            actor_service = ActorService(
+                market_tickers=market_tickers,
+                model_path=config.RL_ACTOR_MODEL_PATH,  # Use config value
+                queue_size=1000,
+                throttle_ms=config.RL_ACTOR_THROTTLE_MS,
+                event_bus=event_bus,
+                observation_adapter=observation_adapter
+            )
+            
+            # Set action selector stub (returns HOLD)
+            actor_service.set_action_selector(select_action_stub)
+            logger.info("Action selector stub configured")
+            
+            # Set order manager
+            actor_service.set_order_manager(order_manager)
+            logger.info("Order manager configured")
+            
+            # Initialize ActorService (subscribes to event bus and starts processing loop)
+            await actor_service.initialize()
+            logger.info("✅ ActorService initialized and ready")
+        else:
+            logger.info("ActorService disabled - orderbook collector only mode")
+            actor_service = None
+            order_manager = None
+            observation_adapter = None
+        logger.info("=" * 60)
         
         # Log startup summary
         logger.info(f"RL Trading Subsystem started successfully for {len(market_tickers)} markets")
@@ -381,6 +392,34 @@ async def health_check(request):
                 **stats_collector.get_summary()
             }
             health_status["status"] = "degraded"
+        
+        # Check ActorService (if enabled)
+        if config.RL_ACTOR_ENABLED:
+            if actor_service:
+                # Check if actor service is processing (healthy)
+                actor_status = actor_service.get_status()
+                if actor_status.get("status") == "running":
+                    health_status["components"]["actor_service"] = {
+                        "status": "healthy",
+                        **actor_service.get_metrics()
+                    }
+                else:
+                    health_status["components"]["actor_service"] = {
+                        "status": "unhealthy",
+                        "status_detail": actor_status.get("status"),
+                        **actor_service.get_metrics()
+                    }
+                    health_status["status"] = "degraded"
+            else:
+                health_status["components"]["actor_service"] = {
+                    "status": "not_initialized",
+                    "error": "ActorService enabled but not initialized"
+                }
+                health_status["status"] = "degraded"
+        else:
+            health_status["components"]["actor_service"] = {
+                "status": "disabled"
+            }
         
         # Return appropriate status code
         status_code = 200 if health_status["status"] == "healthy" else 503
