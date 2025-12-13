@@ -20,6 +20,7 @@ from .orderbook_state import get_shared_orderbook_state, SharedOrderbookState
 from .write_queue import write_queue
 from .database import rl_db
 from ..config import config
+from ..trading.event_bus import emit_orderbook_snapshot, emit_orderbook_delta
 
 logger = logging.getLogger("kalshiflow_rl.orderbook_client")
 
@@ -392,19 +393,35 @@ class OrderbookClient:
             self._last_sequences[market_ticker] = snapshot_data["sequence_number"]
             self._snapshots_received += 1
             
-            # Update in-memory state immediately (non-blocking)
+            # Update local state immediately (non-blocking)
             if market_ticker in self._orderbook_states:
                 await self._orderbook_states[market_ticker].apply_snapshot(snapshot_data)
             
+            # Also update global registry for other components to access
+            global_state = await get_shared_orderbook_state(market_ticker)
+            await global_state.apply_snapshot(snapshot_data)
+            
             # Queue for database persistence with session ID (non-blocking)
-            await write_queue.enqueue_snapshot(snapshot_data)
+            enqueue_success = await write_queue.enqueue_snapshot(snapshot_data)
+            
+            # Trigger actor event via event bus after successful database enqueue (non-blocking)
+            if enqueue_success:
+                try:
+                    await emit_orderbook_snapshot(
+                        market_ticker=market_ticker,
+                        sequence_number=snapshot_data["sequence_number"],
+                        timestamp_ms=snapshot_data["timestamp_ms"]
+                    )
+                except Exception as e:
+                    # Don't let event bus errors break orderbook processing
+                    logger.debug(f"Event bus emit failed for {market_ticker} snapshot: {e}")
             
             # Log snapshot processing (less verbose for production)
             total_levels = (len(snapshot_data['yes_bids']) + len(snapshot_data['yes_asks']) + 
                            len(snapshot_data['no_bids']) + len(snapshot_data['no_asks']))
             logger.info(
                 f"Snapshot processed: {market_ticker} seq={self._last_sequences[market_ticker]} "
-                f"levels={total_levels}"
+                f"levels={total_levels} (local+global)"
             )
             
         except Exception as e:
@@ -423,21 +440,28 @@ class OrderbookClient:
             
             # Delta data is in msg field
             delta_val = msg_data.get("delta", 0)
-            price = msg_data.get("price", 0)
+            price = int(msg_data.get("price", 0))
+            side = msg_data.get("side")
             
-            # Determine old and new size based on delta
-            # Positive delta means size increased, negative means decreased
+            # Get current size from local orderbook state to calculate new size
+            current_size = 0
+            if market_ticker in self._orderbook_states:
+                state = self._orderbook_states[market_ticker]._state
+                if side == "yes":
+                    current_size = state.yes_bids.get(price, 0)
+                elif side == "no":
+                    current_size = state.no_bids.get(price, 0)
+            
+            # Calculate new size from delta
+            new_size = max(0, current_size + delta_val)
+            old_size = current_size
+            
+            # Determine action based on delta
             if delta_val > 0:
-                old_size = 0  # Could be any value, we don't know
-                new_size = abs(delta_val)
-                action = "add"
+                action = "add" if current_size == 0 else "update"
             elif delta_val < 0:
-                old_size = abs(delta_val)
-                new_size = 0
-                action = "remove"
+                action = "remove" if new_size == 0 else "update"
             else:
-                old_size = 0
-                new_size = 0
                 action = "update"
             
             # Get sequence from the outer message (same as snapshots)
@@ -447,9 +471,9 @@ class OrderbookClient:
                 "market_ticker": market_ticker,
                 "timestamp_ms": int(time.time() * 1000),
                 "sequence_number": sequence_number,  # From outer message
-                "side": msg_data.get("side"),  # "yes" or "no"
+                "side": side,  # "yes" or "no"
                 "action": action,
-                "price": int(price),  # Ensure price is int
+                "price": price,  # Already converted to int above
                 "old_size": old_size,
                 "new_size": new_size
             }
@@ -461,18 +485,37 @@ class OrderbookClient:
             self._last_sequences[market_ticker] = delta_data["sequence_number"]
             self._deltas_received += 1
             
-            # Update in-memory state immediately (non-blocking)
+            # Update local state immediately (non-blocking)
+            local_success = False
             if market_ticker in self._orderbook_states:
-                success = await self._orderbook_states[market_ticker].apply_delta(delta_data)
-                if not success:
-                    logger.warning(f"Failed to apply delta for {market_ticker}: seq={delta_data['sequence_number']}")
+                local_success = await self._orderbook_states[market_ticker].apply_delta(delta_data)
+                if not local_success:
+                    logger.warning(f"Failed to apply delta to local state for {market_ticker}: seq={delta_data['sequence_number']}")
+            
+            # Also update global registry for other components to access
+            global_state = await get_shared_orderbook_state(market_ticker)
+            global_success = await global_state.apply_delta(delta_data)
+            if not global_success:
+                logger.warning(f"Failed to apply delta to global state for {market_ticker}: seq={delta_data['sequence_number']}")
             
             # Queue for database persistence with session ID (non-blocking)
-            await write_queue.enqueue_delta(delta_data)
+            enqueue_success = await write_queue.enqueue_delta(delta_data)
+            
+            # Trigger actor event via event bus after successful database enqueue (non-blocking)
+            if enqueue_success:
+                try:
+                    await emit_orderbook_delta(
+                        market_ticker=market_ticker,
+                        sequence_number=delta_data["sequence_number"],
+                        timestamp_ms=delta_data["timestamp_ms"]
+                    )
+                except Exception as e:
+                    # Don't let event bus errors break orderbook processing
+                    logger.debug(f"Event bus emit failed for {market_ticker} delta: {e}")
             
             # Log periodically at info level for production monitoring
             if self._deltas_received % 1000 == 0:
-                logger.info(f"Delta checkpoint: {self._deltas_received} deltas processed across {len(self.market_tickers)} markets")
+                logger.info(f"Delta checkpoint: {self._deltas_received} deltas processed across {len(self.market_tickers)} markets (local+global)")
             
         except Exception as e:
             logger.error(f"Error processing delta: {e}\n{traceback.format_exc()}")
