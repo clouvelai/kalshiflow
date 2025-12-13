@@ -4,7 +4,7 @@
 
 ```mermaid
 sequenceDiagram
-    participant KalshiWS as Kalshi WebSocket
+    participant WS as Kalshi WebSocket
     participant OC as OrderbookClient
     participant SOS as SharedOrderbookState
     participant WQ as WriteQueue
@@ -13,86 +13,134 @@ sequenceDiagram
     participant LOA as LiveObservationAdapter
     participant ASel as ActionSelector
     participant OM as OrderManager
-    participant KAPI as KalshiDemoTradingClient
+    participant API as Kalshi API
 
-    KalshiWS->>OC: Delta message<br/>{delta: +5, price: 50, side: "yes"}
+    WS->>OC: Delta message
+    Note over OC: Parse & validate
     
-    Note over OC: _process_delta()
-    OC->>OC: Parse message<br/>Calculate new_size<br/>Determine action
+    OC->>SOS: apply_delta()
+    SOS-->>OC: Updated
     
-    OC->>SOS: apply_delta(delta_data)
-    SOS-->>OC: Updated (in-memory)
+    OC->>WQ: enqueue_delta()
+    WQ-->>OC: Queued
     
-    OC->>WQ: enqueue_delta(delta_data)
-    WQ-->>OC: Success (queued for DB)
+    OC->>EB: emit_orderbook_delta()
+    EB->>AS: MarketEvent
     
-    OC->>EB: emit_orderbook_delta()<br/>(non-blocking)
-    EB-->>OC: Event published
+    Note over AS: Queue event
     
-    EB->>AS: MarketEvent<br/>(ORDERBOOK_DELTA)
+    Note over AS,LOA: Step 1: Build Observation
+    AS->>SOS: get_snapshot()
+    SOS-->>AS: Snapshot
+    AS->>LOA: build_observation()
+    LOA-->>AS: 52-feature array
     
-    Note over AS: _handle_event_bus_event()
-    AS->>AS: trigger_event()<br/>Queue ActorEvent
-    
-    Note over AS: Background processing loop
-    AS->>AS: _process_market_update()
-    
-    rect rgb(200, 220, 255)
-        Note over AS,LOA: Step 1: Build Observation
-        AS->>SOS: get_snapshot()
-        SOS-->>AS: Orderbook snapshot
-        AS->>LOA: build_observation(market_ticker)
-        LOA->>LOA: Convert to SessionDataPoint<br/>Compute temporal features
-        LOA-->>AS: 52-feature observation array
+    Note over AS,ASel: Step 2: Select Action
+    AS->>ASel: select_action()
+    alt HardcodedSelector
+        ASel-->>AS: action=0 (HOLD)
+    else RLModelSelector
+        ASel->>ASel: model.predict()
+        ASel-->>AS: action=0-4
     end
     
-    rect rgb(220, 255, 200)
-        Note over AS,ASel: Step 2: Select Action
-        AS->>ASel: select_action(observation, market_ticker)
-        alt HardcodedSelector
-            ASel-->>AS: action = 0 (HOLD)
-        else RLModelSelector
-            ASel->>ASel: model.predict(observation)
-            ASel-->>AS: action = 0-4
+    Note over AS,API: Step 3: Execute Action
+    alt HOLD
+        AS-->>AS: Skip execution
+    else Trading Action
+        alt Throttled
+            AS-->>AS: Skip (throttled)
+        else Not Throttled
+            AS->>SOS: get_snapshot()
+            AS->>OM: execute_limit_order_action()
+            OM->>API: place_order()
+            API-->>OM: Order placed
+            OM-->>AS: Result
         end
     end
     
-    rect rgb(255, 220, 200)
-        Note over AS,OM: Step 3: Execute Action
-        AS->>AS: _safe_execute_action(action)
-        
-        alt action == 0 (HOLD)
-            AS-->>AS: Return immediately<br/>(skip execution)
-        else action != 0
-            AS->>AS: Check throttling<br/>(250ms per market)
-            alt Throttled
-                AS-->>AS: Return throttled<br/>(skip execution)
-            else Not Throttled
-                AS->>SOS: get_snapshot()
-                SOS-->>AS: Orderbook snapshot
-                AS->>OM: execute_limit_order_action(action, market_ticker, snapshot)
-                OM->>OM: Calculate limit price<br/>Check cash availability
-                OM->>KAPI: place_order()
-                KAPI-->>OM: Order placed (order_id)
-                OM-->>AS: Execution result<br/>{status: "placed", executed: true}
-                AS->>AS: Update throttle timestamp
-            end
-        end
+    Note over AS,OM: Step 4: Update Positions
+    alt HOLD or Throttled
+        AS-->>AS: Skip
+    else Executed
+        AS->>AS: Wait 100ms
+        AS->>OM: get_positions()
+        OM-->>AS: Positions
     end
     
-    rect rgb(255, 255, 200)
-        Note over AS,OM: Step 4: Update Positions
-        alt HOLD or Throttled
-            AS-->>AS: Skip (no position changes)
-        else Order Executed
-            AS->>AS: Wait 100ms<br/>(for async fill processing)
-            AS->>OM: get_positions()<br/>get_portfolio_value()
-            OM-->>AS: Updated positions<br/>Portfolio value
-            AS->>AS: Log position changes
-        end
-    end
-    
-    AS->>AS: Update metrics<br/>(processing_time, events_processed)
+    AS->>AS: Update metrics
+```
+
+## Simple Text Flow
+
+```
+1. Kalshi WebSocket → OrderbookClient
+   └─> Receives delta message {delta: +5, price: 50, side: "yes"}
+
+2. OrderbookClient._process_delta()
+   ├─> Parse message, calculate new_size
+   ├─> SharedOrderbookState.apply_delta() → Update in-memory orderbook
+   ├─> WriteQueue.enqueue_delta() → Queue for DB write (non-blocking)
+   └─> EventBus.emit_orderbook_delta() → Publish event (non-blocking)
+
+3. EventBus → ActorService
+   └─> ActorService._handle_event_bus_event() receives MarketEvent
+       └─> trigger_event() → Queue ActorEvent (non-blocking)
+
+4. ActorService Background Loop
+   └─> _process_market_update() processes queued event
+
+5. Step 1: Build Observation
+   ├─> ActorService → SharedOrderbookState.get_snapshot()
+   ├─> ActorService → LiveObservationAdapter.build_observation()
+   │   ├─> Convert to SessionDataPoint format
+   │   └─> Compute temporal features (activity_score, momentum, time_gap)
+   └─> Returns: 52-feature numpy array
+
+6. Step 2: Select Action
+   ├─> ActorService → ActionSelector.select_action(observation, market_ticker)
+   │
+   ├─> If HardcodedSelector:
+   │   └─> Returns: action = 0 (HOLD)
+   │
+   └─> If RLModelSelector:
+       ├─> Uses cached PPO model (loaded once at startup)
+       ├─> model.predict(observation, deterministic=True)
+       └─> Returns: action = 0-4 (HOLD or trading action)
+
+7. Step 3: Execute Action
+   ├─> ActorService._safe_execute_action(action, market_ticker)
+   │
+   ├─> If action == 0 (HOLD):
+   │   └─> Return immediately (skip orderbook fetch, OrderManager call)
+   │
+   └─> If action != 0 (Trading action):
+       ├─> Check throttling (250ms since last action for this market)
+       │
+       ├─> If throttled:
+       │   └─> Return {"status": "throttled"} (skip execution)
+       │
+       └─> If not throttled:
+           ├─> Fetch orderbook snapshot
+           ├─> OrderManager.execute_limit_order_action(action, market_ticker, snapshot)
+           │   ├─> Calculate limit price from snapshot
+           │   ├─> Check cash availability (for BUY orders)
+           │   └─> KalshiDemoTradingClient.place_order() → Kalshi API
+           │       └─> Returns: order_id
+           └─> Update throttle timestamp
+
+8. Step 4: Update Positions
+   ├─> If HOLD or throttled:
+   │   └─> Skip (no position changes)
+   │
+   └─> If order executed:
+       ├─> Wait 100ms (for async fill processing)
+       ├─> OrderManager.get_positions() → Read updated positions
+       ├─> OrderManager.get_portfolio_value() → Read portfolio value
+       └─> Log position changes
+
+9. Update Metrics
+   └─> Track processing_time, events_processed, errors, etc.
 ```
 
 ## Key Points
