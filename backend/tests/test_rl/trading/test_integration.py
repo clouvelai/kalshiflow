@@ -28,7 +28,7 @@ from kalshiflow_rl.trading.event_bus import (
     get_event_bus,
     shutdown_event_bus
 )
-from kalshiflow_rl.trading.action_selector import create_action_selector_stub
+from kalshiflow_rl.trading.action_selector import HardcodedSelector
 
 
 class TestMilestone1Integration:
@@ -129,18 +129,17 @@ class TestMilestone1Integration:
     
     @pytest.mark.asyncio
     async def test_event_bus_to_action_selector_integration(self):
-        """Test event bus integration with real ActionSelector stub - M1-M2 scope."""
-        # Test the ActionSelector stub independently (what's actually implemented)
-        action_selector_stub = create_action_selector_stub(debug=True)
+        """Test event bus integration with HardcodedSelector - M3 scope."""
+        # Test the HardcodedSelector independently (what's actually implemented)
+        action_selector = HardcodedSelector()
         
-        # Test that ActionSelector stub works correctly
+        # Test that HardcodedSelector works correctly
         test_observation = np.random.rand(52)
-        action = await action_selector_stub(test_observation, "TEST-MARKET")
+        action = await action_selector(test_observation, "TEST-MARKET")
         
-        # Verify ActionSelector behavior (real functionality)
+        # Verify HardcodedSelector behavior (real functionality)
         assert action == 0  # HOLD action
-        assert action_selector_stub.call_count == 1
-        assert action_selector_stub.last_called_at is not None
+        assert action_selector.get_strategy_name() == "Hardcoded_AlwaysHold"
         
         # Check stats (real functionality that works)
         stats = action_selector_stub.get_stats()

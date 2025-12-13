@@ -32,7 +32,7 @@ from .trading.event_bus import get_event_bus
 from .trading.actor_service import ActorService
 from .trading.kalshi_multi_market_order_manager import KalshiMultiMarketOrderManager
 from .trading.live_observation_adapter import LiveObservationAdapter
-from .trading.action_selector import select_action_stub
+from .trading.action_selector import create_action_selector
 
 # Background task management
 _background_tasks = []
@@ -216,9 +216,20 @@ async def lifespan(app: Starlette):
                     observation_adapter=observation_adapter
                 )
                 
-                # Set action selector stub (returns HOLD)
-                actor_service.set_action_selector(select_action_stub)
-                logger.info("Action selector stub configured")
+                # Create and set action selector based on config
+                try:
+                    selector = create_action_selector(
+                        strategy=config.RL_ACTOR_STRATEGY,
+                        model_path=config.RL_ACTOR_MODEL_PATH
+                    )
+                    actor_service.set_action_selector(selector)
+                    logger.info(f"Action selector configured: {selector.get_strategy_name()}")
+                except Exception as e:
+                    logger.error(f"Failed to create action selector: {e}")
+                    logger.warning("Falling back to HardcodedSelector (always HOLD)")
+                    from .trading.action_selector import HardcodedSelector
+                    actor_service.set_action_selector(HardcodedSelector())
+                    logger.info("Action selector configured: HardcodedSelector (fallback)")
                 
                 # Set order manager
                 actor_service.set_order_manager(order_manager)

@@ -25,7 +25,7 @@ from kalshiflow_rl.trading.event_bus import get_event_bus
 from kalshiflow_rl.trading.actor_service import ActorService
 from kalshiflow_rl.trading.kalshi_multi_market_order_manager import KalshiMultiMarketOrderManager
 from kalshiflow_rl.trading.live_observation_adapter import LiveObservationAdapter
-from kalshiflow_rl.trading.action_selector import select_action_stub
+from kalshiflow_rl.trading.action_selector import HardcodedSelector
 
 # Track if we've seen an event
 event_received = False
@@ -101,9 +101,9 @@ async def main():
             observation_adapter=observation_adapter
         )
         
-        # Set action selector stub
-        actor_service.set_action_selector(select_action_stub)
-        logger.info("✅ Action selector stub configured")
+        # Set action selector (hardcoded - always hold)
+        actor_service.set_action_selector(HardcodedSelector())
+        logger.info("✅ Action selector configured (HardcodedSelector)")
         
         # Set order manager
         actor_service.set_order_manager(order_manager)

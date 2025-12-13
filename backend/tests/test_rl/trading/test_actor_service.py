@@ -15,7 +15,7 @@ from kalshiflow_rl.trading.actor_service import (
     ActorMetrics
 )
 from kalshiflow_rl.trading.service_container import create_test_container
-from kalshiflow_rl.trading.action_selector import ActionSelectorStub, select_action_stub
+from kalshiflow_rl.trading.action_selector import HardcodedSelector
 
 
 @pytest_asyncio.fixture
@@ -44,7 +44,7 @@ async def mock_actor_service():
         )
         
         # Set required dependencies
-        service.set_action_selector(select_action_stub)
+        service.set_action_selector(HardcodedSelector())
         service.set_order_manager(mock_order_manager)
         
         await service.initialize()
@@ -314,7 +314,7 @@ class TestFoundationIssuesFixes:
         )
         
         # Set stub selector
-        service.set_action_selector(select_action_stub)
+        service.set_action_selector(HardcodedSelector())
         
         # Mock observation adapter and order manager
         mock_obs = Mock()
@@ -352,7 +352,7 @@ class TestFoundationIssuesFixes:
                 strict_validation=False
             )
             
-            service.set_action_selector(select_action_stub)
+            service.set_action_selector(HardcodedSelector())
             
             mock_obs = Mock()
             mock_obs.build_observation = AsyncMock(return_value=np.zeros(52))
@@ -424,7 +424,7 @@ class TestFoundationIssuesFixes:
         mock_callback = AsyncMock(return_value=np.array([4.0, 5.0, 6.0]))
         service.set_observation_adapter(mock_callback)
         
-        service.set_action_selector(select_action_stub)
+        service.set_action_selector(HardcodedSelector())
         mock_om = Mock()
         mock_om.get_positions = Mock(return_value={})
         mock_om.get_portfolio_value = Mock(return_value=10000.0)
@@ -466,7 +466,7 @@ class TestFoundationIssuesFixes:
             mock_callback = AsyncMock(return_value=np.zeros(52))
             service.set_observation_adapter(mock_callback)
             
-            service.set_action_selector(select_action_stub)
+            service.set_action_selector(HardcodedSelector())
             mock_om = Mock()
             mock_om.get_positions = Mock(return_value={})
             mock_om.get_portfolio_value = Mock(return_value=10000.0)
@@ -499,7 +499,7 @@ class TestFoundationIssuesFixes:
         mock_obs.build_observation = AsyncMock(return_value=np.zeros(52))
         service._injected_observation_adapter = mock_obs
         
-        service.set_action_selector(select_action_stub)
+        service.set_action_selector(HardcodedSelector())
         mock_om = Mock()
         mock_om.get_positions = Mock(return_value={})
         mock_om.get_portfolio_value = Mock(return_value=10000.0)
@@ -536,7 +536,7 @@ class TestFoundationIssuesFixes:
         mock_obs.build_observation = AsyncMock(return_value=np.zeros(52))
         service._injected_observation_adapter = mock_obs
         
-        service.set_action_selector(select_action_stub)
+        service.set_action_selector(HardcodedSelector())
         mock_om = Mock()
         mock_om.get_positions = Mock(return_value={})
         mock_om.get_portfolio_value = Mock(return_value=10000.0)
@@ -596,7 +596,7 @@ class TestFoundationIssuesFixes:
         mock_obs.build_observation = AsyncMock(return_value=np.zeros(52))
         service._injected_observation_adapter = mock_obs
         
-        service.set_action_selector(select_action_stub)
+        service.set_action_selector(HardcodedSelector())
         
         # Mock order manager with position tracking
         mock_om = Mock()
@@ -631,12 +631,12 @@ class TestFoundationIssuesFixes:
         )
         
         # Test with stub function
-        service.set_action_selector(select_action_stub)
+        service.set_action_selector(HardcodedSelector())
         assert service._is_stub_selector() is True
         
-        # Test with stub class instance
-        stub_instance = ActionSelectorStub()
-        service.set_action_selector(stub_instance)
+        # Test with HardcodedSelector instance
+        hardcoded_instance = HardcodedSelector()
+        service.set_action_selector(hardcoded_instance)
         assert service._is_stub_selector() is True
         
         # Test with non-stub function
