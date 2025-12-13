@@ -161,13 +161,24 @@ class ActorService:
         if self.strict_validation:
             self._validate_dependencies()
         
-        # Check if model should be loaded (only if action selector needs it)
+        # Check if model should be loaded
+        # Note: With M3 ActionSelector, model loading is handled by the selector itself.
+        # ActorService model loading is only for backward compatibility or if selector
+        # doesn't handle its own loading.
         if self.model_path and self._needs_model():
-            await self._load_and_cache_model()
+            # Check if selector already loaded the model (RLModelSelector does this)
+            from .action_selector import RLModelSelector
+            if isinstance(self._action_selector, RLModelSelector):
+                logger.debug(
+                    f"Model loading handled by RLModelSelector, skipping ActorService model load"
+                )
+            else:
+                # For backward compatibility or custom selectors that don't load their own model
+                await self._load_and_cache_model()
         elif self.model_path and not self._needs_model():
-            logger.warning(
-                f"Model path provided ({self.model_path}) but action selector is stub. "
-                f"Model loading deferred until model-based selector is configured (M3)."
+            logger.debug(
+                f"Model path provided ({self.model_path}) but action selector doesn't need it. "
+                f"Model loading handled by selector (M3)."
             )
         
         # Subscribe to event bus for orderbook updates
@@ -252,31 +263,18 @@ class ActorService:
     
     def _is_stub_selector(self) -> bool:
         """
-        Check if the current action selector is a stub.
+        Check if the current action selector is hardcoded (doesn't need model).
         
         Returns:
-            True if action selector is a stub, False otherwise
+            True if action selector doesn't need a model, False otherwise
         """
         if not self._action_selector:
             return False
         
-        # Check if it's an ActionSelectorStub instance
-        from .action_selector import ActionSelectorStub
-        if isinstance(self._action_selector, ActionSelectorStub):
+        # Check if it's a HardcodedSelector instance
+        from .action_selector import HardcodedSelector
+        if isinstance(self._action_selector, HardcodedSelector):
             return True
-        
-        # Check if it's the select_action_stub function
-        import inspect
-        if inspect.isfunction(self._action_selector):
-            # Check function name or module
-            if hasattr(self._action_selector, '__name__'):
-                if self._action_selector.__name__ == 'select_action_stub':
-                    return True
-            if hasattr(self._action_selector, '__module__'):
-                if 'action_selector' in str(self._action_selector.__module__):
-                    # Check if it's the stub function by checking if it always returns HOLD
-                    # This is a heuristic - in practice, stub always returns 0
-                    return True
         
         return False
     
@@ -285,8 +283,18 @@ class ActorService:
         Check if the current action selector requires a model.
         
         Returns:
-            True if model is needed, False if stub selector is used
+            True if model is needed (RLModelSelector), False otherwise
         """
+        if not self._action_selector:
+            return False
+        
+        # Check if it's an RLModelSelector
+        from .action_selector import RLModelSelector
+        if isinstance(self._action_selector, RLModelSelector):
+            return True
+        
+        # If it's not a stub/hardcoded selector, assume it might need a model
+        # (for backward compatibility with custom selectors)
         return not self._is_stub_selector()
     
     async def _handle_event_bus_event(self, event: MarketEvent) -> None:
@@ -721,6 +729,20 @@ class ActorService:
             logger.debug("No order manager configured")
             return None
         
+        # Early return for HOLD actions (no execution needed)
+        if action == 0:
+            return {"status": "hold", "action": action, "market": market_ticker, "executed": False}
+        
+        # Check throttling BEFORE execution (for non-HOLD actions)
+        if market_ticker in self._per_market_throttle:
+            time_since_last = (time.time() - self._per_market_throttle[market_ticker]) * 1000
+            if time_since_last < self.throttle_ms:
+                logger.debug(
+                    f"Market {market_ticker} throttled "
+                    f"({time_since_last:.1f}ms < {self.throttle_ms}ms)"
+                )
+                return {"status": "throttled", "executed": False}
+        
         try:
             # Get orderbook snapshot for price calculation
             orderbook_snapshot = None
@@ -740,9 +762,9 @@ class ActorService:
                     except Exception as e2:
                         logger.warning(f"Could not get orderbook snapshot from global registry: {e2}")
             
-            # Validate orderbook snapshot is available for non-HOLD actions
+            # Validate orderbook snapshot is available (HOLD already handled above)
             # Fail fast if missing - don't proceed with default price
-            if action != 0 and orderbook_snapshot is None:
+            if orderbook_snapshot is None:
                 logger.error(
                     f"Cannot execute action {action} for {market_ticker}: "
                     f"orderbook snapshot unavailable. Skipping execution."
@@ -795,8 +817,12 @@ class ActorService:
         to allow fill processing to complete before reading positions.
         """
         try:
-            # Only update if we have an order manager and execution was attempted
-            if not self._order_manager or not execution_result:
+            # Skip position updates for HOLD actions (no position changes)
+            if not execution_result or execution_result.get("status") == "hold":
+                return
+            
+            # Only update if we have an order manager
+            if not self._order_manager:
                 return
             
             # Wait for fill processing delay to account for async fill processing
