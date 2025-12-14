@@ -429,6 +429,7 @@ class TestFoundationIssuesFixes:
         mock_om.get_positions = Mock(return_value={})
         mock_om.get_portfolio_value = Mock(return_value=10000.0)
         mock_om.get_cash_balance = Mock(return_value=10000.0)
+        mock_om.get_order_features = Mock(return_value={})
         service.set_order_manager(mock_om)
         
         await service.initialize()
@@ -504,6 +505,7 @@ class TestFoundationIssuesFixes:
         mock_om.get_positions = Mock(return_value={})
         mock_om.get_portfolio_value = Mock(return_value=10000.0)
         mock_om.get_cash_balance = Mock(return_value=10000.0)
+        mock_om.get_order_features = Mock(return_value={})
         service.set_order_manager(mock_om)
         
         service._max_errors_per_market = 2
@@ -541,6 +543,7 @@ class TestFoundationIssuesFixes:
         mock_om.get_positions = Mock(return_value={})
         mock_om.get_portfolio_value = Mock(return_value=10000.0)
         mock_om.get_cash_balance = Mock(return_value=10000.0)
+        mock_om.get_order_features = Mock(return_value={})
         service.set_order_manager(mock_om)
         
         # Set short re-enable delay for testing

@@ -176,7 +176,7 @@ class ActorService:
                 # For backward compatibility or custom selectors that don't load their own model
                 await self._load_and_cache_model()
         elif self.model_path and not self._needs_model():
-            logger.debug(
+            logger.warning(
                 f"Model path provided ({self.model_path}) but action selector doesn't need it. "
                 f"Model loading handled by selector (M3)."
             )
@@ -642,13 +642,19 @@ class ActorService:
             if hasattr(self._order_manager, 'get_order_features'):
                 order_features_dict = self._order_manager.get_order_features(market_ticker)
                 # Convert to numpy array: [has_open_buy, has_open_sell, time_since_order, ...]
-                order_features = np.array([
-                    order_features_dict.get('has_open_buy', 0.0),
-                    order_features_dict.get('has_open_sell', 0.0),
-                    order_features_dict.get('time_since_order', 0.0),
-                    0.0,  # Placeholder for additional features
-                    0.0   # Placeholder for additional features
-                ], dtype=np.float32)
+                # Defensive: ensure we have a dict-like object
+                if isinstance(order_features_dict, dict):
+                    order_features = np.array([
+                        float(order_features_dict.get('has_open_buy', 0.0)),
+                        float(order_features_dict.get('has_open_sell', 0.0)),
+                        float(order_features_dict.get('time_since_order', 0.0)),
+                        0.0,  # Placeholder for additional features
+                        0.0   # Placeholder for additional features
+                    ], dtype=np.float32)
+                else:
+                    # Fallback if get_order_features returns something unexpected
+                    logger.debug(f"get_order_features returned non-dict for {market_ticker}, using defaults")
+                    order_features = np.array([0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
         
         # Prefer injected adapter (standardized path with portfolio data)
         if self._injected_observation_adapter:
