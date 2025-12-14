@@ -55,14 +55,14 @@ class OrderbookWriteQueue:
         self.flush_interval = flush_interval if flush_interval is not None else config.ORDERBOOK_QUEUE_FLUSH_INTERVAL
         self.max_queue_size = max_queue_size if max_queue_size is not None else config.ORDERBOOK_MAX_QUEUE_SIZE
         
-        # Async queues for different message types
-        self._snapshot_queue: asyncio.Queue = asyncio.Queue(maxsize=self.max_queue_size // 4)
-        self._delta_queue: asyncio.Queue = asyncio.Queue(maxsize=self.max_queue_size)
+        # Async queues and events - will be created in start() to avoid event loop binding issues
+        self._snapshot_queue: Optional[asyncio.Queue] = None
+        self._delta_queue: Optional[asyncio.Queue] = None
+        self._shutdown_event: Optional[asyncio.Event] = None
         
         # Background task management
         self._flush_task: Optional[asyncio.Task] = None
         self._running = False
-        self._shutdown_event = asyncio.Event()
         
         # Session tracking
         self._session_id: Optional[int] = None
@@ -91,6 +91,14 @@ class OrderbookWriteQueue:
         if self._running:
             logger.warning("OrderbookWriteQueue is already running")
             return
+        
+        # Create async objects in the current event loop
+        if self._snapshot_queue is None:
+            self._snapshot_queue = asyncio.Queue(maxsize=self.max_queue_size // 4)
+        if self._delta_queue is None:
+            self._delta_queue = asyncio.Queue(maxsize=self.max_queue_size)
+        if self._shutdown_event is None:
+            self._shutdown_event = asyncio.Event()
         
         self._running = True
         self._shutdown_event.clear()
@@ -128,6 +136,10 @@ class OrderbookWriteQueue:
         Returns:
             bool: True if enqueued successfully, False if queue full
         """
+        if not self._running or self._snapshot_queue is None:
+            logger.warning("Cannot enqueue snapshot: write queue not started")
+            return False
+            
         try:
             # Add message type and timestamp
             message = {
@@ -163,6 +175,10 @@ class OrderbookWriteQueue:
         Returns:
             bool: True if enqueued successfully, False if sampled out or queue full
         """
+        if not self._running or self._delta_queue is None:
+            logger.warning("Cannot enqueue delta: write queue not started")
+            return False
+            
         try:
             # Add message type and timestamp
             message = {
@@ -223,6 +239,9 @@ class OrderbookWriteQueue:
     
     async def _flush_snapshot_queue(self) -> None:
         """Flush snapshot queue in batches."""
+        if self._snapshot_queue is None:
+            return
+            
         snapshots = []
         
         # Collect messages up to batch size
@@ -255,6 +274,9 @@ class OrderbookWriteQueue:
     
     async def _flush_delta_queue(self) -> None:
         """Flush delta queue in batches."""
+        if self._delta_queue is None:
+            return
+            
         deltas = []
         
         # Collect messages up to batch size
@@ -296,8 +318,8 @@ class OrderbookWriteQueue:
             "snapshots_written": self._snapshots_written,
             "deltas_written": self._deltas_written,
             "queue_full_errors": self._queue_full_errors,
-            "snapshot_queue_size": self._snapshot_queue.qsize(),
-            "delta_queue_size": self._delta_queue.qsize(),
+            "snapshot_queue_size": self._snapshot_queue.qsize() if self._snapshot_queue else 0,
+            "delta_queue_size": self._delta_queue.qsize() if self._delta_queue else 0,
             "last_flush_time": self._last_flush_time,
             "config": {
                 "batch_size": self.batch_size,
@@ -309,6 +331,9 @@ class OrderbookWriteQueue:
     
     def is_healthy(self) -> bool:
         """Check if queue is healthy and processing normally."""
+        if not self._running or self._snapshot_queue is None or self._delta_queue is None:
+            return False
+            
         # Check if queues are not completely full
         snapshot_full = self._snapshot_queue.qsize() >= self._snapshot_queue.maxsize * 0.9
         delta_full = self._delta_queue.qsize() >= self._delta_queue.maxsize * 0.9
@@ -321,6 +346,10 @@ class OrderbookWriteQueue:
     
     async def force_flush(self) -> None:
         """Force an immediate flush of all queues."""
+        if not self._running or self._snapshot_queue is None or self._delta_queue is None:
+            logger.warning("Cannot force flush: write queue not started")
+            return
+            
         await self._flush_all_queues()
         logger.info("Forced flush completed")
 
@@ -328,13 +357,27 @@ class OrderbookWriteQueue:
 # Import config at module level for initialization
 from ..config import config
 
-# Global write queue instance - initialized immediately like orderbook_client
-write_queue = OrderbookWriteQueue(
-    batch_size=config.ORDERBOOK_QUEUE_BATCH_SIZE,
-    flush_interval=config.ORDERBOOK_QUEUE_FLUSH_INTERVAL,
-    max_queue_size=config.ORDERBOOK_MAX_QUEUE_SIZE
-)
+# Global write queue instance - lazy initialized to avoid event loop binding issues
+_write_queue: Optional[OrderbookWriteQueue] = None
 
 def get_write_queue() -> OrderbookWriteQueue:
-    """Get the global write queue instance (for backwards compatibility)."""
-    return write_queue
+    """Get the global write queue instance (lazy initialization)."""
+    global _write_queue
+    if _write_queue is None:
+        _write_queue = OrderbookWriteQueue(
+            batch_size=config.ORDERBOOK_QUEUE_BATCH_SIZE,
+            flush_interval=config.ORDERBOOK_QUEUE_FLUSH_INTERVAL,
+            max_queue_size=config.ORDERBOOK_MAX_QUEUE_SIZE
+        )
+    return _write_queue
+
+
+async def _reset_write_queue() -> None:
+    """Reset the global write queue instance (for testing only)."""
+    global _write_queue
+    if _write_queue is not None and _write_queue._running:
+        try:
+            await _write_queue.stop()
+        except Exception as e:
+            logger.warning(f"Error stopping write queue during reset: {e}")
+    _write_queue = None

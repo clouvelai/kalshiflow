@@ -39,7 +39,7 @@ os.environ["RL_MARKET_TICKERS"] = "KXCABOUT-29,KXEPLGAME-25DEC08WOLMUN,KXFEDDECI
 from kalshiflow_rl.app import app
 from kalshiflow_rl.config import config
 from kalshiflow_rl.data.database import rl_db
-from kalshiflow_rl.data.write_queue import get_write_queue
+from kalshiflow_rl.data.write_queue import get_write_queue, _reset_write_queue
 from kalshiflow_rl.data.orderbook_client import OrderbookClient
 from kalshiflow_rl.data.orderbook_state import get_shared_orderbook_state
 from kalshiflow_rl.data.auth import validate_rl_auth
@@ -146,6 +146,7 @@ async def setup_e2e_test():
 async def cleanup_e2e_test():
     """Clean up E2E test environment."""
     logger.info("🧹 Cleaning up E2E test environment")
+    await _reset_write_queue()
     await rl_db.close()
 
 
@@ -196,6 +197,15 @@ async def test_rl_backend_e2e_regression():
         
         # Test Phase 2: Database Integration
         logger.info("📋 PHASE 2: Database Integration Test")
+        
+        # Create a test session (normally done by OrderbookClient on connection)
+        logger.info("📝 Creating test session for write queue...")
+        session_id = await rl_db.create_session(
+            market_tickers=config.RL_MARKET_TICKERS,
+            websocket_url="test://rl_e2e_regression"
+        )
+        write_queue.set_session_id(session_id)
+        logger.info(f"✅ Test session {session_id} created and set")
         
         # Test write queue performance with real database
         logger.info("💾 Testing write queue database integration...")
@@ -351,7 +361,7 @@ async def test_rl_backend_e2e_regression():
                 else:
                     logger.warning(f"⚠️  {market_ticker}: No snapshots in database yet")
                 
-                deltas_in_db = await rl_db.get_deltas_since_sequence(market_ticker, 0)
+                deltas_in_db = await rl_db.get_deltas_since_sequence(market_ticker, 0, session_id)
                 if deltas_in_db:
                     total_deltas_found += len(deltas_in_db)
                     logger.info(f"📊 {market_ticker}: {len(deltas_in_db)} delta records")
@@ -407,10 +417,21 @@ async def test_rl_backend_e2e_regression():
                     pass
     
     finally:
-        # Stop write queue
+        # Stop write queue and clean up session
         logger.info("🧹 Stopping write queue...")
         write_queue = get_write_queue()
         await write_queue.stop()
+        
+        # Close test session if it was created
+        try:
+            if 'session_id' in locals():
+                logger.info(f"🧹 Closing test session {session_id}...")
+                await rl_db.close_session(session_id)
+        except Exception as e:
+            logger.warning(f"Failed to close test session: {e}")
+    
+    # Reset write queue for next test
+    await _reset_write_queue()
     
     # Final Results
     logger.info("📋 FINAL E2E TEST RESULTS")

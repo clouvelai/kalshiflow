@@ -17,7 +17,7 @@ from websockets.exceptions import ConnectionClosed, InvalidMessage
 
 from .auth import get_rl_auth
 from .orderbook_state import get_shared_orderbook_state, SharedOrderbookState
-from .write_queue import write_queue
+from .write_queue import get_write_queue
 from .database import rl_db
 from ..config import config
 from ..trading.event_bus import emit_orderbook_snapshot, emit_orderbook_delta
@@ -178,7 +178,7 @@ class OrderbookClient:
             )
             
             # Pass session ID to write queue
-            write_queue.set_session_id(self._session_id)
+            get_write_queue().set_session_id(self._session_id)
             
             logger.info(f"WebSocket connected for {len(self.market_tickers)} markets, session {self._session_id}")
             
@@ -403,7 +403,7 @@ class OrderbookClient:
                 await global_state.apply_snapshot(snapshot_data)
             
             # Queue for database persistence with session ID (non-blocking)
-            enqueue_success = await write_queue.enqueue_snapshot(snapshot_data)
+            enqueue_success = await get_write_queue().enqueue_snapshot(snapshot_data)
             
             # Trigger actor event via event bus after successful database enqueue (non-blocking)
             if enqueue_success:
@@ -500,7 +500,7 @@ class OrderbookClient:
                     logger.warning(f"Failed to apply delta for {market_ticker}: seq={delta_data['sequence_number']}")
             
             # Queue for database persistence with session ID (non-blocking)
-            enqueue_success = await write_queue.enqueue_delta(delta_data)
+            enqueue_success = await get_write_queue().enqueue_delta(delta_data)
             
             # Trigger actor event via event bus after successful database enqueue (non-blocking)
             if enqueue_success:

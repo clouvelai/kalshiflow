@@ -21,7 +21,7 @@ from starlette.middleware.cors import CORSMiddleware
 
 from .config import config, logger
 from .data.database import rl_db
-from .data.write_queue import write_queue
+from .data.write_queue import get_write_queue
 from .data.orderbook_client import OrderbookClient
 from .data.orderbook_state import get_all_orderbook_states, get_shared_orderbook_state
 from .data.auth import validate_rl_auth
@@ -117,6 +117,7 @@ async def lifespan(app: Starlette):
         logger.info("Database initialized")
         
         # Start write queue
+        write_queue = get_write_queue()
         await write_queue.start()
         logger.info("Write queue started")
         
@@ -300,6 +301,7 @@ async def lifespan(app: Starlette):
         await stats_collector.stop()
         
         # Stop write queue (this flushes remaining messages)
+        write_queue = get_write_queue()
         await write_queue.stop()
         
         # Cancel background tasks
@@ -376,6 +378,7 @@ async def health_check(request):
             health_status["status"] = "degraded"
         
         # Check write queue
+        write_queue = get_write_queue()
         if write_queue.is_healthy():
             health_status["components"]["write_queue"] = {
                 "status": "healthy",
@@ -489,7 +492,7 @@ async def status_endpoint(request):
                 "kalshi_ws_url": config.KALSHI_WS_URL
             },
             "stats": {
-                "write_queue": write_queue.get_stats(),
+                "write_queue": get_write_queue().get_stats(),
                 "orderbook_client": orderbook_client.get_stats() if orderbook_client else {},
                 "websocket_manager": websocket_manager.get_stats(),
                 "stats_collector": stats_collector.get_stats(),
@@ -548,6 +551,7 @@ async def orderbook_snapshot_endpoint(request):
 async def force_flush_endpoint(request):
     """Force flush of write queue (admin endpoint)."""
     try:
+        write_queue = get_write_queue()
         await write_queue.force_flush()
         
         return JSONResponse({

@@ -12,7 +12,7 @@ from typing import Dict, Any, Optional
 from threading import Lock
 from collections import defaultdict, deque
 
-from .data.write_queue import write_queue
+from .data.write_queue import get_write_queue
 from .config import config
 
 logger = logging.getLogger("kalshiflow_rl.stats_collector")
@@ -126,7 +126,7 @@ class StatsCollector:
             uptime = time.time() - self._start_time
             
             # Get database queue stats
-            queue_stats = write_queue.get_stats() if write_queue else {}
+            queue_stats = get_write_queue().get_stats()
             
             # Get component stats if available
             orderbook_stats = {}
