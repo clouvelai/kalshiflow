@@ -55,13 +55,19 @@ class OrderInfo:
     ticker: str
     side: OrderSide
     contract_side: ContractSide
-    quantity: int
+    quantity: int                    # Remaining quantity (updated on partial fills)
     limit_price: int                # Price in cents (1-99)
     status: OrderStatus
     placed_at: float
-    promised_cash: float            # Cash reserved for this order
+    promised_cash: float            # Cash reserved for remaining order quantity
+    original_quantity: Optional[int] = None  # Original order quantity (for partial fill tracking)
     filled_at: Optional[float] = None
     fill_price: Optional[int] = None
+    
+    def __post_init__(self):
+        """Set original_quantity if not provided."""
+        if self.original_quantity is None:
+            self.original_quantity = self.quantity
     
     def is_active(self) -> bool:
         """Check if order is still active."""
@@ -98,22 +104,67 @@ class Position:
 
 @dataclass
 class FillEvent:
-    """Fill event for processing queue."""
+    """
+    Fill event for processing queue.
+    
+    Based on Kalshi User Fills WebSocket message format:
+    https://docs.kalshi.com/websockets/user-fills
+    """
     kalshi_order_id: str
-    fill_price: int
-    fill_quantity: int
-    fill_timestamp: float
+    fill_price: int              # YES price in cents (1-99)
+    fill_quantity: int           # Number of contracts filled (count)
+    fill_timestamp: float        # Unix timestamp
+    market_ticker: str = ""      # Market ticker from fill message
+    post_position: Optional[int] = None  # Position after fill (from Kalshi - authoritative!)
+    action: str = ""             # "buy" or "sell"
+    side: str = ""               # "yes" or "no"
     
     @classmethod
     def from_kalshi_message(cls, message: Dict[str, Any]) -> Optional['FillEvent']:
-        """Create fill event from Kalshi WebSocket message."""
+        """
+        Create fill event from Kalshi WebSocket message.
+        
+        Note: Kalshi fill messages use 'msg' key, NOT 'data'!
+        
+        Example message:
+        {
+            "type": "fill",
+            "sid": 13,
+            "msg": {
+                "trade_id": "...",
+                "order_id": "...",
+                "market_ticker": "HIGHNY-22DEC23-B53.5",
+                "is_taker": true,
+                "side": "yes",
+                "yes_price": 75,
+                "count": 278,
+                "action": "buy",
+                "ts": 1671899397,
+                "post_position": 500
+            }
+        }
+        """
         try:
-            fill_data = message.get("data", {})
+            # IMPORTANT: Kalshi uses 'msg' not 'data'!
+            fill_data = message.get("msg", {})
+            
+            if not fill_data:
+                logger.warning(f"Empty fill data in message: {message}")
+                return None
+            
+            # Parse timestamp - Kalshi uses 'ts' as Unix timestamp
+            ts = fill_data.get("ts")
+            fill_timestamp = float(ts) if ts else time.time()
+            
             return cls(
                 kalshi_order_id=fill_data.get("order_id", ""),
                 fill_price=fill_data.get("yes_price", 0),
                 fill_quantity=fill_data.get("count", 0),
-                fill_timestamp=time.time()  # Use current time for now
+                fill_timestamp=fill_timestamp,
+                market_ticker=fill_data.get("market_ticker", ""),
+                post_position=fill_data.get("post_position"),  # Can be None
+                action=fill_data.get("action", ""),
+                side=fill_data.get("side", ""),
             )
         except Exception as e:
             logger.error(f"Error parsing fill message: {e}")
@@ -155,6 +206,9 @@ class KalshiMultiMarketOrderManager:
         # Fill processing queue
         self.fills_queue: asyncio.Queue[FillEvent] = asyncio.Queue()
         self._fill_processor_task: Optional[asyncio.Task] = None
+        
+        # Fill listener (WebSocket connection for real-time fill notifications)
+        self._fill_listener = None  # Type: FillListener (imported lazily)
         
         # Periodic sync task
         self._periodic_sync_task: Optional[asyncio.Task] = None
@@ -205,6 +259,17 @@ class KalshiMultiMarketOrderManager:
         self._fill_processor_task = asyncio.create_task(self._process_fills())
         logger.info("✅ Fill processor started")
         
+        # Start fill listener (WebSocket for real-time fill notifications)
+        try:
+            from .fill_listener import FillListener
+            self._fill_listener = FillListener(order_manager=self)
+            await self._fill_listener.start()
+            logger.info("✅ Fill listener started (WebSocket connected)")
+        except Exception as e:
+            # Fill listener is critical but we can fall back to periodic sync
+            logger.warning(f"⚠️ Fill listener failed to start: {e}. Using periodic sync as fallback.")
+            self._fill_listener = None
+        
         # Synchronize orders and positions with Kalshi on startup (if enabled)
         from ..config import config
         if config.RL_ORDER_SYNC_ENABLED and config.RL_ORDER_SYNC_ON_STARTUP:
@@ -243,6 +308,15 @@ class KalshiMultiMarketOrderManager:
         # Cancel all open orders (only if trading client is initialized)
         if self.trading_client is not None:
             await self.cancel_all_orders()
+        
+        # Stop fill listener first (stop receiving new fills)
+        if self._fill_listener:
+            try:
+                await self._fill_listener.stop()
+                logger.info("✅ Fill listener stopped")
+            except Exception as e:
+                logger.warning(f"Error stopping fill listener: {e}")
+            self._fill_listener = None
         
         # Stop periodic sync task
         if self._periodic_sync_task:
@@ -546,8 +620,18 @@ class KalshiMultiMarketOrderManager:
             logger.error(f"Fill processor error: {e}")
     
     async def _process_single_fill(self, fill_event: FillEvent) -> None:
-        """Process a single fill event."""
+        """
+        Process a single fill event.
+        
+        Handles both partial and complete fills:
+        - Partial fills: Update order quantity, release proportional cash, keep order open
+        - Complete fills: Remove order from tracking
+        
+        Uses post_position from Kalshi fill message for accurate position tracking.
+        """
         kalshi_order_id = fill_event.kalshi_order_id
+        fill_quantity = fill_event.fill_quantity
+        fill_price = fill_event.fill_price
         
         # Find our order
         if kalshi_order_id not in self._kalshi_to_internal:
@@ -562,35 +646,80 @@ class KalshiMultiMarketOrderManager:
         
         order = self.open_orders[our_order_id]
         
-        # Process the fill
-        fill_cost = (fill_event.fill_price / 100.0) * fill_event.fill_quantity
+        # Calculate fill cost
+        fill_cost = (fill_price / 100.0) * fill_quantity
         
-        # Update order status
-        order.status = OrderStatus.FILLED
-        order.filled_at = fill_event.fill_timestamp
-        order.fill_price = fill_event.fill_price
+        # Calculate remaining quantity after this fill
+        remaining_quantity = order.quantity - fill_quantity
         
-        # Option B cash management
+        # Determine if this is a partial or complete fill
+        is_partial_fill = remaining_quantity > 0
+        
+        # Option B cash management - PROPORTIONAL release for partial fills
         if order.side == OrderSide.BUY:
-            # Cash was already deducted when order placed
-            # Just reduce promised cash
-            self.promised_cash -= order.promised_cash
+            # Calculate proportional cash to release based on fill ratio
+            # Use order.quantity (remaining before this fill) for ratio calculation
+            fill_ratio = fill_quantity / order.quantity if order.quantity > 0 else 1.0
+            promised_cash_released = order.promised_cash * fill_ratio
+            
+            # Release proportional promised cash
+            self.promised_cash -= promised_cash_released
+            order.promised_cash -= promised_cash_released
+            
+            logger.debug(
+                f"BUY fill cash: released ${promised_cash_released:.2f} of ${order.promised_cash + promised_cash_released:.2f} "
+                f"({fill_quantity}/{order.quantity} contracts)"
+            )
         else:
-            # SELL: add cash received
+            # SELL: add cash received for the filled quantity
             self.cash_balance += fill_cost
+            logger.debug(f"SELL fill cash: received ${fill_cost:.2f}")
         
-        # Update position
-        self._update_position(order, fill_event.fill_price, fill_event.fill_quantity)
+        # Update position using traditional method first
+        self._update_position(order, fill_price, fill_quantity)
         
-        # Remove from tracking
-        del self.open_orders[our_order_id]
-        del self._kalshi_to_internal[kalshi_order_id]
+        # If post_position is provided by Kalshi, use it as authoritative source
+        # This eliminates race conditions and ensures position accuracy
+        if fill_event.post_position is not None:
+            ticker = fill_event.market_ticker or order.ticker
+            if ticker in self.positions:
+                old_contracts = self.positions[ticker].contracts
+                self.positions[ticker].contracts = fill_event.post_position
+                if old_contracts != fill_event.post_position:
+                    logger.debug(
+                        f"Position corrected via post_position: {ticker} "
+                        f"{old_contracts} -> {fill_event.post_position}"
+                    )
+        
+        # Update order tracking based on fill type
+        if is_partial_fill:
+            # Partial fill: Update order quantity, keep order open
+            order.quantity = remaining_quantity
+            order.fill_price = fill_price  # Track most recent fill price
+            
+            logger.info(
+                f"Partial fill processed: {our_order_id} - {fill_quantity} @ {fill_price}¢ "
+                f"(remaining: {remaining_quantity} contracts)"
+            )
+        else:
+            # Complete fill: Update status and remove from tracking
+            order.status = OrderStatus.FILLED
+            order.filled_at = fill_event.fill_timestamp
+            order.fill_price = fill_price
+            order.quantity = 0  # Mark as fully filled
+            
+            # Remove from tracking
+            del self.open_orders[our_order_id]
+            del self._kalshi_to_internal[kalshi_order_id]
+            
+            logger.info(
+                f"Fill complete: {our_order_id} - {fill_quantity} @ {fill_price}¢ "
+                f"(order fully filled)"
+            )
         
         # Update metrics
         self._orders_filled += 1
         self._total_volume_traded += fill_cost
-        
-        logger.info(f"Fill processed: {our_order_id} - {fill_event.fill_quantity} @ {fill_event.fill_price}¢")
     
     def _update_position(self, order: OrderInfo, fill_price: int, fill_quantity: int) -> None:
         """Update position after a fill."""
@@ -725,7 +854,7 @@ class KalshiMultiMarketOrderManager:
     
     def get_metrics(self) -> Dict[str, Any]:
         """Get performance metrics."""
-        return {
+        metrics = {
             "cash_balance": self.cash_balance,
             "promised_cash": self.promised_cash,
             "portfolio_value": self.get_portfolio_value(),
@@ -736,8 +865,16 @@ class KalshiMultiMarketOrderManager:
             "open_orders_count": len(self.open_orders),
             "positions_count": len([p for p in self.positions.values() if not p.is_flat]),
             "total_volume_traded": self._total_volume_traded,
-            "fill_queue_size": self.fills_queue.qsize()
+            "fill_queue_size": self.fills_queue.qsize(),
         }
+        
+        # Include fill listener metrics if available
+        if self._fill_listener:
+            metrics["fill_listener"] = self._fill_listener.get_metrics()
+        else:
+            metrics["fill_listener"] = {"running": False, "connected": False}
+        
+        return metrics
     
     def _calculate_limit_price_from_snapshot(
         self,

@@ -230,12 +230,19 @@ class TestKalshiMultiMarketOrderManager:
             order_id = result["order_id"]
             kalshi_order_id = order_manager.open_orders[order_id].kalshi_order_id
             
-            # Simulate fill
+            # Simulate fill (using Kalshi WebSocket format with 'msg' key)
             await order_manager.queue_fill({
-                "data": {
+                "type": "fill",
+                "sid": 1,
+                "msg": {
                     "order_id": kalshi_order_id,
+                    "market_ticker": "TEST-MARKET",
                     "yes_price": 51,
-                    "count": 10
+                    "count": 10,
+                    "action": "buy",
+                    "side": "yes",
+                    "ts": 1671899397,
+                    "post_position": 10
                 }
             })
             
