@@ -556,7 +556,7 @@ class KalshiDemoTradingClient:
         
         try:
             logger.info(f"Connecting to demo WebSocket: {self.ws_url}")
-            self.ws_connection = await websockets.connect(self.ws_url, extra_headers=ws_headers)
+            self.ws_connection = await websockets.connect(self.ws_url, additional_headers=ws_headers)
             logger.info("Demo account WebSocket connected successfully")
             
         except Exception as e:

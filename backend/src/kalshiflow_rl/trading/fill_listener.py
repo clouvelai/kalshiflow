@@ -283,7 +283,7 @@ class FillListener:
         
         async with websockets.connect(
             self.ws_url,
-            extra_headers=ws_headers,
+            additional_headers=ws_headers,
             ping_interval=20,
             ping_timeout=10,
         ) as ws:
