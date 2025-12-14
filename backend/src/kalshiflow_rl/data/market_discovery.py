@@ -23,7 +23,8 @@ class MarketDiscoveryService:
         """Initialize market discovery service."""
         self.rl_auth = get_rl_auth()
         self.auth = self.rl_auth.auth
-        self.base_url = "https://api.elections.kalshi.com/trade-api/v2"
+        # Use config URL which respects ENVIRONMENT (paper → demo-api.kalshi.co)
+        self.base_url = config.KALSHI_API_URL
         
     async def fetch_markets_list(self, 
                                 limit: int = 100, 
