@@ -358,6 +358,8 @@ async def health_check(request):
             "market_tickers": active_market_tickers or config.RL_MARKET_TICKERS,
             "markets_count": len(active_market_tickers or config.RL_MARKET_TICKERS),
             "market_mode": config.RL_MARKET_MODE,
+            "kalshi_api_url": config.KALSHI_API_URL,
+            "kalshi_ws_url": config.KALSHI_WS_URL,
             "components": {}
         }
         
@@ -482,7 +484,9 @@ async def status_endpoint(request):
                 "market_limit": config.ORDERBOOK_MARKET_LIMIT,
                 "configured_tickers": config.RL_MARKET_TICKERS,
                 "environment": config.ENVIRONMENT,
-                "debug": config.DEBUG
+                "debug": config.DEBUG,
+                "kalshi_api_url": config.KALSHI_API_URL,
+                "kalshi_ws_url": config.KALSHI_WS_URL
             },
             "stats": {
                 "write_queue": write_queue.get_stats(),
