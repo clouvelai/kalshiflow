@@ -1039,6 +1039,169 @@ class RLDatabase:
                 'created_at': model_info['created_at'].isoformat(),
                 'performance': dict(episode_stats) if episode_stats else {}
             }
+    
+    async def close(self):
+        """Close database connection pool."""
+        if self._pool:
+            await self._pool.close()
+            self._pool = None
+            self._initialized = False
+            logger.info("RL database connection pool closed")
+    
+    # Session Cleanup Operations
+    
+    async def delete_session(self, session_id: int) -> Dict[str, Any]:
+        """
+        Delete a session and all related data (cascading delete).
+        
+        Returns dict with deletion statistics.
+        """
+        async with self.get_connection() as conn:
+            async with conn.transaction():
+                # Get session info before deletion
+                session = await conn.fetchrow(
+                    "SELECT * FROM rl_orderbook_sessions WHERE session_id = $1",
+                    session_id
+                )
+                
+                if not session:
+                    return {"error": f"Session {session_id} not found"}
+                
+                # Count related data before deletion
+                snapshot_count = await conn.fetchval(
+                    "SELECT COUNT(*) FROM rl_orderbook_snapshots WHERE session_id = $1",
+                    session_id
+                )
+                delta_count = await conn.fetchval(
+                    "SELECT COUNT(*) FROM rl_orderbook_deltas WHERE session_id = $1",
+                    session_id
+                )
+                
+                # Delete related data (order matters due to foreign keys)
+                await conn.execute("DELETE FROM rl_orderbook_deltas WHERE session_id = $1", session_id)
+                await conn.execute("DELETE FROM rl_orderbook_snapshots WHERE session_id = $1", session_id)
+                await conn.execute("DELETE FROM rl_orderbook_sessions WHERE session_id = $1", session_id)
+                
+                return {
+                    "session_id": session_id,
+                    "markets": session['market_tickers'],
+                    "duration": str(session['ended_at'] - session['started_at']) if session['ended_at'] else "N/A",
+                    "snapshots_deleted": snapshot_count,
+                    "deltas_deleted": delta_count,
+                    "status": "deleted"
+                }
+    
+    async def delete_sessions(self, session_ids: List[int]) -> List[Dict[str, Any]]:
+        """
+        Batch delete multiple sessions with progress tracking.
+        
+        Returns list of deletion results for each session.
+        """
+        results = []
+        for session_id in session_ids:
+            try:
+                result = await self.delete_session(session_id)
+                results.append(result)
+            except Exception as e:
+                results.append({
+                    "session_id": session_id,
+                    "error": str(e),
+                    "status": "failed"
+                })
+        return results
+    
+    async def get_empty_sessions(self) -> List[Dict[str, Any]]:
+        """Get all sessions with no snapshots or deltas."""
+        async with self.get_connection() as conn:
+            rows = await conn.fetch("""
+                SELECT 
+                    session_id,
+                    market_tickers,
+                    started_at,
+                    ended_at,
+                    status,
+                    snapshots_count,
+                    deltas_count,
+                    CASE 
+                        WHEN ended_at IS NOT NULL THEN ended_at - started_at
+                        ELSE NULL
+                    END as duration
+                FROM rl_orderbook_sessions
+                WHERE snapshots_count = 0 AND deltas_count = 0
+                ORDER BY session_id
+            """)
+            
+            return [dict(row) for row in rows]
+    
+    async def get_test_sessions(self, max_duration_minutes: int = 5, max_markets: int = 5) -> List[Dict[str, Any]]:
+        """Get sessions that appear to be test runs (short duration, few markets)."""
+        async with self.get_connection() as conn:
+            rows = await conn.fetch("""
+                SELECT 
+                    session_id,
+                    market_tickers,
+                    started_at,
+                    ended_at,
+                    status,
+                    snapshots_count,
+                    deltas_count,
+                    CASE 
+                        WHEN ended_at IS NOT NULL THEN ended_at - started_at
+                        ELSE NULL
+                    END as duration
+                FROM rl_orderbook_sessions
+                WHERE 
+                    status = 'closed'
+                    AND array_length(market_tickers, 1) <= $1
+                    AND (
+                        ended_at IS NULL 
+                        OR EXTRACT(EPOCH FROM (ended_at - started_at))/60 <= $2
+                    )
+                ORDER BY session_id
+            """, max_markets, max_duration_minutes)
+            
+            return [dict(row) for row in rows]
+    
+    async def get_sessions_by_date_range(self, start_date: datetime, end_date: datetime) -> List[Dict[str, Any]]:
+        """Get sessions within a specific date range."""
+        async with self.get_connection() as conn:
+            rows = await conn.fetch("""
+                SELECT 
+                    session_id,
+                    market_tickers,
+                    started_at,
+                    ended_at,
+                    status,
+                    snapshots_count,
+                    deltas_count,
+                    CASE 
+                        WHEN ended_at IS NOT NULL THEN ended_at - started_at
+                        ELSE NULL
+                    END as duration
+                FROM rl_orderbook_sessions
+                WHERE started_at >= $1 AND started_at <= $2
+                ORDER BY started_at DESC
+            """, start_date, end_date)
+            
+            return [dict(row) for row in rows]
+    
+    async def get_session_statistics(self) -> Dict[str, Any]:
+        """Get overall statistics about all sessions."""
+        async with self.get_connection() as conn:
+            stats = await conn.fetchrow("""
+                SELECT 
+                    COUNT(*) as total_sessions,
+                    COUNT(CASE WHEN snapshots_count > 0 OR deltas_count > 0 THEN 1 END) as sessions_with_data,
+                    COUNT(CASE WHEN snapshots_count = 0 AND deltas_count = 0 THEN 1 END) as empty_sessions,
+                    COUNT(CASE WHEN array_length(market_tickers, 1) <= 5 
+                          AND EXTRACT(EPOCH FROM (ended_at - started_at))/60 <= 5 THEN 1 END) as test_sessions,
+                    SUM(snapshots_count) as total_snapshots,
+                    SUM(deltas_count) as total_deltas
+                FROM rl_orderbook_sessions
+                WHERE status = 'closed'
+            """)
+            
+            return dict(stats)
 
 
 # Global RL database instance

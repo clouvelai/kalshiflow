@@ -522,11 +522,60 @@ cd frontend && railway up --service kalshi-flowboard
 - use the deployment agent for Railway.app deployments and production infrastructure
 - IMPORTANT: Only deploy to production when explicitly requested by the user. Never deploy autonomously.
 
-## Checking Orderbook Session Data
-- use @backend/src/kalshiflow_rl/scripts/fetch_session_data.py to lookup session collection status / metadata
--   You can now use:
-  # Analyze any session
-  uv run python backend/src/kalshiflow_rl/scripts/fetch_session_data.py --analyze 9
+## Managing RL Session Data
 
-  # Or analyze the most recent session
-  uv run pythonbackend/src/kalshiflow_rl/scripts/fetch_session_data.py --analyze
+### Checking Orderbook Sessions
+Use `@backend/src/kalshiflow_rl/scripts/fetch_session_data.py` to monitor and analyze session data:
+
+```bash
+# List all available sessions
+uv run python src/kalshiflow_rl/scripts/fetch_session_data.py --list
+
+# Load and analyze specific session
+uv run python src/kalshiflow_rl/scripts/fetch_session_data.py --analyze 9
+
+# Analyze the most recent session
+uv run python src/kalshiflow_rl/scripts/fetch_session_data.py --analyze
+
+# Create market-specific view
+uv run python src/kalshiflow_rl/scripts/fetch_session_data.py --view 9 --market TICKER
+```
+
+### Cleaning Up Empty/Test Sessions
+Use `@backend/src/kalshiflow_rl/scripts/cleanup_sessions.py` to identify and remove problematic sessions:
+
+```bash
+# Check database statistics
+uv run python src/kalshiflow_rl/scripts/cleanup_sessions.py --stats
+
+# Generate cleanup report (shows what can be deleted)
+uv run python src/kalshiflow_rl/scripts/cleanup_sessions.py --report
+
+# List empty sessions (0 snapshots and 0 deltas)
+uv run python src/kalshiflow_rl/scripts/cleanup_sessions.py --list-empty
+
+# List test sessions (<5 min, ≤5 markets)
+uv run python src/kalshiflow_rl/scripts/cleanup_sessions.py --list-test
+
+# Delete specific sessions (with confirmation)
+uv run python src/kalshiflow_rl/scripts/cleanup_sessions.py --delete 2,3,8,18-22
+
+# Delete all empty sessions
+uv run python src/kalshiflow_rl/scripts/cleanup_sessions.py --delete-empty
+
+# Delete all test sessions
+uv run python src/kalshiflow_rl/scripts/cleanup_sessions.py --delete-test
+```
+
+### Session Data Quality Indicators
+- **Meaningful sessions**: Have snapshots (>0) and deltas (>0)
+- **Empty sessions**: 0 snapshots AND 0 deltas (safe to delete)
+- **Test sessions**: <5 minutes duration, ≤5 markets (usually safe to delete)
+- **Active stuck sessions**: Status='active' but no data for >24 hours (investigate before deleting)
+
+### Best Practices
+1. Run `--report` first to understand what will be deleted
+2. Check `--stats` after cleanup to verify database state
+3. Keep deletion logs for audit trail (automatically saved)
+4. Preserve sessions with any meaningful data (snapshots or deltas > 0)
+5. Document cleanup actions in `training/reports/` directory
