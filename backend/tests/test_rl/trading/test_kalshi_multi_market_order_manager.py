@@ -16,7 +16,9 @@ from kalshiflow_rl.trading.kalshi_multi_market_order_manager import (
     OrderStatus,
     OrderSide,
     ContractSide,
-    FillEvent
+    FillEvent,
+    OrderInfo,
+    Position
 )
 
 
@@ -313,4 +315,332 @@ class TestKalshiMultiMarketOrderManager:
             mock_trading_client.create_order.return_value = {
                 "order": {"order_id": f"kalshi_test_{action}"}
             }
+    
+    @pytest.mark.asyncio
+    async def test_sync_orders_restart_scenario(self, order_manager):
+        """Test sync adds orders found in Kalshi but not in local memory (restart scenario)."""
+        order_manager.trading_client = Mock()
+        
+        initial_cash = order_manager.cash_balance
+        
+        # Simulate Kalshi has an order we don't know about
+        kalshi_order = {
+            "order_id": "kalshi_restart_123",
+            "ticker": "TEST-MARKET",
+            "side": "yes",
+            "action": "buy",
+            "status": "resting",
+            "yes_price": 55,
+            "remaining_count": 10,
+            "initial_count": 10,
+            "fill_count": 0
+        }
+        
+        order_manager.trading_client.get_orders = AsyncMock(return_value={
+            "orders": [kalshi_order]
+        })
+        
+        # Sync should add the order (restart scenario)
+        stats = await order_manager.sync_orders_with_kalshi(is_startup=True)
+        
+        assert stats["added"] == 1
+        assert stats["found_in_kalshi"] == 1
+        assert len(order_manager.open_orders) == 1
+        
+        # Verify order was added correctly
+        our_order_id = list(order_manager.open_orders.keys())[0]
+        order = order_manager.open_orders[our_order_id]
+        assert order.kalshi_order_id == "kalshi_restart_123"
+        assert order.ticker == "TEST-MARKET"
+        assert order.status == OrderStatus.PENDING
+        assert order.quantity == 10
+        # Cash should be reserved for BUY order
+        expected_cost = (55 / 100.0) * 10
+        assert order_manager.cash_balance == initial_cash - expected_cost
+        assert order_manager.promised_cash == expected_cost
+    
+    @pytest.mark.asyncio
+    async def test_sync_orders_status_mismatch(self, order_manager):
+        """Test sync updates local order status to match Kalshi."""
+        order_manager.trading_client = Mock()
+        
+        # Set up cash balance to match order state
+        promised_cash = 5.5
+        order_manager.cash_balance -= promised_cash
+        order_manager.promised_cash = promised_cash
+        
+        # Create local order with PENDING status
+        our_order_id = order_manager._generate_order_id()
+        local_order = OrderInfo(
+            order_id=our_order_id,
+            kalshi_order_id="kalshi_status_123",
+            ticker="TEST-MARKET",
+            side=OrderSide.BUY,
+            contract_side=ContractSide.YES,
+            quantity=10,
+            limit_price=55,
+            status=OrderStatus.PENDING,
+            placed_at=time.time(),
+            promised_cash=promised_cash
+        )
+        order_manager.open_orders[our_order_id] = local_order
+        order_manager._kalshi_to_internal["kalshi_status_123"] = our_order_id
+        
+        # Kalshi says order is executed
+        kalshi_order = {
+            "order_id": "kalshi_status_123",
+            "ticker": "TEST-MARKET",
+            "side": "yes",
+            "action": "buy",
+            "status": "executed",
+            "yes_price": 55,
+            "remaining_count": 0,
+            "initial_count": 10,
+            "fill_count": 10
+        }
+        
+        order_manager.trading_client.get_orders = AsyncMock(return_value={
+            "orders": [kalshi_order]
+        })
+        
+        initial_cash = order_manager.cash_balance
+        initial_promised = order_manager.promised_cash
+        
+        # Sync should update status and process fill
+        stats = await order_manager.sync_orders_with_kalshi()
+        
+        assert stats["updated"] >= 1
+        assert stats["discrepancies"] >= 1
+        # Order should be removed (fully filled)
+        assert "kalshi_status_123" not in order_manager._kalshi_to_internal
+        # Promised cash should be released
+        assert order_manager.promised_cash < initial_promised
+        assert order_manager.promised_cash == 0.0
+    
+    @pytest.mark.asyncio
+    async def test_sync_orders_partial_fill(self, order_manager):
+        """Test sync processes partial fills from Kalshi."""
+        order_manager.trading_client = Mock()
+        
+        # Set up cash balance to match order state
+        promised_cash = 5.5
+        order_manager.cash_balance -= promised_cash
+        order_manager.promised_cash = promised_cash
+        
+        # Create local order with full quantity
+        our_order_id = order_manager._generate_order_id()
+        local_order = OrderInfo(
+            order_id=our_order_id,
+            kalshi_order_id="kalshi_partial_123",
+            ticker="TEST-MARKET",
+            side=OrderSide.BUY,
+            contract_side=ContractSide.YES,
+            quantity=10,  # Full quantity
+            limit_price=55,
+            status=OrderStatus.PENDING,
+            placed_at=time.time(),
+            promised_cash=promised_cash
+        )
+        order_manager.open_orders[our_order_id] = local_order
+        order_manager._kalshi_to_internal["kalshi_partial_123"] = our_order_id
+        
+        # Kalshi says 5 contracts filled, 5 remaining
+        kalshi_order = {
+            "order_id": "kalshi_partial_123",
+            "ticker": "TEST-MARKET",
+            "side": "yes",
+            "action": "buy",
+            "status": "resting",
+            "yes_price": 55,
+            "remaining_count": 5,
+            "initial_count": 10,
+            "fill_count": 5
+        }
+        
+        order_manager.trading_client.get_orders = AsyncMock(return_value={
+            "orders": [kalshi_order]
+        })
+        
+        initial_promised = order_manager.promised_cash
+        
+        # Sync should process partial fill
+        stats = await order_manager.sync_orders_with_kalshi()
+        
+        assert stats["partial_fills"] >= 1
+        assert stats["updated"] >= 1
+        # Order should still exist but with reduced quantity
+        assert "kalshi_partial_123" in order_manager._kalshi_to_internal
+        updated_order = order_manager.open_orders[our_order_id]
+        assert updated_order.quantity == 5
+        # Promised cash should be reduced proportionally
+        assert order_manager.promised_cash < initial_promised
+    
+    @pytest.mark.asyncio
+    async def test_sync_orders_external_cancellation(self, order_manager):
+        """Test sync removes orders that exist locally but not in Kalshi."""
+        order_manager.trading_client = Mock()
+        
+        # Set up cash balance to match order state
+        promised_cash = 5.5
+        initial_cash = order_manager.cash_balance
+        order_manager.cash_balance -= promised_cash
+        order_manager.promised_cash = promised_cash
+        
+        # Create local order
+        our_order_id = order_manager._generate_order_id()
+        local_order = OrderInfo(
+            order_id=our_order_id,
+            kalshi_order_id="kalshi_cancelled_123",
+            ticker="TEST-MARKET",
+            side=OrderSide.BUY,
+            contract_side=ContractSide.YES,
+            quantity=10,
+            limit_price=55,
+            status=OrderStatus.PENDING,
+            placed_at=time.time(),
+            promised_cash=promised_cash
+        )
+        order_manager.open_orders[our_order_id] = local_order
+        order_manager._kalshi_to_internal["kalshi_cancelled_123"] = our_order_id
+        
+        # Kalshi has no orders (order was cancelled externally)
+        order_manager.trading_client.get_orders = AsyncMock(return_value={
+            "orders": []
+        })
+        
+        # Sync should remove the order and restore cash
+        stats = await order_manager.sync_orders_with_kalshi()
+        
+        assert stats["removed"] == 1
+        assert len(order_manager.open_orders) == 0
+        assert "kalshi_cancelled_123" not in order_manager._kalshi_to_internal
+        # Cash should be restored to original (we subtracted 5.5, then restored 5.5)
+        assert order_manager.cash_balance == initial_cash
+        assert order_manager.promised_cash == 0.0
+    
+    @pytest.mark.asyncio
+    async def test_sync_orders_no_discrepancies(self, order_manager):
+        """Test sync when local state matches Kalshi (no discrepancies)."""
+        order_manager.trading_client = Mock()
+        
+        # Set up cash balance to match order state
+        promised_cash = 5.5
+        order_manager.cash_balance -= promised_cash
+        order_manager.promised_cash = promised_cash
+        
+        # Create local order
+        our_order_id = order_manager._generate_order_id()
+        local_order = OrderInfo(
+            order_id=our_order_id,
+            kalshi_order_id="kalshi_sync_123",
+            ticker="TEST-MARKET",
+            side=OrderSide.BUY,
+            contract_side=ContractSide.YES,
+            quantity=10,
+            limit_price=55,
+            status=OrderStatus.PENDING,
+            placed_at=time.time(),
+            promised_cash=promised_cash
+        )
+        order_manager.open_orders[our_order_id] = local_order
+        order_manager._kalshi_to_internal["kalshi_sync_123"] = our_order_id
+        
+        # Kalshi has matching order
+        kalshi_order = {
+            "order_id": "kalshi_sync_123",
+            "ticker": "TEST-MARKET",
+            "side": "yes",
+            "action": "buy",
+            "status": "resting",
+            "yes_price": 55,
+            "remaining_count": 10,
+            "initial_count": 10,
+            "fill_count": 0
+        }
+        
+        order_manager.trading_client.get_orders = AsyncMock(return_value={
+            "orders": [kalshi_order]
+        })
+        
+        # Sync should find no discrepancies
+        stats = await order_manager.sync_orders_with_kalshi()
+        
+        assert stats["discrepancies"] == 0
+        assert stats["updated"] == 0
+        assert stats["added"] == 0
+        assert stats["removed"] == 0
+        # Order should still exist
+        assert "kalshi_sync_123" in order_manager._kalshi_to_internal
+    
+    @pytest.mark.asyncio
+    async def test_sync_positions(self, order_manager):
+        """Test position synchronization with Kalshi."""
+        order_manager.trading_client = Mock()
+        
+        # Create local position
+        order_manager.positions["TEST-MARKET"] = Position(
+            ticker="TEST-MARKET",
+            contracts=5,
+            cost_basis=100.0,
+            realized_pnl=10.0
+        )
+        
+        # Kalshi has different position
+        kalshi_positions = [
+            {
+                "ticker": "TEST-MARKET",
+                "position": 10  # Different from local
+            },
+            {
+                "ticker": "OTHER-MARKET",
+                "position": 3  # New position
+            }
+        ]
+        
+        order_manager.trading_client.get_positions = AsyncMock(return_value={
+            "positions": kalshi_positions
+        })
+        
+        # Sync should update positions
+        await order_manager._sync_positions_with_kalshi()
+        
+        # Local position should match Kalshi
+        assert order_manager.positions["TEST-MARKET"].contracts == 10
+        # New position should be added
+        assert "OTHER-MARKET" in order_manager.positions
+        assert order_manager.positions["OTHER-MARKET"].contracts == 3
+    
+    @pytest.mark.asyncio
+    async def test_sync_orders_filled_order_not_added(self, order_manager):
+        """Test that fully filled orders from Kalshi are not added to open_orders."""
+        order_manager.trading_client = Mock()
+        
+        # Kalshi has a filled order
+        kalshi_order = {
+            "order_id": "kalshi_filled_123",
+            "ticker": "TEST-MARKET",
+            "side": "yes",
+            "action": "buy",
+            "status": "executed",
+            "yes_price": 55,
+            "remaining_count": 0,
+            "initial_count": 10,
+            "fill_count": 10
+        }
+        
+        order_manager.trading_client.get_orders = AsyncMock(return_value={
+            "orders": [kalshi_order]
+        })
+        
+        initial_cash = order_manager.cash_balance
+        
+        # Sync should process fills but not add to open_orders
+        stats = await order_manager.sync_orders_with_kalshi()
+        
+        # Order should not be in open_orders (it's filled)
+        assert len(order_manager.open_orders) == 0
+        # But position should be updated
+        assert "TEST-MARKET" in order_manager.positions
+        assert order_manager.positions["TEST-MARKET"].contracts == 10
+    
 

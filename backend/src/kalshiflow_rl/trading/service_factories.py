@@ -143,12 +143,14 @@ async def create_actor_service(
     from .actor_service import ActorService
     from ..config import config
     
-    # Create actor service instance
+    # Create actor service instance with strict_validation=False to allow
+    # services to be created without all dependencies (they can be set later)
     actor_service = ActorService(
         market_tickers=config.RL_MARKET_TICKERS,
         model_path=None,  # Can be configured later
         queue_size=1000,
-        throttle_ms=250
+        throttle_ms=250,
+        strict_validation=False  # Allow creation without all dependencies
     )
     
     # Inject dependencies through setter methods
@@ -162,6 +164,12 @@ async def create_actor_service(
     # Store references to injected dependencies
     actor_service._injected_adapter = live_observation_adapter
     actor_service._injected_event_bus = event_bus
+    
+    # Set default action selector if not already set (HardcodedSelector as fallback)
+    if not actor_service._action_selector:
+        from .action_selector import HardcodedSelector
+        actor_service.set_action_selector(HardcodedSelector())
+        logger.debug("Set default HardcodedSelector for ActorService")
     
     logger.info("✅ ActorService created with injected dependencies")
     return actor_service

@@ -105,6 +105,11 @@ class RLConfig:
         self.RL_ACTOR_THROTTLE_MS: int = int(os.getenv("RL_ACTOR_THROTTLE_MS", "250"))
         self.RL_ACTOR_CONTRACT_SIZE: int = int(os.getenv("RL_ACTOR_CONTRACT_SIZE", "10"))
         
+        # Order Synchronization Configuration
+        self.RL_ORDER_SYNC_ENABLED: bool = os.getenv("RL_ORDER_SYNC_ENABLED", "true").lower() == "true"
+        self.RL_ORDER_SYNC_INTERVAL_SECONDS: int = int(os.getenv("RL_ORDER_SYNC_INTERVAL_SECONDS", "60"))
+        self.RL_ORDER_SYNC_ON_STARTUP: bool = os.getenv("RL_ORDER_SYNC_ON_STARTUP", "true").lower() == "true"
+        
         # Validate configuration
         self._validate_config()
     

@@ -140,12 +140,6 @@ class TestMilestone1Integration:
         # Verify HardcodedSelector behavior (real functionality)
         assert action == 0  # HOLD action
         assert action_selector.get_strategy_name() == "Hardcoded_AlwaysHold"
-        
-        # Check stats (real functionality that works)
-        stats = action_selector_stub.get_stats()
-        assert stats["is_stub"] is True
-        assert stats["call_count"] == 1
-        assert stats["stub_action"] == "HOLD"
 
 
 class TestMilestone2Integration:

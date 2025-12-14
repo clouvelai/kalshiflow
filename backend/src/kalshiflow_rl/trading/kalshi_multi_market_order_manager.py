@@ -156,6 +156,9 @@ class KalshiMultiMarketOrderManager:
         self.fills_queue: asyncio.Queue[FillEvent] = asyncio.Queue()
         self._fill_processor_task: Optional[asyncio.Task] = None
         
+        # Periodic sync task
+        self._periodic_sync_task: Optional[asyncio.Task] = None
+        
         # Trading client
         self.trading_client: Optional[KalshiDemoTradingClient] = None
         
@@ -202,6 +205,35 @@ class KalshiMultiMarketOrderManager:
         self._fill_processor_task = asyncio.create_task(self._process_fills())
         logger.info("✅ Fill processor started")
         
+        # Synchronize orders and positions with Kalshi on startup (if enabled)
+        from ..config import config
+        if config.RL_ORDER_SYNC_ENABLED and config.RL_ORDER_SYNC_ON_STARTUP:
+            logger.info("Starting order synchronization with Kalshi...")
+            try:
+                order_stats = await self.sync_orders_with_kalshi(is_startup=True)
+                
+                # Log summary (warnings for actual discrepancies are already logged by sync_orders_with_kalshi)
+                # On startup, finding orders in Kalshi but not locally is expected, not a discrepancy
+                actual_discrepancies = order_stats.get("discrepancies", 0) + order_stats.get("removed", 0)
+                if actual_discrepancies == 0:
+                    logger.info(
+                        f"✅ Startup order sync complete: {order_stats['found_in_kalshi']} orders in Kalshi, "
+                        f"{order_stats['found_in_memory']} orders in local memory - all in sync"
+                    )
+                # If there are actual discrepancies, they're already logged as warnings by sync_orders_with_kalshi
+                
+                # Sync positions
+                await self._sync_positions_with_kalshi(is_startup=True)
+                # Position sync messages are already logged by _sync_positions_with_kalshi
+            except Exception as e:
+                logger.error(f"Error during startup sync: {e}")
+                logger.warning("Continuing without sync - local state may be out of sync")
+        
+        # Start periodic synchronization (if enabled)
+        if config.RL_ORDER_SYNC_ENABLED:
+            self._periodic_sync_task = asyncio.create_task(self._start_periodic_sync())
+            logger.info(f"✅ Periodic sync started (interval: {config.RL_ORDER_SYNC_INTERVAL_SECONDS}s)")
+        
         logger.info("✅ KalshiMultiMarketOrderManager ready for trading")
     
     async def shutdown(self) -> None:
@@ -211,6 +243,14 @@ class KalshiMultiMarketOrderManager:
         # Cancel all open orders (only if trading client is initialized)
         if self.trading_client is not None:
             await self.cancel_all_orders()
+        
+        # Stop periodic sync task
+        if self._periodic_sync_task:
+            self._periodic_sync_task.cancel()
+            try:
+                await self._periodic_sync_task
+            except asyncio.CancelledError:
+                pass
         
         # Stop fill processor
         if self._fill_processor_task:
@@ -780,6 +820,627 @@ class KalshiMultiMarketOrderManager:
         except Exception as e:
             logger.error(f"Error calculating limit price: {e}, using default (50)")
             return 50
+    
+    async def sync_orders_with_kalshi(self, is_startup: bool = False) -> Dict[str, Any]:
+        """
+        Sync local order state with Kalshi.
+        
+        Kalshi is the source of truth - local state is updated to match Kalshi.
+        
+        Args:
+            is_startup: If True, orders found in Kalshi but not locally are expected
+                       (process restart scenario) and won't trigger warnings.
+        
+        Returns:
+            Dictionary with sync statistics
+        """
+        if not self.trading_client:
+            logger.error("Cannot sync orders: trading client not initialized")
+            return {"error": "trading_client_not_initialized"}
+        
+        try:
+            # Fetch all orders from Kalshi
+            kalshi_orders_response = await self.trading_client.get_orders()
+            kalshi_orders = {
+                order["order_id"]: order 
+                for order in kalshi_orders_response.get("orders", [])
+            }
+            
+            # Track reconciliation stats
+            stats = {
+                "found_in_kalshi": len(kalshi_orders),
+                "found_in_memory": len(self.open_orders),
+                "added": 0,
+                "updated": 0,
+                "removed": 0,
+                "partial_fills": 0,
+                "discrepancies": 0
+            }
+            
+            # Reconcile each Kalshi order (Kalshi is authoritative)
+            for kalshi_order_id, kalshi_order in kalshi_orders.items():
+                await self._reconcile_order(kalshi_order_id, kalshi_order, stats, is_startup=is_startup)
+            
+            # Check for orders in memory but not in Kalshi
+            # If Kalshi doesn't have it, it doesn't exist - remove from local state
+            for our_order_id, order in list(self.open_orders.items()):
+                if order.kalshi_order_id not in kalshi_orders:
+                    # Order was cancelled externally or doesn't exist in Kalshi
+                    # Trust Kalshi: remove from local tracking
+                    await self._handle_external_cancellation(order, stats)
+            
+            # Log clear warning if discrepancies were found
+            # On startup, finding orders in Kalshi but not locally is expected, not a discrepancy
+            actual_discrepancies = stats["discrepancies"] + stats["removed"]
+            if is_startup:
+                # On startup, only warn about actual discrepancies (not orders added from Kalshi)
+                if actual_discrepancies > 0:
+                    logger.warning(
+                        f"⚠️ STARTUP ORDER SYNC DISCREPANCIES DETECTED: "
+                        f"{stats['discrepancies']} discrepancies (status/fill mismatches), "
+                        f"{stats['removed']} orders removed (not in Kalshi), "
+                        f"{stats['partial_fills']} partial fills processed. "
+                        f"Local state was out of sync with Kalshi."
+                    )
+                elif stats["added"] > 0:
+                    logger.info(
+                        f"Startup sync: Found {stats['added']} order(s) in Kalshi from previous session "
+                        f"(expected on restart). Restored to local tracking."
+                    )
+                elif stats["found_in_kalshi"] == 0:
+                    logger.info("Startup sync: No orders found in Kalshi (clean state)")
+            else:
+                # During periodic sync, warn about any discrepancies including added orders
+                if actual_discrepancies > 0 or stats["added"] > 0:
+                    logger.warning(
+                        f"⚠️ ORDER SYNC DISCREPANCIES DETECTED: "
+                        f"{stats['discrepancies']} discrepancies, "
+                        f"{stats['added']} orders added (not in local memory), "
+                        f"{stats['updated']} orders updated, "
+                        f"{stats['removed']} orders removed (not in Kalshi), "
+                        f"{stats['partial_fills']} partial fills processed. "
+                        f"Local state was out of sync with Kalshi."
+                    )
+                elif stats["found_in_kalshi"] > 0 or stats["found_in_memory"] > 0:
+                    logger.debug(
+                        f"Order sync complete: {stats['found_in_kalshi']} orders in Kalshi, "
+                        f"{stats['found_in_memory']} orders in local memory - all in sync"
+                    )
+            
+            return stats
+            
+        except Exception as e:
+            logger.error(f"Error syncing orders with Kalshi: {e}")
+            return {"error": str(e)}
+    
+    async def _reconcile_order(
+        self, 
+        kalshi_order_id: str, 
+        kalshi_order: Dict[str, Any], 
+        stats: Dict[str, Any],
+        is_startup: bool = False
+    ) -> None:
+        """
+        Reconcile a single Kalshi order with local state.
+        
+        Kalshi state is authoritative - local state is updated to match.
+        
+        Args:
+            kalshi_order_id: Kalshi order ID
+            kalshi_order: Order data from Kalshi API
+            stats: Statistics dictionary to update
+        """
+        # Map Kalshi status to internal status
+        kalshi_status = kalshi_order.get("status", "").lower()
+        if kalshi_status == "resting":
+            kalshi_status_mapped = OrderStatus.PENDING
+        elif kalshi_status == "executed":
+            kalshi_status_mapped = OrderStatus.FILLED
+        elif kalshi_status == "canceled":
+            kalshi_status_mapped = OrderStatus.CANCELLED
+        else:
+            logger.warning(f"Unknown Kalshi order status: {kalshi_status}")
+            kalshi_status_mapped = OrderStatus.PENDING
+        
+        # Check if order exists in local memory
+        if kalshi_order_id in self._kalshi_to_internal:
+            # Order exists locally - reconcile
+            our_order_id = self._kalshi_to_internal[kalshi_order_id]
+            if our_order_id not in self.open_orders:
+                logger.warning(f"Order {kalshi_order_id} in mapping but not in open_orders")
+                # Clean up mapping
+                del self._kalshi_to_internal[kalshi_order_id]
+                stats["discrepancies"] += 1
+                return
+            
+            local_order = self.open_orders[our_order_id]
+            
+            # Check for discrepancies
+            has_discrepancy = False
+            
+            # Status discrepancy
+            if local_order.status != kalshi_status_mapped:
+                logger.warning(
+                    f"⚠️ ORDER STATUS MISMATCH: Order {kalshi_order_id} ({local_order.ticker}) - "
+                    f"local={local_order.status.name}, Kalshi={kalshi_status}. "
+                    f"Updating local state to match Kalshi."
+                )
+                has_discrepancy = True
+                stats["discrepancies"] += 1
+            
+            # Fill count discrepancy
+            fill_count = kalshi_order.get("fill_count", 0)
+            remaining_count = kalshi_order.get("remaining_count", 0)
+            initial_count = kalshi_order.get("initial_count", 0)
+            
+            # Check if order has fills we haven't processed
+            # We compare local order quantity with remaining_count to detect fills
+            expected_remaining = local_order.quantity
+            if remaining_count < expected_remaining:
+                # Order has been filled (partially or fully)
+                filled_quantity = expected_remaining - remaining_count
+                logger.warning(
+                    f"⚠️ ORDER FILL DISCREPANCY: Order {kalshi_order_id} ({local_order.ticker}) - "
+                    f"{filled_quantity} fills not processed locally "
+                    f"(local remaining: {expected_remaining}, Kalshi remaining: {remaining_count}). "
+                    f"Processing missed fill(s) from Kalshi."
+                )
+                await self._process_partial_fill_from_kalshi(
+                    local_order, kalshi_order, filled_quantity, stats
+                )
+                has_discrepancy = True
+                stats["discrepancies"] += 1
+            
+            # Update order status to match Kalshi
+            if local_order.status != kalshi_status_mapped:
+                old_status = local_order.status
+                local_order.status = kalshi_status_mapped
+                
+                # If order is now filled or cancelled, handle accordingly
+                if kalshi_status_mapped == OrderStatus.FILLED:
+                    # Order is fully filled - process any remaining fills and remove from tracking
+                    remaining_count = kalshi_order.get("remaining_count", 0)
+                    if remaining_count < local_order.quantity:
+                        # Process remaining fill
+                        filled_quantity = local_order.quantity - remaining_count
+                        # Get fill price - always use yes_price (NO price can be derived as 99 - yes_price)
+                        # This matches the pattern used elsewhere in the codebase
+                        yes_price = kalshi_order.get("yes_price", local_order.limit_price)
+                        if local_order.contract_side == ContractSide.YES:
+                            fill_price = yes_price
+                        else:
+                            # Derive NO price from YES price (consistent with limit price calculation)
+                            fill_price = 99 - yes_price
+                        
+                        # Option B cash management
+                        if local_order.side == OrderSide.BUY:
+                            # Cash already deducted, just reduce promised cash
+                            fill_ratio = filled_quantity / local_order.quantity
+                            promised_cash_released = local_order.promised_cash * fill_ratio
+                            self.promised_cash -= promised_cash_released
+                        else:
+                            # SELL: add cash received
+                            fill_cost = (fill_price / 100.0) * filled_quantity
+                            self.cash_balance += fill_cost
+                        
+                        # Update position
+                        self._update_position(local_order, fill_price, filled_quantity)
+                        self._orders_filled += 1
+                        self._total_volume_traded += (fill_price / 100.0) * filled_quantity
+                    
+                    # Remove from tracking
+                    if local_order.side == OrderSide.BUY:
+                        # Release any remaining promised cash
+                        self.cash_balance += local_order.promised_cash
+                        self.promised_cash -= local_order.promised_cash
+                    
+                    del self.open_orders[our_order_id]
+                    del self._kalshi_to_internal[kalshi_order_id]
+                    stats["updated"] += 1
+                    
+                elif kalshi_status_mapped == OrderStatus.CANCELLED:
+                    # Order was cancelled - restore cash if BUY
+                    if local_order.side == OrderSide.BUY:
+                        self.cash_balance += local_order.promised_cash
+                        self.promised_cash -= local_order.promised_cash
+                    
+                    del self.open_orders[our_order_id]
+                    del self._kalshi_to_internal[kalshi_order_id]
+                    stats["updated"] += 1
+                    logger.info(f"Order {kalshi_order_id} was cancelled externally")
+            
+            # Update quantity if remaining_count differs
+            if remaining_count > 0 and local_order.quantity != remaining_count:
+                logger.info(
+                    f"Order {kalshi_order_id} quantity mismatch: "
+                    f"local={local_order.quantity}, Kalshi remaining={remaining_count}"
+                )
+                local_order.quantity = remaining_count
+                has_discrepancy = True
+            
+            if has_discrepancy:
+                stats["updated"] += 1
+        else:
+            # Order not in local memory - add it (restart scenario or missed order)
+            ticker = kalshi_order.get("ticker", "UNKNOWN")
+            if is_startup:
+                # On startup, this is expected behavior (process restart)
+                logger.info(
+                    f"Restoring order from Kalshi: {kalshi_order_id} ({ticker}) - "
+                    f"found in Kalshi from previous session, adding to local tracking"
+                )
+            else:
+                # During periodic sync, this indicates a missed order (unexpected)
+                logger.warning(
+                    f"⚠️ ORDER NOT IN LOCAL MEMORY: Order {kalshi_order_id} ({ticker}) "
+                    f"found in Kalshi but not tracked locally. "
+                    f"This indicates a missed order. Adding to local tracking."
+                )
+            await self._add_order_from_kalshi(kalshi_order_id, kalshi_order, stats)
+            stats["added"] += 1
+    
+    async def _process_partial_fill_from_kalshi(
+        self,
+        local_order: OrderInfo,
+        kalshi_order: Dict[str, Any],
+        fill_count: int,
+        stats: Dict[str, Any]
+    ) -> None:
+        """
+        Process partial fill(s) from Kalshi order data.
+        
+        Args:
+            local_order: Local order tracking
+            kalshi_order: Kalshi order data
+            fill_count: Number of contracts filled
+            stats: Statistics dictionary
+        """
+        # Get fill price - always use yes_price (NO price can be derived as 99 - yes_price)
+        # This matches the pattern used elsewhere in the codebase
+        yes_price = kalshi_order.get("yes_price", local_order.limit_price)
+        if local_order.contract_side == ContractSide.YES:
+            fill_price = yes_price
+        else:
+            # Derive NO price from YES price (consistent with limit price calculation)
+            fill_price = 99 - yes_price
+        
+        # Process fill through existing logic
+        fill_cost = (fill_price / 100.0) * fill_count
+        
+        # Option B cash management
+        if local_order.side == OrderSide.BUY:
+            # Cash was already deducted when order placed
+            # Reduce promised cash proportionally
+            fill_ratio = fill_count / local_order.quantity
+            promised_cash_released = local_order.promised_cash * fill_ratio
+            self.promised_cash -= promised_cash_released
+            local_order.promised_cash -= promised_cash_released
+        else:
+            # SELL: add cash received
+            self.cash_balance += fill_cost
+        
+        # Update position
+        self._update_position(local_order, fill_price, fill_count)
+        
+        # Update order quantity
+        remaining_count = kalshi_order.get("remaining_count", 0)
+        local_order.quantity = remaining_count
+        
+        # Update metrics
+        self._orders_filled += 1
+        self._total_volume_traded += fill_cost
+        
+        stats["partial_fills"] += 1
+        logger.info(
+            f"Processed partial fill: {local_order.order_id} - "
+            f"{fill_count} contracts @ {fill_price}¢ (remaining: {remaining_count})"
+        )
+    
+    async def _add_order_from_kalshi(
+        self,
+        kalshi_order_id: str,
+        kalshi_order: Dict[str, Any],
+        stats: Dict[str, Any]
+    ) -> None:
+        """
+        Add order from Kalshi to local tracking (restart scenario).
+        
+        Args:
+            kalshi_order_id: Kalshi order ID
+            kalshi_order: Order data from Kalshi
+            stats: Statistics dictionary
+        """
+        # Parse Kalshi order data
+        ticker = kalshi_order.get("ticker", "")
+        kalshi_side = kalshi_order.get("side", "").lower()
+        kalshi_action = kalshi_order.get("action", "").lower()
+        
+        # Map to internal enums
+        if kalshi_side == "yes":
+            contract_side = ContractSide.YES
+        elif kalshi_side == "no":
+            contract_side = ContractSide.NO
+        else:
+            logger.error(f"Unknown contract side: {kalshi_side}")
+            return
+        
+        if kalshi_action == "buy":
+            side = OrderSide.BUY
+        elif kalshi_action == "sell":
+            side = OrderSide.SELL
+        else:
+            logger.error(f"Unknown action: {kalshi_action}")
+            return
+        
+        # Get order details - always use yes_price (NO price can be derived as 99 - yes_price)
+        # This matches the pattern used elsewhere in the codebase
+        yes_price = kalshi_order.get("yes_price", 50)
+        if contract_side == ContractSide.YES:
+            limit_price = yes_price
+        else:
+            # Derive NO price from YES price (consistent with limit price calculation)
+            limit_price = 99 - yes_price
+        
+        remaining_count = kalshi_order.get("remaining_count", 0)
+        initial_count = kalshi_order.get("initial_count", remaining_count)
+        fill_count = kalshi_order.get("fill_count", 0)
+        
+        # Map status
+        kalshi_status = kalshi_order.get("status", "").lower()
+        if kalshi_status == "resting":
+            status = OrderStatus.PENDING
+        elif kalshi_status == "executed":
+            status = OrderStatus.FILLED
+        elif kalshi_status == "canceled":
+            status = OrderStatus.CANCELLED
+        else:
+            status = OrderStatus.PENDING
+        
+        # Don't add filled or cancelled orders to open_orders
+        # They're historical and don't need tracking
+        if status in (OrderStatus.FILLED, OrderStatus.CANCELLED):
+            logger.debug(
+                f"Skipping {status.name} order from Kalshi: {kalshi_order_id} "
+                f"({ticker}, {side.name} {contract_side.name})"
+            )
+            # Still process fills if order was filled to update positions
+            if status == OrderStatus.FILLED and fill_count > 0:
+                # Get fill price - always use yes_price (NO price can be derived as 99 - yes_price)
+                # This matches the pattern used elsewhere in the codebase
+                yes_price = kalshi_order.get("yes_price", limit_price)
+                if contract_side == ContractSide.YES:
+                    fill_price = yes_price
+                else:
+                    # Derive NO price from YES price (consistent with limit price calculation)
+                    fill_price = 99 - yes_price
+                # Create temporary order info for position update
+                temp_order = OrderInfo(
+                    order_id="temp",
+                    kalshi_order_id=kalshi_order_id,
+                    ticker=ticker,
+                    side=side,
+                    contract_side=contract_side,
+                    quantity=fill_count,
+                    limit_price=fill_price,
+                    status=status,
+                    placed_at=time.time(),
+                    promised_cash=0.0
+                )
+                # Update position
+                self._update_position(temp_order, fill_price, fill_count)
+                # Update cash if SELL
+                if side == OrderSide.SELL:
+                    fill_cost = (fill_price / 100.0) * fill_count
+                    self.cash_balance += fill_cost
+                self._orders_filled += 1
+                self._total_volume_traded += (fill_price / 100.0) * fill_count
+            return
+        
+        # Generate internal order ID
+        our_order_id = self._generate_order_id()
+        
+        # Calculate promised cash (if BUY and still pending)
+        promised_cash = 0.0
+        if side == OrderSide.BUY and status == OrderStatus.PENDING:
+            promised_cash = (limit_price / 100.0) * remaining_count
+            # Reserve cash
+            self.cash_balance -= promised_cash
+            self.promised_cash += promised_cash
+        
+        # Create order info
+        order_info = OrderInfo(
+            order_id=our_order_id,
+            kalshi_order_id=kalshi_order_id,
+            ticker=ticker,
+            side=side,
+            contract_side=contract_side,
+            quantity=remaining_count,
+            limit_price=limit_price,
+            status=status,
+            placed_at=time.time(),  # Use current time (we don't have original timestamp)
+            promised_cash=promised_cash
+        )
+        
+        # If order has partial fills, process them
+        if fill_count > 0 and remaining_count > 0:
+            fill_price = kalshi_order.get("yes_price", limit_price)
+            await self._process_partial_fill_from_kalshi(
+                order_info, kalshi_order, fill_count, stats
+            )
+        
+        # Add to tracking
+        self.open_orders[our_order_id] = order_info
+        self._kalshi_to_internal[kalshi_order_id] = our_order_id
+        
+        logger.info(
+            f"Added order from Kalshi: {our_order_id} -> {kalshi_order_id} "
+            f"({ticker}, {side.name} {contract_side.name}, {remaining_count} remaining)"
+        )
+    
+    async def _handle_external_cancellation(
+        self,
+        order: OrderInfo,
+        stats: Dict[str, Any]
+    ) -> None:
+        """
+        Handle order that exists locally but not in Kalshi.
+        
+        Kalshi is authoritative - if it doesn't exist in Kalshi, remove from local state.
+        
+        Args:
+            order: Local order tracking
+            stats: Statistics dictionary
+        """
+        logger.warning(
+            f"⚠️ ORDER NOT IN KALSHI: Order {order.order_id} ({order.kalshi_order_id}, {order.ticker}) "
+            f"exists locally but not in Kalshi. "
+            f"This indicates external cancellation or state mismatch. Removing from local tracking."
+        )
+        
+        # Restore promised cash if BUY order
+        if order.side == OrderSide.BUY:
+            self.cash_balance += order.promised_cash
+            self.promised_cash -= order.promised_cash
+        
+        # Remove from tracking
+        del self.open_orders[order.order_id]
+        if order.kalshi_order_id in self._kalshi_to_internal:
+            del self._kalshi_to_internal[order.kalshi_order_id]
+        
+        stats["removed"] += 1
+        self._orders_cancelled += 1
+    
+    async def _sync_positions_with_kalshi(self, is_startup: bool = False) -> None:
+        """
+        Sync positions with Kalshi.
+        
+        Kalshi positions are authoritative - update local positions to match.
+        
+        Args:
+            is_startup: If True, positions found in Kalshi but not locally are expected
+                       (process restart scenario) and won't trigger warnings.
+        """
+        if not self.trading_client:
+            logger.error("Cannot sync positions: trading client not initialized")
+            return
+        
+        try:
+            # Get positions from Kalshi
+            kalshi_positions_response = await self.trading_client.get_positions()
+            kalshi_positions_list = kalshi_positions_response.get("positions", [])
+            
+            # Build dict of Kalshi positions by ticker
+            kalshi_positions_dict = {}
+            for kalshi_pos in kalshi_positions_list:
+                ticker = kalshi_pos.get("ticker", "")
+                if ticker:
+                    kalshi_positions_dict[ticker] = kalshi_pos
+            
+            position_discrepancies = []
+            
+            # Update local positions to match Kalshi
+            for ticker, kalshi_pos in kalshi_positions_dict.items():
+                contracts = kalshi_pos.get("position", 0)
+                
+                if ticker not in self.positions:
+                    # New position
+                    self.positions[ticker] = Position(
+                        ticker=ticker,
+                        contracts=contracts,
+                        cost_basis=0.0,  # We don't have cost basis from Kalshi API
+                        realized_pnl=0.0  # We don't have realized P&L from Kalshi API
+                    )
+                    if is_startup:
+                        logger.info(
+                            f"Restoring position from Kalshi: {ticker} = {contracts} contracts "
+                            f"(expected on restart)"
+                        )
+                    else:
+                        logger.warning(
+                            f"⚠️ POSITION NOT IN LOCAL MEMORY: {ticker} = {contracts} contracts "
+                            f"found in Kalshi but not tracked locally. Adding to local tracking."
+                        )
+                        position_discrepancies.append(f"{ticker}: added ({contracts} contracts)")
+                else:
+                    # Update existing position
+                    local_pos = self.positions[ticker]
+                    if local_pos.contracts != contracts:
+                        logger.warning(
+                            f"⚠️ POSITION MISMATCH: {ticker} - "
+                            f"local={local_pos.contracts}, Kalshi={contracts}. "
+                            f"Updating local position to match Kalshi."
+                        )
+                        local_pos.contracts = contracts
+                        position_discrepancies.append(
+                            f"{ticker}: {local_pos.contracts} -> {contracts}"
+                        )
+            
+            # Remove positions that don't exist in Kalshi
+            for ticker in list(self.positions.keys()):
+                if ticker not in kalshi_positions_dict:
+                    logger.warning(
+                        f"⚠️ POSITION NOT IN KALSHI: {ticker} exists locally but not in Kalshi. "
+                        f"Removing from local tracking."
+                    )
+                    del self.positions[ticker]
+                    position_discrepancies.append(f"{ticker}: removed")
+            
+            if position_discrepancies:
+                if is_startup:
+                    logger.info(
+                        f"Startup position sync: Restored {len(position_discrepancies)} position(s) "
+                        f"from Kalshi - {', '.join(position_discrepancies)}"
+                    )
+                else:
+                    logger.warning(
+                        f"⚠️ POSITION SYNC DISCREPANCIES DETECTED: "
+                        f"{len(position_discrepancies)} position(s) out of sync - {', '.join(position_discrepancies)}"
+                    )
+            else:
+                if is_startup and len(self.positions) == 0:
+                    logger.info("Startup position sync: No positions found in Kalshi (clean state)")
+                else:
+                    logger.debug(f"Position sync complete: {len(self.positions)} positions - all in sync")
+            
+        except Exception as e:
+            logger.error(f"Error syncing positions with Kalshi: {e}")
+    
+    async def _start_periodic_sync(self) -> None:
+        """
+        Background task for periodic order synchronization.
+        
+        Runs continuously, syncing orders with Kalshi at configured intervals.
+        """
+        from ..config import config
+        
+        logger.info("Periodic sync task started")
+        
+        try:
+            while True:
+                await asyncio.sleep(config.RL_ORDER_SYNC_INTERVAL_SECONDS)
+                
+                try:
+                    logger.debug("Starting periodic order sync...")
+                    stats = await self.sync_orders_with_kalshi()
+                    
+                    # Note: sync_orders_with_kalshi() already logs warnings for discrepancies
+                    # Just log summary here if no discrepancies
+                    if stats.get("discrepancies", 0) == 0 and stats.get("added", 0) == 0 and stats.get("removed", 0) == 0:
+                        logger.debug(
+                            f"Periodic sync complete: {stats['found_in_kalshi']} orders in sync"
+                        )
+                    
+                    # Also sync positions periodically
+                    await self._sync_positions_with_kalshi()
+                    
+                except Exception as e:
+                    logger.error(f"Error in periodic sync: {e}")
+                    
+        except asyncio.CancelledError:
+            logger.info("Periodic sync task cancelled")
+            raise
+        except Exception as e:
+            logger.error(f"Periodic sync task error: {e}")
     
     def _generate_order_id(self) -> str:
         """Generate unique internal order ID."""
