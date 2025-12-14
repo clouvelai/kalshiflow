@@ -90,6 +90,8 @@ class TestCompleteDataPipeline:
             flush_interval=0.1,
             max_queue_size=100
         )
+        # Set session ID so writes are actually persisted
+        test_write_queue.set_session_id(123)
         await test_write_queue.start()
         
         try:
@@ -125,8 +127,10 @@ class TestCompleteDataPipeline:
                 assert "no_asks" in snapshot
                 
                 # Verify specific bid/ask data from test messages
+                # Snapshot sets yes_bid at 45 to 1000
+                # Delta adds 200 to the existing size: 1000 + 200 = 1200
                 assert 45 in snapshot["yes_bids"]  # From snapshot
-                assert snapshot["yes_bids"][45] == 200  # Updated by delta (delta=200 creates new size)
+                assert snapshot["yes_bids"][45] == 1200  # Updated by delta (delta=200 adds to existing)
                 
                 # Verify that write queue received messages
                 stats = test_write_queue.get_stats()
@@ -189,6 +193,9 @@ class TestCompleteDataPipeline:
             batch_size=2,
             flush_interval=0.1,
         )
+        
+        # Set session ID so writes are actually persisted
+        write_queue.set_session_id(123)
         
         await write_queue.start()
         
@@ -254,6 +261,8 @@ class TestCompleteDataPipeline:
             flush_interval=0.1,
             max_queue_size=100
         )
+        # Set session ID so writes are actually persisted
+        test_write_queue.set_session_id(123)
         await test_write_queue.start()
         
         try:
@@ -340,7 +349,8 @@ class TestCompleteDataPipeline:
                 unchanged_snapshot_b = await unchanged_state_b.get_snapshot()
                 
                 assert updated_snapshot_a["last_sequence"] == 101  # Seq updated from delta
-                assert updated_snapshot_a["yes_bids"][50] == 500  # Delta of 500 creates new size
+                # Delta of 500 adds to existing 1000 → 1500
+                assert updated_snapshot_a["yes_bids"][50] == 1500
                 
                 assert unchanged_snapshot_b["last_sequence"] == 200  # Unchanged
                 assert unchanged_snapshot_b["yes_bids"][45] == 2000  # Unchanged

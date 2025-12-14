@@ -135,6 +135,9 @@ class TestOrderbookWriteQueue:
     async def test_batch_processing(self, mock_db, write_queue, sample_snapshot):
         """Test batching functionality."""
         mock_db.batch_insert_snapshots = AsyncMock(return_value=5)
+        
+        # Set session ID so writes actually happen
+        write_queue.set_session_id(123)
         await write_queue.start()
         
         # Enqueue exactly batch_size messages
@@ -182,6 +185,8 @@ class TestOrderbookWriteQueue:
         mock_db.batch_insert_snapshots = AsyncMock(return_value=3)
         
         queue = OrderbookWriteQueue(flush_interval=10.0)  # Long flush interval
+        # Set session ID so writes actually happen
+        queue.set_session_id(123)
         await queue.start()
         
         # Enqueue some messages
@@ -278,6 +283,8 @@ class TestOrderbookWriteQueue:
         # Mock database to raise an error
         mock_db.batch_insert_snapshots = AsyncMock(side_effect=Exception("Database error"))
         
+        # Set session ID so writes are attempted
+        write_queue.set_session_id(123)
         await write_queue.start()
         
         # Enqueue a message

@@ -7,6 +7,7 @@ properly from session data to trained models.
 """
 
 import pytest
+import pytest_asyncio
 import asyncio
 import os
 import tempfile
@@ -29,7 +30,7 @@ from kalshiflow_rl.environments.market_agnostic_env import EnvConfig
 from kalshiflow_rl.environments.session_data_loader import SessionDataLoader
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def database_url():
     """Get database URL from environment."""
     url = os.getenv("DATABASE_URL")
@@ -38,7 +39,7 @@ async def database_url():
     return url
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def test_session_id(database_url):
     """Get a test session ID with sufficient data."""
     loader = SessionDataLoader(database_url=database_url)
@@ -57,7 +58,7 @@ async def test_session_id(database_url):
     return max(s['session_id'] for s in sessions)
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def sb3_training_config():
     """Create SB3 training configuration for tests."""
     env_config = create_env_config(
@@ -406,14 +407,10 @@ class TestErrorHandling:
     async def test_insufficient_data_handling(self, database_url):
         """Test handling when sessions have insufficient data."""
         # Create config with very high requirements
-        strict_config = create_training_config(
-            min_episode_length=1000,  # Very high requirement
-            skip_failed_markets=True
-        )
-        
         sb3_config = SB3TrainingConfig(
             env_config=create_env_config(),
-            **strict_config.__dict__
+            min_episode_length=1000,  # Very high requirement
+            skip_failed_markets=True
         )
         
         # Get any available session

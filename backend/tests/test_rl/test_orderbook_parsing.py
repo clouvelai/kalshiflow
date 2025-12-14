@@ -105,14 +105,24 @@ class TestOrderbookParsing:
     @pytest.mark.asyncio
     async def test_delta_parsing(self, orderbook_client, kalshi_delta_message):
         """Test that delta messages are parsed correctly."""
-        # Mock the orderbook state
-        mock_state = AsyncMock(spec=SharedOrderbookState)
-        mock_state.apply_delta = AsyncMock(return_value=True)
-        orderbook_client._orderbook_states["TEST-MARKET"] = mock_state
+        from kalshiflow_rl.data.orderbook_state import OrderbookState, SharedOrderbookState
+        
+        # Create real shared state (not a mock) because _process_delta accesses _state
+        shared_state = SharedOrderbookState("TEST-MARKET")
+        # Initialize with a snapshot so we have initial state
+        await shared_state.apply_snapshot({
+            "market_ticker": "TEST-MARKET",
+            "timestamp_ms": 1234567890,
+            "sequence_number": 12340,
+            "yes_bids": {45: 100},
+            "no_bids": {40: 200},
+        })
+        
+        orderbook_client._orderbook_states["TEST-MARKET"] = shared_state
         
         # Mock the write queue
         with patch('kalshiflow_rl.data.orderbook_client.write_queue') as mock_queue:
-            mock_queue.enqueue_delta = AsyncMock()
+            mock_queue.enqueue_delta = AsyncMock(return_value=True)
             
             # Process the delta
             await orderbook_client._process_delta(kalshi_delta_message)
@@ -125,8 +135,10 @@ class TestOrderbookParsing:
             assert delta_data["sequence_number"] == 12346  # From outer message seq field
             assert delta_data["side"] == "yes"
             assert delta_data["price"] == 46  # Should be int
-            assert delta_data["old_size"] == 0  # Should be int
-            assert delta_data["new_size"] == 50  # Should be int (abs(delta))
+            # old_size is 0 because price 46 didn't exist before
+            assert delta_data["old_size"] == 0
+            # new_size is delta added to old_size: 0 + 50 = 50
+            assert delta_data["new_size"] == 50
             assert delta_data["action"] == "add"  # old_size=0, new_size>0
             
             # Verify price is integer
@@ -162,36 +174,52 @@ class TestOrderbookParsing:
     
     @pytest.mark.asyncio
     async def test_orderbook_state_integration(self):
-        """Test that OrderbookState works with integer keys."""
+        """Test that OrderbookState works with integer keys.
+        
+        Note: Kalshi only provides bids. Asks are derived using reciprocal relationship:
+        - YES_BID at X → NO_ASK at (99 - X)
+        - NO_BID at Y → YES_ASK at (99 - Y)
+        """
         from kalshiflow_rl.data.orderbook_state import OrderbookState
         
         state = OrderbookState("TEST-MARKET")
         
-        # Apply a snapshot with integer keys
+        # Apply a snapshot with integer keys (only bids provided, asks derived)
         snapshot_data = {
             "market_ticker": "TEST-MARKET",
             "timestamp_ms": 1234567890,
             "sequence_number": 100,
             "yes_bids": {45: 100, 44: 200},  # Integer keys
-            "yes_asks": {55: 150, 56: 300},
-            "no_bids": {40: 250},
-            "no_asks": {60: 225}
+            "no_bids": {40: 250, 39: 175},
         }
         
         state.apply_snapshot(snapshot_data)
         
-        # Verify state was updated correctly
+        # Verify bids were stored correctly
         assert state.yes_bids[45] == 100
-        assert state.yes_asks[55] == 150
+        assert state.yes_bids[44] == 200
         assert state.no_bids[40] == 250
-        assert state.no_asks[60] == 225
+        assert state.no_bids[39] == 175
+        
+        # Verify asks were derived correctly from reciprocal relationship
+        # NO_BID at 40 → YES_ASK at 59 (99-40)
+        # NO_BID at 39 → YES_ASK at 60 (99-39)
+        assert state.yes_asks[59] == 250
+        assert state.yes_asks[60] == 175
+        
+        # YES_BID at 45 → NO_ASK at 54 (99-45)
+        # YES_BID at 44 → NO_ASK at 55 (99-44)
+        assert state.no_asks[54] == 100
+        assert state.no_asks[55] == 200
         
         # Verify spreads are calculated correctly
+        # yes: best_bid=45, best_ask=59 → spread=14
         yes_spread = state.get_yes_spread()
-        assert yes_spread == 55 - 45  # Best ask - best bid
+        assert yes_spread == 59 - 45
         
+        # no: best_bid=40, best_ask=54 → spread=14
         no_spread = state.get_no_spread()
-        assert no_spread == 60 - 40  # Best ask - best bid
+        assert no_spread == 54 - 40
     
     def test_message_type_detection(self, orderbook_client):
         """Test correct detection of message types."""
