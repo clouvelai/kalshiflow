@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from enum import IntEnum
 
 from .demo_client import KalshiDemoTradingClient
+from ..config import config
 
 logger = logging.getLogger("kalshiflow_rl.trading.kalshi_multi_market_order_manager")
 
@@ -222,6 +223,13 @@ class KalshiMultiMarketOrderManager:
         self._orders_cancelled = 0
         self._total_volume_traded = 0.0
         
+        # State change callbacks (for UI updates)
+        self._state_change_callbacks: List[callable] = []
+        
+        # Market configuration (from config)
+        self._market_tickers = config.RL_MARKET_TICKERS
+        self._market_count = len(self._market_tickers)
+        
         logger.info(f"KalshiMultiMarketOrderManager initialized with ${initial_cash:.2f}")
     
     async def initialize(self) -> None:
@@ -300,6 +308,9 @@ class KalshiMultiMarketOrderManager:
             logger.info(f"✅ Periodic sync started (interval: {config.RL_ORDER_SYNC_INTERVAL_SECONDS}s)")
         
         logger.info("✅ KalshiMultiMarketOrderManager ready for trading")
+        
+        # Notify about initial state
+        await self._notify_state_change()
     
     async def shutdown(self) -> None:
         """Shutdown the order manager."""
@@ -407,6 +418,7 @@ class KalshiMultiMarketOrderManager:
             if result:
                 logger.info(f"Order placed: {action} for {market_ticker} -> {result['order_id']}")
                 self._orders_placed += 1
+                await self._notify_state_change()  # Notify about order placement
                 return {
                     "status": "placed",
                     "order_id": result["order_id"],
@@ -563,6 +575,7 @@ class KalshiMultiMarketOrderManager:
             
             self._orders_cancelled += 1
             logger.info(f"Order cancelled: {order_id}")
+            await self._notify_state_change()  # Notify about order cancellation
             return True
             
         except Exception as e:
@@ -724,6 +737,9 @@ class KalshiMultiMarketOrderManager:
         # Add debug logging
         logger.debug(f"Fill processed: {order.ticker} {order.side.name} {fill_quantity} @ {fill_price}¢")
         logger.debug(f"Portfolio after fill - Cash: ${self.cash_balance:.2f}, Positions: {len(self.positions)}")
+        
+        # Notify about state change after fill
+        await self._notify_state_change()
     
     def _update_position(self, order: OrderInfo, fill_price: int, fill_quantity: int) -> None:
         """Update position after a fill."""
@@ -1626,6 +1642,9 @@ class KalshiMultiMarketOrderManager:
                     # Also sync positions periodically
                     await self._sync_positions_with_kalshi()
                     
+                    # Notify about state changes after periodic sync
+                    await self._notify_state_change()
+                    
                 except Exception as e:
                     logger.error(f"Error in periodic sync: {e}")
                     
@@ -1635,6 +1654,116 @@ class KalshiMultiMarketOrderManager:
         except Exception as e:
             logger.error(f"Periodic sync task error: {e}")
     
+    def add_state_change_callback(self, callback) -> None:
+        """
+        Add a callback function to be called when trader state changes.
+        
+        Args:
+            callback: Async function that takes current state as parameter
+        """
+        self._state_change_callbacks.append(callback)
+        
+    async def get_current_state(self) -> Dict[str, Any]:
+        """
+        Get current trading state for UI display.
+        
+        Returns:
+            Dictionary containing portfolio state, positions, orders, and metrics
+        """
+        # Calculate portfolio value
+        portfolio_value = self.cash_balance + self.promised_cash
+        for position in self.positions.values():
+            # Estimate position value (would need current market prices for accuracy)
+            portfolio_value += position.quantity * 0.50  # Rough estimate at 50c
+        
+        # Calculate fill rate
+        total_orders = self._orders_placed
+        fill_rate = self._orders_filled / total_orders if total_orders > 0 else 0.0
+        
+        return {
+            "portfolio_value": portfolio_value,
+            "cash_balance": self.cash_balance,
+            "promised_cash": self.promised_cash,
+            "open_orders": [
+                {
+                    "order_id": order_info.our_order_id,
+                    "ticker": order_info.ticker,
+                    "side": "BUY" if order_info.side == OrderSide.BUY else "SELL",
+                    "quantity": order_info.quantity,
+                    "price": order_info.yes_price,
+                    "status": order_info.status.name
+                }
+                for order_info in self.open_orders.values()
+            ],
+            "positions": [
+                {
+                    "ticker": ticker,
+                    "quantity": position.quantity,
+                    "unrealized_pnl": position.get_unrealized_pnl(0.50)  # Rough estimate
+                }
+                for ticker, position in self.positions.items()
+                if not position.is_flat()
+            ],
+            "metrics": {
+                "orders_placed": self._orders_placed,
+                "orders_filled": self._orders_filled,
+                "orders_cancelled": self._orders_cancelled,
+                "fill_rate": fill_rate,
+                "volume_traded": self._total_volume_traded
+            },
+            "markets": {
+                "tracked_tickers": self._market_tickers,
+                "market_count": self._market_count,
+                "per_market_activity": self._calculate_per_market_activity()
+            },
+            "actor": {
+                "strategy": config.RL_ACTOR_STRATEGY,
+                "enabled": config.RL_ACTOR_ENABLED,
+                "throttle_ms": config.RL_ACTOR_THROTTLE_MS
+            }
+        }
+        
+    async def _notify_state_change(self) -> None:
+        """Notify all registered callbacks of state changes."""
+        if not self._state_change_callbacks:
+            return
+            
+        current_state = await self.get_current_state()
+        
+        for callback in self._state_change_callbacks:
+            try:
+                await callback(current_state)
+            except Exception as e:
+                logger.error(f"Error in state change callback: {e}")
+
+    def _calculate_per_market_activity(self) -> Dict[str, Dict[str, Any]]:
+        """Calculate per-market trading activity for state reporting."""
+        activity = {}
+        
+        for ticker in self._market_tickers:
+            # Count orders for this market
+            orders_count = sum(1 for order in self.open_orders.values() 
+                              if order.ticker == ticker)
+            
+            # Calculate volume traded for this market
+            volume_traded = 0.0
+            for order in self.open_orders.values():
+                if order.ticker == ticker:
+                    # For open orders, include the promised value
+                    volume_traded += (order.yes_price / 100.0) * order.quantity
+            
+            # Include positions value for this market
+            if ticker in self.positions:
+                position = self.positions[ticker]
+                volume_traded += abs(position.quantity) * 0.50  # Rough estimate
+            
+            activity[ticker] = {
+                "orders": orders_count,
+                "volume": volume_traded
+            }
+        
+        return activity
+
     def _generate_order_id(self) -> str:
         """Generate unique internal order ID."""
         self._order_counter += 1

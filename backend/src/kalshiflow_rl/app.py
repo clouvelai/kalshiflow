@@ -236,6 +236,21 @@ async def lifespan(app: Starlette):
                 actor_service.set_order_manager(order_manager)
                 logger.info("Order manager configured")
                 
+                # Set websocket manager for broadcasting trader actions
+                actor_service.set_websocket_manager(websocket_manager)
+                logger.info("WebSocket manager configured for ActorService")
+                
+                # Set order manager reference in websocket manager for initial state broadcast
+                websocket_manager.set_order_manager(order_manager)
+                
+                # Add state change callback to order manager for UI updates
+                async def broadcast_state(state):
+                    """Callback to broadcast trader state changes via websocket."""
+                    await websocket_manager.broadcast_trader_state(state)
+                
+                order_manager.add_state_change_callback(broadcast_state)
+                logger.info("State change callback configured for OrderManager")
+                
                 # Initialize ActorService (subscribes to event bus and starts processing loop)
                 await actor_service.initialize()
                 logger.info("✅ ActorService initialized and ready")
@@ -548,6 +563,51 @@ async def orderbook_snapshot_endpoint(request):
         }, status_code=500)
 
 
+async def trader_status_endpoint(request):
+    """Get current trader status including positions, orders, and recent actions."""
+    try:
+        # Check if ActorService is enabled
+        if not actor_service:
+            return JSONResponse({
+                "error": "ActorService not enabled",
+                "message": "Trader functionality is disabled. Enable with RL_ACTOR_ENABLED=true"
+            }, status_code=503)
+        
+        # Check if OrderManager is available
+        if not order_manager:
+            return JSONResponse({
+                "error": "OrderManager not initialized",
+                "message": "Trader OrderManager is not available"
+            }, status_code=503)
+        
+        # Get current trader state
+        trader_state = await order_manager.get_current_state()
+        
+        # Get actor service metrics
+        actor_metrics = actor_service.get_metrics() if actor_service else {}
+        
+        # Combine into status response
+        status = {
+            "service": "trader",
+            "timestamp": asyncio.get_event_loop().time(),
+            "enabled": True,
+            "strategy": config.RL_ACTOR_STRATEGY,
+            "model_path": config.RL_ACTOR_MODEL_PATH,
+            "trader_state": trader_state,
+            "actor_metrics": actor_metrics,
+            "markets_trading": active_market_tickers or config.RL_MARKET_TICKERS
+        }
+        
+        return JSONResponse(status)
+        
+    except Exception as e:
+        logger.error(f"Trader status error: {e}")
+        return JSONResponse({
+            "error": str(e),
+            "service": "trader"
+        }, status_code=500)
+
+
 async def force_flush_endpoint(request):
     """Force flush of write queue (admin endpoint)."""
     try:
@@ -576,6 +636,7 @@ routes = [
     Route("/rl/health", health_check, methods=["GET"]),
     Route("/rl/status", status_endpoint, methods=["GET"]),
     Route("/rl/orderbook/snapshot", orderbook_snapshot_endpoint, methods=["GET"]),
+    Route("/rl/trader/status", trader_status_endpoint, methods=["GET"]),
     Route("/rl/admin/flush", force_flush_endpoint, methods=["POST"]),
     WebSocketRoute("/rl/ws", websocket_endpoint),
 ]

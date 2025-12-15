@@ -58,6 +58,20 @@ class StatsMessage:
     data: Dict[str, Any] = None
 
 
+@dataclass
+class TraderStateMessage:
+    """Trader state update message."""
+    type: str = "trader_state"
+    data: Dict[str, Any] = None
+
+
+@dataclass
+class TraderActionMessage:
+    """Trader action decision message."""
+    type: str = "trader_action"
+    data: Dict[str, Any] = None
+
+
 class WebSocketManager:
     """
     Manages WebSocket connections and broadcasts orderbook updates.
@@ -87,6 +101,9 @@ class WebSocketManager:
         
         # For stats collector integration
         self.stats_collector = None
+        
+        # For trader state broadcasting
+        self._order_manager = None
         
         logger.info(f"WebSocketManager initialized for {len(self._market_tickers)} markets")
     
@@ -194,6 +211,18 @@ class WebSocketManager:
                         )
                         await self._send_to_client(websocket, snapshot_msg)
             
+            # Send initial trader state if OrderManager is available
+            if self._order_manager:
+                try:
+                    initial_state = await self._order_manager.get_current_state()
+                    state_msg = TraderStateMessage(data=initial_state)
+                    await self._send_to_client(websocket, state_msg)
+                    logger.info("Sent initial trader state to new client")
+                except Exception as e:
+                    logger.error(f"Failed to send initial trader state: {e}")
+            else:
+                logger.warning("OrderManager not available - skipping initial trader state broadcast")
+            
             # Keep connection alive and handle incoming messages
             while self._running and websocket.client_state == WebSocketState.CONNECTED:
                 try:
@@ -294,6 +323,34 @@ class WebSocketManager:
         message = StatsMessage(data=stats)
         await self._broadcast_to_all(message)
         self._stats_broadcast += 1
+    
+    async def broadcast_trader_state(self, state_data: Dict[str, Any]):
+        """
+        Broadcast trader state to all connected clients.
+        
+        Args:
+            state_data: Trader state data including positions, orders, and metrics
+        """
+        if not self._connections:
+            return
+        
+        message = TraderStateMessage(data=state_data)
+        await self._broadcast_to_all(message)
+        logger.debug(f"Broadcast trader state to {len(self._connections)} clients")
+    
+    async def broadcast_trader_action(self, action_data: Dict[str, Any]):
+        """
+        Broadcast trader action to all connected clients.
+        
+        Args:
+            action_data: Trader action data including observation and decision
+        """
+        if not self._connections:
+            return
+        
+        message = TraderActionMessage(data=action_data)
+        await self._broadcast_to_all(message)
+        logger.debug(f"Broadcast trader action to {len(self._connections)} clients")
     
     async def _broadcast_to_all(self, message: Any):
         """
@@ -417,6 +474,16 @@ class WebSocketManager:
             "deltas_broadcast": self._deltas_broadcast,
             "stats_broadcast": self._stats_broadcast
         }
+    
+    def set_order_manager(self, order_manager):
+        """
+        Set reference to the OrderManager for trader state broadcasting.
+        
+        Args:
+            order_manager: KalshiMultiMarketOrderManager instance
+        """
+        self._order_manager = order_manager
+        logger.info("OrderManager reference configured for WebSocket broadcasting")
     
     def is_healthy(self) -> bool:
         """
