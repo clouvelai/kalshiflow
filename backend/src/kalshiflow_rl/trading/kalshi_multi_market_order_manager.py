@@ -720,6 +720,10 @@ class KalshiMultiMarketOrderManager:
         # Update metrics
         self._orders_filled += 1
         self._total_volume_traded += fill_cost
+        
+        # Add debug logging
+        logger.debug(f"Fill processed: {order.ticker} {order.side.name} {fill_quantity} @ {fill_price}¢")
+        logger.debug(f"Portfolio after fill - Cash: ${self.cash_balance:.2f}, Positions: {len(self.positions)}")
     
     def _update_position(self, order: OrderInfo, fill_price: int, fill_quantity: int) -> None:
         """Update position after a fill."""
@@ -804,17 +808,6 @@ class KalshiMultiMarketOrderManager:
             "time_since_order": time_since_order
         }
     
-    def get_portfolio_value(self) -> float:
-        """Calculate total portfolio value."""
-        total_value = self.cash_balance
-        
-        # Add position values (would need current prices for mark-to-market)
-        for position in self.positions.values():
-            if not position.is_flat:
-                # For now, use cost basis (would need market data for unrealized P&L)
-                total_value += position.cost_basis
-        
-        return total_value
     
     def get_cash_balance(self) -> float:
         """Get available cash balance."""
@@ -852,12 +845,61 @@ class KalshiMultiMarketOrderManager:
         
         return orders
     
+    def get_portfolio_value(self, current_prices: Optional[Dict[str, Any]] = None) -> float:
+        """Get portfolio value in dollars (cash + position values + unrealized P&L).
+        
+        Args:
+            current_prices: Optional current market prices for unrealized P&L calculation.
+                          Format: {ticker: {"bid": float, "ask": float}} in cents
+                          If not provided, uses cost basis + realized P&L only
+        """
+        total = self.cash_balance
+        
+        # Add position values (cost basis + realized P&L + unrealized P&L)
+        for position in self.positions.values():
+            if not position.is_flat:
+                total += position.cost_basis + position.realized_pnl
+                
+                # Add unrealized P&L if current prices are provided
+                if current_prices and position.ticker in current_prices:
+                    price_data = current_prices[position.ticker]
+                    if isinstance(price_data, dict) and "bid" in price_data and "ask" in price_data:
+                        # Convert cents to probability [0,1] for get_unrealized_pnl
+                        yes_bid = price_data["bid"] / 100.0
+                        yes_ask = price_data["ask"] / 100.0
+                        yes_mid = (yes_bid + yes_ask) / 2.0
+                        unrealized_pnl = position.get_unrealized_pnl(yes_mid)
+                        total += unrealized_pnl
+        
+        return total
+
+    def get_portfolio_value_cents(self, current_prices: Dict) -> int:
+        """Get portfolio value in cents using bid/ask prices.
+        
+        Args:
+            current_prices: Dictionary with market prices.
+                          Format: {ticker: {"bid": float, "ask": float}} in cents
+                          
+        Returns:
+            Total portfolio value in cents including unrealized P&L
+        """
+        # Use the updated get_portfolio_value method with current prices
+        return int(self.get_portfolio_value(current_prices) * 100)
+
+    def get_cash_balance_cents(self) -> int:
+        """Get cash balance in cents."""
+        return int(self.cash_balance * 100)
+
+    def get_position_info(self) -> Dict[str, Any]:
+        """Get position info for environment features."""
+        return self.get_positions()
+
     def get_metrics(self) -> Dict[str, Any]:
         """Get performance metrics."""
         metrics = {
             "cash_balance": self.cash_balance,
             "promised_cash": self.promised_cash,
-            "portfolio_value": self.get_portfolio_value(),
+            "portfolio_value": self.get_portfolio_value(),  # Without current_prices for backward compatibility
             "orders_placed": self._orders_placed,
             "orders_filled": self._orders_filled,
             "orders_cancelled": self._orders_cancelled,
@@ -1538,6 +1580,20 @@ class KalshiMultiMarketOrderManager:
                     logger.info("Startup position sync: No positions found in Kalshi (clean state)")
                 else:
                     logger.debug(f"Position sync complete: {len(self.positions)} positions - all in sync")
+            
+            # Also sync cash balance from Kalshi
+            try:
+                account_info = await self.trading_client.get_account_info()
+                if "balance" in account_info:
+                    old_balance = self.cash_balance
+                    self.cash_balance = account_info["balance"] / 100.0  # Convert cents to dollars
+                    if abs(old_balance - self.cash_balance) > 0.01:
+                        if is_startup:
+                            logger.info(f"Cash balance synced: ${old_balance:.2f} → ${self.cash_balance:.2f} (from Kalshi)")
+                        else:
+                            logger.warning(f"Cash balance synced: ${old_balance:.2f} → ${self.cash_balance:.2f}")
+            except Exception as e:
+                logger.warning(f"Could not sync cash balance: {e}")
             
         except Exception as e:
             logger.error(f"Error syncing positions with Kalshi: {e}")

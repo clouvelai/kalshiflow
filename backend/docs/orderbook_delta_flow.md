@@ -4,7 +4,7 @@
 
 ```mermaid
 sequenceDiagram
-    participant WS as Kalshi WebSocket
+    participant WS as Kalshi WebSocket (Orderbook)
     participant OC as OrderbookClient
     participant SOS as SharedOrderbookState
     participant WQ as WriteQueue
@@ -13,7 +13,13 @@ sequenceDiagram
     participant LOA as LiveObservationAdapter
     participant ASel as ActionSelector
     participant OM as OrderManager
+    participant FL as FillListener
+    participant WSFL as Kalshi WebSocket (Fills)
     participant API as Kalshi API
+
+    Note over FL,WSFL: Parallel WebSocket for real-time fills
+    FL->>WSFL: Subscribe to "fill" channel
+    WSFL-->>FL: Connected & subscribed
 
     WS->>OC: Delta message
     Note over OC: Parse & validate
@@ -59,13 +65,22 @@ sequenceDiagram
         end
     end
     
-    Note over AS,OM: Step 4: Update Positions
+    Note over WSFL,OM: Real-time Fill Processing (Parallel)
+    alt Order Filled
+        WSFL->>FL: Fill notification
+        FL->>OM: queue_fill()
+        OM->>OM: _process_fills()
+        OM->>OM: Update positions immediately
+    end
+    
+    Note over AS,OM: Step 4: Update Positions (Dual Approach)
     alt HOLD or Throttled
         AS-->>AS: Skip
     else Executed
-        AS->>AS: Wait 100ms
+        AS->>AS: Wait 100ms (configurable)
+        Note over AS: Fallback sync for missed fills
         AS->>OM: get_positions()
-        OM-->>AS: Positions
+        OM-->>AS: Positions (reconciled)
     end
     
     AS->>AS: Update metrics
@@ -86,6 +101,14 @@ sequenceDiagram
 3. EventBus → ActorService
    └─> ActorService._handle_event_bus_event() receives MarketEvent
        └─> trigger_event() → Queue ActorEvent (non-blocking)
+
+3.5. FillListener (Parallel Process - Runs Independently)
+   └─> FillListener WebSocket → Kalshi User Fills Channel
+       ├─> Started by OrderManager at initialization
+       ├─> Subscribe to "fill" channel for tracked markets
+       ├─> Receive real-time fill notifications
+       └─> OrderManager.queue_fill() → Update positions immediately
+           └─> _process_fills() queue → Async position reconciliation
 
 4. ActorService Background Loop
    └─> _process_market_update() processes queued event
@@ -125,19 +148,26 @@ sequenceDiagram
            ├─> OrderManager.execute_limit_order_action(action, market_ticker, snapshot)
            │   ├─> Calculate limit price from snapshot
            │   ├─> Check cash availability (for BUY orders)
-           │   └─> KalshiDemoTradingClient.place_order() → Kalshi API
+           │   └─> Trading client place_order() → Kalshi API
            │       └─> Returns: order_id
            └─> Update throttle timestamp
 
-8. Step 4: Update Positions
+8. Step 4: Update Positions (Dual Approach)
    ├─> If HOLD or throttled:
    │   └─> Skip (no position changes)
    │
    └─> If order executed:
-       ├─> Wait 100ms (for async fill processing)
-       ├─> OrderManager.get_positions() → Read updated positions
-       ├─> OrderManager.get_portfolio_value() → Read portfolio value
-       └─> Log position changes
+       ├─> Real-time path (via FillListener):
+       │   ├─> FillListener receives fill notification immediately
+       │   ├─> Queues fill for processing
+       │   └─> OrderManager updates positions in real-time
+       │
+       └─> Fallback sync path (for reliability):
+           ├─> Wait 100ms (configurable via position_read_delay_ms)
+           ├─> OrderManager.get_positions() → Read current positions
+           ├─> Reconcile with real-time fill updates
+           ├─> OrderManager.get_portfolio_value() → Read portfolio value
+           └─> Log position changes
 
 9. Update Metrics
    └─> Track processing_time, events_processed, errors, etc.
@@ -149,5 +179,52 @@ sequenceDiagram
 2. **Serial Processing**: Single queue ensures no race conditions
 3. **Throttling**: Enforced per-market (250ms minimum between actions)
 4. **HOLD Optimization**: HOLD actions skip orderbook fetch, OrderManager call, and position updates
-5. **Eventual Consistency**: Position updates wait 100ms for async fill processing
+5. **Dual Position Tracking**: 
+   - **Real-time fills**: FillListener provides immediate fill notifications via separate WebSocket
+   - **Fallback sync**: 100ms delayed position read ensures consistency for missed fills
+6. **Parallel WebSocket Connections**:
+   - **Orderbook WebSocket**: Receives market delta updates
+   - **Fill WebSocket**: Receives real-time fill notifications (managed by FillListener)
+7. **Position Reconciliation**: OrderManager reconciles real-time fills with periodic position syncs
+8. **Configurable Delays**: `position_read_delay_ms` parameter allows tuning of fallback sync timing
+
+## Architecture Notes
+
+### FillListener Service
+
+The FillListener is a critical component that provides real-time order fill notifications:
+
+- **Initialization**: Started automatically by `KalshiMultiMarketOrderManager` during setup
+- **WebSocket Connection**: Maintains separate WebSocket connection to Kalshi's user fill channel
+- **Subscription**: Subscribes to "fill" channel for all tracked markets
+- **Fill Processing**: Forwards fills to OrderManager via `queue_fill()` method
+- **Queue Processing**: OrderManager processes fills asynchronously via `_process_fills()` 
+- **Position Updates**: Immediate position reconciliation upon fill receipt
+
+### Error Handling & Circuit Breakers
+
+The system includes comprehensive error handling:
+
+- **Market-level circuit breakers**: Disable markets after repeated errors
+- **Automatic re-enabling**: Markets re-enabled after cooldown period
+- **Error tracking**: Per-market error counters and timestamps
+- **Graceful degradation**: System continues operating with remaining healthy markets
+
+### Performance Optimizations
+
+- **Lazy service initialization**: Services initialized only when needed
+- **Dependency injection**: ServiceContainer pattern for efficient service management
+- **Queue-based processing**: Prevents blocking on I/O operations
+- **Batch database writes**: WriteQueue batches updates for efficiency
+- **Observation caching**: Recent observations cached to avoid redundant computation
+
+### Portfolio Integration
+
+The observation building process includes portfolio features:
+
+- **Cash balance**: Available cash for trading
+- **Position sizes**: Current position in each market
+- **Order features**: Pending orders and their characteristics
+- **Portfolio value**: Total portfolio value tracking
+- **PnL tracking**: Real-time profit/loss calculations
 

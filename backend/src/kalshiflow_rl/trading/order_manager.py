@@ -97,12 +97,14 @@ class Position:
         """True if no position."""
         return self.contracts == 0
     
-    def get_unrealized_pnl(self, current_yes_price: float) -> float:
+    def get_unrealized_pnl(self, current_yes_price: float = None, yes_bid: float = None, yes_ask: float = None) -> float:
         """
         Calculate unrealized P&L based on current market price.
         
         Args:
-            current_yes_price: Current YES price as a probability (0.0-1.0)
+            current_yes_price: Current YES price as a probability (0.0-1.0) - DEPRECATED, use bid/ask
+            yes_bid: Current YES bid price (what we can sell at)
+            yes_ask: Current YES ask price (what we must pay to buy)
             
         Returns:
             Unrealized P&L in dollars
@@ -110,12 +112,26 @@ class Position:
         if self.is_flat:
             return 0.0
         
-        if self.is_long_yes:
-            # Long YES: profit when YES price rises
-            current_value = self.contracts * current_yes_price
+        # Use bid/ask if provided, otherwise fall back to mid price for backward compatibility
+        if yes_bid is not None and yes_ask is not None:
+            if self.is_long_yes:
+                # Long YES: use bid price (what we can sell at)
+                exit_price = yes_bid
+                current_value = self.contracts * exit_price
+            else:
+                # Long NO: use ask price to calculate NO position value
+                # NO bid = 1 - YES ask (what we can sell NO at)
+                no_bid = 1.0 - yes_ask
+                current_value = abs(self.contracts) * no_bid
         else:
-            # Long NO: profit when YES price falls (NO price = 1 - YES price)
-            current_value = abs(self.contracts) * (1.0 - current_yes_price)
+            # Fallback to mid price for backward compatibility
+            if current_yes_price is None:
+                raise ValueError("Must provide either current_yes_price or both yes_bid and yes_ask")
+            
+            if self.is_long_yes:
+                current_value = self.contracts * current_yes_price
+            else:
+                current_value = abs(self.contracts) * (1.0 - current_yes_price)
         
         return current_value - self.cost_basis
 
@@ -343,12 +359,14 @@ class OrderManager(ABC):
             time_since_order=time_since_order
         )
     
-    def get_total_portfolio_value(self, current_prices: Dict[str, float]) -> float:
+    def get_total_portfolio_value(self, current_prices: Dict[str, any]) -> float:
         """
         Calculate total portfolio value including cash and positions.
         
         Args:
-            current_prices: Dictionary of current YES prices by ticker
+            current_prices: Dictionary with bid/ask or simple prices by ticker.
+                           Format 1: {ticker: {"bid": float, "ask": float}} - preferred for spread accuracy
+                           Format 2: {ticker: float} - backward compatibility using mid price
             
         Returns:
             Total portfolio value in dollars
@@ -357,29 +375,55 @@ class OrderManager(ABC):
         
         for ticker, position in self.positions.items():
             if not position.is_flat and ticker in current_prices:
-                # Add unrealized P&L to portfolio value
-                unrealized_pnl = position.get_unrealized_pnl(current_prices[ticker])
+                # Check if we have bid/ask data or just a price
+                price_data = current_prices[ticker]
+                
+                if isinstance(price_data, dict) and "bid" in price_data and "ask" in price_data:
+                    # Use bid/ask for accurate spread cost calculation
+                    unrealized_pnl = position.get_unrealized_pnl(
+                        yes_bid=price_data["bid"], 
+                        yes_ask=price_data["ask"]
+                    )
+                else:
+                    # Fallback to simple price (backward compatibility)
+                    unrealized_pnl = position.get_unrealized_pnl(current_yes_price=price_data)
+                
                 total_value += position.cost_basis + unrealized_pnl
         
         return total_value
     
-    def get_portfolio_value_cents(self, current_prices: Dict[str, Tuple[float, float]]) -> int:
+    def get_portfolio_value_cents(self, current_prices: Dict[str, any]) -> int:
         """
         Calculate total portfolio value in cents for RL environment compatibility.
         
         Args:
-            current_prices: Dictionary mapping ticker to (yes_mid_price, no_mid_price) in cents
+            current_prices: Dictionary with bid/ask or tuple format by ticker.
+                           Format 1: {ticker: {"bid": float, "ask": float}} in cents - preferred
+                           Format 2: {ticker: (yes_mid, no_mid)} in cents - backward compatibility
             
         Returns:
             Total portfolio value in cents
         """
-        # Convert current_prices format from (yes_mid, no_mid) to just yes_mid
-        simple_prices = {}
-        for ticker, (yes_mid, no_mid) in current_prices.items():
-            simple_prices[ticker] = yes_mid / 100.0  # Convert cents to probability
+        # Convert current_prices to the format expected by get_total_portfolio_value
+        processed_prices = {}
+        
+        for ticker, price_data in current_prices.items():
+            if isinstance(price_data, dict) and "bid" in price_data and "ask" in price_data:
+                # New format with bid/ask in cents
+                processed_prices[ticker] = {
+                    "bid": price_data["bid"] / 100.0,  # Convert cents to probability
+                    "ask": price_data["ask"] / 100.0
+                }
+            elif isinstance(price_data, (tuple, list)) and len(price_data) == 2:
+                # Backward compatibility: (yes_mid, no_mid) in cents
+                yes_mid, no_mid = price_data
+                processed_prices[ticker] = yes_mid / 100.0  # Convert cents to probability
+            else:
+                # Assume single price value
+                processed_prices[ticker] = price_data / 100.0 if price_data > 1 else price_data
         
         # Get total value in dollars and convert to cents
-        total_value_dollars = self.get_total_portfolio_value(simple_prices)
+        total_value_dollars = self.get_total_portfolio_value(processed_prices)
         return int(total_value_dollars * 100)
     
     def get_cash_balance_cents(self) -> int:

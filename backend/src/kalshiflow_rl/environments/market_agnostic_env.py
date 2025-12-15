@@ -343,12 +343,13 @@ class MarketAgnosticKalshiEnv(gym.Env):
         
         return observation
     
-    def _get_current_market_prices(self) -> Dict[str, Tuple[float, float]]:
+    def _get_current_market_prices(self) -> Dict[str, Dict[str, float]]:
         """
         Extract current market prices for portfolio value calculation.
         
         Returns:
-            Dict mapping market ticker to (yes_mid_price, no_mid_price) in cents
+            Dict mapping market ticker to {"bid": float, "ask": float} in cents
+            Falls back to mid prices if bid/ask not available
         """
         if (self.current_market is None or
             self.current_step >= len(self.market_view.data_points)):
@@ -357,11 +358,47 @@ class MarketAgnosticKalshiEnv(gym.Env):
         current_data = self.market_view.data_points[self.current_step]
         prices = {}
         
+        # Try to get bid/ask from orderbook data first
+        if self.current_market in current_data.markets_data:
+            market_data = current_data.markets_data[self.current_market]
+            yes_bids = market_data.get('yes_bids', {})
+            yes_asks = market_data.get('yes_asks', {})
+            
+            # Extract best bid and ask prices
+            best_bid = None
+            best_ask = None
+            
+            if yes_bids:
+                try:
+                    best_bid = max(map(int, yes_bids.keys()))
+                except (ValueError, TypeError):
+                    pass
+            
+            if yes_asks:
+                try:
+                    best_ask = min(map(int, yes_asks.keys()))
+                except (ValueError, TypeError):
+                    pass
+            
+            # Use bid/ask if both available
+            if best_bid is not None and best_ask is not None:
+                prices[self.current_market] = {
+                    "bid": float(best_bid),
+                    "ask": float(best_ask)
+                }
+                return prices
+        
+        # Fall back to mid prices if bid/ask not available
         if self.current_market in current_data.mid_prices:
             yes_mid, no_mid = current_data.mid_prices[self.current_market]
             if yes_mid is not None and no_mid is not None:
                 # Convert Decimal to float and ensure in cents
-                prices[self.current_market] = (float(yes_mid), float(no_mid))
+                # For backward compatibility, create bid/ask from mid with minimal spread
+                yes_mid_cents = float(yes_mid)
+                prices[self.current_market] = {
+                    "bid": yes_mid_cents - 0.5,  # Subtract minimal spread
+                    "ask": yes_mid_cents + 0.5   # Add minimal spread
+                }
         
         return prices
     
