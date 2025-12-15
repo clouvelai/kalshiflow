@@ -17,11 +17,13 @@ Key Design Principles:
 
 import asyncio
 import logging
+import random
 import time
 from abc import ABC, abstractmethod
-from typing import Dict, Any, Optional, List, Tuple, Union
-from dataclasses import dataclass
+from typing import Dict, Any, Optional, List, Tuple, Union, Deque
+from dataclasses import dataclass, field
 from enum import IntEnum
+from collections import deque
 import numpy as np
 
 from ..data.orderbook_state import OrderbookState
@@ -62,7 +64,15 @@ class OrderInfo:
     status: OrderStatus
     placed_at: float     # Timestamp when placed
     filled_at: Optional[float] = None
-    fill_price: Optional[int] = None
+    fill_price: Optional[int] = None  # VWAP fill price for depth consumption
+    filled_quantity: int = 0  # Track partial fills
+    remaining_quantity: int = field(init=False)  # Auto-calculated from quantity - filled_quantity
+    
+    def __post_init__(self):
+        """Initialize computed fields."""
+        if not hasattr(self, 'filled_quantity') or self.filled_quantity == 0:
+            self.filled_quantity = 0
+        self.remaining_quantity = self.quantity - self.filled_quantity
     
     @property
     def time_since_placed(self) -> float:
@@ -72,6 +82,126 @@ class OrderInfo:
     def is_active(self) -> bool:
         """Check if order is still active (not filled/cancelled/rejected)."""
         return self.status == OrderStatus.PENDING
+    
+    def is_partially_filled(self) -> bool:
+        """Check if order is partially filled."""
+        return self.filled_quantity > 0 and self.filled_quantity < self.quantity
+    
+    def update_partial_fill(self, fill_quantity: int, fill_price: int) -> None:
+        """Update order with partial fill information."""
+        self.filled_quantity += fill_quantity
+        self.remaining_quantity = self.quantity - self.filled_quantity
+        
+        # Update VWAP fill price
+        if self.fill_price is None:
+            self.fill_price = fill_price
+        else:
+            # Calculate volume-weighted average price
+            total_filled_value = (self.filled_quantity - fill_quantity) * self.fill_price + fill_quantity * fill_price
+            self.fill_price = int(total_filled_value / self.filled_quantity)
+        
+        # Mark as filled if completely filled
+        if self.remaining_quantity == 0:
+            self.status = OrderStatus.FILLED
+            self.filled_at = time.time()
+
+
+@dataclass
+class ConsumedLiquidity:
+    """Track temporarily consumed liquidity to prevent double-filling."""
+    ticker: str
+    side: str  # 'yes_bid', 'yes_ask', 'no_bid', 'no_ask'
+    price: int
+    consumed_quantity: int
+    timestamp: float
+    decay_time: float = 5.0  # Liquidity restored after 5 seconds
+    
+    def is_expired(self) -> bool:
+        """Check if consumed liquidity has expired and can be restored."""
+        return time.time() - self.timestamp > self.decay_time
+    
+    def get_available_quantity(self, original_quantity: int) -> int:
+        """Get available quantity after accounting for consumption."""
+        if self.is_expired():
+            return original_quantity
+        return max(0, original_quantity - self.consumed_quantity)
+
+
+class MarketActivityTracker:
+    """Track recent market activity for fill probability calculations."""
+    
+    def __init__(self, window_seconds: int = 300):
+        """
+        Initialize market activity tracker.
+        
+        Args:
+            window_seconds: Time window to track trades (default 5 minutes)
+        """
+        self.window_seconds = window_seconds
+        self.trades: Deque[Tuple[float, int]] = deque()  # (timestamp, size) tuples
+        
+    def add_trade(self, size: int) -> None:
+        """
+        Record a trade for activity tracking.
+        
+        Args:
+            size: Number of contracts traded
+        """
+        current_time = time.time()
+        self.trades.append((current_time, size))
+        self._cleanup_old_trades(current_time)
+        
+    def get_activity_level(self) -> float:
+        """
+        Return normalized activity level 0-1 based on recent trades.
+        
+        Returns:
+            Activity level normalized between 0 (dead market) and 1 (very active)
+        """
+        current_time = time.time()
+        self._cleanup_old_trades(current_time)
+        
+        if not self.trades:
+            return 0.0
+        
+        # Calculate trades per minute
+        trades_per_minute = len(self.trades) / (self.window_seconds / 60.0)
+        
+        # Normalize based on expected activity ranges
+        # <5 trades/min = dead (0.0)
+        # 5-20 trades/min = normal (0.0 - 0.5)
+        # >20 trades/min = active (0.5 - 1.0)
+        if trades_per_minute < 5:
+            activity = trades_per_minute / 10.0  # 0.0 - 0.5 for 0-5 trades/min
+        elif trades_per_minute <= 20:
+            activity = 0.5 + (trades_per_minute - 5) / 30.0  # 0.5 - 1.0 for 5-20 trades/min
+        else:
+            activity = min(1.0, 0.5 + trades_per_minute / 40.0)  # Cap at 1.0
+        
+        return activity
+    
+    def get_trade_count(self) -> int:
+        """Get the number of trades in the current window."""
+        current_time = time.time()
+        self._cleanup_old_trades(current_time)
+        return len(self.trades)
+    
+    def get_trades_per_minute(self) -> float:
+        """Get average trades per minute in the current window."""
+        current_time = time.time()
+        self._cleanup_old_trades(current_time)
+        
+        if not self.trades:
+            return 0.0
+        
+        return len(self.trades) / (self.window_seconds / 60.0)
+    
+    def _cleanup_old_trades(self, current_time: float) -> None:
+        """Remove trades older than the window."""
+        cutoff_time = current_time - self.window_seconds
+        
+        while self.trades and self.trades[0][0] < cutoff_time:
+            self.trades.popleft()
 
 
 @dataclass
@@ -542,6 +672,11 @@ class OrderManager(ABC):
         order.filled_at = fill_timestamp
         order.fill_price = fill_price
         
+        # Update filled quantities for new order tracking
+        if hasattr(order, 'filled_quantity') and order.filled_quantity == 0:
+            order.filled_quantity = order.quantity
+            order.remaining_quantity = 0
+        
         # Calculate fill cost in dollars
         fill_cost = (fill_price / 100.0) * order.quantity
         
@@ -615,34 +750,135 @@ class OrderManager(ABC):
             del self.open_orders[order.order_id]
         
         logger.info(f"Fill processed: {order.order_id} - {order.quantity} contracts at {fill_price}¢")
+    
+    def _process_partial_fill(
+        self,
+        order: OrderInfo,
+        fill_quantity: int,
+        fill_price: int
+    ) -> None:
+        """
+        Process a partial order fill and update positions.
+        
+        Args:
+            order: Order that was partially filled
+            fill_quantity: Quantity filled in this partial fill
+            fill_price: Price of this partial fill
+        """
+        # Calculate fill cost in dollars
+        fill_cost = (fill_price / 100.0) * fill_quantity
+        
+        # Update cash balance
+        if order.side == OrderSide.BUY:
+            self.cash_balance -= fill_cost  # Pay for bought contracts
+        else:
+            self.cash_balance += fill_cost  # Receive for sold contracts
+        
+        # Update position (similar to _process_fill but for partial quantity)
+        ticker = order.ticker
+        if ticker not in self.positions:
+            self.positions[ticker] = Position(
+                ticker=ticker,
+                contracts=0,
+                cost_basis=0.0,
+                realized_pnl=0.0
+            )
+        
+        position = self.positions[ticker]
+        
+        # Calculate position change based on Kalshi convention
+        if order.contract_side == ContractSide.YES:
+            if order.side == OrderSide.BUY:
+                contract_change = fill_quantity  # +YES
+            else:
+                contract_change = -fill_quantity  # Sell YES
+        else:  # NO contracts
+            if order.side == OrderSide.BUY:
+                contract_change = -fill_quantity  # Buy NO = -YES
+            else:
+                contract_change = fill_quantity  # Sell NO = +YES
+        
+        # Check if this trade closes existing position (realizes P&L)
+        if (position.contracts > 0 and contract_change < 0) or \
+           (position.contracts < 0 and contract_change > 0):
+            # Position reduction - calculate realized P&L
+            reduction_amount = min(abs(contract_change), abs(position.contracts))
+            
+            # Calculate average cost per contract for the position being closed
+            if position.contracts != 0:
+                avg_cost_per_contract = position.cost_basis / abs(position.contracts)
+                
+                # Calculate realized P&L
+                if position.contracts > 0:  # Closing long YES position
+                    if order.side == OrderSide.SELL:
+                        realized_pnl = reduction_amount * (fill_price / 100.0 - avg_cost_per_contract)
+                    else:
+                        # Buying NO to close YES (unusual but possible)
+                        realized_pnl = reduction_amount * ((100 - fill_price) / 100.0 - avg_cost_per_contract)
+                else:  # Closing long NO position
+                    if order.side == OrderSide.SELL:
+                        # Selling NO to close (unusual)
+                        realized_pnl = reduction_amount * (fill_price / 100.0 - avg_cost_per_contract)
+                    else:
+                        # Buying YES to close NO
+                        realized_pnl = reduction_amount * (avg_cost_per_contract - fill_price / 100.0)
+                
+                position.realized_pnl += realized_pnl
+                
+                # Update cost basis proportionally
+                if abs(position.contracts) > reduction_amount:
+                    position.cost_basis *= (abs(position.contracts) - reduction_amount) / abs(position.contracts)
+                else:
+                    position.cost_basis = 0.0
+        else:
+            # Position increase - add to cost basis
+            position.cost_basis += fill_cost
+        
+        # Update contract count
+        position.contracts += contract_change
+        
+        logger.info(
+            f"Partial fill processed: {order.order_id} - {fill_quantity} contracts at {fill_price}¢, "
+            f"{order.remaining_quantity} remaining"
+        )
 
 
 class SimulatedOrderManager(OrderManager):
     """
-    Simulated order manager for training environments.
+    Simulated order manager for training environments with orderbook depth consumption.
     
-    Provides pure Python simulation of order execution without any API calls.
-    Orders that cross the spread are filled immediately, while others remain
-    as pending limit orders until they can be filled.
+    Provides realistic order execution simulation that accounts for:
+    - Orderbook depth consumption (orders walk the book for large sizes)
+    - Volume-weighted average price (VWAP) calculation for multi-level fills
+    - Consumed liquidity tracking to prevent double-filling
+    - Small order optimization (orders <20 contracts still fill at best price)
     
     Features:
-    - Instant fills for orders that cross the spread
-    - Realistic limit order behavior
+    - Depth-aware order filling with realistic slippage
+    - Partial fills when liquidity is insufficient
+    - Consumed liquidity with time-decay (5 seconds)
     - Deterministic execution for reproducible training
     - No network latency or API dependencies
     """
     
-    def __init__(self, initial_cash: int = 100000):
+    def __init__(self, initial_cash: int = 100000, small_order_threshold: int = 20):
         """
         Initialize simulated order manager.
         
         Args:
             initial_cash: Starting cash balance in cents
+            small_order_threshold: Orders below this size fill at best price without depth consumption
         """
         # Work entirely in cents now - convert to dollars for base class compatibility
         initial_cash_dollars = initial_cash / 100.0
         super().__init__(initial_cash_dollars)
-        logger.info(f"SimulatedOrderManager initialized for training with {initial_cash}¢ (${initial_cash_dollars:.2f})")
+        self.small_order_threshold = small_order_threshold
+        self.consumed_liquidity: Dict[str, ConsumedLiquidity] = {}  # key: f"{ticker}_{side}_{price}"
+        self.activity_tracker = MarketActivityTracker(window_seconds=300)  # 5-minute window
+        logger.info(
+            f"SimulatedOrderManager initialized for training with {initial_cash}¢ "
+            f"(${initial_cash_dollars:.2f}), small order threshold: {small_order_threshold}"
+        )
     
     
     async def place_order(
@@ -661,8 +897,11 @@ class SimulatedOrderManager(OrderManager):
         Others are added to the open orders list.
         """
         try:
-            # Calculate limit price
-            limit_price = self._calculate_limit_price(side, contract_side, orderbook, pricing_strategy)
+            # Calculate limit price - for large orders, use higher limit to allow depth consumption
+            if quantity >= self.small_order_threshold and pricing_strategy == "aggressive":
+                limit_price = self._calculate_aggressive_limit_for_large_order(side, contract_side, orderbook)
+            else:
+                limit_price = self._calculate_limit_price(side, contract_side, orderbook, pricing_strategy)
             
             # Create order
             order = OrderInfo(
@@ -676,14 +915,37 @@ class SimulatedOrderManager(OrderManager):
                 placed_at=time.time()
             )
             
-            # Check for immediate fill
-            can_fill = self._can_fill_immediately(order, orderbook)
+            # Check for immediate fill using depth consumption
+            fill_result = self.calculate_fill_with_depth(order, orderbook)
             
-            if can_fill:
-                # Execute immediate fill
-                fill_price = self._get_fill_price(order, orderbook)
-                self._process_fill(order, fill_price)
-                logger.debug(f"Simulated order filled immediately: {order.order_id}")
+            if fill_result['can_fill']:
+                # Execute immediate fill with depth consumption
+                filled_quantity = fill_result['filled_quantity']
+                vwap_price = fill_result['vwap_price']
+                consumed_levels = fill_result['consumed_levels']
+                
+                # Track consumed liquidity
+                self._track_consumed_liquidity(order, consumed_levels)
+                
+                if filled_quantity >= order.quantity:
+                    # Fully filled
+                    self._process_fill(order, vwap_price)
+                    logger.debug(
+                        f"Simulated order filled immediately: {order.order_id} - "
+                        f"{filled_quantity} contracts at VWAP {vwap_price}¢"
+                    )
+                else:
+                    # Partially filled
+                    order.update_partial_fill(filled_quantity, vwap_price)
+                    self._process_partial_fill(order, filled_quantity, vwap_price)
+                    
+                    # Add remaining quantity to open orders
+                    self.open_orders[order.order_id] = order
+                    logger.debug(
+                        f"Simulated order partially filled: {order.order_id} - "
+                        f"{filled_quantity}/{order.quantity} contracts at VWAP {vwap_price}¢, "
+                        f"{order.remaining_quantity} remaining"
+                    )
             else:
                 # Add to open orders
                 self.open_orders[order.order_id] = order
@@ -741,17 +1003,162 @@ class SimulatedOrderManager(OrderManager):
         logger.debug(f"Simulated order amended: {order_id} - {old_price}¢ → {new_price}¢")
         return True
     
+    def _process_partial_fill(
+        self,
+        order: OrderInfo,
+        fill_quantity: int,
+        fill_price: int
+    ) -> None:
+        """
+        Process a partial order fill and update positions.
+        
+        Args:
+            order: Order that was partially filled
+            fill_quantity: Quantity filled in this partial fill
+            fill_price: Price of this partial fill
+        """
+        # Calculate fill cost in dollars
+        fill_cost = (fill_price / 100.0) * fill_quantity
+        
+        # Update cash balance
+        if order.side == OrderSide.BUY:
+            self.cash_balance -= fill_cost  # Pay for bought contracts
+        else:
+            self.cash_balance += fill_cost  # Receive for sold contracts
+        
+        # Update position (similar to _process_fill but for partial quantity)
+        ticker = order.ticker
+        if ticker not in self.positions:
+            self.positions[ticker] = Position(
+                ticker=ticker,
+                contracts=0,
+                cost_basis=0.0,
+                realized_pnl=0.0
+            )
+        
+        position = self.positions[ticker]
+        
+        # Calculate position change based on Kalshi convention
+        if order.contract_side == ContractSide.YES:
+            if order.side == OrderSide.BUY:
+                contract_change = fill_quantity  # +YES
+            else:
+                contract_change = -fill_quantity  # Sell YES
+        else:  # NO contracts
+            if order.side == OrderSide.BUY:
+                contract_change = -fill_quantity  # Buy NO = -YES
+            else:
+                contract_change = fill_quantity  # Sell NO = +YES
+        
+        # Check if this trade closes existing position (realizes P&L)
+        if (position.contracts > 0 and contract_change < 0) or \
+           (position.contracts < 0 and contract_change > 0):
+            # Position reduction - calculate realized P&L
+            reduction_amount = min(abs(contract_change), abs(position.contracts))
+            
+            # Calculate average cost per contract for the position being closed
+            if position.contracts != 0:
+                avg_cost_per_contract = position.cost_basis / abs(position.contracts)
+                
+                # Calculate realized P&L
+                if position.contracts > 0:  # Closing long YES position
+                    if order.side == OrderSide.SELL:
+                        realized_pnl = reduction_amount * (fill_price / 100.0 - avg_cost_per_contract)
+                    else:
+                        # Buying NO to close YES (unusual but possible)
+                        realized_pnl = reduction_amount * ((100 - fill_price) / 100.0 - avg_cost_per_contract)
+                else:  # Closing long NO position
+                    if order.side == OrderSide.SELL:
+                        # Selling NO to close (unusual)
+                        realized_pnl = reduction_amount * (fill_price / 100.0 - avg_cost_per_contract)
+                    else:
+                        # Buying YES to close NO
+                        realized_pnl = reduction_amount * (avg_cost_per_contract - fill_price / 100.0)
+                
+                position.realized_pnl += realized_pnl
+                
+                # Update cost basis proportionally
+                if abs(position.contracts) > reduction_amount:
+                    position.cost_basis *= (abs(position.contracts) - reduction_amount) / abs(position.contracts)
+                else:
+                    position.cost_basis = 0.0
+        else:
+            # Position increase - add to cost basis
+            position.cost_basis += fill_cost
+        
+        # Update contract count
+        position.contracts += contract_change
+        
+        logger.info(
+            f"Partial fill processed: {order.order_id} - {fill_quantity} contracts at {fill_price}¢, "
+            f"{order.remaining_quantity} remaining"
+        )
+    
     async def check_fills(self, orderbook: OrderbookState) -> List[OrderInfo]:
-        """Check for fills of pending simulated orders."""
+        """Check for fills of pending simulated orders using probabilistic model."""
         filled_orders = []
         orders_to_remove = []
         
         for order in list(self.open_orders.values()):
-            if self._can_fill_immediately(order, orderbook):
-                fill_price = self._get_fill_price(order, orderbook)
-                self._process_fill(order, fill_price)
-                filled_orders.append(order)
-                orders_to_remove.append(order.order_id)
+            # Calculate fill probability
+            fill_probability = self.calculate_fill_probability(order, orderbook)
+            
+            # Use random sampling to determine if order should fill
+            if random.random() < fill_probability:
+                # Order should fill - separate passive and aggressive logic
+                is_aggressive = self._is_aggressive_order(order, orderbook)
+                
+                if is_aggressive:
+                    # Aggressive orders: use depth consumption for VWAP and partial fills
+                    fill_result = self.calculate_fill_with_depth(order, orderbook)
+                    
+                    if fill_result['can_fill']:
+                        filled_quantity = fill_result['filled_quantity']
+                        vwap_price = fill_result['vwap_price']
+                        consumed_levels = fill_result['consumed_levels']
+                        
+                        # Track consumed liquidity
+                        self._track_consumed_liquidity(order, consumed_levels)
+                        fill_type = "aggressive"
+                    else:
+                        continue  # Aggressive order that can't fill due to depth
+                else:
+                    # Passive orders: fill at limit price (already passed probability check)
+                    filled_quantity = order.remaining_quantity
+                    vwap_price = order.limit_price
+                    consumed_levels = []  # No depth consumption for passive fills
+                    fill_type = "passive"
+                
+                # Simulate a trade for activity tracking
+                self.activity_tracker.add_trade(filled_quantity)
+                
+                if filled_quantity >= order.remaining_quantity:
+                    # Fully filled (complete remaining quantity)
+                    if order.is_partially_filled():
+                        # Complete a partial fill
+                        order.update_partial_fill(filled_quantity, vwap_price)
+                        self._process_partial_fill(order, filled_quantity, vwap_price)
+                    else:
+                        # Fresh complete fill
+                        self._process_fill(order, vwap_price)
+                    
+                    filled_orders.append(order)
+                    orders_to_remove.append(order.order_id)
+                    
+                    logger.debug(
+                        f"Order filled ({fill_type}, prob={fill_probability:.2f}): {order.order_id} - "
+                        f"{filled_quantity} contracts at {vwap_price}¢"
+                    )
+                else:
+                    # Partial fill
+                    order.update_partial_fill(filled_quantity, vwap_price)
+                    self._process_partial_fill(order, filled_quantity, vwap_price)
+                    # Note: don't remove from open_orders, still has remaining quantity
+                    
+                    logger.debug(
+                        f"Order partially filled ({fill_type}, prob={fill_probability:.2f}): {order.order_id} - "
+                        f"{filled_quantity}/{order.quantity} contracts at {vwap_price}¢"
+                    )
         
         # Remove filled orders
         for order_id in orders_to_remove:
@@ -761,37 +1168,72 @@ class SimulatedOrderManager(OrderManager):
         return filled_orders
     
     def _can_fill_immediately(self, order: OrderInfo, orderbook: OrderbookState) -> bool:
-        """Check if an order can be filled immediately at current market prices."""
-        if order.contract_side == ContractSide.YES:
-            best_bid = orderbook._get_best_price(orderbook.yes_bids, is_bid=True)
-            best_ask = orderbook._get_best_price(orderbook.yes_asks, is_bid=False)
-        else:
-            # For NO contracts  
-            yes_best_bid = orderbook._get_best_price(orderbook.yes_bids, is_bid=True)
-            yes_best_ask = orderbook._get_best_price(orderbook.yes_asks, is_bid=False)
-            
-            if yes_best_bid is not None and yes_best_ask is not None:
-                best_bid = 99 - yes_best_ask
-                best_ask = 99 - yes_best_bid
-            else:
-                return False  # No prices available
+        """
+        Check if an order can be filled immediately at current market prices.
         
-        if best_bid is None or best_ask is None:
-            return False  # No market prices available
-        
-        if order.side == OrderSide.BUY:
-            # Buy order fills if our bid price >= market ask
-            return order.limit_price >= best_ask
-        else:
-            # Sell order fills if our ask price <= market bid
-            return order.limit_price <= best_bid
+        Now considers available liquidity after accounting for consumed liquidity.
+        """
+        fill_result = self.calculate_fill_with_depth(order, orderbook)
+        return fill_result['can_fill'] and fill_result['filled_quantity'] > 0
     
     def _get_fill_price(self, order: OrderInfo, orderbook: OrderbookState) -> int:
-        """Get the price at which an order would fill."""
+        """
+        Get the VWAP price at which an order would fill, accounting for depth consumption.
+        
+        For small orders (< small_order_threshold), uses the traditional best price fill.
+        For large orders, walks the orderbook and calculates volume-weighted average price.
+        """
+        fill_result = self.calculate_fill_with_depth(order, orderbook)
+        
+        if fill_result['can_fill']:
+            return fill_result['vwap_price']
+        else:
+            # Fallback to order's limit price if no market data
+            return order.limit_price
+    
+    def calculate_fill_with_depth(self, order: OrderInfo, orderbook: OrderbookState) -> Dict[str, Any]:
+        """
+        Calculate order fill with orderbook depth consumption.
+        
+        Walks through price levels to determine:
+        1. How much can be filled
+        2. Volume-weighted average price (VWAP)
+        3. Liquidity consumption impact
+        
+        Args:
+            order: Order to analyze
+            orderbook: Current orderbook state
+            
+        Returns:
+            Dict with keys:
+            - can_fill: bool - whether any part can fill
+            - filled_quantity: int - how many contracts can fill
+            - vwap_price: int - volume-weighted average price in cents
+            - consumed_levels: List[Dict] - price levels that would be consumed
+        """
+        # Clean up expired consumed liquidity
+        self._cleanup_expired_liquidity()
+        
+        # Small order optimization - fill at best price without depth consumption
+        if order.remaining_quantity < self.small_order_threshold:
+            return self._calculate_small_order_fill(order, orderbook)
+        
+        # Large order - walk the orderbook
+        return self._calculate_depth_fill(order, orderbook)
+    
+    def _calculate_small_order_fill(self, order: OrderInfo, orderbook: OrderbookState) -> Dict[str, Any]:
+        """
+        Calculate fill for small orders using traditional best price logic.
+        
+        Small orders (<20 contracts) fill at best bid/ask without slippage.
+        """
         if order.contract_side == ContractSide.YES:
             best_bid = orderbook._get_best_price(orderbook.yes_bids, is_bid=True)
             best_ask = orderbook._get_best_price(orderbook.yes_asks, is_bid=False)
+            book_side = 'yes_ask' if order.side == OrderSide.BUY else 'yes_bid'
+            target_book = orderbook.yes_asks if order.side == OrderSide.BUY else orderbook.yes_bids
         else:
+            # For NO contracts
             yes_best_bid = orderbook._get_best_price(orderbook.yes_bids, is_bid=True)
             yes_best_ask = orderbook._get_best_price(orderbook.yes_asks, is_bid=False)
             
@@ -799,19 +1241,506 @@ class SimulatedOrderManager(OrderManager):
                 best_bid = 99 - yes_best_ask
                 best_ask = 99 - yes_best_bid
             else:
-                # Fallback to order's limit price if no market data
-                return order.limit_price
+                return {'can_fill': False, 'filled_quantity': 0, 'vwap_price': order.limit_price, 'consumed_levels': []}
+            
+            book_side = 'no_ask' if order.side == OrderSide.BUY else 'no_bid'
+            # For NO contracts, we need to construct the effective book
+            if order.side == OrderSide.BUY:
+                # Buying NO = selling YES, so we look at YES bids (which become NO asks)
+                target_book = {99 - price: size for price, size in orderbook.yes_bids.items()}
+            else:
+                # Selling NO = buying YES, so we look at YES asks (which become NO bids)
+                target_book = {99 - price: size for price, size in orderbook.yes_asks.items()}
         
         if best_bid is None or best_ask is None:
-            # Fallback to order's limit price if no market data
-            return order.limit_price
+            return {'can_fill': False, 'filled_quantity': 0, 'vwap_price': order.limit_price, 'consumed_levels': []}
+        
+        # Check if order can fill at best price
+        if order.side == OrderSide.BUY:
+            if order.limit_price >= best_ask:
+                # Get available quantity at best ask
+                best_ask_quantity = target_book.get(best_ask, 0) if target_book else 0
+                liquidity_key = f"{order.ticker}_{book_side}_{best_ask}"
+                
+                if liquidity_key in self.consumed_liquidity:
+                    available_quantity = self.consumed_liquidity[liquidity_key].get_available_quantity(best_ask_quantity)
+                else:
+                    available_quantity = best_ask_quantity
+                
+                if available_quantity >= order.remaining_quantity:
+                    return {
+                        'can_fill': True,
+                        'filled_quantity': order.remaining_quantity,
+                        'vwap_price': best_ask,
+                        'consumed_levels': [{'price': best_ask, 'quantity': order.remaining_quantity}]
+                    }
+        else:  # SELL
+            if order.limit_price <= best_bid:
+                # Get available quantity at best bid
+                best_bid_quantity = target_book.get(best_bid, 0) if target_book else 0
+                liquidity_key = f"{order.ticker}_{book_side}_{best_bid}"
+                
+                if liquidity_key in self.consumed_liquidity:
+                    available_quantity = self.consumed_liquidity[liquidity_key].get_available_quantity(best_bid_quantity)
+                else:
+                    available_quantity = best_bid_quantity
+                
+                if available_quantity >= order.remaining_quantity:
+                    return {
+                        'can_fill': True,
+                        'filled_quantity': order.remaining_quantity,
+                        'vwap_price': best_bid,
+                        'consumed_levels': [{'price': best_bid, 'quantity': order.remaining_quantity}]
+                    }
+        
+        return {'can_fill': False, 'filled_quantity': 0, 'vwap_price': order.limit_price, 'consumed_levels': []}
+    
+    def _calculate_depth_fill(self, order: OrderInfo, orderbook: OrderbookState) -> Dict[str, Any]:
+        """
+        Calculate fill for large orders by walking the orderbook depth.
+        
+        Implements orderbook walking with slippage calculation.
+        """
+        # Determine which book to walk based on order type
+        if order.contract_side == ContractSide.YES:
+            if order.side == OrderSide.BUY:
+                # Buying YES - walk the YES asks
+                book_levels = list(orderbook.yes_asks.items())
+                book_side = 'yes_ask'
+            else:
+                # Selling YES - walk the YES bids
+                book_levels = list(orderbook.yes_bids.items())
+                book_side = 'yes_bid'
+        else:  # NO contracts
+            if order.side == OrderSide.BUY:
+                # Buying NO = walking YES bids (converted to NO asks)
+                book_levels = [(99 - price, size) for price, size in orderbook.yes_bids.items()]
+                book_side = 'no_ask'
+            else:
+                # Selling NO = walking YES asks (converted to NO bids)
+                book_levels = [(99 - price, size) for price, size in orderbook.yes_asks.items()]
+                book_side = 'no_bid'
+        
+        if not book_levels:
+            return {'can_fill': False, 'filled_quantity': 0, 'vwap_price': order.limit_price, 'consumed_levels': []}
+        
+        # Sort levels appropriately
+        if order.side == OrderSide.BUY:
+            # For buying, start with lowest ask prices
+            book_levels.sort(key=lambda x: x[0])
+        else:
+            # For selling, start with highest bid prices
+            book_levels.sort(key=lambda x: x[0], reverse=True)
+        
+        # Walk the book and calculate fill
+        total_cost = 0
+        total_filled = 0
+        consumed_levels = []
+        remaining_to_fill = order.remaining_quantity
+        
+        for price, size in book_levels:
+            # Check if this price level satisfies order's limit price
+            if order.side == OrderSide.BUY and price > order.limit_price:
+                break  # Price too high for buy order
+            if order.side == OrderSide.SELL and price < order.limit_price:
+                break  # Price too low for sell order
+            
+            # Check available liquidity (accounting for consumed liquidity)
+            liquidity_key = f"{order.ticker}_{book_side}_{price}"
+            if liquidity_key in self.consumed_liquidity:
+                available_quantity = self.consumed_liquidity[liquidity_key].get_available_quantity(size)
+            else:
+                available_quantity = size
+            
+            if available_quantity <= 0:
+                continue  # No liquidity available at this level
+            
+            # Calculate how much we can fill at this level
+            level_fill = min(remaining_to_fill, available_quantity)
+            
+            if level_fill > 0:
+                total_cost += level_fill * price
+                total_filled += level_fill
+                remaining_to_fill -= level_fill
+                
+                consumed_levels.append({
+                    'price': price,
+                    'quantity': level_fill
+                })
+                
+                if remaining_to_fill <= 0:
+                    break  # Order fully filled
+        
+        if total_filled > 0:
+            vwap_price = round(total_cost / total_filled)
+            return {
+                'can_fill': True,
+                'filled_quantity': total_filled,
+                'vwap_price': vwap_price,
+                'consumed_levels': consumed_levels
+            }
+        else:
+            return {
+                'can_fill': False,
+                'filled_quantity': 0,
+                'vwap_price': order.limit_price,
+                'consumed_levels': []
+            }
+    
+    def _track_consumed_liquidity(self, order: OrderInfo, consumed_levels: List[Dict[str, Any]]) -> None:
+        """
+        Track consumed liquidity to prevent double-filling at same price levels.
+        
+        Args:
+            order: The order that consumed liquidity
+            consumed_levels: List of price levels consumed with quantities
+        """
+        # Determine book side
+        if order.contract_side == ContractSide.YES:
+            book_side = 'yes_ask' if order.side == OrderSide.BUY else 'yes_bid'
+        else:
+            book_side = 'no_ask' if order.side == OrderSide.BUY else 'no_bid'
+        
+        for level in consumed_levels:
+            price = level['price']
+            quantity = level['quantity']
+            
+            liquidity_key = f"{order.ticker}_{book_side}_{price}"
+            
+            if liquidity_key in self.consumed_liquidity:
+                # Update existing consumed liquidity
+                self.consumed_liquidity[liquidity_key].consumed_quantity += quantity
+                self.consumed_liquidity[liquidity_key].timestamp = time.time()
+            else:
+                # Create new consumed liquidity record
+                self.consumed_liquidity[liquidity_key] = ConsumedLiquidity(
+                    ticker=order.ticker,
+                    side=book_side,
+                    price=price,
+                    consumed_quantity=quantity,
+                    timestamp=time.time()
+                )
+    
+    def _cleanup_expired_liquidity(self) -> None:
+        """
+        Remove expired consumed liquidity records.
+        
+        Consumed liquidity expires after 5 seconds and is available again.
+        """
+        current_time = time.time()
+        expired_keys = [
+            key for key, consumed in self.consumed_liquidity.items()
+            if consumed.is_expired()
+        ]
+        
+        for key in expired_keys:
+            del self.consumed_liquidity[key]
+        
+        if expired_keys:
+            logger.debug(f"Cleaned up {len(expired_keys)} expired liquidity records")
+    
+    def get_consumed_liquidity_stats(self) -> Dict[str, Any]:
+        """
+        Get statistics about consumed liquidity for monitoring/debugging.
+
+        Returns:
+            Dict with consumed liquidity statistics
+        """
+        self._cleanup_expired_liquidity()
+
+        stats = {
+            'total_consumed_levels': len(self.consumed_liquidity),
+            'by_ticker': {},
+            'by_side': {}
+        }
+
+        for key, consumed in self.consumed_liquidity.items():
+            ticker = consumed.ticker
+            side = consumed.side
+
+            if ticker not in stats['by_ticker']:
+                stats['by_ticker'][ticker] = {
+                    'levels': 0,
+                    'total_quantity': 0
+                }
+
+            if side not in stats['by_side']:
+                stats['by_side'][side] = {
+                    'levels': 0,
+                    'total_quantity': 0
+                }
+
+            stats['by_ticker'][ticker]['levels'] += 1
+            stats['by_ticker'][ticker]['total_quantity'] += consumed.consumed_quantity
+
+            stats['by_side'][side]['levels'] += 1
+            stats['by_side'][side]['total_quantity'] += consumed.consumed_quantity
+
+        return stats
+    
+    def calculate_fill_probability(self, order: OrderInfo, orderbook: OrderbookState) -> float:
+        """
+        Calculate realistic fill probability based on:
+        - Price aggression (how far through the spread)
+        - Time in queue (FIFO priority approximation)
+        - Order size vs typical size
+        - Current market activity level
+        
+        Returns: Probability between 0.0 and 0.99
+        """
+        # 1. Calculate base probability from price aggression
+        base_prob = self._calculate_price_aggression_probability(order, orderbook)
+        
+        # 2. Time priority modifier (scaled down to ±15%)
+        time_in_queue = order.time_since_placed
+        if time_in_queue < 10:
+            time_modifier = -0.1 + (time_in_queue / 10.0) * 0.1  # -10% to 0% for 0-10 seconds
+        elif time_in_queue < 30:
+            time_modifier = (time_in_queue - 10) / 20.0 * 0.05  # 0% to +5% for 10-30 seconds
+        else:
+            time_modifier = 0.05  # +5% for 30+ seconds (front of queue)
+        
+        # 3. Size impact modifier (scaled down to ±10%)
+        if order.remaining_quantity < 10:
+            size_modifier = 0.05  # +5% for small orders
+        elif order.remaining_quantity <= 50:
+            size_modifier = 0.0  # No modifier for normal size
+        elif order.remaining_quantity <= 100:
+            size_modifier = -0.03  # -3% for slightly large orders
+        else:
+            size_modifier = -0.1  # -10% for large orders
+        
+        # 4. Market activity modifier (scaled down to ±10%)
+        activity_level = self.activity_tracker.get_activity_level()
+        activity_modifier = activity_level * 0.2 - 0.1  # Maps [0,1] to [-0.1, +0.1]
+        
+        # 5. Edge case adjustments
+        spread = self._calculate_spread(orderbook)
+        
+        # Wide spread adjustment
+        if spread > 5:
+            wide_spread_penalty = -0.1 * min((spread - 5) / 10, 1.0)  # Up to -10% for wide spreads
+        else:
+            wide_spread_penalty = 0.0
+        
+        # Empty orderbook adjustment
+        if self._is_orderbook_empty(orderbook):
+            empty_book_penalty = -0.3  # -30% for empty books
+        else:
+            empty_book_penalty = 0.0
+        
+        # Combine all factors
+        fill_prob = (
+            base_prob 
+            + time_modifier 
+            + size_modifier 
+            + activity_modifier 
+            + wide_spread_penalty 
+            + empty_book_penalty
+        )
+        
+        # Clamp to valid range [0.01, 0.99]
+        fill_prob = max(0.01, min(0.99, fill_prob))
+        
+        return fill_prob
+    
+    def _calculate_price_aggression_probability(self, order: OrderInfo, orderbook: OrderbookState) -> float:
+        """
+        Calculate base fill probability based on price aggression.
+        
+        Returns base probability based on how aggressive the order price is.
+        """
+        # Get best bid and ask for the relevant contract side
+        if order.contract_side == ContractSide.YES:
+            best_bid = orderbook._get_best_price(orderbook.yes_bids, is_bid=True)
+            best_ask = orderbook._get_best_price(orderbook.yes_asks, is_bid=False)
+        else:
+            # For NO contracts
+            yes_best_bid = orderbook._get_best_price(orderbook.yes_bids, is_bid=True)
+            yes_best_ask = orderbook._get_best_price(orderbook.yes_asks, is_bid=False)
+            
+            if yes_best_bid is not None and yes_best_ask is not None:
+                best_bid = 99 - yes_best_ask  # NO bid = 99 - YES ask
+                best_ask = 99 - yes_best_bid  # NO ask = 99 - YES bid
+            else:
+                best_bid = None
+                best_ask = None
+        
+        # Handle empty orderbook
+        if best_bid is None or best_ask is None:
+            return 0.3  # Low base probability for empty books
+        
+        spread = best_ask - best_bid
+        mid_price = (best_bid + best_ask) / 2.0
         
         if order.side == OrderSide.BUY:
-            # Buy orders fill at the market ask price
-            return best_ask
+            if order.limit_price >= best_ask:
+                # Crossing spread (aggressive)
+                if order.limit_price > best_ask:
+                    return 0.99  # Very aggressive, almost certain fill
+                else:
+                    return 0.95  # At ask, very high probability
+            elif order.limit_price >= best_ask - 1 and spread >= 2:
+                # 1 cent inside spread
+                return 0.8
+            elif order.limit_price >= best_ask - 2 and spread >= 3:
+                # 2 cents inside spread
+                return 0.9
+            elif order.limit_price == best_bid:
+                # At bid (passive)
+                return 0.4  # 40% base probability at touch
+            elif order.limit_price < best_bid:
+                # Below bid (very passive)
+                distance = best_bid - order.limit_price
+                return max(0.1, 0.3 - distance * 0.05)  # Decay with distance
+            else:
+                # Inside spread
+                position_in_spread = (order.limit_price - best_bid) / max(spread, 1)
+                return 0.4 + position_in_spread * 0.4  # 40% to 80% inside spread
+        else:  # SELL order
+            if order.limit_price <= best_bid:
+                # Crossing spread (aggressive)
+                if order.limit_price < best_bid:
+                    return 0.99  # Very aggressive, almost certain fill
+                else:
+                    return 0.95  # At bid, very high probability
+            elif order.limit_price <= best_bid + 1 and spread >= 2:
+                # 1 cent inside spread
+                return 0.8
+            elif order.limit_price <= best_bid + 2 and spread >= 3:
+                # 2 cents inside spread
+                return 0.9
+            elif order.limit_price == best_ask:
+                # At ask (passive)
+                return 0.4  # 40% base probability at touch
+            elif order.limit_price > best_ask:
+                # Above ask (very passive)
+                distance = order.limit_price - best_ask
+                return max(0.1, 0.3 - distance * 0.05)  # Decay with distance
+            else:
+                # Inside spread
+                position_in_spread = (best_ask - order.limit_price) / max(spread, 1)
+                return 0.4 + position_in_spread * 0.4  # 40% to 80% inside spread
+    
+    def _calculate_spread(self, orderbook: OrderbookState) -> int:
+        """Calculate the bid-ask spread in cents."""
+        yes_best_bid = orderbook._get_best_price(orderbook.yes_bids, is_bid=True)
+        yes_best_ask = orderbook._get_best_price(orderbook.yes_asks, is_bid=False)
+        
+        if yes_best_bid is not None and yes_best_ask is not None:
+            return yes_best_ask - yes_best_bid
+        return 1  # Default spread if no market data
+    
+    def _calculate_mid_price(self, orderbook: OrderbookState) -> float:
+        """Calculate the mid price."""
+        yes_best_bid = orderbook._get_best_price(orderbook.yes_bids, is_bid=True)
+        yes_best_ask = orderbook._get_best_price(orderbook.yes_asks, is_bid=False)
+        
+        if yes_best_bid is not None and yes_best_ask is not None:
+            return (yes_best_bid + yes_best_ask) / 2.0
+        return 50.0  # Default mid if no market data
+    
+    def _is_orderbook_empty(self, orderbook: OrderbookState) -> bool:
+        """Check if orderbook has no liquidity."""
+        return (not orderbook.yes_bids and not orderbook.yes_asks)
+    
+    def _calculate_aggressive_limit_for_large_order(
+        self,
+        side: OrderSide,
+        contract_side: ContractSide,
+        orderbook: OrderbookState
+    ) -> int:
+        """
+        Calculate a high limit price for large aggressive orders to allow depth consumption.
+        
+        For large orders, we want to set the limit price high enough to walk through
+        multiple price levels in the orderbook.
+        
+        Args:
+            side: Buy or Sell
+            contract_side: YES or NO
+            orderbook: Current orderbook
+            
+        Returns:
+            Limit price in cents that allows depth consumption
+        """
+        if contract_side == ContractSide.YES:
+            relevant_book = orderbook.yes_asks if side == OrderSide.BUY else orderbook.yes_bids
         else:
-            # Sell orders fill at the market bid price
-            return best_bid
+            # For NO contracts, we need to consider the derived book
+            if side == OrderSide.BUY:
+                # Buying NO = derived from YES bids
+                relevant_book = {99 - price: size for price, size in orderbook.yes_bids.items()}
+            else:
+                # Selling NO = derived from YES asks  
+                relevant_book = {99 - price: size for price, size in orderbook.yes_asks.items()}
+        
+        if not relevant_book:
+            return 50  # Default mid-market if no book
+        
+        # For aggressive orders, allow walking through multiple levels
+        if side == OrderSide.BUY:
+            # For buy orders, find a price that allows access to several ask levels
+            sorted_prices = sorted(relevant_book.keys())
+            # Allow walking through at least 3 levels or all available levels
+            target_levels = min(3, len(sorted_prices))
+            if target_levels > 0:
+                max_price = sorted_prices[target_levels - 1]
+                # Add small buffer to ensure we can access this level
+                limit_price = min(99, max_price + 1)
+            else:
+                limit_price = 99  # Maximum possible
+        else:
+            # For sell orders, find a price that allows access to several bid levels
+            sorted_prices = sorted(relevant_book.keys(), reverse=True)
+            target_levels = min(3, len(sorted_prices))
+            if target_levels > 0:
+                min_price = sorted_prices[target_levels - 1]
+                # Subtract small buffer to ensure we can access this level
+                limit_price = max(1, min_price - 1)
+            else:
+                limit_price = 1  # Minimum possible
+        
+        return limit_price
+    
+    def _is_aggressive_order(self, order: OrderInfo, orderbook: OrderbookState) -> bool:
+        """
+        Determine if an order is aggressive (crosses the spread) or passive (joins the bid/ask).
+        
+        Args:
+            order: Order to check
+            orderbook: Current orderbook state
+            
+        Returns:
+            True if order is aggressive (crosses spread), False if passive
+        """
+        # Get best bid and ask for the relevant contract side
+        if order.contract_side == ContractSide.YES:
+            best_bid = orderbook._get_best_price(orderbook.yes_bids, is_bid=True)
+            best_ask = orderbook._get_best_price(orderbook.yes_asks, is_bid=False)
+        else:
+            # For NO contracts
+            yes_best_bid = orderbook._get_best_price(orderbook.yes_bids, is_bid=True)
+            yes_best_ask = orderbook._get_best_price(orderbook.yes_asks, is_bid=False)
+            
+            if yes_best_bid is not None and yes_best_ask is not None:
+                best_bid = 99 - yes_best_ask  # NO bid = 99 - YES ask
+                best_ask = 99 - yes_best_bid  # NO ask = 99 - YES bid
+            else:
+                # If no market data, assume not aggressive
+                return False
+        
+        # If no bid/ask available, assume not aggressive
+        if best_bid is None or best_ask is None:
+            return False
+        
+        # Check if order crosses the spread
+        if order.side == OrderSide.BUY:
+            # Buy order is aggressive if it's at or above the best ask
+            return order.limit_price >= best_ask
+        else:  # SELL
+            # Sell order is aggressive if it's at or below the best bid
+            return order.limit_price <= best_bid
 
 
 class KalshiOrderManager(OrderManager):
@@ -1195,6 +2124,45 @@ class KalshiOrderManager(OrderManager):
             
         except Exception as e:
             logger.error(f"Error processing fill message: {e}")
+    
+    def get_consumed_liquidity_stats(self) -> Dict[str, Any]:
+        """
+        Get statistics about consumed liquidity for monitoring/debugging.
+        
+        Returns:
+            Dict with consumed liquidity statistics
+        """
+        self._cleanup_expired_liquidity()
+        
+        stats = {
+            'total_consumed_levels': len(self.consumed_liquidity),
+            'by_ticker': {},
+            'by_side': {}
+        }
+        
+        for key, consumed in self.consumed_liquidity.items():
+            ticker = consumed.ticker
+            side = consumed.side
+            
+            if ticker not in stats['by_ticker']:
+                stats['by_ticker'][ticker] = {
+                    'levels': 0,
+                    'total_quantity': 0
+                }
+            
+            if side not in stats['by_side']:
+                stats['by_side'][side] = {
+                    'levels': 0,
+                    'total_quantity': 0
+                }
+            
+            stats['by_ticker'][ticker]['levels'] += 1
+            stats['by_ticker'][ticker]['total_quantity'] += consumed.consumed_quantity
+            
+            stats['by_side'][side]['levels'] += 1
+            stats['by_side'][side]['total_quantity'] += consumed.consumed_quantity
+        
+        return stats
     
     async def start_fill_tracking(self) -> None:
         """
