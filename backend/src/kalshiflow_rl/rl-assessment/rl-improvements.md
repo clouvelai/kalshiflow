@@ -1,6 +1,23 @@
 # RL Training Improvements - Priority Ranked
 
-Last Updated: 2025-12-11 21:35
+Last Updated: 2025-12-15 (Updated with Order Simulation Analysis)
+
+## URGENT: Simulation Fidelity Issues (NEW)
+
+### 0. Fix Order Simulation Realism 🚨
+**Impact**: CRITICAL - Current simulator teaches wrong behaviors
+**Evidence**: SimulatedOrderManager analysis shows 40% P&L overestimation
+**Problems**:
+- No orderbook depth consumption (no slippage modeling)
+- Binary fill model (100% or 0%, no probabilistic fills)
+- No market impact (orders don't affect spreads)
+- No partial fills (unrealistic for large orders)
+**Solution**:
+- Implement depth-aware pricing (walk the book for large orders)
+- Add probabilistic fill model based on price/size/time
+- Model spread widening from order placement
+- Support partial order fills
+**See**: `rl-assessment/order-simulation-fidelity-analysis.md` for detailed implementation
 
 ## Critical Priority (Immediate Impact on Profitability)
 
