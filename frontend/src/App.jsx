@@ -1,4 +1,5 @@
 import React from 'react';
+import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
 import { TradeProvider, useTradeContext } from './context/TradeContext';
 import Layout from './components/Layout';
 import UnifiedAnalytics from './components/UnifiedAnalytics';
@@ -6,8 +7,9 @@ import MarketGrid from './components/MarketGrid';
 import TradeFlowRiver from './components/TradeFlowRiver';
 import TopTradesList from './components/TopTradesList';
 import FAQ from './components/FAQ';
+import TraderDashboard from './components/trader/TraderDashboard';
 
-const AppContent = () => {
+const MainDashboard = () => {
   const {
     recentTrades,
     hotMarkets,
@@ -64,9 +66,22 @@ const AppContent = () => {
 
 function App() {
   return (
-    <TradeProvider>
-      <AppContent />
-    </TradeProvider>
+    <Router>
+      <Routes>
+        <Route 
+          path="/" 
+          element={
+            <TradeProvider>
+              <MainDashboard />
+            </TradeProvider>
+          } 
+        />
+        <Route 
+          path="/trader" 
+          element={<TraderDashboard />} 
+        />
+      </Routes>
+    </Router>
   );
 }
 

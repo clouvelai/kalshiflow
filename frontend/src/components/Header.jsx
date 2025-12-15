@@ -151,8 +151,8 @@ const Header = ({ connectionStatus, ...props }) => {
             </p>
           </div>
 
-          {/* Connection Status - Integrated into hero */}
-          <div className="flex items-center justify-center mt-6">
+          {/* Connection Status and Navigation - Integrated into hero */}
+          <div className="flex items-center justify-center mt-6 space-x-4">
             <div className="flex items-center space-x-3 group px-6 py-3 bg-slate-900/50 backdrop-blur-xl rounded-2xl border border-slate-800/50 hover:border-slate-700/50 transition-all duration-300" data-testid="connection-status">
               <div className="relative">
                 <div className={`w-3 h-3 rounded-full ${
@@ -188,6 +188,19 @@ const Header = ({ connectionStatus, ...props }) => {
                   : 'Connection Offline'}
               </span>
             </div>
+            
+            {/* Navigation Link to Trader Dashboard */}
+            <a 
+              href="/trader" 
+              className="flex items-center space-x-2 px-6 py-3 bg-slate-900/50 backdrop-blur-xl rounded-2xl border border-slate-800/50 hover:border-green-500/50 hover:bg-slate-900/70 transition-all duration-300 group"
+            >
+              <svg className="w-4 h-4 text-green-400 group-hover:text-green-300 transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
+              </svg>
+              <span className="text-sm font-semibold text-slate-300 group-hover:text-green-400 transition-colors">
+                RL Trader
+              </span>
+            </a>
           </div>
 
           {/* Decorative elements */}

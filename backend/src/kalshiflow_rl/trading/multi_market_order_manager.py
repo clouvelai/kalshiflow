@@ -106,6 +106,9 @@ class MultiMarketOrderManager:
         self._last_portfolio_update = 0.0
         self._safety_circuit_breaker = False
         
+        # State change callbacks for UI updates
+        self._state_change_callbacks = []
+        
         logger.info(
             f"MultiMarketOrderManager initialized for {len(self.markets)} markets: "
             f"{', '.join(self.markets[:5])}{'...' if len(self.markets) > 5 else ''}"
@@ -279,6 +282,9 @@ class MultiMarketOrderManager:
             # Update metrics
             self._execution_count += 1
             execution_time = time.time() - start_time
+            
+            # Notify state change callbacks (for UI updates)
+            await self._notify_state_change()
             
             logger.info(
                 f"Executed action {action} for {market_ticker}: "
@@ -497,6 +503,93 @@ class MultiMarketOrderManager:
                 "daily_trades": self.global_state.daily_trades
             },
             "last_portfolio_update": self._last_portfolio_update
+        }
+    
+    def add_state_change_callback(self, callback):
+        """
+        Register callback for state changes.
+        
+        Args:
+            callback: Async callable that takes state dict as argument
+        """
+        self._state_change_callbacks.append(callback)
+        logger.debug(f"Added state change callback. Total callbacks: {len(self._state_change_callbacks)}")
+    
+    async def _notify_state_change(self):
+        """Notify all callbacks of state change."""
+        if not self._state_change_callbacks:
+            return
+        
+        state = await self.get_current_state()
+        for callback in self._state_change_callbacks:
+            try:
+                # Create async task to avoid blocking
+                asyncio.create_task(callback(state))
+            except Exception as e:
+                logger.error(f"Error in state change callback: {e}")
+    
+    async def get_current_state(self) -> Dict[str, Any]:
+        """
+        Get complete current state snapshot for UI.
+        
+        Returns:
+            Dict containing all trader state information
+        """
+        # Gather positions across all markets
+        positions = {}
+        open_orders = []
+        
+        for market_ticker in self._market_managers:
+            # Get position for market
+            position_data = await self.get_position_for_market(market_ticker)
+            if position_data.get('position', 0) != 0:
+                positions[market_ticker] = {
+                    "contracts": position_data.get('position', 0),
+                    "cost_basis": position_data.get('cost_basis', 0.0),
+                    "realized_pnl": position_data.get('realized_pnl', 0.0),
+                    "unrealized_pnl": 0.0  # Would need current prices to calculate
+                }
+            
+            # Get open orders for market
+            market_orders = await self.get_orders_for_market(market_ticker)
+            for order in market_orders:
+                open_orders.append({
+                    "order_id": order.get("order_id"),
+                    "ticker": market_ticker,
+                    "side": order.get("side"),
+                    "contract_side": order.get("contract_side", "YES"),  # Default to YES
+                    "quantity": order.get("quantity"),
+                    "limit_price": order.get("price"),
+                    "placed_at": order.get("placed_at", time.time()),
+                    "status": order.get("status", "PENDING")
+                })
+        
+        # Calculate portfolio value (simplified - would need current prices)
+        portfolio_value = self.global_state.total_cash
+        for market, position in positions.items():
+            # Add position value at cost basis for now
+            portfolio_value += abs(position["contracts"]) * position.get("cost_basis", 0)
+        
+        return {
+            "timestamp": time.time(),
+            "cash_balance": self.global_state.total_cash,
+            "promised_cash": sum(
+                order["quantity"] * order["limit_price"] / 100  # Convert cents to dollars
+                for order in open_orders
+                if order.get("side") == "BUY"
+            ),
+            "portfolio_value": portfolio_value,
+            "positions": positions,
+            "open_orders": open_orders,
+            "metrics": {
+                "orders_placed": self._execution_count,
+                "orders_filled": self._execution_count - len(open_orders),  # Approximation
+                "orders_cancelled": 0,  # Would need to track this
+                "fill_rate": (self._execution_count - len(open_orders)) / max(1, self._execution_count),
+                "total_volume_traded": abs(self.global_state.total_realized_pnl) * 100,  # Approximation
+                "daily_pnl": self.global_state.daily_pnl,
+                "daily_trades": self.global_state.daily_trades
+            }
         }
     
     def get_status(self) -> Dict[str, Any]:

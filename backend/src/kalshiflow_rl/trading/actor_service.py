@@ -139,6 +139,7 @@ class ActorService:
         self._observation_adapter: Optional[Callable] = None
         self._action_selector: Optional[Callable] = None
         self._order_manager: Optional[Union[Callable, "KalshiMultiMarketOrderManager"]] = None
+        self._websocket_manager: Optional[Any] = None  # For broadcasting trading actions
         
         logger.info(
             f"ActorService initialized for {len(self.market_tickers)} markets: {', '.join(self.market_tickers)}"
@@ -528,6 +529,16 @@ class ActorService:
             # Step 3: Safe execute action (requires OrderManager)
             execution_result = await self._safe_execute_action(action, market_ticker)
             
+            # Broadcast trader action to UI via WebSocket
+            if self._websocket_manager and execution_result is not None:
+                await self._broadcast_trader_action(
+                    event=event,
+                    market_ticker=market_ticker,
+                    observation=observation,
+                    action=action,
+                    execution_result=execution_result
+                )
+            
             # Step 4: Update positions (track portfolio state)
             await self._update_positions(market_ticker, action, execution_result)
             
@@ -811,6 +822,86 @@ class ActorService:
             self._check_circuit_breaker(market_ticker)
             return None
     
+    async def _broadcast_trader_action(
+        self,
+        event: ActorEvent,
+        market_ticker: str,
+        observation: np.ndarray,
+        action: int,
+        execution_result: Dict[str, Any]
+    ) -> None:
+        """
+        Broadcast trader action to UI via WebSocket.
+        
+        Args:
+            event: Original ActorEvent
+            market_ticker: Market being traded
+            observation: Observation used for decision
+            action: Action taken (0=HOLD, 1=BUY_YES, etc)
+            execution_result: Result from order execution
+        """
+        try:
+            # Map action IDs to names
+            action_names = {
+                0: "HOLD",
+                1: "BUY_YES_LIMIT",
+                2: "SELL_YES_LIMIT",
+                3: "BUY_NO_LIMIT",
+                4: "SELL_NO_LIMIT"
+            }
+            
+            # Extract observation features for UI display
+            # Assuming observation structure matches LiveObservationAdapter output
+            obs_dict = {}
+            if observation is not None and len(observation) >= 10:
+                # Basic orderbook features (first 10 values)
+                obs_dict = {
+                    "yes_bid": float(observation[0]) if len(observation) > 0 else 0,
+                    "yes_ask": float(observation[1]) if len(observation) > 1 else 0,
+                    "no_bid": float(observation[2]) if len(observation) > 2 else 0,
+                    "no_ask": float(observation[3]) if len(observation) > 3 else 0,
+                    "yes_bid_size": float(observation[4]) if len(observation) > 4 else 0,
+                    "yes_ask_size": float(observation[5]) if len(observation) > 5 else 0,
+                    "no_bid_size": float(observation[6]) if len(observation) > 6 else 0,
+                    "no_ask_size": float(observation[7]) if len(observation) > 7 else 0,
+                    "spread": float(observation[8]) if len(observation) > 8 else 0,
+                    "mid_price": float(observation[9]) if len(observation) > 9 else 0,
+                }
+                
+                # Add portfolio features if available (assuming they're in the observation)
+                if len(observation) > 15:
+                    obs_dict["position"] = float(observation[15])
+                    obs_dict["cash_available"] = float(observation[16]) if len(observation) > 16 else 0
+                    obs_dict["imbalance"] = float(observation[10]) if len(observation) > 10 else 0
+            
+            # Build action data for broadcast
+            action_data = {
+                "timestamp": time.time(),
+                "market_ticker": market_ticker,
+                "sequence_number": event.sequence_number,
+                "observation": obs_dict,
+                "action": {
+                    "action_id": action,
+                    "action_name": action_names.get(action, f"UNKNOWN_{action}"),
+                    "quantity": execution_result.get("quantity", 10),  # Default to 10 for MVP
+                    "limit_price": execution_result.get("limit_price"),
+                    "reason": "model_prediction"
+                },
+                "execution_result": {
+                    "executed": execution_result.get("executed", False),
+                    "order_id": execution_result.get("order_id"),
+                    "status": execution_result.get("status", "unknown"),
+                    "error": execution_result.get("error")
+                }
+            }
+            
+            # Broadcast via websocket manager
+            await self._websocket_manager.broadcast_trader_action(action_data)
+            
+        except Exception as e:
+            logger.error(f"Error broadcasting trader action: {e}")
+            # Don't fail the main processing on broadcast errors
+    
     async def _update_positions(self, market_ticker: str, action: int, execution_result: Optional[Dict[str, Any]]) -> None:
         """
         Update portfolio tracking (Step 4).
@@ -894,6 +985,11 @@ class ActorService:
             logger.info("KalshiMultiMarketOrderManager instance configured")
         else:
             logger.info("Order manager callable configured")
+    
+    def set_websocket_manager(self, websocket_manager: Any) -> None:
+        """Set the websocket manager for broadcasting trader actions to UI."""
+        self._websocket_manager = websocket_manager
+        logger.info("WebSocket manager configured for trader action broadcasting")
     
     def get_metrics(self) -> Dict[str, Any]:
         """Get current actor service metrics."""
