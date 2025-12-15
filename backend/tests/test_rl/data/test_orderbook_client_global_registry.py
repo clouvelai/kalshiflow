@@ -46,7 +46,9 @@ class TestOrderbookClientGlobalRegistry:
         }
         
         # Mock write queue and event bus to prevent actual DB writes and events
-        with patch('kalshiflow_rl.data.orderbook_client.write_queue') as mock_write_queue:
+        with patch('kalshiflow_rl.data.orderbook_client.get_write_queue') as mock_get_queue:
+            mock_write_queue = AsyncMock()
+            mock_get_queue.return_value = mock_write_queue
             with patch('kalshiflow_rl.data.orderbook_client.emit_orderbook_snapshot') as mock_emit:
                 mock_write_queue.enqueue_snapshot = AsyncMock(return_value=True)
                 mock_emit = AsyncMock(return_value=True)
@@ -89,7 +91,9 @@ class TestOrderbookClientGlobalRegistry:
             }
         }
         
-        with patch('kalshiflow_rl.data.orderbook_client.write_queue') as mock_write_queue:
+        with patch('kalshiflow_rl.data.orderbook_client.get_write_queue') as mock_get_queue:
+            mock_write_queue = AsyncMock()
+            mock_get_queue.return_value = mock_write_queue
             with patch('kalshiflow_rl.data.orderbook_client.emit_orderbook_snapshot'):
                 mock_write_queue.enqueue_snapshot = AsyncMock(return_value=True)
                 await client._process_snapshot(snapshot_message)
@@ -106,7 +110,9 @@ class TestOrderbookClientGlobalRegistry:
             }
         }
         
-        with patch('kalshiflow_rl.data.orderbook_client.write_queue') as mock_write_queue:
+        with patch('kalshiflow_rl.data.orderbook_client.get_write_queue') as mock_get_queue:
+            mock_write_queue = AsyncMock()
+            mock_get_queue.return_value = mock_write_queue
             with patch('kalshiflow_rl.data.orderbook_client.emit_orderbook_delta'):
                 mock_write_queue.enqueue_delta = AsyncMock(return_value=True)
                 await client._process_delta(delta_message)
@@ -147,7 +153,9 @@ class TestOrderbookClientGlobalRegistry:
             }
         }
         
-        with patch('kalshiflow_rl.data.orderbook_client.write_queue') as mock_write_queue:
+        with patch('kalshiflow_rl.data.orderbook_client.get_write_queue') as mock_get_queue:
+            mock_write_queue = AsyncMock()
+            mock_get_queue.return_value = mock_write_queue
             with patch('kalshiflow_rl.data.orderbook_client.emit_orderbook_snapshot'):
                 mock_write_queue.enqueue_snapshot = AsyncMock(return_value=True)
                 await client._process_snapshot(snapshot_a)
@@ -187,7 +195,9 @@ class TestOrderbookClientGlobalRegistry:
             }
         }
         
-        with patch('kalshiflow_rl.data.orderbook_client.write_queue') as mock_write_queue:
+        with patch('kalshiflow_rl.data.orderbook_client.get_write_queue') as mock_get_queue:
+            mock_write_queue = AsyncMock()
+            mock_get_queue.return_value = mock_write_queue
             with patch('kalshiflow_rl.data.orderbook_client.emit_orderbook_snapshot'):
                 mock_write_queue.enqueue_snapshot = AsyncMock(return_value=True)
                 await client._process_snapshot(snapshot_message)
@@ -237,7 +247,9 @@ class TestOrderbookClientGlobalRegistry:
             }
         }
         
-        with patch('kalshiflow_rl.data.orderbook_client.write_queue') as mock_write_queue:
+        with patch('kalshiflow_rl.data.orderbook_client.get_write_queue') as mock_get_queue:
+            mock_write_queue = AsyncMock()
+            mock_get_queue.return_value = mock_write_queue
             with patch('kalshiflow_rl.data.orderbook_client.emit_orderbook_snapshot'):
                 mock_write_queue.enqueue_snapshot = AsyncMock(return_value=True)
                 await client._process_snapshot(snapshot_message)
@@ -266,7 +278,9 @@ class TestOrderbookClientGlobalRegistry:
             }
         }
         
-        with patch('kalshiflow_rl.data.orderbook_client.write_queue') as mock_write_queue:
+        with patch('kalshiflow_rl.data.orderbook_client.get_write_queue') as mock_get_queue:
+            mock_write_queue = AsyncMock()
+            mock_get_queue.return_value = mock_write_queue
             with patch('kalshiflow_rl.data.orderbook_client.emit_orderbook_delta'):
                 mock_write_queue.enqueue_delta = AsyncMock(return_value=True)
                 await client._process_delta(delta_message)

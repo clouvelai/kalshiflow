@@ -297,7 +297,7 @@ class TestLimitOrderIntegration:
             assert is_valid, f"Valid action {action} failed validation: {reason}"
         
         # Test invalid actions
-        invalid_actions = [-1, 5, 10, 100]
+        invalid_actions = [-1, 21, 25, 100]
         for action in invalid_actions:
             is_valid, reason = action_space.validate_action(
                 action=action,

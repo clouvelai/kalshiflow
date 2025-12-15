@@ -96,7 +96,7 @@ class TestCompleteDataPipeline:
         
         try:
             # Patch the global write_queue import in orderbook_client
-            with patch('kalshiflow_rl.data.orderbook_client.write_queue', test_write_queue):
+            with patch('kalshiflow_rl.data.orderbook_client.get_write_queue', return_value=test_write_queue):
                 # Create client (no WebSocket connection needed for this test)
                 client = OrderbookClient("TEST-MARKET")
                 
@@ -267,7 +267,7 @@ class TestCompleteDataPipeline:
         
         try:
             # Patch the global write_queue import
-            with patch('kalshiflow_rl.data.orderbook_client.write_queue', test_write_queue):
+            with patch('kalshiflow_rl.data.orderbook_client.get_write_queue', return_value=test_write_queue):
                 # Create multi-market client
                 client = OrderbookClient(["MARKET-A", "MARKET-B"])
                 

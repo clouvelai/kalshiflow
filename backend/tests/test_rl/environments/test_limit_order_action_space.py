@@ -302,10 +302,10 @@ class TestActionExecution:
     @pytest.mark.asyncio
     async def test_invalid_action_execution(self, action_space, sample_orderbook):
         """Test invalid action execution."""
-        result = await action_space.execute_action(10, "TEST", sample_orderbook)
+        result = await action_space.execute_action(25, "TEST", sample_orderbook)
         
         assert result.was_successful() is False
-        assert "not a valid" in result.error_message
+        assert "Invalid action" in result.error_message
     
     @pytest.mark.asyncio
     async def test_buy_action_execution(self, action_space, sample_orderbook, mock_order_manager):

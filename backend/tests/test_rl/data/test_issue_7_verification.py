@@ -45,7 +45,9 @@ async def test_issue_7_orderbook_client_populates_global_registry():
     }
     
     # Mock dependencies to avoid actual DB writes
-    with patch('kalshiflow_rl.data.orderbook_client.write_queue') as mock_write_queue:
+    with patch('kalshiflow_rl.data.orderbook_client.get_write_queue') as mock_get_queue:
+        mock_write_queue = AsyncMock()
+        mock_get_queue.return_value = mock_write_queue
         with patch('kalshiflow_rl.data.orderbook_client.emit_orderbook_snapshot'):
             mock_write_queue.enqueue_snapshot = AsyncMock(return_value=True)
             
@@ -111,7 +113,9 @@ async def test_issue_7_multiple_components_access_same_data():
         }
     }
     
-    with patch('kalshiflow_rl.data.orderbook_client.write_queue') as mock_write_queue:
+    with patch('kalshiflow_rl.data.orderbook_client.get_write_queue') as mock_get_queue:
+        mock_write_queue = AsyncMock()
+        mock_get_queue.return_value = mock_write_queue
         with patch('kalshiflow_rl.data.orderbook_client.emit_orderbook_snapshot'):
             mock_write_queue.enqueue_snapshot = AsyncMock(return_value=True)
             await client._process_snapshot(snapshot_message)

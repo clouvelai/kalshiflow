@@ -266,7 +266,7 @@ class TestMarketAgnosticEnv:
         # Check gym spaces
         assert env.observation_space.shape == (52,)
         assert env.observation_space.dtype == np.float32
-        assert env.action_space.n == 5
+        assert env.action_space.n == 21
         
         # Check configuration
         assert env.config == basic_env_config

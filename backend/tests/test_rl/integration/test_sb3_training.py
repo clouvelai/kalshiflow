@@ -105,7 +105,7 @@ class TestSB3EnvironmentIntegration:
         
         # Check environment properties
         assert env.observation_space.shape == (52,)
-        assert env.action_space.n == 5
+        assert env.action_space.n == 21
         
         # Test reset
         obs, info = env.reset()
@@ -457,7 +457,7 @@ class TestErrorHandling:
         # Test invalid actions (should be handled gracefully)
         obs, info = env.reset()
         
-        for invalid_action in [-1, 5, 10]:
+        for invalid_action in [-1, 21, 25]:
             try:
                 # Some environments might handle invalid actions, others might raise
                 obs, reward, terminated, truncated, info = env.step(invalid_action)

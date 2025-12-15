@@ -75,8 +75,10 @@ class TestOrderbookParsing:
         orderbook_client._orderbook_states["TEST-MARKET"] = mock_state
         
         # Mock the write queue
-        with patch('kalshiflow_rl.data.orderbook_client.write_queue') as mock_queue:
-            mock_queue.enqueue_snapshot = AsyncMock()
+        with patch('kalshiflow_rl.data.orderbook_client.get_write_queue') as mock_get_queue:
+            mock_queue = AsyncMock()
+            mock_get_queue.return_value = mock_queue
+            mock_queue.enqueue_snapshot = AsyncMock(return_value=True)
             
             # Process the snapshot
             await orderbook_client._process_snapshot(kalshi_snapshot_message)
@@ -121,7 +123,9 @@ class TestOrderbookParsing:
         orderbook_client._orderbook_states["TEST-MARKET"] = shared_state
         
         # Mock the write queue
-        with patch('kalshiflow_rl.data.orderbook_client.write_queue') as mock_queue:
+        with patch('kalshiflow_rl.data.orderbook_client.get_write_queue') as mock_get_queue:
+            mock_queue = AsyncMock()
+            mock_get_queue.return_value = mock_queue
             mock_queue.enqueue_delta = AsyncMock(return_value=True)
             
             # Process the delta
@@ -163,8 +167,10 @@ class TestOrderbookParsing:
         mock_state = AsyncMock(spec=SharedOrderbookState)
         orderbook_client._orderbook_states["TEST-MARKET"] = mock_state
         
-        with patch('kalshiflow_rl.data.orderbook_client.write_queue') as mock_queue:
-            mock_queue.enqueue_snapshot = AsyncMock()
+        with patch('kalshiflow_rl.data.orderbook_client.get_write_queue') as mock_get_queue:
+            mock_queue = AsyncMock()
+            mock_get_queue.return_value = mock_queue
+            mock_queue.enqueue_snapshot = AsyncMock(return_value=True)
             
             await orderbook_client._process_snapshot(edge_snapshot)
             
