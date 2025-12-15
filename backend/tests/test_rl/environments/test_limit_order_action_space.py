@@ -135,7 +135,7 @@ class TestLimitOrderActionSpace:
         """Test Gym space representation."""
         gym_space = action_space.get_gym_space()
         
-        assert gym_space.n == 5
+        assert gym_space.n == 21
         assert hasattr(gym_space, 'sample')  # It's a proper Gym space
     
     def test_action_info(self, action_space):

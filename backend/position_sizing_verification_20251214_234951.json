@@ -1,0 +1,44 @@
+{
+  "total_steps": 10240,
+  "total_episodes": 437,
+  "action_space_size": 21,
+  "actions_explored": 21,
+  "action_distribution": [
+    496.0,
+    476.0,
+    480.0,
+    511.0,
+    458.0,
+    445.0,
+    471.0,
+    451.0,
+    452.0,
+    489.0,
+    537.0,
+    502.0,
+    416.0,
+    493.0,
+    504.0,
+    415.0,
+    520.0,
+    491.0,
+    502.0,
+    543.0,
+    588.0
+  ],
+  "position_sizes_used": [
+    5,
+    10,
+    20,
+    50,
+    100
+  ],
+  "position_size_counts": {
+    "5": 1969,
+    "10": 1838,
+    "20": 1958,
+    "50": 1994,
+    "100": 1985
+  },
+  "verification_status": {
+    "all_21_actions_explored": 

@@ -39,15 +39,15 @@ class ActionSelector(ABC):
     Abstract base class for action selection strategies.
     
     All action selectors must implement:
-    - select_action(): Choose action (0-4) based on observation
+    - select_action(): Choose action (0-20) based on observation
     - get_strategy_name(): Return descriptive strategy name
     
-    Action space:
+    Action space (21 actions total):
     - 0: HOLD
-    - 1: BUY_YES_LIMIT
-    - 2: SELL_YES_LIMIT
-    - 3: BUY_NO_LIMIT
-    - 4: SELL_NO_LIMIT
+    - 1-5: BUY_YES (5, 10, 20, 50, 100 contracts)
+    - 6-10: SELL_YES (5, 10, 20, 50, 100 contracts)  
+    - 11-15: BUY_NO (5, 10, 20, 50, 100 contracts)
+    - 16-20: SELL_NO (5, 10, 20, 50, 100 contracts)
     """
     
     @abstractmethod

@@ -111,8 +111,8 @@ class MarketAgnosticKalshiEnv(gym.Env):
             dtype=np.float32
         )
         
-        # 5 discrete actions: HOLD, BUY_YES_LIMIT, SELL_YES_LIMIT, BUY_NO_LIMIT, SELL_NO_LIMIT
-        self.action_space = spaces.Discrete(5)
+        # 21 discrete actions: HOLD (1) + trading actions with 5 position sizes (4×5=20)
+        self.action_space = spaces.Discrete(21)
         
         logger.info(f"Environment initialized: obs_space={self.observation_space.shape}, action_space={self.action_space.n}")
         
