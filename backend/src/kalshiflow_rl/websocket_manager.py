@@ -180,38 +180,66 @@ class WebSocketManager:
         logger.info(f"New WebSocket connection accepted. Total connections: {len(self._connections)}")
         
         try:
-            # Send connection message with market list
+            # Send connection message with market list and API configuration
             connection_msg = ConnectionMessage(
                 data={
                     "markets": self._market_tickers,
                     "status": "connected", 
-                    "version": "1.0.0"
+                    "version": "1.0.0",
+                    "kalshi_api_url": config.KALSHI_API_URL,
+                    "kalshi_ws_url": config.KALSHI_WS_URL,
+                    "environment": config.ENVIRONMENT
                 }
             )
             await self._send_to_client(websocket, connection_msg)
             
-            # Send initial snapshots for all markets
+            # Send initial snapshots for all markets (force send even if empty)
+            snapshots_sent = 0
             for market_ticker in self._market_tickers:
                 if market_ticker in self._orderbook_states:
                     state = self._orderbook_states[market_ticker]
                     snapshot = await state.get_snapshot()
-                    if snapshot:
-                        snapshot_msg = OrderbookSnapshotMessage(
-                            data={
-                                "market_ticker": market_ticker,
-                                "timestamp_ms": snapshot.get("timestamp_ms"),
-                                "sequence_number": snapshot.get("sequence_number"),
-                                "yes_bids": snapshot.get("yes_bids", {}),
-                                "yes_asks": snapshot.get("yes_asks", {}),
-                                "no_bids": snapshot.get("no_bids", {}),
-                                "no_asks": snapshot.get("no_asks", {}),
-                                "yes_mid_price": snapshot.get("yes_mid_price"),
-                                "no_mid_price": snapshot.get("no_mid_price")
-                            }
-                        )
-                        await self._send_to_client(websocket, snapshot_msg)
+                    
+                    # Always send a snapshot message, even if snapshot is None or empty
+                    snapshot_msg = OrderbookSnapshotMessage(
+                        data={
+                            "market_ticker": market_ticker,
+                            "timestamp_ms": snapshot.get("timestamp_ms", 0) if snapshot else int(time.time() * 1000),
+                            "sequence_number": snapshot.get("sequence_number", 0) if snapshot else 0,
+                            "yes_bids": snapshot.get("yes_bids", {}) if snapshot else {},
+                            "yes_asks": snapshot.get("yes_asks", {}) if snapshot else {},
+                            "no_bids": snapshot.get("no_bids", {}) if snapshot else {},
+                            "no_asks": snapshot.get("no_asks", {}) if snapshot else {},
+                            "yes_mid_price": snapshot.get("yes_mid_price") if snapshot else None,
+                            "no_mid_price": snapshot.get("no_mid_price") if snapshot else None,
+                            "is_empty": snapshot is None or not any(snapshot.get(k) for k in ["yes_bids", "yes_asks", "no_bids", "no_asks"] if snapshot)
+                        }
+                    )
+                    await self._send_to_client(websocket, snapshot_msg)
+                    snapshots_sent += 1
+                else:
+                    # Send empty snapshot for markets not yet initialized
+                    snapshot_msg = OrderbookSnapshotMessage(
+                        data={
+                            "market_ticker": market_ticker,
+                            "timestamp_ms": int(time.time() * 1000),
+                            "sequence_number": 0,
+                            "yes_bids": {},
+                            "yes_asks": {},
+                            "no_bids": {},
+                            "no_asks": {},
+                            "yes_mid_price": None,
+                            "no_mid_price": None,
+                            "is_empty": True,
+                            "state_missing": True
+                        }
+                    )
+                    await self._send_to_client(websocket, snapshot_msg)
+                    snapshots_sent += 1
             
-            # Send initial trader state if OrderManager is available
+            logger.info(f"Sent {snapshots_sent} initial snapshots to new WebSocket client")
+            
+            # Send initial trader state (always send, even if empty)
             if self._order_manager:
                 try:
                     initial_state = await self._order_manager.get_current_state()
@@ -220,8 +248,33 @@ class WebSocketManager:
                     logger.info("Sent initial trader state to new client")
                 except Exception as e:
                     logger.error(f"Failed to send initial trader state: {e}")
+                    # Send empty trader state on error
+                    empty_state = {
+                        "positions": {},
+                        "open_orders": {},
+                        "cash_balance": 0.0,
+                        "portfolio_value": 0.0,
+                        "recent_actions": [],
+                        "status": "error",
+                        "error": str(e)
+                    }
+                    state_msg = TraderStateMessage(data=empty_state)
+                    await self._send_to_client(websocket, state_msg)
+                    logger.info("Sent error trader state to new client")
             else:
-                logger.warning("OrderManager not available - skipping initial trader state broadcast")
+                # Always send initial trader state, even if OrderManager not available
+                empty_state = {
+                    "positions": {},
+                    "open_orders": {},
+                    "cash_balance": 0.0,
+                    "portfolio_value": 0.0,
+                    "recent_actions": [],
+                    "status": "waiting_for_trader",
+                    "message": "Trading functionality not enabled"
+                }
+                state_msg = TraderStateMessage(data=empty_state)
+                await self._send_to_client(websocket, state_msg)
+                logger.info("Sent empty trader state to new client (OrderManager not available)")
             
             # Keep connection alive and handle incoming messages
             while self._running and websocket.client_state == WebSocketState.CONNECTED:

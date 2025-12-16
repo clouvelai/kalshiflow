@@ -18,7 +18,7 @@ const TraderDashboard = () => {
       return;
     }
 
-    const ws = new WebSocket('ws://localhost:8001/rl/ws');
+    const ws = new WebSocket('ws://localhost:8002/rl/ws');
     wsRef.current = ws;
 
     ws.onopen = () => {

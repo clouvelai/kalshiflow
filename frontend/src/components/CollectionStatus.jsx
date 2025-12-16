@@ -1,6 +1,6 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 
-const CollectionStatus = ({ status }) => {
+const CollectionStatus = ({ status, apiUrls }) => {
   // Helper function to format numbers
   const formatNumber = (num) => {
     if (num === null || num === undefined) return '0';
@@ -37,6 +37,17 @@ const CollectionStatus = ({ status }) => {
   };
 
   const displayStatus = status || defaultStatus;
+
+  // State for collapsible markets list
+  const [marketsCollapsed, setMarketsCollapsed] = useState(() => {
+    const saved = localStorage.getItem('rl-trader-markets-collapsed');
+    return saved ? JSON.parse(saved) : false;
+  });
+
+  // Save collapsed state to localStorage
+  useEffect(() => {
+    localStorage.setItem('rl-trader-markets-collapsed', JSON.stringify(marketsCollapsed));
+  }, [marketsCollapsed]);
 
   // Calculate uptime
   const formatUptime = (seconds) => {
@@ -86,27 +97,35 @@ const CollectionStatus = ({ status }) => {
         </span>
       </div>
 
-      {/* Markets Being Monitored */}
+      {/* Markets Being Monitored - Collapsible */}
       {displayStatus.markets && displayStatus.markets.length > 0 && (
         <div className="bg-gray-700/30 rounded p-3 space-y-2">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-xs font-semibold text-gray-400 uppercase">Active Markets</span>
+          <div 
+            className="flex items-center justify-between mb-2 cursor-pointer hover:bg-gray-700/20 -mx-1 px-1 py-1 rounded transition-colors"
+            onClick={() => setMarketsCollapsed(!marketsCollapsed)}
+          >
+            <span className="text-xs font-semibold text-gray-400 uppercase flex items-center">
+              <span className="mr-1">{marketsCollapsed ? '▸' : '▾'}</span>
+              Active Markets ({displayStatus.markets_active || displayStatus.markets.length})
+            </span>
             <span className="text-xs text-gray-300 font-mono">
               {displayStatus.markets_active || displayStatus.markets.length}
             </span>
           </div>
           
-          <div className="space-y-1 max-h-32 overflow-y-auto">
-            {displayStatus.markets.map((market, index) => (
-              <div 
-                key={market} 
-                className="text-xs font-mono text-gray-400 hover:text-gray-300 transition-colors flex items-center space-x-1"
-              >
-                <span className="text-blue-400">›</span>
-                <span className="truncate">{market}</span>
-              </div>
-            ))}
-          </div>
+          {!marketsCollapsed && (
+            <div className="space-y-1 max-h-32 overflow-y-auto">
+              {displayStatus.markets.map((market, index) => (
+                <div 
+                  key={market} 
+                  className="text-xs font-mono text-gray-400 hover:text-gray-300 transition-colors flex items-center space-x-1"
+                >
+                  <span className="text-blue-400">›</span>
+                  <span className="truncate">{market}</span>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
@@ -159,6 +178,31 @@ const CollectionStatus = ({ status }) => {
         </div>
       )}
 
+      {/* API Endpoints */}
+      {apiUrls && (apiUrls.kalshi_api_url || apiUrls.kalshi_ws_url) && (
+        <div className="space-y-2">
+          <h4 className="text-xs font-semibold text-gray-400 uppercase">API Endpoints</h4>
+          <div className="bg-gray-700/30 rounded p-2 space-y-1">
+            {apiUrls.kalshi_api_url && (
+              <div className="flex flex-col space-y-1">
+                <span className="text-xs text-gray-400">REST API:</span>
+                <span className="text-xs font-mono text-gray-300 truncate" title={apiUrls.kalshi_api_url}>
+                  {apiUrls.kalshi_api_url.replace('https://', '').replace('/trade-api/v2', '')}
+                </span>
+              </div>
+            )}
+            {apiUrls.kalshi_ws_url && (
+              <div className="flex flex-col space-y-1">
+                <span className="text-xs text-gray-400">WebSocket:</span>
+                <span className="text-xs font-mono text-gray-300 truncate" title={apiUrls.kalshi_ws_url}>
+                  {apiUrls.kalshi_ws_url.replace('wss://', '').replace('/trade-api/ws/v2', '')}
+                </span>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Last Update */}
       <div className="pt-2 border-t border-gray-700">
         <div className="flex items-center justify-between">
@@ -168,28 +212,6 @@ const CollectionStatus = ({ status }) => {
           </span>
         </div>
       </div>
-
-      {/* Connection Quality Indicator */}
-      {displayStatus.messages_per_second !== undefined && (
-        <div className="bg-gray-700/30 rounded p-2">
-          <div className="flex items-center justify-between mb-1">
-            <span className="text-xs text-gray-400">Connection Quality</span>
-            <ConnectionQuality messagesPerSecond={displayStatus.messages_per_second} />
-          </div>
-          <div className="w-full h-1 bg-gray-600 rounded overflow-hidden">
-            <div 
-              className={`h-full transition-all duration-500 ${
-                displayStatus.messages_per_second > 10 ? 'bg-green-400' :
-                displayStatus.messages_per_second > 1 ? 'bg-yellow-400' :
-                displayStatus.messages_per_second > 0 ? 'bg-orange-400' : 'bg-red-400'
-              }`}
-              style={{ 
-                width: `${Math.min(100, (displayStatus.messages_per_second / 20) * 100)}%` 
-              }}
-            />
-          </div>
-        </div>
-      )}
     </div>
   );
 };
@@ -202,28 +224,6 @@ const MetricCard = ({ label, value }) => {
       <p className="text-sm font-mono text-gray-300">{value}</p>
     </div>
   );
-};
-
-// Connection Quality Component
-const ConnectionQuality = ({ messagesPerSecond }) => {
-  let quality = 'Poor';
-  let color = 'text-red-400';
-  
-  if (messagesPerSecond > 10) {
-    quality = 'Excellent';
-    color = 'text-green-400';
-  } else if (messagesPerSecond > 5) {
-    quality = 'Good';
-    color = 'text-green-400';
-  } else if (messagesPerSecond > 1) {
-    quality = 'Fair';
-    color = 'text-yellow-400';
-  } else if (messagesPerSecond > 0) {
-    quality = 'Poor';
-    color = 'text-orange-400';
-  }
-  
-  return <span className={`text-xs font-medium ${color}`}>{quality}</span>;
 };
 
 export default CollectionStatus;

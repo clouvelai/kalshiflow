@@ -41,8 +41,15 @@ const TradesFeed = ({ fills }) => {
   const formatAction = (action) => {
     if (!action) return 'UNKNOWN';
     
-    // Convert action to uppercase and make it more readable
-    const actionStr = action.toString().toUpperCase();
+    // Handle if action is an object (e.g., {action_name: "BUY_YES_LIMIT"})
+    let actionStr;
+    if (typeof action === 'object' && action !== null) {
+      // Try to get action_name from object
+      actionStr = (action.action_name || action.name || JSON.stringify(action)).toString().toUpperCase();
+    } else {
+      // Convert action to uppercase and make it more readable
+      actionStr = action.toString().toUpperCase();
+    }
     
     // Handle various action formats
     if (actionStr.includes('BUY_YES')) return 'BUY YES';
@@ -99,8 +106,10 @@ const TradesFeed = ({ fills }) => {
   return (
     <div className="space-y-1 max-h-96 overflow-y-auto">
       {fills.map((fill, index) => {
+        // Handle nested action structure if present
+        const action = fill.action?.action_name || fill.action;
         const isSuccess = fill.success !== false && (fill.filled || fill.success);
-        const actionColor = getActionColor(fill.action, isSuccess);
+        const actionColor = getActionColor(action, isSuccess);
         
         return (
           <div 
@@ -117,13 +126,13 @@ const TradesFeed = ({ fills }) => {
               
               {/* Action */}
               <span className={`${actionColor} font-semibold w-20`}>
-                {formatAction(fill.action)}
+                {formatAction(action)}
               </span>
               
               {/* Market/Ticker (if available) */}
-              {fill.market && (
+              {(fill.market || fill.ticker || fill.market_ticker) && (
                 <span className="text-gray-400 text-xs truncate max-w-[80px]">
-                  {fill.market}
+                  {fill.market || fill.ticker || fill.market_ticker}
                 </span>
               )}
               

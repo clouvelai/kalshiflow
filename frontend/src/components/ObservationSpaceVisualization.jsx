@@ -39,11 +39,29 @@ const ObservationSpaceVisualization = ({ observation }) => {
     return 'LOW';
   };
 
-  // Default empty state
+  // Default empty state - show structure with placeholder values
   if (!observation) {
     return (
       <div className="space-y-4">
-        <div className="text-gray-500 text-sm">Waiting for observation data...</div>
+        {/* Empty orderbook features */}
+        <div className="space-y-2">
+          <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Orderbook</h3>
+          <div className="grid grid-cols-1 gap-2">
+            <FeatureCard label="Spread" value={null} bar="░░░░░░░░░░" color="text-gray-500" intensity="N/A" />
+            <FeatureCard label="Bid Depth" value={null} bar="░░░░░░░░░░" color="text-gray-500" intensity="N/A" />
+            <FeatureCard label="Ask Depth" value={null} bar="░░░░░░░░░░" color="text-gray-500" intensity="N/A" />
+          </div>
+        </div>
+        
+        {/* Empty market dynamics */}
+        <div className="space-y-2">
+          <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Market Dynamics</h3>
+          <div className="grid grid-cols-1 gap-2">
+            <FeatureCard label="Momentum" value={null} bar="░░░░░░░░░░" color="text-gray-500" intensity="N/A" />
+            <FeatureCard label="Volatility" value={null} bar="░░░░░░░░░░" color="text-gray-500" intensity="N/A" />
+            <FeatureCard label="Activity" value={null} bar="░░░░░░░░░░" color="text-gray-500" intensity="N/A" />
+          </div>
+        </div>
       </div>
     );
   }

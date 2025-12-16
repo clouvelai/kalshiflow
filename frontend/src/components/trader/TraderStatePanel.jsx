@@ -1,10 +1,38 @@
 import React from 'react';
 
 const TraderStatePanel = ({ state }) => {
+  // Show a clean empty state instead of "Waiting..." message
   if (!state) {
     return (
-      <div className="bg-gray-800 rounded-lg p-6 text-gray-400">
-        <p>Waiting for trader state...</p>
+      <div className="space-y-4">
+        {/* Empty state cards with default values */}
+        <div className="bg-gray-800 rounded-lg p-4 shadow-lg">
+          <h2 className="text-xl font-semibold text-white mb-3">Actor</h2>
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <p className="text-gray-400 text-sm">Strategy</p>
+              <p className="text-lg font-mono text-gray-600">--</p>
+            </div>
+            <div>
+              <p className="text-gray-400 text-sm">Status</p>
+              <p className="text-lg font-mono text-gray-600">--</p>
+            </div>
+          </div>
+        </div>
+
+        <div className="bg-gray-800 rounded-lg p-4 shadow-lg">
+          <h2 className="text-xl font-semibold text-white mb-3">Portfolio</h2>
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <p className="text-gray-400 text-sm">Cash Available</p>
+              <p className="text-2xl font-mono text-gray-600">$0.00</p>
+            </div>
+            <div>
+              <p className="text-gray-400 text-sm">Portfolio Value</p>
+              <p className="text-2xl font-mono text-gray-600">$0.00</p>
+            </div>
+          </div>
+        </div>
       </div>
     );
   }

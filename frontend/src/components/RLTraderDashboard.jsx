@@ -13,6 +13,7 @@ const RLTraderDashboard = () => {
   const [recentFills, setRecentFills] = useState([]);
   const [executionStats, setExecutionStats] = useState(null);
   const [tradingMode, setTradingMode] = useState('paper'); // paper or production
+  const [apiUrls, setApiUrls] = useState(null); // Store API URLs from connection
   
   const wsRef = useRef(null);
   const reconnectTimeoutRef = useRef(null);
@@ -25,8 +26,8 @@ const RLTraderDashboard = () => {
       return;
     }
 
-    // Connect to RL trader WebSocket on port 8001
-    const ws = new WebSocket('ws://localhost:8001/rl/ws');
+    // Connect to RL trader WebSocket on port 8002
+    const ws = new WebSocket('ws://localhost:8002/rl/ws');
     wsRef.current = ws;
 
     ws.onopen = () => {
@@ -43,6 +44,22 @@ const RLTraderDashboard = () => {
           case 'connection':
             console.log('Connection established:', data.data);
             setConnectionStatus('connected');
+            
+            // Extract API URLs from connection message
+            if (data.data?.kalshi_api_url || data.data?.kalshi_ws_url) {
+              setApiUrls({
+                kalshi_api_url: data.data.kalshi_api_url,
+                kalshi_ws_url: data.data.kalshi_ws_url
+              });
+              
+              // Determine trading mode from API URLs
+              if (data.data.kalshi_api_url?.includes('demo-api.kalshi.co')) {
+                setTradingMode('paper');
+              } else if (data.data.kalshi_api_url?.includes('api.elections.kalshi.com')) {
+                setTradingMode('production');
+              }
+            }
+            
             if (data.data?.markets) {
               setCollectionStatus({
                 markets: data.data.markets,
@@ -226,7 +243,7 @@ const RLTraderDashboard = () => {
           <div className="xl:col-span-1">
             <div className="bg-gray-800 rounded-lg p-6 shadow-lg h-full">
               <h2 className="text-lg font-semibold mb-4 text-gray-100">Collection Status</h2>
-              <CollectionStatus status={collectionStatus} />
+              <CollectionStatus status={collectionStatus} apiUrls={apiUrls} />
             </div>
           </div>
 
