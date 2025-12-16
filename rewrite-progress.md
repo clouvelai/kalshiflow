@@ -1,5 +1,125 @@
 # RL System Rewrite Progress
 
+## 2024-12-16 16:45 EST - Discovery Plan Radical Simplification (30 minutes)
+
+### What was implemented or changed?
+
+**Radical simplification** of the Discovery Full Lifecycle plan based on quant perspective and "complex systems break" principle:
+
+**Major Simplifications Applied**:
+- **Database schema**: Reduced from 20+ fields to 6 essential fields, removed complex JSONB metadata tracking
+- **Implementation phases**: Streamlined from 4 phases to 3 phases (8 days vs 10+ days)
+- **Recovery strategy**: Replaced complex gap tracking with simple restart logic (80/20 rule)
+- **Scaling targets**: Realistic 50-100 markets instead of premature 1000 market optimization
+- **Success metrics**: Focused on MVP essentials vs comprehensive operational monitoring
+
+**Key Design Changes**:
+- Minimal `rl_market_lifecycle_events` table (only `created`/`determined`/`settled` events)
+- Simple session enhancement (single `lifecycle_mode` flag vs complex JSONB tracking)
+- Basic recovery (restart and resume vs sophisticated gap analysis)
+- Environment toggle migration strategy (simple rollback capability)
+
+### How is it tested or validated?
+
+**Simplified validation approach**:
+- Focus on 6 core MVP validation points vs 15+ complex scenarios
+- Dynamic subscription test as critical first step in Phase 2
+- End-to-end integration validation for complete market lifecycles
+- Performance testing with realistic 50-100 market targets
+
+**Safety measures maintained**:
+- Environment variable toggle for instant rollback
+- Paper trading mode enforcement
+- Phased implementation with actor service disabled initially
+
+### Do you have any concerns with the current implementation we should address before moving forward?
+
+**No concerns - plan is now properly scoped for MVP**. Major improvements:
+
+✅ **Simplicity achieved**: Follows "complex systems break" principle from quant perspective
+✅ **Realistic timeline**: 8 days with 85% confidence vs previous over-engineered approach  
+✅ **Clear value proposition**: Delivers quant's "10x multiplier" (complete market lifecycles + critical time periods)
+✅ **Implementation ready**: Can start Phase 1 immediately with `LifecycleWebSocketClient`
+
+### Recommended next steps
+
+1. **Begin Phase 1 implementation** of `LifecycleWebSocketClient` (3 days)
+2. **Test dynamic subscription capability** early in Phase 2 (critical path)
+3. **Maintain MVP scope discipline** - resist feature creep during implementation
+4. **Keep actor service in paper mode** throughout development
+
+**Final Assessment**: 🟢 **GO** - Plan is simplified, realistic, and ready for implementation.
+
+## 2024-12-16 14:30 EST - Discovery Full Lifecycle Plan Refinement (45 minutes)
+
+### What was implemented or changed?
+
+**Comprehensive refinement** of `/Users/samuelclark/Desktop/kalshiflow/backend/trading/mvp-planning/discovery-full-lifecycle.md` incorporating deep analysis of current system architecture and Kalshi API capabilities:
+
+**Current System Analysis**:
+- Analyzed `OrderbookClient` (633 lines) and `OrderbookWriteQueue` (383 lines) architecture  
+- Reviewed existing session management in `RLDatabase.create_session()`
+- Examined `MarketDiscoveryService.fetch_active_markets()` REST API polling approach
+- Investigated Kalshi `market_lifecycle_v2` WebSocket stream documentation
+
+**Enhanced Technical Architecture**:
+- Designed `LifecycleWebSocketClient` following `OrderbookClient` patterns
+- Specified exact `OrderbookOrchestrator` integration with dynamic market management
+- Created detailed database schema for `rl_market_lifecycle_events` table
+- Enhanced session metadata with JSONB tracking for dynamic market participation
+
+**Production-Ready Implementation Plan**:
+- **Phase 1 (3-4 days)**: Lifecycle event collection with actor service disabled
+- **Phase 2 (2-3 days)**: Dynamic subscription research + `OrderbookOrchestrator` implementation
+- **Phase 3 (2-3 days)**: End-to-end integration with paper trading mode
+- Clear migration strategy with environment variable toggles and rollback plan
+
+**Quant Insights Integration**:
+- Incorporated "10x multiplier" concept for model performance  
+- Smart prioritization algorithm for first hour (discovery) + last 6 hours (endgame)
+- Temporal feature engineering capabilities (time_since_activation, time_until_close)
+- Data pruning strategy: full data for first/last 20%, sample middle 60%
+
+### How is it tested or validated?
+
+**Technical Validation Framework**:
+- Dynamic subscription test plan for Kalshi WebSocket capabilities
+- Mock lifecycle event testing strategy for subscription orchestration  
+- Session continuity validation with dynamic market churn
+- Performance scaling tests (100 → 1000 markets, memory usage)
+- Complete integration testing checklist with 7 validation points
+
+**Migration Safety**:
+- Environment variable toggle system (`LIFECYCLE_DISCOVERY_MODE=true/false`)
+- Backward compatibility with existing REST-based discovery
+- Rollback strategy to revert instantly if issues arise
+- Actor service disabled during development phases for safety
+
+### Do you have any concerns with the current implementation we should address before moving forward?
+
+**No major concerns - plan is ready for implementation**. Key strengths:
+
+1. **Builds incrementally** on existing robust infrastructure
+2. **Actor service disabled first** ensures safe development
+3. **Environment toggle** provides instant rollback capability  
+4. **Detailed technical specifications** match current codebase patterns
+5. **Performance targets** are realistic and measurable
+
+**Minor considerations for implementation**:
+- Dynamic subscription testing should be first priority to validate Kalshi WebSocket capabilities
+- Memory optimization strategies may need tuning based on real-world market churn rates
+- Market prioritization algorithm may need refinement based on actual lifecycle event patterns
+
+### Recommended next steps
+
+1. **Start Phase 1 immediately**: Implement `LifecycleWebSocketClient` for event collection
+2. **Create test script** to validate Kalshi dynamic subscription capabilities
+3. **Set up database schema** for `rl_market_lifecycle_events` table
+4. **Add configuration toggles** for lifecycle discovery mode
+5. **Monitor real lifecycle events** to understand market creation patterns
+
+**Implementation can begin immediately** - the plan is comprehensive and production-ready.
+
 ## 2025-12-16 09:57 - **WebSocket Initialization Fixes: Complete Initial State Delivery** (600 seconds)
 
 ### What was implemented or changed?
