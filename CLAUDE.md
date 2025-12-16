@@ -579,3 +579,38 @@ uv run python src/kalshiflow_rl/scripts/cleanup_sessions.py --delete-test
 3. Keep deletion logs for audit trail (automatically saved)
 4. Preserve sessions with any meaningful data (snapshots or deltas > 0)
 5. Document cleanup actions in `training/reports/` directory
+
+## Managing RL Trained Models
+
+### Current Model Configuration
+The active RL model is tracked in `@backend/src/kalshiflow_rl/CURRENT_MODEL.json`:
+- **Current model**: `session32_final.zip` (21-action space with 5 contract sizes)
+- **Action space**: 21 actions supporting position sizes of [5, 10, 20, 50, 100] contracts
+- **Backup model**: `session9_ppo_20251211_221054` (historical reference)
+
+### Cleaning Up Trained Models
+Use `@backend/src/kalshiflow_rl/scripts/cleanup_trained_models.py` to manage the trained models directory:
+
+```bash
+# Preview what will be deleted (dry run mode - default)
+uv run python src/kalshiflow_rl/scripts/cleanup_trained_models.py
+
+# Actually delete old models (keeps only current + historical reference)
+uv run python src/kalshiflow_rl/scripts/cleanup_trained_models.py --execute
+
+# Quiet mode (minimal output)
+uv run python src/kalshiflow_rl/scripts/cleanup_trained_models.py --execute --quiet
+```
+
+### Model Cleanup Features
+- **Automatic detection**: Reads CURRENT_MODEL.json to identify models to keep
+- **Space recovery**: Removes failed training runs and experiments (typically 400+ MB)
+- **Safety**: Always preserves current production model and historical reference
+- **Audit trail**: Saves deletion log to `src/kalshiflow_rl/logs/model_cleanup_YYYYMMDD_HHMMSS.json`
+- **Dry run default**: Won't delete anything unless `--execute` flag is used
+
+### When to Run Cleanup
+- After updating CURRENT_MODEL.json to a new model
+- When trained_models directory exceeds 1GB
+- Before archiving or backing up the project
+- After extensive hyperparameter tuning sessions

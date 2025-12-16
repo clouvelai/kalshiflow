@@ -1,51 +1,50 @@
 {
   "current_model": {
-    "model_path": "backend/trained_models/session9_ppo_20251211_221054/",
-    "model_file": "trained_model.zip",
-    "full_path": "backend/trained_models/session9_ppo_20251211_221054/trained_model.zip",
-    "status": "breakthrough_model",
-    "description": "First successful RL trading model that learned profitable market making strategies",
-    "last_updated": "2025-12-11T22:13:30.747450Z",
-    "selected_reason": "Major breakthrough - discovered profitable SELL_YES_LIMIT market making strategy with +641.87 cents average reward"
+    "model_path": "backend/trained_models/",
+    "model_file": "session32_final.zip",
+    "full_path": "backend/trained_models/session32_final.zip",
+    "status": "production_candidate",
+    "description": "21-action space model trained on session 32 with position sizing support",
+    "last_updated": "2025-12-16T00:00:00.000000Z",
+    "selected_reason": "Compatible with current 21-action space, supports 5 position sizes (5, 10, 20, 50, 100 contracts)"
   },
   "model_metadata": {
     "training_session": {
-      "session_id": 9,
+      "session_id": 32,
       "algorithm": "PPO",
-      "total_timesteps": 200704,
-      "total_episodes": 1915,
-      "training_duration_seconds": 156.42,
-      "training_start": "2025-12-11T22:10:54.137069Z",
-      "training_completion": "2025-12-11T22:13:30.747450Z"
+      "total_timesteps": 1003520,
+      "total_episodes": 7721,
+      "training_duration_seconds": 406.36,
+      "training_start": "2025-12-15T00:15:49.260508Z",
+      "training_completion": "2025-12-15T00:22:35.948265Z"
     },
     "performance_metrics": {
-      "strategy_discovered": "SELL_YES_LIMIT market making",
-      "dominant_action": {
-        "action": "SELL_YES_LIMIT",
-        "percentage": 40.96,
-        "avg_reward": 641.87,
-        "total_profit_cents": 5276924400,
-        "success_rate": 93.08
-      },
+      "action_space": "21 actions (5 position sizes)",
+      "position_sizes": [5, 10, 20, 50, 100],
       "trading_activity": {
-        "hold_percentage": 18.15,
-        "trading_percentage": 81.85,
-        "trading_activity_level": "normal",
-        "exploration_ratio": 0.868
+        "hold_percentage": 4.45,
+        "trading_percentage": 95.55,
+        "trading_activity_level": "high",
+        "exploration_ratio": 0.385
+      },
+      "action_distribution": {
+        "actions_used": "0-20 (all 21 actions)",
+        "entropy": 0.656,
+        "balanced": true
       },
       "learning_signal": {
         "signal_strength": "strong",
-        "reward_sparsity": 17.22,
-        "gradient_availability": 82.78,
+        "reward_sparsity": 17.69,
+        "gradient_availability": 82.31,
         "portfolio_progression": "increasing"
       }
     },
     "hyperparameters": {
-      "learning_rate": "1e-4 (tuned)",
-      "batch_size": 256,
-      "n_steps": 4096,
-      "entropy_coefficient": 0.05,
-      "note": "Breakthrough achieved through hyperparameter tuning - reduced learning rate from default 3e-4"
+      "learning_rate": "default",
+      "batch_size": "default",
+      "n_steps": "default",
+      "entropy_coefficient": "default",
+      "note": "21-action space with position sizing support"
     },
     "data_quality": {
       "observation_error_rate": 0.0,
@@ -58,25 +57,38 @@
     "status": "candidate",
     "risk_level": "medium",
     "deployment_notes": [
-      "First profitable model - requires careful monitoring",
-      "Strategy focuses on YES market making - may need adaptation for different market conditions",
-      "Recommend paper trading validation before live deployment",
-      "Monitor for overfitting to Session 9 data patterns"
+      "Model supports 21-action space with position sizing",
+      "Trained on session 32 data - may need cross-session validation",
+      "Shows balanced action distribution across all position sizes",
+      "Recommend testing on sessions 5-10 for broader validation"
     ],
     "validation_required": [
-      "Cross-session validation (test on sessions 5-8)",
-      "Out-of-sample performance verification",
-      "Risk management system integration",
-      "Position sizing validation",
-      "Drawdown stress testing"
+      "Cross-session validation (test on sessions 5-10)",
+      "Position sizing strategy validation",
+      "Risk management with larger position sizes (50, 100 contracts)",
+      "Portfolio concentration limits testing",
+      "Drawdown analysis with varied position sizes"
     ]
   },
   "diagnostics_files": {
-    "training_summary": "backend/trained_models/session9_ppo_20251211_221054/training_summary.json",
-    "detailed_log": "backend/trained_models/session9_ppo_20251211_221054/diagnostics.log",
-    "structured_log": "backend/trained_models/session9_ppo_20251211_221054/diagnostics.jsonl"
+    "training_summary": "backend/trained_models/session32_ppo_20251215_001549/training_summary.json",
+    "detailed_log": "backend/trained_models/session32_ppo_20251215_001549/diagnostics.log",
+    "structured_log": "backend/trained_models/session32_ppo_20251215_001549/diagnostics.jsonl"
   },
   "version_history": [
+    {
+      "version": "2.0",
+      "date": "2025-12-16T00:00:00Z",
+      "model_path": "backend/trained_models/session32_final.zip",
+      "milestone": "21_action_space",
+      "description": "Updated to 21-action space model with position sizing",
+      "key_improvements": [
+        "Expanded from 5 to 21 actions with position sizing",
+        "Supports 5 position sizes: 5, 10, 20, 50, 100 contracts",
+        "Achieved 95.55% trading activity vs 4.45% HOLD",
+        "Balanced action distribution across all position sizes"
+      ]
+    },
     {
       "version": "1.0",
       "date": "2025-12-11T22:13:30Z",
@@ -92,11 +104,11 @@
     }
   ],
   "notes": [
-    "This model represents a major breakthrough in RL trading for Kalshi markets",
-    "Successfully transitioned from theoretical exploration to practical profitability",
-    "Market making strategy shows strong performance with low sparsity rewards",
-    "Hyperparameter tuning was critical - learning rate reduction enabled convergence",
-    "Model demonstrates proper exploration-exploitation balance",
-    "Ready for next phase: cross-session validation and production testing"
+    "Model updated to support 21-action space with position sizing (December 16, 2025)",
+    "session32_final.zip trained on session 32 with full action space",
+    "Position sizes enable more sophisticated trading strategies",
+    "Model shows balanced usage of all 21 actions in training",
+    "Requires validation on sessions 5-10 as originally intended",
+    "Alternative models available: session10, session15 for A/B testing"
   ]
 }
