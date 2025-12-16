@@ -188,6 +188,145 @@ sequenceDiagram
 7. **Position Reconciliation**: OrderManager reconciles real-time fills with periodic position syncs
 8. **Configurable Delays**: `position_read_delay_ms` parameter allows tuning of fallback sync timing
 
+## Training Pipeline Flow
+
+### Data Collection → Training → Deployment
+
+```mermaid
+sequenceDiagram
+    participant WS as Kalshi WebSocket
+    participant OC as OrderbookClient
+    participant WQ as WriteQueue
+    participant DB as PostgreSQL
+    participant SDL as SessionDataLoader
+    participant ENV as MarketAgnosticEnv
+    participant SB3 as StableBaselines3
+    participant MR as ModelRegistry
+    participant AS as ActionSelector
+    participant ACTOR as ActorService
+
+    Note over WS,DB: COLLECTION PHASE (Continuous)
+    WS->>OC: Orderbook deltas
+    OC->>WQ: enqueue_delta()
+    WQ->>DB: batch_insert_deltas()
+    
+    Note over DB,SB3: TRAINING PHASE (Batch/Scheduled)
+    SDL->>DB: load_session_data(session_id)
+    DB-->>SDL: Orderbook snapshots + deltas
+    SDL->>ENV: create_market_view()
+    ENV->>ENV: build_episodes()
+    
+    Note over ENV,SB3: Training Loop
+    ENV->>SB3: reset() + step() episodes
+    SB3->>SB3: PPO/A2C learning
+    SB3->>MR: model.save(trained_models/)
+    
+    Note over MR,ACTOR: DEPLOYMENT PHASE (Live Trading)
+    MR->>AS: load_model()
+    AS->>ACTOR: predict(observation)
+    ACTOR->>ACTOR: execute_action()
+    
+    Note over AS: HOT RELOAD CAPABILITY
+    MR->>AS: reload_model() (triggered by file change)
+    AS->>AS: Update model weights without restart
+```
+
+### Training Pipeline Components
+
+#### 1. Data Flow: Collection → Training
+```
+OrderbookClient (live) → WriteQueue → PostgreSQL
+SessionDataLoader ← PostgreSQL (historical)
+MarketAgnosticEnv ← SessionDataLoader (episodic)
+```
+
+#### 2. Session-Based Training
+- **Session Selection**: Training scripts load specific session IDs from database
+- **Market-Agnostic**: Same environment works across ALL markets in session
+- **Curriculum Learning**: Train on each viable market exactly once
+- **No Live Data**: Training NEVER connects to WebSocket (strict separation)
+
+#### 3. Model Lifecycle
+```python
+# Training phase
+python train_sb3.py --session 9 --algorithm ppo --total-timesteps 50000
+
+# Model persistence
+model.save("trained_models/session9_ppo_20251215_143000/model.zip")
+
+# Deployment integration
+action_selector = RLModelSelector(model_path="trained_models/...")
+actor_service.set_action_selector(action_selector)
+```
+
+#### 4. Hot-Reload Mechanism
+The training → deployment integration supports live model updates:
+
+- **File Watching**: ModelRegistry monitors trained_models/ directory
+- **Atomic Updates**: Models replaced atomically without service restart
+- **Graceful Fallback**: Falls back to HOLD actions if model loading fails
+- **Version Control**: Timestamped model paths prevent conflicts
+
+#### 5. Training Configuration
+```python
+# Environment config (market-agnostic)
+env_config = EnvConfig(
+    cash_start_cents=1000000,  # $10,000 starting cash
+    max_markets=1,             # Single market episodes
+    temporal_features=True,    # Time gap analysis
+    position_sizing="fixed"    # 10-contract position sizes
+)
+
+# Training config (session-based)
+training_config = SB3TrainingConfig(
+    min_episode_length=10,     # Skip short episodes
+    max_episode_steps=None,    # Run episodes to completion
+    skip_failed_markets=True   # Skip markets with data issues
+)
+```
+
+#### 6. Data Quality Validation
+Training pipeline includes comprehensive validation:
+
+- **Session Validation**: Check for sufficient data before training
+- **Market Filtering**: Exclude markets with insufficient activity
+- **Data Continuity**: Validate orderbook sequence integrity
+- **Feature Validation**: Ensure temporal features are computable
+
+#### 7. Training Metrics & Monitoring
+```python
+# Portfolio metrics during training
+PortfolioMetricsCallback(
+    log_freq=1000,           # Log every 1000 episodes
+    sample_freq=100          # Sample portfolio every 100 steps
+)
+
+# Comprehensive diagnostics
+M10DiagnosticsCallback(
+    action_tracking=True,     # Track action distribution
+    reward_analysis=True,     # Analyze reward patterns
+    observation_validation=True  # Validate feature extraction
+)
+```
+
+#### 8. Deployment Integration
+The trained model integrates seamlessly with live trading:
+
+```python
+# Live observation building (same as training)
+observation = live_adapter.build_observation(
+    snapshot=current_orderbook,
+    market_ticker=market_ticker,
+    timestamp=current_time
+)
+
+# Model prediction (deterministic for consistency)
+action, _states = model.predict(observation, deterministic=True)
+
+# Action execution (live trading)
+result = actor_service.execute_action(action, market_ticker)
+```
+
 ## Architecture Notes
 
 ### FillListener Service
