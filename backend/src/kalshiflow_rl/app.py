@@ -237,10 +237,19 @@ async def lifespan(app: Starlette):
                 
                 # Set order manager reference in websocket manager for initial state broadcast
                 websocket_manager.set_order_manager(order_manager)
+                websocket_manager.set_actor_service(actor_service)
                 
                 # Add state change callback to order manager for UI updates
                 async def broadcast_state(state):
                     """Callback to broadcast trader state changes via websocket."""
+                    # Include actor metrics if available
+                    if actor_service and hasattr(actor_service, '_processing') and actor_service._processing:
+                        try:
+                            actor_metrics = actor_service.get_metrics()
+                            state["actor_metrics"] = actor_metrics
+                        except Exception as e:
+                            logger.warning(f"Could not get actor metrics: {e}")
+                    
                     await websocket_manager.broadcast_trader_state(state)
                 
                 order_manager.add_state_change_callback(broadcast_state)

@@ -104,6 +104,7 @@ class WebSocketManager:
         
         # For trader state broadcasting
         self._order_manager = None
+        self._actor_service = None
         
         logger.info(f"WebSocketManager initialized for {len(self._market_tickers)} markets")
     
@@ -266,6 +267,15 @@ class WebSocketManager:
             if self._order_manager:
                 try:
                     initial_state = await self._order_manager.get_current_state()
+                    
+                    # Include actor metrics if available
+                    if self._actor_service and hasattr(self._actor_service, '_processing') and self._actor_service._processing:
+                        try:
+                            actor_metrics = self._actor_service.get_metrics()
+                            initial_state["actor_metrics"] = actor_metrics
+                        except Exception as e:
+                            logger.warning(f"Could not get actor metrics for initial state: {e}")
+                    
                     state_msg = TraderStateMessage(data=initial_state)
                     await self._send_to_client(websocket, state_msg)
                     logger.info("Sent initial trader state to new client")
@@ -568,6 +578,16 @@ class WebSocketManager:
         """
         self._order_manager = order_manager
         logger.info("OrderManager reference configured for WebSocket broadcasting")
+    
+    def set_actor_service(self, actor_service):
+        """
+        Set reference to the ActorService for metrics broadcasting.
+        
+        Args:
+            actor_service: ActorService instance
+        """
+        self._actor_service = actor_service
+        logger.info("ActorService reference configured for WebSocket broadcasting")
     
     def is_healthy(self) -> bool:
         """

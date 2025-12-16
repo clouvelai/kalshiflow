@@ -56,6 +56,21 @@ class ActorMetrics:
     last_error: Optional[str] = None
     started_at: Optional[float] = None
     last_processed_at: Optional[float] = None
+    
+    # Action counts by type (21-action space)
+    action_counts: Dict[str, int] = None
+    total_actions: int = 0
+    
+    def __post_init__(self):
+        """Initialize action counts dictionary."""
+        if self.action_counts is None:
+            self.action_counts = {
+                "hold": 0,
+                "buy_yes": 0,
+                "sell_yes": 0,
+                "buy_no": 0,
+                "sell_no": 0
+            }
 
 
 class ActorService:
@@ -742,6 +757,8 @@ class ActorService:
             
             if action is not None:
                 self.metrics.model_predictions += 1
+                # Count the action type
+                self._count_action(action)
             
             return action
         except Exception as e:
@@ -753,6 +770,33 @@ class ActorService:
             # Check circuit breaker
             self._check_circuit_breaker(market_ticker)
             return None
+    
+    def _count_action(self, action: int) -> None:
+        """
+        Count action by type based on 21-action space.
+        
+        Action space:
+        - 0: HOLD
+        - 1-5: BUY_YES (5, 10, 20, 50, 100 contracts)
+        - 6-10: SELL_YES (5, 10, 20, 50, 100 contracts)  
+        - 11-15: BUY_NO (5, 10, 20, 50, 100 contracts)
+        - 16-20: SELL_NO (5, 10, 20, 50, 100 contracts)
+        """
+        if action == 0:
+            self.metrics.action_counts["hold"] += 1
+        elif 1 <= action <= 5:
+            self.metrics.action_counts["buy_yes"] += 1
+        elif 6 <= action <= 10:
+            self.metrics.action_counts["sell_yes"] += 1
+        elif 11 <= action <= 15:
+            self.metrics.action_counts["buy_no"] += 1
+        elif 16 <= action <= 20:
+            self.metrics.action_counts["sell_no"] += 1
+        else:
+            logger.warning(f"Unknown action: {action}")
+            return
+        
+        self.metrics.total_actions += 1
     
     async def _safe_execute_action(self, action: int, market_ticker: str) -> Optional[Dict[str, Any]]:
         """
@@ -1062,6 +1106,8 @@ class ActorService:
             "model_load_error": self._model_load_error,
             "active_markets": len(self.market_tickers),
             "processing": self._processing,
+            "action_counts": self.metrics.action_counts.copy(),
+            "total_actions": self.metrics.total_actions,
             "started_at": self.metrics.started_at,
             "last_processed_at": self.metrics.last_processed_at
         }

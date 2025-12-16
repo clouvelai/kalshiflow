@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
 import TradesFeed from './TradesFeed';
-import ExecutionStats from './ExecutionStats';
 import CollectionStatus from './CollectionStatus';
 import TraderStatePanel from './TraderStatePanel';
 
@@ -246,21 +245,14 @@ const RLTraderDashboard = () => {
             <div className="bg-gray-800 rounded-lg shadow-lg h-full">
               <div className="p-6">
                 <h2 className="text-lg font-semibold mb-4 text-gray-100">Trader State</h2>
-                <TraderStatePanel state={traderState} />
+                <TraderStatePanel state={traderState} executionStats={executionStats} />
               </div>
             </div>
           </div>
 
-          {/* Right Panel: Execution Stats + Recent Fills */}
-          <div className="xl:col-span-1 space-y-6">
-            {/* Execution Statistics */}
-            <div className="bg-gray-800 rounded-lg p-6 shadow-lg">
-              <h2 className="text-lg font-semibold mb-4 text-gray-100">Execution Stats</h2>
-              <ExecutionStats stats={executionStats} />
-            </div>
-
-            {/* Recent Fills with integrated observation space */}
-            <div className="bg-gray-800 rounded-lg p-6 shadow-lg">
+          {/* Right Panel: Recent Fills */}
+          <div className="xl:col-span-1">
+            <div className="bg-gray-800 rounded-lg p-6 shadow-lg h-full">
               <h2 className="text-lg font-semibold mb-4 text-gray-100">Recent Fills</h2>
               <TradesFeed fills={recentFills} />
             </div>
