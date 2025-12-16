@@ -67,6 +67,59 @@ npm run dev
 # See SUPABASE_SETUP.md for detailed configuration
 ```
 
+### RL Development
+
+The RL system uses two focused scripts for different purposes:
+
+#### Orderbook Collection (Real Markets)
+**Purpose**: Collect data from production Kalshi API for RL training
+```bash
+# Standard data collection (real Kalshi markets)
+./scripts/run-orderbook-collector.sh
+
+# Custom configurations
+./scripts/run-orderbook-collector.sh --markets 50         # Limit to 50 markets
+./scripts/run-orderbook-collector.sh --port 8004        # Custom port
+./scripts/run-orderbook-collector.sh --env production   # Production environment
+```
+
+**Default Configuration:**
+- **Environment**: `local` (production Kalshi API for real market data)
+- **Port**: 8002
+- **Actor**: Disabled (data collection only)
+- **Markets**: 100 orderbook subscriptions
+
+**Access Points:**
+- **Health**: http://localhost:8002/rl/health
+- **Status**: http://localhost:8002/rl/status
+- **WebSocket**: ws://localhost:8002/rl/ws
+
+#### RL Trading (Paper Account)
+**Purpose**: Safe trading with RL actor service using demo account
+```bash
+# HOLD strategy (safe testing)
+./scripts/run-rl-trader.sh --strategy hardcoded
+
+# AI trading strategy (trained RL model)
+./scripts/run-rl-trader.sh --strategy rl_model
+
+# Custom configurations  
+./scripts/run-rl-trader.sh --strategy rl_model --markets 25   # AI trading with 25 markets
+./scripts/run-rl-trader.sh --port 8004 --markets 50         # Custom port and market limit
+```
+
+**Default Configuration:**
+- **Environment**: `paper` (demo account for safe trading)
+- **Port**: 8003
+- **Actor**: Enabled (trading decisions)
+- **Strategy**: `hardcoded` (HOLD only)
+
+**Access Points:**
+- **Dashboard**: http://localhost:5173/rl-trader (requires frontend running)
+- **Health**: http://localhost:8003/rl/health
+- **Status**: http://localhost:8003/rl/status
+- **WebSocket**: ws://localhost:8003/rl/ws
+
 ### Testing
 ```bash
 # Backend tests
@@ -421,10 +474,11 @@ RL_ORDERBOOK_SAMPLE_RATE=1                 # Delta sampling rate (1 = keep all)
 # Run E2E test
 ./scripts/test_rl_e2e.sh
 
-# Start service locally
-./scripts/test_rl_orderbook_service.sh
+# Start orderbook collector locally  
+./scripts/run-orderbook-collector.sh
 
-# Service runs on port 8002 by default for local testing
+# Start RL trader locally
+./scripts/run-rl-trader.sh
 ```
 
 ### WebSocket Protocol

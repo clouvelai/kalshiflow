@@ -1,15 +1,15 @@
 #!/bin/bash
 
-# Run Kalshi RL Actor/Trader Backend Service
+# Run Kalshi RL Trader Service
 # 
-# This script provides a consistent way to run the RL trading actor locally
-# for end-to-end testing with configurable parameters.
+# This script provides RL trading with actor service for paper trading.
+# Focuses on safe trading decisions using demo account.
 #
 # Default configuration:
 # - Paper trading mode (demo-api.kalshi.co)
-# - Discovery mode with 100 markets
 # - Actor service enabled
-# - Port 8002
+# - Port 8003
+# - Strategy selection (hardcoded HOLD or RL model)
 
 set -e
 
@@ -21,37 +21,43 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Default values
-DEFAULT_PORT=8002
+DEFAULT_PORT=8003
 DEFAULT_MARKET_LIMIT=100
 DEFAULT_MODE="discovery"
 DEFAULT_ENV="paper"
+DEFAULT_STRATEGY="hardcoded"
 
 # Parse command line arguments
 PORT=$DEFAULT_PORT
 MARKET_LIMIT=$DEFAULT_MARKET_LIMIT
 MODE=$DEFAULT_MODE
 ENVIRONMENT=$DEFAULT_ENV
+STRATEGY=$DEFAULT_STRATEGY
 HELP=false
-ACTOR_ENABLED=true
 
 usage() {
     echo "Usage: $0 [OPTIONS]"
     echo ""
-    echo "Run Kalshi RL Actor/Trader backend service for local testing"
+    echo "Run Kalshi RL Trader service for paper trading"
     echo ""
     echo "OPTIONS:"
     echo "  -p, --port PORT               Port to run on (default: $DEFAULT_PORT)"
     echo "  -m, --markets LIMIT           Orderbook market limit (default: $DEFAULT_MARKET_LIMIT)"
-    echo "  -e, --env ENVIRONMENT         Environment: paper|production (default: $DEFAULT_ENV)"
+    echo "  -e, --env ENVIRONMENT         Environment: paper|local|production (default: $DEFAULT_ENV)"
     echo "  --mode MODE                   Market mode: discovery|config (default: $DEFAULT_MODE)"
-    echo "  --no-actor                    Disable actor service (data collection only)"
+    echo "  -s, --strategy STRATEGY       Action strategy: hardcoded|rl_model (default: $DEFAULT_STRATEGY)"
     echo "  -h, --help                    Show this help message"
     echo ""
     echo "EXAMPLES:"
-    echo "  $0                            # Run with defaults (paper, 100 markets, port 8002)"
-    echo "  $0 -p 8003 -m 500            # Run on port 8003 with 500 markets"
-    echo "  $0 -e production --no-actor   # Production mode, no trading, data collection only"
-    echo "  $0 -m 50                      # Paper mode with just 50 markets for testing"
+    echo "  $0                            # Run with defaults (hardcoded HOLD strategy)"
+    echo "  $0 -s rl_model               # Use trained RL model for trading decisions"
+    echo "  $0 -s rl_model -m 25         # RL model with 25 markets for testing"
+    echo "  $0 -p 8004 -m 50             # Custom port and market limit"
+    echo ""
+    echo "PURPOSE:"
+    echo "  - Paper trading with RL actor service"
+    echo "  - Safe trading decisions using demo account"
+    echo "  - Real-time trading strategy testing"
     echo ""
     echo "FRONTEND ACCESS:"
     echo "  Once running, access the RL Trader Dashboard at:"
@@ -81,9 +87,9 @@ while [[ $# -gt 0 ]]; do
             MODE="$2"
             shift 2
             ;;
-        --no-actor)
-            ACTOR_ENABLED=false
-            shift
+        -s|--strategy)
+            STRATEGY="$2"
+            shift 2
             ;;
         -h|--help)
             usage
@@ -108,8 +114,8 @@ if ! [[ "$MARKET_LIMIT" =~ ^[0-9]+$ ]] || [ "$MARKET_LIMIT" -lt 1 ]; then
     exit 1
 fi
 
-if [[ "$ENVIRONMENT" != "paper" && "$ENVIRONMENT" != "production" ]]; then
-    echo -e "${RED}Error: Environment must be 'paper' or 'production'${NC}"
+if [[ "$ENVIRONMENT" != "paper" && "$ENVIRONMENT" != "local" && "$ENVIRONMENT" != "production" ]]; then
+    echo -e "${RED}Error: Environment must be 'paper', 'local', or 'production'${NC}"
     exit 1
 fi
 
@@ -118,10 +124,51 @@ if [[ "$MODE" != "discovery" && "$MODE" != "config" ]]; then
     exit 1
 fi
 
+if [[ "$STRATEGY" != "hardcoded" && "$STRATEGY" != "rl_model" ]]; then
+    echo -e "${RED}Error: Strategy must be 'hardcoded' or 'rl_model'${NC}"
+    exit 1
+fi
+
+# Function to get current model path from CURRENT_MODEL.json
+get_current_model_path() {
+    local script_dir="$1"
+    local current_model_json="$script_dir/../backend/src/kalshiflow_rl/BEST_MODEL/CURRENT_MODEL.json"
+    
+    if [ ! -f "$current_model_json" ]; then
+        echo -e "${RED}Error: CURRENT_MODEL.json not found at $current_model_json${NC}"
+        exit 1
+    fi
+    
+    # Extract model path using jq if available, otherwise use basic sed/grep
+    if command -v jq >/dev/null 2>&1; then
+        local model_path=$(jq -r '.current_model.full_path' "$current_model_json" 2>/dev/null)
+    else
+        # Fallback: use grep and sed to extract the model path
+        local model_path=$(grep '"full_path"' "$current_model_json" | sed 's/.*"full_path": "\([^"]*\)".*/\1/')
+    fi
+    
+    if [ -z "$model_path" ] || [ "$model_path" = "null" ]; then
+        echo -e "${RED}Error: Could not extract model path from $current_model_json${NC}"
+        exit 1
+    fi
+    
+    echo "$model_path"
+}
+
 # Header
 echo -e "${BLUE}=========================================="
-echo -e "🤖 Kalshi RL Actor/Trader Service"
+echo -e "🤖 Kalshi RL Trader Service"
 echo -e "==========================================${NC}"
+
+# Resolve model path if using rl_model strategy
+if [[ "$STRATEGY" == "rl_model" ]]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    MODEL_PATH=$(get_current_model_path "$SCRIPT_DIR")
+    echo -e "${GREEN}🧠 RL Model Strategy Selected${NC}"
+    echo -e "  Model: $(basename "$MODEL_PATH")"
+    echo -e "  Path:  $MODEL_PATH"
+    echo ""
+fi
 
 # Show configuration
 echo -e "${GREEN}Configuration:${NC}"
@@ -129,7 +176,8 @@ echo "  Environment:      $ENVIRONMENT"
 echo "  Market Mode:      $MODE"
 echo "  Market Limit:     $MARKET_LIMIT"
 echo "  Port:             $PORT"
-echo "  Actor Enabled:    $ACTOR_ENABLED"
+echo "  Strategy:         $STRATEGY"
+echo "  Actor Enabled:    true (trading enabled)"
 echo ""
 
 # Warn about production
@@ -143,6 +191,16 @@ if [[ "$ENVIRONMENT" == "production" ]]; then
         echo "Cancelled."
         exit 1
     fi
+elif [[ "$ENVIRONMENT" == "local" ]]; then
+    echo -e "${YELLOW}⚠️  NOTE: Using LOCAL environment with real Kalshi API.${NC}"
+    echo -e "${YELLOW}   This connects to production API but should be for data only.${NC}"
+    echo ""
+fi
+
+# Paper trading safety message
+if [[ "$ENVIRONMENT" == "paper" ]]; then
+    echo -e "${GREEN}✅ SAFE: Using paper trading environment (demo account)${NC}"
+    echo ""
 fi
 
 # Check if port is available
@@ -169,7 +227,15 @@ echo -e "${GREEN}Setting up environment...${NC}"
 export ENVIRONMENT="$ENVIRONMENT"
 export RL_MODE="$MODE"
 export RL_ORDERBOOK_MARKET_LIMIT="$MARKET_LIMIT"
-export RL_ACTOR_ENABLED="$ACTOR_ENABLED"
+export RL_ACTOR_ENABLED="true"  # ENABLED - trading enabled
+
+# Set up actor strategy and model path
+if [[ "$STRATEGY" == "rl_model" ]]; then
+    export RL_ACTOR_STRATEGY="rl_model"
+    export RL_ACTOR_MODEL_PATH="$MODEL_PATH"
+else
+    export RL_ACTOR_STRATEGY="hardcoded"
+fi
 
 # Additional settings for local testing
 export RL_LOG_LEVEL="INFO"
@@ -183,10 +249,14 @@ echo "  ENVIRONMENT=$ENVIRONMENT"
 echo "  RL_MODE=$RL_MODE" 
 echo "  RL_ORDERBOOK_MARKET_LIMIT=$RL_ORDERBOOK_MARKET_LIMIT"
 echo "  RL_ACTOR_ENABLED=$RL_ACTOR_ENABLED"
+echo "  RL_ACTOR_STRATEGY=$RL_ACTOR_STRATEGY"
+if [[ "$STRATEGY" == "rl_model" ]]; then
+    echo "  RL_ACTOR_MODEL_PATH=$RL_ACTOR_MODEL_PATH"
+fi
 echo ""
 
 # Start the service
-echo -e "${GREEN}Starting RL Backend Service...${NC}"
+echo -e "${GREEN}Starting RL Trader Service...${NC}"
 echo ""
 
 # Show endpoints that will be available
@@ -198,6 +268,13 @@ echo ""
 echo -e "${BLUE}Frontend Dashboard:${NC}"
 echo "  🌐 RL Trader: http://localhost:5173/rl-trader"
 echo "     (requires frontend: cd frontend && npm run dev)"
+echo ""
+
+if [[ "$STRATEGY" == "rl_model" ]]; then
+    echo -e "${YELLOW}Purpose: AI-powered trading using trained RL model${NC}"
+else
+    echo -e "${YELLOW}Purpose: Safe HOLD strategy trading for testing${NC}"
+fi
 echo ""
 
 echo -e "${YELLOW}Press Ctrl+C to stop the service${NC}"
