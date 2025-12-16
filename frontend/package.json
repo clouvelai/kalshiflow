@@ -14,6 +14,7 @@
     "test:frontend-regression": "playwright test tests/frontend-e2e-regression.spec.js"
   },
   "dependencies": {
+    "@heroicons/react": "^2.2.0",
     "lucide-react": "^0.556.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",

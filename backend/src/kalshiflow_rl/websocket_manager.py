@@ -107,6 +107,16 @@ class WebSocketManager:
         
         logger.info(f"WebSocketManager initialized for {len(self._market_tickers)} markets")
     
+    def set_market_tickers(self, market_tickers: list):
+        """
+        Update the list of market tickers to monitor.
+        
+        Args:
+            market_tickers: List of market tickers to monitor
+        """
+        self._market_tickers = market_tickers
+        logger.info(f"Updated WebSocketManager to monitor {len(market_tickers)} markets")
+    
     async def start(self):
         """Start the WebSocket manager and subscribe to orderbook updates."""
         if self._running:
@@ -196,6 +206,11 @@ class WebSocketManager:
             # Send initial snapshots for all markets (force send even if empty)
             snapshots_sent = 0
             for market_ticker in self._market_tickers:
+                # Check connection state before each send
+                if websocket.client_state != WebSocketState.CONNECTED:
+                    logger.warning(f"WebSocket disconnected while sending initial snapshots (sent {snapshots_sent}/{len(self._market_tickers)})")
+                    break
+                    
                 if market_ticker in self._orderbook_states:
                     state = self._orderbook_states[market_ticker]
                     snapshot = await state.get_snapshot()
@@ -215,8 +230,12 @@ class WebSocketManager:
                             "is_empty": snapshot is None or not any(snapshot.get(k) for k in ["yes_bids", "yes_asks", "no_bids", "no_asks"] if snapshot)
                         }
                     )
-                    await self._send_to_client(websocket, snapshot_msg)
-                    snapshots_sent += 1
+                    success = await self._send_to_client(websocket, snapshot_msg)
+                    if success:
+                        snapshots_sent += 1
+                    else:
+                        logger.warning(f"Failed to send snapshot for {market_ticker}, stopping initial snapshot send")
+                        break
                 else:
                     # Send empty snapshot for markets not yet initialized
                     snapshot_msg = OrderbookSnapshotMessage(
@@ -234,8 +253,12 @@ class WebSocketManager:
                             "state_missing": True
                         }
                     )
-                    await self._send_to_client(websocket, snapshot_msg)
-                    snapshots_sent += 1
+                    success = await self._send_to_client(websocket, snapshot_msg)
+                    if success:
+                        snapshots_sent += 1
+                    else:
+                        logger.warning(f"Failed to send empty snapshot for {market_ticker}, stopping initial snapshot send")
+                        break
             
             logger.info(f"Sent {snapshots_sent} initial snapshots to new WebSocket client")
             
@@ -444,12 +467,20 @@ class WebSocketManager:
             message: Message to send (dataclass with asdict support)
         """
         try:
+            # Check if WebSocket is still connected before sending
+            if websocket.client_state != WebSocketState.CONNECTED:
+                logger.debug("Skipping send - WebSocket not connected")
+                self._connections.discard(websocket)
+                return False
+                
             msg_dict = asdict(message) if hasattr(message, '__dataclass_fields__') else message
             await websocket.send_json(msg_dict)
             self._messages_sent += 1
+            return True
         except Exception as e:
             logger.error(f"Error sending to client: {e}")
             self._connections.discard(websocket)
+            return False
     
     async def _on_orderbook_notification(self, notification_data: Dict[str, Any], market_ticker: str):
         """

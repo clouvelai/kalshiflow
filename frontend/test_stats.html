@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>WebSocket Stats Test</title>
+</head>
+<body>
+    <h1>WebSocket Stats Test</h1>
+    <div id="status">Connecting...</div>
+    <div id="stats">
+        <h2>Stats Messages Received: <span id="count">0</span></h2>
+        <h3>Latest Stats:</h3>
+        <pre id="latest"></pre>
+    </div>
+    <h2>All Messages:</h2>
+    <div id="messages"></div>
+
+    <script>
+        let statsCount = 0;
+        const ws = new WebSocket('ws://localhost:8002/rl/ws');
+        
+        ws.onopen = () => {
+            document.getElementById('status').textContent = 'Connected!';
+            console.log('WebSocket connected');
+        };
+        
+        ws.onmessage = (event) => {
+            try {
+                const data = JSON.parse(event.data);
+                console.log('Received message:', data);
+                
+                // Display message type
+                const messageDiv = document.createElement('div');
+                messageDiv.textContent = `${new Date().toISOString()} - Type: ${data.type}`;
+                document.getElementById('messages').prepend(messageDiv);
+                
+                // Track stats messages specifically
+                if (data.type === 'stats') {
+                    statsCount++;
+                    document.getElementById('count').textContent = statsCount;
+                    document.getElementById('latest').textContent = JSON.stringify(data.data, null, 2);
+                    console.log('Stats message received:', data.data);
+                }
+            } catch (e) {
+                console.error('Error parsing message:', e);
+            }
+        };
+        
+        ws.onerror = (error) => {
+            console.error('WebSocket error:', error);
+            document.getElementById('status').textContent = 'Error!';
+        };
+        
+        ws.onclose = () => {
+            console.log('WebSocket closed');
+            document.getElementById('status').textContent = 'Disconnected!';
+        };
+    </script>
+</body>
+</html>

@@ -7,7 +7,6 @@ import MarketGrid from './components/MarketGrid';
 import TradeFlowRiver from './components/TradeFlowRiver';
 import TopTradesList from './components/TopTradesList';
 import FAQ from './components/FAQ';
-import TraderDashboard from './components/trader/TraderDashboard';
 import RLTraderDashboard from './components/RLTraderDashboard';
 
 const MainDashboard = () => {
@@ -78,11 +77,11 @@ function App() {
           } 
         />
         <Route 
-          path="/trader" 
-          element={<TraderDashboard />} 
+          path="/rl-trader" 
+          element={<RLTraderDashboard />} 
         />
         <Route 
-          path="/rl-trader" 
+          path="/trader" 
           element={<RLTraderDashboard />} 
         />
       </Routes>

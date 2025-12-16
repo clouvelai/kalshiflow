@@ -39,12 +39,13 @@ class OrderbookClient:
     - Per-market sequence number tracking and validation
     """
     
-    def __init__(self, market_tickers: Optional[List[str]] = None):
+    def __init__(self, market_tickers: Optional[List[str]] = None, stats_collector=None):
         """
         Initialize orderbook client.
         
         Args:
             market_tickers: List of market tickers to subscribe to (defaults to config)
+            stats_collector: Optional stats collector for tracking metrics
         """
         # Support backward compatibility - accept single ticker as string
         if isinstance(market_tickers, str):
@@ -78,6 +79,9 @@ class OrderbookClient:
         self._on_connected: Optional[Callable] = None
         self._on_disconnected: Optional[Callable] = None
         self._on_error: Optional[Callable] = None
+        
+        # Stats collector for metrics tracking
+        self._stats_collector = stats_collector
         
         logger.info(f"OrderbookClient initialized for {len(self.market_tickers)} markets: {', '.join(self.market_tickers)}")
     
@@ -393,6 +397,10 @@ class OrderbookClient:
             self._last_sequences[market_ticker] = snapshot_data["sequence_number"]
             self._snapshots_received += 1
             
+            # Track in stats collector if available
+            if self._stats_collector:
+                self._stats_collector.track_snapshot(market_ticker)
+            
             # Apply snapshot to shared state (self._orderbook_states[market_ticker] is the same instance)
             # No need to apply twice - they're the same object
             if market_ticker in self._orderbook_states:
@@ -485,6 +493,10 @@ class OrderbookClient:
             
             self._last_sequences[market_ticker] = delta_data["sequence_number"]
             self._deltas_received += 1
+            
+            # Track in stats collector if available
+            if self._stats_collector:
+                self._stats_collector.track_delta(market_ticker)
             
             # Apply delta to shared state (self._orderbook_states[market_ticker] is the same instance as get_shared_orderbook_state)
             # No need to apply twice - they're the same object

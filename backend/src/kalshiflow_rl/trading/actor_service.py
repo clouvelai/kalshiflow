@@ -220,9 +220,11 @@ class ActorService:
                 event_bus = await get_event_bus()
                 logger.warning("Falling back to global EventBus - consider using dependency injection")
             
-            # Subscribe to both snapshot and delta events
-            event_bus.subscribe(EventType.ORDERBOOK_SNAPSHOT, self._handle_event_bus_event)
-            event_bus.subscribe(EventType.ORDERBOOK_DELTA, self._handle_event_bus_event)
+            # Subscribe to both snapshots and deltas
+            # Snapshots: Used for orderbook state initialization (no trading)
+            # Deltas: Trigger trading decisions
+            event_bus.subscribe(EventType.ORDERBOOK_SNAPSHOT, self._handle_snapshot_event)
+            event_bus.subscribe(EventType.ORDERBOOK_DELTA, self._handle_delta_event)
             
             logger.info("ActorService subscribed to event bus for orderbook updates")
             
@@ -298,26 +300,42 @@ class ActorService:
         # (for backward compatibility with custom selectors)
         return not self._is_stub_selector()
     
-    async def _handle_event_bus_event(self, event: MarketEvent) -> None:
+    async def _handle_snapshot_event(self, event: MarketEvent) -> None:
         """
-        Handle event from the event bus (replaces direct actor_event_trigger).
+        Handle snapshot event from the event bus.
+        Snapshots are used for orderbook state initialization only, not for trading.
         
         Args:
-            event: MarketEvent from the event bus
+            event: MarketEvent from the event bus (snapshot)
+        """
+        try:
+            # Log snapshot for monitoring but don't trigger trading
+            logger.debug(f"Received snapshot for {event.market_ticker}, seq={event.sequence_number}")
+            # Orderbook state is already updated by OrderbookClient
+            # No trading action needed on snapshots
+            
+        except Exception as e:
+            logger.error(f"Error handling snapshot event for {event.market_ticker}: {e}")
+    
+    async def _handle_delta_event(self, event: MarketEvent) -> None:
+        """
+        Handle delta event from the event bus.
+        Deltas trigger trading decisions.
+        
+        Args:
+            event: MarketEvent from the event bus (delta)
         """
         try:
             # Convert event bus event to actor event trigger
-            update_type = "snapshot" if event.event_type == EventType.ORDERBOOK_SNAPSHOT else "delta"
-            
             await self.trigger_event(
                 market_ticker=event.market_ticker,
-                update_type=update_type,
+                update_type="delta",
                 sequence_number=event.sequence_number,
                 timestamp_ms=event.timestamp_ms
             )
             
         except Exception as e:
-            logger.error(f"Error handling event bus event for {event.market_ticker}: {e}")
+            logger.error(f"Error handling delta event for {event.market_ticker}: {e}")
     
     async def _load_and_cache_model(self) -> None:
         """Load RL model once at startup and cache in memory."""
@@ -841,38 +859,74 @@ class ActorService:
             execution_result: Result from order execution
         """
         try:
-            # Map action IDs to names
-            action_names = {
-                0: "HOLD",
-                1: "BUY_YES_LIMIT",
-                2: "SELL_YES_LIMIT",
-                3: "BUY_NO_LIMIT",
-                4: "SELL_NO_LIMIT"
-            }
+            # Map action IDs to names for 21-action space
+            # Actions 0-4: Position size 5
+            # Actions 5-8: Position size 10
+            # Actions 9-12: Position size 20
+            # Actions 13-16: Position size 50
+            # Actions 17-20: Position size 100
+            position_sizes = [5, 10, 20, 50, 100]
+            action_types = ["HOLD", "BUY_YES_LIMIT", "SELL_YES_LIMIT", "BUY_NO_LIMIT", "SELL_NO_LIMIT"]
+            
+            # Determine action name and position size
+            if action == 0:
+                action_name = "HOLD"
+                position_size = 0
+            else:
+                # Calculate which position size group (1-20 maps to 0-19)
+                adjusted_action = action - 1
+                size_group = adjusted_action // 4  # 0-4 for sizes
+                action_type_idx = (adjusted_action % 4) + 1  # 1-4 for buy/sell types
+                
+                action_name = action_types[action_type_idx] if action_type_idx < len(action_types) else f"UNKNOWN_{action}"
+                position_size = position_sizes[size_group] if size_group < len(position_sizes) else 10
             
             # Extract observation features for UI display
-            # Assuming observation structure matches LiveObservationAdapter output
-            obs_dict = {}
+            # Include both parsed features and full raw array
+            obs_dict = {
+                "raw_array": observation.tolist() if observation is not None else [],
+                "features": {}
+            }
+            
             if observation is not None and len(observation) >= 10:
                 # Basic orderbook features (first 10 values)
-                obs_dict = {
-                    "yes_bid": float(observation[0]) if len(observation) > 0 else 0,
-                    "yes_ask": float(observation[1]) if len(observation) > 1 else 0,
-                    "no_bid": float(observation[2]) if len(observation) > 2 else 0,
-                    "no_ask": float(observation[3]) if len(observation) > 3 else 0,
-                    "yes_bid_size": float(observation[4]) if len(observation) > 4 else 0,
-                    "yes_ask_size": float(observation[5]) if len(observation) > 5 else 0,
-                    "no_bid_size": float(observation[6]) if len(observation) > 6 else 0,
-                    "no_ask_size": float(observation[7]) if len(observation) > 7 else 0,
-                    "spread": float(observation[8]) if len(observation) > 8 else 0,
-                    "mid_price": float(observation[9]) if len(observation) > 9 else 0,
+                obs_dict["features"] = {
+                    "orderbook": {
+                        "yes_bid": float(observation[0]) if len(observation) > 0 else 0,
+                        "yes_ask": float(observation[1]) if len(observation) > 1 else 0,
+                        "no_bid": float(observation[2]) if len(observation) > 2 else 0,
+                        "no_ask": float(observation[3]) if len(observation) > 3 else 0,
+                        "yes_bid_size": float(observation[4]) if len(observation) > 4 else 0,
+                        "yes_ask_size": float(observation[5]) if len(observation) > 5 else 0,
+                        "no_bid_size": float(observation[6]) if len(observation) > 6 else 0,
+                        "no_ask_size": float(observation[7]) if len(observation) > 7 else 0,
+                        "spread": float(observation[8]) if len(observation) > 8 else 0,
+                        "mid_price": float(observation[9]) if len(observation) > 9 else 0,
+                    }
                 }
                 
-                # Add portfolio features if available (assuming they're in the observation)
+                # Add imbalance and other metrics
+                if len(observation) > 10:
+                    obs_dict["features"]["market_dynamics"] = {
+                        "imbalance": float(observation[10]) if len(observation) > 10 else 0,
+                        "volume_ratio": float(observation[11]) if len(observation) > 11 else 0,
+                        "price_momentum": float(observation[12]) if len(observation) > 12 else 0,
+                    }
+                
+                # Add portfolio features if available
                 if len(observation) > 15:
-                    obs_dict["position"] = float(observation[15])
-                    obs_dict["cash_available"] = float(observation[16]) if len(observation) > 16 else 0
-                    obs_dict["imbalance"] = float(observation[10]) if len(observation) > 10 else 0
+                    obs_dict["features"]["portfolio"] = {
+                        "position": float(observation[15]) if len(observation) > 15 else 0,
+                        "cash_available": float(observation[16]) if len(observation) > 16 else 0,
+                        "unrealized_pnl": float(observation[17]) if len(observation) > 17 else 0,
+                    }
+                
+                # Add time features if available
+                if len(observation) > 20:
+                    obs_dict["features"]["temporal"] = {
+                        "seconds_since_midnight": float(observation[20]) if len(observation) > 20 else 0,
+                        "day_of_week": float(observation[21]) if len(observation) > 21 else 0,
+                    }
             
             # Build action data for broadcast
             action_data = {
@@ -882,8 +936,9 @@ class ActorService:
                 "observation": obs_dict,
                 "action": {
                     "action_id": action,
-                    "action_name": action_names.get(action, f"UNKNOWN_{action}"),
-                    "quantity": execution_result.get("quantity", 10),  # Default to 10 for MVP
+                    "action_name": action_name,
+                    "position_size": position_size if action != 0 else None,
+                    "quantity": execution_result.get("quantity", position_size),
                     "limit_price": execution_result.get("limit_price"),
                     "reason": "model_prediction"
                 },

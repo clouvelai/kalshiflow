@@ -130,9 +130,10 @@ async def lifespan(app: Starlette):
         # Select market tickers (either from discovery or config)
         market_tickers = await select_market_tickers()
         
-        # Initialize OrderbookClient with selected markets
+        # Initialize OrderbookClient with selected markets and stats collector
+        # Pass stats_collector directly so it tracks snapshots/deltas immediately
         global orderbook_client
-        orderbook_client = OrderbookClient(market_tickers=market_tickers)
+        orderbook_client = OrderbookClient(market_tickers=market_tickers, stats_collector=stats_collector)
         orderbook_client.on_connected(_on_orderbook_connected)
         orderbook_client.on_disconnected(_on_orderbook_disconnected)
         orderbook_client.on_error(_on_orderbook_error)
@@ -145,24 +146,18 @@ async def lifespan(app: Starlette):
         await stats_collector.start()
         logger.info("Statistics collector started")
         
+        # Update WebSocket manager with discovered markets
+        websocket_manager.set_market_tickers(market_tickers)
+        
         # Start WebSocket manager
         websocket_manager.stats_collector = stats_collector
         await websocket_manager.start()
         logger.info("WebSocket manager started")
         
         # Start orderbook client as background task
+        # Note: Stats tracking is now handled directly inside orderbook_client via passed stats_collector
         orderbook_task = asyncio.create_task(orderbook_client.start())
         _background_tasks.append(orderbook_task)
-        
-        # Hook up stats tracking to orderbook updates
-        orderbook_states = await get_all_orderbook_states()
-        for market_ticker, state in orderbook_states.items():
-            def create_stats_callback(ticker):
-                def callback(notification_data):
-                    _on_orderbook_update_for_stats(notification_data, ticker)
-                return callback
-            
-            state.add_subscriber(create_stats_callback(market_ticker))
         
         # Initialize ActorService components for trading (only if enabled)
         logger.info("=" * 60)
@@ -349,16 +344,7 @@ async def _on_orderbook_error(error: Exception):
     logger.error(f"Orderbook client error: {error}")
 
 
-def _on_orderbook_update_for_stats(notification_data: Dict[str, Any], market_ticker: str):
-    """Track orderbook updates in statistics (sync callback)."""
-    try:
-        update_type = notification_data.get('update_type')
-        if update_type == "snapshot":
-            stats_collector.track_snapshot(market_ticker)
-        elif update_type == "delta":
-            stats_collector.track_delta(market_ticker)
-    except Exception as e:
-        logger.error(f"Error tracking stats for {market_ticker}: {e}")
+# Stats tracking is now handled directly in orderbook_client via passed stats_collector
 
 
 # API endpoints
