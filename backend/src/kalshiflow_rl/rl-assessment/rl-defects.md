@@ -1,8 +1,32 @@
 # RL System Defects - Severity Ranked
 
-Last Updated: 2025-12-16 07:00
+Last Updated: 2025-12-16 13:00
 
 ## Critical Defects (Training Blockers)
+
+### 0. RLModelSelector Action Validation Bug - BLOCKS 76% OF ACTIONS
+**Severity**: CRITICAL (Production Blocker)
+**Component**: RLModelSelector in action_selector.py
+**Description**: Action validation incorrectly checks for 0-4 range instead of 0-20
+**Location**: Line 158 in `/backend/src/kalshiflow_rl/trading/action_selector.py`
+**Reproduction**:
+```python
+# Any action > 4 will be rejected and converted to HOLD
+# This affects actions 5-20 (16 out of 21 actions = 76%)
+```
+**Impact**: 
+- Model trained on 21 actions but can only use 5
+- All larger position sizes (10, 20, 50, 100 contracts) unusable except for BUY_YES
+- Model effectively crippled to 24% of its capability
+**Root Cause**: Code not updated after expanding from 5 to 21 actions
+**Suggested Fix**:
+```python
+# Line 158 in action_selector.py, change:
+if not (0 <= action_int <= 4):
+# To:
+if not (0 <= action_int <= 20):
+```
+**Verification**: After fix, test all 21 actions can be selected and executed
 
 ### 1. Observation Dimension Mismatch - FIXED
 **Severity**: ~~CRITICAL~~ RESOLVED
@@ -199,7 +223,7 @@ def extract_market_features():
 
 ## Priority Fix Order
 
-1. **Fix observation dimension to 54** (IMMEDIATE - training blocker)
+1. **Fix RLModelSelector action validation** (IMMEDIATE - blocks 76% of model actions)
 2. **Increase transaction fee to 0.1** (Quick fix, major impact on realism)
 3. **Fix HOLD-only behavior** (Critical - prevents any learning)
 4. **Increase default training duration** (Easy fix, high impact)

@@ -53,7 +53,7 @@ class ActionSelector(ABC):
     @abstractmethod
     async def select_action(self, observation: np.ndarray, market_ticker: str) -> int:
         """
-        Select action (0-4) based on observation.
+        Select action based on observation.
         
         Args:
             observation: 52-feature observation vector from LiveObservationAdapter
@@ -61,7 +61,7 @@ class ActionSelector(ABC):
                           since model is market-agnostic
         
         Returns:
-            int: Action ID (0-4)
+            int: Action ID (valid range depends on model's action space)
         """
         pass
     
@@ -122,13 +122,24 @@ class RLModelSelector(ActionSelector):
             self._model_loaded = True
             self._load_error = None
             
+            # Derive action space bounds from the model itself
+            self.action_space_n = self.model.action_space.n
+            self.min_action = 0
+            self.max_action = self.action_space_n - 1
+            
             load_time = time.time() - start_time
-            logger.info(f"✅ RL model loaded and cached successfully in {load_time:.3f}s")
+            logger.info(
+                f"✅ RL model loaded and cached successfully in {load_time:.3f}s. "
+                f"Action space: {self.action_space_n} actions (0-{self.max_action})"
+            )
             
         except Exception as e:
             self._model_loaded = False
             self._load_error = str(e)
             self.model = None
+            self.action_space_n = None
+            self.min_action = None
+            self.max_action = None
             logger.error(f"❌ Failed to load RL model: {e}")
             raise RuntimeError(f"Model loading failed: {e}") from e
     
@@ -143,7 +154,7 @@ class RLModelSelector(ActionSelector):
             market_ticker: Market ticker (for logging only)
         
         Returns:
-            int: Action ID (0-4), falls back to HOLD on error
+            int: Action ID (valid range derived from model), falls back to HOLD on error
         """
         if not self._model_loaded or self.model is None:
             logger.error(f"Model not loaded for {market_ticker}, returning HOLD")
@@ -154,10 +165,11 @@ class RLModelSelector(ActionSelector):
             action, _states = self.model.predict(observation, deterministic=True)
             action_int = int(action)
             
-            # Validate action is in valid range (0-4)
-            if not (0 <= action_int <= 4):
+            # Validate action is in valid range (dynamically derived from model)
+            if not (self.min_action <= action_int <= self.max_action):
                 logger.warning(
-                    f"Model returned invalid action {action_int} for {market_ticker}, "
+                    f"Model returned invalid action {action_int} for {market_ticker} "
+                    f"(valid range: {self.min_action}-{self.max_action}), "
                     f"returning HOLD"
                 )
                 return LimitOrderActions.HOLD.value
