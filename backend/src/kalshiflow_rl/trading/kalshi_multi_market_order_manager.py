@@ -18,9 +18,10 @@ Architecture:
 import asyncio
 import logging
 import time
-from typing import Dict, Any, Optional, List
-from dataclasses import dataclass
+from typing import Dict, Any, Optional, List, Callable, Deque
+from dataclasses import dataclass, field
 from enum import IntEnum
+from collections import deque
 
 from .demo_client import KalshiDemoTradingClient
 from ..config import config
@@ -64,6 +65,7 @@ class OrderInfo:
     original_quantity: Optional[int] = None  # Original order quantity (for partial fill tracking)
     filled_at: Optional[float] = None
     fill_price: Optional[int] = None
+    model_decision: int = 0          # Original action decision from model (0-4)
     
     def __post_init__(self):
         """Set original_quantity if not provided."""
@@ -104,6 +106,35 @@ class Position:
 
 
 @dataclass
+class TradeDetail:
+    """
+    Individual trade detail for execution history.
+
+    This is broadcast via WebSocket for frontend display.
+    """
+    trade_id: str               # Unique trade identifier
+    timestamp: float            # Unix timestamp of execution
+    ticker: str
+    action: str                 # "BUY_YES", "SELL_YES", "BUY_NO", "SELL_NO" 
+    quantity: int
+    fill_price: int             # Fill price in cents
+    order_id: str               # Our internal order ID
+    model_decision: int         # Original action decision from model (0-4)
+
+
+@dataclass
+class ExecutionStats:
+    """
+    Aggregate execution statistics.
+    """
+    total_fills: int = 0
+    maker_fills: int = 0        # Fills from passive orders
+    taker_fills: int = 0        # Fills from aggressive orders
+    avg_fill_time_ms: float = 0.0  # Average time from order to fill
+    total_volume: float = 0.0   # Total volume traded in dollars
+
+
+@dataclass
 class FillEvent:
     """
     Fill event for processing queue.
@@ -119,6 +150,7 @@ class FillEvent:
     post_position: Optional[int] = None  # Position after fill (from Kalshi - authoritative!)
     action: str = ""             # "buy" or "sell"
     side: str = ""               # "yes" or "no"
+    is_taker: bool = False       # Whether fill was aggressive (taker) or passive (maker)
     
     @classmethod
     def from_kalshi_message(cls, message: Dict[str, Any]) -> Optional['FillEvent']:
@@ -166,6 +198,7 @@ class FillEvent:
                 post_position=fill_data.get("post_position"),  # Can be None
                 action=fill_data.get("action", ""),
                 side=fill_data.get("side", ""),
+                is_taker=fill_data.get("is_taker", False),
             )
         except Exception as e:
             logger.error(f"Error parsing fill message: {e}")
@@ -225,6 +258,13 @@ class KalshiMultiMarketOrderManager:
         
         # State change callbacks (for UI updates)
         self._state_change_callbacks: List[callable] = []
+        
+        # Execution history tracking (maxlen=100)
+        self.execution_history: Deque[TradeDetail] = deque(maxlen=100)
+        self.execution_stats = ExecutionStats()
+        
+        # Broadcast callbacks for WebSocket updates
+        self._trade_broadcast_callbacks: List[Callable[[Dict[str, Any]], None]] = []
         
         # Market configuration (from config)
         self._market_tickers = config.RL_MARKET_TICKERS
@@ -418,6 +458,12 @@ class KalshiMultiMarketOrderManager:
             if result:
                 logger.info(f"Order placed: {action} for {market_ticker} -> {result['order_id']}")
                 self._orders_placed += 1
+                
+                # Store model decision for trade tracking
+                order_id = result["order_id"]
+                if order_id in self.open_orders:
+                    self.open_orders[order_id].model_decision = action
+                
                 await self._notify_state_change()  # Notify about order placement
                 return {
                     "status": "placed",
@@ -730,6 +776,15 @@ class KalshiMultiMarketOrderManager:
                 f"(order fully filled)"
             )
         
+        # Track the fill in execution history
+        await self._track_fill(
+            order=order,
+            fill_price=fill_price,
+            fill_quantity=fill_quantity,
+            fill_timestamp=fill_event.fill_timestamp,
+            is_taker=fill_event.is_taker
+        )
+        
         # Update metrics
         self._orders_filled += 1
         self._total_volume_traded += fill_cost
@@ -737,6 +792,9 @@ class KalshiMultiMarketOrderManager:
         # Add debug logging
         logger.debug(f"Fill processed: {order.ticker} {order.side.name} {fill_quantity} @ {fill_price}¢")
         logger.debug(f"Portfolio after fill - Cash: ${self.cash_balance:.2f}, Positions: {len(self.positions)}")
+        
+        # Broadcast trades update
+        await self._broadcast_trades()
         
         # Notify about state change after fill
         await self._notify_state_change()
@@ -803,6 +861,159 @@ class KalshiMultiMarketOrderManager:
         
         # Update contract count
         position.contracts += contract_change
+    
+    async def _track_fill(
+        self,
+        order: OrderInfo,
+        fill_price: int,
+        fill_quantity: int,
+        fill_timestamp: float,
+        is_taker: bool = True
+    ) -> None:
+        """
+        Track fill in execution history and update statistics.
+
+        Args:
+            order: Order that was filled
+            fill_price: Fill price in cents
+            fill_quantity: Number of contracts filled
+            fill_timestamp: Timestamp of fill
+            is_taker: Whether fill was aggressive (taker) or passive (maker)
+        """
+        # Generate unique trade ID
+        trade_id = f"trade_{int(fill_timestamp * 1000)}_{order.order_id}"
+
+        # Create action string for display
+        if order.side == OrderSide.BUY:
+            if order.contract_side == ContractSide.YES:
+                action_str = "BUY_YES"
+            else:
+                action_str = "BUY_NO"
+        else:
+            if order.contract_side == ContractSide.YES:
+                action_str = "SELL_YES"
+            else:
+                action_str = "SELL_NO"
+
+        # Create trade detail
+        trade_detail = TradeDetail(
+            trade_id=trade_id,
+            timestamp=fill_timestamp,
+            ticker=order.ticker,
+            action=action_str,
+            quantity=fill_quantity,
+            fill_price=fill_price,
+            order_id=order.order_id,
+            model_decision=getattr(order, 'model_decision', 0)
+        )
+
+        # Add to execution history (deque automatically limits to 100)
+        self.execution_history.append(trade_detail)
+
+        # Update execution statistics
+        self.execution_stats.total_fills += 1
+        if is_taker:
+            self.execution_stats.taker_fills += 1
+        else:
+            self.execution_stats.maker_fills += 1
+
+        # Update average fill time
+        if hasattr(order, 'placed_at'):
+            fill_time_ms = (fill_timestamp - order.placed_at) * 1000
+            # Calculate rolling average
+            total_fills = self.execution_stats.total_fills
+            current_avg = self.execution_stats.avg_fill_time_ms
+            self.execution_stats.avg_fill_time_ms = (
+                (current_avg * (total_fills - 1) + fill_time_ms) / total_fills
+            )
+
+        # Update total volume
+        fill_cost = (fill_price / 100.0) * fill_quantity
+        self.execution_stats.total_volume += fill_cost
+
+        logger.debug(f"Tracked fill: {trade_detail.action} {fill_quantity} @ {fill_price}¢ (taker: {is_taker})")
+    
+    def add_trade_broadcast_callback(self, callback: Callable[[Dict[str, Any]], None]) -> None:
+        """
+        Add a callback function to be called when trades are broadcast.
+
+        Args:
+            callback: Function that takes trade broadcast data as parameter
+        """
+        self._trade_broadcast_callbacks.append(callback)
+    
+    async def _broadcast_trades(self) -> None:
+        """
+        Broadcast recent trades and observation space data via WebSocket.
+
+        This creates the message format specified in the Pow Wow Master Plan.
+        """
+        if not self._trade_broadcast_callbacks:
+            return
+
+        # Get recent fills (last 20 trades)
+        recent_fills = list(self.execution_history)[-20:]
+        recent_fills_data = []
+
+        for trade in recent_fills:
+            recent_fills_data.append({
+                "trade_id": trade.trade_id,
+                "timestamp": trade.timestamp,
+                "ticker": trade.ticker,
+                "action": trade.action,
+                "quantity": trade.quantity,
+                "fill_price": trade.fill_price,
+                "order_id": trade.order_id,
+                "model_decision": trade.model_decision
+            })
+
+        # Create execution stats
+        execution_stats_data = {
+            "total_fills": self.execution_stats.total_fills,
+            "maker_fills": self.execution_stats.maker_fills,
+            "taker_fills": self.execution_stats.taker_fills,
+            "avg_fill_time_ms": round(self.execution_stats.avg_fill_time_ms, 2),
+            "total_volume": round(self.execution_stats.total_volume, 2)
+        }
+
+        # Create observation space data (simplified for now - will be enhanced later)
+        observation_space_data = {
+            "orderbook_features": {
+                "spread": {"value": 0.02, "intensity": "medium"},
+                "bid_depth": {"value": 0.5, "intensity": "medium"},
+                "ask_depth": {"value": 0.5, "intensity": "medium"}
+            },
+            "market_dynamics": {
+                "momentum": {"value": 0.0, "intensity": "low"},
+                "volatility": {"value": 0.1, "intensity": "low"},
+                "activity": {"value": 0.3, "intensity": "medium"}
+            },
+            "portfolio_state": {
+                "cash_ratio": {"value": self.cash_balance / (self.cash_balance + self.promised_cash + 1), "intensity": "high"},
+                "exposure": {"value": len(self.positions) / 10.0, "intensity": "medium" if len(self.positions) < 5 else "high"},
+                "risk_level": {"value": min(len(self.open_orders) / 10.0, 1.0), "intensity": "low" if len(self.open_orders) < 3 else "high"}
+            }
+        }
+
+        # Create broadcast message
+        broadcast_data = {
+            "type": "trades",
+            "data": {
+                "recent_fills": recent_fills_data,
+                "execution_stats": execution_stats_data,
+                "observation_space": observation_space_data
+            }
+        }
+
+        # Send to all registered callbacks
+        for callback in self._trade_broadcast_callbacks:
+            try:
+                if asyncio.iscoroutinefunction(callback):
+                    await callback(broadcast_data)
+                else:
+                    callback(broadcast_data)
+            except Exception as e:
+                logger.error(f"Error in trade broadcast callback: {e}")
     
     def get_order_features(self, market_ticker: str) -> Dict[str, float]:
         """Get order-related features for RL observations."""
@@ -931,6 +1142,16 @@ class KalshiMultiMarketOrderManager:
             metrics["fill_listener"] = self._fill_listener.get_metrics()
         else:
             metrics["fill_listener"] = {"running": False, "connected": False}
+        
+        # Add execution history metrics
+        metrics["execution_history"] = {
+            "history_size": len(self.execution_history),
+            "total_fills": self.execution_stats.total_fills,
+            "maker_fills": self.execution_stats.maker_fills,
+            "taker_fills": self.execution_stats.taker_fills,
+            "avg_fill_time_ms": self.execution_stats.avg_fill_time_ms,
+            "total_volume": self.execution_stats.total_volume
+        }
         
         return metrics
     
@@ -1745,21 +1966,24 @@ class KalshiMultiMarketOrderManager:
             orders_count = sum(1 for order in self.open_orders.values() 
                               if order.ticker == ticker)
             
-            # Calculate volume traded for this market
+            # Calculate volume traded for this market from execution history
             volume_traded = 0.0
+            trades_count = 0
+            
+            for trade in self.execution_history:
+                if trade.ticker == ticker:
+                    volume_traded += (trade.fill_price / 100.0) * trade.quantity
+                    trades_count += 1
+            
+            # Include open orders promised value
             for order in self.open_orders.values():
                 if order.ticker == ticker:
-                    # For open orders, include the promised value
-                    volume_traded += (order.yes_price / 100.0) * order.quantity
-            
-            # Include positions value for this market
-            if ticker in self.positions:
-                position = self.positions[ticker]
-                volume_traded += abs(position.quantity) * 0.50  # Rough estimate
+                    volume_traded += (order.limit_price / 100.0) * order.quantity
             
             activity[ticker] = {
                 "orders": orders_count,
-                "volume": volume_traded
+                "volume": volume_traded,
+                "trades": trades_count
             }
         
         return activity

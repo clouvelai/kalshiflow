@@ -1,6 +1,6 @@
 # RL Training Improvements - Priority Ranked
 
-Last Updated: 2025-12-15 (Updated with Order Simulation Analysis)
+Last Updated: 2025-12-16 (Updated with Observation Space Review)
 
 ## URGENT: Simulation Fidelity Issues (✅ RESOLVED - Dec 15, 2024)
 
@@ -36,16 +36,35 @@ Last Updated: 2025-12-15 (Updated with Order Simulation Analysis)
 
 ## Critical Priority (Immediate Impact on Profitability)
 
-### 1. Fix HOLD-Only Behavior Pattern
-**Impact**: CRITICAL - Agent stuck in HOLD prevents any trading
-**Evidence**: Curriculum training on 473 markets shows agent defaulting to HOLD action
-**Solution**: 
-- Implement exploration bonuses in reward function
-- Add entropy regularization to PPO (increase ent_coef from 0.01 to 0.1)
-- Use action masking to force non-HOLD actions periodically
-- Add minimum trading frequency requirement in reward
+### 1. Add Spread-Aware Features to Observation Space ✅ (IMPLEMENTED & VERIFIED)
+**Status**: ✅ IMPLEMENTED (Dec 16, 2024) - Observation space verified at 54 dimensions
+**Impact**: CRITICAL - Model now aware of explicit trading costs
+**Evidence**: 80% of markets have >20¢ spreads making them untradeable
+**Completed**:
+- ✅ Added direct spread cost features (spread_cents, spread_pct)
+- ✅ Added spread regime classification (liquid/illiquid indicator)
+- ✅ Added profitability threshold features (breakeven move required)
+- ✅ Removed redundant features (8 features removed)
+- ✅ Added transaction fee penalty in reward function (10% of spread)
+- ✅ Verified observation dimension = 54 (28 market + 10 temporal + 11 portfolio + 5 order)
+**Next Step**: Increase transaction fee to 50% of spread for conservative trading
+**Expected Result**: 30-50% reduction in trading frequency once fee increased
 
-### 2. Implement Proper Episode Boundaries
+### 2. Fix Excessive Trading Behavior (95%+ Activity) - NEW TOP PRIORITY
+**Impact**: CRITICAL - Agent trades too frequently for paper trading
+**Evidence**: Training shows 95.2% trading vs 3.7% HOLD despite ent_coef=0.07
+**Root Causes**:
+- Action space imbalance (20 trading vs 1 HOLD = 95.2% prior)
+- Action 20 (100-contract SELL_NO) dominates with 6.62 avg reward
+- Transaction fees (10% of spread) insufficient deterrent
+**Solutions**:
+1. Increase transaction fee to 50% of spread (0.5 multiplier)
+2. Add HOLD stability bonus (+0.0001 reward)
+3. Reduce entropy coefficient to 0.01
+4. Consider action space redesign (add more HOLD-like actions)
+**Expected Result**: Reduce trading to target 30-50% activity
+
+### 3. Implement Proper Episode Boundaries
 **Impact**: HIGH - Current setup may leak future information
 **Evidence**: Session 9 has 47,851 timesteps but episodes don't respect market boundaries
 **Solution**:
@@ -54,7 +73,7 @@ Last Updated: 2025-12-15 (Updated with Order Simulation Analysis)
 - Reset order state between episodes properly
 - Test with --curriculum mode which already does this correctly
 
-### 3. Scale Training Duration
+### 4. Scale Training Duration
 **Impact**: HIGH - 10K timesteps insufficient for learning
 **Evidence**: Session 9 has 282 viable markets with 50+ timesteps each
 **Solution**:
@@ -64,7 +83,7 @@ Last Updated: 2025-12-15 (Updated with Order Simulation Analysis)
 
 ## High Priority (Direct Trading Performance)
 
-### 4. Reward Function Enhancement
+### 5. Reward Function Enhancement
 **Impact**: HIGH - Simple portfolio value change may be too sparse
 **Evidence**: Large gaps between trades, weak learning signal
 **Solution**:
@@ -73,7 +92,7 @@ Last Updated: 2025-12-15 (Updated with Order Simulation Analysis)
 - Penalize excessive position concentration
 - Include drawdown penalties
 
-### 5. Hyperparameter Optimization
+### 6. Hyperparameter Optimization
 **Impact**: HIGH - Default PPO parameters not tuned for trading
 **Evidence**: Default learning rate 3e-4 may be too high for financial data
 **Solution**:
@@ -82,18 +101,18 @@ Last Updated: 2025-12-15 (Updated with Order Simulation Analysis)
 - Tune GAE lambda for better credit assignment
 - Use longer n_steps (8192) for better advantage estimation
 
-### 6. Feature Engineering Improvements
+### 7. Feature Engineering Improvements (UPDATED - See #1 for Spread Features)
 **Impact**: MEDIUM-HIGH - Better features enable better decisions
-**Evidence**: Current 52 features may miss key patterns
+**Evidence**: Current 52 features miss spread awareness and have redundancies
 **Solution**:
-- Add order imbalance features
-- Include momentum indicators
-- Add spread regime classification
+- ✅ Add spread-aware features (see #1 and observation-space-review.md)
+- Add order imbalance features at multiple price levels
+- Include momentum indicators over different time windows
 - Enhance temporal features with market microstructure signals
 
 ## Medium Priority (Training Efficiency)
 
-### 7. Curriculum Learning Strategy
+### 8. Curriculum Learning Strategy
 **Impact**: MEDIUM - Better market ordering improves learning
 **Evidence**: 282 viable markets vary greatly in difficulty
 **Solution**:
@@ -102,7 +121,7 @@ Last Updated: 2025-12-15 (Updated with Order Simulation Analysis)
 - Use market characteristics for difficulty scoring
 - Implement adaptive curriculum based on performance
 
-### 8. Multi-Session Training
+### 9. Multi-Session Training
 **Impact**: MEDIUM - More diverse data improves generalization
 **Evidence**: Sessions 5-9 available, only using session 9
 **Solution**:
@@ -110,17 +129,17 @@ Last Updated: 2025-12-15 (Updated with Order Simulation Analysis)
 - Use session rotation for better coverage
 - Test generalization across unseen sessions
 
-### 9. Action Space Refinement
-**Impact**: MEDIUM - Current 5-action space may be limiting
-**Evidence**: Fixed contract size (10) limits position sizing flexibility
-**Solution**:
-- Add variable position sizing
-- Implement aggressive vs passive pricing modes
-- Consider market orders for high-confidence signals
+### 10. Action Space Refinement ✅ (COMPLETED)
+**Impact**: MEDIUM - Current 5-action space was limiting
+**Evidence**: Fixed contract size (10) limited position sizing flexibility
+**Solution**: ✅ IMPLEMENTED 21-action space with 5 position sizes
+- ✅ Variable position sizing: [5, 10, 20, 50, 100] contracts
+- ✅ 21 total actions: HOLD + 4 actions × 5 sizes
+- Future: Consider aggressive vs passive pricing modes
 
 ## Lower Priority (Future Enhancements)
 
-### 10. Model Architecture Updates
+### 11. Model Architecture Updates
 **Impact**: LOW-MEDIUM - MlpPolicy may be sufficient initially
 **Evidence**: Default 2-layer MLP with 64 units each
 **Solution**:
@@ -128,7 +147,7 @@ Last Updated: 2025-12-15 (Updated with Order Simulation Analysis)
 - Add LSTM layers for temporal dependencies
 - Consider attention mechanisms for market selection
 
-### 11. Evaluation Metrics Enhancement
+### 12. Evaluation Metrics Enhancement
 **Impact**: LOW - Better metrics for development iteration
 **Evidence**: Current metrics focus on episode rewards
 **Solution**:
@@ -137,7 +156,7 @@ Last Updated: 2025-12-15 (Updated with Order Simulation Analysis)
 - Track win rate and profit factor
 - Add per-market performance breakdown
 
-### 12. Live Data Integration
+### 13. Live Data Integration
 **Impact**: LOW - Not needed until strategy profitable in simulation
 **Evidence**: Currently using historical session data only
 **Solution**:
@@ -147,17 +166,17 @@ Last Updated: 2025-12-15 (Updated with Order Simulation Analysis)
 
 ## Experimental Ideas
 
-### 13. Ensemble Methods
+### 14. Ensemble Methods
 - Train multiple agents with different hyperparameters
 - Use voting or averaging for action selection
 - Implement policy distillation from ensemble
 
-### 14. Market Regime Detection
+### 15. Market Regime Detection
 - Classify markets by volatility/liquidity regimes
 - Train separate policies per regime
 - Dynamic policy selection based on conditions
 
-### 15. Risk Management Layer
+### 16. Risk Management Layer
 - Add maximum position limits
 - Implement stop-loss logic
 - Portfolio-level risk constraints
@@ -166,20 +185,25 @@ Last Updated: 2025-12-15 (Updated with Order Simulation Analysis)
 
 ## Recommended Next Experiment
 
-**Experiment**: Fix HOLD-only behavior with enhanced exploration
-**Session**: 9 (47,851 timesteps, 282 viable markets)
+**Experiment**: Add spread-aware features and fix HOLD-only behavior
+**Session**: 32 or newer sessions with liquid markets
 **Algorithm**: PPO with modified hyperparameters
 **Changes**:
-1. Increase entropy coefficient to 0.1
-2. Add exploration bonus to reward: +0.001 for non-HOLD actions
-3. Reduce learning rate to 1e-4
-4. Increase training to 100K timesteps
-5. Use curriculum mode for clean episode boundaries
+1. ✅ **PRIORITY 1**: Implement spread-aware features in feature_extractors.py
+   - Add spread_cents, spread_pct, spread_regime features
+   - Remove redundant features to maintain 52-feature space
+2. Filter training data to markets with <10¢ spreads
+3. Increase entropy coefficient to 0.1
+4. Add exploration bonus to reward: +0.001 for non-HOLD actions
+5. Reduce learning rate to 1e-4
+6. Increase training to 100K timesteps
+7. Use curriculum mode for clean episode boundaries
 
-**Command**:
+**Command** (after implementing spread features):
 ```bash
-python train_sb3.py --session 9 --curriculum --algorithm ppo \
-  --learning-rate 0.0001 --total-timesteps 100000
+python train_sb3.py --session 32 --curriculum --algorithm ppo \
+  --learning-rate 0.0001 --total-timesteps 100000 \
+  --max-spread 10  # Filter for liquid markets only
 ```
 
-Note: Entropy coefficient needs to be modified in get_default_model_params() first.
+Note: See `rl-assessment/observation-space-review.md` for detailed implementation guide.

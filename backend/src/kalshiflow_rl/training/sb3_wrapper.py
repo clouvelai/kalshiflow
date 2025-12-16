@@ -110,7 +110,7 @@ class SessionBasedEnvironment(gym.Env):
         # Initialize observation and action spaces with default values
         # These will be properly validated in _ensure_spaces_initialized()
         self.observation_space = spaces.Box(
-            low=-np.inf, high=np.inf, shape=(52,), dtype=np.float32
+            low=-np.inf, high=np.inf, shape=(54,), dtype=np.float32
         )
         self.action_space = spaces.Discrete(21)
         

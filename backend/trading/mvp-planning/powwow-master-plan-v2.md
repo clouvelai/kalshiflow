@@ -4,9 +4,9 @@
 
 **CRITICAL DISCOVERY**: The system is 95% complete, not 85%. The infrastructure works, tests pass (327/356), and training runs at 2,410 steps/sec. The only real problems are: (1) exploration parameters causing HOLD-only behavior, and (2) missing WebSocket components 2 & 3.
 
-**Timeline**: **5 days to paper trading**, not 3-4 weeks
-**Investment**: ~20 hours of focused work, not 120 hours
-**Success Criteria**: Agent takes actions >20% of time with >30% win rate
+**Timeline**: **6-7 days to paper trading**, not 3-4 weeks
+**Investment**: ~28 hours of focused work, not 120 hours
+**Success Criteria**: Agent takes actions 30-50% of time with >40% win rate ("low and slow" philosophy)
 
 ## Part 1: System Architecture Truth
 
@@ -21,17 +21,19 @@
 
 ### What's Actually Missing (Build This)
 1. **Training Config Fix** (30 minutes):
-   - Entropy coefficient: 0.01 → 0.1
+   - Entropy coefficient: 0.01 → 0.07 (optimal for "low and slow" behavior)
    - Learning rate: 3e-4 → 1e-4  
-   - Add exploration bonus: +0.001 for non-HOLD
+   - Remove exploration bonus entirely
+   - Add transaction fee penalty: -0.01 * spread per trade in reward function
+   - Focus on proper fee representation, not artificial bonuses
 
-2. **WebSocket Components 2 & 3** (8 hours):
+2. **WebSocket Components 2 & 3** (10 hours):
    - Component 2: Trader state (partially exists)
-   - Component 3: Trades/execution history (missing)
+   - Component 3: Trades/execution history + observation space visualization (missing)
 
-3. **Paper Trading Wrapper** (4 hours):
+3. **Paper Trading Configuration** (4 hours):
    - Connect trained model to ActorService
-   - Add demo environment validation
+   - Use environment configuration (ENVIRONMENT=paper)
 
 ### Training Pipeline Documentation (Now Added)
 
@@ -104,7 +106,7 @@ sequenceDiagram
 }
 ```
 
-### Component 3: Trades (NEW)
+### Component 3: Trades + Observation Space (NEW)
 ```javascript
 {
   "type": "trades",
@@ -126,6 +128,26 @@ sequenceDiagram
       "maker_fills": 67,
       "taker_fills": 22,
       "avg_fill_time_ms": 234
+    },
+    "observation_space": {
+      "orderbook_features": {
+        "spread": 0.75,
+        "bid_depth": 0.62,
+        "ask_depth": 0.58,
+        "intensity": "high"
+      },
+      "market_dynamics": {
+        "momentum": 0.23,
+        "volatility": 0.45,
+        "activity": 0.78,
+        "intensity": "medium"
+      },
+      "portfolio_state": {
+        "cash_ratio": 0.85,
+        "exposure": 0.15,
+        "risk_level": 0.12,
+        "intensity": "low"
+      }
     }
   }
 }
@@ -139,34 +161,43 @@ sequenceDiagram
 ├─────────────────────────────────────────────────────────────┤
 │  Portfolio: $10,500 (+$350, +3.4%) | Cash: $8,500           │
 ├────────────────┬────────────────┬────────────────────────────┤
-│  Collection    │  Trader State  │       Trades               │
+│  Collection    │  Trader State  │  Trades + Observation      │
 │  Status        │                │                            │
 ├────────────────┼────────────────┼────────────────────────────┤
 │ ✓ Connected    │ Positions: 2   │ Recent Fills:              │
-│ Markets: 2     │                │                            │
-│ Session: #73   │ INXD-25JAN03   │ 14:32:15 BUY YES @45¢ ✓   │
-│ Snapshots: 12k │ 100 YES @45.5¢ │ 14:31:45 SELL NO @82¢ ✓   │
-│ Queue: 12      │ P&L: +$250     │ 14:31:20 BUY YES @47¢ ✓   │
-│                │                │                            │
-│ Memory: 245MB  │ Orders: 3 Open │ Fill Rate: 61.3%           │
-│ Uptime: 2h 34m │ Fill Rate: 61% │ Volume: $45,600            │
+│ Markets: 2     │                │ 14:32:15 BUY YES @45¢ ✓   │
+│ Session: #73   │ INXD-25JAN03   │ 14:31:45 SELL NO @82¢ ✓   │
+│ Snapshots: 12k │ 100 YES @45.5¢ │                            │
+│ Queue: 12      │ P&L: +$250     │ Feature Cards:             │
+│                │                │ Orderbook: ██▓░ (0.75)    │
+│ Memory: 245MB  │ Orders: 3 Open │ Dynamics:  ███░ (0.45)    │
+│ Uptime: 2h 34m │ Fill Rate: 61% │ Portfolio: █░░░ (0.15)     │
 └────────────────┴────────────────┴────────────────────────────┘
 ```
 
-## Part 3: Realistic 5-Day Sprint to Paper Trading
+## Part 3: Realistic 6-7 Day Sprint to Paper Trading
 
-### Day 1: Fix Training (4 hours)
+### Day 1: Fix Training + Spread-Aware Features (4 hours)
 **Morning (2 hours)**:
 ```python
-# Fix exploration in train_sb3.py config
+# Fix training config for "low and slow" behavior
 hyperparams = {
     'learning_rate': 1e-4,  # was 3e-4
     'batch_size': 256,       # was 64
-    'ent_coef': 0.1,        # was 0.01 - CRITICAL FIX
+    'ent_coef': 0.07,       # optimal for conservative trading
     'clip_range': 0.2,
     'n_steps': 2048,
-    'exploration_bonus': 0.001  # Add to reward function
+    # NO exploration bonus - use proper fee representation
 }
+
+# Add transaction fee penalty in reward function
+# reward -= 0.01 * spread_width_cents  # per trade
+
+# SPREAD-AWARE FEATURES: Add to observation space for Day 1-2 training
+# - spread_width_normalized: (ask - bid) / mid_price
+# - spread_imbalance: bid_depth / (bid_depth + ask_depth)
+# - depth_ratio: ask_depth / bid_depth
+# - effective_spread: actual spread accounting for depth
 ```
 
 **Afternoon (2 hours)**:
@@ -177,42 +208,47 @@ python train_sb3.py \
     --algorithm ppo \
     --total-timesteps 100000 \
     --learning-rate 1e-4 \
-    --ent-coef 0.1
+    --ent-coef 0.07 \
+    --transaction-fee-penalty 0.01
 ```
 
-### Day 2: Validate Model (3 hours)
+### Day 2: Validate Model + Spread Features (3 hours)
 **Morning**:
-- Load trained model
-- Verify >20% non-HOLD actions
-- Check win rate >30%
+- Load trained model with spread-aware features
+- Verify 30-50% non-HOLD actions ("low and slow")
+- Check win rate >40%
+- Ensure agent holds when no good opportunities exist
+- Test spread-aware decision making
 
 **Afternoon**:
-- If failed, adjust entropy to 0.15 and retrain
-- If passed, save as v1.0-foundation
+- If failed, fine-tune entropy between 0.05-0.10 and retrain
+- If passed, save as v1.0-foundation with spread features
+- Validate proper fee representation drives behavior
+- Verify spread-aware features improve edge detection
 
 ### Day 3: Paper Trading Integration (6 hours)
 **Morning (3 hours)**:
 ```python
-# In actor_service.py
-class PaperTradingActorService(ActorService):
-    def __init__(self):
-        super().__init__()
-        self.validate_demo_environment()
-        self.load_model("models/v1.0-foundation.zip")
+# Paper trading via environment configuration - NO SAFETY CONSTRAINTS IN v1
+# Set ENVIRONMENT=paper to use .env.paper with demo-api.kalshi.co URLs
+# ActorService automatically detects demo vs production based on API URLs
+
+# Let the model learn naturally without artificial constraints
+# The model should discover optimal position sizing through reward signals
 ```
 
 **Afternoon (3 hours)**:
-- Test paper trading connection
+- Test paper trading connection using `ENVIRONMENT=paper`
 - Verify order execution on demo-api.kalshi.co
-- Monitor for 1 hour continuous operation
+- Monitor for 1 hour continuous operation without constraints
 
-### Day 4: WebSocket Components 2 & 3 (8 hours)
+### Day 4: WebSocket Components 2 & 3 + Observation Visualization (10 hours)
 **Morning (4 hours)**:
 ```python
-# Add to order_manager.py
-class EnhancedOrderManager(KalshiMultiMarketOrderManager):
+# Add execution history directly to KalshiMultiMarketOrderManager
+class KalshiMultiMarketOrderManager:
     def __init__(self):
-        super().__init__()
+        # existing initialization...
         self.execution_history = deque(maxlen=100)
         self.execution_stats = {...}
     
@@ -221,21 +257,34 @@ class EnhancedOrderManager(KalshiMultiMarketOrderManager):
         self.broadcast_trades()
 ```
 
-**Afternoon (4 hours)**:
+**Afternoon (6 hours)**:
 - Implement three-component WebSocket messages
 - Update frontend to display three panels
-- Test real-time updates
+- Add observation space visualization (multi-row feature cards)
+- Color-coded intensity grid showing signal strength
+- Test real-time updates with observation data
 
-### Day 5: Integration & Launch (4 hours)
-**Morning (2 hours)**:
+### Day 5-6: Integration & Testing (8 hours)
+**Day 5 (4 hours)**:
 - Full system test (collection + trading + UI)
+- Test observation space visualization with spread features
 - Fix any integration issues
-- Verify all three components updating
 
-**Afternoon (2 hours)**:
+**Day 6 (4 hours)**:
+- Extended testing with natural model behavior
+- Validate "low and slow" trading behavior emerges naturally
 - Deploy to paper trading
 - Monitor for stability
+
+### Day 7: Launch & Documentation (4 hours)
+**Morning (2 hours)**:
+- Final system validation
+- Deploy to paper trading environment
+
+**Afternoon (2 hours)**:
+- Monitor live trading behavior
 - Document any issues for v2.0
+- Validate all success metrics met
 
 ## Part 4: What NOT to Build (Saves 100+ hours)
 
@@ -260,11 +309,14 @@ class EnhancedOrderManager(KalshiMultiMarketOrderManager):
 
 ## Part 5: Success Metrics (Realistic)
 
-### v1.0 Ship Criteria (ANY of these):
-- ✅ Agent takes non-HOLD actions >20% of time
-- ✅ Win rate >30% on any trades executed
-- ✅ No crashes in 1-hour paper trading run
-- ✅ Three WebSocket components displaying data
+### v1.0 Ship Criteria (ALL of these):
+- ✅ Agent takes non-HOLD actions 30-50% of time ("low and slow")
+- ✅ Win rate >40% on trades executed
+- ✅ Sharpe ratio >0.3 (realistic for v1.0)
+- ✅ No crashes in 2-hour paper trading run
+- ✅ Three WebSocket components + observation visualization
+- ✅ Spread-aware features integrated into observation space
+- ✅ Agent properly holds when no good opportunities exist
 
 ### v1.1 Improvements (Week 2):
 - Win rate >40%
@@ -280,23 +332,25 @@ class EnhancedOrderManager(KalshiMultiMarketOrderManager):
 
 ## Part 6: Immediate Action Items
 
-### Must Do (20 hours total):
-1. **Fix training config** - 30 minutes
-2. **Train model with exploration** - 4 hours
-3. **Add paper trading wrapper** - 4 hours
-4. **Implement trades WebSocket** - 4 hours
-5. **Create three-panel UI** - 4 hours
-6. **Integration testing** - 3 hours
-7. **Deploy to paper** - 30 minutes
+### Must Do (28 hours total):
+1. **Fix training config + add spread-aware features** - 30 minutes
+2. **Train model with proper fee representation + spread features** - 4 hours
+3. **Configure paper trading (NO safety constraints)** - 6 hours
+4. **Implement trades WebSocket + observation viz** - 6 hours
+5. **Create three-panel UI with feature cards** - 6 hours
+6. **Extended integration testing** - 5 hours
+7. **Deploy to paper with monitoring** - 30 minutes
 
 ### Nice to Have (if time):
-- Add 5 algo-aware features (spread_imbalance, depth_ratio, etc.)
+- Add additional algo-aware features beyond core spread features
 - Implement basic trade reasoning display
 - Add performance metrics dashboard
 - Create deployment documentation
 
 ### Won't Do (explicitly excluded):
-- Complex reward engineering
+- Complex reward engineering (proper fee representation sufficient)
+- Exploration bonuses or artificial rewards
+- Safety constraints or position limits (let model learn naturally)
 - Multi-stage curriculum
 - Database schema changes
 - Authentication system
@@ -305,15 +359,18 @@ class EnhancedOrderManager(KalshiMultiMarketOrderManager):
 ## Part 7: Risk Mitigation
 
 ### Technical Risks:
-- **Model won't explore**: Increase entropy to 0.15-0.2
+- **Model won't trade enough**: Fine-tune entropy between 0.05-0.10
+- **Model trades too aggressively**: Increase transaction fee penalty
+- **Spread features not effective**: Monitor edge detection in paper trading
 - **Paper trading fails**: Fall back to simulated trading
 - **WebSocket overload**: Throttle updates to 1/second
 - **Memory leaks**: Cap history at 1000 items
 
-### Trading Risks:
-- **Position limits**: 100 contracts max per market
-- **Loss limits**: Stop at 5% daily drawdown
-- **Demo account limits**: Stay under $100K volume/day
+### Trading Risks (v1 - No Artificial Constraints):
+- **Demo account limits**: Stay under $100K volume/day (Kalshi limit)
+- **Natural risk management**: Let model learn position sizing through rewards
+- **Monitor behavior**: Watch for excessive position sizes in logs
+- **Emergency stop**: Manual kill switch if needed
 
 ## Conclusion: The Real Plan
 

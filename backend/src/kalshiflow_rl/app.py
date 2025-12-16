@@ -631,6 +631,80 @@ async def websocket_endpoint(websocket):
     await websocket_manager.handle_connection(websocket)
 
 
+async def trades_websocket_endpoint(websocket):
+    """WebSocket endpoint for real-time trades and observation space updates."""
+    try:
+        await websocket.accept()
+        logger.info("Trades WebSocket client connected")
+        
+        # Create a callback function to send updates to this WebSocket
+        async def send_trades_update(data):
+            if websocket.client_state == websocket.client_state.CONNECTED:
+                try:
+                    await websocket.send_json(data)
+                except Exception as e:
+                    logger.error(f"Error sending trades update: {e}")
+        
+        # Register the callback with the order manager if available
+        if order_manager:
+            order_manager.add_trade_broadcast_callback(send_trades_update)
+            logger.info("Registered trades broadcast callback")
+            
+            # Send initial state
+            initial_data = {
+                "type": "trades",
+                "data": {
+                    "recent_fills": [],
+                    "execution_stats": {
+                        "total_fills": order_manager.execution_stats.total_fills,
+                        "maker_fills": order_manager.execution_stats.maker_fills,
+                        "taker_fills": order_manager.execution_stats.taker_fills,
+                        "avg_fill_time_ms": round(order_manager.execution_stats.avg_fill_time_ms, 2),
+                        "total_volume": round(order_manager.execution_stats.total_volume, 2)
+                    },
+                    "observation_space": {
+                        "orderbook_features": {
+                            "spread": {"value": 0.02, "intensity": "medium"},
+                            "bid_depth": {"value": 0.5, "intensity": "medium"},
+                            "ask_depth": {"value": 0.5, "intensity": "medium"}
+                        },
+                        "market_dynamics": {
+                            "momentum": {"value": 0.0, "intensity": "low"},
+                            "volatility": {"value": 0.1, "intensity": "low"},
+                            "activity": {"value": 0.3, "intensity": "medium"}
+                        },
+                        "portfolio_state": {
+                            "cash_ratio": {"value": order_manager.cash_balance / (order_manager.cash_balance + order_manager.promised_cash + 1), "intensity": "high"},
+                            "exposure": {"value": len(order_manager.positions) / 10.0, "intensity": "medium" if len(order_manager.positions) < 5 else "high"},
+                            "risk_level": {"value": min(len(order_manager.open_orders) / 10.0, 1.0), "intensity": "low" if len(order_manager.open_orders) < 3 else "high"}
+                        }
+                    }
+                }
+            }
+            await send_trades_update(initial_data)
+        else:
+            logger.warning("Order manager not available for trades WebSocket")
+            await websocket.send_json({
+                "type": "error",
+                "message": "Order manager not available"
+            })
+        
+        # Keep connection alive and handle disconnection
+        try:
+            while True:
+                # Wait for ping or close message
+                message = await websocket.receive()
+                if message["type"] == "websocket.disconnect":
+                    break
+        except Exception as e:
+            logger.info(f"Trades WebSocket client disconnected: {e}")
+        
+    except Exception as e:
+        logger.error(f"Error in trades WebSocket: {e}")
+    finally:
+        logger.info("Trades WebSocket client disconnected")
+
+
 # Routes
 routes = [
     Route("/rl/health", health_check, methods=["GET"]),
@@ -639,6 +713,7 @@ routes = [
     Route("/rl/trader/status", trader_status_endpoint, methods=["GET"]),
     Route("/rl/admin/flush", force_flush_endpoint, methods=["POST"]),
     WebSocketRoute("/rl/ws", websocket_endpoint),
+    WebSocketRoute("/rl/trades", trades_websocket_endpoint),
 ]
 
 # Middleware

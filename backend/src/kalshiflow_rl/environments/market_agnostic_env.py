@@ -71,8 +71,13 @@ class MarketAgnosticKalshiEnv(gym.Env):
     """
     
     # Observation space dimension (calculated from feature extractors)
-    # 1 market × 21 market features + 14 temporal + 12 portfolio + 5 order = 52
-    OBSERVATION_DIM = 52
+    # Updated with spread-aware features and removed redundant ones:
+    # 1 market × 28 market features (21 original - 3 removed + 10 spread-aware)
+    # + 10 temporal features (14 original - 4 removed)
+    # + 11 portfolio features (12 original - 1 removed)
+    # + 5 order features
+    # = 28 + 10 + 11 + 5 = 54 features
+    OBSERVATION_DIM = 54
     
     def __init__(
         self,
@@ -146,6 +151,9 @@ class MarketAgnosticKalshiEnv(gym.Env):
         self.action_space_handler = LimitOrderActionSpace(
             order_manager=self.order_manager,
             contract_size=10  # Fixed contract size
+        )
+        self.reward_calculator = UnifiedRewardCalculator(
+            reward_scale=0.001  # Scale rewards for stable training
         )
         
         # Build initial observation
@@ -234,12 +242,43 @@ class MarketAgnosticKalshiEnv(gym.Env):
             # Build next observation
             observation = self._build_observation()
             
-            # Calculate reward using portfolio value change
+            # Calculate reward using portfolio value change with transaction fees
             new_portfolio_value = self.order_manager.get_portfolio_value_cents(
                 self._get_current_market_prices()
             )
-            # Simple reward: portfolio value change in cents
-            reward = float(new_portfolio_value - prev_portfolio_value)
+            
+            # Prepare step info for reward calculation
+            step_info = {}
+            if action != 0:  # Non-HOLD action
+                # Get spread information from orderbook
+                if self.current_market in current_data.markets_data:
+                    market_data = current_data.markets_data[self.current_market]
+                    yes_bids = market_data.get('yes_bids', {})
+                    yes_asks = market_data.get('yes_asks', {})
+                    
+                    # Calculate spread based on action side
+                    if action in [1, 2]:  # YES side actions
+                        best_yes_bid = max(map(int, yes_bids.keys())) if yes_bids else 50
+                        best_yes_ask = min(map(int, yes_asks.keys())) if yes_asks else 50
+                        spread_cents = best_yes_ask - best_yes_bid
+                    else:  # NO side actions
+                        no_bids = market_data.get('no_bids', {})
+                        no_asks = market_data.get('no_asks', {})
+                        best_no_bid = max(map(int, no_bids.keys())) if no_bids else 50
+                        best_no_ask = min(map(int, no_asks.keys())) if no_asks else 50
+                        spread_cents = best_no_ask - best_no_bid
+                    
+                    step_info = {
+                        'action_taken': True,
+                        'spread_cents': max(spread_cents, 1),  # Minimum 1 cent spread
+                        'quantity': 10  # Default quantity from action space
+                    }
+            
+            # Calculate reward with transaction fee penalty
+            reward = self.reward_calculator.calculate_step_reward(
+                new_portfolio_value,
+                step_info
+            )
             
             # Check termination conditions
             terminated = (

@@ -69,10 +69,13 @@ def extract_market_agnostic_features(orderbook_data: Dict[str, Any]) -> Dict[str
     features['best_no_bid_norm'] = (best_no_bid / 100.0) if best_no_bid else 0.5
     features['best_no_ask_norm'] = (best_no_ask / 100.0) if best_no_ask else 0.5
     
-    # Calculate spreads in probability space
-    yes_spread = (best_yes_ask - best_yes_bid) / 100.0 if (best_yes_ask and best_yes_bid) else 0.1
-    no_spread = (best_no_ask - best_no_bid) / 100.0 if (best_no_ask and best_no_bid) else 0.1
+    # Calculate spreads in cents (absolute cost)
+    yes_spread_cents = (best_yes_ask - best_yes_bid) if (best_yes_ask and best_yes_bid) else 10
+    no_spread_cents = (best_no_ask - best_no_bid) if (best_no_ask and best_no_bid) else 10
     
+    # DEPRECATED: Old normalized spreads (keeping for backward compatibility temporarily)
+    yes_spread = yes_spread_cents / 100.0
+    no_spread = no_spread_cents / 100.0
     features['yes_spread_norm'] = min(max(yes_spread, 0.001), 0.99)  # Clamp to valid range
     features['no_spread_norm'] = min(max(no_spread, 0.001), 0.99)
     
@@ -83,22 +86,60 @@ def extract_market_agnostic_features(orderbook_data: Dict[str, Any]) -> Dict[str
     features['yes_mid_price_norm'] = min(max(yes_mid, 0.01), 0.99)
     features['no_mid_price_norm'] = min(max(no_mid, 0.01), 0.99)
     
-    # === VOLUME AND LIQUIDITY FEATURES ===
+    # === NEW SPREAD-AWARE FEATURES ===
     
-    # Calculate total volumes per side
+    # 1. Direct spread costs in cents (absolute trading cost)
+    features['yes_spread_cents'] = yes_spread_cents / 100.0  # Normalized to [0,1] for consistency
+    features['no_spread_cents'] = no_spread_cents / 100.0
+    
+    # 2. Relative spread as percentage of mid-price
+    features['yes_spread_pct'] = (yes_spread_cents / (yes_mid * 100.0)) if yes_mid > 0 else 0.5
+    features['no_spread_pct'] = (no_spread_cents / (no_mid * 100.0)) if no_mid > 0 else 0.5
+    
+    # 3. Spread regime classification (0=ultra-tight, 0.25=tight, 0.5=medium, 0.75=wide, 1.0=very wide)
+    def classify_spread_regime(spread_cents):
+        if spread_cents < 2:
+            return 0.0  # Ultra-tight
+        elif spread_cents < 5:
+            return 0.25  # Tight
+        elif spread_cents < 10:
+            return 0.5  # Medium
+        elif spread_cents < 20:
+            return 0.75  # Wide
+        else:
+            return 1.0  # Very wide
+    
+    features['yes_spread_regime'] = classify_spread_regime(yes_spread_cents)
+    features['no_spread_regime'] = classify_spread_regime(no_spread_cents)
+    
+    # 4. Breakeven distance (how much price must move to profit after spread)
+    # This is the minimum favorable price movement needed to overcome the spread cost
+    features['yes_breakeven_move'] = yes_spread_cents / 100.0  # As probability
+    features['no_breakeven_move'] = no_spread_cents / 100.0
+    
+    # 5. Liquidity score (volume-to-spread ratio, higher is better)
     yes_bid_volume = sum(yes_bids.values()) if yes_bids else 0
     yes_ask_volume = sum(yes_asks.values()) if yes_asks else 0
     no_bid_volume = sum(no_bids.values()) if no_bids else 0
     no_ask_volume = sum(no_asks.values()) if no_asks else 0
     
+    yes_total_volume = yes_bid_volume + yes_ask_volume
+    no_total_volume = no_bid_volume + no_ask_volume
+    
+    # Liquidity score: volume / (1 + spread_cents), normalized
+    features['yes_liquidity_score'] = min(yes_total_volume / (1.0 + yes_spread_cents) / 100.0, 1.0)
+    features['no_liquidity_score'] = min(no_total_volume / (1.0 + no_spread_cents) / 100.0, 1.0)
+    
+    # === VOLUME AND LIQUIDITY FEATURES ===
+    
+    # Note: yes/no_bid_volume already calculated above for liquidity scores
     total_yes_volume = yes_bid_volume + yes_ask_volume
     total_no_volume = no_bid_volume + no_ask_volume
     total_volume = total_yes_volume + total_no_volume
     
     # Normalize volumes (using log scale for wide ranges)
     max_volume_ref = 10000.0  # Reference maximum for normalization
-    features['yes_volume_norm'] = min(np.log(1 + total_yes_volume) / np.log(1 + max_volume_ref), 1.0)
-    features['no_volume_norm'] = min(np.log(1 + total_no_volume) / np.log(1 + max_volume_ref), 1.0)
+    # REMOVED: yes_volume_norm and no_volume_norm (redundant with total_volume + imbalance)
     features['total_volume_norm'] = min(np.log(1 + total_volume) / np.log(1 + max_volume_ref), 1.0)
     
     # Volume imbalance: (yes_vol - no_vol) / total_vol ∈ [-1, 1]
@@ -142,9 +183,7 @@ def extract_market_agnostic_features(orderbook_data: Dict[str, Any]) -> Dict[str
     # Market efficiency: How close the sum is to 1.0 (higher = more efficient)
     features['market_efficiency'] = max(0.0, 1.0 - features['arbitrage_opportunity'])
     
-    # Cross-side spread efficiency: smaller cross-side spreads indicate efficiency
-    cross_side_spread = abs(features['yes_mid_price_norm'] - (1.0 - features['no_mid_price_norm']))
-    features['cross_side_efficiency'] = max(0.0, 1.0 - cross_side_spread * 5.0)  # Scale for visibility
+    # REMOVED: cross_side_efficiency (redundant with arbitrage_opportunity)
     
     logger.debug(f"Extracted {len(features)} market-agnostic features for orderbook")
     return features
@@ -158,14 +197,24 @@ def _get_default_market_features() -> Dict[str, float]:
         'best_yes_ask_norm': 0.51, 
         'best_no_bid_norm': 0.49,
         'best_no_ask_norm': 0.51,
-        'yes_spread_norm': 0.02,
-        'no_spread_norm': 0.02,
+        'yes_spread_norm': 0.02,  # Deprecated but kept for backward compatibility
+        'no_spread_norm': 0.02,   # Deprecated but kept for backward compatibility
         'yes_mid_price_norm': 0.5,
         'no_mid_price_norm': 0.5,
         
-        # Volume features (minimal activity)
-        'yes_volume_norm': 0.01,
-        'no_volume_norm': 0.01,
+        # Spread-aware features (defaults for medium spreads)
+        'yes_spread_cents': 0.02,
+        'no_spread_cents': 0.02,
+        'yes_spread_pct': 0.04,  # 4% of mid-price
+        'no_spread_pct': 0.04,
+        'yes_spread_regime': 0.25,  # Tight regime
+        'no_spread_regime': 0.25,
+        'yes_breakeven_move': 0.02,
+        'no_breakeven_move': 0.02,
+        'yes_liquidity_score': 0.3,
+        'no_liquidity_score': 0.3,
+        
+        # Volume features (minimal activity) - REMOVED yes/no_volume_norm
         'total_volume_norm': 0.01,
         'volume_imbalance': 0.0,
         'yes_side_imbalance': 0.0,
@@ -177,10 +226,9 @@ def _get_default_market_features() -> Dict[str, float]:
         'yes_liquidity_concentration': 0.5,
         'no_liquidity_concentration': 0.5,
         
-        # Efficiency features (perfect efficiency as default)
+        # Efficiency features (perfect efficiency as default) - REMOVED cross_side_efficiency
         'arbitrage_opportunity': 0.0,
-        'market_efficiency': 1.0,
-        'cross_side_efficiency': 1.0
+        'market_efficiency': 1.0
     }
 
 
@@ -218,8 +266,7 @@ def extract_temporal_features(
     else:
         features['time_of_day_norm'] = 0.0  # Outside business hours
     
-    # Day of week (Monday=0, Sunday=6) → [0,1]
-    features['day_of_week_norm'] = current_data.timestamp.weekday() / 6.0
+    # REMOVED: day_of_week_norm (low signal for prediction markets)
     
     # === ACTIVITY MOMENTUM FEATURES ===
     
@@ -258,9 +305,7 @@ def extract_temporal_features(
         burst_threshold = mean_activity + 1.5 * std_activity
         features['activity_burst_indicator'] = 1.0 if current_activity > burst_threshold else 0.0
         
-        # Quiet period: current activity < mean - 1.0*std
-        quiet_threshold = mean_activity - 1.0 * std_activity
-        features['quiet_period_indicator'] = 1.0 if current_activity < quiet_threshold else 0.0
+        # REMOVED: quiet_period_indicator (inverse of activity_burst_indicator)
         
         # Activity trend (increasing/decreasing)
         if len(activity_scores) >= 5:
@@ -270,7 +315,6 @@ def extract_temporal_features(
             features['activity_trend'] = 0.0
     else:
         features['activity_burst_indicator'] = 0.0
-        features['quiet_period_indicator'] = 0.0
         features['activity_trend'] = 0.0
     
     # === PRICE MOMENTUM FEATURES ===
@@ -312,14 +356,7 @@ def extract_temporal_features(
     # For single-market training, we focus on the target market's activity patterns
     # rather than cross-market correlations which don't apply
     
-    # Market activity consistency (how stable the activity level is)
-    if len(historical_data) >= 5:
-        recent_activities = [point.activity_score for point in historical_data[-5:]] + [current_activity]
-        activity_std = np.std(recent_activities)
-        max_activity_std_ref = 0.3  # Reference maximum activity standard deviation
-        features['activity_consistency'] = max(0.0, 1.0 - (activity_std / max_activity_std_ref))
-    else:
-        features['activity_consistency'] = 0.5
+    # REMOVED: activity_consistency (low signal value, overlaps with volatility_regime)
     
     # Price stability (how much prices are changing recently)
     if len(historical_data) >= 3:
@@ -348,22 +385,7 @@ def extract_temporal_features(
     else:
         features['price_stability'] = 0.5
     
-    # Activity persistence (how long current activity level has been maintained)
-    if len(historical_data) >= 3:
-        # Count consecutive periods with similar activity
-        consecutive_similar = 1  # Current period
-        activity_threshold = 0.1  # Similarity threshold
-        
-        for i in range(len(historical_data) - 1, max(-1, len(historical_data) - 10), -1):
-            if abs(historical_data[i].activity_score - current_activity) <= activity_threshold:
-                consecutive_similar += 1
-            else:
-                break
-        
-        # Normalize to [0,1] with max persistence of 10 periods
-        features['activity_persistence'] = min(consecutive_similar / 10.0, 1.0)
-    else:
-        features['activity_persistence'] = 0.0
+    # REMOVED: activity_persistence (overlaps with activity_trend)
     
     logger.debug(f"Extracted {len(features)} temporal features for timestamp {current_data.timestamp_ms}")
     return features
@@ -503,32 +525,7 @@ def extract_portfolio_features(
     
     # === RISK METRICS ===
     
-    # Position diversity (using Herfindahl index)
-    if position_data:
-        position_sizes = []
-        for pos_info in position_data.values():
-            if hasattr(pos_info, 'position'):  # PositionInfo object
-                position_sizes.append(abs(pos_info.position))
-            else:  # Dict format
-                position_sizes.append(abs(pos_info.get('position', 0)))
-        total_size = sum(position_sizes)
-        
-        if total_size > 0:
-            # Calculate Herfindahl index (concentration measure)
-            herfindahl = sum((size / total_size) ** 2 for size in position_sizes)
-            # Convert to diversity: 1 - normalized_herfindahl
-            max_herfindahl = 1.0  # When all positions are in one market
-            min_herfindahl = 1.0 / len(position_sizes)  # When equally distributed
-            
-            if max_herfindahl > min_herfindahl:
-                normalized_herfindahl = (herfindahl - min_herfindahl) / (max_herfindahl - min_herfindahl)
-                features['position_diversity'] = 1.0 - normalized_herfindahl
-            else:
-                features['position_diversity'] = 1.0
-        else:
-            features['position_diversity'] = 0.0
-    else:
-        features['position_diversity'] = 0.0
+    # REMOVED: position_diversity (not relevant for single-market training)
     
     # Leverage approximation (total position value / portfolio value)
     if position_data:

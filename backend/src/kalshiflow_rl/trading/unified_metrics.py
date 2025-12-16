@@ -53,18 +53,23 @@ class UnifiedRewardCalculator:
         step_info: Optional[Dict[str, Any]] = None
     ) -> float:
         """
-        Calculate reward based on portfolio value change.
+        Calculate reward based on portfolio value change with transaction fee penalty.
         
-        Simple approach: reward = (new_value - old_value) * scale
+        Approach: reward = (new_value - old_value) * scale - transaction_fee_penalty
+        
         This naturally captures all trading performance including:
         - Profit from correct predictions
         - Cost of holding positions
         - Opportunity cost of cash
         - Risk/return tradeoffs
+        - Transaction costs based on spread
         
         Args:
             current_portfolio_value: Current total portfolio value in cents
-            step_info: Optional additional step information
+            step_info: Optional dict with:
+                - 'action_taken': bool, whether a non-HOLD action was executed
+                - 'spread_cents': int, the spread in cents for the trade
+                - 'quantity': int, number of contracts traded
             
         Returns:
             Reward value (can be positive or negative)
@@ -79,6 +84,25 @@ class UnifiedRewardCalculator:
             # Calculate value change
             value_change = current_portfolio_value - self.previous_portfolio_value
             reward = value_change * self.reward_scale
+            
+            # Apply transaction fee penalty if a trade was executed
+            if step_info and step_info.get('action_taken', False):
+                # Fee is proportional to spread and quantity
+                spread_cents = step_info.get('spread_cents', 2)  # Default 2 cents if not provided
+                quantity = step_info.get('quantity', 10)  # Default 10 contracts if not provided
+                
+                # Transaction fee penalty: 0.1 * spread per trade (scaled by quantity)
+                # This encourages the model to only trade when expected profit > spread cost
+                # 10% of spread is more realistic to discourage excessive trading
+                transaction_fee = 0.1 * spread_cents * (quantity / 10.0)  # Normalize by base quantity
+                fee_penalty = transaction_fee * self.reward_scale
+                
+                reward -= fee_penalty
+                
+                logger.debug(
+                    f"Transaction fee applied: {transaction_fee:.2f}¢ "
+                    f"(spread: {spread_cents}¢, quantity: {quantity}, penalty: {fee_penalty:.6f})"
+                )
             
             # Update for next step
             self.previous_portfolio_value = current_portfolio_value
