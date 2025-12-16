@@ -1,15 +1,13 @@
 import React, { useState, useEffect, useRef } from 'react';
-import ObservationSpaceVisualization from './ObservationSpaceVisualization';
 import TradesFeed from './TradesFeed';
 import ExecutionStats from './ExecutionStats';
 import CollectionStatus from './CollectionStatus';
-import TraderStatePanel from './trader/TraderStatePanel';
+import TraderStatePanel from './TraderStatePanel';
 
 const RLTraderDashboard = () => {
   const [connectionStatus, setConnectionStatus] = useState('connecting');
   const [collectionStatus, setCollectionStatus] = useState(null);
   const [traderState, setTraderState] = useState(null);
-  const [observationSpace, setObservationSpace] = useState(null);
   const [recentFills, setRecentFills] = useState([]);
   const [executionStats, setExecutionStats] = useState(null);
   const [tradingMode, setTradingMode] = useState('paper'); // paper or production
@@ -70,6 +68,7 @@ const RLTraderDashboard = () => {
             
           case 'stats':
             // Collection service statistics
+            console.log('Stats message received:', data.data);
             if (data.data) {
               setCollectionStatus(prev => ({
                 ...prev,
@@ -97,11 +96,6 @@ const RLTraderDashboard = () => {
               // Update execution statistics
               if (tradeData.execution_stats) {
                 setExecutionStats(tradeData.execution_stats);
-              }
-              
-              // Update observation space visualization
-              if (tradeData.observation_space) {
-                setObservationSpace(tradeData.observation_space);
               }
             }
             break;
@@ -257,21 +251,15 @@ const RLTraderDashboard = () => {
             </div>
           </div>
 
-          {/* Right Panel: Trades + Observation Visualization */}
+          {/* Right Panel: Execution Stats + Recent Fills */}
           <div className="xl:col-span-1 space-y-6">
-            {/* Observation Space Visualization */}
-            <div className="bg-gray-800 rounded-lg p-6 shadow-lg">
-              <h2 className="text-lg font-semibold mb-4 text-gray-100">Observation Space</h2>
-              <ObservationSpaceVisualization observation={observationSpace} />
-            </div>
-
             {/* Execution Statistics */}
             <div className="bg-gray-800 rounded-lg p-6 shadow-lg">
               <h2 className="text-lg font-semibold mb-4 text-gray-100">Execution Stats</h2>
               <ExecutionStats stats={executionStats} />
             </div>
 
-            {/* Recent Fills */}
+            {/* Recent Fills with integrated observation space */}
             <div className="bg-gray-800 rounded-lg p-6 shadow-lg">
               <h2 className="text-lg font-semibold mb-4 text-gray-100">Recent Fills</h2>
               <TradesFeed fills={recentFills} />

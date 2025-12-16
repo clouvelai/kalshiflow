@@ -583,9 +583,11 @@ uv run python src/kalshiflow_rl/scripts/cleanup_sessions.py --delete-test
 ## Managing RL Trained Models
 
 ### Current Model Configuration
-The active RL model is tracked in `@backend/src/kalshiflow_rl/CURRENT_MODEL.json`:
+The active RL model is tracked in `@backend/src/kalshiflow_rl/BEST_MODEL/CURRENT_MODEL.json`:
 - **Current model**: `session32_final.zip` (21-action space with 5 contract sizes)
+- **Model location**: `@backend/src/kalshiflow_rl/BEST_MODEL/session32_final.zip`
 - **Action space**: 21 actions supporting position sizes of [5, 10, 20, 50, 100] contracts
+- **Status**: Production-ready with centralized organization
 - **Backup model**: `session9_ppo_20251211_221054` (historical reference)
 
 ### Cleaning Up Trained Models
@@ -603,14 +605,15 @@ uv run python src/kalshiflow_rl/scripts/cleanup_trained_models.py --execute --qu
 ```
 
 ### Model Cleanup Features
-- **Automatic detection**: Reads CURRENT_MODEL.json to identify models to keep
+- **Automatic detection**: Reads BEST_MODEL/CURRENT_MODEL.json to identify models to keep
 - **Space recovery**: Removes failed training runs and experiments (typically 400+ MB)
 - **Safety**: Always preserves current production model and historical reference
+- **Centralized organization**: Works with new BEST_MODEL directory structure
 - **Audit trail**: Saves deletion log to `src/kalshiflow_rl/logs/model_cleanup_YYYYMMDD_HHMMSS.json`
 - **Dry run default**: Won't delete anything unless `--execute` flag is used
 
 ### When to Run Cleanup
-- After updating CURRENT_MODEL.json to a new model
+- After updating BEST_MODEL/CURRENT_MODEL.json to a new model
 - When trained_models directory exceeds 1GB
 - Before archiving or backing up the project
 - After extensive hyperparameter tuning sessions

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Cleanup script for trained models directory.
-Removes all models except the one specified in CURRENT_MODEL.json.
+Removes all models except the one specified in BEST_MODEL/CURRENT_MODEL.json.
 """
 
 import json
@@ -13,8 +13,8 @@ from datetime import datetime
 
 
 def load_current_model_config():
-    """Load the CURRENT_MODEL.json configuration."""
-    config_path = Path(__file__).parent.parent / "CURRENT_MODEL.json"
+    """Load the CURRENT_MODEL.json configuration from BEST_MODEL directory."""
+    config_path = Path(__file__).parent.parent / "BEST_MODEL" / "CURRENT_MODEL.json"
     
     if not config_path.exists():
         raise FileNotFoundError(f"CURRENT_MODEL.json not found at {config_path}")

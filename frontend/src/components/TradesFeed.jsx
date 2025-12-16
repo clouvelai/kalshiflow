@@ -1,10 +1,36 @@
-import React from 'react';
+import React, { useState } from 'react';
+import { ChevronDownIcon, ChevronRightIcon } from '@heroicons/react/24/outline';
 
 const TradesFeed = ({ fills }) => {
-  // Helper function to format timestamp
+  const [expandedRows, setExpandedRows] = useState(new Set());
+
+  // Helper function to toggle row expansion
+  const toggleRowExpansion = (index) => {
+    const newExpanded = new Set(expandedRows);
+    if (newExpanded.has(index)) {
+      newExpanded.delete(index);
+    } else {
+      newExpanded.add(index);
+    }
+    setExpandedRows(newExpanded);
+  };
+
+  // Helper function to format timestamp - shows actual timestamp of action
   const formatTimestamp = (timestamp) => {
     if (!timestamp) return '--:--:--';
+    // Ensure we're using the actual timestamp from the action
     const date = new Date(timestamp);
+    if (isNaN(date.getTime())) {
+      // If timestamp is relative seconds, convert it
+      if (typeof timestamp === 'number' && timestamp < 86400) {
+        // Likely seconds since session start - show as relative time
+        const hours = Math.floor(timestamp / 3600);
+        const minutes = Math.floor((timestamp % 3600) / 60);
+        const seconds = Math.floor(timestamp % 60);
+        return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+      }
+      return '--:--:--';
+    }
     return date.toLocaleTimeString('en-US', { 
       hour12: false,
       hour: '2-digit',
@@ -13,172 +39,339 @@ const TradesFeed = ({ fills }) => {
     });
   };
 
-  // Helper function to get action color
-  const getActionColor = (action, success) => {
-    if (!success) return 'text-red-500';
+  // Helper function to get action color and background
+  const getActionStyle = (action, success) => {
+    const actionStr = typeof action === 'object' ? action.action_name : action;
+    const isSuccess = success !== false;
     
-    switch (action?.toLowerCase()) {
-      case 'buy':
-      case 'buy_yes':
-      case 'bid':
-        return 'text-green-400';
-      case 'sell':
-      case 'sell_yes':
-      case 'buy_no':
-      case 'ask':
-        return 'text-red-400';
-      case 'cancel':
-      case 'cancelled':
-        return 'text-gray-500';
-      case 'hold':
-        return 'text-yellow-400';
-      default:
-        return 'text-gray-400';
+    if (!isSuccess) {
+      return {
+        color: 'text-red-400',
+        bg: 'bg-red-900/20',
+        borderColor: 'border-red-600/30'
+      };
     }
+    
+    const actionUpper = actionStr?.toUpperCase() || '';
+    
+    if (actionUpper.includes('HOLD')) {
+      return {
+        color: 'text-amber-400',
+        bg: 'bg-amber-900/20',
+        borderColor: 'border-amber-600/30',
+        icon: '⏸'
+      };
+    } else if (actionUpper.includes('BUY_YES') || actionUpper === 'BUY' || actionUpper === 'BID') {
+      return {
+        color: 'text-green-400',
+        bg: 'bg-green-900/20',
+        borderColor: 'border-green-600/30',
+        icon: '↑'
+      };
+    } else if (actionUpper.includes('SELL_YES') || actionUpper === 'SELL' || actionUpper === 'ASK') {
+      return {
+        color: 'text-red-400',
+        bg: 'bg-red-900/20',
+        borderColor: 'border-red-600/30',
+        icon: '↓'
+      };
+    } else if (actionUpper.includes('BUY_NO')) {
+      return {
+        color: 'text-purple-400',
+        bg: 'bg-purple-900/20',
+        borderColor: 'border-purple-600/30',
+        icon: '↓'
+      };
+    } else if (actionUpper.includes('SELL_NO')) {
+      return {
+        color: 'text-blue-400',
+        bg: 'bg-blue-900/20',
+        borderColor: 'border-blue-600/30',
+        icon: '↑'
+      };
+    } else if (actionUpper.includes('CANCEL')) {
+      return {
+        color: 'text-gray-500',
+        bg: 'bg-gray-800/20',
+        borderColor: 'border-gray-600/30',
+        icon: '✕'
+      };
+    }
+    
+    return {
+      color: 'text-gray-400',
+      bg: 'bg-gray-800/20',
+      borderColor: 'border-gray-600/30'
+    };
   };
 
   // Helper function to format action text
   const formatAction = (action) => {
     if (!action) return 'UNKNOWN';
     
-    // Handle if action is an object (e.g., {action_name: "BUY_YES_LIMIT"})
-    let actionStr;
-    if (typeof action === 'object' && action !== null) {
-      // Try to get action_name from object
-      actionStr = (action.action_name || action.name || JSON.stringify(action)).toString().toUpperCase();
-    } else {
-      // Convert action to uppercase and make it more readable
-      actionStr = action.toString().toUpperCase();
-    }
+    let actionStr = typeof action === 'object' ? 
+      (action.action_name || action.name || JSON.stringify(action)) : 
+      action.toString();
     
-    // Handle various action formats
-    if (actionStr.includes('BUY_YES')) return 'BUY YES';
-    if (actionStr.includes('SELL_YES')) return 'SELL YES';
-    if (actionStr.includes('BUY_NO')) return 'BUY NO';
-    if (actionStr.includes('SELL_NO')) return 'SELL NO';
-    if (actionStr.includes('CANCEL')) return 'CANCEL';
+    actionStr = actionStr.toUpperCase();
+    
+    // Simplify the display names
+    if (actionStr.includes('BUY_YES_LIMIT')) return 'BUY YES';
+    if (actionStr.includes('SELL_YES_LIMIT')) return 'SELL YES';
+    if (actionStr.includes('BUY_NO_LIMIT')) return 'BUY NO';
+    if (actionStr.includes('SELL_NO_LIMIT')) return 'SELL NO';
     if (actionStr.includes('HOLD')) return 'HOLD';
+    if (actionStr.includes('CANCEL')) return 'CANCEL';
     
-    return actionStr;
+    return actionStr.replace(/_/g, ' ');
   };
 
   // Helper function to format price
   const formatPrice = (price) => {
     if (price === null || price === undefined) return '--';
-    // Convert to cents if needed (assuming price is between 0-1)
     if (price <= 1) {
       return `${Math.round(price * 100)}¢`;
     }
     return `$${price.toFixed(2)}`;
   };
 
-  // Helper function to get success indicator
-  const getSuccessIndicator = (fill) => {
-    if (fill.success === false) return '✗';
-    if (fill.filled || fill.success) return '✓';
-    if (fill.status === 'pending') return '⏳';
-    if (fill.status === 'cancelled') return '⊘';
-    return '•';
-  };
+  // Helper function to format observation data
+  const formatObservationData = (observation) => {
+    if (!observation) return null;
+    
+    const features = observation.features || {};
+    const rawArray = observation.raw_array || [];
+    
+    return (
+      <div className="mt-2 p-3 bg-gray-900/50 rounded-lg border border-gray-700/50 space-y-3">
+        {/* Orderbook Features */}
+        {features.orderbook && (
+          <div>
+            <h4 className="text-xs font-semibold text-gray-400 mb-2">Orderbook State</h4>
+            <div className="grid grid-cols-2 gap-2 text-xs">
+              <div className="flex justify-between">
+                <span className="text-gray-500">YES Bid/Ask:</span>
+                <span className="text-green-400 font-mono">
+                  {formatPrice(features.orderbook.yes_bid)} / {formatPrice(features.orderbook.yes_ask)}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-500">NO Bid/Ask:</span>
+                <span className="text-red-400 font-mono">
+                  {formatPrice(features.orderbook.no_bid)} / {formatPrice(features.orderbook.no_ask)}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-500">YES Size:</span>
+                <span className="text-gray-300 font-mono">
+                  {features.orderbook.yes_bid_size?.toFixed(0)} / {features.orderbook.yes_ask_size?.toFixed(0)}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-500">NO Size:</span>
+                <span className="text-gray-300 font-mono">
+                  {features.orderbook.no_bid_size?.toFixed(0)} / {features.orderbook.no_ask_size?.toFixed(0)}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-500">Spread:</span>
+                <span className="text-amber-400 font-mono">{formatPrice(features.orderbook.spread)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-500">Mid Price:</span>
+                <span className="text-blue-400 font-mono">{formatPrice(features.orderbook.mid_price)}</span>
+              </div>
+            </div>
+          </div>
+        )}
 
-  // Helper function to get fill type badge
-  const getFillTypeBadge = (fill) => {
-    if (fill.is_maker) {
-      return <span className="text-xs px-1 py-0.5 bg-blue-500/20 text-blue-400 rounded">MAKER</span>;
-    }
-    if (fill.is_taker) {
-      return <span className="text-xs px-1 py-0.5 bg-purple-500/20 text-purple-400 rounded">TAKER</span>;
-    }
-    return null;
+        {/* Market Dynamics */}
+        {features.market_dynamics && (
+          <div>
+            <h4 className="text-xs font-semibold text-gray-400 mb-2">Market Dynamics</h4>
+            <div className="grid grid-cols-3 gap-2 text-xs">
+              <div className="flex flex-col">
+                <span className="text-gray-500">Imbalance</span>
+                <span className={`font-mono ${features.market_dynamics.imbalance > 0 ? 'text-green-400' : 'text-red-400'}`}>
+                  {(features.market_dynamics.imbalance * 100).toFixed(1)}%
+                </span>
+              </div>
+              <div className="flex flex-col">
+                <span className="text-gray-500">Volume Ratio</span>
+                <span className="text-purple-400 font-mono">
+                  {features.market_dynamics.volume_ratio?.toFixed(2)}
+                </span>
+              </div>
+              <div className="flex flex-col">
+                <span className="text-gray-500">Momentum</span>
+                <span className={`font-mono ${features.market_dynamics.price_momentum > 0 ? 'text-green-400' : 'text-red-400'}`}>
+                  {features.market_dynamics.price_momentum?.toFixed(3)}
+                </span>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Portfolio State */}
+        {features.portfolio && (
+          <div>
+            <h4 className="text-xs font-semibold text-gray-400 mb-2">Portfolio State</h4>
+            <div className="grid grid-cols-3 gap-2 text-xs">
+              <div className="flex flex-col">
+                <span className="text-gray-500">Position</span>
+                <span className={`font-mono ${features.portfolio.position > 0 ? 'text-green-400' : features.portfolio.position < 0 ? 'text-red-400' : 'text-gray-400'}`}>
+                  {features.portfolio.position?.toFixed(0)}
+                </span>
+              </div>
+              <div className="flex flex-col">
+                <span className="text-gray-500">Cash</span>
+                <span className="text-blue-400 font-mono">
+                  ${features.portfolio.cash_available?.toFixed(0)}
+                </span>
+              </div>
+              <div className="flex flex-col">
+                <span className="text-gray-500">Unrealized P&L</span>
+                <span className={`font-mono ${features.portfolio.unrealized_pnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                  ${features.portfolio.unrealized_pnl?.toFixed(2)}
+                </span>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Raw Observation Array */}
+        {rawArray && rawArray.length > 0 && (
+          <div>
+            <h4 className="text-xs font-semibold text-gray-400 mb-2">
+              Raw Observation Vector ({rawArray.length} features)
+            </h4>
+            <div className="bg-gray-800/50 rounded p-2 max-h-32 overflow-y-auto">
+              <pre className="text-xs text-gray-300 font-mono whitespace-pre-wrap">
+                [{rawArray.map(v => typeof v === 'number' ? v.toFixed(3) : v).join(', ')}]
+              </pre>
+            </div>
+          </div>
+        )}
+      </div>
+    );
   };
 
   // Default empty state
   if (!fills || fills.length === 0) {
     return (
       <div className="space-y-2">
-        <div className="text-gray-500 text-sm text-center py-4">
-          No trades executed yet
+        <div className="text-gray-500 text-sm text-center py-8">
+          <div className="mb-2">🤖</div>
+          <div>Waiting for trading decisions...</div>
+          <div className="text-xs mt-1 text-gray-600">Model will analyze markets and execute trades</div>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="space-y-1 max-h-96 overflow-y-auto">
+    <div className="space-y-1 max-h-[600px] overflow-y-auto">
       {fills.map((fill, index) => {
-        // Handle nested action structure if present
+        const isExpanded = expandedRows.has(index);
         const action = fill.action?.action_name || fill.action;
-        const isSuccess = fill.success !== false && (fill.filled || fill.success);
-        const actionColor = getActionColor(action, isSuccess);
+        const positionSize = fill.action?.position_size;
+        const isSuccess = fill.execution_result?.executed !== false && fill.success !== false;
+        const actionStyle = getActionStyle(action, isSuccess);
+        const hasObservation = fill.observation && (fill.observation.raw_array?.length > 0 || fill.observation.features);
         
         return (
           <div 
             key={`fill-${index}-${fill.timestamp}`}
-            className={`font-mono text-xs py-1.5 px-2 rounded ${
-              isSuccess ? 'bg-gray-700/30' : 'bg-red-900/20'
-            } hover:bg-gray-700/50 transition-colors flex items-center justify-between`}
+            className={`font-mono text-xs rounded-lg ${actionStyle.bg} border ${actionStyle.borderColor} transition-all duration-200`}
           >
-            <div className="flex items-center space-x-2 flex-1">
-              {/* Timestamp */}
-              <span className="text-gray-500 w-20">
-                {formatTimestamp(fill.timestamp)}
-              </span>
-              
-              {/* Action */}
-              <span className={`${actionColor} font-semibold w-20`}>
-                {formatAction(action)}
-              </span>
-              
-              {/* Market/Ticker (if available) */}
-              {(fill.market || fill.ticker || fill.market_ticker) && (
-                <span className="text-gray-400 text-xs truncate max-w-[80px]">
-                  {fill.market || fill.ticker || fill.market_ticker}
+            {/* Main Row */}
+            <div 
+              className={`py-2 px-3 flex items-center justify-between ${hasObservation ? 'cursor-pointer hover:bg-gray-700/20' : ''}`}
+              onClick={() => hasObservation && toggleRowExpansion(index)}
+            >
+              <div className="flex items-center space-x-3 flex-1">
+                {/* Expand/Collapse Icon */}
+                {hasObservation && (
+                  <div className="text-gray-500">
+                    {isExpanded ? 
+                      <ChevronDownIcon className="h-3 w-3" /> : 
+                      <ChevronRightIcon className="h-3 w-3" />
+                    }
+                  </div>
+                )}
+
+                {/* Timestamp */}
+                <span className="text-gray-500 w-20">
+                  {formatTimestamp(fill.timestamp)}
                 </span>
-              )}
-              
-              {/* Price */}
-              {(fill.price !== undefined || fill.fill_price !== undefined) && (
-                <span className="text-gray-300">
-                  @{formatPrice(fill.fill_price || fill.price)}
+
+                {/* Action with Icon */}
+                <div className="flex items-center space-x-1">
+                  {actionStyle.icon && <span className={actionStyle.color}>{actionStyle.icon}</span>}
+                  <span className={`${actionStyle.color} font-semibold w-24`}>
+                    {formatAction(action)}
+                  </span>
+                </div>
+
+                {/* Position Size (for non-HOLD actions) */}
+                {positionSize && positionSize > 0 && (
+                  <span className="px-1.5 py-0.5 bg-gray-700/50 text-gray-300 rounded text-xs">
+                    {positionSize} contracts
+                  </span>
+                )}
+
+                {/* Market Ticker - Show full ticker */}
+                {fill.market_ticker && (
+                  <span className="text-gray-400 text-xs">
+                    {fill.market_ticker}
+                  </span>
+                )}
+
+                {/* Price (if applicable) */}
+                {fill.action?.limit_price !== undefined && fill.action?.limit_price !== null && (
+                  <span className="text-gray-300">
+                    @{formatPrice(fill.action.limit_price)}
+                  </span>
+                )}
+              </div>
+
+              <div className="flex items-center space-x-2">
+                {/* Execution Status */}
+                {fill.execution_result && (
+                  <span className={`text-xs px-2 py-0.5 rounded ${
+                    fill.execution_result.executed ? 'bg-green-900/30 text-green-400' : 
+                    fill.execution_result.status === 'hold' ? 'bg-amber-900/30 text-amber-400' :
+                    'bg-red-900/30 text-red-400'
+                  }`}>
+                    {fill.execution_result.status || (fill.execution_result.executed ? 'executed' : 'failed')}
+                  </span>
+                )}
+
+                {/* Success Indicator */}
+                <span className={`${isSuccess ? 'text-green-400' : 'text-red-400'} text-sm`}>
+                  {isSuccess ? '✓' : '✗'}
                 </span>
-              )}
-              
-              {/* Quantity (if available) */}
-              {fill.quantity !== undefined && fill.quantity > 0 && (
-                <span className="text-gray-500 text-xs">
-                  x{fill.quantity}
-                </span>
-              )}
-              
-              {/* Fill type badge */}
-              {getFillTypeBadge(fill)}
+              </div>
             </div>
-            
-            <div className="flex items-center space-x-2">
-              {/* Model confidence or reason (if available) */}
-              {fill.confidence !== undefined && (
-                <span className="text-xs text-gray-500">
-                  {(fill.confidence * 100).toFixed(0)}%
-                </span>
-              )}
-              
-              {/* Success indicator */}
-              <span className={`${isSuccess ? 'text-green-400' : 'text-red-400'} text-sm`}>
-                {getSuccessIndicator(fill)}
-              </span>
-            </div>
+
+            {/* Expanded Observation Details */}
+            {isExpanded && hasObservation && (
+              <div className="border-t border-gray-700/50">
+                {formatObservationData(fill.observation)}
+              </div>
+            )}
+
+            {/* Error Message (if any) */}
+            {fill.execution_result?.error && (
+              <div className="px-3 pb-2">
+                <div className="text-xs text-red-400 bg-red-900/20 rounded p-1.5">
+                  Error: {fill.execution_result.error}
+                </div>
+              </div>
+            )}
           </div>
         );
       })}
-      
-      {/* Show reasoning for latest trade if available */}
-      {fills[0]?.reasoning && (
-        <div className="mt-2 p-2 bg-gray-700/30 rounded border border-gray-600/50">
-          <p className="text-xs text-gray-400">
-            <span className="font-semibold">Decision:</span> {fills[0].reasoning}
-          </p>
-        </div>
-      )}
     </div>
   );
 };
