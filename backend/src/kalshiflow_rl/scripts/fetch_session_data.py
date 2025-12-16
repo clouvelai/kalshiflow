@@ -69,8 +69,8 @@ async def list_available_sessions():
     print(f"\nFound {len(sessions)} closed sessions:\n")
     
     # Header
-    print(f"{'ID':>6} {'Status':<10} {'Duration':<12} {'Markets':>8} {'Snapshots':>10} {'Deltas':>8} {'Start Time':<20}")
-    print("-" * 80)
+    print(f"{'ID':>6} {'Env':<10} {'Status':<10} {'Duration':<12} {'Markets':>8} {'Snapshots':>10} {'Deltas':>8} {'Start Time':<20}")
+    print("-" * 110)
     
     # Sessions
     for session in sessions:
@@ -88,7 +88,9 @@ async def list_available_sessions():
         if markets == 0 and session.get('market_tickers'):
             markets = len(session['market_tickers'])
             
+        env = session.get('environment', 'unknown')[:10]  # Truncate to fit column
         print(f"{session['session_id']:>6} "
+              f"{env:<10} "
               f"{session.get('status', 'unknown'):<10} "
               f"{duration_str:<12} "
               f"{markets:>8} "
@@ -157,6 +159,8 @@ async def load_session_data(session_id: int = None):
     
     print(f"\n📊 EPISODE METRICS:")
     print(f"   Session ID:        {session_data.session_id}")
+    print(f"   Environment:       {session_data.environment or 'unknown'}")
+    print(f"   WebSocket URL:     {session_data.websocket_url or 'not recorded'}")
     print(f"   Episode Length:    {session_data.get_episode_length()} timesteps")
     print(f"   Duration:          {session_data.total_duration}")
     print(f"   Markets:           {len(session_data.markets_involved)} active")

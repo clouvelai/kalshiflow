@@ -134,13 +134,15 @@ class RLDatabase:
                 ended_at TIMESTAMPTZ,  -- NULL while session is active
                 status VARCHAR(20) NOT NULL DEFAULT 'active',  -- active, closed, error
                 websocket_url TEXT,
+                environment TEXT,  -- Environment where session was collected (local/production/paper)
                 connection_metadata JSONB,  -- Additional connection info
                 messages_received BIGINT DEFAULT 0,
                 snapshots_count INTEGER DEFAULT 0,
                 deltas_count INTEGER DEFAULT 0,
                 last_message_at TIMESTAMPTZ,
                 error_message TEXT,  -- If session ended with error
-                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                CONSTRAINT chk_sessions_environment CHECK (environment IN ('local', 'production', 'paper', 'test'))
             );
         ''')
         
@@ -159,6 +161,11 @@ class RLDatabase:
         await conn.execute('''
             CREATE INDEX IF NOT EXISTS idx_sessions_markets 
                 ON rl_orderbook_sessions USING GIN(market_tickers);
+        ''')
+        
+        await conn.execute('''
+            CREATE INDEX IF NOT EXISTS idx_sessions_environment 
+                ON rl_orderbook_sessions(environment, started_at DESC);
         ''')
         
         # Add constraints
@@ -507,17 +514,17 @@ class RLDatabase:
     
     # Session management operations
     
-    async def create_session(self, market_tickers: List[str], websocket_url: str = None) -> int:
+    async def create_session(self, market_tickers: List[str], websocket_url: str = None, environment: str = None) -> int:
         """Create a new orderbook session and return its ID."""
         async with self.get_connection() as conn:
             session_id = await conn.fetchval('''
                 INSERT INTO rl_orderbook_sessions (
-                    market_tickers, websocket_url, status, started_at
-                ) VALUES ($1, $2, 'active', CURRENT_TIMESTAMP)
+                    market_tickers, websocket_url, environment, status, started_at
+                ) VALUES ($1, $2, $3, 'active', CURRENT_TIMESTAMP)
                 RETURNING session_id
-            ''', market_tickers, websocket_url)
+            ''', market_tickers, websocket_url, environment)
             
-            logger.info(f"Created orderbook session {session_id} for {len(market_tickers)} markets")
+            logger.info(f"Created orderbook session {session_id} for {len(market_tickers)} markets (env: {environment})")
             return session_id
     
     async def update_session_stats(self, session_id: int, messages: int = 0, snapshots: int = 0, deltas: int = 0) -> None:
@@ -1202,6 +1209,19 @@ class RLDatabase:
             """)
             
             return dict(stats)
+    
+    async def get_environment_statistics(self) -> Dict[str, int]:
+        """Get session count breakdown by environment."""
+        async with self.get_connection() as conn:
+            rows = await conn.fetch("""
+                SELECT environment, COUNT(*) as count
+                FROM rl_orderbook_sessions
+                WHERE status = 'closed'
+                GROUP BY environment
+                ORDER BY count DESC
+            """)
+            
+            return {row['environment']: row['count'] for row in rows}
 
 
 # Global RL database instance

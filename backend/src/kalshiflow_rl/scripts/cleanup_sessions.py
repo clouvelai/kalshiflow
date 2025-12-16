@@ -210,6 +210,16 @@ async def generate_report(db: RLDatabase):
     print(f"   Total snapshots:       {stats['total_snapshots']:,}")
     print(f"   Total deltas:          {stats['total_deltas']:,}")
     
+    # Get environment breakdown
+    env_stats = await db.get_environment_statistics()
+    if env_stats:
+        print(f"\n📍 ENVIRONMENT BREAKDOWN:")
+        for env, count in env_stats.items():
+            if env:  # Skip NULL environments
+                print(f"   {env:<15}    {count} sessions")
+        if None in env_stats:
+            print(f"   {'unknown':<15}    {env_stats[None]} sessions (no environment recorded)")
+    
     # Get empty sessions
     empty = await db.get_empty_sessions()
     test = await db.get_test_sessions()

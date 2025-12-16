@@ -178,7 +178,8 @@ class OrderbookClient:
             # Create new session
             self._session_id = await rl_db.create_session(
                 market_tickers=self.market_tickers,
-                websocket_url=self.ws_url
+                websocket_url=self.ws_url,
+                environment=config.ENVIRONMENT
             )
             
             # Pass session ID to write queue
