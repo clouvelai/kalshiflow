@@ -60,6 +60,34 @@
 
 ---
 
+## Critical MVP Session Management Design
+
+### The Single Session Principle
+
+**FUNDAMENTAL RULE**: One discovery run = One session_id
+
+The lifecycle discovery system maintains a **SINGLE, LONG-RUNNING SESSION** for the entire discovery period. Markets dynamically join and leave this session, but the session_id NEVER changes until the process restarts.
+
+**Key Implementation Points**:
+1. **Session Creation**: Happens ONCE when OrderbookOrchestrator starts
+2. **Market Additions**: Use existing session_id, track in `rl_market_participation`
+3. **Market Removals**: Use existing session_id, update `left_at` in participation table
+4. **No Session Proliferation**: Adding/removing markets does NOT create new sessions
+5. **Restart Behavior**: Only creates new session on process restart
+
+**Database Structure**:
+- `rl_orderbook_sessions`: ONE entry per discovery run
+- `rl_market_participation`: Tracks when each market joins/leaves the session
+- `rl_orderbook_snapshots/deltas`: All use the same session_id
+
+**Why This Matters**:
+- Prevents session_id explosion (avoiding 1000s of sessions)
+- Clean data organization (one discovery run = one queryable unit)
+- Simple recovery (restart = new session, no complex resumption)
+- Training-friendly (complete market lifecycles in one session)
+
+---
+
 ## System Architecture
 
 ### Components Overview
@@ -91,7 +119,7 @@ graph TB
 ```
 
 **Key Integration Points**:
-- `LifecycleWebSocketClient` connects to `wss://api.elections.kalshi.com/trade-api/ws/v2` with `market_lifecycle_v2` channel
+- `LifecycleWebSocketClient` connects to rlconfig's `KALSHI_WS_URL` with `market_lifecycle_v2` channel
 - `OrderbookOrchestrator` manages the existing `OrderbookClient.market_tickers` list dynamically
 - Existing `WriteQueue` batching and `SharedOrderbookState` management remain unchanged
 - Single session spans entire lifecycle discovery period with dynamic market participation tracking
@@ -180,6 +208,22 @@ ALTER TABLE rl_market_lifecycle_events ADD CONSTRAINT chk_lifecycle_event_type
 ALTER TABLE rl_orderbook_sessions ADD COLUMN IF NOT EXISTS lifecycle_mode BOOLEAN DEFAULT FALSE;
 ```
 
+### New Table: `rl_market_participation` (CRITICAL FOR MVP)
+
+```sql
+CREATE TABLE rl_market_participation (
+    session_id BIGINT REFERENCES rl_orderbook_sessions(session_id),
+    market_ticker VARCHAR(100) NOT NULL,
+    joined_at TIMESTAMPTZ NOT NULL,
+    left_at TIMESTAMPTZ,
+    PRIMARY KEY (session_id, market_ticker, joined_at)
+);
+
+-- Index for active market queries
+CREATE INDEX idx_participation_active ON rl_market_participation(session_id, left_at) 
+WHERE left_at IS NULL;
+```
+
 **MVP Design Decision**: Store only what we use. No complex JSONB tracking, no detailed metadata. We can enhance later if needed, but start simple.
 
 ---
@@ -194,6 +238,7 @@ ALTER TABLE rl_orderbook_sessions ADD COLUMN IF NOT EXISTS lifecycle_mode BOOLEA
 - `LifecycleWebSocketClient` - Connect to `market_lifecycle_v2` channel
 - Store `created`/`determined`/`settled` events in database
 - Basic logging and monitoring
+- **CRITICAL**: Create database tables including `rl_market_participation`
 
 **MVP Implementation:**
 ```python
@@ -203,7 +248,7 @@ class LifecycleWebSocketClient:
     
     async def start(self) -> None:
         """Connect and listen to lifecycle events."""
-        # Connect to wss://api.elections.kalshi.com/trade-api/ws/v2
+        # Connect to rlconfig.KALSHI_WS_URL (configured per environment)
         # Subscribe to market_lifecycle_v2 channel
         # Store events in rl_market_lifecycle_events table
         
@@ -218,7 +263,13 @@ class LifecycleWebSocketClient:
 
 ### Phase 2: Dynamic Market Collection (3 days)
 
-**Goal**: Use lifecycle events to start/stop orderbook collection automatically.
+**Goal**: Use lifecycle events to start/stop orderbook collection automatically WITH SINGLE SESSION.
+
+**CRITICAL SESSION MANAGEMENT**:
+- ONE session created at orchestrator startup
+- Markets join/leave within same session
+- Track participation in `rl_market_participation` table
+- Session only changes on process restart
 
 **Critical First Step**: Test if Kalshi supports dynamic subscriptions:
 ```python
@@ -233,30 +284,63 @@ class LifecycleWebSocketClient:
 - `determined` event → stop collecting that market
 - Integration with existing OrderbookClient
 
-**MVP Implementation:**
+**MVP Implementation (WITH CRITICAL SESSION MANAGEMENT):**
 ```python
 class OrderbookOrchestrator:
-    """Simple orchestrator for lifecycle-driven collection."""
+    """Orchestrator maintaining SINGLE session for entire discovery run."""
     
+    def __init__(self):
+        self.session_id = None  # CRITICAL: Set once, never changes during run
+        self.active_markets = set()
+        self.orderbook_client = None
+        
+    async def start(self):
+        """Start discovery with ONE session for entire run."""
+        # CRITICAL: Create session ONCE
+        self.session_id = await rl_db.create_session(
+            environment="lifecycle_discovery",
+            lifecycle_mode=True
+        )
+        logger.info(f"Started lifecycle discovery session: {self.session_id}")
+        
     async def handle_lifecycle_event(self, event: Dict):
         """MVP: Only handle created and determined events."""
         event_type = event.get("event_type")
         market_ticker = event.get("market_ticker")
         
+        # CRITICAL: Always use same session_id
         if event_type == "created":
             await self._add_market(market_ticker)
         elif event_type == "determined":
             await self._remove_market(market_ticker)
     
     async def _add_market(self, ticker: str):
-        """Add market to OrderbookClient subscription."""
-        # Add to self.orderbook_client.market_tickers
-        # Re-subscribe with new list
+        """Add market WITHOUT creating new session."""
+        if ticker not in self.active_markets:
+            # Track participation with EXISTING session_id
+            await rl_db.execute("""
+                INSERT INTO rl_market_participation 
+                (session_id, market_ticker, joined_at) 
+                VALUES ($1, $2, NOW())
+            """, self.session_id, ticker)
+            
+            self.active_markets.add(ticker)
+            # Update subscriptions on existing WebSocket
+            await self.orderbook_client.update_subscriptions(list(self.active_markets))
         
     async def _remove_market(self, ticker: str):
-        """Remove market from OrderbookClient subscription."""
-        # Remove from self.orderbook_client.market_tickers
-        # Re-subscribe with new list
+        """Remove market WITHOUT touching session."""
+        if ticker in self.active_markets:
+            # Mark end time with EXISTING session_id
+            await rl_db.execute("""
+                UPDATE rl_market_participation 
+                SET left_at = NOW()
+                WHERE session_id = $1 AND market_ticker = $2 AND left_at IS NULL
+            """, self.session_id, ticker)
+            
+            self.active_markets.remove(ticker)
+            # Update subscriptions on existing WebSocket
+            await self.orderbook_client.update_subscriptions(list(self.active_markets))
 ```
 
 **Test**: Verify markets are added/removed correctly and data flows as expected.
@@ -275,10 +359,10 @@ class OrderbookOrchestrator:
 ```python
 async def recover_on_startup(session_id: int):
     """Simple recovery: check which markets are still open."""
-    # Get last known markets from session
-    # Check if still trading (current_time < close_ts)
-    # Resume collection for open markets
-    # Mark session with recovery flag
+    # MVP: Skip markets without 'created' events entirely
+    # No tracking, no lifecycle messages for mid-stream markets
+    # Only track markets we see from creation onwards
+    # Mark session with recovery flag for monitoring
 ```
 
 **Test**: End-to-end validation that complete market lifecycles are captured.
@@ -297,8 +381,9 @@ async def recover_on_startup():
     """MVP: Simple restart recovery."""
     # 1. Start new session (don't try to resume old one)
     # 2. Connect to lifecycle stream 
-    # 3. Start collecting from any new 'created' events
-    # 4. Log that we had a restart (for data quality tracking)
+    # 3. Start collecting ONLY from new 'created' events
+    # 4. Skip any markets already mid-lifecycle (no 'created' seen)
+    # 5. Log that we had a restart (for data quality tracking)
 ```
 
 ### MVP Recovery Principles
@@ -335,12 +420,55 @@ Deferred to v2 (rare edge cases):
 
 **MVP Approach**: Start with dynamic subscription test. Use restart fallback if needed.
 
-### 2. Session Management
+### 2. Session Management (CRITICAL MVP DESIGN)
 
-**Solution**: Use existing session architecture with minimal changes
-- Track current markets in `market_tickers` array (already exists)
-- Add `lifecycle_mode` flag to session (already designed)
-- Keep it simple - enhance later if needed
+**MVP Strategy: Single Long-Running Session**
+
+**Key Principle**: ONE session per discovery run, markets dynamically join/leave within it.
+
+**Implementation**:
+```python
+class OrderbookOrchestrator:
+    def __init__(self):
+        self.session_id = None  # Set ONCE at startup, never changes
+        self.active_markets = set()  # Current subscriptions
+        
+    async def start(self):
+        # Create ONE session for entire discovery run
+        self.session_id = await create_session(mode="lifecycle_discovery")
+        # This session_id stays constant until process restart
+        
+    async def _add_market(self, ticker: str):
+        if ticker not in self.active_markets:
+            # Track participation WITHOUT creating new session
+            await db.execute("""
+                INSERT INTO rl_market_participation 
+                (session_id, market_ticker, joined_at) 
+                VALUES ($1, $2, NOW())
+            """, self.session_id, ticker)
+            
+            self.active_markets.add(ticker)
+            await self.orderbook_client.update_subscriptions(self.active_markets)
+    
+    async def _remove_market(self, ticker: str):
+        if ticker in self.active_markets:
+            # Mark participation end, keep same session
+            await db.execute("""
+                UPDATE rl_market_participation 
+                SET left_at = NOW()
+                WHERE session_id = $1 AND market_ticker = $2 AND left_at IS NULL
+            """, self.session_id, ticker)
+            
+            self.active_markets.remove(ticker)
+            await self.orderbook_client.update_subscriptions(self.active_markets)
+```
+
+**Why This Approach**:
+- ✅ **No session proliferation**: Single session_id for entire run
+- ✅ **Clean tracking**: Market participation separate from orderbook data
+- ✅ **Simple recovery**: On restart, just create new session
+- ✅ **Query friendly**: Easy to get all data from one discovery run
+- ✅ **Future-proof**: Can add session rotation later if needed
 
 ---
 
