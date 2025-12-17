@@ -136,7 +136,12 @@ class UnifiedRewardCalculator:
                     taker_fee_rate = 0.007  # 0.7% - realistic Kalshi fee
                     
                     transaction_fee = trade_value * taker_fee_rate
-                    fee_penalty = transaction_fee * self.reward_scale
+                    
+                    # Add spread-based penalty (50% of spread as additional cost)
+                    spread_penalty = 0.5 * spread_cents * quantity  # 50% of spread
+                    total_fee = transaction_fee + spread_penalty
+                    
+                    fee_penalty = total_fee * self.reward_scale
                     reward -= fee_penalty
                     
                     # 3. MARKET IMPACT COST (for large orders relative to liquidity)

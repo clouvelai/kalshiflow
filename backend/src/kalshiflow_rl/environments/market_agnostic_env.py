@@ -155,8 +155,8 @@ class MarketAgnosticKalshiEnv(gym.Env):
             initial_cash=self.config.cash_start  # Now in cents
         )
         self.action_space_handler = LimitOrderActionSpace(
-            order_manager=self.order_manager,
-            contract_size=10  # Fixed contract size
+            order_manager=self.order_manager
+            # Uses PositionConfig default sizes=[20] as single source of truth
         )
         self.reward_calculator = UnifiedRewardCalculator(
             reward_scale=0.001,  # Scale rewards for stable training

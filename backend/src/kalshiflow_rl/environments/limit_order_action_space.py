@@ -194,7 +194,6 @@ class LimitOrderActionSpace:
         self, 
         order_manager: OrderManager,
         position_config: Optional[PositionConfig] = None,
-        contract_size: int = 10,  # Deprecated - kept for backward compatibility
         pricing_strategy: str = "aggressive"
     ):
         """
@@ -202,22 +201,13 @@ class LimitOrderActionSpace:
         
         Args:
             order_manager: OrderManager instance for execution
-            position_config: Position sizing configuration (new approach)
-            contract_size: Fixed number of contracts per trade (deprecated, use position_config)
+            position_config: Position sizing configuration (defaults to PositionConfig())
             pricing_strategy: Default pricing strategy ("aggressive", "passive", "mid")
         """
         self.order_manager = order_manager
         self.position_config = position_config or PositionConfig()
         self.position_sizes = self.position_config.sizes
         self.position_validator = PositionSizeValidator(self.position_config)
-        
-        # Backward compatibility: if no position_config provided, use old contract_size
-        if position_config is None and contract_size != 10:
-            # User explicitly set contract_size, use it as default size
-            self.position_sizes = [contract_size]
-            logger.warning(f"Using deprecated contract_size={contract_size}. Consider migrating to PositionConfig.")
-        
-        self.contract_size = contract_size  # Keep for backward compatibility
         self.pricing_strategy = pricing_strategy
         
         self.action_descriptions = {
@@ -228,7 +218,7 @@ class LimitOrderActionSpace:
             LimitOrderActions.SELL_NO_LIMIT: "Place/maintain sell order for NO contracts"
         }
         
-        logger.info(f"LimitOrderActionSpace initialized with {contract_size} contract size")
+        logger.info(f"LimitOrderActionSpace initialized with position sizes: {self.position_sizes}")
     
     def get_gym_space(self) -> spaces.Discrete:
         """
@@ -281,7 +271,7 @@ class LimitOrderActionSpace:
                     # Real OrderManager in async context - might not be safe
                     logger.debug(f"Real OrderManager in async context, might skip execution for action {action}")
                     return ActionExecutionResult(
-                        action_taken=LimitOrderActions(decode_action(action, len(self.position_sizes))[0]) if 0 <= action <= 20 else LimitOrderActions.HOLD,
+                        action_taken=LimitOrderActions(decode_action(action, len(self.position_sizes))[0]) if 0 <= action <= 4 else LimitOrderActions.HOLD,
                         order_placed=False,
                         order_cancelled=False,
                         order_amended=False,
@@ -320,7 +310,7 @@ class LimitOrderActionSpace:
         since they don't actually need to be async. Now supports 21 actions with position sizing.
         """
         try:
-            if not (0 <= action <= 20):
+            if not (0 <= action <= 4):
                 return ActionExecutionResult(
                     action_taken=LimitOrderActions.HOLD,
                     order_placed=False,
@@ -396,7 +386,7 @@ class LimitOrderActionSpace:
             ActionExecutionResult with details of what was executed
         """
         try:
-            if not (0 <= action <= 20):
+            if not (0 <= action <= 4):
                 return ActionExecutionResult(
                     action_taken=LimitOrderActions.HOLD,
                     order_placed=False,
@@ -503,10 +493,10 @@ class LimitOrderActionSpace:
         any conflicting sell orders before placing the new buy order.
         
         Args:
-            position_size: Number of contracts to trade (if None, uses self.contract_size for backward compatibility)
+            position_size: Number of contracts to trade (if None, uses first position size from config)
         """
         # Use provided position_size or fallback to contract_size for backward compatibility
-        quantity = position_size if position_size is not None else self.contract_size
+        quantity = position_size if position_size is not None else self.position_sizes[0]
         # Cancel conflicting orders (any sell orders)
         open_orders = self.order_manager.get_open_orders(ticker)
         conflicting_orders = [
@@ -597,10 +587,10 @@ class LimitOrderActionSpace:
         Execute a sell action - place sell order, cancelling conflicting buys.
         
         Args:
-            position_size: Number of contracts to trade (if None, uses self.contract_size for backward compatibility)
+            position_size: Number of contracts to trade (if None, uses first position size from config)
         """
         # Use provided position_size or fallback to contract_size for backward compatibility
-        quantity = position_size if position_size is not None else self.contract_size
+        quantity = position_size if position_size is not None else self.position_sizes[0]
         # Cancel conflicting orders (any buy orders)
         open_orders = self.order_manager.get_open_orders(ticker)
         conflicting_orders = [
@@ -690,7 +680,7 @@ class LimitOrderActionSpace:
         Returns:
             Dictionary with action metadata
         """
-        if not (0 <= action <= 20):
+        if not (0 <= action <= 4):
             raise ValueError(f"Action must be in range [0, 4], got {action}")
         
         action_enum = LimitOrderActions(action)
@@ -700,7 +690,7 @@ class LimitOrderActionSpace:
             'action_name': action_enum.name,
             'description': self.action_descriptions[action_enum],
             'is_trade': action != LimitOrderActions.HOLD,
-            'contract_size': self.contract_size if action != LimitOrderActions.HOLD else 0,
+            'contract_size': self.position_sizes[0] if action != LimitOrderActions.HOLD else 0,
             'order_type': 'limit' if action != LimitOrderActions.HOLD else None,
             'requires_order_management': True
         }
@@ -733,7 +723,7 @@ class LimitOrderActionSpace:
         Returns:
             Tuple of (is_valid, reason_if_invalid)
         """
-        if not (0 <= action <= 20):
+        if not (0 <= action <= 4):
             return False, f"Action {action} not in valid range [0, 4]"
         
         # HOLD is always valid
@@ -792,8 +782,26 @@ class LimitOrderActionSpace:
         logger.info(f"Pricing strategy updated to: {strategy}")
     
     def get_contract_size(self) -> int:
-        """Get the fixed contract size."""
-        return self.contract_size
+        """Get the default contract size.
+        
+        Deprecated: Use get_position_sizes() for multi-size support.
+        Returns first size for backward compatibility.
+        """
+        if len(self.position_sizes) > 1:
+            logger.warning("get_contract_size() called with multiple sizes configured. "
+                          "Use get_position_sizes() or get_position_size_for_action().")
+        return self.position_sizes[0]
+    
+    def get_position_sizes(self) -> List[int]:
+        """Get all configured position sizes."""
+        return self.position_sizes
+    
+    def get_position_size_for_action(self, action: int) -> int:
+        """Get the position size for a specific action."""
+        if action == 0:  # HOLD
+            return 0
+        _, size_index = decode_action(action, len(self.position_sizes))
+        return self.position_sizes[size_index]
     
     def get_action_mask(
         self,
@@ -848,7 +856,7 @@ class LimitOrderActionSpace:
             
         # Estimate worst-case cost (buying at highest ask)
         max_ask = max(max(orderbook.yes_asks.keys()), max(orderbook.no_asks.keys()) if orderbook.no_asks else 0)
-        estimated_cost = self.contract_size * max_ask / 100.0
+        estimated_cost = self.position_sizes[0] * max_ask / 100.0
         
         return cash_balance >= estimated_cost
     
@@ -879,7 +887,7 @@ class LimitOrderActionSpace:
         
         position_diff = target_position - current_position
         
-        if abs(position_diff) < self.contract_size:
+        if abs(position_diff) < self.position_sizes[0]:
             return 0, f"Position difference ({position_diff}) less than contract size"
         
         if position_diff > 0:  # Need more YES position
@@ -904,7 +912,7 @@ class LimitOrderActionSpace:
         return {
             "action_space_type": "LimitOrderActionSpace",
             "action_count": 5,
-            "contract_size": self.contract_size,
+            "contract_size": self.position_sizes[0],
             "pricing_strategy": self.pricing_strategy,
             "actions": self.get_all_actions_info(),
             "constraints": {
@@ -953,7 +961,7 @@ class LimitOrderActionSpace:
         """Synchronous version of _execute_buy_action for SimulatedOrderManager."""
         try:
             # Use provided position_size or fallback to contract_size for backward compatibility
-            quantity = position_size if position_size is not None else self.contract_size
+            quantity = position_size if position_size is not None else self.position_sizes[0]
             # Calculate limit price using SimulatedOrderManager's method
             limit_price = self.order_manager._calculate_limit_price(
                 OrderSide.BUY, contract_side, orderbook, self.pricing_strategy
@@ -1018,7 +1026,7 @@ class LimitOrderActionSpace:
         """Synchronous version of _execute_sell_action for SimulatedOrderManager."""
         try:
             # Use provided position_size or fallback to contract_size for backward compatibility
-            quantity = position_size if position_size is not None else self.contract_size
+            quantity = position_size if position_size is not None else self.position_sizes[0]
             # Calculate limit price using SimulatedOrderManager's method
             limit_price = self.order_manager._calculate_limit_price(
                 OrderSide.SELL, contract_side, orderbook, self.pricing_strategy
