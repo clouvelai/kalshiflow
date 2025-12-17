@@ -4,6 +4,46 @@ Last Updated: 2025-12-16 13:00
 
 ## Critical Defects (Training Blockers)
 
+### CRITICAL: Session 12 Model Has Catastrophically Collapsed to SELL_NO-Only Policy
+**Severity**: CRITICAL - MODEL IS COMPLETELY BROKEN
+**Component**: session12_ppo_final.zip model
+**Description**: Model has collapsed to executing 95.87% SELL_NO actions - essentially a degenerate one-action policy
+**Evidence**:
+- Training statistics show 962,049 SELL_NO actions out of 1,003,520 total (95.87%)
+- Live trading shows 9+ consecutive SELL_NO orders with zero other actions
+- Entropy collapsed to 0.229 (healthy models have >1.0)
+- Last 10 training episodes used almost exclusively action 4 (SELL_NO)
+
+**Technical Analysis**:
+1. **Policy Network Bias**: SELL_YES has highest bias (0.1483) but model still chooses SELL_NO due to:
+   - Reward function systematically favoring SELL_NO
+   - Training data with market conditions biased toward NO selling
+   - Exploration collapse preventing discovery of other profitable strategies
+
+2. **Feature Space Issues**: 
+   - 7 features have zero variance (constant values)
+   - Poor feature distribution health flagged in training
+   - Model may be ignoring most features and acting on spurious correlations
+
+3. **Reward Signal Problem**:
+   - SELL_NO average reward: +1.32 per action
+   - All other actions have negative average rewards
+   - Portfolio consistently decreasing (-1634 average recent change)
+
+**Why This Happened**:
+- PPO entropy coefficient (0.01) too low to maintain exploration
+- Session 12 data may have systematic bias in market conditions
+- No action masking or diversity requirements during training
+- Reward function doesn't penalize one-sided trading
+
+**Impact**: 
+- **THIS MODEL WILL LOSE MONEY IN PRODUCTION**
+- Creates massive one-sided risk exposure
+- No ability to profit from YES movements
+- Will drain account through accumulated spread costs
+
+**Verdict**: This model is fundamentally broken and exhibits textbook policy collapse. It has learned a degenerate strategy of always selling NO regardless of market conditions. DO NOT USE IN ANY TRADING ENVIRONMENT.
+
 ### 0. RLModelSelector Action Validation Bug - BLOCKS 76% OF ACTIONS
 **Severity**: CRITICAL (Production Blocker)
 **Component**: RLModelSelector in action_selector.py

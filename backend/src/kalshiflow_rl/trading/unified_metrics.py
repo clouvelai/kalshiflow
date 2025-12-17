@@ -121,38 +121,55 @@ class UnifiedRewardCalculator:
                 action_taken = step_info and step_info.get('action_taken', False)
                 
                 if action_taken:
-                    # TRADING ACTION - Apply aggressive penalties
+                    # TRADING ACTION - Apply realistic penalties based on actual execution
                     self.trades_this_episode += 1
                     
                     quantity = step_info.get('quantity', 10)
                     execution_price = step_info.get('execution_price', 50)  # Default mid price
                     spread_cents = step_info.get('spread_cents', 2)
+                    liquidity_impact_ratio = step_info.get('liquidity_impact_ratio', 0.1)
+                    price_levels_hit = step_info.get('price_levels_hit', 1)
+                    realistic_execution = step_info.get('realistic_execution', False)
+                    action_failed = step_info.get('action_failed', False)
                     
                     # Calculate trade value
                     trade_value = quantity * execution_price  # In cents
                     
                     # 2. REALISTIC TRANSACTION FEES
-                    # Kalshi's actual taker fee structure
+                    # Kalshi's actual taker fee structure - INCREASED for realism
                     taker_fee_rate = 0.007  # 0.7% - realistic Kalshi fee
                     
                     transaction_fee = trade_value * taker_fee_rate
                     
-                    # Add spread-based penalty (50% of spread as additional cost)
-                    spread_penalty = 0.5 * spread_cents * quantity  # 50% of spread
+                    # Add spread-based penalty (75% of spread as additional cost for realistic crossing)
+                    spread_penalty = 0.75 * spread_cents * quantity  # Increased from 50% to 75%
+                    
+                    # Additional penalty for walking multiple price levels
+                    if realistic_execution and price_levels_hit > 1:
+                        # Multi-level penalty: 0.1% per additional level
+                        multi_level_penalty = trade_value * 0.001 * (price_levels_hit - 1)
+                        spread_penalty += multi_level_penalty
+                        
                     total_fee = transaction_fee + spread_penalty
                     
+                    # 3. MARKET IMPACT COST (for large orders relative to liquidity)
+                    if liquidity_impact_ratio > 0.05:  # If taking >5% of available liquidity (reduced threshold)
+                        # Quadratic impact function - gets expensive quickly for large orders
+                        market_impact_rate = min(0.05, liquidity_impact_ratio ** 2)  # Up to 5% impact
+                        market_impact = trade_value * market_impact_rate
+                        total_fee += market_impact
+                        impact_penalty = market_impact * self.reward_scale
+                    else:
+                        impact_penalty = 0.0
+                    
+                    # 4. FAILED ACTION PENALTY
+                    if action_failed:
+                        # Heavy penalty for actions that couldn't execute due to liquidity constraints
+                        failed_action_penalty = trade_value * 0.02  # 2% penalty for failed actions
+                        total_fee += failed_action_penalty
+                        
                     fee_penalty = total_fee * self.reward_scale
                     reward -= fee_penalty
-                    
-                    # 3. MARKET IMPACT COST (for large orders relative to liquidity)
-                    available_liquidity = step_info.get('available_liquidity', 1000)
-                    if available_liquidity > 0:
-                        liquidity_ratio = quantity / available_liquidity
-                        if liquidity_ratio > 0.1:  # If taking >10% of available liquidity
-                            # Realistic market impact
-                            market_impact = (liquidity_ratio ** 2) * execution_price * 0.01  # 1% base impact
-                            impact_penalty = market_impact * self.reward_scale
-                            reward -= impact_penalty
                     
                 # No HOLD bonus - let profit/loss teach when to hold
                 
@@ -175,13 +192,21 @@ class UnifiedRewardCalculator:
                 
                 # Detailed logging every 20 steps for debugging
                 if self.steps_this_episode % 20 == 0:
-                    logger.info(
-                        f"Step {self.steps_this_episode} Reward Breakdown: "
-                        f"Base={base_reward:.6f}, "
-                        f"Fees=-{fee_penalty:.6f}, "
-                        f"Impact=-{impact_penalty:.6f}, "
-                        f"Total={reward:.6f}"
-                    )
+                    if action_taken:
+                        logger.info(
+                            f"Step {self.steps_this_episode} Reward Breakdown: "
+                            f"Base={base_reward:.6f}, "
+                            f"TotalFees=-{fee_penalty:.6f}, "
+                            f"ImpactRatio={liquidity_impact_ratio:.3f}, "
+                            f"PriceLevels={price_levels_hit}, "
+                            f"Failed={action_failed}, "
+                            f"Total={reward:.6f}"
+                        )
+                    else:
+                        logger.info(
+                            f"Step {self.steps_this_episode} Reward: "
+                            f"Base={base_reward:.6f}, HOLD action"
+                        )
             
             # Update for next step
             self.previous_portfolio_value = current_portfolio_value

@@ -1,6 +1,55 @@
 # RL Training Improvements - Priority Ranked
 
-Last Updated: 2025-12-16 (Updated with Observation Space Review)
+Last Updated: 2025-12-17 (CRITICAL UPDATE: Session 12 Model Policy Collapse)
+
+## CRITICAL: Session 12 Model Has Collapsed - Immediate Action Required
+
+### 0.1 IMMEDIATE: Replace Broken Session 12 Model
+**Status**: 🚨 **URGENT - Model is executing 96% SELL_NO only**
+**Priority**: CRITICAL - Financial risk if deployed
+**Evidence**: Training shows 962,049 SELL_NO out of 1,003,520 actions (95.87%)
+
+**Immediate Actions**:
+1. **Stop using session12_ppo_final.zip immediately**
+2. **Revert to session32_final.zip or use hardcoded HOLD**
+3. **Do NOT trade with current model - it will lose money**
+
+**Root Cause Analysis**:
+- Entropy coefficient too low (0.01) → exploration collapsed
+- Reward function biased toward SELL_NO (+1.32 avg reward vs negative for others)
+- 7 features with zero variance in training data
+- No action diversity requirements or masking
+
+### 0.2 Retrain with Anti-Collapse Measures
+**Priority**: CRITICAL - Must fix before any production use
+**Implementation**: 
+```python
+# Key changes for retraining
+model = PPO(
+    "MlpPolicy", env,
+    ent_coef=0.1,    # 10x increase from 0.01
+    clip_range=0.1,   # More conservative updates
+    target_kl=0.01,   # Early stopping on divergence
+    n_steps=256       # Smaller batches
+)
+
+# Add to reward function
+def add_diversity_bonus(action_history):
+    action_entropy = calculate_entropy(action_history[-100:])
+    return action_entropy * 0.1  # Reward action diversity
+
+# Implement action masking
+if consecutive_same_actions > 3:
+    mask_repeated_action()
+```
+
+**Validation Requirements**:
+- Entropy must stay > 1.0 throughout training
+- No action should exceed 40% of total actions
+- Test on multiple sessions (not just session 12)
+- Verify balanced action distribution in paper trading
+
+Last Updated: 2025-12-17 (CRITICAL UPDATE: Session 12 Model Policy Collapse)
 
 ## URGENT: Simulation Fidelity Issues (✅ RESOLVED - Dec 15, 2024)
 

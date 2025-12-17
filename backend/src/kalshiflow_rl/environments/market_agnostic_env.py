@@ -12,12 +12,13 @@ from dataclasses import dataclass
 import numpy as np
 import gymnasium as gym
 from gymnasium import spaces
+import time
 
 from .session_data_loader import SessionDataPoint, MarketSessionView
 from .feature_extractors import build_observation_from_session_data
 from .limit_order_action_space import LimitOrderActionSpace
 from ..trading.unified_metrics import UnifiedRewardCalculator
-from ..trading.order_manager import SimulatedOrderManager
+from ..trading.order_manager import SimulatedOrderManager, ConsumedLiquidity
 from ..data.orderbook_state import OrderbookState
 
 logger = logging.getLogger("kalshiflow_rl.environments.market_agnostic_env")
@@ -108,6 +109,10 @@ class MarketAgnosticKalshiEnv(gym.Env):
         # Observation history for temporal features
         self.observation_history: List[SessionDataPoint] = []
         
+        # Consumed liquidity tracking to prevent infinite liquidity exploitation
+        self.consumed_liquidity: Dict[str, ConsumedLiquidity] = {}  # key: f"{market}_{side}_{price}"
+        self.liquidity_decay_time: float = 5.0  # Liquidity restored after 5 seconds
+        
         # Define gym spaces using calculated observation dimension
         self.observation_space = spaces.Box(
             low=-np.inf, 
@@ -149,6 +154,9 @@ class MarketAgnosticKalshiEnv(gym.Env):
         self.episode_length = self.market_view.get_episode_length()
         self.observation_history = []
         self._is_reset = True  # Mark environment as reset
+        
+        # Clear consumed liquidity for new episode to prevent cross-episode contamination
+        self.consumed_liquidity.clear()
         
         # Initialize fresh components for this episode
         self.order_manager = SimulatedOrderManager(
@@ -215,30 +223,82 @@ class MarketAgnosticKalshiEnv(gym.Env):
                     self.current_market
                 )
                 
-                # Execute action using action space handler (no async needed)
-                try:
-                    action_result = self.action_space_handler.execute_action_sync(
-                        action, self.current_market, orderbook
-                    )
-                    # Fix #3: Process action results for better debugging and feedback
-                    if action_result is None:
-                        logger.debug(f"Invalid action {action} at step {self.current_step}")
-                    elif hasattr(action_result, 'status'):
-                        if action_result.status == 'success':
-                            if hasattr(action_result, 'order') and action_result.order:
-                                order = action_result.order
-                                logger.debug(
-                                    f"Action {action} executed: {order.side.value if hasattr(order, 'side') else 'N/A'} "
-                                    f"{order.quantity if hasattr(order, 'quantity') else 0} contracts"
+                # Apply realistic orderbook constraints BEFORE executing action
+                constraint_result = self._apply_realistic_orderbook_constraints(
+                    orderbook, action, self.current_market
+                )
+                
+                # Only execute if constraints allow it
+                if constraint_result['can_execute']:
+                    try:
+                        # Pass consumed liquidity state to OrderManager for validation
+                        if hasattr(self.order_manager, 'consumed_liquidity'):
+                            self.order_manager.consumed_liquidity = self.consumed_liquidity
+                        
+                        action_result = self.action_space_handler.execute_action_sync(
+                            action, self.current_market, orderbook
+                        )
+                        
+                        # Track liquidity consumption if action was executed successfully
+                        if (action_result and hasattr(action_result, 'status') and 
+                            action_result.status == 'success' and constraint_result['execution_levels']):
+                            
+                            # Track consumption for each price level hit
+                            for level in constraint_result['execution_levels']:
+                                # Determine book side from action
+                                from .limit_order_action_space import decode_action
+                                base_action, _ = decode_action(action)
+                                
+                                if base_action == 1:  # BUY_YES
+                                    book_side = 'yes_ask'
+                                elif base_action == 2:  # SELL_YES  
+                                    book_side = 'yes_bid'
+                                elif base_action == 3:  # BUY_NO
+                                    book_side = 'no_ask'  
+                                else:  # SELL_NO
+                                    book_side = 'no_bid'
+                                
+                                self._track_liquidity_consumption(
+                                    self.current_market,
+                                    book_side,
+                                    level['price'],
+                                    level['quantity']
                                 )
-                        elif action_result.status == 'hold':
-                            logger.debug(f"Action {action}: HOLD - no order placed")
+                            
+                            logger.debug(
+                                f"Action {action} executed with realistic constraints: "
+                                f"{constraint_result['available_quantity']} contracts across "
+                                f"{len(constraint_result['execution_levels'])} price levels, "
+                                f"VWAP: {constraint_result['total_cost'] // constraint_result['available_quantity'] if constraint_result['available_quantity'] > 0 else 0}¢"
+                            )
+                        
+                        # Process action results for debugging
+                        if action_result is None:
+                            logger.debug(f"Invalid action {action} at step {self.current_step}")
+                        elif hasattr(action_result, 'status'):
+                            if action_result.status == 'success':
+                                if hasattr(action_result, 'order') and action_result.order:
+                                    order = action_result.order
+                                    logger.debug(
+                                        f"Action {action} executed: {order.side.value if hasattr(order, 'side') else 'N/A'} "
+                                        f"{order.quantity if hasattr(order, 'quantity') else 0} contracts"
+                                    )
+                            elif action_result.status == 'hold':
+                                logger.debug(f"Action {action}: HOLD - no order placed")
+                            else:
+                                logger.debug(f"Action {action} status: {action_result.status}")
                         else:
-                            logger.debug(f"Action {action} status: {action_result.status}")
-                    else:
-                        logger.debug(f"Action {action} result received")
-                except Exception as e:
-                    logger.warning(f"Action execution failed: {e}")
+                            logger.debug(f"Action {action} result received")
+                            
+                    except Exception as e:
+                        logger.warning(f"Action execution failed: {e}")
+                else:
+                    # Action blocked by realistic constraints
+                    logger.debug(
+                        f"Action {action} blocked by liquidity constraints: "
+                        f"available_quantity={constraint_result['available_quantity']}, "
+                        f"can_execute={constraint_result['can_execute']}"
+                    )
                     
             # Update observation history
             self.observation_history.append(current_data)
@@ -254,57 +314,67 @@ class MarketAgnosticKalshiEnv(gym.Env):
                 self._get_current_market_prices()
             )
             
-            # Prepare step info for reward calculation
+            # Prepare step info for reward calculation with realistic transaction costs
             step_info = {}
             if action != 0:  # Non-HOLD action
-                # Decode action to get actual quantity
-                from .limit_order_action_space import decode_action, PositionConfig
-                base_action, size_index = decode_action(action)
-                position_config = PositionConfig()
-                actual_quantity = position_config.sizes[size_index] if size_index < len(position_config.sizes) else 10
+                # Use constraint result if action was attempted
+                orderbook_available = (self.current_market in current_data.markets_data)
+                constraint_applied = orderbook_available and 'constraint_result' in locals()
                 
-                # Get spread and liquidity information from orderbook
-                if self.current_market in current_data.markets_data:
+                if constraint_applied and constraint_result['can_execute']:
+                    # Use realistic constraint data for reward calculation
+                    total_quantity = constraint_result['available_quantity']
+                    total_cost = constraint_result['total_cost']
+                    vwap_price = total_cost // total_quantity if total_quantity > 0 else 50
+                    
+                    # Calculate spread from orderbook for fee calculation
                     market_data = current_data.markets_data[self.current_market]
                     yes_bids = market_data.get('yes_bids', {})
                     yes_asks = market_data.get('yes_asks', {})
-                    no_bids = market_data.get('no_bids', {})
-                    no_asks = market_data.get('no_asks', {})
                     
-                    # Calculate spread and execution price based on action side
-                    if base_action in [1, 3]:  # BUY actions (YES or NO)
-                        if base_action == 1:  # BUY_YES
-                            best_yes_ask = min(map(int, yes_asks.keys())) if yes_asks else 50
-                            execution_price = best_yes_ask
-                            available_liquidity = sum(yes_asks.values()) if yes_asks else 0
-                            best_yes_bid = max(map(int, yes_bids.keys())) if yes_bids else 50
-                            spread_cents = best_yes_ask - best_yes_bid
-                        else:  # BUY_NO
-                            best_no_ask = min(map(int, no_asks.keys())) if no_asks else 50
-                            execution_price = best_no_ask
-                            available_liquidity = sum(no_asks.values()) if no_asks else 0
-                            best_no_bid = max(map(int, no_bids.keys())) if no_bids else 50
-                            spread_cents = best_no_ask - best_no_bid
-                    else:  # SELL actions
-                        if base_action == 2:  # SELL_YES
-                            best_yes_bid = max(map(int, yes_bids.keys())) if yes_bids else 50
-                            execution_price = best_yes_bid
-                            available_liquidity = sum(yes_bids.values()) if yes_bids else 0
-                            best_yes_ask = min(map(int, yes_asks.keys())) if yes_asks else 50
-                            spread_cents = best_yes_ask - best_yes_bid
-                        else:  # SELL_NO
-                            best_no_bid = max(map(int, no_bids.keys())) if no_bids else 50
-                            execution_price = best_no_bid
-                            available_liquidity = sum(no_bids.values()) if no_bids else 0
-                            best_no_ask = min(map(int, no_asks.keys())) if no_asks else 50
-                            spread_cents = best_no_ask - best_no_bid
+                    best_yes_ask = min(map(int, yes_asks.keys())) if yes_asks else 50
+                    best_yes_bid = max(map(int, yes_bids.keys())) if yes_bids else 50
+                    spread_cents = max(best_yes_ask - best_yes_bid, 1)  # Minimum 1 cent
+                    
+                    # Calculate liquidity impact - large orders relative to available liquidity
+                    total_available_liquidity = sum(level['original_quantity'] 
+                                                  for level in constraint_result['execution_levels'])
+                    liquidity_impact_ratio = total_quantity / max(total_available_liquidity, 1)
                     
                     step_info = {
                         'action_taken': True,
-                        'spread_cents': max(spread_cents, 1),  # Minimum 1 cent spread
-                        'quantity': actual_quantity,
-                        'execution_price': execution_price,
-                        'available_liquidity': int(available_liquidity)  # Convert to int for safety
+                        'spread_cents': spread_cents,
+                        'quantity': total_quantity,
+                        'execution_price': vwap_price,
+                        'available_liquidity': total_available_liquidity,
+                        'liquidity_impact_ratio': liquidity_impact_ratio,
+                        'total_cost': total_cost,
+                        'price_levels_hit': len(constraint_result['execution_levels']),
+                        'realistic_execution': True  # Flag to indicate realistic pricing was used
+                    }
+                    
+                    logger.debug(
+                        f"Realistic step_info: quantity={total_quantity}, VWAP={vwap_price}¢, "
+                        f"impact_ratio={liquidity_impact_ratio:.2f}, levels_hit={len(constraint_result['execution_levels'])}"
+                    )
+                else:
+                    # Fallback for failed actions or missing orderbook data
+                    from .limit_order_action_space import decode_action, PositionConfig
+                    base_action, size_index = decode_action(action)
+                    position_config = PositionConfig()
+                    attempted_quantity = position_config.sizes[size_index] if size_index < len(position_config.sizes) else 10
+                    
+                    step_info = {
+                        'action_taken': False,  # Action was attempted but failed
+                        'spread_cents': 10,  # Penalty spread for failed actions
+                        'quantity': attempted_quantity,
+                        'execution_price': 50,  # Default mid price
+                        'available_liquidity': 0,  # No liquidity available
+                        'liquidity_impact_ratio': 1.0,  # Maximum impact for failed action
+                        'total_cost': attempted_quantity * 50,
+                        'price_levels_hit': 0,
+                        'realistic_execution': False,
+                        'action_failed': True  # Flag for failed action
                     }
             
             # Calculate reward with transaction fee penalty
@@ -474,10 +544,200 @@ class MarketAgnosticKalshiEnv(gym.Env):
         
         return prices
     
+    def _cleanup_expired_liquidity(self) -> None:
+        """
+        Remove expired consumed liquidity records.
+        
+        Consumed liquidity expires after liquidity_decay_time seconds and is available again.
+        """
+        current_time = time.time()
+        expired_keys = [
+            key for key, consumed in self.consumed_liquidity.items()
+            if consumed.is_expired()
+        ]
+        
+        for key in expired_keys:
+            del self.consumed_liquidity[key]
+        
+        if expired_keys:
+            logger.debug(f"Cleaned up {len(expired_keys)} expired liquidity records in environment")
+    
+    def _get_available_liquidity(
+        self, 
+        market_ticker: str, 
+        side: str, 
+        price: int, 
+        original_quantity: int
+    ) -> int:
+        """
+        Get available liquidity after accounting for consumption.
+        
+        Args:
+            market_ticker: Market ticker
+            side: Book side ('yes_bid', 'yes_ask', 'no_bid', 'no_ask') 
+            price: Price level
+            original_quantity: Original quantity at this level
+            
+        Returns:
+            Available quantity after consumption
+        """
+        liquidity_key = f"{market_ticker}_{side}_{price}"
+        
+        if liquidity_key in self.consumed_liquidity:
+            return self.consumed_liquidity[liquidity_key].get_available_quantity(original_quantity)
+        
+        return original_quantity
+    
+    def _track_liquidity_consumption(
+        self,
+        market_ticker: str,
+        side: str, 
+        price: int,
+        consumed_quantity: int
+    ) -> None:
+        """
+        Track consumed liquidity to prevent double-filling at same price levels.
+        
+        Args:
+            market_ticker: Market ticker
+            side: Book side ('yes_bid', 'yes_ask', 'no_bid', 'no_ask')
+            price: Price level where liquidity was consumed
+            consumed_quantity: Quantity consumed at this level
+        """
+        liquidity_key = f"{market_ticker}_{side}_{price}"
+        
+        if liquidity_key in self.consumed_liquidity:
+            # Update existing consumed liquidity
+            self.consumed_liquidity[liquidity_key].consumed_quantity += consumed_quantity
+            self.consumed_liquidity[liquidity_key].timestamp = time.time()
+        else:
+            # Create new consumed liquidity record
+            self.consumed_liquidity[liquidity_key] = ConsumedLiquidity(
+                ticker=market_ticker,
+                side=side,
+                price=price,
+                consumed_quantity=consumed_quantity,
+                timestamp=time.time(),
+                decay_time=self.liquidity_decay_time
+            )
+        
+        logger.debug(f"Tracked liquidity consumption: {liquidity_key} -> {consumed_quantity} contracts")
+    
+    def _apply_realistic_orderbook_constraints(
+        self,
+        orderbook: OrderbookState,
+        action: int,
+        market_ticker: str
+    ) -> Dict[str, Any]:
+        """
+        Apply realistic orderbook constraints including:
+        1. Liquidity consumption tracking
+        2. Price walking for large orders
+        3. Available quantity validation
+        
+        Args:
+            orderbook: Current orderbook state
+            action: Integer action from agent
+            market_ticker: Market ticker
+            
+        Returns:
+            Dict with constraint results:
+            - can_execute: bool - whether action can be executed
+            - available_quantity: int - quantity available after constraints
+            - execution_levels: List[Dict] - price levels for execution with quantities
+            - total_cost: int - total cost including slippage
+        """
+        # Clean up expired liquidity first
+        self._cleanup_expired_liquidity()
+        
+        # Decode action to understand what agent wants to do
+        if action == 0:  # HOLD action
+            return {
+                'can_execute': True,
+                'available_quantity': 0,
+                'execution_levels': [],
+                'total_cost': 0
+            }
+        
+        # For trading actions, get action details
+        from .limit_order_action_space import decode_action, PositionConfig
+        base_action, size_index = decode_action(action)
+        position_config = PositionConfig()
+        requested_quantity = position_config.sizes[size_index] if size_index < len(position_config.sizes) else 20
+        
+        # Determine which side of the book we're hitting
+        if base_action == 1:  # BUY_YES
+            book_side = 'yes_ask'
+            target_book = orderbook.yes_asks
+        elif base_action == 2:  # SELL_YES  
+            book_side = 'yes_bid'
+            target_book = orderbook.yes_bids
+        elif base_action == 3:  # BUY_NO
+            book_side = 'no_ask'  
+            # For NO contracts, convert from YES book
+            target_book = {100 - price: size for price, size in orderbook.yes_bids.items()}
+        else:  # SELL_NO
+            book_side = 'no_bid'
+            # For NO contracts, convert from YES book
+            target_book = {100 - price: size for price, size in orderbook.yes_asks.items()}
+        
+        if not target_book:
+            return {
+                'can_execute': False,
+                'available_quantity': 0,
+                'execution_levels': [],
+                'total_cost': 0
+            }
+        
+        # Sort levels for price walking (buy = ascending, sell = descending)
+        is_buy = base_action in [1, 3]  # BUY_YES or BUY_NO
+        sorted_levels = sorted(target_book.items(), key=lambda x: x[0], reverse=not is_buy)
+        
+        # Walk through orderbook levels applying liquidity constraints
+        execution_levels = []
+        total_filled = 0
+        total_cost = 0
+        remaining_to_fill = requested_quantity
+        
+        for price, original_quantity in sorted_levels:
+            if remaining_to_fill <= 0:
+                break
+            
+            # Check available liquidity after consumption
+            available_quantity = self._get_available_liquidity(
+                market_ticker, book_side, price, original_quantity
+            )
+            
+            if available_quantity <= 0:
+                continue  # No liquidity available at this level
+            
+            # Calculate how much we can fill at this level
+            level_fill = min(remaining_to_fill, available_quantity)
+            
+            if level_fill > 0:
+                execution_levels.append({
+                    'price': price,
+                    'quantity': level_fill,
+                    'original_quantity': original_quantity,
+                    'available_quantity': available_quantity
+                })
+                
+                total_filled += level_fill
+                total_cost += level_fill * price
+                remaining_to_fill -= level_fill
+        
+        return {
+            'can_execute': total_filled > 0,
+            'available_quantity': total_filled,
+            'execution_levels': execution_levels,
+            'total_cost': total_cost
+        }
+
     def close(self) -> None:
         """Clean up resources."""
         self.reward_calculator = None
         self.order_manager = None
         self.action_space_handler = None
         self.observation_history = []
+        self.consumed_liquidity.clear()
         logger.info("Environment closed and resources cleaned up")
