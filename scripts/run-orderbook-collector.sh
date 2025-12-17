@@ -202,5 +202,4 @@ echo "----------------------------------------"
 exec uv run uvicorn kalshiflow_rl.app:app \
     --host 0.0.0.0 \
     --port "$PORT" \
-    --log-level info \
-    --reload
+    --log-level info
