@@ -57,7 +57,7 @@ class RLConfig:
         
         # Market Discovery Settings
         self.RL_MARKET_MODE: str = os.getenv("RL_MARKET_MODE", "discovery")  # "discovery" or "config"
-        self.ORDERBOOK_MARKET_LIMIT: int = int(os.getenv("ORDERBOOK_MARKET_LIMIT", "100"))  # Max markets for discovery mode
+        self.ORDERBOOK_MARKET_LIMIT: int = int(os.getenv("RL_ORDERBOOK_MARKET_LIMIT", "100"))  # Max markets for discovery mode
         
         # Orderbook Ingestion Settings
         self.ORDERBOOK_QUEUE_BATCH_SIZE: int = int(os.getenv("RL_ORDERBOOK_BATCH_SIZE", "100"))
