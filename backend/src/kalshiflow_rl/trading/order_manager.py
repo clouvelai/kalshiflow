@@ -1247,10 +1247,10 @@ class SimulatedOrderManager(OrderManager):
             # For NO contracts, we need to construct the effective book
             if order.side == OrderSide.BUY:
                 # Buying NO = selling YES, so we look at YES bids (which become NO asks)
-                target_book = {99 - price: size for price, size in orderbook.yes_bids.items()}
+                target_book = {100 - price: size for price, size in orderbook.yes_bids.items()}
             else:
                 # Selling NO = buying YES, so we look at YES asks (which become NO bids)
-                target_book = {99 - price: size for price, size in orderbook.yes_asks.items()}
+                target_book = {100 - price: size for price, size in orderbook.yes_asks.items()}
         
         if best_bid is None or best_ask is None:
             return {'can_fill': False, 'filled_quantity': 0, 'vwap_price': order.limit_price, 'consumed_levels': []}
@@ -1314,11 +1314,11 @@ class SimulatedOrderManager(OrderManager):
         else:  # NO contracts
             if order.side == OrderSide.BUY:
                 # Buying NO = walking YES bids (converted to NO asks)
-                book_levels = [(99 - price, size) for price, size in orderbook.yes_bids.items()]
+                book_levels = [(100 - price, size) for price, size in orderbook.yes_bids.items()]
                 book_side = 'no_ask'
             else:
                 # Selling NO = walking YES asks (converted to NO bids)
-                book_levels = [(99 - price, size) for price, size in orderbook.yes_asks.items()]
+                book_levels = [(100 - price, size) for price, size in orderbook.yes_asks.items()]
                 book_side = 'no_bid'
         
         if not book_levels:
@@ -1670,10 +1670,10 @@ class SimulatedOrderManager(OrderManager):
             # For NO contracts, we need to consider the derived book
             if side == OrderSide.BUY:
                 # Buying NO = derived from YES bids
-                relevant_book = {99 - price: size for price, size in orderbook.yes_bids.items()}
+                relevant_book = {100 - price: size for price, size in orderbook.yes_bids.items()}
             else:
                 # Selling NO = derived from YES asks  
-                relevant_book = {99 - price: size for price, size in orderbook.yes_asks.items()}
+                relevant_book = {100 - price: size for price, size in orderbook.yes_asks.items()}
         
         if not relevant_book:
             return 50  # Default mid-market if no book

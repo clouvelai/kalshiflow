@@ -4,6 +4,9 @@ Live Observation Adapter for Kalshi Trading Actor MVP.
 Converts real-time SharedOrderbookState data to training-consistent 52-feature observations
 using the same feature extraction functions as training. Maintains sliding window history
 for temporal feature computation.
+
+Features include improved bid_ask_depth_ratio (log transform) and microprice features
+for enhanced short-term predictive power.
 """
 
 import asyncio

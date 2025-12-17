@@ -1419,14 +1419,14 @@ class KalshiMultiMarketOrderManager:
                     if remaining_count < local_order.quantity:
                         # Process remaining fill
                         filled_quantity = local_order.quantity - remaining_count
-                        # Get fill price - always use yes_price (NO price can be derived as 99 - yes_price)
+                        # Get fill price - always use yes_price (NO price can be derived as 100 - yes_price) [FIXED: was 99-price]
                         # This matches the pattern used elsewhere in the codebase
                         yes_price = kalshi_order.get("yes_price", local_order.limit_price)
                         if local_order.contract_side == ContractSide.YES:
                             fill_price = yes_price
                         else:
                             # Derive NO price from YES price (consistent with limit price calculation)
-                            fill_price = 99 - yes_price
+                            fill_price = 100 - yes_price
                         
                         # Option B cash management
                         if local_order.side == OrderSide.BUY:
@@ -1511,14 +1511,14 @@ class KalshiMultiMarketOrderManager:
             fill_count: Number of contracts filled
             stats: Statistics dictionary
         """
-        # Get fill price - always use yes_price (NO price can be derived as 99 - yes_price)
+        # Get fill price - always use yes_price (NO price can be derived as 100 - yes_price) [FIXED: was 99-price]
         # This matches the pattern used elsewhere in the codebase
         yes_price = kalshi_order.get("yes_price", local_order.limit_price)
         if local_order.contract_side == ContractSide.YES:
             fill_price = yes_price
         else:
             # Derive NO price from YES price (consistent with limit price calculation)
-            fill_price = 99 - yes_price
+            fill_price = 100 - yes_price
         
         # Process fill through existing logic
         fill_cost = (fill_price / 100.0) * fill_count
@@ -1588,14 +1588,14 @@ class KalshiMultiMarketOrderManager:
             logger.error(f"Unknown action: {kalshi_action}")
             return
         
-        # Get order details - always use yes_price (NO price can be derived as 99 - yes_price)
+        # Get order details - always use yes_price (NO price can be derived as 100 - yes_price) [FIXED: was 99-price]
         # This matches the pattern used elsewhere in the codebase
         yes_price = kalshi_order.get("yes_price", 50)
         if contract_side == ContractSide.YES:
             limit_price = yes_price
         else:
             # Derive NO price from YES price (consistent with limit price calculation)
-            limit_price = 99 - yes_price
+            limit_price = 100 - yes_price
         
         remaining_count = kalshi_order.get("remaining_count", 0)
         initial_count = kalshi_order.get("initial_count", remaining_count)
@@ -1621,14 +1621,14 @@ class KalshiMultiMarketOrderManager:
             )
             # Still process fills if order was filled to update positions
             if status == OrderStatus.FILLED and fill_count > 0:
-                # Get fill price - always use yes_price (NO price can be derived as 99 - yes_price)
+                # Get fill price - always use yes_price (NO price can be derived as 100 - yes_price) [FIXED: was 99-price]
                 # This matches the pattern used elsewhere in the codebase
                 yes_price = kalshi_order.get("yes_price", limit_price)
                 if contract_side == ContractSide.YES:
                     fill_price = yes_price
                 else:
                     # Derive NO price from YES price (consistent with limit price calculation)
-                    fill_price = 99 - yes_price
+                    fill_price = 100 - yes_price
                 # Create temporary order info for position update
                 temp_order = OrderInfo(
                     order_id="temp",

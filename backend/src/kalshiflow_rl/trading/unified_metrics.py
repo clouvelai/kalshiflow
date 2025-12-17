@@ -28,24 +28,37 @@ class UnifiedRewardCalculator:
     """
     Unified reward calculation for RL environments.
     
-    Implements simple reward = portfolio value change approach.
-    This captures all important signals naturally without artificial complexity.
+    Implements economically realistic reward calculation that includes:
+    - Portfolio value change as base reward
+    - Realistic transaction fees matching Kalshi's fee structure
+    - Overtrading penalties to discourage excessive activity
+    - Volatility penalties to prevent gambling behavior
     """
     
-    def __init__(self, reward_scale: float = 0.0001):
+    def __init__(self, reward_scale: float = 0.0001, enable_penalties: bool = True):
         """
         Initialize reward calculator.
         
         Args:
             reward_scale: Scaling factor for rewards (default: 0.0001 for cents to reasonable scale)
+            enable_penalties: Whether to enable overtrading and volatility penalties
         """
         self.reward_scale = reward_scale
+        self.enable_penalties = enable_penalties
         self.previous_portfolio_value: Optional[int] = None
         self.episode_rewards: List[float] = []
         self.episode_portfolio_values: List[int] = []
         self.episode_start_value: Optional[int] = None
         
-        logger.info(f"Initialized reward calculator with scale {reward_scale}")
+        # Track trading activity for overtrading penalty
+        self.trades_this_episode: int = 0
+        self.steps_this_episode: int = 0
+        
+        # Track portfolio values for volatility calculation
+        self.recent_portfolio_values: List[int] = []  # Rolling window for volatility
+        self.volatility_window_size: int = 20  # Calculate volatility over 20 steps
+        
+        logger.info(f"Initialized reward calculator with scale {reward_scale}, penalties={'enabled' if enable_penalties else 'disabled'}")
     
     def calculate_step_reward(
         self,
@@ -53,16 +66,15 @@ class UnifiedRewardCalculator:
         step_info: Optional[Dict[str, Any]] = None
     ) -> float:
         """
-        Calculate reward based on portfolio value change with transaction fee penalty.
+        Calculate reward focused on profitable trading.
         
-        Approach: reward = (new_value - old_value) * scale - transaction_fee_penalty
+        Components:
+        1. Base reward: Portfolio value change (includes realized P&L) - PRIMARY SIGNAL
+        2. Transaction fees: 0.7% of trade value (realistic Kalshi taker fee)
+        3. Market impact: 1% base cost for large orders relative to liquidity
         
-        This naturally captures all trading performance including:
-        - Profit from correct predictions
-        - Cost of holding positions
-        - Opportunity cost of cash
-        - Risk/return tradeoffs
-        - Transaction costs based on spread
+        The model learns to trade profitably through natural profit/loss signals,
+        not through artificial penalties that discourage trading.
         
         Args:
             current_portfolio_value: Current total portfolio value in cents
@@ -70,10 +82,14 @@ class UnifiedRewardCalculator:
                 - 'action_taken': bool, whether a non-HOLD action was executed
                 - 'spread_cents': int, the spread in cents for the trade
                 - 'quantity': int, number of contracts traded
+                - 'execution_price': int, actual execution price in cents
+                - 'available_liquidity': int, available contracts at best price
             
         Returns:
             Reward value (can be positive or negative)
         """
+        self.steps_this_episode += 1
+        
         if self.previous_portfolio_value is None:
             # First step - record starting value, no reward
             self.previous_portfolio_value = current_portfolio_value
@@ -81,28 +97,86 @@ class UnifiedRewardCalculator:
             reward = 0.0
             value_change = 0
         else:
-            # Calculate value change
+            # 1. BASE REWARD: Portfolio value change (includes realized P&L)
             value_change = current_portfolio_value - self.previous_portfolio_value
-            reward = value_change * self.reward_scale
+            base_reward = value_change * self.reward_scale
+            reward = base_reward
             
-            # Apply transaction fee penalty if a trade was executed
-            if step_info and step_info.get('action_taken', False):
-                # Fee is proportional to spread and quantity
-                spread_cents = step_info.get('spread_cents', 2)  # Default 2 cents if not provided
-                quantity = step_info.get('quantity', 10)  # Default 10 contracts if not provided
+            # Track portfolio values for volatility calculation
+            self.recent_portfolio_values.append(current_portfolio_value)
+            if len(self.recent_portfolio_values) > self.volatility_window_size:
+                self.recent_portfolio_values.pop(0)
+            
+            # Apply penalties only if enabled
+            if self.enable_penalties:
                 
-                # Transaction fee penalty: 0.1 * spread per trade (scaled by quantity)
-                # This encourages the model to only trade when expected profit > spread cost
-                # 10% of spread is more realistic to discourage excessive trading
-                transaction_fee = 0.1 * spread_cents * (quantity / 10.0)  # Normalize by base quantity
-                fee_penalty = transaction_fee * self.reward_scale
+                # Components for detailed logging
+                fee_penalty = 0.0
+                impact_penalty = 0.0
+                overtrading_penalty = 0.0
+                volatility_penalty = 0.0
+                hold_bonus = 0.0
                 
-                reward -= fee_penalty
+                # Check if action was taken or HOLD
+                action_taken = step_info and step_info.get('action_taken', False)
                 
-                logger.debug(
-                    f"Transaction fee applied: {transaction_fee:.2f}¢ "
-                    f"(spread: {spread_cents}¢, quantity: {quantity}, penalty: {fee_penalty:.6f})"
-                )
+                if action_taken:
+                    # TRADING ACTION - Apply aggressive penalties
+                    self.trades_this_episode += 1
+                    
+                    quantity = step_info.get('quantity', 10)
+                    execution_price = step_info.get('execution_price', 50)  # Default mid price
+                    spread_cents = step_info.get('spread_cents', 2)
+                    
+                    # Calculate trade value
+                    trade_value = quantity * execution_price  # In cents
+                    
+                    # 2. REALISTIC TRANSACTION FEES
+                    # Kalshi's actual taker fee structure
+                    taker_fee_rate = 0.007  # 0.7% - realistic Kalshi fee
+                    
+                    transaction_fee = trade_value * taker_fee_rate
+                    fee_penalty = transaction_fee * self.reward_scale
+                    reward -= fee_penalty
+                    
+                    # 3. MARKET IMPACT COST (for large orders relative to liquidity)
+                    available_liquidity = step_info.get('available_liquidity', 1000)
+                    if available_liquidity > 0:
+                        liquidity_ratio = quantity / available_liquidity
+                        if liquidity_ratio > 0.1:  # If taking >10% of available liquidity
+                            # Realistic market impact
+                            market_impact = (liquidity_ratio ** 2) * execution_price * 0.01  # 1% base impact
+                            impact_penalty = market_impact * self.reward_scale
+                            reward -= impact_penalty
+                    
+                # No HOLD bonus - let profit/loss teach when to hold
+                
+                # No overtrading penalty - let profit/loss teach optimal activity rate
+                if self.steps_this_episode % 50 == 0:
+                    activity_rate = self.trades_this_episode / self.steps_this_episode
+                    logger.info(
+                        f"Activity rate: {activity_rate:.1%} (no penalty applied)"
+                    )
+                
+                # No volatility penalty - profitable trading often requires position taking
+                if len(self.recent_portfolio_values) >= 5 and self.episode_start_value > 0:
+                    portfolio_std = np.std(self.recent_portfolio_values)
+                    volatility_pct = (portfolio_std / self.episode_start_value) * 100
+                    
+                    if self.steps_this_episode % 50 == 0:
+                        logger.info(
+                            f"Portfolio volatility: {volatility_pct:.1f}% (no penalty applied)"
+                        )
+                
+                # Detailed logging every 20 steps for debugging
+                if self.steps_this_episode % 20 == 0:
+                    logger.info(
+                        f"Step {self.steps_this_episode} Reward Breakdown: "
+                        f"Base={base_reward:.6f}, "
+                        f"Fees=-{fee_penalty:.6f}, "
+                        f"Impact=-{impact_penalty:.6f}, "
+                        f"Total={reward:.6f}"
+                    )
             
             # Update for next step
             self.previous_portfolio_value = current_portfolio_value
@@ -111,7 +185,6 @@ class UnifiedRewardCalculator:
         self.episode_rewards.append(reward)
         self.episode_portfolio_values.append(current_portfolio_value)
         
-        logger.debug(f"Step reward: {reward:.6f} (portfolio: {current_portfolio_value}¢, change: {value_change}¢)")
         return reward
     
     def calculate_reward(
@@ -142,6 +215,12 @@ class UnifiedRewardCalculator:
         self.episode_start_value = initial_portfolio_value
         self.episode_rewards.clear()
         self.episode_portfolio_values.clear()
+        
+        # Reset tracking for penalties
+        self.trades_this_episode = 0
+        self.steps_this_episode = 0
+        self.recent_portfolio_values.clear()
+        
         logger.debug(f"Reset reward calculator (initial value: {initial_portfolio_value or 'TBD'}¢)")
     
     def get_episode_stats(self) -> Dict[str, float]:
@@ -149,7 +228,7 @@ class UnifiedRewardCalculator:
         Get episode-level reward statistics.
         
         Returns:
-            Episode reward statistics including returns, drawdown, and Sharpe ratio
+            Episode reward statistics including returns, drawdown, Sharpe ratio, and activity metrics
         """
         if not self.episode_portfolio_values or self.episode_start_value is None:
             return {
@@ -159,7 +238,10 @@ class UnifiedRewardCalculator:
                 "sharpe_ratio": 0.0,
                 "final_portfolio_value": self.previous_portfolio_value or 0,
                 "episode_length": 0,
-                "avg_reward_per_step": 0.0
+                "avg_reward_per_step": 0.0,
+                "activity_rate": 0.0,
+                "portfolio_volatility": 0.0,
+                "trades_executed": 0
             }
         
         final_value = self.episode_portfolio_values[-1]
@@ -182,6 +264,15 @@ class UnifiedRewardCalculator:
         reward_std = np.std(self.episode_rewards) if len(self.episode_rewards) > 1 else 0.0
         sharpe_ratio = avg_reward / reward_std if reward_std > 0 else 0.0
         
+        # Activity rate calculation
+        activity_rate = (self.trades_this_episode / self.steps_this_episode * 100) if self.steps_this_episode > 0 else 0.0
+        
+        # Portfolio volatility as percentage of starting capital
+        portfolio_volatility = 0.0
+        if len(self.episode_portfolio_values) > 1 and self.episode_start_value > 0:
+            portfolio_std = np.std(self.episode_portfolio_values)
+            portfolio_volatility = (portfolio_std / self.episode_start_value) * 100
+        
         return {
             "total_return": total_return,
             "total_reward": total_reward,
@@ -190,7 +281,10 @@ class UnifiedRewardCalculator:
             "final_portfolio_value": final_value,
             "episode_length": len(self.episode_rewards),
             "avg_reward_per_step": avg_reward,
-            "reward_volatility": reward_std
+            "reward_volatility": reward_std,
+            "activity_rate": activity_rate,
+            "portfolio_volatility": portfolio_volatility,
+            "trades_executed": self.trades_this_episode
         }
 
 

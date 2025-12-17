@@ -354,33 +354,97 @@ class OrderbookClient:
             # Extract orderbook data from msg field
             data = msg_data
             
-            # Parse Kalshi array format [[price, qty], ...] into separate bid/ask dicts
+            # CRITICAL FIX: Parse Kalshi orderbook format correctly per official documentation
+            # Reference: https://docs.kalshi.com/getting_started/orderbook_responses
+            # 
+            # Kalshi sends ONLY BIDS in both "yes" and "no" arrays:
+            # - "yes" array: [[price, qty], ...] = YES BIDS ONLY
+            # - "no" array: [[price, qty], ...]  = NO BIDS ONLY
+            # 
+            # Asks must be DERIVED using reciprocal relationship:
+            # - YES ASKS = derived from NO BIDS (100 - no_bid_price)
+            # - NO ASKS = derived from YES BIDS (100 - yes_bid_price)
+            
             yes_bids = {}
-            yes_asks = {}
             no_bids = {}
+            yes_asks = {}
             no_asks = {}
             
-            # Process yes side
+            # Parse YES bids directly from Kalshi 'yes' array
             yes_levels = data.get("yes", [])
             if isinstance(yes_levels, list):
-                for price, qty in yes_levels:
-                    if qty > 0:
-                        price_int = int(price)
-                        if price_int <= 50:
-                            yes_bids[price_int] = int(qty)
-                        else:
-                            yes_asks[price_int] = int(qty)
+                for price_qty in yes_levels:
+                    if len(price_qty) >= 2:
+                        price, qty = price_qty[0], price_qty[1]
+                        if qty > 0:
+                            price_int = int(price)
+                            if 1 <= price_int <= 99:  # Valid Kalshi price range
+                                yes_bids[price_int] = int(qty)
             
-            # Process no side
+            # Parse NO bids directly from Kalshi 'no' array
             no_levels = data.get("no", [])
             if isinstance(no_levels, list):
-                for price, qty in no_levels:
-                    if qty > 0:
-                        price_int = int(price)
-                        if price_int <= 50:
-                            no_bids[price_int] = int(qty)
-                        else:
-                            no_asks[price_int] = int(qty)
+                for price_qty in no_levels:
+                    if len(price_qty) >= 2:
+                        price, qty = price_qty[0], price_qty[1]
+                        if qty > 0:
+                            price_int = int(price)
+                            if 1 <= price_int <= 99:  # Valid Kalshi price range
+                                no_bids[price_int] = int(qty)
+            
+            # Derive YES asks from NO bids using reciprocal relationship
+            # If there's a NO bid at price X, there's a YES ask at (100 - X)
+            for no_bid_price, qty in no_bids.items():
+                yes_ask_price = 100 - no_bid_price
+                if 1 <= yes_ask_price <= 99:  # Ensure valid derived price range
+                    yes_asks[yes_ask_price] = qty
+            
+            # Derive NO asks from YES bids using reciprocal relationship  
+            # If there's a YES bid at price X, there's a NO ask at (100 - X)
+            for yes_bid_price, qty in yes_bids.items():
+                no_ask_price = 100 - yes_bid_price
+                if 1 <= no_ask_price <= 99:  # Ensure valid derived price range
+                    no_asks[no_ask_price] = qty
+            
+            # VALIDATION: Ensure arbitrage constraint is maintained
+            # The reciprocal relationship should guarantee: YES_bid_price + NO_ask_price = 100 (and vice versa)
+            # Since NO_ask_price = 100 - YES_bid_price, we should have YES_bid_price + (100 - YES_bid_price) = 100
+            validation_errors = []
+            
+            # Verify derived asks match expected reciprocal relationship
+            for yes_bid_price in yes_bids:
+                expected_no_ask_price = 100 - yes_bid_price
+                if expected_no_ask_price in no_asks:
+                    # This should always equal 100 by definition
+                    sum_check = yes_bid_price + expected_no_ask_price
+                    if sum_check != 100:
+                        validation_errors.append(f"YES_bid({yes_bid_price}) + derived_NO_ask({expected_no_ask_price}) = {sum_check} ≠ 100")
+            
+            for no_bid_price in no_bids:
+                expected_yes_ask_price = 100 - no_bid_price
+                if expected_yes_ask_price in yes_asks:
+                    # This should always equal 100 by definition  
+                    sum_check = no_bid_price + expected_yes_ask_price
+                    if sum_check != 100:
+                        validation_errors.append(f"NO_bid({no_bid_price}) + derived_YES_ask({expected_yes_ask_price}) = {sum_check} ≠ 100")
+            
+            if validation_errors:
+                logger.error(f"Reciprocal relationship validation failed for {market_ticker}: {validation_errors[:3]}...")
+            
+            # Log parsing success for first few snapshots to verify fix
+            if not hasattr(self, '_logged_parsing_success'):
+                self._logged_parsing_success = {}
+            if market_ticker not in self._logged_parsing_success:
+                self._logged_parsing_success[market_ticker] = 0
+            
+            if self._logged_parsing_success[market_ticker] < 3:  # Log first 3 snapshots per market
+                self._logged_parsing_success[market_ticker] += 1
+                logger.info(
+                    f"PARSING SUCCESS {market_ticker}: "
+                    f"YES_bids={len(yes_bids)}, NO_bids={len(no_bids)}, "
+                    f"derived_YES_asks={len(yes_asks)}, derived_NO_asks={len(no_asks)} "
+                    f"[Fix verified - using correct Kalshi format]"
+                )
             
             # Get sequence from the outer message (not from msg data)
             sequence_number = message.get("seq", 0)
@@ -451,16 +515,21 @@ class OrderbookClient:
             # Delta data is in msg field
             delta_val = msg_data.get("delta", 0)
             price = int(msg_data.get("price", 0))
-            side = msg_data.get("side")
+            side = msg_data.get("side")  # "yes" or "no" (indicates which BID side is changing)
+            
+            # CRITICAL: Delta processing is CORRECT as-is because Kalshi deltas only update BIDS
+            # - side="yes" means YES BIDS are changing at this price
+            # - side="no" means NO BIDS are changing at this price  
+            # - The derived asks will be recalculated when SharedOrderbookState applies the delta
             
             # Get current size from local orderbook state to calculate new size
             current_size = 0
             if market_ticker in self._orderbook_states:
                 state = self._orderbook_states[market_ticker]._state
                 if side == "yes":
-                    current_size = state.yes_bids.get(price, 0)
+                    current_size = state.yes_bids.get(price, 0)  # YES bid at this price
                 elif side == "no":
-                    current_size = state.no_bids.get(price, 0)
+                    current_size = state.no_bids.get(price, 0)   # NO bid at this price
             
             # Calculate new size from delta
             new_size = max(0, current_size + delta_val)

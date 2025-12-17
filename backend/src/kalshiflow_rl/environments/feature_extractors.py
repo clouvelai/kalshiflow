@@ -73,11 +73,6 @@ def extract_market_agnostic_features(orderbook_data: Dict[str, Any]) -> Dict[str
     yes_spread_cents = (best_yes_ask - best_yes_bid) if (best_yes_ask and best_yes_bid) else 10
     no_spread_cents = (best_no_ask - best_no_bid) if (best_no_ask and best_no_bid) else 10
     
-    # DEPRECATED: Old normalized spreads (keeping for backward compatibility temporarily)
-    yes_spread = yes_spread_cents / 100.0
-    no_spread = no_spread_cents / 100.0
-    features['yes_spread_norm'] = min(max(yes_spread, 0.001), 0.99)  # Clamp to valid range
-    features['no_spread_norm'] = min(max(no_spread, 0.001), 0.99)
     
     # Mid-prices in probability space
     yes_mid = ((best_yes_bid + best_yes_ask) / 2.0 / 100.0) if (best_yes_bid and best_yes_ask) else 0.5
@@ -145,6 +140,33 @@ def extract_market_agnostic_features(orderbook_data: Dict[str, Any]) -> Dict[str
     features['yes_side_imbalance'] = ((yes_bid_volume - yes_ask_volume) / total_yes_volume) if total_yes_volume > 0 else 0.0
     features['no_side_imbalance'] = ((no_bid_volume - no_ask_volume) / total_no_volume) if total_no_volume > 0 else 0.0
     
+    # Bid vs Ask depth ratio (liquidity asymmetry) - using log transform
+    total_bid_volume = yes_bid_volume + no_bid_volume
+    total_ask_volume = yes_ask_volume + no_ask_volume
+    # Use tanh of log difference for bounded [-1,1] signal that preserves relative differences
+    features['bid_ask_depth_ratio'] = np.tanh(0.5 * (np.log(1 + total_bid_volume) - np.log(1 + total_ask_volume)))
+    
+    # YES/NO consistency check (how well reciprocal relationship holds)
+    if best_yes_bid and best_no_ask:
+        consistency_error = abs((best_yes_bid + best_no_ask) - 100)
+        features['yes_no_consistency'] = consistency_error / 100.0  # Normalize to [0,1]
+    else:
+        features['yes_no_consistency'] = 0.5  # Default when prices unavailable
+    
+    # Microprice - volume-weighted price (strongest short-term predictor)
+    # Weights prices by opposite side's volume (bid weighted by ask volume, ask by bid volume)
+    if best_yes_bid and best_yes_ask and yes_ask_volume > 0 and yes_bid_volume > 0:
+        yes_microprice = (best_yes_bid * yes_ask_volume + best_yes_ask * yes_bid_volume) / (yes_bid_volume + yes_ask_volume)
+        features['yes_microprice_norm'] = yes_microprice / 100.0  # Convert to probability space
+    else:
+        features['yes_microprice_norm'] = yes_mid  # Fall back to regular mid price
+
+    if best_no_bid and best_no_ask and no_ask_volume > 0 and no_bid_volume > 0:
+        no_microprice = (best_no_bid * no_ask_volume + best_no_ask * no_bid_volume) / (no_bid_volume + no_ask_volume)
+        features['no_microprice_norm'] = no_microprice / 100.0  # Convert to probability space
+    else:
+        features['no_microprice_norm'] = no_mid  # Fall back to regular mid price
+    
     # === ORDER BOOK SHAPE FEATURES ===
     
     # Book depth (number of price levels with orders)
@@ -172,12 +194,6 @@ def extract_market_agnostic_features(orderbook_data: Dict[str, Any]) -> Dict[str
     
     # === ARBITRAGE AND EFFICIENCY FEATURES ===
     
-    # Arbitrage opportunity: |YES_mid + NO_mid - 1.0| (should be close to 0)
-    total_mid_price = features['yes_mid_price_norm'] + features['no_mid_price_norm']
-    features['arbitrage_opportunity'] = abs(total_mid_price - 1.0)
-    
-    # Market efficiency: How close the sum is to 1.0 (higher = more efficient)
-    features['market_efficiency'] = max(0.0, 1.0 - features['arbitrage_opportunity'])
     
     # REMOVED: cross_side_efficiency (redundant with arbitrage_opportunity)
     
@@ -193,8 +209,6 @@ def _get_default_market_features() -> Dict[str, float]:
         'best_yes_ask_norm': 0.51, 
         'best_no_bid_norm': 0.49,
         'best_no_ask_norm': 0.51,
-        'yes_spread_norm': 0.02,  # Deprecated but kept for backward compatibility
-        'no_spread_norm': 0.02,   # Deprecated but kept for backward compatibility
         'yes_mid_price_norm': 0.5,
         'no_mid_price_norm': 0.5,
         
@@ -220,9 +234,11 @@ def _get_default_market_features() -> Dict[str, float]:
         'yes_liquidity_concentration': 0.5,
         'no_liquidity_concentration': 0.5,
         
-        # Efficiency features (perfect efficiency as default) - REMOVED cross_side_efficiency
-        'arbitrage_opportunity': 0.0,
-        'market_efficiency': 1.0
+        # New features
+        'bid_ask_depth_ratio': 0.0,  # Balanced in log space (was 1.0)
+        'yes_no_consistency': 0.0,    # Perfect consistency by default
+        'yes_microprice_norm': 0.5,
+        'no_microprice_norm': 0.5,
     }
 
 

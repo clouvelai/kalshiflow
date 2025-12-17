@@ -41,8 +41,18 @@ logger = logging.getLogger("kalshiflow_rl.environments.limit_order_action_space"
 
 @dataclass
 class PositionConfig:
-    """Central configuration for position sizing."""
-    sizes: List[int] = field(default_factory=lambda: [5, 10, 20, 50, 100])
+    """Central configuration for position sizing.
+    
+    EVOLUTION STRATEGY:
+    - Phase 1: sizes=[20] -> 5 actions (1 HOLD + 4 trades)
+    - Phase 2: sizes=[10, 50] -> 9 actions (1 HOLD + 8 trades)
+    - Phase 3: sizes=[5, 10, 20, 50, 100] -> 21 actions (full granularity)
+    """
+    # START WITH SINGLE SIZE FOR SIMPLICITY (5 total actions)
+    sizes: List[int] = field(default_factory=lambda: [20])  # Phase 1: Single size
+    # sizes: List[int] = field(default_factory=lambda: [10, 50])  # Phase 2: Two sizes
+    # sizes: List[int] = field(default_factory=lambda: [5, 10, 20, 50, 100])  # Phase 3: Full
+    
     max_position_per_market: int = 500
     max_position_value: int = 50000  # $500 in cents
     max_portfolio_concentration: float = 0.20  # 20% max
@@ -60,7 +70,7 @@ class PositionSizeValidator:
         if action == 0:
             return True  # HOLD always valid
             
-        base_action, size_index = decode_action(action)
+        base_action, size_index = decode_action(action, len(self.config.sizes))
         size = self.config.sizes[size_index]
         
         # Validate size constraints
@@ -88,23 +98,31 @@ class PositionSizeValidator:
             return max(orderbook.yes_bids.keys()) if orderbook.yes_bids else 50
 
 
-def decode_action(action: int) -> Tuple[int, int]:
+def decode_action(action: int, num_sizes: int = 1) -> Tuple[int, int]:
     """Decode single action into base action and size index.
     
-    The model outputs a single action (0-20) which encodes both
-    the trading intent AND the position size.
+    Flexible decoding that adapts to the number of position sizes configured.
+    
+    Args:
+        action: The raw action from the model (0 to N)
+        num_sizes: Number of position sizes available (from PositionConfig)
     
     Returns:
         base_action: 0=HOLD, 1=BUY_YES, 2=SELL_YES, 3=BUY_NO, 4=SELL_NO
-        size_index: 0-4 mapping to [5, 10, 20, 50, 100] contracts
+        size_index: Index into the sizes array
     """
     if action == 0:
         return 0, 0  # HOLD, no size
     
-    adjusted = action - 1  # Now 0-19 for trading actions
-    base_action = (adjusted // 5) + 1  # Which trading intent (1-4)
-    size_index = adjusted % 5  # Which size (0-4)
-    return base_action, size_index
+    if num_sizes == 1:
+        # Phase 1: Single size, actions 1-4 map directly to trading intents
+        return action, 0  # Always use first (only) size
+    else:
+        # Phase 2+: Multiple sizes
+        adjusted = action - 1  # Now 0-based for trading actions
+        base_action = (adjusted // num_sizes) + 1  # Which trading intent
+        size_index = adjusted % num_sizes  # Which size
+        return base_action, size_index
 
 
 class ActionType(IntEnum):
@@ -216,10 +234,16 @@ class LimitOrderActionSpace:
         """
         Get the Gymnasium space representation.
         
+        Dynamically calculates space size based on configured position sizes:
+        - 1 size: 5 actions (1 HOLD + 4 trading directions)
+        - 2 sizes: 9 actions (1 HOLD + 8 trading combinations)
+        - 5 sizes: 21 actions (1 HOLD + 20 trading combinations)
+        
         Returns:
-            spaces.Discrete(21): Discrete action space with 21 actions (1 HOLD + 4 trading × 5 sizes)
+            spaces.Discrete(n): Where n = 1 + (4 * num_sizes)
         """
-        return spaces.Discrete(21)
+        num_actions = 1 + (4 * len(self.position_sizes))  # HOLD + (4 directions × sizes)
+        return spaces.Discrete(num_actions)
     
     def execute_action_sync(
         self,
@@ -257,7 +281,7 @@ class LimitOrderActionSpace:
                     # Real OrderManager in async context - might not be safe
                     logger.debug(f"Real OrderManager in async context, might skip execution for action {action}")
                     return ActionExecutionResult(
-                        action_taken=LimitOrderActions(action) if 0 <= action <= 4 else LimitOrderActions.HOLD,
+                        action_taken=LimitOrderActions(decode_action(action, len(self.position_sizes))[0]) if 0 <= action <= 20 else LimitOrderActions.HOLD,
                         order_placed=False,
                         order_cancelled=False,
                         order_amended=False,
@@ -307,7 +331,7 @@ class LimitOrderActionSpace:
                 )
             
             # Decode action into base action and size
-            base_action, size_index = decode_action(action)
+            base_action, size_index = decode_action(action, len(self.position_sizes))
             
             # Handle HOLD action
             if base_action == 0:
@@ -383,7 +407,7 @@ class LimitOrderActionSpace:
                 )
             
             # Decode action into base action and size
-            base_action, size_index = decode_action(action)
+            base_action, size_index = decode_action(action, len(self.position_sizes))
             
             # Handle HOLD action
             if base_action == 0:
@@ -666,7 +690,7 @@ class LimitOrderActionSpace:
         Returns:
             Dictionary with action metadata
         """
-        if not (0 <= action <= 4):
+        if not (0 <= action <= 20):
             raise ValueError(f"Action must be in range [0, 4], got {action}")
         
         action_enum = LimitOrderActions(action)
@@ -709,7 +733,7 @@ class LimitOrderActionSpace:
         Returns:
             Tuple of (is_valid, reason_if_invalid)
         """
-        if not (0 <= action <= 4):
+        if not (0 <= action <= 20):
             return False, f"Action {action} not in valid range [0, 4]"
         
         # HOLD is always valid

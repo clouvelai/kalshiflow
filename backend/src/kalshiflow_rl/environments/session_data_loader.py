@@ -13,7 +13,7 @@ PRICE FORMAT CONVENTION:
 
 from typing import Dict, List, Optional, Tuple, Any, Union
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 import logging
 import json
@@ -385,7 +385,7 @@ class SessionDataLoader:
             session_data = SessionData(
                 session_id=session_id,
                 start_time=session_info['started_at'],
-                end_time=session_info['ended_at'] or datetime.now(),
+                end_time=session_info['ended_at'] or datetime.now(timezone.utc),
                 data_points=data_points,
                 markets_involved=session_info['market_tickers'],
                 environment=session_info.get('environment'),
@@ -543,8 +543,8 @@ class SessionDataLoader:
         for timestamp_ms in sorted(timestamp_groups.keys()):
             markets_data = timestamp_groups[timestamp_ms]
             
-            # Convert timestamp to datetime
-            timestamp = datetime.fromtimestamp(timestamp_ms / 1000.0)
+            # Convert timestamp to datetime (timezone-aware)
+            timestamp = datetime.fromtimestamp(timestamp_ms / 1000.0, tz=timezone.utc)
             
             # Extract market-agnostic features from orderbook states
             spreads = {}

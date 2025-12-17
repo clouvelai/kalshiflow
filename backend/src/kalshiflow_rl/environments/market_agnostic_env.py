@@ -71,13 +71,13 @@ class MarketAgnosticKalshiEnv(gym.Env):
     """
     
     # Observation space dimension (calculated from feature extractors)
-    # Updated with spread-aware features and removed redundant ones:
-    # 1 market × 28 market features (21 original - 3 removed + 10 spread-aware)
-    # + 10 temporal features (14 original - 4 removed)
-    # + 11 portfolio features (12 original - 1 removed)
+    # Updated with microprice features:
+    # 1 market × 26 market features (24 previous + 2 microprice)
+    # + 10 temporal features
+    # + 11 portfolio features
     # + 5 order features
-    # = 28 + 10 + 11 + 5 = 54 features
-    OBSERVATION_DIM = 54
+    # = 26 + 10 + 11 + 5 = 52 features
+    OBSERVATION_DIM = 52
     
     def __init__(
         self,
@@ -116,8 +116,14 @@ class MarketAgnosticKalshiEnv(gym.Env):
             dtype=np.float32
         )
         
-        # 21 discrete actions: HOLD (1) + trading actions with 5 position sizes (4×5=20)
-        self.action_space = spaces.Discrete(21)
+        # Dynamic action space based on position sizes configured
+        # Phase 1: 5 actions (1 HOLD + 4 trades with single size)
+        # Phase 2: 9 actions (1 HOLD + 8 trades with 2 sizes)  
+        # Phase 3: 21 actions (1 HOLD + 20 trades with 5 sizes)
+        from .limit_order_action_space import PositionConfig
+        position_config = PositionConfig()
+        num_actions = 1 + (4 * len(position_config.sizes))
+        self.action_space = spaces.Discrete(num_actions)
         
         logger.info(f"Environment initialized: obs_space={self.observation_space.shape}, action_space={self.action_space.n}")
         
@@ -153,7 +159,8 @@ class MarketAgnosticKalshiEnv(gym.Env):
             contract_size=10  # Fixed contract size
         )
         self.reward_calculator = UnifiedRewardCalculator(
-            reward_scale=0.001  # Scale rewards for stable training
+            reward_scale=0.001,  # Scale rewards for stable training
+            enable_penalties=True  # Enable realistic trading penalties
         )
         
         # Build initial observation
@@ -250,28 +257,54 @@ class MarketAgnosticKalshiEnv(gym.Env):
             # Prepare step info for reward calculation
             step_info = {}
             if action != 0:  # Non-HOLD action
-                # Get spread information from orderbook
+                # Decode action to get actual quantity
+                from .limit_order_action_space import decode_action, PositionConfig
+                base_action, size_index = decode_action(action)
+                position_config = PositionConfig()
+                actual_quantity = position_config.sizes[size_index] if size_index < len(position_config.sizes) else 10
+                
+                # Get spread and liquidity information from orderbook
                 if self.current_market in current_data.markets_data:
                     market_data = current_data.markets_data[self.current_market]
                     yes_bids = market_data.get('yes_bids', {})
                     yes_asks = market_data.get('yes_asks', {})
+                    no_bids = market_data.get('no_bids', {})
+                    no_asks = market_data.get('no_asks', {})
                     
-                    # Calculate spread based on action side
-                    if action in [1, 2]:  # YES side actions
-                        best_yes_bid = max(map(int, yes_bids.keys())) if yes_bids else 50
-                        best_yes_ask = min(map(int, yes_asks.keys())) if yes_asks else 50
-                        spread_cents = best_yes_ask - best_yes_bid
-                    else:  # NO side actions
-                        no_bids = market_data.get('no_bids', {})
-                        no_asks = market_data.get('no_asks', {})
-                        best_no_bid = max(map(int, no_bids.keys())) if no_bids else 50
-                        best_no_ask = min(map(int, no_asks.keys())) if no_asks else 50
-                        spread_cents = best_no_ask - best_no_bid
+                    # Calculate spread and execution price based on action side
+                    if base_action in [1, 3]:  # BUY actions (YES or NO)
+                        if base_action == 1:  # BUY_YES
+                            best_yes_ask = min(map(int, yes_asks.keys())) if yes_asks else 50
+                            execution_price = best_yes_ask
+                            available_liquidity = sum(yes_asks.values()) if yes_asks else 0
+                            best_yes_bid = max(map(int, yes_bids.keys())) if yes_bids else 50
+                            spread_cents = best_yes_ask - best_yes_bid
+                        else:  # BUY_NO
+                            best_no_ask = min(map(int, no_asks.keys())) if no_asks else 50
+                            execution_price = best_no_ask
+                            available_liquidity = sum(no_asks.values()) if no_asks else 0
+                            best_no_bid = max(map(int, no_bids.keys())) if no_bids else 50
+                            spread_cents = best_no_ask - best_no_bid
+                    else:  # SELL actions
+                        if base_action == 2:  # SELL_YES
+                            best_yes_bid = max(map(int, yes_bids.keys())) if yes_bids else 50
+                            execution_price = best_yes_bid
+                            available_liquidity = sum(yes_bids.values()) if yes_bids else 0
+                            best_yes_ask = min(map(int, yes_asks.keys())) if yes_asks else 50
+                            spread_cents = best_yes_ask - best_yes_bid
+                        else:  # SELL_NO
+                            best_no_bid = max(map(int, no_bids.keys())) if no_bids else 50
+                            execution_price = best_no_bid
+                            available_liquidity = sum(no_bids.values()) if no_bids else 0
+                            best_no_ask = min(map(int, no_asks.keys())) if no_asks else 50
+                            spread_cents = best_no_ask - best_no_bid
                     
                     step_info = {
                         'action_taken': True,
                         'spread_cents': max(spread_cents, 1),  # Minimum 1 cent spread
-                        'quantity': 10  # Default quantity from action space
+                        'quantity': actual_quantity,
+                        'execution_price': execution_price,
+                        'available_liquidity': int(available_liquidity)  # Convert to int for safety
                     }
             
             # Calculate reward with transaction fee penalty
