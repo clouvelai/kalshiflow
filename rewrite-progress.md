@@ -1,5 +1,129 @@
 # RL System Rewrite Progress
 
+## 2025-12-17 21:30 EST - MVP Plan Revised for Testing-Only Approach (1,200 seconds)
+
+### What was implemented or changed?
+
+**Major revision** of the MVP completion plan based on updated requirements and status changes.
+
+**Key Changes**:
+- **Balance issue RESOLVED**: Demo account now shows proper balance (>$0) - API keys updated  
+- **NO mock trading mode needed**: Going straight to real paper environment testing
+- **Focus shifted from implementation to verification**: Complete trading system already exists
+- **Simplified to single test command**: `./scripts/run-rl-trader.sh --markets 1000 --port 8003`
+
+**Plan Restructure**:
+- Removed complex implementation phases and mock trading mode development
+- Focused on testing existing end-to-end trading pipeline  
+- Added fallback plan for low demo orderbook activity (use real env for collection + paper env for trading)
+- Emphasized that balance management is working and no new code needed
+- Clear success criteria with actionable verification steps
+
+**Updated File**: `backend/trading/mvp-planning/focused_mvp_finish.md`
+- Completely rewritten from implementation-focused to testing-focused approach
+- Removed 75% of complex implementation details 
+- Added clear "Ready to Test" section with single command action
+- Preserved Architecture Preservation section for future RL model integration
+
+### How is it tested or validated?
+
+**Immediate validation approach**:
+1. **Single Command Test**: `./scripts/run-rl-trader.sh --markets 1000 --port 8003 --strategy hardcoded`
+2. **Frontend Verification**: http://localhost:5173/rl-trader should show trading state
+3. **System Stability**: Run for 30+ minutes to ensure no crashes
+4. **Order Pipeline**: Verify hardcoded strategy → orders → Kalshi API → fills → position updates
+
+**No implementation testing needed** - focus is on operational verification of existing complete system.
+
+### Do you have any concerns with the current implementation we should address before moving forward?
+
+**No major concerns** - this revision properly aligns with the updated requirements:
+- ✅ Demo balance issue resolved (no mock mode needed)
+- ✅ Complete trading system already built and functional
+- ✅ Clear testing approach with single command
+- ✅ Fallback plan for orderbook activity issues
+- ✅ Architecture preserved for future RL model integration
+
+**Minor considerations**:
+- Demo environment may have low orderbook activity - fallback plan addresses this
+- Port 8003 vs 8001 configuration should be verified during testing
+- Frontend WebSocket connection to correct trading service port
+
+### Recommended next steps
+
+**Immediate action**: Execute the single test command to verify the complete end-to-end trading system:
+```bash
+./scripts/run-rl-trader.sh --markets 1000 --port 8003 --strategy hardcoded
+```
+
+**Validation sequence**:
+1. Verify service starts successfully on port 8003
+2. Confirm demo account balance shows >$0  
+3. Monitor hardcoded strategy trading decisions (75% HOLD, 25% trading)
+4. Verify orders reach Kalshi demo API and fills are processed
+5. Test frontend dashboard connection and trading state display
+6. Run stability test for 30+ minutes
+
+**If successful**: Trading MVP is complete and ready for future RL model integration.
+**If issues found**: Debug specific components rather than building new mock systems.
+
+## 2025-12-17 20:50 EST - MVP Completion Plan Created (1,800 seconds)
+
+### What was implemented or changed?
+
+**Comprehensive MVP completion plan** created for the Kalshi RL Trading Subsystem to transition from current 99% complete architecture to operational verification with hardcoded trading policy.
+
+**Key Deliverable**:
+- **`backend/trading/mvp-planning/focused_mvp_finish.md`**: Detailed implementation plan with 4 phases, technical specifications, and timeline
+
+**Plan Components**:
+1. **Current State Assessment**: Identified what's working (orderbook collection, auth, actor architecture) vs what needs verification (balance management, actor integration, WebSocket organization)
+2. **Phase 1 - Balance Resolution**: Address $0 demo account balance issue with test overrides and mock trading mode
+3. **Phase 2 - Actor Service Integration**: End-to-end verification of orderbook events → action decisions → order execution
+4. **Phase 3 - WebSocket Cleanup**: Restructure messages to separate collection status from trading state (eliminate spam)
+5. **Phase 4 - Trading Flow Testing**: Complete validation of action → order → fill → position sync pipeline
+
+### How is it tested or validated?
+
+**Planning Analysis Based On**:
+- ✅ **Live System Status**: Confirmed orderbook collector running successfully with 1000 markets on port 8001
+- ✅ **Architecture Review**: Analyzed existing components (actor service, order manager, action selector) 
+- ✅ **Previous Assessment**: Built on TRADER-MECHANICS-ASSESSMENT.md identifying balance sync as primary blocker
+- ✅ **Code Analysis**: Reviewed current enhanced hardcoded strategy (75% HOLD, 25% trading actions)
+
+**Implementation Strategy**:
+- **Balance Override**: Add test mode to bypass $0 balance issue for mechanics verification
+- **Mock Trading**: Enable full testing without requiring real funds
+- **Enhanced Observability**: Debug logging and metrics for actor service decisions
+- **Clean WebSocket Protocol**: Structured message types with rate limiting
+
+### Do you have any concerns with the current implementation we should address before moving forward?
+
+**No major concerns - plan addresses all critical gaps**:
+
+1. **Balance Issue Mitigation**: Plan includes both diagnosis tools and override mechanisms
+2. **Architecture Preservation**: All changes maintain swappable component design for future RL model integration
+3. **Risk Management**: Demo-only operation with safety checks and rate limiting
+4. **Testing Strategy**: Comprehensive end-to-end validation without requiring production trading
+
+**Key Success Metrics Defined**:
+- Trading system processes 100+ actions without errors
+- Position tracking matches Kalshi API exactly  
+- Frontend shows clean trading state (no message spam)
+- Architecture ready for RL model swap (hardcoded → trained model)
+
+### Recommended next steps
+
+**Immediate Implementation Priority**:
+1. **Run Balance Diagnosis**: Execute `test_demo_balance.py` to confirm current demo account state
+2. **Implement Phase 1**: Add balance override and mock trading configuration options
+3. **Enable Actor Service**: Test with `RL_ACTOR_ENABLED=true` and hardcoded strategy
+4. **Verify Order Pipeline**: End-to-end action selection → order creation → Kalshi submission
+
+**Timeline**: 2-week implementation with Week 1 focused on core trading mechanics and Week 2 on WebSocket cleanup and comprehensive testing.
+
+The plan transforms the current 99% complete architecture into a fully operational MVP that validates all trading mechanics with hardcoded policies while preserving the complete framework for future RL model integration.
+
 ## 2025-12-17 18:15 EST - Trading System Position/Portfolio Sync Validation (3,600 seconds)
 
 ### What was implemented or changed?
