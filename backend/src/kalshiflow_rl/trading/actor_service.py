@@ -57,7 +57,7 @@ class ActorMetrics:
     started_at: Optional[float] = None
     last_processed_at: Optional[float] = None
     
-    # Action counts by type (21-action space)
+    # Action counts by type (5-action space)
     action_counts: Dict[str, int] = None
     total_actions: int = 0
     
@@ -773,27 +773,27 @@ class ActorService:
     
     def _count_action(self, action: int) -> None:
         """
-        Count action by type based on 21-action space.
+        Count action by type based on 5-action space.
         
         Action space:
         - 0: HOLD
-        - 1-5: BUY_YES (5, 10, 20, 50, 100 contracts)
-        - 6-10: SELL_YES (5, 10, 20, 50, 100 contracts)  
-        - 11-15: BUY_NO (5, 10, 20, 50, 100 contracts)
-        - 16-20: SELL_NO (5, 10, 20, 50, 100 contracts)
+        - 1: BUY_YES_LIMIT
+        - 2: SELL_YES_LIMIT  
+        - 3: BUY_NO_LIMIT
+        - 4: SELL_NO_LIMIT
         """
         if action == 0:
             self.metrics.action_counts["hold"] += 1
-        elif 1 <= action <= 5:
+        elif action == 1:
             self.metrics.action_counts["buy_yes"] += 1
-        elif 6 <= action <= 10:
+        elif action == 2:
             self.metrics.action_counts["sell_yes"] += 1
-        elif 11 <= action <= 15:
+        elif action == 3:
             self.metrics.action_counts["buy_no"] += 1
-        elif 16 <= action <= 20:
+        elif action == 4:
             self.metrics.action_counts["sell_no"] += 1
         else:
-            logger.warning(f"Unknown action: {action}")
+            logger.warning(f"Unknown action: {action} (valid range: 0-4)")
             return
         
         self.metrics.total_actions += 1
@@ -903,27 +903,18 @@ class ActorService:
             execution_result: Result from order execution
         """
         try:
-            # Map action IDs to names for 21-action space
-            # Actions 0-4: Position size 5
-            # Actions 5-8: Position size 10
-            # Actions 9-12: Position size 20
-            # Actions 13-16: Position size 50
-            # Actions 17-20: Position size 100
-            position_sizes = [5, 10, 20, 50, 100]
+            # Map action IDs to names for 5-action space
             action_types = ["HOLD", "BUY_YES_LIMIT", "SELL_YES_LIMIT", "BUY_NO_LIMIT", "SELL_NO_LIMIT"]
+            position_size = 20  # Fixed size for session 12 model
             
             # Determine action name and position size
-            if action == 0:
-                action_name = "HOLD"
-                position_size = 0
+            if 0 <= action < len(action_types):
+                action_name = action_types[action]
+                if action == 0:  # HOLD
+                    position_size = 0
             else:
-                # Calculate which position size group (1-20 maps to 0-19)
-                adjusted_action = action - 1
-                size_group = adjusted_action // 4  # 0-4 for sizes
-                action_type_idx = (adjusted_action % 4) + 1  # 1-4 for buy/sell types
-                
-                action_name = action_types[action_type_idx] if action_type_idx < len(action_types) else f"UNKNOWN_{action}"
-                position_size = position_sizes[size_group] if size_group < len(position_sizes) else 10
+                action_name = f"UNKNOWN_{action}"
+                position_size = 0
             
             # Extract observation features for UI display
             # Include both parsed features and full raw array

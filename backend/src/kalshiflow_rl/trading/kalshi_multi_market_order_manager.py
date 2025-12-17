@@ -431,8 +431,8 @@ class KalshiMultiMarketOrderManager:
                 logger.error(f"Unknown action: {action} (valid range: 0-4)")
                 return None
             
-            # Fixed contract size matching training (10 contracts)
-            quantity = 10
+            # Fixed contract size matching session 12 training (20 contracts)
+            quantity = 20
             
             # Calculate limit price from orderbook snapshot
             limit_price = self._calculate_limit_price_from_snapshot(
