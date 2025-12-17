@@ -23,8 +23,8 @@ const RLTraderDashboard = () => {
       return;
     }
 
-    // Connect to RL trader WebSocket on port 8002
-    const ws = new WebSocket('ws://localhost:8002/rl/ws');
+    // Connect to RL trader WebSocket on port 8003 (paper trading)
+    const ws = new WebSocket('ws://localhost:8003/rl/ws');
     wsRef.current = ws;
 
     ws.onopen = () => {

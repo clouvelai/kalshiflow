@@ -86,17 +86,18 @@ def extract_market_agnostic_features(orderbook_data: Dict[str, Any]) -> Dict[str
     features['yes_mid_price_norm'] = min(max(yes_mid, 0.01), 0.99)
     features['no_mid_price_norm'] = min(max(no_mid, 0.01), 0.99)
     
-    # === NEW SPREAD-AWARE FEATURES ===
+    # === SPREAD-AWARE FEATURES (COMPATIBLE WITH TRAINING) ===
     
-    # 1. Direct spread costs in cents (absolute trading cost)
-    features['yes_spread_cents'] = yes_spread_cents / 100.0  # Normalized to [0,1] for consistency
+    # Add back specific features to match the 52-feature model used in training
+    # 1. Direct spread costs in cents (normalized)
+    features['yes_spread_cents'] = yes_spread_cents / 100.0  
     features['no_spread_cents'] = no_spread_cents / 100.0
     
     # 2. Relative spread as percentage of mid-price
     features['yes_spread_pct'] = (yes_spread_cents / (yes_mid * 100.0)) if yes_mid > 0 else 0.5
     features['no_spread_pct'] = (no_spread_cents / (no_mid * 100.0)) if no_mid > 0 else 0.5
     
-    # 3. Spread regime classification (0=ultra-tight, 0.25=tight, 0.5=medium, 0.75=wide, 1.0=very wide)
+    # 3. Spread regime classification
     def classify_spread_regime(spread_cents):
         if spread_cents < 2:
             return 0.0  # Ultra-tight
@@ -112,12 +113,11 @@ def extract_market_agnostic_features(orderbook_data: Dict[str, Any]) -> Dict[str
     features['yes_spread_regime'] = classify_spread_regime(yes_spread_cents)
     features['no_spread_regime'] = classify_spread_regime(no_spread_cents)
     
-    # 4. Breakeven distance (how much price must move to profit after spread)
-    # This is the minimum favorable price movement needed to overcome the spread cost
-    features['yes_breakeven_move'] = yes_spread_cents / 100.0  # As probability
+    # 4. Breakeven distance
+    features['yes_breakeven_move'] = yes_spread_cents / 100.0
     features['no_breakeven_move'] = no_spread_cents / 100.0
     
-    # 5. Liquidity score (volume-to-spread ratio, higher is better)
+    # Calculate volume for liquidity features
     yes_bid_volume = sum(yes_bids.values()) if yes_bids else 0
     yes_ask_volume = sum(yes_asks.values()) if yes_asks else 0
     no_bid_volume = sum(no_bids.values()) if no_bids else 0
@@ -125,10 +125,6 @@ def extract_market_agnostic_features(orderbook_data: Dict[str, Any]) -> Dict[str
     
     yes_total_volume = yes_bid_volume + yes_ask_volume
     no_total_volume = no_bid_volume + no_ask_volume
-    
-    # Liquidity score: volume / (1 + spread_cents), normalized
-    features['yes_liquidity_score'] = min(yes_total_volume / (1.0 + yes_spread_cents) / 100.0, 1.0)
-    features['no_liquidity_score'] = min(no_total_volume / (1.0 + no_spread_cents) / 100.0, 1.0)
     
     # === VOLUME AND LIQUIDITY FEATURES ===
     
@@ -211,8 +207,6 @@ def _get_default_market_features() -> Dict[str, float]:
         'no_spread_regime': 0.25,
         'yes_breakeven_move': 0.02,
         'no_breakeven_move': 0.02,
-        'yes_liquidity_score': 0.3,
-        'no_liquidity_score': 0.3,
         
         # Volume features (minimal activity) - REMOVED yes/no_volume_norm
         'total_volume_norm': 0.01,
@@ -570,7 +564,6 @@ def _get_default_portfolio_features() -> Dict[str, float]:
         'unrealized_pnl_ratio': 0.0,
         
         # Risk metrics (no risk)
-        'position_diversity': 0.0,
         'leverage': 0.0
     }
 

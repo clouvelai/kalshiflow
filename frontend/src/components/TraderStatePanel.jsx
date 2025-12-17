@@ -62,6 +62,18 @@ const TraderStatePanel = ({ state, executionStats }) => {
             </p>
           </div>
         </div>
+        
+        {/* Zero Balance Warning */}
+        {displayState.cash_balance === 0 && displayState.portfolio_value === 0 && (
+          <div className="mt-3 p-2 bg-yellow-500/10 border border-yellow-500/30 rounded">
+            <p className="text-xs text-yellow-400">
+              ⚠️ <span className="font-semibold">Zero Balance Detected</span>
+            </p>
+            <p className="text-xs text-yellow-400/80 mt-1">
+              Trading disabled - Demo account needs funding. Add balance through Kalshi demo account UI.
+            </p>
+          </div>
+        )}
       </div>
 
       {/* Positions */}
