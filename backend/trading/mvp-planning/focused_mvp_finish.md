@@ -1,8 +1,9 @@
 # Kalshi RL Trading Subsystem - Focused MVP Completion Plan
 
 **Date**: December 17, 2024  
-**Status**: End-to-end trading system complete - need to verify with real paper testing  
-**Goal**: Verify existing trading system works with funded demo account (no new implementation needed)
+**Status**: End-to-end trading system complete - encountering demo environment activity limitations  
+**Current Roadblock**: Kalshi demo environment has extremely low orderbook activity (1 delta in 23 minutes)  
+**Goal**: Verify existing trading system works - will implement hybrid approach if demo activity remains insufficient
 
 ## Current State Assessment
 
@@ -18,12 +19,12 @@
 9. **Balance Management**: Demo account balance sync RESOLVED ✅
 10. **Complete Trading Pipeline**: Action selection → Order creation → Kalshi submission → Fill processing
 
-### ⚠️ What Needs VERIFICATION (Not Implementation)
-1. **End-to-End Trading Test**: Run `./scripts/run-rl-trader.sh` with 1000 markets on port 8003
-2. **Order Execution Verification**: Confirm existing pipeline works with real orders  
-3. **Position Synchronization**: Verify state updates correctly after trades
-4. **Frontend Integration**: Ensure port 8003 displays accurate trading state
-5. **Orderbook Activity**: If demo env lacks activity, consider real env for collection + paper env for trading
+### ⚠️ Current Status and Next Steps
+1. **Demo Environment Activity Issue**: First test session yielded only 1 orderbook delta in 23 minutes
+2. **Fresh Session Running**: New test started with 1000 markets to verify if activity improves
+3. **Decision Point**: Will evaluate activity after ~24 minutes and implement hybrid approach if needed
+4. **Hybrid Plan Ready**: Real environment orderbook collection + paper environment trading
+5. **System Verification Pending**: All components ready, waiting for sufficient market activity to test
 
 ## Primary Testing Objectives
 
@@ -136,22 +137,32 @@ INFO: [FillProcessor] Order filled: order_12345 → +10 YES position
 - Insufficient balance scenarios
 - WebSocket reconnection logic
 
-### Phase 3: Fallback Plan (IF NEEDED)
+### Phase 3: Hybrid Approach Implementation (LIKELY NEEDED)
 
-#### Step 3.1: Handle Low Demo Activity
-**If demo environment lacks orderbook activity**:
+#### Current Testing Progress
+- **Session 1**: 1 orderbook delta in 23 minutes (insufficient for trading validation)
+- **Session 2**: Fresh test running with 1000 markets (monitoring for ~24 minutes)
+- **Decision Timeline**: If no significant improvement, proceed to hybrid implementation
 
+#### Step 3.1: Hybrid Architecture Implementation
+**When demo environment proves insufficient**:
+
+**Hybrid Configuration Strategy**:
+1. **Orderbook Collection**: Connect to production Kalshi (`api.elections.kalshi.com`) for rich delta activity
+2. **Trading Execution**: Connect to demo Kalshi (`demo-api.kalshi.co`) for safe paper trading
+3. **Data Flow**: Real market data → Trading decisions → Safe demo account execution
+
+**Implementation Approach**:
 ```bash
-# Option A: Wait and be patient - demo markets may become active
-# Option B: Hybrid approach if needed:
-#   - Real env for orderbook collection (more activity)
-#   - Paper env for trading (safe with demo account)
+# Add --hybrid flag to RL trader script
+./scripts/run-rl-trader.sh --markets 1000 --port 8003 --strategy hardcoded --hybrid
 ```
 
-**Hybrid Configuration (only if necessary)**:
-- Collection service connects to production Kalshi for orderbook data
-- Trading service connects to demo Kalshi for safe paper trading
-- This provides better data flow while maintaining trading safety
+**Technical Requirements**:
+- Dual credential management (production for data, demo for trading)
+- Separate WebSocket connections for orderbook vs trading
+- Market ticker mapping between environments
+- Enhanced configuration validation
 
 ## Success Criteria
 

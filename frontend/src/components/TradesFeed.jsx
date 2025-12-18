@@ -270,7 +270,22 @@ const TradesFeed = ({ fills }) => {
   }
 
   return (
-    <div className="space-y-1 max-h-[600px] overflow-y-auto">
+    <div className="space-y-2 max-h-[600px] overflow-y-auto custom-scrollbar">
+      <style jsx>{`
+        @keyframes slideInFromLeft {
+          from {
+            opacity: 0;
+            transform: translateX(-20px);
+          }
+          to {
+            opacity: 1;
+            transform: translateX(0);
+          }
+        }
+        .animate-slide-in-left {
+          animation: slideInFromLeft 0.3s ease-out;
+        }
+      `}</style>
       {fills.map((fill, index) => {
         const isExpanded = expandedRows.has(index);
         const action = fill.action?.action_name || fill.action;
@@ -282,11 +297,15 @@ const TradesFeed = ({ fills }) => {
         return (
           <div 
             key={`fill-${index}-${fill.timestamp}`}
-            className={`font-mono text-xs rounded-lg ${actionStyle.bg} border ${actionStyle.borderColor} transition-all duration-200`}
+            className={`group font-mono text-xs rounded-lg ${actionStyle.bg} border ${actionStyle.borderColor} 
+                      transition-all duration-200 hover:shadow-lg hover:scale-[1.02] hover:border-opacity-80
+                      ${index === 0 ? 'animate-slide-in-left' : ''}`}
           >
             {/* Main Row */}
             <div 
-              className={`py-2 px-3 flex items-center justify-between ${hasObservation ? 'cursor-pointer hover:bg-gray-700/20' : ''}`}
+              className={`py-3 px-3 flex items-center justify-between rounded-lg
+                        ${hasObservation ? 'cursor-pointer hover:bg-gray-700/30' : ''}
+                        transition-colors duration-150`}
               onClick={() => hasObservation && toggleRowExpansion(index)}
             >
               <div className="flex items-center space-x-3 flex-1">
@@ -306,8 +325,12 @@ const TradesFeed = ({ fills }) => {
                 </span>
 
                 {/* Action with Icon */}
-                <div className="flex items-center space-x-1">
-                  {actionStyle.icon && <span className={actionStyle.color}>{actionStyle.icon}</span>}
+                <div className="flex items-center space-x-2">
+                  {actionStyle.icon && (
+                    <span className={`${actionStyle.color} text-lg group-hover:scale-110 transition-transform`}>
+                      {actionStyle.icon}
+                    </span>
+                  )}
                   <span className={`${actionStyle.color} font-semibold w-24`}>
                     {formatAction(action)}
                   </span>
@@ -315,14 +338,16 @@ const TradesFeed = ({ fills }) => {
 
                 {/* Position Size (for non-HOLD actions) */}
                 {positionSize && positionSize > 0 && (
-                  <span className="px-1.5 py-0.5 bg-gray-700/50 text-gray-300 rounded text-xs">
+                  <span className="px-2 py-1 bg-gray-700/50 text-gray-300 rounded-md text-xs font-medium
+                                 group-hover:bg-gray-700/70 transition-colors">
                     {positionSize} contracts
                   </span>
                 )}
 
                 {/* Market Ticker - Show full ticker */}
                 {fill.market_ticker && (
-                  <span className="text-gray-400 text-xs">
+                  <span className="text-gray-400 text-xs font-medium px-2 py-1 bg-gray-700/30 rounded-md
+                                 group-hover:bg-gray-700/50 transition-colors">
                     {fill.market_ticker}
                   </span>
                 )}
@@ -338,7 +363,7 @@ const TradesFeed = ({ fills }) => {
               <div className="flex items-center space-x-2">
                 {/* Execution Status */}
                 {fill.execution_result && (
-                  <span className={`text-xs px-2 py-0.5 rounded ${
+                  <span className={`text-xs px-2 py-1 rounded-md font-medium ${
                     fill.execution_result.executed ? 'bg-green-900/30 text-green-400' : 
                     fill.execution_result.status === 'hold' ? 'bg-amber-900/30 text-amber-400' :
                     'bg-red-900/30 text-red-400'

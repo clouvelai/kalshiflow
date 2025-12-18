@@ -195,55 +195,53 @@ class RLModelSelector(ActionSelector):
 
 class HardcodedSelector(ActionSelector):
     """
-    Enhanced hardcoded action selector for comprehensive trading mechanics testing.
+    Active trading hardcoded action selector for comprehensive trading mechanics testing.
     
-    Strategy Distribution:
-    - 75% HOLD (action 0) - Conservative baseline
-    - 6.25% BUY_YES (action 1) - Test YES position building
-    - 6.25% SELL_YES (action 2) - Test YES position closing 
-    - 6.25% BUY_NO (action 3) - Test NO position building
-    - 6.25% SELL_NO (action 4) - Test NO position closing
+    Strategy Distribution (NO HOLD ACTIONS):
+    - 25% BUY_YES (action 1) - Test YES position building
+    - 25% SELL_YES (action 2) - Test YES position closing 
+    - 25% BUY_NO (action 3) - Test NO position building
+    - 25% SELL_NO (action 4) - Test NO position closing
     
-    This strategy exercises all trading mechanics with realistic position sizing
-    while remaining conservative enough for safe testing on paper accounts.
+    This strategy forces active trading on every decision to test order submission,
+    position synchronization, and fill processing across all action types without
+    relying on HOLD actions. Designed for testing trading pipeline mechanics.
     """
     
     def __init__(self):
-        """Initialize hardcoded selector with action distribution."""
+        """Initialize hardcoded selector with active trading distribution."""
         self.action_count = 0
         self.action_history = []
-        logger.info("Enhanced HardcodedSelector initialized with diversified action distribution")
-        logger.info("Strategy: 75% HOLD, 25% trading across all 4 trade directions")
+        logger.info("Active HardcodedSelector initialized - NO HOLD ACTIONS")
+        logger.info("Strategy: 25% BUY_YES, 25% SELL_YES, 25% BUY_NO, 25% SELL_NO")
     
     async def select_action(self, observation: np.ndarray, market_ticker: str) -> int:
         """
-        Select action using weighted random distribution to exercise all mechanics.
+        Select action using equal distribution across trading actions only.
         
-        Uses deterministic cycling with randomness to ensure good coverage
-        while being reproducible for testing purposes.
+        Uses simple cycling pattern to ensure equal distribution and predictable
+        testing of all trading mechanics without any HOLD actions.
         
         Args:
             observation: Market observation (used for basic validity checks)
             market_ticker: Market ticker (used for logging)
         
         Returns:
-            int: Action ID (0-4) selected according to strategy distribution
+            int: Action ID (1-4) selected according to equal trading distribution
         """
         self.action_count += 1
         
-        # Use a mix of deterministic cycling and basic randomness
-        # This ensures all actions get tested while being somewhat predictable
-        cycle_position = self.action_count % 16
+        # Simple 4-cycle pattern for equal distribution
+        # No HOLD actions - always force trading decisions
+        cycle_position = self.action_count % 4
         
-        # Enhanced distribution pattern over 16 cycles:
-        # 12 HOLD, 1 BUY_YES, 1 SELL_YES, 1 BUY_NO, 1 SELL_NO
-        if cycle_position in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]:
-            action = LimitOrderActions.HOLD.value
-        elif cycle_position == 13:
+        # Equal distribution pattern over 4 cycles:
+        # BUY_YES, SELL_YES, BUY_NO, SELL_NO (rotating)
+        if cycle_position == 1:
             action = LimitOrderActions.BUY_YES_LIMIT.value
-        elif cycle_position == 14:
+        elif cycle_position == 2:
             action = LimitOrderActions.SELL_YES_LIMIT.value
-        elif cycle_position == 15:
+        elif cycle_position == 3:
             action = LimitOrderActions.BUY_NO_LIMIT.value
         else:  # cycle_position == 0
             action = LimitOrderActions.SELL_NO_LIMIT.value
@@ -256,22 +254,21 @@ class HardcodedSelector(ActionSelector):
             'timestamp': self.action_count
         })
         
-        # Log trading actions for monitoring
-        if action != LimitOrderActions.HOLD.value:
-            action_names = {
-                1: "BUY_YES",
-                2: "SELL_YES", 
-                3: "BUY_NO",
-                4: "SELL_NO"
-            }
-            logger.info(f"Trading action selected: {action_names[action]} for {market_ticker} "
-                       f"(cycle {cycle_position}/16, total actions: {self.action_count})")
+        # Log all actions since they're all trading actions now
+        action_names = {
+            1: "BUY_YES",
+            2: "SELL_YES", 
+            3: "BUY_NO",
+            4: "SELL_NO"
+        }
+        logger.info(f"Active trading action: {action_names[action]} for {market_ticker} "
+                   f"(cycle {cycle_position}/4, total actions: {self.action_count})")
         
         return action
     
     def get_strategy_name(self) -> str:
         """Return strategy name with distribution info."""
-        return "Enhanced_Hardcoded(75%_HOLD_25%_Trading)"
+        return "Active_Hardcoded(NO_HOLD_25%_Each_Trading)"
     
     def get_action_statistics(self) -> dict:
         """Get statistics about action distribution for assessment."""
@@ -289,8 +286,8 @@ class HardcodedSelector(ActionSelector):
             action: (count / total * 100) for action, count in action_counts.items()
         }
         
+        # Updated action names without HOLD (only trading actions)
         action_names = {
-            0: "HOLD",
             1: "BUY_YES", 
             2: "SELL_YES",
             3: "BUY_NO",
@@ -306,7 +303,8 @@ class HardcodedSelector(ActionSelector):
             "total_actions": total,
             "distribution": named_distribution,
             "raw_counts": action_counts,
-            "recent_actions": self.action_history[-10:] if len(self.action_history) >= 10 else self.action_history
+            "recent_actions": self.action_history[-10:] if len(self.action_history) >= 10 else self.action_history,
+            "strategy_type": "active_trading_no_hold"
         }
 
 

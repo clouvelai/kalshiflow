@@ -82,8 +82,9 @@ class Position:
     """Position in a specific market using Kalshi convention."""
     ticker: str
     contracts: int       # +contracts for YES, -contracts for NO
-    cost_basis: float    # Total cost in dollars
+    cost_basis: float    # Total cost in dollars (position_cost from Kalshi)
     realized_pnl: float  # Cumulative realized P&L
+    kalshi_data: Dict[str, Any] = field(default_factory=dict)  # Raw Kalshi API response
     
     @property
     def is_flat(self) -> bool:
@@ -257,7 +258,7 @@ class KalshiMultiMarketOrderManager:
         self._total_volume_traded = 0.0
         
         # State change callbacks (for UI updates)
-        self._state_change_callbacks: List[callable] = []
+        self._state_change_callbacks: List[Callable] = []
         
         # Execution history tracking (maxlen=100)
         self.execution_history: Deque[TradeDetail] = deque(maxlen=100)
@@ -1743,7 +1744,11 @@ class KalshiMultiMarketOrderManager:
         try:
             # Get positions from Kalshi
             kalshi_positions_response = await self.trading_client.get_positions()
-            kalshi_positions_list = kalshi_positions_response.get("positions", [])
+            kalshi_positions_list = kalshi_positions_response.get("positions", kalshi_positions_response.get("market_positions", []))
+            
+            # Log the raw response structure for debugging
+            if kalshi_positions_list:
+                logger.debug(f"Kalshi positions response sample: {kalshi_positions_list[0] if kalshi_positions_list else 'empty'}")
             
             # Build dict of Kalshi positions by ticker
             kalshi_positions_dict = {}
@@ -1759,12 +1764,13 @@ class KalshiMultiMarketOrderManager:
                 contracts = kalshi_pos.get("position", 0)
                 
                 if ticker not in self.positions:
-                    # New position
+                    # New position - store the entire Kalshi response
                     self.positions[ticker] = Position(
                         ticker=ticker,
                         contracts=contracts,
-                        cost_basis=0.0,  # We don't have cost basis from Kalshi API
-                        realized_pnl=0.0  # We don't have realized P&L from Kalshi API
+                        cost_basis=0.0,  # Will be calculated if needed
+                        realized_pnl=0.0,  # Will be calculated if needed
+                        kalshi_data=kalshi_pos  # Store complete Kalshi response
                     )
                     if is_startup:
                         logger.info(
@@ -1778,7 +1784,7 @@ class KalshiMultiMarketOrderManager:
                         )
                         position_discrepancies.append(f"{ticker}: added ({contracts} contracts)")
                 else:
-                    # Update existing position
+                    # Update existing position with Kalshi data
                     local_pos = self.positions[ticker]
                     if local_pos.contracts != contracts:
                         logger.warning(
@@ -1786,10 +1792,13 @@ class KalshiMultiMarketOrderManager:
                             f"local={local_pos.contracts}, Kalshi={contracts}. "
                             f"Updating local position to match Kalshi."
                         )
-                        local_pos.contracts = contracts
                         position_discrepancies.append(
                             f"{ticker}: {local_pos.contracts} -> {contracts}"
                         )
+                    
+                    # Always update with complete Kalshi response (authoritative source)
+                    local_pos.contracts = contracts
+                    local_pos.kalshi_data = kalshi_pos
             
             # Remove positions that don't exist in Kalshi
             for ticker in list(self.positions.keys()):
@@ -1891,11 +1900,15 @@ class KalshiMultiMarketOrderManager:
         Returns:
             Dictionary containing portfolio state, positions, orders, and metrics
         """
-        # Calculate portfolio value
+        # Calculate portfolio value using actual market exposure from Kalshi
         portfolio_value = self.cash_balance + self.promised_cash
         for position in self.positions.values():
-            # Estimate position value (would need current market prices for accuracy)
-            portfolio_value += position.quantity * 0.50  # Rough estimate at 50c
+            # Use market_exposure_dollars if available, otherwise convert from cents
+            kalshi_data = position.kalshi_data
+            if "market_exposure_dollars" in kalshi_data:
+                portfolio_value += float(kalshi_data["market_exposure_dollars"])
+            elif "market_exposure" in kalshi_data:
+                portfolio_value += float(kalshi_data["market_exposure"]) / 100.0
         
         # Calculate fill rate
         total_orders = self._orders_placed
@@ -1907,24 +1920,25 @@ class KalshiMultiMarketOrderManager:
             "promised_cash": self.promised_cash,
             "open_orders": [
                 {
-                    "order_id": order_info.our_order_id,
+                    "order_id": order_info.order_id,
                     "ticker": order_info.ticker,
                     "side": "BUY" if order_info.side == OrderSide.BUY else "SELL",
                     "quantity": order_info.quantity,
-                    "price": order_info.yes_price,
+                    "price": order_info.limit_price,
                     "status": order_info.status.name
                 }
                 for order_info in self.open_orders.values()
             ],
-            "positions": [
-                {
+            "positions": {
+                ticker: {
                     "ticker": ticker,
-                    "quantity": position.quantity,
-                    "unrealized_pnl": position.get_unrealized_pnl(0.50)  # Rough estimate
+                    "side": "YES" if position.contracts > 0 else "NO",
+                    "contracts": abs(position.contracts),
+                    **position.kalshi_data  # Pass through complete Kalshi API response
                 }
                 for ticker, position in self.positions.items()
-                if not position.is_flat()
-            ],
+                if not position.is_flat
+            },
             "metrics": {
                 "orders_placed": self._orders_placed,
                 "orders_filled": self._orders_filled,

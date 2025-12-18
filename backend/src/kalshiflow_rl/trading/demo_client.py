@@ -449,8 +449,14 @@ class KalshiDemoTradingClient:
                 "type": type
             }
             
+            # Kalshi API requires specific price field names based on contract side
             if price is not None:
-                order_data["price"] = price
+                if side.lower() == "yes":
+                    order_data["yes_price"] = price
+                elif side.lower() == "no":
+                    order_data["no_price"] = price
+                else:
+                    raise KalshiDemoOrderError(f"Invalid contract side: {side}. Must be 'yes' or 'no'")
             
             logger.info(f"Creating demo order: {action} {count} {side} contracts of {ticker} @ {price}¢")
             

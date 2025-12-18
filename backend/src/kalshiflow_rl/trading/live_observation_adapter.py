@@ -254,9 +254,20 @@ class LiveObservationAdapter:
             time_gap = (live_snapshot.timestamp - prev_snapshot.timestamp).total_seconds()
         
         # Convert to SessionDataPoint format
+        # Filter orderbook_data to only include the raw orderbook structure 
+        # and exclude computed values that might conflict with feature extraction
+        orderbook_data = live_snapshot.orderbook_data
+        
+        # Only keep the actual orderbook levels (dicts) and exclude computed values (ints/floats)
+        filtered_orderbook = {}
+        for key, value in orderbook_data.items():
+            # Keep only dictionary values (bid/ask levels) and essential metadata
+            if isinstance(value, dict) or key in ['market_ticker', 'last_sequence', 'last_update_time']:
+                filtered_orderbook[key] = value
+        
         markets_data = {
             live_snapshot.market_ticker: {
-                **live_snapshot.orderbook_data,
+                **filtered_orderbook,
                 'total_volume': live_snapshot.total_volume
             }
         }
