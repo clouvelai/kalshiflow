@@ -25,7 +25,7 @@ from kalshiflow_rl.trading.event_bus import get_event_bus
 from kalshiflow_rl.trading.actor_service import ActorService
 from kalshiflow_rl.trading.kalshi_multi_market_order_manager import KalshiMultiMarketOrderManager
 from kalshiflow_rl.trading.live_observation_adapter import LiveObservationAdapter
-from kalshiflow_rl.trading.action_selector import HardcodedSelector
+from kalshiflow_rl.trading.hardcoded_policies import HardcodedSelector
 
 # Track if we've seen an event
 event_received = False

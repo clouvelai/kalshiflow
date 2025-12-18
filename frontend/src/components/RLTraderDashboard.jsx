@@ -414,21 +414,99 @@ const RLTraderDashboard = () => {
     }
   };
 
+  // Parse settlement date from ticker (e.g., "INXD-25JAN03" -> Date object)
+  const parseSettlementDate = (ticker) => {
+    try {
+      // Kalshi ticker format: SYMBOL-DDMMMYY (e.g., "INXD-25JAN03", "PRES-05NOV24")
+      const match = ticker.match(/-(\d{2})([A-Z]{3})(\d{2})$/);
+      if (match) {
+        const [, day, monthStr, year] = match;
+        const monthMap = {
+          'JAN': 0, 'FEB': 1, 'MAR': 2, 'APR': 3, 'MAY': 4, 'JUN': 5,
+          'JUL': 6, 'AUG': 7, 'SEP': 8, 'OCT': 9, 'NOV': 10, 'DEC': 11
+        };
+        const month = monthMap[monthStr];
+        if (month !== undefined) {
+          const yearNum = parseInt(year);
+          // Handle 2-digit years: assume 2000-2099 range
+          const fullYear = yearNum < 50 ? 2000 + yearNum : 1900 + yearNum;
+          const date = new Date(fullYear, month, parseInt(day));
+          return date;
+        }
+      }
+    } catch (e) {
+      console.warn(`Failed to parse settlement date from ticker ${ticker}:`, e);
+    }
+    return null;
+  };
+
+  // Calculate time to expiration
+  const getTimeToExpiration = (settlementDate) => {
+    if (!settlementDate) return null;
+    const now = new Date();
+    const diff = settlementDate.getTime() - now.getTime();
+    const days = Math.floor(diff / (1000 * 60 * 60 * 24));
+    const hours = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+    const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
+    
+    if (diff < 0) return { expired: true, display: 'Expired' };
+    if (days > 0) return { expired: false, display: `${days}d ${hours}h`, days };
+    if (hours > 0) return { expired: false, display: `${hours}h ${minutes}m`, days: 0, hours };
+    return { expired: false, display: `${minutes}m`, days: 0, hours: 0, minutes };
+  };
+
   // Format positions for display
   const formatPositions = () => {
     if (!positions || Object.keys(positions).length === 0) return [];
     
-    return Object.entries(positions).map(([ticker, pos]) => ({
-      ticker,
-      contracts: pos.position || pos.contracts || 0,
-      side: (pos.position || pos.contracts || 0) > 0 ? 'YES' : 'NO',
-      costBasis: pos.cost_basis || 0,
-      realizedPnl: pos.realized_pnl || 0,
-      marketExposure: pos.market_exposure || Math.abs((pos.position || pos.contracts || 0) * (pos.cost_basis || 0) / 100),
-      totalTraded: pos.total_traded,
-      feesPaid: pos.fees_paid || 0,
-      lastUpdated: pos.last_updated_ts
-    })).filter(p => p.contracts !== 0);
+    const formatted = Object.entries(positions).map(([ticker, pos]) => {
+      const contracts = pos.position || pos.contracts || 0;
+      const settlementDate = parseSettlementDate(ticker);
+      const timeToExp = getTimeToExpiration(settlementDate);
+      
+      // Calculate market exposure - prefer market_exposure_dollars, fallback to cost_basis calculation
+      let marketExposure = 0;
+      if (pos.market_exposure_dollars !== undefined && pos.market_exposure_dollars !== null) {
+        marketExposure = typeof pos.market_exposure_dollars === 'number' 
+          ? pos.market_exposure_dollars 
+          : parseFloat(pos.market_exposure_dollars) || 0;
+      } else if (pos.market_exposure !== undefined && pos.market_exposure !== null) {
+        // market_exposure could be in dollars or cents, try both
+        const exposure = typeof pos.market_exposure === 'number' 
+          ? pos.market_exposure 
+          : parseFloat(pos.market_exposure) || 0;
+        // If it's a large number (> 1000 for typical positions), assume it's in cents
+        marketExposure = exposure > 1000 ? exposure / 100 : exposure;
+      } else {
+        // Fallback: estimate from contracts and cost basis
+        const costBasisDollars = (pos.cost_basis || 0) * Math.abs(contracts);
+        marketExposure = costBasisDollars;
+      }
+      
+      return {
+        ticker,
+        contracts,
+        side: contracts > 0 ? 'YES' : 'NO',
+        costBasis: pos.cost_basis || 0,
+        realizedPnl: pos.realized_pnl || 0,
+        marketExposure,
+        totalTraded: pos.total_traded,
+        feesPaid: pos.fees_paid || 0,
+        lastUpdated: pos.last_updated_ts,
+        settlementDate,
+        timeToExp,
+        settlementTimestamp: settlementDate ? settlementDate.getTime() : Infinity
+      };
+    }).filter(p => p.contracts !== 0);
+    
+    // Sort by settlement date (earliest first)
+    return formatted.sort((a, b) => {
+      // Expired positions go to the end
+      if (a.timeToExp?.expired && !b.timeToExp?.expired) return 1;
+      if (!a.timeToExp?.expired && b.timeToExp?.expired) return -1;
+      // Both expired or both not expired - sort by date
+      return a.settlementTimestamp - b.settlementTimestamp;
+    });
   };
 
   // Helper to format relative time
@@ -1327,7 +1405,7 @@ const RLTraderDashboard = () => {
                 Open Positions
                 {formatPositions().length > 0 && (
                   <span className="ml-2 text-sm text-gray-400 font-normal">
-                    ({formatPositions().length} active)
+                    ({formatPositions().length} active, sorted by settlement date)
                   </span>
                 )}
               </h3>
@@ -1368,6 +1446,39 @@ const RLTraderDashboard = () => {
                               </span>
                             </div>
                           </div>
+                          
+                          {/* Market Exposure */}
+                          <div>
+                            <span className="text-gray-500 block">Market Exposure</span>
+                            <span className="text-blue-400 font-mono font-medium">
+                              ${pos.marketExposure.toFixed(2)}
+                            </span>
+                          </div>
+                          
+                          {/* Settlement Date & Time to Expiration */}
+                          {pos.settlementDate && pos.timeToExp && (
+                            <div className="pt-2 border-t border-gray-700/50">
+                              <div className="flex justify-between items-center mb-1">
+                                <span className="text-gray-500">Expires:</span>
+                                <span className={`font-medium ${
+                                  pos.timeToExp.expired 
+                                    ? 'text-red-400' 
+                                    : (pos.timeToExp.days !== undefined && pos.timeToExp.days < 1)
+                                    ? 'text-orange-400'
+                                    : 'text-yellow-400'
+                                }`}>
+                                  {pos.timeToExp.display}
+                                </span>
+                              </div>
+                              <div className="text-gray-600 text-xs">
+                                {pos.settlementDate.toLocaleDateString('en-US', { 
+                                  month: 'short', 
+                                  day: 'numeric', 
+                                  year: 'numeric' 
+                                })}
+                              </div>
+                            </div>
+                          )}
                         </div>
                       </div>
                     ))}

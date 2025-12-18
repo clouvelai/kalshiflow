@@ -28,7 +28,7 @@ from kalshiflow_rl.trading.event_bus import (
     get_event_bus,
     shutdown_event_bus
 )
-from kalshiflow_rl.trading.action_selector import HardcodedSelector
+from kalshiflow_rl.trading.hardcoded_policies import HardcodedSelector
 
 
 class TestMilestone1Integration:

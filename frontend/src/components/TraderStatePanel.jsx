@@ -220,97 +220,145 @@ const TraderStatePanel = ({
           </div>
         </div>
 
-        {/* Action Breakdown - Redesigned */}
+        {/* Action Breakdown - Redesigned with No Op and Trades sections */}
         {showActionBreakdown && displayState.actor_metrics?.action_counts && (
           <div className="bg-gradient-to-br from-gray-800 to-gray-800/80 border border-gray-700 rounded-lg p-3 hover:border-gray-600 transition-all">
-            <div className="flex items-center justify-between mb-2">
+            {/* Header with Events Received count */}
+            <div className="flex items-center justify-between mb-3">
               <h3 className="text-xs font-medium text-gray-400 uppercase tracking-wider">Actions</h3>
-              <span className="text-xs px-2 py-0.5 bg-blue-500/20 text-blue-400 rounded-full">
-                {formatNumber(displayState.actor_metrics.total_actions || 0)} total
-              </span>
-            </div>
-            <div className="space-y-2">
-              {/* Compact action grid - All 5 actions always visible */}
-              <div className="grid grid-cols-2 gap-x-4 gap-y-2">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs text-gray-500">Hold</span>
-                  <span className="text-sm font-semibold text-amber-400 font-mono">
-                    {formatNumber(displayState.actor_metrics.action_counts.hold || 0)}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-xs text-gray-500">Buy YES</span>
-                  <span className="text-sm font-semibold text-green-400 font-mono">
-                    {formatNumber(displayState.actor_metrics.action_counts.buy_yes || 0)}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-xs text-gray-500">Sell YES</span>
-                  <span className="text-sm font-semibold text-red-400 font-mono">
-                    {formatNumber(displayState.actor_metrics.action_counts.sell_yes || 0)}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-xs text-gray-500">Buy NO</span>
-                  <span className="text-sm font-semibold text-purple-400 font-mono">
-                    {formatNumber(displayState.actor_metrics.action_counts.buy_no || 0)}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-xs text-gray-500">Sell NO</span>
-                  <span className="text-sm font-semibold text-blue-400 font-mono">
-                    {formatNumber(displayState.actor_metrics.action_counts.sell_no || 0)}
-                  </span>
-                </div>
+              <div className="flex items-center space-x-2">
+                <span className="text-xs px-2 py-0.5 bg-gray-600/50 text-gray-300 rounded-full">
+                  {formatNumber(displayState.actor_metrics.events_queued || 0)} events
+                </span>
+                <span className="text-xs px-2 py-0.5 bg-blue-500/20 text-blue-400 rounded-full">
+                  {formatNumber(displayState.actor_metrics.total_actions || 0)} actions
+                </span>
               </div>
-              
-              {/* Action distribution bar */}
-              {displayState.actor_metrics.total_actions > 0 && (
-                <div className="mt-2 pt-2 border-t border-gray-700/50">
-                  <div className="flex h-2 rounded-full overflow-hidden bg-gray-700">
-                    {displayState.actor_metrics.action_counts.hold > 0 && (
-                      <div 
-                        className="bg-amber-400 transition-all duration-500"
-                        style={{ 
-                          width: `${(displayState.actor_metrics.action_counts.hold / displayState.actor_metrics.total_actions) * 100}%` 
-                        }}
-                      />
+            </div>
+            
+            <div className="space-y-3">
+              {/* No Op Section */}
+              <div className="bg-gray-900/50 border border-gray-700/50 rounded-lg p-2.5">
+                <div className="flex items-center justify-between mb-2">
+                  <h4 className="text-xs font-medium text-gray-500 uppercase tracking-wider">No Op</h4>
+                  <span className="text-xs px-2 py-0.5 bg-gray-600/50 text-gray-300 rounded-full">
+                    {formatNumber(
+                      (displayState.actor_metrics.action_counts.hold || 0) +
+                      (displayState.actor_metrics.action_counts.failed || 0) +
+                      (displayState.actor_metrics.action_counts.throttled || 0)
                     )}
-                    {displayState.actor_metrics.action_counts.buy_yes > 0 && (
-                      <div 
-                        className="bg-green-400 transition-all duration-500"
-                        style={{ 
-                          width: `${(displayState.actor_metrics.action_counts.buy_yes / displayState.actor_metrics.total_actions) * 100}%` 
-                        }}
-                      />
-                    )}
-                    {displayState.actor_metrics.action_counts.sell_yes > 0 && (
-                      <div 
-                        className="bg-red-400 transition-all duration-500"
-                        style={{ 
-                          width: `${(displayState.actor_metrics.action_counts.sell_yes / displayState.actor_metrics.total_actions) * 100}%` 
-                        }}
-                      />
-                    )}
-                    {displayState.actor_metrics.action_counts.buy_no > 0 && (
-                      <div 
-                        className="bg-purple-400 transition-all duration-500"
-                        style={{ 
-                          width: `${(displayState.actor_metrics.action_counts.buy_no / displayState.actor_metrics.total_actions) * 100}%` 
-                        }}
-                      />
-                    )}
-                    {displayState.actor_metrics.action_counts.sell_no > 0 && (
-                      <div 
-                        className="bg-blue-400 transition-all duration-500"
-                        style={{ 
-                          width: `${(displayState.actor_metrics.action_counts.sell_no / displayState.actor_metrics.total_actions) * 100}%` 
-                        }}
-                      />
-                    )}
+                  </span>
+                </div>
+                <div className="grid grid-cols-3 gap-x-3 gap-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs text-gray-500">Hold</span>
+                    <span className="text-sm font-semibold text-amber-400 font-mono">
+                      {formatNumber(displayState.actor_metrics.action_counts.hold || 0)}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs text-gray-500">Failed</span>
+                    <span className="text-sm font-semibold text-orange-400 font-mono">
+                      {formatNumber(displayState.actor_metrics.action_counts.failed || 0)}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs text-gray-500">Throttled</span>
+                    <span className="text-sm font-semibold text-yellow-400 font-mono">
+                      {formatNumber(displayState.actor_metrics.action_counts.throttled || 0)}
+                    </span>
                   </div>
                 </div>
-              )}
+              </div>
+
+              {/* Trades Section */}
+              <div className="bg-gray-800/50 border border-gray-700/50 rounded-lg p-2.5">
+                <div className="flex items-center justify-between mb-2">
+                  <h4 className="text-xs font-medium text-gray-400 uppercase tracking-wider">Trades</h4>
+                  <span className="text-xs px-2 py-0.5 bg-blue-500/20 text-blue-400 rounded-full">
+                    {formatNumber(
+                      (displayState.actor_metrics.action_counts.buy_yes || 0) +
+                      (displayState.actor_metrics.action_counts.sell_yes || 0) +
+                      (displayState.actor_metrics.action_counts.buy_no || 0) +
+                      (displayState.actor_metrics.action_counts.sell_no || 0)
+                    )}
+                  </span>
+                </div>
+                <div className="grid grid-cols-2 gap-x-4 gap-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs text-gray-500">Buy YES</span>
+                    <span className="text-sm font-semibold text-green-400 font-mono">
+                      {formatNumber(displayState.actor_metrics.action_counts.buy_yes || 0)}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs text-gray-500">Sell YES</span>
+                    <span className="text-sm font-semibold text-red-400 font-mono">
+                      {formatNumber(displayState.actor_metrics.action_counts.sell_yes || 0)}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs text-gray-500">Buy NO</span>
+                    <span className="text-sm font-semibold text-purple-400 font-mono">
+                      {formatNumber(displayState.actor_metrics.action_counts.buy_no || 0)}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs text-gray-500">Sell NO</span>
+                    <span className="text-sm font-semibold text-blue-400 font-mono">
+                      {formatNumber(displayState.actor_metrics.action_counts.sell_no || 0)}
+                    </span>
+                  </div>
+                </div>
+                
+                {/* Trade distribution bar - only show trades, exclude No Op */}
+                {(() => {
+                  const tradesTotal = 
+                    (displayState.actor_metrics.action_counts.buy_yes || 0) +
+                    (displayState.actor_metrics.action_counts.sell_yes || 0) +
+                    (displayState.actor_metrics.action_counts.buy_no || 0) +
+                    (displayState.actor_metrics.action_counts.sell_no || 0);
+                  
+                  return tradesTotal > 0 ? (
+                    <div className="mt-2 pt-2 border-t border-gray-700/50">
+                      <div className="flex h-2 rounded-full overflow-hidden bg-gray-700">
+                        {displayState.actor_metrics.action_counts.buy_yes > 0 && (
+                          <div 
+                            className="bg-green-400 transition-all duration-500"
+                            style={{ 
+                              width: `${(displayState.actor_metrics.action_counts.buy_yes / tradesTotal) * 100}%` 
+                            }}
+                          />
+                        )}
+                        {displayState.actor_metrics.action_counts.sell_yes > 0 && (
+                          <div 
+                            className="bg-red-400 transition-all duration-500"
+                            style={{ 
+                              width: `${(displayState.actor_metrics.action_counts.sell_yes / tradesTotal) * 100}%` 
+                            }}
+                          />
+                        )}
+                        {displayState.actor_metrics.action_counts.buy_no > 0 && (
+                          <div 
+                            className="bg-purple-400 transition-all duration-500"
+                            style={{ 
+                              width: `${(displayState.actor_metrics.action_counts.buy_no / tradesTotal) * 100}%` 
+                            }}
+                          />
+                        )}
+                        {displayState.actor_metrics.action_counts.sell_no > 0 && (
+                          <div 
+                            className="bg-blue-400 transition-all duration-500"
+                            style={{ 
+                              width: `${(displayState.actor_metrics.action_counts.sell_no / tradesTotal) * 100}%` 
+                            }}
+                          />
+                        )}
+                      </div>
+                    </div>
+                  ) : null;
+                })()}
+              </div>
             </div>
           </div>
         )}

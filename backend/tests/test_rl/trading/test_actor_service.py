@@ -15,7 +15,7 @@ from kalshiflow_rl.trading.actor_service import (
     ActorMetrics
 )
 from kalshiflow_rl.trading.service_container import create_test_container
-from kalshiflow_rl.trading.action_selector import HardcodedSelector
+from kalshiflow_rl.trading.hardcoded_policies import HardcodedSelector
 
 
 @pytest_asyncio.fixture

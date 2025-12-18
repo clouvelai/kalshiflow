@@ -70,7 +70,9 @@ class ActorMetrics:
                 "buy_yes": 0,
                 "sell_yes": 0,
                 "buy_no": 0,
-                "sell_no": 0
+                "sell_no": 0,
+                "throttled": 0,
+                "failed": 0
             }
 
 
@@ -291,7 +293,7 @@ class ActorService:
             return False
         
         # Check if it's a HardcodedSelector instance
-        from .action_selector import HardcodedSelector
+        from .hardcoded_policies import HardcodedSelector
         if isinstance(self._action_selector, HardcodedSelector):
             return True
         
@@ -554,7 +556,10 @@ class ActorService:
             # Step 1: Build observation (requires LiveObservationAdapter)
             observation = await self._build_observation(market_ticker)
             if observation is None:
-                logger.debug(f"No observation available for {market_ticker}")
+                logger.info(f"No observation available for {market_ticker} - skipping action")
+                # Still increment events_processed to track that we attempted to process this event
+                # but failed at observation building stage
+                self.metrics.events_processed += 1
                 return
             
             # Step 2: Select action (requires ActionSelector)
@@ -683,7 +688,8 @@ class ActorService:
         if self._order_manager:
             if hasattr(self._order_manager, 'get_positions'):
                 all_positions = self._order_manager.get_positions()
-                position_data = all_positions.get(market_ticker, {})
+                # Pass all positions (dict of all markets) - extract_portfolio_features expects this format
+                position_data = all_positions if isinstance(all_positions, dict) else {}
             if hasattr(self._order_manager, 'get_portfolio_value'):
                 portfolio_value = self._order_manager.get_portfolio_value()
             if hasattr(self._order_manager, 'get_cash_balance'):
@@ -743,7 +749,7 @@ class ActorService:
                 self._check_circuit_breaker(market_ticker)
                 return None
         
-        logger.debug("No observation adapter configured")
+        logger.warning("No observation adapter configured")
         return None
     
     async def _select_action(self, observation: np.ndarray, market_ticker: str) -> Optional[int]:
@@ -753,12 +759,29 @@ class ActorService:
         Requires ActionSelector integration.
         """
         if not self._action_selector:
-            logger.debug("No action selector configured")
+            logger.warning("No action selector configured - action selection failed")
+            # Track failed action
+            self.metrics.action_counts["failed"] += 1
+            self.metrics.total_actions += 1
             return None
         
         try:
-            # Use configured action selector
-            action = await self._action_selector(observation, market_ticker)
+            # Get position info from order manager (already-populated, session-maintained positions)
+            # Always provide position_info, even if position is 0 (fail-safe requires explicit position data)
+            position_info = {'position': 0}  # Default to 0 (no position)
+            if self._order_manager and hasattr(self._order_manager, 'get_positions'):
+                # get_positions() returns locally maintained positions (synced with Kalshi periodically,
+                # but not fetched on-demand - no API call here)
+                all_positions = self._order_manager.get_positions()
+                market_position = all_positions.get(market_ticker, {})
+                if market_position:
+                    position_info = {'position': market_position.get('position', 0)}
+                else:
+                    # Market not in positions dict - explicitly use 0 (no position)
+                    position_info = {'position': 0}
+            
+            # Use configured action selector with position info
+            action = await self._action_selector(observation, market_ticker, position_info)
             
             if action is not None:
                 self.metrics.model_predictions += 1
@@ -770,11 +793,14 @@ class ActorService:
             
             return action
         except Exception as e:
-            logger.error(f"Error selecting action for {market_ticker}: {e}")
+            logger.warning(f"Error selecting action for {market_ticker}: {e}")
             # Update error metrics
             self._error_counts[market_ticker] += 1
             self.metrics.errors += 1
             self.metrics.last_error = str(e)
+            # Track failed action
+            self.metrics.action_counts["failed"] += 1
+            self.metrics.total_actions += 1
             # Check circuit breaker
             self._check_circuit_breaker(market_ticker)
             return None
@@ -824,11 +850,13 @@ class ActorService:
         if market_ticker in self._per_market_throttle:
             time_since_last = (time.time() - self._per_market_throttle[market_ticker]) * 1000
             if time_since_last < self.throttle_ms:
-                logger.debug(
+                logger.info(
                     f"Market {market_ticker} throttled "
                     f"({time_since_last:.1f}ms < {self.throttle_ms}ms)"
                 )
-                return {"status": "throttled", "executed": False}
+                # Track throttled action (already counted in total_actions when action was selected)
+                self.metrics.action_counts["throttled"] += 1
+                return {"status": "throttled", "executed": False, "throttled": True}
         
         try:
             # Get orderbook snapshot for price calculation
@@ -914,7 +942,7 @@ class ActorService:
         try:
             # Map action IDs to names for 5-action space
             action_types = ["HOLD", "BUY_YES_LIMIT", "SELL_YES_LIMIT", "BUY_NO_LIMIT", "SELL_NO_LIMIT"]
-            position_size = 20  # Fixed size for session 12 model
+            position_size = 5  # Fixed contract size
             
             # Determine action name and position size
             if 0 <= action < len(action_types):

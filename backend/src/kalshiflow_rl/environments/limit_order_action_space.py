@@ -49,7 +49,7 @@ class PositionConfig:
     - Phase 3: sizes=[5, 10, 20, 50, 100] -> 21 actions (full granularity)
     """
     # START WITH SINGLE SIZE FOR SIMPLICITY (5 total actions)
-    sizes: List[int] = field(default_factory=lambda: [20])  # Phase 1: Single size
+    sizes: List[int] = field(default_factory=lambda: [5])  # Phase 1: Single size
     # sizes: List[int] = field(default_factory=lambda: [10, 50])  # Phase 2: Two sizes
     # sizes: List[int] = field(default_factory=lambda: [5, 10, 20, 50, 100])  # Phase 3: Full
     

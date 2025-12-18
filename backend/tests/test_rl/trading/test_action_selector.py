@@ -20,9 +20,9 @@ from unittest.mock import Mock, patch, MagicMock
 from kalshiflow_rl.trading.action_selector import (
     ActionSelector,
     RLModelSelector,
-    HardcodedSelector,
     create_action_selector
 )
+from kalshiflow_rl.trading.hardcoded_policies import HardcodedSelector
 from kalshiflow_rl.environments.limit_order_action_space import LimitOrderActions
 
 

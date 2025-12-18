@@ -47,7 +47,7 @@ usage() {
     echo "  -m, --markets LIMIT           Orderbook market limit (default: $DEFAULT_MARKET_LIMIT)"
     echo "  -e, --env ENVIRONMENT         Environment: paper|local|production (default: $DEFAULT_ENV)"
     echo "  --mode MODE                   Market mode: discovery|config (default: $DEFAULT_MODE)"
-    echo "  -s, --strategy STRATEGY       Action strategy: hardcoded|rl_model|quant_hardcoded (default: $DEFAULT_STRATEGY)"
+    echo "  -s, --strategy STRATEGY       Action strategy: hardcoded|rl_model|quant_hardcoded|position_aware_quant_hardcoded (default: $DEFAULT_STRATEGY)"
     echo "  --no-cleanup                  Disable order/position cleanup on startup (default: cleanup enabled)"
     echo "  -h, --help                    Show this help message"
     echo ""
@@ -132,8 +132,10 @@ if [[ "$MODE" != "discovery" && "$MODE" != "config" ]]; then
     exit 1
 fi
 
-if [[ "$STRATEGY" != "hardcoded" && "$STRATEGY" != "rl_model" && "$STRATEGY" != "quant_hardcoded" ]]; then
-    echo -e "${RED}Error: Strategy must be 'hardcoded', 'rl_model', or 'quant_hardcoded'${NC}"
+# Validate strategy (allow position_aware variants)
+VALID_STRATEGIES=("hardcoded" "rl_model" "quant_hardcoded" "position_aware" "position_aware_quant_hardcoded" "position_aware_hardcoded")
+if [[ ! " ${VALID_STRATEGIES[@]} " =~ " ${STRATEGY} " ]]; then
+    echo -e "${RED}Error: Strategy must be one of: ${VALID_STRATEGIES[*]}${NC}"
     exit 1
 fi
 
@@ -240,13 +242,12 @@ export RL_ACTOR_ENABLED="true"  # ENABLED - trading enabled
 export RL_CLEANUP_ON_START="$CLEANUP"
 
 # Set up actor strategy and model path
+# Pass strategy directly to allow position_aware variants
 if [[ "$STRATEGY" == "rl_model" ]]; then
     export RL_ACTOR_STRATEGY="rl_model"
     export RL_ACTOR_MODEL_PATH="$MODEL_PATH"
-elif [[ "$STRATEGY" == "quant_hardcoded" ]]; then
-    export RL_ACTOR_STRATEGY="quant_hardcoded"
 else
-    export RL_ACTOR_STRATEGY="hardcoded"
+    export RL_ACTOR_STRATEGY="$STRATEGY"
 fi
 
 # Additional settings for local testing

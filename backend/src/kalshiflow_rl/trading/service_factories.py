@@ -167,7 +167,7 @@ async def create_actor_service(
     
     # Set default action selector if not already set (HardcodedSelector as fallback)
     if not actor_service._action_selector:
-        from .action_selector import HardcodedSelector
+        from .hardcoded_policies import HardcodedSelector
         default_selector = HardcodedSelector()
         actor_service.set_action_selector(default_selector)
         

@@ -230,7 +230,7 @@ async def lifespan(app: Starlette):
                 except Exception as e:
                     logger.error(f"Failed to create action selector: {e}")
                     logger.warning("Falling back to HardcodedSelector (always HOLD)")
-                    from .trading.action_selector import HardcodedSelector
+                    from .trading.hardcoded_policies import HardcodedSelector
                     fallback_selector = HardcodedSelector()
                     actor_service.set_action_selector(fallback_selector)
                     
