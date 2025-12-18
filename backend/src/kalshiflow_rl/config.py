@@ -103,7 +103,7 @@ class RLConfig:
         self.RL_ACTOR_STRATEGY: str = os.getenv("RL_ACTOR_STRATEGY", "disabled")  # "rl_model" | "hardcoded" | "disabled"
         self.RL_ACTOR_MODEL_PATH: Optional[str] = os.getenv("RL_ACTOR_MODEL_PATH")
         self.RL_ACTOR_THROTTLE_MS: int = int(os.getenv("RL_ACTOR_THROTTLE_MS", "250"))
-        self.RL_ACTOR_CONTRACT_SIZE: int = int(os.getenv("RL_ACTOR_CONTRACT_SIZE", "10"))
+        self.RL_ACTOR_CONTRACT_SIZE: int = int(os.getenv("RL_ACTOR_CONTRACT_SIZE", "5"))
         
         # Order Synchronization Configuration
         self.RL_ORDER_SYNC_ENABLED: bool = os.getenv("RL_ORDER_SYNC_ENABLED", "true").lower() == "true"

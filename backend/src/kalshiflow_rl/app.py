@@ -251,6 +251,9 @@ async def lifespan(app: Starlette):
                 websocket_manager.set_order_manager(order_manager)
                 websocket_manager.set_actor_service(actor_service)
                 
+                # Set websocket manager reference in order manager for specific event broadcasts
+                order_manager.set_websocket_manager(websocket_manager)
+                
                 # Add state change callback to order manager for UI updates
                 async def broadcast_state(state):
                     """Callback to broadcast trader state changes via websocket."""

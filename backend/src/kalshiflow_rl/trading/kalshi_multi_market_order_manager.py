@@ -702,6 +702,8 @@ class KalshiMultiMarketOrderManager:
                     self.open_orders[order_id].model_decision = action
                 
                 await self._notify_state_change()  # Notify about order placement
+                await self._broadcast_orders_update("order_placed")  # Specific orders update
+                await self._broadcast_portfolio_update("order_placed")  # Portfolio update due to promised cash
                 return {
                     "status": "placed",
                     "order_id": result["order_id"],
@@ -859,6 +861,8 @@ class KalshiMultiMarketOrderManager:
             self._orders_cancelled += 1
             logger.info(f"Order cancelled: {order_id}")
             await self._notify_state_change()  # Notify about order cancellation
+            await self._broadcast_orders_update("order_cancelled")  # Specific orders update
+            await self._broadcast_portfolio_update("order_cancelled")  # Portfolio update due to released cash
             return True
             
         except Exception as e:
@@ -1032,6 +1036,26 @@ class KalshiMultiMarketOrderManager:
         
         # Broadcast trades update
         await self._broadcast_trades()
+        
+        # Broadcast specific fill event and position updates
+        fill_data = {
+            "fill": {
+                "kalshi_order_id": fill_event.kalshi_order_id,
+                "fill_quantity": fill_event.fill_quantity,
+                "fill_price": fill_event.fill_price,
+                "fill_timestamp": fill_event.fill_timestamp,
+                "is_taker": fill_event.is_taker,
+                "market_ticker": fill_event.market_ticker
+            },
+            "updated_position": {
+                "ticker": order.ticker,
+                "contracts": self.positions.get(order.ticker).contracts if order.ticker in self.positions else 0,
+                "average_cost_cents": self.positions.get(order.ticker).average_cost_cents if order.ticker in self.positions else 0
+            }
+        }
+        await self._broadcast_fill_event(fill_data)
+        await self._broadcast_positions_update("fill_processed")
+        await self._broadcast_portfolio_update("fill_processed")
         
         # Notify about state change after fill
         await self._notify_state_change()
@@ -1251,6 +1275,114 @@ class KalshiMultiMarketOrderManager:
                     callback(broadcast_data)
             except Exception as e:
                 logger.error(f"Error in trade broadcast callback: {e}")
+    
+    async def _broadcast_orders_update(self, event_type: str = "general") -> None:
+        """
+        Broadcast orders update via WebSocket.
+        
+        Args:
+            event_type: Type of event that triggered the update (e.g., "order_placed", "order_cancelled")
+        """
+        if not self._websocket_manager:
+            return
+            
+        # Get current orders for broadcast
+        orders_data = []
+        for order_id, order in self.open_orders.items():
+            orders_data.append({
+                "order_id": order_id,
+                "kalshi_order_id": order.kalshi_order_id,
+                "ticker": order.ticker,
+                "side": order.side.name,
+                "contract_side": order.contract_side.name,
+                "quantity": order.quantity,
+                "limit_price": order.limit_price,
+                "status": order.status.name,
+                "placed_at": order.placed_at,
+                "promised_cash": order.promised_cash
+            })
+        
+        await self._websocket_manager.broadcast_orders_update(
+            {"orders": orders_data},
+            source=event_type
+        )
+        logger.debug(f"Broadcast orders update: {len(orders_data)} orders (event: {event_type})")
+    
+    async def _broadcast_positions_update(self, event_type: str = "general") -> None:
+        """
+        Broadcast positions update via WebSocket.
+        
+        Args:
+            event_type: Type of event that triggered the update (e.g., "fill_processed", "position_sync")
+        """
+        if not self._websocket_manager:
+            return
+            
+        # Calculate total portfolio value
+        portfolio_value = self.cash_balance + self.promised_cash
+        for position in self.positions.values():
+            if hasattr(position, 'market_exposure_dollars') and position.market_exposure_dollars:
+                portfolio_value += position.market_exposure_dollars
+            else:
+                # Fallback calculation if market_exposure_dollars not available
+                portfolio_value += (position.average_cost_cents / 100.0) * position.contracts
+        
+        # Get positions data for broadcast
+        positions_data = {}
+        for ticker, position in self.positions.items():
+            positions_data[ticker] = {
+                "contracts": position.contracts,
+                "average_cost_cents": position.average_cost_cents,
+                "market_exposure_dollars": getattr(position, 'market_exposure_dollars', None),
+                "realized_pnl": position.realized_pnl,
+                "fees_paid": getattr(position, 'fees_paid', 0.0)
+            }
+        
+        await self._websocket_manager.broadcast_positions_update(
+            {
+                "positions": positions_data,
+                "total_value": portfolio_value
+            },
+            source=event_type
+        )
+        logger.debug(f"Broadcast positions update: {len(positions_data)} positions (event: {event_type})")
+    
+    async def _broadcast_portfolio_update(self, event_type: str = "general") -> None:
+        """
+        Broadcast portfolio/balance update via WebSocket.
+        
+        Args:
+            event_type: Type of event that triggered the update (e.g., "balance_sync", "order_placed")
+        """
+        if not self._websocket_manager:
+            return
+            
+        # Calculate portfolio value
+        portfolio_value = self.cash_balance + self.promised_cash
+        for position in self.positions.values():
+            if hasattr(position, 'market_exposure_dollars') and position.market_exposure_dollars:
+                portfolio_value += position.market_exposure_dollars
+            else:
+                portfolio_value += (position.average_cost_cents / 100.0) * position.contracts
+        
+        await self._websocket_manager.broadcast_portfolio_update({
+            "cash_balance": self.cash_balance,
+            "portfolio_value": portfolio_value
+        })
+        logger.debug(f"Broadcast portfolio update: cash={self.cash_balance:.2f}, portfolio={portfolio_value:.2f} (event: {event_type})")
+    
+    async def _broadcast_fill_event(self, fill_data: Dict[str, Any]) -> None:
+        """
+        Broadcast fill event notification via WebSocket.
+        
+        Args:
+            fill_data: Fill event data containing fill details and updated position
+        """
+        if not self._websocket_manager:
+            return
+            
+        await self._websocket_manager.broadcast_fill_event(fill_data)
+        logger.debug(f"Broadcast fill event: {fill_data.get('fill', {}).get('kalshi_order_id', 'unknown')}")
     
     def get_order_features(self, market_ticker: str) -> Dict[str, float]:
         """Get order-related features for RL observations."""
@@ -2107,6 +2239,10 @@ class KalshiMultiMarketOrderManager:
                     
                     # Also sync positions periodically
                     await self._sync_positions_with_kalshi()
+                    
+                    # Broadcast specific updates after periodic sync
+                    await self._broadcast_positions_update("periodic_sync")
+                    await self._broadcast_portfolio_update("periodic_sync")
                     
                     # Notify about state changes after periodic sync
                     await self._notify_state_change()
