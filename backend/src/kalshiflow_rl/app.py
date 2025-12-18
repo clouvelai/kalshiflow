@@ -10,6 +10,7 @@ import asyncio
 import logging
 import signal
 import sys
+import time
 from contextlib import asynccontextmanager
 from typing import Dict, Any, Optional
 
@@ -191,6 +192,8 @@ async def lifespan(app: Starlette):
             try:
                 await order_manager.initialize()
                 logger.info("✅ KalshiMultiMarketOrderManager initialized successfully")
+                # Cleanup is now handled inside initialize() method before syncing
+                
             except Exception as e:
                 logger.error(f"❌ Failed to initialize OrderManager: {e}")
                 logger.error("ActorService disabled - OrderManager requires valid credentials")
@@ -219,12 +222,21 @@ async def lifespan(app: Starlette):
                         model_path=config.RL_ACTOR_MODEL_PATH
                     )
                     actor_service.set_action_selector(selector)
+                    
+                    # Register selector with order manager for mutual exclusivity protection
+                    order_manager.register_action_selector(selector)
+                    
                     logger.info(f"Action selector configured: {selector.get_strategy_name()}")
                 except Exception as e:
                     logger.error(f"Failed to create action selector: {e}")
                     logger.warning("Falling back to HardcodedSelector (always HOLD)")
                     from .trading.action_selector import HardcodedSelector
-                    actor_service.set_action_selector(HardcodedSelector())
+                    fallback_selector = HardcodedSelector()
+                    actor_service.set_action_selector(fallback_selector)
+                    
+                    # Register fallback selector with order manager
+                    order_manager.register_action_selector(fallback_selector)
+                    
                     logger.info("Action selector configured: HardcodedSelector (fallback)")
                 
                 # Set order manager
@@ -621,6 +633,70 @@ async def force_flush_endpoint(request):
         }, status_code=500)
 
 
+async def trader_sync_endpoint(request):
+    """Manual sync endpoint for frontend-triggered synchronization."""
+    try:
+        # Check if ActorService and OrderManager are available
+        if not order_manager:
+            return JSONResponse({
+                "error": "OrderManager not available - ActorService may be disabled"
+            }, status_code=503)
+        
+        logger.info("Manual trader sync requested by frontend")
+        
+        # Perform order sync
+        logger.info("Starting manual order sync...")
+        order_stats = await order_manager.sync_orders_with_kalshi()
+        
+        # Perform position sync
+        logger.info("Starting manual position sync...")
+        await order_manager._sync_positions_with_kalshi()
+        
+        # Get current state for broadcasting
+        current_state = await order_manager.get_current_state()
+        
+        # Broadcast updates via WebSocket with proper source attribution
+        if websocket_manager:
+            # Broadcast orders update
+            await websocket_manager.broadcast_orders_update(
+                {"orders": current_state.get("open_orders", [])},
+                source="api_sync"
+            )
+            
+            # Broadcast positions update
+            positions_data = {
+                "positions": current_state.get("positions", {}),
+                "total_value": current_state.get("portfolio_value", 0.0)
+            }
+            await websocket_manager.broadcast_positions_update(
+                positions_data,
+                source="api_sync"
+            )
+            
+            # Broadcast portfolio update
+            portfolio_data = {
+                "cash_balance": current_state.get("cash_balance", 0.0),
+                "portfolio_value": current_state.get("portfolio_value", 0.0)
+            }
+            await websocket_manager.broadcast_portfolio_update(portfolio_data)
+            
+            logger.info("Manual sync completed - WebSocket updates broadcast")
+        
+        return JSONResponse({
+            "message": "Trader sync completed successfully",
+            "order_sync": order_stats,
+            "trader_state": current_state,
+            "timestamp": time.time()
+        })
+        
+    except Exception as e:
+        logger.error(f"Trader sync error: {e}")
+        return JSONResponse({
+            "error": str(e),
+            "message": "Failed to sync trader state"
+        }, status_code=500)
+
+
 async def websocket_endpoint(websocket):
     """WebSocket endpoint for real-time orderbook updates."""
     await websocket_manager.handle_connection(websocket)
@@ -706,6 +782,7 @@ routes = [
     Route("/rl/status", status_endpoint, methods=["GET"]),
     Route("/rl/orderbook/snapshot", orderbook_snapshot_endpoint, methods=["GET"]),
     Route("/rl/trader/status", trader_status_endpoint, methods=["GET"]),
+    Route("/rl/trader/sync", trader_sync_endpoint, methods=["POST"]),
     Route("/rl/admin/flush", force_flush_endpoint, methods=["POST"]),
     WebSocketRoute("/rl/ws", websocket_endpoint),
     WebSocketRoute("/rl/trades", trades_websocket_endpoint),

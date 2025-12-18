@@ -267,6 +267,9 @@ class KalshiMultiMarketOrderManager:
         # Broadcast callbacks for WebSocket updates
         self._trade_broadcast_callbacks: List[Callable[[Dict[str, Any]], None]] = []
         
+        # WebSocket manager for specific event broadcasts
+        self._websocket_manager = None  # Will be set after initialization
+        
         # Market configuration (from config)
         self._market_tickers = config.RL_MARKET_TICKERS
         self._market_count = len(self._market_tickers)
@@ -285,6 +288,9 @@ class KalshiMultiMarketOrderManager:
             Exception: If client connection fails
         """
         logger.info("Initializing KalshiMultiMarketOrderManager...")
+        
+        # Initialize action selector tracking
+        self.action_selector = None
         
         # Validate credentials are available before attempting connection
         from ..config import config
@@ -319,8 +325,30 @@ class KalshiMultiMarketOrderManager:
             logger.warning(f"⚠️ Fill listener failed to start: {e}. Using periodic sync as fallback.")
             self._fill_listener = None
         
-        # Synchronize orders and positions with Kalshi on startup (if enabled)
+        # Check if cleanup is enabled BEFORE syncing (defaults to true)
+        import os
         from ..config import config
+        cleanup_enabled = os.getenv("RL_CLEANUP_ON_START", "true").lower() == "true"
+        
+        if cleanup_enabled:
+            # Clean up any leftover orders/positions BEFORE syncing
+            logger.info("Running startup cleanup to reset trader state...")
+            cleanup_summary = await self.cleanup_orders_and_positions()
+            
+            if cleanup_summary.get("cleanup_success"):
+                logger.info("✅ Startup cleanup completed successfully")
+                # Broadcast cleanup summary to any connected WebSocket clients
+                await self.broadcast_cleanup_summary(cleanup_summary)
+            else:
+                warnings = cleanup_summary.get("warnings", [])
+                logger.warning(f"⚠️ Startup cleanup had issues: {'; '.join(warnings)}")
+                # Still broadcast the summary so UI can show warnings
+                await self.broadcast_cleanup_summary(cleanup_summary)
+        else:
+            logger.info("Startup cleanup disabled via RL_CLEANUP_ON_START=false")
+        
+        # Synchronize orders and positions with Kalshi on startup (if enabled)
+        # This happens AFTER cleanup so we get fresh state
         if config.RL_ORDER_SYNC_ENABLED and config.RL_ORDER_SYNC_ON_STARTUP:
             logger.info("Starting order synchronization with Kalshi...")
             try:
@@ -352,6 +380,214 @@ class KalshiMultiMarketOrderManager:
         
         # Notify about initial state
         await self._notify_state_change()
+    
+    async def cleanup_orders_and_positions(self) -> Dict[str, Any]:
+        """
+        Cancel all open orders on startup. Note: Positions cannot be cancelled, only closed via trades.
+        
+        This method is called during actor startup to clean up resting orders from previous sessions.
+        It:
+        1. Fetches all open orders from Kalshi API
+        2. Batch cancels all resting orders to recover reserved cash
+        3. Reports on existing positions (but cannot close them without cash)
+        4. Returns summary for frontend display
+        
+        IMPORTANT: This does NOT close positions. Positions require opposite trades to close,
+        which requires available cash. Positions will remain open until manually closed or
+        markets settle.
+        
+        Returns:
+            Dictionary with cleanup summary for UI display
+        """
+        if not self.trading_client:
+            logger.error("Cannot cleanup: trading client not initialized")
+            return {"error": "Trading client not initialized"}
+        
+        cleanup_summary = {
+            "orders_before": 0,
+            "orders_cancelled": 0,
+            "orders_failed": 0,
+            "cash_before": self.cash_balance,
+            "cash_after": 0.0,
+            "cash_recovered": 0.0,
+            "positions_before": 0,
+            "positions_after": 0,
+            "cleanup_success": False,
+            "warnings": []
+        }
+        
+        try:
+            logger.info("Starting cleanup of open orders (positions cannot be cancelled)...")
+            
+            # Step 1: Fetch all orders and positions for baseline
+            orders_response = await self.trading_client.get_orders()
+            initial_orders = orders_response.get("orders", [])
+            cleanup_summary["orders_before"] = len(initial_orders)
+            
+            positions_response = await self.trading_client.get_positions()
+            initial_positions = positions_response.get("positions", [])
+            non_zero_positions = [p for p in initial_positions if p.get("position", 0) != 0]
+            cleanup_summary["positions_before"] = len(non_zero_positions)
+            
+            logger.info(f"Found {len(initial_orders)} open orders and {len(non_zero_positions)} positions")
+            
+            # Early return if no orders to cancel
+            if not initial_orders:
+                logger.info(f"✅ No orders to cancel. {len(non_zero_positions)} positions remain open (require trades to close)")
+                cleanup_summary["cleanup_success"] = True
+                cleanup_summary["cash_after"] = self.cash_balance
+                cleanup_summary["positions_after"] = len(non_zero_positions)
+                if non_zero_positions:
+                    cleanup_summary["warnings"].append(f"{len(non_zero_positions)} positions remain open (insufficient cash to close)")
+                return cleanup_summary
+            
+            # Step 2: Batch cancel all orders (if any)
+            cancelled_orders = []
+            failed_cancellations = []
+            
+            if initial_orders:
+                logger.info(f"Batch cancelling {len(initial_orders)} orders...")
+                
+                # Extract order IDs
+                order_ids = [order.get("order_id", "") for order in initial_orders if order.get("order_id")]
+                
+                if order_ids:
+                    try:
+                        # Use batch cancel if available
+                        if hasattr(self.trading_client, 'batch_cancel_orders'):
+                            batch_result = await self.trading_client.batch_cancel_orders(order_ids)
+                            cancelled_orders = batch_result.get("cancelled", [])
+                            failed_cancellations = batch_result.get("errors", [])
+                            
+                            logger.info(f"Batch cancel complete: {len(cancelled_orders)} cancelled, {len(failed_cancellations)} failed")
+                        else:
+                            # Fallback to individual cancellations
+                            logger.info("Batch cancel not available, using individual cancellations...")
+                            for order_id in order_ids:
+                                try:
+                                    await self.trading_client.cancel_order(order_id)
+                                    cancelled_orders.append(order_id)
+                                except Exception as e:
+                                    failed_cancellations.append({"order_id": order_id, "error": str(e)})
+                            
+                            logger.info(f"Individual cancellations complete: {len(cancelled_orders)} cancelled, {len(failed_cancellations)} failed")
+                    
+                    except Exception as e:
+                        logger.error(f"Error during order cancellation: {e}")
+                        cleanup_summary["warnings"].append(f"Order cancellation failed: {e}")
+            
+            cleanup_summary["orders_cancelled"] = len(cancelled_orders)
+            cleanup_summary["orders_failed"] = len(failed_cancellations)
+            
+            # Step 3: Wait a moment for order cancellations to settle
+            if cancelled_orders:
+                logger.info("Waiting 2 seconds for order cancellations to settle...")
+                await asyncio.sleep(2.0)
+            
+            # Step 4: Re-sync with Kalshi to verify cleanup and update cash balance
+            logger.info("Re-syncing with Kalshi to verify cleanup...")
+            
+            # Sync positions first (affects cash calculation)
+            await self._sync_positions_with_kalshi(is_startup=True)
+            
+            # Sync orders to ensure cleanup was successful
+            sync_stats = await self.sync_orders_with_kalshi(is_startup=True)
+            final_orders = sync_stats.get("found_in_kalshi", 0)
+            
+            # Update final metrics
+            cleanup_summary["cash_after"] = self.cash_balance
+            cleanup_summary["cash_recovered"] = cleanup_summary["cash_after"] - cleanup_summary["cash_before"]
+            cleanup_summary["positions_after"] = len([p for p in self.positions.values() if not p.is_flat])
+            
+            # Check if cleanup was successful
+            if final_orders == 0:
+                cleanup_summary["cleanup_success"] = True
+                logger.info(f"✅ Cleanup successful: cancelled {len(cancelled_orders)} orders, recovered ${cleanup_summary['cash_recovered']:.2f}")
+            else:
+                cleanup_summary["warnings"].append(f"Still have {final_orders} orders after cleanup")
+                logger.warning(f"⚠️ Cleanup incomplete: {final_orders} orders remain after cancellation")
+            
+            # Warn if cash is low
+            if cleanup_summary["cash_after"] < 500.0:
+                warning_msg = f"Low cash balance after cleanup: ${cleanup_summary['cash_after']:.2f} (may need manual funding)"
+                cleanup_summary["warnings"].append(warning_msg)
+                logger.warning(f"⚠️ {warning_msg}")
+            
+            # Log summary
+            logger.info(
+                f"Cleanup summary: {cleanup_summary['orders_cancelled']} orders cancelled, "
+                f"{cleanup_summary['positions_after']} positions remain open (cannot close without cash), "
+                f"${cleanup_summary['cash_after']:.2f} cash balance"
+            )
+            
+            # Add warning about open positions if any exist
+            if cleanup_summary["positions_after"] > 0:
+                cleanup_summary["warnings"].append(
+                    f"{cleanup_summary['positions_after']} positions remain open. "
+                    f"Closing requires opposite trades (need cash to place orders)"
+                )
+            
+            return cleanup_summary
+            
+        except Exception as e:
+            logger.error(f"Error during cleanup: {e}")
+            cleanup_summary["warnings"].append(f"Cleanup failed: {e}")
+            cleanup_summary["cleanup_success"] = False
+            cleanup_summary["cash_after"] = self.cash_balance
+            return cleanup_summary
+    
+    async def broadcast_cleanup_summary(self, cleanup_summary: Dict[str, Any]) -> None:
+        """
+        Broadcast cleanup summary to frontend via WebSocket.
+        
+        Args:
+            cleanup_summary: Dictionary from cleanup_orders_and_positions()
+        """
+        try:
+            # Format message for UI display
+            if cleanup_summary.get("cleanup_success"):
+                if cleanup_summary["orders_before"] > 0:
+                    message = (
+                        f"✅ Order cleanup complete: Cancelled {cleanup_summary['orders_cancelled']} orders, "
+                        f"recovered ${cleanup_summary['cash_recovered']:.2f} cash. "
+                    )
+                    if cleanup_summary.get("positions_after", 0) > 0:
+                        message += f" Note: {cleanup_summary['positions_after']} positions remain open (need cash to close)."
+                    message += f" Cash balance: ${cleanup_summary['cash_after']:.2f}"
+                else:
+                    if cleanup_summary.get("positions_after", 0) > 0:
+                        message = (
+                            f"✅ No orders to cancel. "
+                            f"Note: {cleanup_summary['positions_after']} positions remain open (need cash to close). "
+                            f"Cash balance: ${cleanup_summary['cash_after']:.2f}"
+                        )
+                    else:
+                        message = f"✅ Clean state: No orders or positions. Cash balance: ${cleanup_summary['cash_after']:.2f}"
+            else:
+                message = f"⚠️ Cleanup issues: {'; '.join(cleanup_summary.get('warnings', ['Unknown error']))}"
+            
+            # Create WebSocket message
+            cleanup_message = {
+                "type": "cleanup_summary",
+                "data": {
+                    "timestamp": time.time(),
+                    "summary": cleanup_summary,
+                    "message": message,
+                    "success": cleanup_summary.get("cleanup_success", False)
+                }
+            }
+            
+            # Broadcast via state change callbacks (includes WebSocket manager)
+            for callback in self._state_change_callbacks:
+                try:
+                    await callback(cleanup_message)
+                except Exception as e:
+                    logger.error(f"Error broadcasting cleanup summary: {e}")
+            
+            logger.info(f"Cleanup summary broadcast: {message}")
+            
+        except Exception as e:
+            logger.error(f"Error formatting cleanup summary for broadcast: {e}")
     
     async def shutdown(self) -> None:
         """Shutdown the order manager."""
@@ -1893,6 +2129,16 @@ class KalshiMultiMarketOrderManager:
         """
         self._state_change_callbacks.append(callback)
         
+    def set_websocket_manager(self, websocket_manager) -> None:
+        """
+        Set the WebSocket manager for specific event broadcasts.
+        
+        Args:
+            websocket_manager: WebSocketManager instance for broadcasting specific events
+        """
+        self._websocket_manager = websocket_manager
+        logger.info("WebSocket manager configured for specific event broadcasts")
+        
     async def get_current_state(self) -> Dict[str, Any]:
         """
         Get current trading state for UI display.
@@ -2002,6 +2248,36 @@ class KalshiMultiMarketOrderManager:
         
         return activity
 
+    def register_action_selector(self, selector) -> None:
+        """
+        Register an action selector with mutual exclusivity protection.
+        
+        Only one selector can be registered at a time. If a selector is already
+        registered, this will raise an error to prevent double-firing.
+        
+        Args:
+            selector: Action selector to register (RLActionSelector or HardcodedSelector)
+            
+        Raises:
+            RuntimeError: If a selector is already registered
+        """
+        if self.action_selector is not None:
+            existing_selector_name = type(self.action_selector).__name__
+            new_selector_name = type(selector).__name__
+            logger.error(
+                f"Attempted to register {new_selector_name} when {existing_selector_name} "
+                f"is already registered. Only one action selector allowed per session."
+            )
+            raise RuntimeError(
+                f"Action selector already registered: {existing_selector_name}. "
+                f"Cannot register {new_selector_name}. Only one selector allowed per session."
+            )
+        
+        self.action_selector = selector
+        selector_name = type(selector).__name__
+        logger.info(f"✅ Action selector registered: {selector_name}")
+        logger.info(f"Strategy configuration confirmed: Only {selector_name} will fire")
+    
     def _generate_order_id(self) -> str:
         """Generate unique internal order ID."""
         self._order_counter += 1

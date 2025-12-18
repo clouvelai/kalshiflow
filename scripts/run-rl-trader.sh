@@ -26,6 +26,7 @@ DEFAULT_MARKET_LIMIT=100
 DEFAULT_MODE="discovery"
 DEFAULT_ENV="paper"
 DEFAULT_STRATEGY="hardcoded"
+DEFAULT_CLEANUP="true"
 
 # Parse command line arguments
 PORT=$DEFAULT_PORT
@@ -33,6 +34,7 @@ MARKET_LIMIT=$DEFAULT_MARKET_LIMIT
 MODE=$DEFAULT_MODE
 ENVIRONMENT=$DEFAULT_ENV
 STRATEGY=$DEFAULT_STRATEGY
+CLEANUP=$DEFAULT_CLEANUP
 HELP=false
 
 usage() {
@@ -46,12 +48,14 @@ usage() {
     echo "  -e, --env ENVIRONMENT         Environment: paper|local|production (default: $DEFAULT_ENV)"
     echo "  --mode MODE                   Market mode: discovery|config (default: $DEFAULT_MODE)"
     echo "  -s, --strategy STRATEGY       Action strategy: hardcoded|rl_model (default: $DEFAULT_STRATEGY)"
+    echo "  --no-cleanup                  Disable order/position cleanup on startup (default: cleanup enabled)"
     echo "  -h, --help                    Show this help message"
     echo ""
     echo "EXAMPLES:"
-    echo "  $0                            # Run with defaults (hardcoded HOLD strategy)"
+    echo "  $0                            # Run with defaults (hardcoded HOLD strategy, cleanup enabled)"
     echo "  $0 -s rl_model               # Use trained RL model for trading decisions"
     echo "  $0 -s rl_model -m 25         # RL model with 25 markets for testing"
+    echo "  $0 --no-cleanup              # Skip order/position cleanup on startup"
     echo "  $0 -p 8004 -m 50             # Custom port and market limit"
     echo ""
     echo "PURPOSE:"
@@ -90,6 +94,10 @@ while [[ $# -gt 0 ]]; do
         -s|--strategy)
             STRATEGY="$2"
             shift 2
+            ;;
+        --no-cleanup)
+            CLEANUP="false"
+            shift
             ;;
         -h|--help)
             usage
@@ -178,6 +186,7 @@ echo "  Market Limit:     $MARKET_LIMIT"
 echo "  Port:             $PORT"
 echo "  Strategy:         $STRATEGY"
 echo "  Actor Enabled:    true (trading enabled)"
+echo "  Cleanup on Start: $CLEANUP"
 echo ""
 
 # Warn about production
@@ -228,6 +237,7 @@ export ENVIRONMENT="$ENVIRONMENT"
 export RL_MODE="$MODE"
 export RL_ORDERBOOK_MARKET_LIMIT="$MARKET_LIMIT"
 export RL_ACTOR_ENABLED="true"  # ENABLED - trading enabled
+export RL_CLEANUP_ON_START="$CLEANUP"
 
 # Set up actor strategy and model path
 if [[ "$STRATEGY" == "rl_model" ]]; then
@@ -250,6 +260,7 @@ echo "  RL_MODE=$RL_MODE"
 echo "  RL_ORDERBOOK_MARKET_LIMIT=$RL_ORDERBOOK_MARKET_LIMIT"
 echo "  RL_ACTOR_ENABLED=$RL_ACTOR_ENABLED"
 echo "  RL_ACTOR_STRATEGY=$RL_ACTOR_STRATEGY"
+echo "  RL_CLEANUP_ON_START=$RL_CLEANUP_ON_START"
 if [[ "$STRATEGY" == "rl_model" ]]; then
     echo "  RL_ACTOR_MODEL_PATH=$RL_ACTOR_MODEL_PATH"
 fi

@@ -168,8 +168,15 @@ async def create_actor_service(
     # Set default action selector if not already set (HardcodedSelector as fallback)
     if not actor_service._action_selector:
         from .action_selector import HardcodedSelector
-        actor_service.set_action_selector(HardcodedSelector())
-        logger.debug("Set default HardcodedSelector for ActorService")
+        default_selector = HardcodedSelector()
+        actor_service.set_action_selector(default_selector)
+        
+        # Register with order manager if available for mutual exclusivity
+        if order_manager and hasattr(order_manager, 'register_action_selector'):
+            order_manager.register_action_selector(default_selector)
+            logger.debug("Set and registered default HardcodedSelector with order manager")
+        else:
+            logger.debug("Set default HardcodedSelector for ActorService (order manager not available for registration)")
     
     logger.info("✅ ActorService created with injected dependencies")
     return actor_service

@@ -1,6 +1,14 @@
 import React, { useState } from 'react';
 
-const TraderStatePanel = ({ state, executionStats, showExecutionStats = true, showOnlyExecutionStats = false }) => {
+const TraderStatePanel = ({ 
+  state, 
+  executionStats, 
+  showExecutionStats = true, 
+  showOnlyExecutionStats = false,
+  showPositions = true,
+  showOrders = true,
+  showActionBreakdown = true 
+}) => {
   const [showCents, setShowCents] = useState(false);
   // Helper function to format currency
   const formatCurrency = (amount) => {
@@ -212,6 +220,7 @@ const TraderStatePanel = ({ state, executionStats, showExecutionStats = true, sh
       </div>
 
       {/* Enhanced Positions Section */}
+      {showPositions && (
       <div className="bg-gray-800 border border-gray-700 rounded-lg overflow-hidden">
         <div className="bg-gray-700/30 px-4 py-3 border-b border-gray-700">
           <div className="flex items-center justify-between">
@@ -310,8 +319,10 @@ const TraderStatePanel = ({ state, executionStats, showExecutionStats = true, sh
           )}
         </div>
       </div>
+      )}
 
       {/* Enhanced Open Orders Section */}
+      {showOrders && (
       <div className="bg-gray-800 border border-gray-700 rounded-lg overflow-hidden">
         <div className="bg-gray-700/30 px-4 py-3 border-b border-gray-700">
           <div className="flex items-center justify-between">
@@ -401,6 +412,7 @@ const TraderStatePanel = ({ state, executionStats, showExecutionStats = true, sh
           )}
         </div>
       </div>
+      )}
 
       {/* Execution Statistics - Only show if showExecutionStats is true */}
       {showExecutionStats && (
@@ -505,7 +517,7 @@ const TraderStatePanel = ({ state, executionStats, showExecutionStats = true, sh
       )}
 
       {/* Action Breakdown */}
-      {displayState.actor_metrics?.action_counts && (
+      {showActionBreakdown && displayState.actor_metrics?.action_counts && (
         <div className="bg-gray-800 border border-gray-700 rounded-lg p-4">
           <h3 className="text-sm font-medium text-gray-400 mb-3">Action Breakdown</h3>
           <div className="grid grid-cols-2 gap-2">

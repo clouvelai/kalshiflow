@@ -503,6 +503,87 @@ class KalshiDemoTradingClient:
         except Exception as e:
             raise KalshiDemoOrderError(f"Failed to cancel order {order_id}: {e}")
     
+    async def batch_cancel_orders(self, order_ids: List[str]) -> Dict[str, Any]:
+        """
+        Cancel multiple orders in batch.
+        
+        According to Kalshi API docs, this should use POST /portfolio/orders/batched
+        with a list of order IDs to cancel.
+        
+        Args:
+            order_ids: List of order IDs to cancel
+            
+        Returns:
+            Dictionary with cancellation results
+            
+        Raises:
+            KalshiDemoOrderError: If batch cancellation fails
+        """
+        if not order_ids:
+            return {"cancelled": [], "errors": [], "total": 0}
+            
+        try:
+            logger.info(f"Batch cancelling {len(order_ids)} demo orders")
+            
+            # Try batch cancel endpoint first
+            try:
+                request_data = {
+                    "order_ids": order_ids
+                }
+                
+                response = await self._make_request(
+                    "POST", 
+                    "/portfolio/orders/batched",
+                    json=request_data
+                )
+                
+                # Process response
+                cancelled = response.get("cancelled", [])
+                errors = response.get("errors", [])
+                
+                # Update local tracking
+                for cancelled_id in cancelled:
+                    if cancelled_id in self.orders:
+                        del self.orders[cancelled_id]
+                
+                logger.info(f"Batch cancel complete: {len(cancelled)} cancelled, {len(errors)} errors")
+                
+                return {
+                    "cancelled": cancelled,
+                    "errors": errors,
+                    "total": len(order_ids),
+                    "success_count": len(cancelled),
+                    "error_count": len(errors)
+                }
+                
+            except Exception as batch_error:
+                # If batch endpoint fails, fall back to individual cancellations
+                logger.warning(f"Batch cancel endpoint failed: {batch_error}. Falling back to individual cancellations")
+                
+                cancelled = []
+                errors = []
+                
+                for order_id in order_ids:
+                    try:
+                        await self.cancel_order(order_id)
+                        cancelled.append(order_id)
+                    except Exception as e:
+                        errors.append({"order_id": order_id, "error": str(e)})
+                
+                logger.info(f"Individual cancel fallback complete: {len(cancelled)} cancelled, {len(errors)} errors")
+                
+                return {
+                    "cancelled": cancelled,
+                    "errors": errors,
+                    "total": len(order_ids),
+                    "success_count": len(cancelled),
+                    "error_count": len(errors),
+                    "fallback_used": True
+                }
+                
+        except Exception as e:
+            raise KalshiDemoOrderError(f"Failed to batch cancel orders: {e}")
+    
     async def get_fills(self, ticker: Optional[str] = None) -> Dict[str, Any]:
         """
         Get trade fills on demo account.

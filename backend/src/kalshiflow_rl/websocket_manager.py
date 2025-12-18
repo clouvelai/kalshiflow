@@ -72,6 +72,41 @@ class TraderActionMessage:
     data: Dict[str, Any] = None
 
 
+@dataclass
+class OrdersUpdateMessage:
+    """Orders update message."""
+    type: str = "orders_update"
+    data: Dict[str, Any] = None
+
+
+@dataclass
+class PositionsUpdateMessage:
+    """Positions update message."""
+    type: str = "positions_update"
+    data: Dict[str, Any] = None
+
+
+@dataclass
+class PortfolioUpdateMessage:
+    """Portfolio/Balance update message."""
+    type: str = "portfolio_update"
+    data: Dict[str, Any] = None
+
+
+@dataclass
+class FillEventMessage:
+    """Fill event notification message."""
+    type: str = "fill_event"
+    data: Dict[str, Any] = None
+
+
+@dataclass
+class StatsUpdateMessage:
+    """Stats update message (throttled to 10s)."""
+    type: str = "stats_update"
+    data: Dict[str, Any] = None
+
+
 class WebSocketManager:
     """
     Manages WebSocket connections and broadcasts orderbook updates.
@@ -146,7 +181,7 @@ class WebSocketManager:
                 state.add_subscriber(create_callback(market_ticker))
                 logger.info(f"Subscribed to orderbook updates for: {market_ticker}")
         
-        # Start statistics broadcast task (1-second interval)
+        # Start statistics broadcast task (10-second interval)
         self._stats_task = asyncio.create_task(self._stats_broadcast_loop())
         
         logger.info("WebSocketManager started successfully")
@@ -406,7 +441,14 @@ class WebSocketManager:
         if not self._connections:
             return
         
-        message = StatsMessage(data=stats)
+        # Use new StatsUpdateMessage format with timestamp and source
+        message = StatsUpdateMessage(
+            data={
+                "stats": stats,
+                "timestamp": time.time(),
+                "source": "stats_collector"
+            }
+        )
         await self._broadcast_to_all(message)
         self._stats_broadcast += 1
     
@@ -437,6 +479,89 @@ class WebSocketManager:
         message = TraderActionMessage(data=action_data)
         await self._broadcast_to_all(message)
         logger.debug(f"Broadcast trader action to {len(self._connections)} clients")
+    
+    async def broadcast_orders_update(self, orders_data: Dict[str, Any], source: str = "websocket"):
+        """
+        Broadcast orders update to all connected clients.
+        
+        Args:
+            orders_data: Orders data containing orders list
+            source: Source of the update ("api_sync" or "websocket")
+        """
+        if not self._connections:
+            return
+        
+        message = OrdersUpdateMessage(
+            data={
+                "orders": orders_data.get("orders", []),
+                "timestamp": time.time(),
+                "source": source
+            }
+        )
+        await self._broadcast_to_all(message)
+        logger.debug(f"Broadcast orders update to {len(self._connections)} clients (source: {source})")
+    
+    async def broadcast_positions_update(self, positions_data: Dict[str, Any], source: str = "websocket"):
+        """
+        Broadcast positions update to all connected clients.
+        
+        Args:
+            positions_data: Positions data containing positions and total value
+            source: Source of the update ("api_sync" or "websocket")
+        """
+        if not self._connections:
+            return
+        
+        message = PositionsUpdateMessage(
+            data={
+                "positions": positions_data.get("positions", {}),
+                "total_value": positions_data.get("total_value", 0.0),
+                "timestamp": time.time(),
+                "source": source
+            }
+        )
+        await self._broadcast_to_all(message)
+        logger.debug(f"Broadcast positions update to {len(self._connections)} clients (source: {source})")
+    
+    async def broadcast_portfolio_update(self, portfolio_data: Dict[str, Any]):
+        """
+        Broadcast portfolio/balance update to all connected clients.
+        
+        Args:
+            portfolio_data: Portfolio data containing cash balance and portfolio value
+        """
+        if not self._connections:
+            return
+        
+        message = PortfolioUpdateMessage(
+            data={
+                "cash_balance": portfolio_data.get("cash_balance", 0.0),
+                "portfolio_value": portfolio_data.get("portfolio_value", 0.0),
+                "timestamp": time.time()
+            }
+        )
+        await self._broadcast_to_all(message)
+        logger.debug(f"Broadcast portfolio update to {len(self._connections)} clients")
+    
+    async def broadcast_fill_event(self, fill_data: Dict[str, Any]):
+        """
+        Broadcast fill event notification to all connected clients.
+        
+        Args:
+            fill_data: Fill data containing fill details and updated position
+        """
+        if not self._connections:
+            return
+        
+        message = FillEventMessage(
+            data={
+                "fill": fill_data.get("fill", {}),
+                "updated_position": fill_data.get("updated_position", {}),
+                "timestamp": time.time()
+            }
+        )
+        await self._broadcast_to_all(message)
+        logger.debug(f"Broadcast fill event to {len(self._connections)} clients")
     
     async def _broadcast_to_all(self, message: Any):
         """
@@ -515,10 +640,10 @@ class WebSocketManager:
                 await self.broadcast_snapshot(market_ticker, snapshot)
     
     async def _stats_broadcast_loop(self):
-        """Broadcast statistics every second."""
+        """Broadcast statistics every 10 seconds."""
         while self._running:
             try:
-                await asyncio.sleep(1.0)
+                await asyncio.sleep(10.0)
                 
                 # Gather statistics
                 stats = await self._gather_stats()
