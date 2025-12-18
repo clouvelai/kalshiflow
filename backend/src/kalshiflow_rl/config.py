@@ -110,6 +110,9 @@ class RLConfig:
         self.RL_ORDER_SYNC_INTERVAL_SECONDS: int = int(os.getenv("RL_ORDER_SYNC_INTERVAL_SECONDS", "60"))
         self.RL_ORDER_SYNC_ON_STARTUP: bool = os.getenv("RL_ORDER_SYNC_ON_STARTUP", "true").lower() == "true"
         
+        # Cash Reserve Configuration
+        self.RL_MIN_CASH_RESERVE: float = float(os.getenv("RL_MIN_CASH_RESERVE", "100.0"))  # Minimum cash before trading stops
+        
         # Validate configuration
         self._validate_config()
     

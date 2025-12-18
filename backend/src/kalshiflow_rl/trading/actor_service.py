@@ -57,6 +57,7 @@ class ActorMetrics:
     last_error: Optional[str] = None
     started_at: Optional[float] = None
     last_processed_at: Optional[float] = None
+    forced_holds: int = 0  # HOLD actions forced due to cash reserve threshold
     
     # Action counts by type (5-action space)
     action_counts: Dict[str, int] = None
@@ -562,11 +563,34 @@ class ActorService:
                 self.metrics.events_processed += 1
                 return
             
-            # Step 2: Select action (requires ActionSelector)
-            action = await self._select_action(observation, market_ticker)
-            if action is None:
-                logger.debug(f"No action selected for {market_ticker} - treating as HOLD")
-                action = 0  # Convert None to explicit HOLD action (0)
+            # Check cash reserve threshold before action selection
+            # If cash balance is below reserve, force HOLD to prevent trading
+            if self._order_manager:
+                cash_balance = self._order_manager.get_cash_balance()
+                from ..config import config
+                min_cash_reserve = config.RL_MIN_CASH_RESERVE
+                
+                if cash_balance < min_cash_reserve:
+                    logger.warning(
+                        f"Cash reserve threshold hit: ${cash_balance:.2f} < ${min_cash_reserve:.2f}. "
+                        f"Forcing HOLD action for {market_ticker}"
+                    )
+                    # Force HOLD action (0) instead of selecting action
+                    action = 0
+                    # Track forced HOLDs in metrics
+                    self.metrics.forced_holds += 1
+                else:
+                    # Step 2: Select action (requires ActionSelector)
+                    action = await self._select_action(observation, market_ticker)
+                    if action is None:
+                        logger.debug(f"No action selected for {market_ticker} - treating as HOLD")
+                        action = 0  # Convert None to explicit HOLD action (0)
+            else:
+                # Step 2: Select action (requires ActionSelector)
+                action = await self._select_action(observation, market_ticker)
+                if action is None:
+                    logger.debug(f"No action selected for {market_ticker} - treating as HOLD")
+                    action = 0  # Convert None to explicit HOLD action (0)
             
             # Step 3: Safe execute action (requires OrderManager) 
             execution_result = await self._safe_execute_action(action, market_ticker, trade_sequence_id)
@@ -1138,6 +1162,7 @@ class ActorService:
             "processing": self._processing,
             "action_counts": self.metrics.action_counts.copy(),
             "total_actions": self.metrics.total_actions,
+            "forced_holds": self.metrics.forced_holds,
             "started_at": self.metrics.started_at,
             "last_processed_at": self.metrics.last_processed_at
         }

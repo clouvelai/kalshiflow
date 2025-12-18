@@ -234,6 +234,19 @@ class KalshiMultiMarketOrderManager:
         self.promised_cash = 0.0              # Cash reserved for open orders
         self.initial_cash = initial_cash
         
+        # Cash reserve protection
+        from ..config import config
+        self.min_cash_reserve = config.RL_MIN_CASH_RESERVE
+        
+        # Session tracking (initialized after sync with Kalshi)
+        self.session_start_cash: Optional[float] = None
+        self.session_start_portfolio_value: Optional[float] = None
+        
+        # Cashflow tracking
+        self.session_cash_invested: float = 0.0  # Total cash spent on BUY orders
+        self.session_cash_recouped: float = 0.0   # Total cash received from SELL orders
+        self.session_total_fees_paid: float = 0.0  # Total trading fees paid
+        
         # Order and position tracking
         self.open_orders: Dict[str, OrderInfo] = {}  # {our_order_id: OrderInfo}
         self.positions: Dict[str, Position] = {}     # {ticker: Position}
@@ -379,6 +392,15 @@ class KalshiMultiMarketOrderManager:
         if config.RL_ORDER_SYNC_ENABLED:
             self._periodic_sync_task = asyncio.create_task(self._start_periodic_sync())
             logger.info(f"✅ Periodic sync started (interval: {config.RL_ORDER_SYNC_INTERVAL_SECONDS}s)")
+        
+        # Capture session start values after sync (for session tracking)
+        if self.session_start_cash is None:
+            self.session_start_cash = self.cash_balance
+            self.session_start_portfolio_value = self.get_portfolio_value()
+            logger.info(
+                f"Session start values captured: Cash=${self.session_start_cash:.2f}, "
+                f"Portfolio=${self.session_start_portfolio_value:.2f}"
+            )
         
         logger.info("✅ KalshiMultiMarketOrderManager ready for trading")
         
@@ -680,6 +702,19 @@ class KalshiMultiMarketOrderManager:
             limit_price = self._calculate_limit_price_from_snapshot(
                 orderbook_snapshot, side, contract_side
             )
+            
+            # Check cash reserve threshold (applies to all trading actions)
+            if self.cash_balance < self.min_cash_reserve:
+                logger.warning(
+                    f"Cash reserve threshold hit: ${self.cash_balance:.2f} < ${self.min_cash_reserve:.2f}. "
+                    f"Trading stopped to maintain reserve."
+                )
+                return {
+                    "status": "cash_reserve_hit",
+                    "cash_balance": self.cash_balance,
+                    "min_reserve": self.min_cash_reserve,
+                    "message": f"Cash balance ${self.cash_balance:.2f} below reserve ${self.min_cash_reserve:.2f}"
+                }
             
             # Check cash for BUY orders (Option B)
             if side == OrderSide.BUY:
@@ -984,6 +1019,24 @@ class KalshiMultiMarketOrderManager:
             # SELL: add cash received for the filled quantity
             self.cash_balance += fill_cost
             logger.debug(f"SELL fill cash: received ${fill_cost:.2f}")
+        
+        # Track cashflow and fees for this fill
+        fill_value = fill_cost  # fill_cost already calculated as (fill_price / 100.0) * fill_quantity
+        
+        # Calculate trading fee (Kalshi fee structure: 0.7% for taker orders)
+        # Use is_taker from fill_event, default to True if not specified (conservative estimate)
+        is_taker = fill_event.is_taker if hasattr(fill_event, 'is_taker') else True
+        fee_rate = 0.007 if is_taker else 0.0  # 0.7% for taker, 0% for maker (maker rebate not tracked as negative fee)
+        fill_fee = fill_value * fee_rate
+        self.session_total_fees_paid += fill_fee
+        
+        # Track cashflow
+        if order.side == OrderSide.BUY:
+            # BUY: cash invested (spent)
+            self.session_cash_invested += fill_cost
+        else:
+            # SELL: cash recouped (received)
+            self.session_cash_recouped += fill_cost
         
         # Update position using traditional method first
         self._update_position(order, fill_price, fill_quantity)
@@ -2323,10 +2376,33 @@ class KalshiMultiMarketOrderManager:
         total_orders = self._orders_placed
         fill_rate = self._orders_filled / total_orders if total_orders > 0 else 0.0
         
+        # Calculate session changes
+        cash_balance_change = (
+            self.cash_balance - self.session_start_cash 
+            if self.session_start_cash is not None 
+            else 0.0
+        )
+        portfolio_value_change = (
+            portfolio_value - self.session_start_portfolio_value 
+            if self.session_start_portfolio_value is not None 
+            else 0.0
+        )
+        net_cashflow = self.session_cash_recouped - self.session_cash_invested
+        
         return {
             "portfolio_value": portfolio_value,
             "cash_balance": self.cash_balance,
             "promised_cash": self.promised_cash,
+            # Session tracking
+            "session_start_cash": self.session_start_cash if self.session_start_cash is not None else self.cash_balance,
+            "session_start_portfolio_value": self.session_start_portfolio_value if self.session_start_portfolio_value is not None else portfolio_value,
+            "cash_balance_change": cash_balance_change,
+            "portfolio_value_change": portfolio_value_change,
+            # Cashflow tracking
+            "session_cash_invested": self.session_cash_invested,
+            "session_cash_recouped": self.session_cash_recouped,
+            "net_cashflow": net_cashflow,
+            "session_total_fees_paid": self.session_total_fees_paid,
             "open_orders": [
                 {
                     "order_id": order_info.order_id,

@@ -91,22 +91,22 @@ const TraderStatePanel = ({
       <div className="space-y-3">
         {/* Primary Metrics */}
         <div className="grid grid-cols-2 gap-3">
-          <div className="bg-gray-700/50 border border-gray-600 rounded-lg p-3 hover:bg-gray-700/70 transition-colors">
-            <p className="text-xs text-gray-400 mb-1">Total Fills</p>
+          <div className="bg-slate-700/50 border border-slate-600 rounded-lg p-3 hover:bg-slate-700/70 transition-colors">
+            <p className="text-xs text-slate-400 mb-1">Total Fills</p>
             <p className={`text-xl font-mono font-bold ${
-              (executionStats?.total_fills || 0) > 0 ? 'text-green-400' : 'text-gray-300'
+              (executionStats?.total_fills || 0) > 0 ? 'text-emerald-400' : 'text-slate-300'
             }`}>
               {executionStats?.total_fills || 0}
             </p>
           </div>
           
-          <div className="bg-gray-700/50 border border-gray-600 rounded-lg p-3 hover:bg-gray-700/70 transition-colors">
-            <p className="text-xs text-gray-400 mb-1">Win Rate</p>
+          <div className="bg-slate-700/50 border border-slate-600 rounded-lg p-3 hover:bg-slate-700/70 transition-colors">
+            <p className="text-xs text-slate-400 mb-1">Win Rate</p>
             <p className={`text-xl font-mono font-bold ${
               executionStats?.win_rate ? 
-                (executionStats.win_rate >= 0.6 ? 'text-green-400' : 
-                 executionStats.win_rate >= 0.4 ? 'text-yellow-400' : 'text-red-400') : 
-                'text-gray-300'
+                (executionStats.win_rate >= 0.6 ? 'text-emerald-400' : 
+                 executionStats.win_rate >= 0.4 ? 'text-amber-400' : 'text-red-400') : 
+                'text-slate-300'
             }`}>
               {executionStats?.win_rate ? `${(executionStats.win_rate * 100).toFixed(1)}%` : '--'}
             </p>
@@ -114,20 +114,20 @@ const TraderStatePanel = ({
         </div>
 
         {/* Fill Types */}
-        <div className="bg-gray-700/50 border border-gray-600 rounded-lg p-3 hover:bg-gray-700/70 transition-colors">
-          <h4 className="text-xs font-semibold text-gray-400 uppercase mb-2">Fill Breakdown</h4>
+        <div className="bg-slate-700/50 border border-slate-600 rounded-lg p-3 hover:bg-slate-700/70 transition-colors">
+          <h4 className="text-xs font-semibold text-slate-300 uppercase mb-2">Fill Breakdown</h4>
           
           <div className="flex items-center justify-between mb-2">
             <div className="flex items-center space-x-2">
-              <span className="text-xs px-1.5 py-0.5 bg-blue-500/20 text-blue-400 rounded font-medium">MAKER</span>
-              <span className="text-sm font-mono text-gray-300">
+              <span className="text-xs px-2 py-1 bg-blue-500/20 text-blue-400 rounded font-medium border border-blue-500/30">MAKER</span>
+              <span className="text-sm font-mono font-semibold text-slate-200">
                 {executionStats?.maker_fills || 0}
               </span>
             </div>
             
             <div className="flex items-center space-x-2">
-              <span className="text-xs px-1.5 py-0.5 bg-purple-500/20 text-purple-400 rounded font-medium">TAKER</span>
-              <span className="text-sm font-mono text-gray-300">
+              <span className="text-xs px-2 py-1 bg-purple-500/20 text-purple-400 rounded font-medium border border-purple-500/30">TAKER</span>
+              <span className="text-sm font-mono font-semibold text-slate-200">
                 {executionStats?.taker_fills || 0}
               </span>
             </div>
@@ -135,16 +135,16 @@ const TraderStatePanel = ({
 
           {/* Fill ratio bar */}
           {(executionStats?.total_fills || 0) > 0 && (
-            <div className="w-full h-2 bg-gray-600 rounded-full overflow-hidden">
+            <div className="w-full h-2 bg-slate-600 rounded-full overflow-hidden">
               <div className="h-full flex">
                 <div 
-                  className="bg-gradient-to-r from-blue-500 to-blue-400 transition-all duration-500"
+                  className="bg-blue-400 transition-all duration-500"
                   style={{ 
                     width: `${((executionStats?.maker_fills || 0) / executionStats.total_fills) * 100}%` 
                   }}
                 />
                 <div 
-                  className="bg-gradient-to-r from-purple-500 to-purple-400 transition-all duration-500"
+                  className="bg-purple-400 transition-all duration-500"
                   style={{ 
                     width: `${((executionStats?.taker_fills || 0) / executionStats.total_fills) * 100}%` 
                   }}
@@ -156,25 +156,25 @@ const TraderStatePanel = ({
 
         {/* Performance Metrics */}
         <div className="grid grid-cols-2 gap-3">
-          <div className="bg-gray-700/50 border border-gray-600 rounded-lg p-3 hover:bg-gray-700/70 transition-colors">
-            <p className="text-xs text-gray-400 mb-1">Success Rate</p>
+          <div className="bg-slate-700/50 border border-slate-600 rounded-lg p-3 hover:bg-slate-700/70 transition-colors">
+            <p className="text-xs text-slate-400 mb-1">Success Rate</p>
             <p className={`text-lg font-mono font-bold ${
               executionStats?.success_rate ? 
-                (executionStats.success_rate >= 0.8 ? 'text-green-400' : 
-                 executionStats.success_rate >= 0.5 ? 'text-yellow-400' : 'text-red-400') : 
-                'text-gray-300'
+                (executionStats.success_rate >= 0.8 ? 'text-emerald-400' : 
+                 executionStats.success_rate >= 0.5 ? 'text-amber-400' : 'text-red-400') : 
+                'text-slate-300'
             }`}>
               {executionStats?.success_rate ? `${(executionStats.success_rate * 100).toFixed(1)}%` : '--'}
             </p>
           </div>
           
-          <div className="bg-gray-700/50 border border-gray-600 rounded-lg p-3 hover:bg-gray-700/70 transition-colors">
-            <p className="text-xs text-gray-400 mb-1">Total P&L</p>
+          <div className="bg-slate-700/50 border border-slate-600 rounded-lg p-3 hover:bg-slate-700/70 transition-colors">
+            <p className="text-xs text-slate-400 mb-1">Total P&L</p>
             <p className={`text-lg font-mono font-bold ${
               executionStats?.total_pnl ? 
-                (executionStats.total_pnl > 0 ? 'text-green-400' : 
-                 executionStats.total_pnl < 0 ? 'text-red-400' : 'text-gray-400') : 
-                'text-gray-300'
+                (executionStats.total_pnl > 0 ? 'text-emerald-400' : 
+                 executionStats.total_pnl < 0 ? 'text-red-400' : 'text-slate-400') : 
+                'text-slate-300'
             }`}>
               {executionStats?.total_pnl ? 
                 `${executionStats.total_pnl > 0 ? '+' : ''}${formatCurrency(executionStats.total_pnl)}` : 
@@ -188,49 +188,138 @@ const TraderStatePanel = ({
 
   return (
     <div className="space-y-4">
-      {/* Portfolio Summary - Redesigned */}
-      <div className="grid grid-cols-2 gap-3">
-        <div className="bg-gradient-to-br from-gray-800 to-gray-800/80 border border-gray-700 rounded-lg p-3 hover:border-gray-600 transition-all">
-          <div className="flex items-center justify-between mb-2">
-            <h3 className="text-xs font-medium text-gray-400 uppercase tracking-wider">Portfolio</h3>
-            <span className="text-xs text-gray-500">💼</span>
-          </div>
-          <div className="space-y-3">
-            <div className="flex justify-between items-end">
-              <div className="flex-1">
-                <p className="text-xs text-gray-500 mb-1">Total Value</p>
-                <p className="text-xl font-bold text-white">
-                  {formatCurrency(displayState.portfolio_value)}
+      {/* Hero Portfolio Section */}
+      <div className="relative overflow-hidden bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 border border-slate-700/50 rounded-xl p-6 shadow-xl">
+        {/* Subtle animated background pattern */}
+        <div className="absolute inset-0 opacity-5">
+          <div className="absolute inset-0" style={{
+            backgroundImage: `radial-gradient(circle at 2px 2px, white 1px, transparent 0)`,
+            backgroundSize: '40px 40px'
+          }}></div>
+        </div>
+        
+        <div className="relative z-10">
+          {/* Portfolio Value Hero */}
+          <div className="mb-6">
+            <div className="flex items-baseline justify-between mb-2">
+              <p className="text-sm font-medium text-slate-400 uppercase tracking-wider">Portfolio Value</p>
+              {displayState.session_start_portfolio_value !== undefined && (
+                <p className="text-xs text-slate-500">
+                  Started at {formatCurrency(displayState.session_start_portfolio_value)}
                 </p>
-              </div>
+              )}
             </div>
-            <div className="pt-2 border-t border-gray-700/50">
-              <p className="text-xs text-gray-500 mb-1">Cash Balance</p>
-              <p className="text-lg font-semibold text-gray-200">
-                {formatCurrency(displayState.cash_balance)}
+            <div className="flex items-baseline gap-3 mb-2">
+              <h2 className="text-4xl font-bold text-white tracking-tight">
+                {formatCurrency(displayState.portfolio_value)}
+              </h2>
+              {displayState.portfolio_value_change !== undefined && displayState.portfolio_value_change !== 0 && (
+                <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-semibold text-sm ${
+                  displayState.portfolio_value_change >= 0 
+                    ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' 
+                    : 'bg-red-500/20 text-red-400 border border-red-500/30'
+                }`}>
+                  <span>{displayState.portfolio_value_change >= 0 ? '↑' : '↓'}</span>
+                  <span>{displayState.portfolio_value_change >= 0 ? '+' : ''}{formatCurrency(displayState.portfolio_value_change)}</span>
+                </div>
+              )}
+            </div>
+            {displayState.portfolio_value_change !== undefined && displayState.session_start_portfolio_value !== undefined && displayState.session_start_portfolio_value > 0 && (
+              <p className="text-xs text-slate-500">
+                {((displayState.portfolio_value_change / displayState.session_start_portfolio_value) * 100).toFixed(2)}% change
               </p>
-            </div>
-            
-            {/* Compact Balance Indicator */}
-            {displayState.cash_balance === 0 && displayState.portfolio_value === 0 && (
-              <div className="text-xs text-yellow-400 bg-yellow-500/10 rounded px-2 py-1">
-                ⚠️ Zero Balance - Add funds
-              </div>
             )}
           </div>
+
+          {/* Cash Balance & Cashflow Grid */}
+          <div className="grid grid-cols-2 gap-4 pt-4 border-t border-slate-700/50">
+            {/* Cash Balance */}
+            <div>
+              <p className="text-xs font-medium text-slate-400 uppercase tracking-wider mb-2">Cash Balance</p>
+              <div className="space-y-1">
+                <p className="text-2xl font-bold text-slate-100">
+                  {formatCurrency(displayState.cash_balance)}
+                </p>
+                <div className="flex items-center gap-2">
+                  {displayState.session_start_cash !== undefined && (
+                    <p className="text-xs text-slate-500">
+                      Start: {formatCurrency(displayState.session_start_cash)}
+                    </p>
+                  )}
+                  {displayState.cash_balance_change !== undefined && displayState.cash_balance_change !== 0 && (
+                    <span className={`text-xs font-medium ${
+                      displayState.cash_balance_change >= 0 ? 'text-emerald-400' : 'text-red-400'
+                    }`}>
+                      {displayState.cash_balance_change >= 0 ? '+' : ''}{formatCurrency(displayState.cash_balance_change)}
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Session Cashflow */}
+            <div>
+              <p className="text-xs font-medium text-slate-400 uppercase tracking-wider mb-2">Session Cashflow</p>
+              <div className="space-y-1.5">
+                <div className="flex justify-between items-center">
+                  <span className="text-xs text-slate-500">Invested</span>
+                  <span className="text-xs font-mono font-semibold text-red-400">
+                    -{formatCurrency(displayState.session_cash_invested || 0)}
+                  </span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-xs text-slate-500">Recouped</span>
+                  <span className="text-xs font-mono font-semibold text-emerald-400">
+                    +{formatCurrency(displayState.session_cash_recouped || 0)}
+                  </span>
+                </div>
+                {displayState.net_cashflow !== undefined && (
+                  <div className="flex justify-between items-center pt-1.5 border-t border-slate-700/30">
+                    <span className="text-xs font-medium text-slate-400">Net</span>
+                    <span className={`text-sm font-mono font-bold ${
+                      displayState.net_cashflow >= 0 ? 'text-emerald-400' : 'text-red-400'
+                    }`}>
+                      {displayState.net_cashflow >= 0 ? '+' : ''}{formatCurrency(displayState.net_cashflow || 0)}
+                    </span>
+                  </div>
+                )}
+                {displayState.session_total_fees_paid !== undefined && (
+                  <div className="flex justify-between items-center">
+                    <span className="text-xs text-slate-500">Fees</span>
+                    <span className="text-xs font-mono font-semibold text-amber-400">
+                      -{formatCurrency(displayState.session_total_fees_paid || 0)}
+                    </span>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Warning Indicator */}
+          {displayState.cash_balance === 0 && displayState.portfolio_value === 0 && (
+            <div className="mt-4 pt-4 border-t border-slate-700/50">
+              <div className="text-xs text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded-lg px-3 py-2">
+                ⚠️ Zero Balance - Add funds to continue trading
+              </div>
+            </div>
+          )}
         </div>
+      </div>
+
+      {/* Main Content Grid */}
+      <div className="grid grid-cols-2 gap-3">
 
         {/* Action Breakdown - Redesigned with No Op and Trades sections */}
         {showActionBreakdown && displayState.actor_metrics?.action_counts && (
-          <div className="bg-gradient-to-br from-gray-800 to-gray-800/80 border border-gray-700 rounded-lg p-3 hover:border-gray-600 transition-all">
+          <div className="bg-gradient-to-br from-slate-800 to-slate-800/80 border border-slate-700 rounded-lg p-4 hover:border-slate-600 transition-all">
             {/* Header with Events Received count */}
-            <div className="flex items-center justify-between mb-3">
-              <h3 className="text-xs font-medium text-gray-400 uppercase tracking-wider">Actions</h3>
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-sm font-semibold text-slate-300 uppercase tracking-wider">Actions</h3>
               <div className="flex items-center space-x-2">
-                <span className="text-xs px-2 py-0.5 bg-gray-600/50 text-gray-300 rounded-full">
+                <span className="text-xs px-2.5 py-1 bg-slate-700/50 text-slate-300 rounded-full font-medium">
                   {formatNumber(displayState.actor_metrics.events_queued || 0)} events
                 </span>
-                <span className="text-xs px-2 py-0.5 bg-blue-500/20 text-blue-400 rounded-full">
+                <span className="text-xs px-2.5 py-1 bg-blue-500/20 text-blue-400 rounded-full font-medium border border-blue-500/30">
                   {formatNumber(displayState.actor_metrics.total_actions || 0)} actions
                 </span>
               </div>
@@ -238,10 +327,10 @@ const TraderStatePanel = ({
             
             <div className="space-y-3">
               {/* No Op Section */}
-              <div className="bg-gray-900/50 border border-gray-700/50 rounded-lg p-2.5">
-                <div className="flex items-center justify-between mb-2">
-                  <h4 className="text-xs font-medium text-gray-500 uppercase tracking-wider">No Op</h4>
-                  <span className="text-xs px-2 py-0.5 bg-gray-600/50 text-gray-300 rounded-full">
+              <div className="bg-slate-900/50 border border-slate-700/50 rounded-lg p-3">
+                <div className="flex items-center justify-between mb-3">
+                  <h4 className="text-xs font-medium text-slate-400 uppercase tracking-wider">No Op</h4>
+                  <span className="text-xs px-2 py-0.5 bg-slate-700/50 text-slate-300 rounded-full">
                     {formatNumber(
                       (displayState.actor_metrics.action_counts.hold || 0) +
                       (displayState.actor_metrics.action_counts.failed || 0) +
@@ -249,21 +338,21 @@ const TraderStatePanel = ({
                     )}
                   </span>
                 </div>
-                <div className="grid grid-cols-3 gap-x-3 gap-y-1.5">
+                <div className="grid grid-cols-3 gap-x-3 gap-y-2">
                   <div className="flex items-center justify-between">
-                    <span className="text-xs text-gray-500">Hold</span>
+                    <span className="text-xs text-slate-500">Hold</span>
                     <span className="text-sm font-semibold text-amber-400 font-mono">
                       {formatNumber(displayState.actor_metrics.action_counts.hold || 0)}
                     </span>
                   </div>
                   <div className="flex items-center justify-between">
-                    <span className="text-xs text-gray-500">Failed</span>
+                    <span className="text-xs text-slate-500">Failed</span>
                     <span className="text-sm font-semibold text-orange-400 font-mono">
                       {formatNumber(displayState.actor_metrics.action_counts.failed || 0)}
                     </span>
                   </div>
                   <div className="flex items-center justify-between">
-                    <span className="text-xs text-gray-500">Throttled</span>
+                    <span className="text-xs text-slate-500">Throttled</span>
                     <span className="text-sm font-semibold text-yellow-400 font-mono">
                       {formatNumber(displayState.actor_metrics.action_counts.throttled || 0)}
                     </span>
@@ -272,10 +361,10 @@ const TraderStatePanel = ({
               </div>
 
               {/* Trades Section */}
-              <div className="bg-gray-800/50 border border-gray-700/50 rounded-lg p-2.5">
-                <div className="flex items-center justify-between mb-2">
-                  <h4 className="text-xs font-medium text-gray-400 uppercase tracking-wider">Trades</h4>
-                  <span className="text-xs px-2 py-0.5 bg-blue-500/20 text-blue-400 rounded-full">
+              <div className="bg-slate-800/50 border border-slate-700/50 rounded-lg p-3">
+                <div className="flex items-center justify-between mb-3">
+                  <h4 className="text-xs font-medium text-slate-300 uppercase tracking-wider">Trades</h4>
+                  <span className="text-xs px-2 py-0.5 bg-blue-500/20 text-blue-400 rounded-full border border-blue-500/30">
                     {formatNumber(
                       (displayState.actor_metrics.action_counts.buy_yes || 0) +
                       (displayState.actor_metrics.action_counts.sell_yes || 0) +
@@ -284,27 +373,27 @@ const TraderStatePanel = ({
                     )}
                   </span>
                 </div>
-                <div className="grid grid-cols-2 gap-x-4 gap-y-1.5">
+                <div className="grid grid-cols-2 gap-x-4 gap-y-2">
                   <div className="flex items-center justify-between">
-                    <span className="text-xs text-gray-500">Buy YES</span>
-                    <span className="text-sm font-semibold text-green-400 font-mono">
+                    <span className="text-xs text-slate-500">Buy YES</span>
+                    <span className="text-sm font-semibold text-emerald-400 font-mono">
                       {formatNumber(displayState.actor_metrics.action_counts.buy_yes || 0)}
                     </span>
                   </div>
                   <div className="flex items-center justify-between">
-                    <span className="text-xs text-gray-500">Sell YES</span>
+                    <span className="text-xs text-slate-500">Sell YES</span>
                     <span className="text-sm font-semibold text-red-400 font-mono">
                       {formatNumber(displayState.actor_metrics.action_counts.sell_yes || 0)}
                     </span>
                   </div>
                   <div className="flex items-center justify-between">
-                    <span className="text-xs text-gray-500">Buy NO</span>
+                    <span className="text-xs text-slate-500">Buy NO</span>
                     <span className="text-sm font-semibold text-purple-400 font-mono">
                       {formatNumber(displayState.actor_metrics.action_counts.buy_no || 0)}
                     </span>
                   </div>
                   <div className="flex items-center justify-between">
-                    <span className="text-xs text-gray-500">Sell NO</span>
+                    <span className="text-xs text-slate-500">Sell NO</span>
                     <span className="text-sm font-semibold text-blue-400 font-mono">
                       {formatNumber(displayState.actor_metrics.action_counts.sell_no || 0)}
                     </span>
@@ -320,11 +409,11 @@ const TraderStatePanel = ({
                     (displayState.actor_metrics.action_counts.sell_no || 0);
                   
                   return tradesTotal > 0 ? (
-                    <div className="mt-2 pt-2 border-t border-gray-700/50">
-                      <div className="flex h-2 rounded-full overflow-hidden bg-gray-700">
+                    <div className="mt-3 pt-3 border-t border-slate-700/50">
+                      <div className="flex h-2 rounded-full overflow-hidden bg-slate-700">
                         {displayState.actor_metrics.action_counts.buy_yes > 0 && (
                           <div 
-                            className="bg-green-400 transition-all duration-500"
+                            className="bg-emerald-400 transition-all duration-500"
                             style={{ 
                               width: `${(displayState.actor_metrics.action_counts.buy_yes / tradesTotal) * 100}%` 
                             }}
@@ -366,19 +455,19 @@ const TraderStatePanel = ({
 
       {/* Enhanced Positions Section */}
       {showPositions && (
-      <div className="bg-gray-800 border border-gray-700 rounded-lg overflow-hidden">
-        <div className="bg-gray-700/30 px-4 py-3 border-b border-gray-700">
+      <div className="bg-slate-800 border border-slate-700 rounded-lg overflow-hidden">
+        <div className="bg-slate-700/30 px-4 py-3 border-b border-slate-700">
           <div className="flex items-center justify-between">
-            <h3 className="text-sm font-medium text-gray-100">📊 Open Positions</h3>
+            <h3 className="text-sm font-semibold text-slate-100">📊 Open Positions</h3>
             <div className="flex items-center space-x-3">
               {displayState.positions && Object.keys(displayState.positions).length > 0 && (
-                <span className="text-xs px-2 py-1 bg-blue-500/20 text-blue-400 rounded-full font-medium">
+                <span className="text-xs px-2 py-1 bg-blue-500/20 text-blue-400 rounded-full font-medium border border-blue-500/30">
                   {Object.keys(displayState.positions).length} Active
                 </span>
               )}
               <button
                 onClick={() => setShowCents(!showCents)}
-                className="text-xs px-2 py-1 bg-gray-600/50 hover:bg-gray-600/80 text-gray-300 rounded font-medium transition-colors"
+                className="text-xs px-2 py-1 bg-slate-700/50 hover:bg-slate-700/80 text-slate-300 rounded font-medium transition-colors"
               >
                 {showCents ? '$' : '¢'}
               </button>
@@ -387,7 +476,7 @@ const TraderStatePanel = ({
         </div>
         <div className="p-4">
           {displayState.positions && Object.keys(displayState.positions).length > 0 ? (
-            <div className="space-y-2">
+            <div className="space-y-3">
               {Object.entries(displayState.positions).map(([key, position]) => {
                 // Extract ticker - it might be in the position object or use the key
                 const ticker = position.ticker || position.market_ticker || key;
@@ -395,59 +484,59 @@ const TraderStatePanel = ({
                 const isProfit = position.unrealized_pnl >= 0;
                 
                 return (
-                  <div key={key} className="group bg-gray-700/30 hover:bg-gray-700/50 rounded-lg p-3 transition-all duration-200 border border-gray-700 hover:border-gray-600">
+                  <div key={key} className="group bg-slate-700/30 hover:bg-slate-700/50 rounded-lg p-4 transition-all duration-200 border border-slate-700 hover:border-slate-600">
                     {/* Main Position Info */}
-                    <div className="flex justify-between items-start mb-2">
+                    <div className="flex justify-between items-start mb-3">
                       <div className="flex-1">
                         <div className="flex items-center space-x-2 mb-1">
                           <p className="font-semibold text-white text-sm">{ticker}</p>
-                          <span className={`text-xs px-1.5 py-0.5 rounded ${
-                            position.side === 'YES' ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'
+                          <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${
+                            position.side === 'YES' ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' : 'bg-red-500/20 text-red-400 border border-red-500/30'
                           }`}>
                             {position.side}
                           </span>
                         </div>
-                        <p className="text-xs text-gray-400">
+                        <p className="text-xs text-slate-400">
                           <span className="font-mono">{position.contracts}</span> contracts
                         </p>
                       </div>
                       <div className="text-right">
                         <p className={`font-bold text-sm ${
-                          (position.realized_pnl_dollars ? parseFloat(position.realized_pnl_dollars) : (position.realized_pnl || 0) / 100) >= 0 ? 'text-green-400' : 'text-red-400'
+                          (position.realized_pnl_dollars ? parseFloat(position.realized_pnl_dollars) : (position.realized_pnl || 0) / 100) >= 0 ? 'text-emerald-400' : 'text-red-400'
                         }`}>
                           {(position.realized_pnl_dollars ? parseFloat(position.realized_pnl_dollars) : (position.realized_pnl || 0) / 100) >= 0 ? '+' : ''}{formatValueFromKalshi(position, 'realized_pnl')}
                         </p>
-                        <p className="text-xs text-gray-400">Realized P&L</p>
+                        <p className="text-xs text-slate-400">Realized P&L</p>
                       </div>
                     </div>
                     
                     {/* Kalshi Position Details */}
-                    <div className="grid grid-cols-2 gap-2 text-xs mt-3 pt-2 border-t border-gray-700/50">
+                    <div className="grid grid-cols-2 gap-3 text-xs mt-3 pt-3 border-t border-slate-700/50">
                       <div>
-                        <p className="text-gray-500">Cost Basis</p>
-                        <p className="text-gray-300 font-mono">{formatCurrency(position.cost_basis || 0)}</p>
+                        <p className="text-slate-500 mb-1">Cost Basis</p>
+                        <p className="text-slate-200 font-mono font-medium">{formatCurrency(position.cost_basis || 0)}</p>
                       </div>
                       <div>
-                        <p className="text-gray-500">Market Exposure</p>
-                        <p className="text-gray-300 font-mono">{formatValueFromKalshi(position, 'market_exposure')}</p>
+                        <p className="text-slate-500 mb-1">Market Exposure</p>
+                        <p className="text-slate-200 font-mono font-medium">{formatValueFromKalshi(position, 'market_exposure')}</p>
                       </div>
                       <div>
-                        <p className="text-gray-500">Total Traded</p>
-                        <p className="text-gray-300 font-mono">{formatValueFromKalshi(position, 'total_traded')}</p>
+                        <p className="text-slate-500 mb-1">Total Traded</p>
+                        <p className="text-slate-200 font-mono font-medium">{formatValueFromKalshi(position, 'total_traded')}</p>
                       </div>
                       <div>
-                        <p className="text-gray-500">Fees Paid</p>
-                        <p className="text-gray-300 font-mono">{formatValueFromKalshi(position, 'fees_paid')}</p>
+                        <p className="text-slate-500 mb-1">Fees Paid</p>
+                        <p className="text-slate-200 font-mono font-medium">{formatValueFromKalshi(position, 'fees_paid')}</p>
                       </div>
                       <div>
-                        <p className="text-gray-500">Realized P&L</p>
-                        <p className="text-gray-300 font-mono">{formatValueFromKalshi(position, 'realized_pnl')}</p>
+                        <p className="text-slate-500 mb-1">Realized P&L</p>
+                        <p className="text-slate-200 font-mono font-medium">{formatValueFromKalshi(position, 'realized_pnl')}</p>
                       </div>
                     </div>
                     {position.last_updated_ts && (
-                      <div className="mt-2 text-xs">
-                        <p className="text-gray-500">Last Updated</p>
-                        <p className="text-gray-400 font-mono">
+                      <div className="mt-3 text-xs pt-3 border-t border-slate-700/50">
+                        <p className="text-slate-500">Last Updated</p>
+                        <p className="text-slate-400 font-mono">
                           {new Date(position.last_updated_ts).toLocaleString()}
                         </p>
                       </div>
@@ -457,9 +546,9 @@ const TraderStatePanel = ({
               })}
             </div>
           ) : (
-            <div className="text-center py-6">
-              <p className="text-xs text-gray-500">No open positions</p>
-              <p className="text-xs text-gray-600 mt-1">Waiting for trading signals...</p>
+            <div className="text-center py-8">
+              <p className="text-xs text-slate-400">No open positions</p>
+              <p className="text-xs text-slate-500 mt-1">Waiting for trading signals...</p>
             </div>
           )}
         </div>
@@ -468,12 +557,12 @@ const TraderStatePanel = ({
 
       {/* Enhanced Open Orders Section */}
       {showOrders && (
-      <div className="bg-gray-800 border border-gray-700 rounded-lg overflow-hidden">
-        <div className="bg-gray-700/30 px-4 py-3 border-b border-gray-700">
+      <div className="bg-slate-800 border border-slate-700 rounded-lg overflow-hidden">
+        <div className="bg-slate-700/30 px-4 py-3 border-b border-slate-700">
           <div className="flex items-center justify-between">
-            <h3 className="text-sm font-medium text-gray-100">📋 Open Orders</h3>
+            <h3 className="text-sm font-semibold text-slate-100">📋 Open Orders</h3>
             {displayState.open_orders && displayState.open_orders.length > 0 && (
-              <span className="text-xs px-2 py-1 bg-amber-500/20 text-amber-400 rounded-full font-medium">
+              <span className="text-xs px-2 py-1 bg-amber-500/20 text-amber-400 rounded-full font-medium border border-amber-500/30">
                 {displayState.open_orders.length} Pending
               </span>
             )}
@@ -481,7 +570,7 @@ const TraderStatePanel = ({
         </div>
         <div className="p-4">
           {displayState.open_orders && displayState.open_orders.length > 0 ? (
-            <div className="space-y-2">
+            <div className="space-y-3">
               {displayState.open_orders.slice(0, 5).map((order, idx) => {
                 const orderTime = order.created_at ? new Date(order.created_at) : (order.placed_at ? new Date(order.placed_at * 1000) : null);
                 const timeElapsed = orderTime ? Date.now() - orderTime.getTime() : 0;
@@ -489,56 +578,56 @@ const TraderStatePanel = ({
                 const secondsElapsed = Math.floor((timeElapsed % 60000) / 1000);
                 
                 return (
-                  <div key={idx} className="group bg-gray-700/30 hover:bg-gray-700/50 rounded-lg p-3 transition-all duration-200 border border-gray-700 hover:border-gray-600">
+                  <div key={idx} className="group bg-slate-700/30 hover:bg-slate-700/50 rounded-lg p-4 transition-all duration-200 border border-slate-700 hover:border-slate-600">
                     <div className="flex justify-between items-start">
                       <div className="flex-1">
-                        <div className="flex items-center space-x-2 mb-1">
+                        <div className="flex items-center space-x-2 mb-2">
                           {/* Trade ID Badge */}
                           {order.trade_sequence_id && (
-                            <span className="px-2 py-0.5 bg-gray-700/70 text-gray-300 rounded text-xs font-bold border border-gray-600">
+                            <span className="px-2 py-0.5 bg-slate-700/70 text-slate-300 rounded text-xs font-bold border border-slate-600">
                               #{order.trade_sequence_id}
                             </span>
                           )}
                           <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${
                             order.side === 'BUY' || order.side === 'YES' || order.contract_side === 'YES' ? 
-                              'bg-green-500/20 text-green-400' : 
-                              'bg-red-500/20 text-red-400'
+                              'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' : 
+                              'bg-red-500/20 text-red-400 border border-red-500/30'
                           }`}>
                             {order.side || order.contract_side || 'BUY'}
                           </span>
-                          <span className="text-xs px-1.5 py-0.5 bg-amber-500/20 text-amber-400 rounded font-medium">
+                          <span className="text-xs px-1.5 py-0.5 bg-amber-500/20 text-amber-400 rounded font-medium border border-amber-500/30">
                             PENDING
                           </span>
                           {order.ticker && (
-                            <p className="text-xs text-gray-400 font-medium">{order.ticker}</p>
+                            <p className="text-xs text-slate-400 font-medium">{order.ticker}</p>
                           )}
                         </div>
-                        <p className="text-xs text-gray-300">
-                          <span className="font-mono">{order.quantity}</span> contracts @ 
-                          <span className="font-mono text-white ml-1">{formatCurrency((order.limit_price || order.price)/100)}</span>
+                        <p className="text-xs text-slate-300">
+                          <span className="font-mono font-medium">{order.quantity}</span> contracts @ 
+                          <span className="font-mono text-white ml-1 font-semibold">{formatCurrency((order.limit_price || order.price)/100)}</span>
                         </p>
                       </div>
                       <div className="text-right">
                         {(order.current_price !== undefined || order.placed_at) && (
-                          <p className="text-xs text-gray-400 mb-1">
+                          <p className="text-xs text-slate-400 mb-1">
                             Market: <span className="font-mono">{formatCurrency(order.current_price/100)}</span>
                           </p>
                         )}
                         {(orderTime || order.placed_at) && (
-                          <p className="text-xs text-gray-500">
+                          <p className="text-xs text-slate-500">
                             {minutesElapsed > 0 ? `${minutesElapsed}m ` : ''}{secondsElapsed}s ago
                           </p>
                         )}
                       </div>
                     </div>
                     {order.current_price !== undefined && (
-                      <div className="mt-2 pt-2 border-t border-gray-700/50">
+                      <div className="mt-3 pt-3 border-t border-slate-700/50">
                         <div className="flex justify-between items-center">
-                          <p className="text-xs text-gray-500">Distance from market:</p>
-                          <p className={`text-xs font-mono ${
-                            Math.abs(order.price - order.current_price) < 5 ? 'text-green-400' : 
-                            Math.abs(order.price - order.current_price) < 10 ? 'text-yellow-400' : 
-                            'text-gray-400'
+                          <p className="text-xs text-slate-500">Distance from market:</p>
+                          <p className={`text-xs font-mono font-medium ${
+                            Math.abs(order.price - order.current_price) < 5 ? 'text-emerald-400' : 
+                            Math.abs(order.price - order.current_price) < 10 ? 'text-amber-400' : 
+                            'text-slate-400'
                           }`}>
                             {formatCurrency(Math.abs(order.price - order.current_price)/100)} 
                             ({((Math.abs(order.price - order.current_price) / order.current_price) * 100).toFixed(1)}%)
@@ -550,15 +639,15 @@ const TraderStatePanel = ({
                 );
               })}
               {displayState.open_orders.length > 5 && (
-                <p className="text-xs text-gray-500 text-center mt-2">
+                <p className="text-xs text-slate-500 text-center mt-2">
                   +{displayState.open_orders.length - 5} more orders
                 </p>
               )}
             </div>
           ) : (
-            <div className="text-center py-6">
-              <p className="text-xs text-gray-500">No open orders</p>
-              <p className="text-xs text-gray-600 mt-1">Orders will appear here when placed</p>
+            <div className="text-center py-8">
+              <p className="text-xs text-slate-400">No open orders</p>
+              <p className="text-xs text-slate-500 mt-1">Orders will appear here when placed</p>
             </div>
           )}
         </div>
@@ -567,27 +656,27 @@ const TraderStatePanel = ({
 
       {/* Execution Statistics - Only show if showExecutionStats is true */}
       {showExecutionStats && (
-        <div className="bg-gray-800 border border-gray-700 rounded-lg p-4">
-          <h3 className="text-sm font-medium text-gray-400 mb-3">Execution Statistics</h3>
-          <div className="space-y-3">
+        <div className="bg-slate-800 border border-slate-700 rounded-lg p-4">
+          <h3 className="text-sm font-semibold text-slate-300 mb-4">Execution Statistics</h3>
+          <div className="space-y-4">
             {/* Primary Metrics */}
             <div className="grid grid-cols-2 gap-3">
-              <div className="bg-gray-700 border border-gray-600 rounded p-2">
-                <p className="text-xs text-gray-400">Total Fills</p>
-                <p className={`text-lg font-mono ${
-                  (executionStats?.total_fills || 0) > 0 ? 'text-green-400' : 'text-gray-300'
+              <div className="bg-slate-700/50 border border-slate-600 rounded-lg p-3">
+                <p className="text-xs text-slate-400 mb-1">Total Fills</p>
+                <p className={`text-xl font-mono font-bold ${
+                  (executionStats?.total_fills || 0) > 0 ? 'text-emerald-400' : 'text-slate-300'
                 }`}>
                   {executionStats?.total_fills || 0}
                 </p>
               </div>
               
-              <div className="bg-gray-700 border border-gray-600 rounded p-2">
-                <p className="text-xs text-gray-400">Win Rate</p>
-                <p className={`text-lg font-mono ${
+              <div className="bg-slate-700/50 border border-slate-600 rounded-lg p-3">
+                <p className="text-xs text-slate-400 mb-1">Win Rate</p>
+                <p className={`text-xl font-mono font-bold ${
                   executionStats?.win_rate ? 
-                    (executionStats.win_rate >= 0.6 ? 'text-green-400' : 
-                     executionStats.win_rate >= 0.4 ? 'text-yellow-400' : 'text-red-400') : 
-                    'text-gray-300'
+                    (executionStats.win_rate >= 0.6 ? 'text-emerald-400' : 
+                     executionStats.win_rate >= 0.4 ? 'text-amber-400' : 'text-red-400') : 
+                    'text-slate-300'
                 }`}>
                   {executionStats?.win_rate ? `${(executionStats.win_rate * 100).toFixed(1)}%` : '--'}
                 </p>
@@ -595,20 +684,20 @@ const TraderStatePanel = ({
             </div>
 
             {/* Fill Types */}
-            <div className="bg-gray-700 border border-gray-600 rounded p-3 space-y-2">
-              <h4 className="text-xs font-semibold text-gray-400 uppercase">Fill Breakdown</h4>
+            <div className="bg-slate-700/50 border border-slate-600 rounded-lg p-4 space-y-3">
+              <h4 className="text-xs font-semibold text-slate-300 uppercase tracking-wider">Fill Breakdown</h4>
               
               <div className="flex items-center justify-between">
                 <div className="flex items-center space-x-2">
-                  <span className="text-xs px-1.5 py-0.5 bg-blue-500/20 text-blue-400 rounded">MAKER</span>
-                  <span className="text-sm font-mono text-gray-300">
+                  <span className="text-xs px-2 py-1 bg-blue-500/20 text-blue-400 rounded font-medium border border-blue-500/30">MAKER</span>
+                  <span className="text-sm font-mono font-semibold text-slate-200">
                     {executionStats?.maker_fills || 0}
                   </span>
                 </div>
                 
                 <div className="flex items-center space-x-2">
-                  <span className="text-xs px-1.5 py-0.5 bg-purple-500/20 text-purple-400 rounded">TAKER</span>
-                  <span className="text-sm font-mono text-gray-300">
+                  <span className="text-xs px-2 py-1 bg-purple-500/20 text-purple-400 rounded font-medium border border-purple-500/30">TAKER</span>
+                  <span className="text-sm font-mono font-semibold text-slate-200">
                     {executionStats?.taker_fills || 0}
                   </span>
                 </div>
@@ -616,7 +705,7 @@ const TraderStatePanel = ({
 
               {/* Fill ratio bar */}
               {(executionStats?.total_fills || 0) > 0 && (
-                <div className="w-full h-2 bg-gray-600 rounded overflow-hidden">
+                <div className="w-full h-2 bg-slate-600 rounded-full overflow-hidden">
                   <div className="h-full flex">
                     <div 
                       className="bg-blue-400 transition-all duration-500"
@@ -637,25 +726,25 @@ const TraderStatePanel = ({
 
             {/* Performance Metrics */}
             <div className="grid grid-cols-2 gap-3">
-              <div className="bg-gray-700 border border-gray-600 rounded p-2">
-                <p className="text-xs text-gray-400">Success Rate</p>
-                <p className={`text-sm font-mono ${
+              <div className="bg-slate-700/50 border border-slate-600 rounded-lg p-3">
+                <p className="text-xs text-slate-400 mb-1">Success Rate</p>
+                <p className={`text-lg font-mono font-semibold ${
                   executionStats?.success_rate ? 
-                    (executionStats.success_rate >= 0.8 ? 'text-green-400' : 
-                     executionStats.success_rate >= 0.5 ? 'text-yellow-400' : 'text-red-400') : 
-                    'text-gray-300'
+                    (executionStats.success_rate >= 0.8 ? 'text-emerald-400' : 
+                     executionStats.success_rate >= 0.5 ? 'text-amber-400' : 'text-red-400') : 
+                    'text-slate-300'
                 }`}>
                   {executionStats?.success_rate ? `${(executionStats.success_rate * 100).toFixed(1)}%` : '--'}
                 </p>
               </div>
               
-              <div className="bg-gray-700 border border-gray-600 rounded p-2">
-                <p className="text-xs text-gray-400">Total P&L</p>
-                <p className={`text-sm font-mono ${
+              <div className="bg-slate-700/50 border border-slate-600 rounded-lg p-3">
+                <p className="text-xs text-slate-400 mb-1">Total P&L</p>
+                <p className={`text-lg font-mono font-semibold ${
                   executionStats?.total_pnl ? 
-                    (executionStats.total_pnl > 0 ? 'text-green-400' : 
-                     executionStats.total_pnl < 0 ? 'text-red-400' : 'text-gray-400') : 
-                    'text-gray-300'
+                    (executionStats.total_pnl > 0 ? 'text-emerald-400' : 
+                     executionStats.total_pnl < 0 ? 'text-red-400' : 'text-slate-400') : 
+                    'text-slate-300'
                 }`}>
                   {executionStats?.total_pnl ? 
                     `${executionStats.total_pnl > 0 ? '+' : ''}${formatCurrency(executionStats.total_pnl)}` : 
