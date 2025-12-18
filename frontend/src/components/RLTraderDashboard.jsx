@@ -16,6 +16,7 @@ const RLTraderDashboard = () => {
   const [openOrders, setOpenOrders] = useState([]); // Track open orders
   const [allOrders, setAllOrders] = useState(new Map()); // Track ALL orders by trade_sequence_id
   const [positions, setPositions] = useState({}); // Track positions
+  const [priceMode, setPriceMode] = useState('dollar'); // Price display mode: 'dollar' or 'cent'
   
   // Collapsible state for grid sections
   const [collapsedSections, setCollapsedSections] = useState({
@@ -535,13 +536,57 @@ const RLTraderDashboard = () => {
     return actionStr.replace(/_/g, ' ');
   };
 
-  // Helper function to format price
-  const formatPrice = (price) => {
-    if (price === null || price === undefined) return '--';
-    if (price <= 1) {
-      return `${Math.round(price * 100)}¢`;
+  // Helper function to format price from cents (prefers dollars field if available)
+  const formatPriceFromCents = (cents, dollarsValue, mode) => {
+    if (cents === null || cents === undefined) return '--';
+    
+    if (mode === 'dollar') {
+      // Prefer dollars field if available
+      if (dollarsValue !== null && dollarsValue !== undefined && dollarsValue !== '') {
+        const dollars = typeof dollarsValue === 'string' ? parseFloat(dollarsValue) : dollarsValue;
+        return `$${dollars.toFixed(2)}`;
+      }
+      // Fallback: convert from cents
+      return `$${(cents / 100).toFixed(2)}`;
+    } else {
+      // Cent mode: use cents directly
+      return `${cents}¢`;
     }
-    return `$${price.toFixed(2)}`;
+  };
+
+  // Helper function to format price from normalized observation values (0-1 range)
+  const formatPriceFromNormalized = (dollars, mode) => {
+    if (dollars === null || dollars === undefined) return '--';
+    
+    if (mode === 'dollar') {
+      return `$${dollars.toFixed(2)}`;
+    } else {
+      // Convert to cents
+      return `${Math.round(dollars * 100)}¢`;
+    }
+  };
+
+  // Helper function to format derived prices (spread, mid-price, etc.)
+  const formatDerivedPrice = (value, mode, isCentsSource) => {
+    if (value === null || value === undefined) return '--';
+    
+    if (mode === 'dollar') {
+      if (isCentsSource) {
+        // Value is in cents, convert to dollars
+        return `$${(value / 100).toFixed(2)}`;
+      } else {
+        // Value is already in dollars
+        return `$${value.toFixed(2)}`;
+      }
+    } else {
+      if (isCentsSource) {
+        // Value is in cents, use directly
+        return `${Math.round(value)}¢`;
+      } else {
+        // Value is in dollars, convert to cents
+        return `${Math.round(value * 100)}¢`;
+      }
+    }
   };
 
   // Group trades, orders, and fills by trade_sequence_id
@@ -778,6 +823,32 @@ const RLTraderDashboard = () => {
                   ({tradeLifecycleRows.length} active trades)
                 </span>
               </h2>
+              {/* Price Mode Toggle */}
+              <div className="flex items-center space-x-2">
+                <span className="text-sm text-gray-400">Price Display:</span>
+                <div className="inline-flex rounded-lg border border-gray-600 bg-gray-700 p-1">
+                  <button
+                    onClick={() => setPriceMode('dollar')}
+                    className={`px-3 py-1 rounded text-sm font-medium transition-colors ${
+                      priceMode === 'dollar'
+                        ? 'bg-blue-600 text-white'
+                        : 'text-gray-300 hover:text-white'
+                    }`}
+                  >
+                    Dollar
+                  </button>
+                  <button
+                    onClick={() => setPriceMode('cent')}
+                    className={`px-3 py-1 rounded text-sm font-medium transition-colors ${
+                      priceMode === 'cent'
+                        ? 'bg-blue-600 text-white'
+                        : 'text-gray-300 hover:text-white'
+                    }`}
+                  >
+                    Cent
+                  </button>
+                </div>
+              </div>
             </div>
 
             {/* Column Headers */}
@@ -873,7 +944,11 @@ const RLTraderDashboard = () => {
                                     )}
                                     {trade.action?.limit_price !== undefined && trade.action?.limit_price !== null && (
                                       <span className="text-gray-300 text-xs">
-                                        @{formatPrice(trade.action.limit_price)}
+                                        @{formatPriceFromCents(
+                                          trade.action.limit_price,
+                                          trade.action?.limit_price_dollars || trade.execution_result?.limit_price_dollars,
+                                          priceMode
+                                        )}
                                       </span>
                                     )}
                                   </div>
@@ -902,7 +977,7 @@ const RLTraderDashboard = () => {
                                             <div className="flex justify-between mb-1">
                                               <span className="text-gray-500">YES Bid:</span>
                                               <span className="text-green-400 font-mono">
-                                                {formatPrice(trade.observation.features.orderbook.yes_bid)}
+                                                {formatPriceFromNormalized(trade.observation.features.orderbook.yes_bid, priceMode)}
                                               </span>
                                             </div>
                                             <div className="flex justify-between text-xxs">
@@ -916,7 +991,7 @@ const RLTraderDashboard = () => {
                                             <div className="flex justify-between mb-1">
                                               <span className="text-gray-500">YES Ask:</span>
                                               <span className="text-green-400 font-mono">
-                                                {formatPrice(trade.observation.features.orderbook.yes_ask)}
+                                                {formatPriceFromNormalized(trade.observation.features.orderbook.yes_ask, priceMode)}
                                               </span>
                                             </div>
                                             <div className="flex justify-between text-xxs">
@@ -934,7 +1009,7 @@ const RLTraderDashboard = () => {
                                             <div className="flex justify-between mb-1">
                                               <span className="text-gray-500">NO Bid:</span>
                                               <span className="text-orange-400 font-mono">
-                                                {formatPrice(trade.observation.features.orderbook.no_bid)}
+                                                {formatPriceFromNormalized(trade.observation.features.orderbook.no_bid, priceMode)}
                                               </span>
                                             </div>
                                             <div className="flex justify-between text-xxs">
@@ -948,7 +1023,7 @@ const RLTraderDashboard = () => {
                                             <div className="flex justify-between mb-1">
                                               <span className="text-gray-500">NO Ask:</span>
                                               <span className="text-orange-400 font-mono">
-                                                {formatPrice(trade.observation.features.orderbook.no_ask)}
+                                                {formatPriceFromNormalized(trade.observation.features.orderbook.no_ask, priceMode)}
                                               </span>
                                             </div>
                                             <div className="flex justify-between text-xxs">
@@ -966,13 +1041,21 @@ const RLTraderDashboard = () => {
                                             <div>
                                               <span className="text-gray-600 block">Spread</span>
                                               <span className="text-yellow-400 font-mono">
-                                                {((trade.observation.features.orderbook.yes_ask - trade.observation.features.orderbook.yes_bid) * 100).toFixed(1)}¢
+                                                {formatDerivedPrice(
+                                                  (trade.observation.features.orderbook.yes_ask - trade.observation.features.orderbook.yes_bid),
+                                                  priceMode,
+                                                  false  // Spread is in dollars (normalized range)
+                                                )}
                                               </span>
                                             </div>
                                             <div>
                                               <span className="text-gray-600 block">Mid Price</span>
                                               <span className="text-purple-400 font-mono">
-                                                {formatPrice((trade.observation.features.orderbook.yes_bid + trade.observation.features.orderbook.yes_ask) / 2)}
+                                                {formatDerivedPrice(
+                                                  (trade.observation.features.orderbook.yes_bid + trade.observation.features.orderbook.yes_ask) / 2,
+                                                  priceMode,
+                                                  false  // Mid price is in dollars (normalized range)
+                                                )}
                                               </span>
                                             </div>
                                             <div>
@@ -1076,7 +1159,7 @@ const RLTraderDashboard = () => {
                                             <span className="text-gray-500">Avg Entry:</span>
                                             <span className="text-purple-400 font-mono">
                                               {trade.observation.features.portfolio.avg_entry_price ? 
-                                                formatPrice(trade.observation.features.portfolio.avg_entry_price) : '--'}
+                                                formatPriceFromNormalized(trade.observation.features.portfolio.avg_entry_price, priceMode) : '--'}
                                             </span>
                                           </div>
                                         </div>
@@ -1135,7 +1218,9 @@ const RLTraderDashboard = () => {
                                 </div>
                                 <div className="flex justify-between">
                                   <span className="text-gray-500">Price:</span>
-                                  <span className="text-gray-300 font-mono">{order.limit_price}¢</span>
+                                  <span className="text-gray-300 font-mono">
+                                    {formatPriceFromCents(order.limit_price, order.limit_price_dollars, priceMode)}
+                                  </span>
                                 </div>
                                 <div className="flex justify-between">
                                   <span className="text-gray-500">Value:</span>
@@ -1184,7 +1269,13 @@ const RLTraderDashboard = () => {
                                 </div>
                                 <div className="flex justify-between">
                                   <span className="text-gray-500">Price:</span>
-                                  <span className="text-gray-300 font-mono">{fill.price || 0}¢</span>
+                                  <span className="text-gray-300 font-mono">
+                                    {formatPriceFromCents(
+                                      fill.price || fill.fill_price || 0,
+                                      fill.fill_price_dollars || fill.price_dollars || fill.yes_price_dollars,
+                                      priceMode
+                                    )}
+                                  </span>
                                 </div>
                                 <div className="flex justify-between">
                                   <span className="text-gray-500">Value:</span>

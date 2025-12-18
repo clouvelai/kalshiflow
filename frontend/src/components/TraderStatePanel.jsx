@@ -230,7 +230,7 @@ const TraderStatePanel = ({
               </span>
             </div>
             <div className="space-y-2">
-              {/* Compact action grid */}
+              {/* Compact action grid - All 5 actions always visible */}
               <div className="grid grid-cols-2 gap-x-4 gap-y-2">
                 <div className="flex items-center justify-between">
                   <span className="text-xs text-gray-500">Hold</span>
@@ -256,19 +256,13 @@ const TraderStatePanel = ({
                     {formatNumber(displayState.actor_metrics.action_counts.buy_no || 0)}
                   </span>
                 </div>
-              </div>
-              
-              {/* Sell NO in separate row if exists */}
-              {displayState.actor_metrics.action_counts.sell_no > 0 && (
-                <div className="pt-2 border-t border-gray-700/50">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs text-gray-500">Sell NO</span>
-                    <span className="text-sm font-semibold text-blue-400 font-mono">
-                      {formatNumber(displayState.actor_metrics.action_counts.sell_no || 0)}
-                    </span>
-                  </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-gray-500">Sell NO</span>
+                  <span className="text-sm font-semibold text-blue-400 font-mono">
+                    {formatNumber(displayState.actor_metrics.action_counts.sell_no || 0)}
+                  </span>
                 </div>
-              )}
+              </div>
               
               {/* Action distribution bar */}
               {displayState.actor_metrics.total_actions > 0 && (

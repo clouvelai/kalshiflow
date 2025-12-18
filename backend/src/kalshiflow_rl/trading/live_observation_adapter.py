@@ -192,8 +192,9 @@ class LiveObservationAdapter:
             return observation
             
         except Exception as e:
-            logger.error(f"Error building observation for {market_ticker}: {e}")
-            return None
+            import traceback
+            logger.error(f"Error building observation for {market_ticker}: {e}\n{traceback.format_exc()}")
+            raise  # Re-raise to fail fast, no fallbacks
     
     async def _get_live_snapshot(
         self,
@@ -216,7 +217,7 @@ class LiveObservationAdapter:
             # Calculate total volume for activity sorting
             total_volume = 0
             for side in ['yes_bids', 'yes_asks', 'no_bids', 'no_asks']:
-                if side in snapshot:
+                if side in snapshot and isinstance(snapshot[side], dict):
                     total_volume += sum(snapshot[side].values())
             
             # Create live snapshot in our format
@@ -232,8 +233,9 @@ class LiveObservationAdapter:
             return live_snapshot
             
         except Exception as e:
-            logger.error(f"Error getting live snapshot for {market_ticker}: {e}")
-            return None
+            import traceback
+            logger.error(f"Error getting live snapshot for {market_ticker}: {e}\n{traceback.format_exc()}")
+            raise
     
     def _convert_to_session_data_point(
         self,

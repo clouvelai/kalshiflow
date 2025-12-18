@@ -67,6 +67,7 @@ class OrderInfo:
     fill_price: Optional[int] = None
     model_decision: int = 0          # Original action decision from model (0-4)
     trade_sequence_id: Optional[str] = None  # Unique ID for tracking through lifecycle
+    limit_price_dollars: Optional[str] = None  # Limit price in dollars from Kalshi API (if available)
     
     def __post_init__(self):
         """Set original_quantity if not provided."""
@@ -153,6 +154,7 @@ class FillEvent:
     action: str = ""             # "buy" or "sell"
     side: str = ""               # "yes" or "no"
     is_taker: bool = False       # Whether fill was aggressive (taker) or passive (maker)
+    fill_price_dollars: Optional[str] = None  # YES price in dollars from Kalshi API (e.g., "0.750")
     
     @classmethod
     def from_kalshi_message(cls, message: Dict[str, Any]) -> Optional['FillEvent']:
@@ -201,6 +203,7 @@ class FillEvent:
                 action=fill_data.get("action", ""),
                 side=fill_data.get("side", ""),
                 is_taker=fill_data.get("is_taker", False),
+                fill_price_dollars=fill_data.get("yes_price_dollars"),  # Extract dollars field if available
             )
         except Exception as e:
             logger.error(f"Error parsing fill message: {e}")
@@ -1045,18 +1048,24 @@ class KalshiMultiMarketOrderManager:
         await self._broadcast_trades()
         
         # Broadcast specific fill event and position updates
+        fill_dict = {
+            "kalshi_order_id": fill_event.kalshi_order_id,
+            "fill_quantity": fill_event.fill_quantity,
+            "fill_price": fill_event.fill_price,
+            "fill_timestamp": fill_event.fill_timestamp,
+            "is_taker": fill_event.is_taker,
+            "market_ticker": fill_event.market_ticker,
+            "trade_sequence_id": order.trade_sequence_id,
+            "side": order.side.name,
+            "contract_side": order.contract_side.name
+        }
+        # Include fill_price_dollars if available (from FillEvent)
+        if fill_event.fill_price_dollars is not None:
+            fill_dict["fill_price_dollars"] = fill_event.fill_price_dollars
+            fill_dict["yes_price_dollars"] = fill_event.fill_price_dollars  # Also include as yes_price_dollars for compatibility
+        
         fill_data = {
-            "fill": {
-                "kalshi_order_id": fill_event.kalshi_order_id,
-                "fill_quantity": fill_event.fill_quantity,
-                "fill_price": fill_event.fill_price,
-                "fill_timestamp": fill_event.fill_timestamp,
-                "is_taker": fill_event.is_taker,
-                "market_ticker": fill_event.market_ticker,
-                "trade_sequence_id": order.trade_sequence_id,
-                "side": order.side.name,
-                "contract_side": order.contract_side.name
-            },
+            "fill": fill_dict,
             "updated_position": {
                 "ticker": order.ticker,
                 "contracts": self.positions.get(order.ticker).contracts if order.ticker in self.positions else 0,
@@ -1227,7 +1236,7 @@ class KalshiMultiMarketOrderManager:
         recent_fills_data = []
 
         for trade in recent_fills:
-            recent_fills_data.append({
+            trade_dict = {
                 "trade_id": trade.trade_id,
                 "timestamp": trade.timestamp,
                 "ticker": trade.ticker,
@@ -1236,7 +1245,10 @@ class KalshiMultiMarketOrderManager:
                 "fill_price": trade.fill_price,
                 "order_id": trade.order_id,
                 "model_decision": trade.model_decision
-            })
+            }
+            # Include fill_price_dollars if available (TradeDetail doesn't have it yet, but prepare for future)
+            # For now, we'll rely on FillEvent broadcasts which include it
+            recent_fills_data.append(trade_dict)
 
         # Create execution stats
         execution_stats_data = {
@@ -1299,7 +1311,7 @@ class KalshiMultiMarketOrderManager:
         # Get current orders for broadcast
         orders_data = []
         for order_id, order in self.open_orders.items():
-            orders_data.append({
+            order_dict = {
                 "order_id": order_id,
                 "kalshi_order_id": order.kalshi_order_id,
                 "ticker": order.ticker,
@@ -1311,7 +1323,11 @@ class KalshiMultiMarketOrderManager:
                 "placed_at": order.placed_at,
                 "promised_cash": order.promised_cash,
                 "trade_sequence_id": order.trade_sequence_id
-            })
+            }
+            # Include limit_price_dollars if available
+            if order.limit_price_dollars is not None:
+                order_dict["limit_price_dollars"] = order.limit_price_dollars
+            orders_data.append(order_dict)
         
         await self._websocket_manager.broadcast_orders_update(
             {"orders": orders_data},
