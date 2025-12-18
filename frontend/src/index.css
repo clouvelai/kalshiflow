@@ -70,6 +70,12 @@
     animation: counterUp 0.8s ease-out;
   }
 
+  /* Text utilities */
+  .text-xxs {
+    font-size: 0.625rem;
+    line-height: 0.875rem;
+  }
+
   /* Text truncation utilities */
   .line-clamp-2 {
     display: -webkit-box;

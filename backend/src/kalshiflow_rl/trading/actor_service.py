@@ -10,6 +10,7 @@ import asyncio
 import logging
 import time
 import traceback
+import uuid
 from typing import Dict, Any, Optional, Callable, List, Union, TYPE_CHECKING
 from dataclasses import dataclass
 from collections import defaultdict
@@ -547,6 +548,9 @@ class ActorService:
             return
         
         try:
+            # Generate unique trade sequence ID for tracking through lifecycle
+            trade_sequence_id = str(uuid.uuid4())[:8]  # Short ID for display
+            
             # Step 1: Build observation (requires LiveObservationAdapter)
             observation = await self._build_observation(market_ticker)
             if observation is None:
@@ -559,8 +563,8 @@ class ActorService:
                 logger.debug(f"No action selected for {market_ticker} - treating as HOLD")
                 action = 0  # Convert None to explicit HOLD action (0)
             
-            # Step 3: Safe execute action (requires OrderManager)
-            execution_result = await self._safe_execute_action(action, market_ticker)
+            # Step 3: Safe execute action (requires OrderManager) 
+            execution_result = await self._safe_execute_action(action, market_ticker, trade_sequence_id)
             
             # Broadcast trader action to UI via WebSocket
             if self._websocket_manager and execution_result is not None:
@@ -569,7 +573,8 @@ class ActorService:
                     market_ticker=market_ticker,
                     observation=observation,
                     action=action,
-                    execution_result=execution_result
+                    execution_result=execution_result,
+                    trade_sequence_id=trade_sequence_id
                 )
             
             # Step 4: Update positions (track portfolio state)
@@ -801,7 +806,7 @@ class ActorService:
         
         self.metrics.total_actions += 1
     
-    async def _safe_execute_action(self, action: int, market_ticker: str) -> Optional[Dict[str, Any]]:
+    async def _safe_execute_action(self, action: int, market_ticker: str, trade_sequence_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """
         Safely execute trading action (Step 3).
         
@@ -864,7 +869,7 @@ class ActorService:
             if hasattr(self._order_manager, 'execute_limit_order_action'):
                 # Use KalshiMultiMarketOrderManager instance
                 result = await self._order_manager.execute_limit_order_action(
-                    action, market_ticker, orderbook_snapshot
+                    action, market_ticker, orderbook_snapshot, trade_sequence_id
                 )
             else:
                 # Use configured order manager callable
@@ -893,7 +898,8 @@ class ActorService:
         market_ticker: str,
         observation: np.ndarray,
         action: int,
-        execution_result: Dict[str, Any]
+        execution_result: Dict[str, Any],
+        trade_sequence_id: str
     ) -> None:
         """
         Broadcast trader action to UI via WebSocket.
@@ -968,6 +974,7 @@ class ActorService:
             
             # Build action data for broadcast
             action_data = {
+                "trade_sequence_id": trade_sequence_id,  # Unique ID for this trade
                 "timestamp": time.time(),
                 "market_ticker": market_ticker,
                 "sequence_number": event.sequence_number,
@@ -984,7 +991,8 @@ class ActorService:
                     "executed": execution_result.get("executed", False),
                     "order_id": execution_result.get("order_id"),
                     "status": execution_result.get("status", "unknown"),
-                    "error": execution_result.get("error")
+                    "error": execution_result.get("error"),
+                    "trade_sequence_id": trade_sequence_id  # Include in execution result too
                 }
             }
             

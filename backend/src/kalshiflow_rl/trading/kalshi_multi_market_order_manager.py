@@ -66,6 +66,7 @@ class OrderInfo:
     filled_at: Optional[float] = None
     fill_price: Optional[int] = None
     model_decision: int = 0          # Original action decision from model (0-4)
+    trade_sequence_id: Optional[str] = None  # Unique ID for tracking through lifecycle
     
     def __post_init__(self):
         """Set original_quantity if not provided."""
@@ -632,7 +633,8 @@ class KalshiMultiMarketOrderManager:
         self, 
         market_ticker: str, 
         action: int,
-        orderbook_snapshot: Optional[Dict[str, Any]] = None
+        orderbook_snapshot: Optional[Dict[str, Any]] = None,
+        trade_sequence_id: Optional[str] = None
     ) -> Optional[Dict[str, Any]]:
         """
         Execute an order action for the specified market.
@@ -646,7 +648,7 @@ class KalshiMultiMarketOrderManager:
             Execution result dict or None if failed
         """
         if action == 0:  # HOLD
-            return {"status": "hold", "action": action, "market": market_ticker}
+            return {"status": "hold", "action": action, "market": market_ticker, "trade_sequence_id": trade_sequence_id}
         
         if not self.trading_client:
             logger.error("Trading client not initialized")
@@ -689,7 +691,8 @@ class KalshiMultiMarketOrderManager:
                 side=side,
                 contract_side=contract_side,
                 quantity=quantity,
-                limit_price=limit_price
+                limit_price=limit_price,
+                trade_sequence_id=trade_sequence_id
             )
             
             if result:
@@ -712,7 +715,8 @@ class KalshiMultiMarketOrderManager:
                     "side": side.name,
                     "contract_side": contract_side.name,
                     "quantity": quantity,
-                    "limit_price": limit_price
+                    "limit_price": limit_price,
+                    "trade_sequence_id": trade_sequence_id
                 }
             else:
                 return {"status": "failed", "reason": "kalshi_api_error"}
@@ -725,7 +729,8 @@ class KalshiMultiMarketOrderManager:
         self,
         action: int,
         market_ticker: str,
-        orderbook_snapshot: Optional[Dict[str, Any]] = None
+        orderbook_snapshot: Optional[Dict[str, Any]] = None,
+        trade_sequence_id: Optional[str] = None
     ) -> Optional[Dict[str, Any]]:
         """
         Execute limit order action (wrapper for ActorService integration).
@@ -741,7 +746,7 @@ class KalshiMultiMarketOrderManager:
         Returns:
             Execution result dict with "executed" key for ActorService compatibility
         """
-        result = await self.execute_order(market_ticker, action, orderbook_snapshot)
+        result = await self.execute_order(market_ticker, action, orderbook_snapshot, trade_sequence_id)
         
         # Normalize result format for ActorService
         if result is None:
@@ -761,7 +766,8 @@ class KalshiMultiMarketOrderManager:
         side: OrderSide,
         contract_side: ContractSide,
         quantity: int,
-        limit_price: int
+        limit_price: int,
+        trade_sequence_id: Optional[str] = None
     ) -> Optional[Dict[str, Any]]:
         """Place order via Kalshi API and track locally."""
         try:
@@ -811,7 +817,8 @@ class KalshiMultiMarketOrderManager:
                 limit_price=limit_price,
                 status=OrderStatus.PENDING,
                 placed_at=time.time(),
-                promised_cash=promised_cash
+                promised_cash=promised_cash,
+                trade_sequence_id=trade_sequence_id
             )
             
             # Track order
@@ -1045,7 +1052,10 @@ class KalshiMultiMarketOrderManager:
                 "fill_price": fill_event.fill_price,
                 "fill_timestamp": fill_event.fill_timestamp,
                 "is_taker": fill_event.is_taker,
-                "market_ticker": fill_event.market_ticker
+                "market_ticker": fill_event.market_ticker,
+                "trade_sequence_id": order.trade_sequence_id,
+                "side": order.side.name,
+                "contract_side": order.contract_side.name
             },
             "updated_position": {
                 "ticker": order.ticker,
@@ -1299,7 +1309,8 @@ class KalshiMultiMarketOrderManager:
                 "limit_price": order.limit_price,
                 "status": order.status.name,
                 "placed_at": order.placed_at,
-                "promised_cash": order.promised_cash
+                "promised_cash": order.promised_cash,
+                "trade_sequence_id": order.trade_sequence_id
             })
         
         await self._websocket_manager.broadcast_orders_update(

@@ -293,6 +293,7 @@ const TradesFeed = ({ fills }) => {
         const isSuccess = fill.execution_result?.executed !== false && fill.success !== false;
         const actionStyle = getActionStyle(action, isSuccess);
         const hasObservation = fill.observation && (fill.observation.raw_array?.length > 0 || fill.observation.features);
+        const tradeId = fill.trade_sequence_id || fill.execution_result?.trade_sequence_id;
         
         return (
           <div 
@@ -317,6 +318,13 @@ const TradesFeed = ({ fills }) => {
                       <ChevronRightIcon className="h-3 w-3" />
                     }
                   </div>
+                )}
+
+                {/* Trade ID Badge */}
+                {tradeId && (
+                  <span className="px-2 py-0.5 bg-gray-700/70 text-gray-300 rounded text-xs font-bold border border-gray-600">
+                    #{tradeId}
+                  </span>
                 )}
 
                 {/* Timestamp */}

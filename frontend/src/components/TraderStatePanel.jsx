@@ -441,7 +441,7 @@ const TraderStatePanel = ({
           {displayState.open_orders && displayState.open_orders.length > 0 ? (
             <div className="space-y-2">
               {displayState.open_orders.slice(0, 5).map((order, idx) => {
-                const orderTime = order.created_at ? new Date(order.created_at) : null;
+                const orderTime = order.created_at ? new Date(order.created_at) : (order.placed_at ? new Date(order.placed_at * 1000) : null);
                 const timeElapsed = orderTime ? Date.now() - orderTime.getTime() : 0;
                 const minutesElapsed = Math.floor(timeElapsed / 60000);
                 const secondsElapsed = Math.floor((timeElapsed % 60000) / 1000);
@@ -451,15 +451,21 @@ const TraderStatePanel = ({
                     <div className="flex justify-between items-start">
                       <div className="flex-1">
                         <div className="flex items-center space-x-2 mb-1">
+                          {/* Trade ID Badge */}
+                          {order.trade_sequence_id && (
+                            <span className="px-2 py-0.5 bg-gray-700/70 text-gray-300 rounded text-xs font-bold border border-gray-600">
+                              #{order.trade_sequence_id}
+                            </span>
+                          )}
                           <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${
-                            order.side === 'BUY' || order.side === 'YES' ? 
+                            order.side === 'BUY' || order.side === 'YES' || order.contract_side === 'YES' ? 
                               'bg-green-500/20 text-green-400' : 
                               'bg-red-500/20 text-red-400'
                           }`}>
-                            {order.side}
+                            {order.side || order.contract_side || 'BUY'}
                           </span>
-                          <span className="text-xs px-1.5 py-0.5 bg-gray-600/50 text-gray-300 rounded">
-                            {order.order_type || 'LIMIT'}
+                          <span className="text-xs px-1.5 py-0.5 bg-amber-500/20 text-amber-400 rounded font-medium">
+                            PENDING
                           </span>
                           {order.ticker && (
                             <p className="text-xs text-gray-400 font-medium">{order.ticker}</p>
@@ -467,16 +473,16 @@ const TraderStatePanel = ({
                         </div>
                         <p className="text-xs text-gray-300">
                           <span className="font-mono">{order.quantity}</span> contracts @ 
-                          <span className="font-mono text-white ml-1">{formatCurrency(order.price/100)}</span>
+                          <span className="font-mono text-white ml-1">{formatCurrency((order.limit_price || order.price)/100)}</span>
                         </p>
                       </div>
                       <div className="text-right">
-                        {order.current_price !== undefined && (
+                        {(order.current_price !== undefined || order.placed_at) && (
                           <p className="text-xs text-gray-400 mb-1">
                             Market: <span className="font-mono">{formatCurrency(order.current_price/100)}</span>
                           </p>
                         )}
-                        {orderTime && (
+                        {(orderTime || order.placed_at) && (
                           <p className="text-xs text-gray-500">
                             {minutesElapsed > 0 ? `${minutesElapsed}m ` : ''}{secondsElapsed}s ago
                           </p>
