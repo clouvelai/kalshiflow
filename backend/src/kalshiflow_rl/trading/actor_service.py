@@ -556,8 +556,8 @@ class ActorService:
             # Step 2: Select action (requires ActionSelector)
             action = await self._select_action(observation, market_ticker)
             if action is None:
-                logger.debug(f"No action selected for {market_ticker}")
-                return
+                logger.debug(f"No action selected for {market_ticker} - treating as HOLD")
+                action = 0  # Convert None to explicit HOLD action (0)
             
             # Step 3: Safe execute action (requires OrderManager)
             execution_result = await self._safe_execute_action(action, market_ticker)
@@ -759,6 +759,9 @@ class ActorService:
                 self.metrics.model_predictions += 1
                 # Count the action type
                 self._count_action(action)
+            else:
+                # Count None as HOLD action (will be converted to explicit 0 in processing pipeline)
+                self._count_action(0)
             
             return action
         except Exception as e:

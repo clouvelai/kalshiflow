@@ -188,33 +188,136 @@ const TraderStatePanel = ({
 
   return (
     <div className="space-y-4">
-      {/* Portfolio Summary */}
-      <div className="bg-gray-800 border border-gray-700 rounded-lg p-4">
-        <h3 className="text-sm font-medium text-gray-400 mb-3">Portfolio Summary</h3>
-        <div className="grid grid-cols-2 gap-4">
-          <div>
-            <p className="text-xs text-gray-500">Total Value</p>
-            <p className="text-lg font-bold text-white">
-              {formatCurrency(displayState.portfolio_value)}
-            </p>
+      {/* Portfolio Summary - Redesigned */}
+      <div className="grid grid-cols-2 gap-3">
+        <div className="bg-gradient-to-br from-gray-800 to-gray-800/80 border border-gray-700 rounded-lg p-3 hover:border-gray-600 transition-all">
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="text-xs font-medium text-gray-400 uppercase tracking-wider">Portfolio</h3>
+            <span className="text-xs text-gray-500">💼</span>
           </div>
-          <div>
-            <p className="text-xs text-gray-500">Cash Balance</p>
-            <p className="text-lg font-bold text-white">
-              {formatCurrency(displayState.cash_balance)}
-            </p>
+          <div className="space-y-3">
+            <div className="flex justify-between items-end">
+              <div className="flex-1">
+                <p className="text-xs text-gray-500 mb-1">Total Value</p>
+                <p className="text-xl font-bold text-white">
+                  {formatCurrency(displayState.portfolio_value)}
+                </p>
+              </div>
+            </div>
+            <div className="pt-2 border-t border-gray-700/50">
+              <p className="text-xs text-gray-500 mb-1">Cash Balance</p>
+              <p className="text-lg font-semibold text-gray-200">
+                {formatCurrency(displayState.cash_balance)}
+              </p>
+            </div>
+            
+            {/* Compact Balance Indicator */}
+            {displayState.cash_balance === 0 && displayState.portfolio_value === 0 && (
+              <div className="text-xs text-yellow-400 bg-yellow-500/10 rounded px-2 py-1">
+                ⚠️ Zero Balance - Add funds
+              </div>
+            )}
           </div>
         </div>
-        
-        {/* Zero Balance Warning */}
-        {displayState.cash_balance === 0 && displayState.portfolio_value === 0 && (
-          <div className="mt-3 p-2 bg-yellow-500/10 border border-yellow-500/30 rounded">
-            <p className="text-xs text-yellow-400">
-              ⚠️ <span className="font-semibold">Zero Balance Detected</span>
-            </p>
-            <p className="text-xs text-yellow-400/80 mt-1">
-              Trading disabled - Demo account needs funding. Add balance through Kalshi demo account UI.
-            </p>
+
+        {/* Action Breakdown - Redesigned */}
+        {showActionBreakdown && displayState.actor_metrics?.action_counts && (
+          <div className="bg-gradient-to-br from-gray-800 to-gray-800/80 border border-gray-700 rounded-lg p-3 hover:border-gray-600 transition-all">
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="text-xs font-medium text-gray-400 uppercase tracking-wider">Actions</h3>
+              <span className="text-xs px-2 py-0.5 bg-blue-500/20 text-blue-400 rounded-full">
+                {formatNumber(displayState.actor_metrics.total_actions || 0)} total
+              </span>
+            </div>
+            <div className="space-y-2">
+              {/* Compact action grid */}
+              <div className="grid grid-cols-2 gap-x-4 gap-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-gray-500">Hold</span>
+                  <span className="text-sm font-semibold text-amber-400 font-mono">
+                    {formatNumber(displayState.actor_metrics.action_counts.hold || 0)}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-gray-500">Buy YES</span>
+                  <span className="text-sm font-semibold text-green-400 font-mono">
+                    {formatNumber(displayState.actor_metrics.action_counts.buy_yes || 0)}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-gray-500">Sell YES</span>
+                  <span className="text-sm font-semibold text-red-400 font-mono">
+                    {formatNumber(displayState.actor_metrics.action_counts.sell_yes || 0)}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-gray-500">Buy NO</span>
+                  <span className="text-sm font-semibold text-purple-400 font-mono">
+                    {formatNumber(displayState.actor_metrics.action_counts.buy_no || 0)}
+                  </span>
+                </div>
+              </div>
+              
+              {/* Sell NO in separate row if exists */}
+              {displayState.actor_metrics.action_counts.sell_no > 0 && (
+                <div className="pt-2 border-t border-gray-700/50">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs text-gray-500">Sell NO</span>
+                    <span className="text-sm font-semibold text-blue-400 font-mono">
+                      {formatNumber(displayState.actor_metrics.action_counts.sell_no || 0)}
+                    </span>
+                  </div>
+                </div>
+              )}
+              
+              {/* Action distribution bar */}
+              {displayState.actor_metrics.total_actions > 0 && (
+                <div className="mt-2 pt-2 border-t border-gray-700/50">
+                  <div className="flex h-2 rounded-full overflow-hidden bg-gray-700">
+                    {displayState.actor_metrics.action_counts.hold > 0 && (
+                      <div 
+                        className="bg-amber-400 transition-all duration-500"
+                        style={{ 
+                          width: `${(displayState.actor_metrics.action_counts.hold / displayState.actor_metrics.total_actions) * 100}%` 
+                        }}
+                      />
+                    )}
+                    {displayState.actor_metrics.action_counts.buy_yes > 0 && (
+                      <div 
+                        className="bg-green-400 transition-all duration-500"
+                        style={{ 
+                          width: `${(displayState.actor_metrics.action_counts.buy_yes / displayState.actor_metrics.total_actions) * 100}%` 
+                        }}
+                      />
+                    )}
+                    {displayState.actor_metrics.action_counts.sell_yes > 0 && (
+                      <div 
+                        className="bg-red-400 transition-all duration-500"
+                        style={{ 
+                          width: `${(displayState.actor_metrics.action_counts.sell_yes / displayState.actor_metrics.total_actions) * 100}%` 
+                        }}
+                      />
+                    )}
+                    {displayState.actor_metrics.action_counts.buy_no > 0 && (
+                      <div 
+                        className="bg-purple-400 transition-all duration-500"
+                        style={{ 
+                          width: `${(displayState.actor_metrics.action_counts.buy_no / displayState.actor_metrics.total_actions) * 100}%` 
+                        }}
+                      />
+                    )}
+                    {displayState.actor_metrics.action_counts.sell_no > 0 && (
+                      <div 
+                        className="bg-blue-400 transition-all duration-500"
+                        style={{ 
+                          width: `${(displayState.actor_metrics.action_counts.sell_no / displayState.actor_metrics.total_actions) * 100}%` 
+                        }}
+                      />
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
         )}
       </div>
@@ -516,50 +619,6 @@ const TraderStatePanel = ({
         </div>
       )}
 
-      {/* Action Breakdown */}
-      {showActionBreakdown && displayState.actor_metrics?.action_counts && (
-        <div className="bg-gray-800 border border-gray-700 rounded-lg p-4">
-          <h3 className="text-sm font-medium text-gray-400 mb-3">Action Breakdown</h3>
-          <div className="grid grid-cols-2 gap-2">
-            <div>
-              <p className="text-xs text-gray-500">Hold</p>
-              <p className="text-sm font-medium text-amber-400">
-                {formatNumber(displayState.actor_metrics.action_counts.hold || 0)}
-              </p>
-            </div>
-            <div>
-              <p className="text-xs text-gray-500">Buy YES</p>
-              <p className="text-sm font-medium text-green-400">
-                {formatNumber(displayState.actor_metrics.action_counts.buy_yes || 0)}
-              </p>
-            </div>
-            <div>
-              <p className="text-xs text-gray-500">Sell YES</p>
-              <p className="text-sm font-medium text-red-400">
-                {formatNumber(displayState.actor_metrics.action_counts.sell_yes || 0)}
-              </p>
-            </div>
-            <div>
-              <p className="text-xs text-gray-500">Buy NO</p>
-              <p className="text-sm font-medium text-purple-400">
-                {formatNumber(displayState.actor_metrics.action_counts.buy_no || 0)}
-              </p>
-            </div>
-            <div>
-              <p className="text-xs text-gray-500">Sell NO</p>
-              <p className="text-sm font-medium text-blue-400">
-                {formatNumber(displayState.actor_metrics.action_counts.sell_no || 0)}
-              </p>
-            </div>
-            <div>
-              <p className="text-xs text-gray-500">Total</p>
-              <p className="text-sm font-medium text-white">
-                {formatNumber(displayState.actor_metrics.total_actions || 0)}
-              </p>
-            </div>
-          </div>
-        </div>
-      )}
 
     </div>
   );

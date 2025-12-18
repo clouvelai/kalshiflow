@@ -1050,7 +1050,7 @@ class KalshiMultiMarketOrderManager:
             "updated_position": {
                 "ticker": order.ticker,
                 "contracts": self.positions.get(order.ticker).contracts if order.ticker in self.positions else 0,
-                "average_cost_cents": self.positions.get(order.ticker).average_cost_cents if order.ticker in self.positions else 0
+                "average_cost_cents": int(self.positions.get(order.ticker).cost_basis * 100) if order.ticker in self.positions else 0
             }
         }
         await self._broadcast_fill_event(fill_data)
@@ -1325,14 +1325,14 @@ class KalshiMultiMarketOrderManager:
                 portfolio_value += position.market_exposure_dollars
             else:
                 # Fallback calculation if market_exposure_dollars not available
-                portfolio_value += (position.average_cost_cents / 100.0) * position.contracts
+                portfolio_value += position.cost_basis * abs(position.contracts)
         
         # Get positions data for broadcast
         positions_data = {}
         for ticker, position in self.positions.items():
             positions_data[ticker] = {
                 "contracts": position.contracts,
-                "average_cost_cents": position.average_cost_cents,
+                "average_cost_cents": int(position.cost_basis * 100),  # Convert dollars to cents
                 "market_exposure_dollars": getattr(position, 'market_exposure_dollars', None),
                 "realized_pnl": position.realized_pnl,
                 "fees_paid": getattr(position, 'fees_paid', 0.0)
@@ -1363,7 +1363,7 @@ class KalshiMultiMarketOrderManager:
             if hasattr(position, 'market_exposure_dollars') and position.market_exposure_dollars:
                 portfolio_value += position.market_exposure_dollars
             else:
-                portfolio_value += (position.average_cost_cents / 100.0) * position.contracts
+                portfolio_value += position.cost_basis * abs(position.contracts)
         
         await self._websocket_manager.broadcast_portfolio_update({
             "cash_balance": self.cash_balance,

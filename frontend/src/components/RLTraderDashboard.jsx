@@ -111,14 +111,34 @@ const RLTraderDashboard = () => {
             break;
             
           case 'trades':
-            // Trade broadcast with recent fills and stats
+            // Trade broadcast - only update execution stats, not fills
+            // (fills are handled by individual trader_action messages to avoid duplicates)
             if (data.data) {
-              if (data.data.recent_fills) {
-                setRecentFills(data.data.recent_fills);
-              }
               if (data.data.execution_stats) {
                 setExecutionStats(data.data.execution_stats);
               }
+              // DON'T set recent_fills here - handled by trader_action messages
+            }
+            break;
+            
+          case 'trader_action':
+            // Individual trader action from the RL agent
+            if (data.data) {
+              // Add the new trader action to recent fills
+              setRecentFills(prev => {
+                // Create a properly formatted fill entry
+                const actionEntry = {
+                  timestamp: data.data.timestamp || new Date().toISOString(),
+                  market_ticker: data.data.market_ticker,
+                  action: data.data.action,
+                  observation: data.data.observation,
+                  execution_result: data.data.execution_result,
+                  success: data.data.execution_result?.executed !== false,
+                  ...data.data
+                };
+                // Add to beginning and limit to 100 entries
+                return [actionEntry, ...prev].slice(0, 100);
+              });
             }
             break;
             
@@ -511,10 +531,30 @@ const RLTraderDashboard = () => {
               showActionBreakdown={true}
             />
             
-            {/* Grid View Components */}
+            {/* Grid View Components - Ordered Chronologically: Trade → Order → Fill → Position */}
             <div className="mt-6 space-y-4">
               
-              {/* Open Orders Section */}
+              {/* Recent Trades Section - FIRST: AI Decisions */}
+              <div className="border border-gray-700 rounded-lg">
+                <div 
+                  className="flex items-center justify-between p-4 cursor-pointer hover:bg-gray-700/50 transition-colors"
+                  onClick={() => toggleSection('trades')}
+                >
+                  <h3 className="text-md font-medium text-gray-200">
+                    🤖 Recent Trades {recentFills && recentFills.length > 0 && `(${recentFills.length})`}
+                  </h3>
+                  <span className="text-gray-400">
+                    {collapsedSections.trades ? '▶' : '▼'}
+                  </span>
+                </div>
+                {!collapsedSections.trades && (
+                  <div className="border-t border-gray-700 p-4 max-h-64 overflow-y-auto">
+                    <TradesFeed fills={recentFills} maxItems={100} />
+                  </div>
+                )}
+              </div>
+
+              {/* Open Orders Section - SECOND: Pending Orders */}
               <div className="border border-gray-700 rounded-lg">
                 <div 
                   className="flex items-center justify-between p-4 cursor-pointer hover:bg-gray-700/50 transition-colors"
@@ -528,24 +568,57 @@ const RLTraderDashboard = () => {
                   </span>
                 </div>
                 {!collapsedSections.orders && (
-                  <div className="border-t border-gray-700 p-4 max-h-64 overflow-y-auto">
+                  <div className="border-t border-gray-700 p-4 max-h-96 overflow-y-auto">
                     {openOrders && openOrders.length > 0 ? (
-                      <div className="space-y-2">
+                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
                         {openOrders.map((order, idx) => (
-                          <div key={order.order_id || idx} className="text-sm bg-gray-700/30 rounded p-2">
-                            <div className="flex justify-between items-center">
-                              <span className="font-mono text-xs text-gray-400">{order.ticker}</span>
-                              <span className={`px-2 py-1 rounded text-xs ${
-                                order.side === 'BUY' ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'
+                          <div key={order.order_id || idx} className="bg-gray-700/30 hover:bg-gray-700/50 rounded-lg p-3 border border-gray-700 hover:border-gray-600 transition-all">
+                            {/* Header with ticker and side */}
+                            <div className="flex justify-between items-center mb-2 pb-2 border-b border-gray-700/50">
+                              <span className="font-mono text-xs text-gray-300 truncate flex-1 mr-2" title={order.ticker}>
+                                {order.ticker}
+                              </span>
+                              <span className={`px-2 py-1 rounded text-xs font-medium ${
+                                order.side === 'BUY' && order.contract_side === 'YES' ? 'bg-green-500/20 text-green-400' : 
+                                order.side === 'BUY' && order.contract_side === 'NO' ? 'bg-orange-500/20 text-orange-400' :
+                                order.side === 'SELL' && order.contract_side === 'YES' ? 'bg-red-500/20 text-red-400' :
+                                'bg-purple-500/20 text-purple-400'
                               }`}>
-                                {order.side} {order.contract_side}
+                                {order.side === 'BUY' ? 'BUY' : 'SELL'} {order.contract_side}
                               </span>
                             </div>
-                            <div className="flex justify-between mt-1">
-                              <span className="text-gray-300">{order.quantity} @ {order.limit_price}¢</span>
-                              <span className="text-xs text-gray-500">
-                                {new Date(order.placed_at * 1000).toLocaleTimeString()}
-                              </span>
+                            
+                            {/* Order details grid */}
+                            <div className="space-y-2 text-xs">
+                              <div className="grid grid-cols-2 gap-2">
+                                <div>
+                                  <span className="text-gray-500 block">Contracts</span>
+                                  <span className="text-gray-200 font-mono">{order.quantity}</span>
+                                </div>
+                                <div>
+                                  <span className="text-gray-500 block">Price</span>
+                                  <span className="text-gray-200 font-mono">{order.limit_price}¢</span>
+                                </div>
+                              </div>
+                              
+                              <div className="grid grid-cols-2 gap-2">
+                                <div>
+                                  <span className="text-gray-500 block">Value</span>
+                                  <span className="text-gray-200 font-mono">${((order.quantity * order.limit_price) / 100).toFixed(2)}</span>
+                                </div>
+                                <div>
+                                  <span className="text-gray-500 block">Status</span>
+                                  <span className="text-gray-300 font-mono">{order.status || 'OPEN'}</span>
+                                </div>
+                              </div>
+                              
+                              {/* Time placed */}
+                              <div className="pt-2 border-t border-gray-700/30">
+                                <span className="text-gray-500 block">Placed</span>
+                                <span className="text-gray-300 text-xs">
+                                  {new Date(order.placed_at * 1000).toLocaleTimeString()}
+                                </span>
+                              </div>
                             </div>
                           </div>
                         ))}
@@ -561,7 +634,7 @@ const RLTraderDashboard = () => {
                 )}
               </div>
 
-              {/* Recent Fills Section */}
+              {/* Recent Fills Section - THIRD: Executed Orders */}
               <div className="border border-gray-700 rounded-lg">
                 <div 
                   className="flex items-center justify-between p-4 cursor-pointer hover:bg-gray-700/50 transition-colors"
@@ -575,9 +648,58 @@ const RLTraderDashboard = () => {
                   </span>
                 </div>
                 {!collapsedSections.fills && (
-                  <div className="border-t border-gray-700 p-4 max-h-64 overflow-y-auto">
+                  <div className="border-t border-gray-700 p-4 max-h-96 overflow-y-auto">
                     {actualFills && actualFills.length > 0 ? (
-                      <TradesFeed fills={actualFills} maxItems={50} />
+                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+                        {actualFills.slice(0, 50).map((fill, idx) => (
+                          <div key={fill.fill_id || idx} className="bg-gray-700/30 hover:bg-gray-700/50 rounded-lg p-3 border border-gray-700 hover:border-gray-600 transition-all">
+                            {/* Header with ticker and side */}
+                            <div className="flex justify-between items-center mb-2 pb-2 border-b border-gray-700/50">
+                              <span className="font-mono text-xs text-gray-300 truncate flex-1 mr-2" title={fill.market_ticker || fill.ticker}>
+                                {fill.market_ticker || fill.ticker || 'Unknown'}
+                              </span>
+                              <span className={`px-2 py-1 rounded text-xs font-medium ${
+                                fill.side === 'BUY' ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'
+                              }`}>
+                                {fill.side || 'BUY'}
+                              </span>
+                            </div>
+                            
+                            {/* Fill details grid */}
+                            <div className="space-y-2 text-xs">
+                              <div className="grid grid-cols-2 gap-2">
+                                <div>
+                                  <span className="text-gray-500 block">Contracts</span>
+                                  <span className="text-gray-200 font-mono">{fill.quantity || 0}</span>
+                                </div>
+                                <div>
+                                  <span className="text-gray-500 block">Price</span>
+                                  <span className="text-gray-200 font-mono">{fill.price || 0}¢</span>
+                                </div>
+                              </div>
+                              
+                              <div className="grid grid-cols-2 gap-2">
+                                <div>
+                                  <span className="text-gray-500 block">Value</span>
+                                  <span className="text-gray-200 font-mono">${(((fill.quantity || 0) * (fill.price || 0)) / 100).toFixed(2)}</span>
+                                </div>
+                                <div>
+                                  <span className="text-gray-500 block">Type</span>
+                                  <span className="text-gray-300 font-mono">{fill.type || 'FILL'}</span>
+                                </div>
+                              </div>
+                              
+                              {/* Time executed */}
+                              <div className="pt-2 border-t border-gray-700/30">
+                                <span className="text-gray-500 block">Executed</span>
+                                <span className="text-gray-300 text-xs">
+                                  {new Date(fill.timestamp).toLocaleTimeString()}
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
                     ) : (
                       <div className="text-center text-gray-500 py-8">
                         <div className="mb-2">💸</div>
@@ -589,7 +711,7 @@ const RLTraderDashboard = () => {
                 )}
               </div>
 
-              {/* Open Positions Section */}
+              {/* Open Positions Section - FOURTH: Accumulated Positions */}
               <div className="border border-gray-700 rounded-lg">
                 <div 
                   className="flex items-center justify-between p-4 cursor-pointer hover:bg-gray-700/50 transition-colors"
@@ -678,25 +800,6 @@ const RLTraderDashboard = () => {
                 )}
               </div>
 
-              {/* Recent Trades Section */}
-              <div className="border border-gray-700 rounded-lg">
-                <div 
-                  className="flex items-center justify-between p-4 cursor-pointer hover:bg-gray-700/50 transition-colors"
-                  onClick={() => toggleSection('trades')}
-                >
-                  <h3 className="text-md font-medium text-gray-200">
-                    🤖 Recent Trades {recentFills && recentFills.length > 0 && `(${recentFills.length})`}
-                  </h3>
-                  <span className="text-gray-400">
-                    {collapsedSections.trades ? '▶' : '▼'}
-                  </span>
-                </div>
-                {!collapsedSections.trades && (
-                  <div className="border-t border-gray-700 p-4 max-h-64 overflow-y-auto">
-                    <TradesFeed fills={recentFills} maxItems={100} />
-                  </div>
-                )}
-              </div>
               
             </div>
           </div>

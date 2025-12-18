@@ -389,8 +389,15 @@ const TradesFeed = ({ fills }) => {
             {/* Error Message (if any) */}
             {fill.execution_result?.error && (
               <div className="px-3 pb-2">
-                <div className="text-xs text-red-400 bg-red-900/20 rounded p-1.5">
-                  Error: {fill.execution_result.error}
+                <div className="text-xs text-red-400 bg-red-900/20 rounded p-1.5 flex items-start space-x-1">
+                  <span className="text-red-500">⚠️</span>
+                  <span className="flex-1">
+                    {fill.execution_result.error.includes('average_cost_cents') 
+                      ? 'Position tracking error - backend issue'
+                      : fill.execution_result.error.length > 100 
+                        ? fill.execution_result.error.substring(0, 100) + '...'
+                        : fill.execution_result.error}
+                  </span>
                 </div>
               </div>
             )}

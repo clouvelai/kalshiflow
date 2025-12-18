@@ -258,7 +258,7 @@ async def lifespan(app: Starlette):
                 async def broadcast_state(state):
                     """Callback to broadcast trader state changes via websocket."""
                     # Include actor metrics if available
-                    if actor_service and hasattr(actor_service, '_processing') and actor_service._processing:
+                    if actor_service:
                         try:
                             actor_metrics = actor_service.get_metrics()
                             state["actor_metrics"] = actor_metrics

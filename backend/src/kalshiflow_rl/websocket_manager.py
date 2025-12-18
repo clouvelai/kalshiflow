@@ -304,7 +304,7 @@ class WebSocketManager:
                     initial_state = await self._order_manager.get_current_state()
                     
                     # Include actor metrics if available
-                    if self._actor_service and hasattr(self._actor_service, '_processing') and self._actor_service._processing:
+                    if self._actor_service:
                         try:
                             actor_metrics = self._actor_service.get_metrics()
                             initial_state["actor_metrics"] = actor_metrics
