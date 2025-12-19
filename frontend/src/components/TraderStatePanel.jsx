@@ -199,137 +199,81 @@ const TraderStatePanel = ({
         </div>
         
         <div className="relative z-10">
-          {/* Portfolio Value Hero */}
+          {/* Portfolio Summary - Horizontal Layout */}
           <div className="mb-6">
-            <div className="flex items-baseline justify-between mb-2">
-              <p className="text-sm font-medium text-slate-400 uppercase tracking-wider">Portfolio Value</p>
-              {displayState.session_start_portfolio_value !== undefined && (
-                <div>
-                  <p className="text-xs text-slate-500">
-                    Started at {formatCurrency(displayState.session_start_portfolio_value)}
-                  </p>
-                  {displayState.calculated_portfolio_value !== undefined && displayState.portfolio_value !== undefined && (
-                    <p className="text-xs text-slate-400 mt-0.5">
-                      Calculated: {formatCurrency(displayState.calculated_portfolio_value)}
-                      {(() => {
-                        const currentDrift = displayState.calculated_portfolio_value - displayState.portfolio_value;
-                        if (Math.abs(currentDrift) > 0.01) {
-                          return (
-                            <span className={`ml-2 ${currentDrift >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                              ({currentDrift >= 0 ? '+' : ''}{formatCurrency(currentDrift)})
-                            </span>
-                          );
-                        }
-                        return null;
-                      })()}
-                    </p>
-                  )}
-                </div>
-              )}
-            </div>
-            <div className="flex items-baseline gap-3 mb-2">
-              <h2 className="text-4xl font-bold text-white tracking-tight">
-                {formatCurrency(displayState.portfolio_value)}
-              </h2>
-              {displayState.portfolio_value_change !== undefined && displayState.portfolio_value_change !== 0 && (
-                <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-semibold text-sm ${
-                  displayState.portfolio_value_change >= 0 
-                    ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' 
-                    : 'bg-red-500/20 text-red-400 border border-red-500/30'
-                }`}>
-                  <span>{displayState.portfolio_value_change >= 0 ? '↑' : '↓'}</span>
-                  <span>{displayState.portfolio_value_change >= 0 ? '+' : ''}{formatCurrency(displayState.portfolio_value_change)}</span>
-                </div>
-              )}
-            </div>
-            {displayState.portfolio_value_change !== undefined && displayState.session_start_portfolio_value !== undefined && displayState.session_start_portfolio_value > 0 && (
-              <p className="text-xs text-slate-500">
-                {((displayState.portfolio_value_change / displayState.session_start_portfolio_value) * 100).toFixed(2)}% change
-              </p>
-            )}
-          </div>
-
-          {/* Cash Balance & Cashflow Grid */}
-          <div className="grid grid-cols-2 gap-4 pt-4 border-t border-slate-700/50">
-            {/* Cash Balance */}
-            <div>
-              <p className="text-xs font-medium text-slate-400 uppercase tracking-wider mb-2">Cash Balance</p>
-              <div className="space-y-1">
-                <p className="text-2xl font-bold text-slate-100">
-                  {formatCurrency(displayState.cash_balance)}
-                </p>
-                <div className="flex items-center gap-2">
-                  {displayState.session_start_cash !== undefined && (
-                    <div>
-                      <p className="text-xs text-slate-500">
-                        Start: {formatCurrency(displayState.session_start_cash)}
+            {(() => {
+              const totalValue = (displayState.portfolio_value || 0) + (displayState.cash_balance || 0);
+              const totalStartValue = (displayState.session_start_portfolio_value || 0) + (displayState.session_start_cash || 0);
+              const totalPnl = totalValue - totalStartValue;
+              const totalPnlPercent = totalStartValue > 0 ? (totalPnl / totalStartValue) * 100 : 0;
+              
+              return (
+                <div className="flex items-end gap-6 flex-wrap">
+                  {/* Position Value */}
+                  <div className="flex flex-col items-start">
+                    <p className="text-xs font-medium text-slate-400 uppercase tracking-wider mb-1">Position</p>
+                    <h2 className="text-3xl font-bold text-white tracking-tight leading-none">
+                      {formatCurrency(displayState.portfolio_value || 0)}
+                    </h2>
+                    {displayState.portfolio_value_change !== undefined && displayState.portfolio_value_change !== 0 && (
+                      <p className={`text-xs mt-1 ${
+                        displayState.portfolio_value_change >= 0 ? 'text-emerald-400' : 'text-red-400'
+                      }`}>
+                        {displayState.portfolio_value_change >= 0 ? '+' : ''}{formatCurrency(displayState.portfolio_value_change)}
                       </p>
-                      {displayState.calculated_cash_balance !== undefined && displayState.cash_balance !== undefined && (
-                        <p className="text-xs text-slate-400 mt-0.5">
-                          Calculated: {formatCurrency(displayState.calculated_cash_balance)}
-                          {(() => {
-                            const currentDrift = displayState.calculated_cash_balance - displayState.cash_balance;
-                            if (Math.abs(currentDrift) > 0.01) {
-                              return (
-                                <span className={`ml-2 ${currentDrift >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                                  ({currentDrift >= 0 ? '+' : ''}{formatCurrency(currentDrift)})
-                                </span>
-                              );
-                            }
-                            return null;
-                          })()}
-                        </p>
-                      )}
+                    )}
+                  </div>
+                  
+                  {/* Plus Sign */}
+                  <span className="text-2xl font-bold text-slate-500 pb-1">+</span>
+                  
+                  {/* Cash Balance */}
+                  <div className="flex flex-col items-start">
+                    <p className="text-xs font-medium text-slate-400 uppercase tracking-wider mb-1">Cash</p>
+                    <h2 className="text-3xl font-bold text-white tracking-tight leading-none">
+                      {formatCurrency(displayState.cash_balance || 0)}
+                    </h2>
+                    {displayState.cash_balance_change !== undefined && displayState.cash_balance_change !== 0 && (
+                      <p className={`text-xs mt-1 ${
+                        displayState.cash_balance_change >= 0 ? 'text-emerald-400' : 'text-red-400'
+                      }`}>
+                        {displayState.cash_balance_change >= 0 ? '+' : ''}{formatCurrency(displayState.cash_balance_change)}
+                      </p>
+                    )}
+                  </div>
+                  
+                  {/* Arrow */}
+                  <span className="text-2xl font-bold text-slate-500 pb-1">→</span>
+                  
+                  {/* Total Value */}
+                  <div className="flex flex-col items-start">
+                    <p className="text-xs font-medium text-slate-400 uppercase tracking-wider mb-1">Total Value</p>
+                    <h2 className="text-3xl font-bold text-white tracking-tight leading-none">
+                      {formatCurrency(totalValue)}
+                    </h2>
+                  </div>
+                  
+                  {/* Total P&L Badge */}
+                  {totalStartValue > 0 && (
+                    <div className={`flex flex-col items-center justify-center px-6 py-5 rounded-xl font-semibold ml-2 ${
+                      totalPnl >= 0 
+                        ? 'bg-emerald-500/20 text-emerald-400 border-2 border-emerald-500/30' 
+                        : 'bg-red-500/20 text-red-400 border-2 border-red-500/30'
+                    }`}>
+                      <p className="text-xs font-medium uppercase tracking-wider mb-1.5">Total P&L</p>
+                      <p className={`text-4xl font-bold leading-none ${totalPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                        {totalPnl >= 0 ? '+' : ''}{formatCurrency(totalPnl)}
+                      </p>
+                      <p className="text-sm mt-1.5 font-semibold">
+                        {totalPnlPercent >= 0 ? '+' : ''}{totalPnlPercent.toFixed(2)}%
+                      </p>
                     </div>
                   )}
-                  {displayState.cash_balance_change !== undefined && displayState.cash_balance_change !== 0 && (
-                    <span className={`text-xs font-medium ${
-                      displayState.cash_balance_change >= 0 ? 'text-emerald-400' : 'text-red-400'
-                    }`}>
-                      {displayState.cash_balance_change >= 0 ? '+' : ''}{formatCurrency(displayState.cash_balance_change)}
-                    </span>
-                  )}
                 </div>
-              </div>
-            </div>
-
-            {/* Session Cashflow */}
-            <div>
-              <p className="text-xs font-medium text-slate-400 uppercase tracking-wider mb-2">Session Cashflow</p>
-              <div className="space-y-1.5">
-                <div className="flex justify-between items-center">
-                  <span className="text-xs text-slate-500">Invested</span>
-                  <span className="text-xs font-mono font-semibold text-red-400">
-                    -{formatCurrency(displayState.session_cash_invested || 0)}
-                  </span>
-                </div>
-                <div className="flex justify-between items-center">
-                  <span className="text-xs text-slate-500">Recouped</span>
-                  <span className="text-xs font-mono font-semibold text-emerald-400">
-                    +{formatCurrency(displayState.session_cash_recouped || 0)}
-                  </span>
-                </div>
-                {displayState.net_cashflow !== undefined && (
-                  <div className="flex justify-between items-center pt-1.5 border-t border-slate-700/30">
-                    <span className="text-xs font-medium text-slate-400">Net</span>
-                    <span className={`text-sm font-mono font-bold ${
-                      displayState.net_cashflow >= 0 ? 'text-emerald-400' : 'text-red-400'
-                    }`}>
-                      {displayState.net_cashflow >= 0 ? '+' : ''}{formatCurrency(displayState.net_cashflow || 0)}
-                    </span>
-                  </div>
-                )}
-                {displayState.session_total_fees_paid !== undefined && (
-                  <div className="flex justify-between items-center">
-                    <span className="text-xs text-slate-500">Fees</span>
-                    <span className="text-xs font-mono font-semibold text-amber-400">
-                      -{formatCurrency(displayState.session_total_fees_paid || 0)}
-                    </span>
-                  </div>
-                )}
-              </div>
-            </div>
+              );
+            })()}
           </div>
+
 
           {/* Warning Indicator */}
           {displayState.cash_balance === 0 && displayState.portfolio_value === 0 && (
@@ -487,6 +431,43 @@ const TraderStatePanel = ({
             </div>
           </div>
         )}
+
+        {/* Session Cashflow */}
+        <div className="bg-gradient-to-br from-slate-800 to-slate-800/80 border border-slate-700 rounded-lg p-4 hover:border-slate-600 transition-all">
+          <h3 className="text-sm font-semibold text-slate-300 uppercase tracking-wider mb-4">Session Cashflow</h3>
+          <div className="space-y-1.5">
+            <div className="flex justify-between items-center">
+              <span className="text-xs text-slate-500">Invested</span>
+              <span className="text-xs font-mono font-semibold text-red-400">
+                -{formatCurrency(displayState.session_cash_invested || 0)}
+              </span>
+            </div>
+            <div className="flex justify-between items-center">
+              <span className="text-xs text-slate-500">Recouped</span>
+              <span className="text-xs font-mono font-semibold text-emerald-400">
+                +{formatCurrency(displayState.session_cash_recouped || 0)}
+              </span>
+            </div>
+            {displayState.net_cashflow !== undefined && (
+              <div className="flex justify-between items-center pt-1.5 border-t border-slate-700/30">
+                <span className="text-xs font-medium text-slate-400">Net</span>
+                <span className={`text-sm font-mono font-bold ${
+                  displayState.net_cashflow >= 0 ? 'text-emerald-400' : 'text-red-400'
+                }`}>
+                  {displayState.net_cashflow >= 0 ? '+' : ''}{formatCurrency(displayState.net_cashflow || 0)}
+                </span>
+              </div>
+            )}
+            {displayState.session_total_fees_paid !== undefined && (
+              <div className="flex justify-between items-center">
+                <span className="text-xs text-slate-500">Fees</span>
+                <span className="text-xs font-mono font-semibold text-amber-400">
+                  -{formatCurrency(displayState.session_total_fees_paid || 0)}
+                </span>
+              </div>
+            )}
+          </div>
+        </div>
       </div>
 
       {/* Enhanced Positions Section */}
