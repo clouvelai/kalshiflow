@@ -664,11 +664,32 @@ class KalshiMultiMarketOrderManager:
                 await initialization_tracker.mark_step_failed("verify_position_listener_subscription", "Position listener not active")
             
             await initialization_tracker.mark_step_in_progress("verify_listeners")
-            await initialization_tracker.mark_step_complete("verify_listeners", {
+            # Gather listener details for context
+            listener_details = {
                 "fill_listener": self._fill_listener is not None,
                 "position_listener": self._position_listener is not None,
                 "state_change_callbacks": True,  # Set later in app.py
-            })
+            }
+            
+            # Add fill listener details if available
+            if self._fill_listener:
+                try:
+                    fill_health = self._fill_listener.get_health_details() if hasattr(self._fill_listener, 'get_health_details') else {}
+                    listener_details["fill_listener_ws_url"] = getattr(self._fill_listener, 'ws_url', 'N/A')
+                    listener_details["fill_listener_connected"] = self._fill_listener.is_healthy() if hasattr(self._fill_listener, 'is_healthy') else True
+                except Exception:
+                    pass
+            
+            # Add position listener details if available
+            if self._position_listener:
+                try:
+                    pos_health = self._position_listener.get_health_details() if hasattr(self._position_listener, 'get_health_details') else {}
+                    listener_details["position_listener_ws_url"] = getattr(self._position_listener, 'ws_url', 'N/A')
+                    listener_details["position_listener_connected"] = self._position_listener.is_healthy() if hasattr(self._position_listener, 'is_healthy') else True
+                except Exception:
+                    pass
+            
+            await initialization_tracker.mark_step_complete("verify_listeners", listener_details)
         
         # Notify about initial state
         await self._notify_state_change()

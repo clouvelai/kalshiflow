@@ -1,8 +1,10 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { CheckCircleIcon, XCircleIcon, ClockIcon, ExclamationTriangleIcon } from '@heroicons/react/24/solid';
-import { CheckCircleIcon as CheckCircleOutline, XCircleIcon as XCircleOutline, ClockIcon as ClockOutline } from '@heroicons/react/24/outline';
+import { CheckCircleIcon as CheckCircleOutline, XCircleIcon as XCircleOutline, ClockIcon as ClockOutline, ChevronDownIcon, ChevronRightIcon } from '@heroicons/react/24/outline';
 
 const SystemHealth = ({ initializationStatus, componentHealth }) => {
+  // State to track which phases are expanded/collapsed
+  const [expandedPhases, setExpandedPhases] = useState(new Set());
   const getStatusIcon = (status) => {
     switch (status) {
       case 'complete':
@@ -71,6 +73,30 @@ const SystemHealth = ({ initializationStatus, componentHealth }) => {
     return initializationStatus.steps[stepId];
   };
 
+  const togglePhase = (phaseName) => {
+    setExpandedPhases(prev => {
+      const next = new Set(prev);
+      if (next.has(phaseName)) {
+        next.delete(phaseName);
+      } else {
+        next.add(phaseName);
+      }
+      return next;
+    });
+  };
+
+  const isPhaseExpanded = (phaseName) => {
+    return expandedPhases.has(phaseName);
+  };
+
+  // Calculate completion counts for each phase
+  const getPhaseStats = (phase) => {
+    const steps = phase.steps.map(stepId => getStepDetails(stepId)).filter(Boolean);
+    const completed = steps.filter(step => step.status === 'complete').length;
+    const total = steps.length;
+    return { completed, total };
+  };
+
   const isInitializing = initializationStatus && !initializationStatus.completed_at;
   
   // If no initialization status yet, show placeholder
@@ -89,7 +115,6 @@ const SystemHealth = ({ initializationStatus, componentHealth }) => {
     <div className="space-y-6">
       {/* Initialization Status Header */}
       <div className="bg-gray-800 rounded-lg border border-gray-700 p-6">
-        <div className="bg-gray-800 rounded-lg border border-gray-700 p-6">
           <div className="flex items-center justify-between mb-6">
             <h3 className="text-xl font-semibold text-gray-100">System Initialization</h3>
             {initializationStatus.completed_at ? (
@@ -114,7 +139,9 @@ const SystemHealth = ({ initializationStatus, componentHealth }) => {
               <div className="flex items-center justify-between">
                 <div>
                   <div className="text-sm text-gray-400">Initialization completed in</div>
-                  <div className="text-lg font-semibold text-gray-100">{formatDuration(initializationStatus.duration_seconds)}</div>
+                  <div className="text-lg font-semibold text-gray-100">
+                    {formatDuration(initializationStatus.duration_seconds)} at {formatTime(initializationStatus.completed_at)}
+                  </div>
                 </div>
                 {initializationStatus.warnings && initializationStatus.warnings.length > 0 && (
                   <div className="flex items-start">
@@ -133,107 +160,169 @@ const SystemHealth = ({ initializationStatus, componentHealth }) => {
             </div>
           )}
 
-          {/* Initialization Steps by Phase */}
-          <div className="space-y-6">
-            {phases.map((phase, phaseIdx) => (
-              <div key={phaseIdx} className="border-b border-gray-700 pb-6 last:border-b-0 last:pb-0">
-                <h4 className="text-sm font-semibold text-gray-300 mb-4 uppercase tracking-wide">{phase.name}</h4>
-                <div className="space-y-2">
-                  {phase.steps.map((stepId) => {
-                    const step = getStepDetails(stepId);
-                    if (!step) return null;
+          {/* Initialization Steps by Phase - 3 Column Grid */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            {phases.map((phase, phaseIdx) => {
+              const stats = getPhaseStats(phase);
+              const isExpanded = isPhaseExpanded(phase.name);
+              
+              return (
+                <div key={phaseIdx} className="bg-gray-900/30 rounded-lg border border-gray-700/50">
+                  {/* Phase Header - Collapsible */}
+                  <button
+                    onClick={() => togglePhase(phase.name)}
+                    className="w-full flex items-center justify-between p-4 hover:bg-gray-800/50 transition-colors rounded-t-lg"
+                  >
+                    <div className="flex items-center space-x-3">
+                      {isExpanded ? (
+                        <ChevronDownIcon className="h-5 w-5 text-gray-400" />
+                      ) : (
+                        <ChevronRightIcon className="h-5 w-5 text-gray-400" />
+                      )}
+                      <h4 className="text-sm font-semibold text-gray-300 uppercase tracking-wide">
+                        {phase.name}
+                      </h4>
+                    </div>
+                    <div className={`px-2 py-1 rounded text-xs font-semibold ${
+                      stats.completed === stats.total
+                        ? 'bg-green-900/50 text-green-400 border border-green-700/50'
+                        : stats.completed > 0
+                        ? 'bg-yellow-900/50 text-yellow-400 border border-yellow-700/50'
+                        : 'bg-gray-800/50 text-gray-400 border border-gray-700/50'
+                    }`}>
+                      {stats.completed}/{stats.total}
+                    </div>
+                  </button>
+                  
+                  {/* Phase Content - Collapsible */}
+                  {isExpanded && (
+                    <div className="p-4 pt-0 space-y-3">
+                      {phase.steps.map((stepId) => {
+                        const step = getStepDetails(stepId);
+                        if (!step) return null;
 
-                    const statusBg = {
-                      'complete': 'bg-green-900/20 border-green-700/30',
-                      'failed': 'bg-red-900/20 border-red-700/30',
-                      'in_progress': 'bg-blue-900/20 border-blue-700/30',
-                      'pending': 'bg-gray-800/50 border-gray-700/50'
-                    }[step.status] || 'bg-gray-800/50 border-gray-700/50';
+                        const statusBg = {
+                          'complete': 'bg-green-900/20 border-green-700/30',
+                          'failed': 'bg-red-900/20 border-red-700/30',
+                          'in_progress': 'bg-blue-900/20 border-blue-700/30',
+                          'pending': 'bg-gray-800/50 border-gray-700/50'
+                        }[step.status] || 'bg-gray-800/50 border-gray-700/50';
 
-                    return (
-                      <div
-                        key={stepId}
-                        className={`flex items-start justify-between p-4 rounded-lg border transition-all ${statusBg}`}
-                      >
-                        <div className="flex items-start space-x-4 flex-1">
-                          <div className="mt-0.5">
-                            {getStatusIcon(step.status)}
-                          </div>
-                          <div className="flex-1 min-w-0">
-                            <div className={`font-medium text-sm ${getStatusColor(step.status)} mb-1`}>
-                              {step.name}
+                        // Format context details for card body
+                        const formatContextValue = (key, value) => {
+                          // Handle nested details object
+                          if (key === 'details' && typeof value === 'object' && value !== null) {
+                            return Object.entries(value).map(([nestedKey, nestedValue]) => {
+                              return formatContextValue(nestedKey, nestedValue);
+                            }).filter(Boolean);
+                          }
+                          if (key === 'balance' || key === 'balance_before') {
+                            return `${key === 'balance' ? 'Cash Balance' : 'Previous Balance'}: $${Number(value).toFixed(2)}`;
+                          }
+                          if (key === 'portfolio_value') {
+                            return `Portfolio Value: $${Number(value).toFixed(2)}`;
+                          }
+                          if (key === 'positions_count') {
+                            return `Positions: ${value}`;
+                          }
+                          if (key === 'orders_in_kalshi' || key === 'orders_in_memory') {
+                            return `${key === 'orders_in_kalshi' ? 'Kalshi' : 'Local'} Orders: ${value}`;
+                          }
+                          if (key === 'markets_subscribed' || key === 'snapshots_received' || key === 'deltas_received') {
+                            return `${key === 'markets_subscribed' ? 'Markets' : key === 'snapshots_received' ? 'Snapshots' : 'Deltas'}: ${value}`;
+                          }
+                          if (key === 'api_url' || key === 'ws_url' || key === 'fill_listener_ws_url' || key === 'position_listener_ws_url') {
+                            const label = key === 'api_url' ? 'API URL' : 
+                                        key === 'ws_url' ? 'WebSocket URL' :
+                                        key === 'fill_listener_ws_url' ? 'Fill Listener WS URL' :
+                                        'Position Listener WS URL';
+                            return `${label}: ${String(value)}`;
+                          }
+                          if (key === 'connected' || key === 'fill_listener_connected' || key === 'position_listener_connected') {
+                            const label = key === 'connected' ? 'Connected' :
+                                        key === 'fill_listener_connected' ? 'Fill Listener Connected' :
+                                        'Position Listener Connected';
+                            return `${label}: ${value ? 'true' : 'false'}`;
+                          }
+                          if (key === 'fill_listener' || key === 'position_listener') {
+                            return `${key === 'fill_listener' ? 'Fill Listener' : 'Position Listener'}: ${value ? 'active' : 'inactive'}`;
+                          }
+                          if (key === 'total_steps' || key === 'completed_steps' || key === 'failed_steps') {
+                            return `${key === 'total_steps' ? 'Total Steps' : key === 'completed_steps' ? 'Completed Steps' : 'Failed Steps'}: ${value}`;
+                          }
+                          if (key === 'warnings_count') {
+                            return `Warnings: ${value}`;
+                          }
+                          if (typeof value === 'object' && value !== null) {
+                            return null;
+                          }
+                          if (typeof value === 'boolean') {
+                            return `${key}: ${value ? 'true' : 'false'}`;
+                          }
+                          return `${key}: ${String(value)}`;
+                        };
+
+                        return (
+                          <div
+                            key={stepId}
+                            className={`rounded-lg border transition-all ${statusBg}`}
+                          >
+                            {/* Card Header */}
+                            <div className="flex items-center space-x-2 p-3 border-b border-gray-700/50">
+                              <div className="flex-shrink-0">
+                                {getStatusIcon(step.status)}
+                              </div>
+                              <div className={`font-medium text-sm ${getStatusColor(step.status)} flex-1`}>
+                                {step.name}
+                              </div>
                             </div>
+                            
+                            {/* Card Body - Context Details */}
                             {step.details && Object.keys(step.details).length > 0 && (
-                              <div className="text-xs text-gray-400 mt-2 space-y-1">
+                              <div className="p-3 text-xs text-gray-400 space-y-1.5">
                                 {Object.entries(step.details).map(([key, value]) => {
-                                  if (key === 'details' && typeof value === 'object') {
-                                    return null;
-                                  }
-                                  if (key === 'balance' || key === 'balance_before') {
-                                    return (
-                                      <div key={key} className="font-mono">
-                                        {key === 'balance' ? 'Cash Balance' : 'Previous Balance'}: ${Number(value).toFixed(2)}
+                                  const formatted = formatContextValue(key, value);
+                                  if (!formatted) return null;
+                                  // Handle array of formatted values (from nested details)
+                                  if (Array.isArray(formatted)) {
+                                    return formatted.map((item, idx) => (
+                                      <div key={`${key}-${idx}`} className="font-mono truncate">
+                                        {item}
                                       </div>
-                                    );
-                                  }
-                                  if (key === 'portfolio_value') {
-                                    return (
-                                      <div key={key} className="font-mono">
-                                        Portfolio Value: ${Number(value).toFixed(2)}
-                                      </div>
-                                    );
-                                  }
-                                  if (key === 'positions_count') {
-                                    return (
-                                      <div key={key}>
-                                        Positions: {value}
-                                      </div>
-                                    );
-                                  }
-                                  if (key === 'orders_in_kalshi' || key === 'orders_in_memory') {
-                                    return (
-                                      <div key={key}>
-                                        {key === 'orders_in_kalshi' ? 'Kalshi' : 'Local'} Orders: {value}
-                                      </div>
-                                    );
-                                  }
-                                  if (key === 'markets_subscribed' || key === 'snapshots_received' || key === 'deltas_received') {
-                                    return (
-                                      <div key={key}>
-                                        {key === 'markets_subscribed' ? 'Markets' : key === 'snapshots_received' ? 'Snapshots' : 'Deltas'}: {value}
-                                      </div>
-                                    );
-                                  }
-                                  if (typeof value === 'object') {
-                                    return null;
+                                    ));
                                   }
                                   return (
-                                    <div key={key} className="truncate">
-                                      {key}: {String(value)}
+                                    <div key={key} className="font-mono truncate">
+                                      {formatted}
                                     </div>
                                   );
                                 })}
                               </div>
                             )}
+                            
+                            {/* Card Footer - Timestamp */}
+                            {step.completed_at && (
+                              <div className="px-3 py-2 border-t border-gray-700/50 text-xs text-gray-500">
+                                {formatTime(step.completed_at)}
+                              </div>
+                            )}
+                            
+                            {/* Error Display */}
                             {step.error && (
-                              <div className="text-xs text-red-400 mt-2 font-medium">{step.error}</div>
+                              <div className="px-3 py-2 border-t border-gray-700/50 text-xs text-red-400 font-medium">
+                                {step.error}
+                              </div>
                             )}
                           </div>
-                        </div>
-                        {step.completed_at && (
-                          <div className="text-xs text-gray-500 ml-4 whitespace-nowrap">
-                            {formatTime(step.completed_at)}
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
-      </div>
 
       {/* Component Health Status */}
       {componentHealth && Object.keys(componentHealth).length > 0 && (

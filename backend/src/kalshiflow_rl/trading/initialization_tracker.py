@@ -193,10 +193,24 @@ class InitializationTracker:
         """Mark initialization as complete."""
         self.completed_at = time.time()
         
-        # Ensure final step is marked complete
+        # Calculate summary statistics
+        completed_steps = len([s for s in self.steps.values() if s.status == StepStatus.COMPLETE])
+        failed_steps = len([s for s in self.steps.values() if s.status == StepStatus.FAILED])
+        total_steps = len(self.steps)
+        
+        # Prepare details for the final step
+        final_step_details = {
+            "total_steps": total_steps,
+            "completed_steps": completed_steps,
+            "failed_steps": failed_steps,
+            "duration_seconds": self.completed_at - self.started_at if self.started_at else 0.0,
+            "warnings_count": len(self.warnings),
+        }
+        
+        # Ensure final step is marked complete with summary details
         if "initialization_complete" in self.steps:
             final_step = self.steps["initialization_complete"]
-            final_step.mark_complete()
+            final_step.mark_complete(final_step_details)
         
         summary_data = {
             "completed_at": self.completed_at,
@@ -210,7 +224,7 @@ class InitializationTracker:
         
         logger.info(
             f"Initialization complete in {summary_data['duration_seconds']:.2f}s. "
-            f"{len([s for s in self.steps.values() if s.status == StepStatus.COMPLETE])}/{len(self.steps)} steps completed"
+            f"{completed_steps}/{total_steps} steps completed"
         )
         
         if self.websocket_manager:
