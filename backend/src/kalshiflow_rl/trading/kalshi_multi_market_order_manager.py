@@ -88,6 +88,7 @@ class Position:
     realized_pnl: float  # Cumulative realized P&L in cents
     kalshi_data: Dict[str, Any] = field(default_factory=dict)  # Raw Kalshi API response
     last_updated_ts: Optional[str] = None  # ISO timestamp of last update from Kalshi
+    opened_at: Optional[float] = None  # Unix timestamp when position was opened (for max hold time check)
     
     @property
     def is_flat(self) -> bool:
@@ -290,6 +291,13 @@ class KalshiMultiMarketOrderManager:
         
         # Track previous position state for change detection
         self._previous_position_state: Dict[str, Dict[str, Any]] = {}
+        
+        # Track active closing reasons per ticker (cleared after position goes flat)
+        self._active_closing_reasons: Dict[str, str] = {}  # {ticker: reason}
+        
+        # Trader status tracking
+        self._trader_status: str = "trading"  # Current trader status
+        self._trader_status_history: List[Dict[str, Any]] = []  # Status transition history (max 50 entries)
         
         # Execution history tracking (maxlen=100)
         self.execution_history: Deque[TradeDetail] = deque(maxlen=100)
@@ -616,7 +624,13 @@ class KalshiMultiMarketOrderManager:
         # Start periodic synchronization (if enabled)
         if config.RL_ORDER_SYNC_ENABLED:
             self._periodic_sync_task = asyncio.create_task(self._start_periodic_sync())
-            logger.info(f"✅ Periodic sync started (interval: {config.RL_ORDER_SYNC_INTERVAL_SECONDS}s)")
+            logger.info(f"✅ Periodic sync and recalibration started (interval: {config.RL_RECALIBRATION_INTERVAL_SECONDS}s)")
+        
+        # Set initial trader status
+        await self._update_trader_status("trading", "initialized and ready")
+        
+        # Set initial trader status
+        await self._update_trader_status("trading", "initialized and ready")
         
         # Capture session start values AFTER all sync steps complete
         # Both cash balance and portfolio_value MUST come directly from Kalshi API - NO calculations
@@ -955,7 +969,8 @@ class KalshiMultiMarketOrderManager:
         market_ticker: str, 
         action: int,
         orderbook_snapshot: Optional[Dict[str, Any]] = None,
-        trade_sequence_id: Optional[str] = None
+        trade_sequence_id: Optional[str] = None,
+        reason: Optional[str] = None
     ) -> Optional[Dict[str, Any]]:
         """
         Execute an order action for the specified market.
@@ -1041,7 +1056,7 @@ class KalshiMultiMarketOrderManager:
                 await self._notify_state_change()  # Notify about order placement
                 await self._broadcast_orders_update("order_placed")  # Specific orders update
                 await self._broadcast_portfolio_update("order_placed")  # Portfolio update due to promised cash
-                return {
+                execution_result = {
                     "status": "placed",
                     "order_id": result["order_id"],
                     "action": action,
@@ -1052,6 +1067,9 @@ class KalshiMultiMarketOrderManager:
                     "limit_price": limit_price,
                     "trade_sequence_id": trade_sequence_id
                 }
+                if reason:
+                    execution_result["reason"] = reason
+                return execution_result
             else:
                 return {"status": "failed", "reason": "kalshi_api_error"}
         
@@ -1064,7 +1082,8 @@ class KalshiMultiMarketOrderManager:
         action: int,
         market_ticker: str,
         orderbook_snapshot: Optional[Dict[str, Any]] = None,
-        trade_sequence_id: Optional[str] = None
+        trade_sequence_id: Optional[str] = None,
+        reason: Optional[str] = None
     ) -> Optional[Dict[str, Any]]:
         """
         Execute limit order action (wrapper for ActorService integration).
@@ -1076,11 +1095,12 @@ class KalshiMultiMarketOrderManager:
             action: Action ID (0=HOLD, 1=BUY_YES_LIMIT, 2=SELL_YES_LIMIT, 3=BUY_NO_LIMIT, 4=SELL_NO_LIMIT)
             market_ticker: Market to trade
             orderbook_snapshot: Orderbook snapshot for price calculation
+            reason: Optional reason for the action (e.g., "close_position:take_profit")
             
         Returns:
             Execution result dict with "executed" key for ActorService compatibility
         """
-        result = await self.execute_order(market_ticker, action, orderbook_snapshot, trade_sequence_id)
+        result = await self.execute_order(market_ticker, action, orderbook_snapshot, trade_sequence_id, reason)
         
         # Normalize result format for ActorService
         if result is None:
@@ -1093,6 +1113,132 @@ class KalshiMultiMarketOrderManager:
             result["executed"] = False
         
         return result
+    
+    async def close_position(
+        self,
+        ticker: str,
+        reason: str,
+        orderbook_snapshot: Optional[Dict[str, Any]] = None
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Close a position by placing an opposite order.
+        
+        Args:
+            ticker: Market ticker
+            reason: Reason for closing (e.g., "take_profit", "stop_loss", "cash_recovery", "market_closing")
+            orderbook_snapshot: Optional orderbook snapshot for price calculation
+            
+        Returns:
+            Execution result dict or None if failed
+        """
+        logger.info(f"close_position called for {ticker} with reason: {reason}")
+        
+        position = self.positions.get(ticker)
+        if not position or position.is_flat:
+            logger.warning(f"No position to close for {ticker} (position exists: {position is not None}, is_flat: {position.is_flat if position else 'N/A'})")
+            return None
+        
+        logger.info(f"Closing position {ticker}: {position.contracts} contracts, cost_basis=${position.cost_basis/100:.2f}, reason={reason}")
+        
+        # Determine opposite action based on current position
+        # Long YES (contracts > 0) -> SELL YES (action 2)
+        # Long NO (contracts < 0) -> SELL NO (action 4)
+        if position.contracts > 0:
+            # Long YES -> SELL YES
+            action = 2  # SELL_YES_LIMIT
+            action_name = "SELL_YES_LIMIT"
+        else:
+            # Long NO -> SELL NO
+            action = 4  # SELL_NO_LIMIT
+            action_name = "SELL_NO_LIMIT"
+        
+        logger.debug(f"Position {ticker} is long {abs(position.contracts)} {'YES' if position.contracts > 0 else 'NO'} contracts, using action {action} ({action_name})")
+        
+        # Get orderbook snapshot if not provided
+        if orderbook_snapshot is None:
+            logger.debug(f"Fetching orderbook snapshot for {ticker}")
+            orderbook_snapshot = await self._get_orderbook_snapshot(ticker)
+            if orderbook_snapshot is None:
+                logger.error(f"Could not get orderbook snapshot for {ticker}, cannot close position")
+                return None
+            logger.debug(f"Orderbook snapshot retrieved for {ticker}")
+        else:
+            logger.debug(f"Using provided orderbook snapshot for {ticker}")
+        
+        # Generate trade sequence ID for closing action
+        trade_sequence_id = f"close_{ticker}_{int(time.time() * 1000)}"
+        logger.debug(f"Generated trade_sequence_id: {trade_sequence_id}")
+        
+        # Execute closing order with reason
+        closing_reason = f"close_position:{reason}"
+        logger.info(f"Executing closing order for {ticker}: action={action}, reason={closing_reason}")
+        
+        result = await self.execute_limit_order_action(
+            action=action,
+            market_ticker=ticker,
+            orderbook_snapshot=orderbook_snapshot,
+            trade_sequence_id=trade_sequence_id,
+            reason=closing_reason
+        )
+        
+        if result and result.get("executed"):
+            # Track closing reason for this ticker
+            self._active_closing_reasons[ticker] = reason
+            logger.info(f"Position closing initiated successfully: {ticker} ({reason}) -> order_id={result.get('order_id')}, status={result.get('status')}")
+        else:
+            error_msg = result.get("error") if result else "No result returned"
+            status = result.get("status") if result else "unknown"
+            logger.error(f"Failed to close position {ticker} ({reason}): status={status}, error={error_msg}, result={result}")
+        
+        return result
+    
+    async def _get_orderbook_snapshot(self, ticker: str) -> Optional[Dict[str, Any]]:
+        """
+        Get orderbook snapshot for a market ticker.
+        
+        Args:
+            ticker: Market ticker
+            
+        Returns:
+            Orderbook snapshot dict or None if unavailable
+        """
+        try:
+            from ..data.orderbook_state import get_shared_orderbook_state
+            shared_state = await get_shared_orderbook_state(ticker)
+            if shared_state:
+                return await shared_state.get_snapshot()
+        except Exception as e:
+            logger.debug(f"Could not get orderbook snapshot for {ticker}: {e}")
+        return None
+    
+    async def _get_market_info(self, ticker: str) -> Optional[Dict[str, Any]]:
+        """
+        Get market info from Kalshi API (status, end time, etc.).
+        
+        Args:
+            ticker: Market ticker
+            
+        Returns:
+            Market info dict or None if unavailable
+        """
+        if not self.trading_client:
+            return None
+        
+        try:
+            # Use get_markets and filter by ticker
+            # Note: Kalshi API doesn't have a direct get_market endpoint, so we use get_markets
+            markets_response = await self.trading_client.get_markets(limit=100)
+            markets = markets_response.get("markets", [])
+            
+            for market in markets:
+                if market.get("ticker") == ticker:
+                    return market
+            
+            logger.debug(f"Market {ticker} not found in markets list")
+            return None
+        except Exception as e:
+            logger.debug(f"Could not get market info for {ticker}: {e}")
+            return None
     
     async def _place_kalshi_order(
         self,
@@ -1801,6 +1947,53 @@ class KalshiMultiMarketOrderManager:
             "portfolio_value": portfolio_value
         })
         logger.debug(f"Broadcast portfolio update: cash={self.cash_balance:.2f}, portfolio={portfolio_value:.2f} (event: {event_type})")
+    
+    async def _update_trader_status(
+        self, 
+        status: str, 
+        result: Optional[str] = None,
+        duration: Optional[float] = None
+    ) -> None:
+        """
+        Update trader status and broadcast via WebSocket.
+        
+        Args:
+            status: New trader status (e.g., "trading", "calibrating", "calibrating -> closing positions")
+            result: Optional result message (e.g., "closed 2 positions", "no positions to close")
+            duration: Optional duration in seconds for this status
+        """
+        timestamp = time.time()
+        
+        # Update current status
+        self._trader_status = status
+        
+        # Build result with timing if provided
+        full_result = result
+        if duration is not None and result:
+            full_result = f"{result} ({duration:.1f}s)"
+        elif duration is not None:
+            full_result = f"({duration:.1f}s)"
+        
+        # Append to history (keep last 50 entries)
+        status_entry = {
+            "timestamp": timestamp,
+            "status": status,
+            "result": full_result,
+            "duration": duration
+        }
+        self._trader_status_history.append(status_entry)
+        if len(self._trader_status_history) > 50:
+            self._trader_status_history.pop(0)
+        
+        # Broadcast status update via WebSocket
+        if self._websocket_manager:
+            status_data = {
+                "current_status": status,
+                "status_history": self._trader_status_history[-20:]  # Send last 20 entries
+            }
+            await self._websocket_manager.broadcast_trader_status(status_data)
+        
+        logger.info(f"Trader status: {status}" + (f" - {full_result}" if full_result else ""))
     
     async def _broadcast_fill_event(self, fill_data: Dict[str, Any]) -> None:
         """
@@ -3049,6 +3242,9 @@ class KalshiMultiMarketOrderManager:
         was_settled = False
         if current_position and current_position.contracts != 0 and new_contracts == 0:
             was_settled = True
+            # Clear closing reason when position goes flat
+            if market_ticker in self._active_closing_reasons:
+                del self._active_closing_reasons[market_ticker]
             logger.info(
                 f"🎯 Position settled: {market_ticker} - "
                 f"Final P&L: ${new_realized_pnl:.2f}"
@@ -3057,11 +3253,19 @@ class KalshiMultiMarketOrderManager:
         # Update or create position
         if current_position:
             # Update existing position
+            prev_contracts = current_position.contracts
             current_position.contracts = new_contracts
             current_position.cost_basis = new_position_cost  # WebSocket provides accurate position_cost
             current_position.realized_pnl = new_realized_pnl
             current_position.kalshi_data = position_data.get("raw_data", {})
             current_position.last_updated_ts = new_last_updated_ts
+            
+            # Track opened_at: set when position transitions from flat to non-flat
+            if prev_contracts == 0 and new_contracts != 0:
+                current_position.opened_at = time.time()
+            elif new_contracts == 0:
+                # Reset when position goes flat
+                current_position.opened_at = None
             
             # Store additional fields as attributes
             current_position.fees_paid = new_fees_paid
@@ -3076,6 +3280,10 @@ class KalshiMultiMarketOrderManager:
                 kalshi_data=position_data.get("raw_data", {}),
                 last_updated_ts=new_last_updated_ts
             )
+            # Track opened_at: set when position is created with non-zero contracts
+            if new_contracts != 0:
+                new_position.opened_at = time.time()
+            
             # Store additional fields as attributes
             new_position.fees_paid = new_fees_paid
             new_position.volume = new_volume
@@ -3165,39 +3373,396 @@ class KalshiMultiMarketOrderManager:
             "was_settled": was_settled
         }
         
+        # Include closing reason if position is being closed
+        if market_ticker in self._active_closing_reasons:
+            position_update_data["closing_reason"] = self._active_closing_reasons[market_ticker]
+        
         # Broadcast via WebSocket manager
         await self._websocket_manager.broadcast_position_update(position_update_data)
     
+    async def _monitor_position_health(self) -> List[tuple]:
+        """
+        Monitor position health and determine which positions should be closed.
+        
+        Returns:
+            List of (ticker, reason) tuples for positions that should be closed
+        """
+        positions_to_close = []
+        total_positions = len([p for p in self.positions.values() if not p.is_flat])
+        
+        logger.info(f"Monitoring position health for {total_positions} non-flat positions")
+        
+        for ticker, position in self.positions.items():
+            if position.is_flat:
+                logger.debug(f"Skipping flat position: {ticker}")
+                continue
+            
+            logger.debug(f"Checking position health for {ticker}: {position.contracts} contracts, cost_basis=${position.cost_basis/100:.2f}")
+            
+            # Get current market price from orderbook
+            orderbook_snapshot = await self._get_orderbook_snapshot(ticker)
+            if not orderbook_snapshot:
+                logger.warning(f"Could not get orderbook snapshot for {ticker}, skipping health check")
+                continue
+            
+            # Calculate current YES price (mid price)
+            yes_bid = orderbook_snapshot.get("yes_bid", 0)
+            yes_ask = orderbook_snapshot.get("yes_ask", 0)
+            if yes_bid > 0 and yes_ask > 0:
+                current_yes_price = (yes_bid + yes_ask) / 2.0 / 100.0  # Convert cents to 0.0-1.0
+                logger.debug(f"Orderbook snapshot for {ticker}: yes_bid={yes_bid}, yes_ask={yes_ask}, mid_price={current_yes_price:.4f}")
+            else:
+                logger.warning(f"Invalid orderbook data for {ticker} (yes_bid={yes_bid}, yes_ask={yes_ask}), skipping health check")
+                continue
+            
+            # Calculate unrealized P&L
+            unrealized_pnl = position.get_unrealized_pnl(current_yes_price)
+            
+            # Calculate P&L as percentage of cost basis
+            if position.cost_basis > 0:
+                pnl_percentage = unrealized_pnl / position.cost_basis
+            else:
+                pnl_percentage = 0.0
+                logger.warning(f"Position {ticker} has zero cost basis, cannot calculate P&L percentage")
+            
+            logger.debug(
+                f"Position {ticker} P&L: unrealized=${unrealized_pnl/100:.2f}, "
+                f"percentage={pnl_percentage:.2%}, "
+                f"cost_basis=${position.cost_basis/100:.2f}"
+            )
+            
+            # Check take profit threshold
+            if pnl_percentage >= config.RL_POSITION_TAKE_PROFIT_THRESHOLD:
+                positions_to_close.append((ticker, "take_profit"))
+                logger.info(
+                    f"Position {ticker} hit take profit: {pnl_percentage:.2%} "
+                    f"(threshold: {config.RL_POSITION_TAKE_PROFIT_THRESHOLD:.2%})"
+                )
+                continue
+            
+            # Check stop loss threshold
+            if pnl_percentage <= config.RL_POSITION_STOP_LOSS_THRESHOLD:
+                positions_to_close.append((ticker, "stop_loss"))
+                logger.info(
+                    f"Position {ticker} hit stop loss: {pnl_percentage:.2%} "
+                    f"(threshold: {config.RL_POSITION_STOP_LOSS_THRESHOLD:.2%})"
+                )
+                continue
+            
+            # Check max hold time
+            if position.opened_at:
+                time_in_position = time.time() - position.opened_at
+                logger.debug(f"Position {ticker} time in position: {time_in_position:.0f}s (threshold: {config.RL_POSITION_MAX_HOLD_TIME_SECONDS}s)")
+                if time_in_position >= config.RL_POSITION_MAX_HOLD_TIME_SECONDS:
+                    positions_to_close.append((ticker, "max_hold_time"))
+                    logger.info(
+                        f"Position {ticker} exceeded max hold time: {time_in_position:.0f}s "
+                        f"(threshold: {config.RL_POSITION_MAX_HOLD_TIME_SECONDS}s)"
+                    )
+                    continue
+            else:
+                logger.debug(f"Position {ticker} has no opened_at timestamp, skipping max hold time check")
+        
+        logger.info(f"Position health check complete: {len(positions_to_close)} positions need closing out of {total_positions} checked")
+        return positions_to_close
+    
+    async def _recover_cash_by_closing_positions(self) -> None:
+        """
+        Close worst-performing positions to recover cash when balance is low.
+        """
+        if self.cash_balance >= self.min_cash_reserve:
+            return
+        
+        logger.warning(
+            f"Cash balance ${self.cash_balance:.2f} below reserve ${self.min_cash_reserve:.2f}. "
+            f"Closing positions to recover cash."
+        )
+        
+        # Get all positions with their P&L
+        position_pnl = []
+        for ticker, position in self.positions.items():
+            if position.is_flat:
+                continue
+            
+            # Get current market price
+            orderbook_snapshot = await self._get_orderbook_snapshot(ticker)
+            if not orderbook_snapshot:
+                continue
+            
+            yes_bid = orderbook_snapshot.get("yes_bid", 0)
+            yes_ask = orderbook_snapshot.get("yes_ask", 0)
+            if yes_bid > 0 and yes_ask > 0:
+                current_yes_price = (yes_bid + yes_ask) / 2.0 / 100.0
+                unrealized_pnl = position.get_unrealized_pnl(current_yes_price)
+                position_pnl.append((ticker, position, unrealized_pnl))
+        
+        # Sort by worst P&L first (close losers first)
+        position_pnl.sort(key=lambda x: x[2])  # Sort by P&L (ascending, worst first)
+        
+        # Close positions until we have enough cash
+        target_cash = self.min_cash_reserve + 100.0  # Add buffer
+        cash_recovered = 0.0
+        
+        for ticker, position, pnl in position_pnl:
+            if self.cash_balance + cash_recovered >= target_cash:
+                break
+            
+            # Estimate cash recovery from closing this position
+            # Rough estimate: cost_basis (we'll recoup most of it)
+            estimated_recovery = position.cost_basis / 100.0  # Convert cents to dollars
+            
+            # Close position
+            result = await self.close_position(ticker, "cash_recovery")
+            if result and result.get("executed"):
+                cash_recovered += estimated_recovery
+                logger.info(
+                    f"Closed position {ticker} for cash recovery. "
+                    f"Estimated recovery: ${estimated_recovery:.2f}"
+                )
+        
+        if cash_recovered > 0:
+            logger.info(f"Cash recovery complete. Estimated recovery: ${cash_recovered:.2f}")
+        else:
+            logger.warning("Could not recover sufficient cash by closing positions")
+    
+    async def _monitor_market_states(self) -> None:
+        """
+        Monitor market states and close positions in markets that are closing soon.
+        """
+        from datetime import datetime
+        
+        for ticker, position in self.positions.items():
+            if position.is_flat:
+                continue
+            
+            # Get market info
+            market_info = await self._get_market_info(ticker)
+            if not market_info:
+                continue
+            
+            # Check market status
+            market_status = market_info.get("status", "").lower()
+            if market_status in ["closed", "ending"]:
+                # Market is closing/closed, close position
+                result = await self.close_position(ticker, "market_closing")
+                if result and result.get("executed"):
+                    logger.info(f"Closed position {ticker} due to market closing (status: {market_status})")
+                continue
+            
+            # Check market end time if available
+            end_time_str = market_info.get("end_time")
+            if end_time_str:
+                try:
+                    # Parse ISO timestamp
+                    end_time = datetime.fromisoformat(end_time_str.replace('Z', '+00:00'))
+                    time_until_close = (end_time.timestamp() - time.time())
+                    
+                    if time_until_close <= config.RL_MARKET_CLOSING_BUFFER_SECONDS:
+                        # Market closing soon, close position
+                        result = await self.close_position(ticker, "market_closing")
+                        if result and result.get("executed"):
+                            logger.info(
+                                f"Closed position {ticker} due to market closing soon "
+                                f"({time_until_close:.0f}s until close)"
+                            )
+                except Exception as e:
+                    logger.debug(f"Could not parse end_time for {ticker}: {e}")
+    
+    async def _monitor_and_close_positions(self) -> str:
+        """
+        Monitor position health and close positions that meet criteria.
+        
+        Returns:
+            Result summary string (e.g., "closed 2 positions (take_profit: 1, stop_loss: 1)" or "no positions to close")
+        """
+        closing_result, _ = await self._monitor_and_close_positions_detailed()
+        return closing_result
+    
+    async def _monitor_and_close_positions_detailed(self) -> tuple[str, List[str]]:
+        """
+        Monitor position health and close positions with detailed breakdown.
+        
+        Returns:
+            Tuple of (result_summary, details_list)
+        """
+        logger.info("Starting position health monitoring...")
+        
+        total_positions = len([p for p in self.positions.values() if not p.is_flat])
+        details = []
+        
+        if total_positions == 0:
+            logger.info("No positions to close")
+            return "no positions to close", []
+        
+        details.append(f"{total_positions} active positions")
+        
+        # Check position health
+        positions_to_close = await self._monitor_position_health()
+        
+        logger.info(f"Position health check complete: {len(positions_to_close)} positions need closing")
+        
+        if not positions_to_close:
+            logger.info("No positions need closing")
+            return f"no positions to close ({total_positions} active)", details
+        
+        # Group positions by reason
+        by_reason = {}
+        for ticker, reason in positions_to_close:
+            if reason not in by_reason:
+                by_reason[reason] = []
+            by_reason[reason].append(ticker)
+        
+        # Track closing results
+        closing_results = {}
+        closed_count = 0
+        failed_count = 0
+        total_pnl = 0.0
+        
+        # Close positions grouped by reason
+        for reason, tickers in by_reason.items():
+            reason_count = len(tickers)
+            reason_pnl = 0.0
+            
+            for ticker in tickers:
+                position = self.positions.get(ticker)
+                if not position:
+                    continue
+                
+                # Calculate P&L before closing
+                orderbook_snapshot = await self._get_orderbook_snapshot(ticker)
+                if orderbook_snapshot:
+                    yes_bid = orderbook_snapshot.get("yes_bid", 0)
+                    yes_ask = orderbook_snapshot.get("yes_ask", 0)
+                    if yes_bid > 0 and yes_ask > 0:
+                        current_yes_price = (yes_bid + yes_ask) / 2.0 / 100.0
+                        unrealized_pnl = position.get_unrealized_pnl(current_yes_price)
+                        reason_pnl += unrealized_pnl
+                
+                logger.info(f"Attempting to close position {ticker} (reason: {reason})")
+                result = await self.close_position(ticker, reason)
+                if result and result.get("executed"):
+                    closed_count += 1
+                    if reason not in closing_results:
+                        closing_results[reason] = 0
+                    closing_results[reason] += 1
+                    logger.info(f"Successfully closed position {ticker} ({reason})")
+                else:
+                    failed_count += 1
+                    logger.warning(f"Failed to close position {ticker} ({reason}): {result}")
+            
+            # Add reason-specific detail
+            reason_label = {
+                "take_profit": "above profit threshold",
+                "stop_loss": "exceed loss threshold",
+                "max_hold_time": "older than 24 hours",
+                "cash_recovery": "for cash recovery",
+                "market_closing": "in closing markets"
+            }.get(reason, reason)
+            
+            pnl_sign = "+" if reason_pnl >= 0 else ""
+            details.append(f"{reason_count} {reason_label}: closed {reason_count} -> {pnl_sign}${reason_pnl/100:.2f} P&L")
+            total_pnl += reason_pnl
+        
+        # Build result summary
+        positions_after = len([p for p in self.positions.values() if not p.is_flat])
+        if closed_count > 0:
+            pnl_sign = "+" if total_pnl >= 0 else ""
+            result_summary = f"closed {closed_count} ({total_positions} -> {positions_after}) {pnl_sign}${total_pnl/100:.2f} P&L"
+        else:
+            result_summary = f"failed to close {failed_count} position{'s' if failed_count != 1 else ''}"
+        
+        logger.info(f"Position closing complete: {result_summary}")
+        return result_summary, details
+    
     async def _start_periodic_sync(self) -> None:
         """
-        Background task for periodic order synchronization.
+        Background task for periodic order synchronization and recalibration.
         
-        Runs continuously, syncing orders with Kalshi at configured intervals.
+        Runs continuously, syncing orders with Kalshi and monitoring positions
+        at configured intervals. This combines periodic sync with recalibration loop.
         """
         from ..config import config
         
-        logger.info("Periodic sync task started")
+        logger.info("Periodic sync and recalibration task started")
         
         try:
             while True:
-                await asyncio.sleep(config.RL_ORDER_SYNC_INTERVAL_SECONDS)
+                # Use recalibration interval if configured, otherwise use order sync interval
+                interval = config.RL_RECALIBRATION_INTERVAL_SECONDS
+                await asyncio.sleep(interval)
                 
                 try:
-                    logger.debug("Starting periodic order sync...")
+                    calibration_start = time.time()
+                    logger.debug("Starting periodic sync and recalibration...")
+                    
+                    # Update status to calibrating
+                    await self._update_trader_status("calibrating", "periodic sync")
+                    
+                    # 1. Sync state with Kalshi - track state changes
+                    sync_start = time.time()
+                    cash_before = self.cash_balance
+                    portfolio_before = self._calculate_portfolio_value()
+                    positions_before = len([p for p in self.positions.values() if not p.is_flat])
+                    
+                    await self._update_trader_status("calibrating -> syncing state")
+                    
                     stats = await self.sync_orders_with_kalshi()
-                    
-                    # Note: sync_orders_with_kalshi() already logs warnings for discrepancies
-                    # Just log summary here if no discrepancies
-                    if stats.get("discrepancies", 0) == 0 and stats.get("added", 0) == 0 and stats.get("removed", 0) == 0:
-                        logger.debug(
-                            f"Periodic sync complete: {stats['found_in_kalshi']} orders in sync"
-                        )
-                    
-                    # Also sync positions periodically
                     await self._sync_positions_with_kalshi()
-                    
-                    # Also sync settlements periodically
                     await self.sync_settlements_with_kalshi()
+                    
+                    sync_duration = time.time() - sync_start
+                    cash_after = self.cash_balance
+                    portfolio_after = self._calculate_portfolio_value()
+                    positions_after = len([p for p in self.positions.values() if not p.is_flat])
+                    
+                    # Build sync result with state changes
+                    sync_details = []
+                    if abs(cash_before - cash_after) > 0.01:  # Only show if change > 1 cent
+                        sync_details.append(f"cash ${cash_before:.2f} -> ${cash_after:.2f}")
+                    if abs(portfolio_before - portfolio_after) > 0.01:
+                        sync_details.append(f"portfolio ${portfolio_before:.2f} -> ${portfolio_after:.2f}")
+                    if positions_before != positions_after:
+                        sync_details.append(f"positions {positions_before} -> {positions_after}")
+                    
+                    sync_result = ", ".join(sync_details) if sync_details else "no changes"
+                    await self._update_trader_status("calibrating -> syncing state", sync_result, duration=sync_duration)
+                    
+                    # Check for low cash balance
+                    if self.cash_balance < self.min_cash_reserve:
+                        low_cash_msg = f"${self.cash_balance:.2f} < ${self.min_cash_reserve:.2f} (low balance mode)"
+                        await self._update_trader_status("calibrating -> low cash balance", low_cash_msg)
+                    
+                    # 2. Position health monitoring and closing (NEW - recalibration loop)
+                    closing_start = time.time()
+                    await self._update_trader_status("calibrating -> closing positions")
+                    
+                    closing_result, closing_details = await self._monitor_and_close_positions_detailed()
+                    closing_duration = time.time() - closing_start
+                    
+                    # Include details in result if available
+                    if closing_details:
+                        full_closing_result = f"{closing_result} | " + " | ".join(closing_details)
+                    else:
+                        full_closing_result = closing_result
+                    
+                    await self._update_trader_status("calibrating -> closing positions", full_closing_result, duration=closing_duration)
+                    
+                    # 3. Market state monitoring (NEW - recalibration loop)
+                    await self._monitor_market_states()
+                    
+                    # 4. Cash recovery if needed (NEW - recalibration loop)
+                    if self.cash_balance < self.min_cash_reserve:
+                        recovery_start = time.time()
+                        cash_before_recovery = self.cash_balance
+                        await self._update_trader_status("calibrating -> cash recovery")
+                        await self._recover_cash_by_closing_positions()
+                        recovery_duration = time.time() - recovery_start
+                        cash_after_recovery = self.cash_balance
+                        
+                        recovery_result = f"cash ${cash_before_recovery:.2f} -> ${cash_after_recovery:.2f}"
+                        if cash_after_recovery >= self.min_cash_reserve:
+                            recovery_result += " (restored)"
+                        await self._update_trader_status("calibrating -> cash recovery", recovery_result, duration=recovery_duration)
                     
                     # Broadcast specific updates after periodic sync
                     await self._broadcast_positions_update("periodic_sync")
@@ -3206,8 +3771,12 @@ class KalshiMultiMarketOrderManager:
                     # Notify about state changes after periodic sync
                     await self._notify_state_change()
                     
+                    # Update status back to trading
+                    total_duration = time.time() - calibration_start
+                    await self._update_trader_status("trading", "recalibration complete", duration=total_duration)
+                    
                 except Exception as e:
-                    logger.error(f"Error in periodic sync: {e}")
+                    logger.error(f"Error in periodic sync and recalibration: {e}")
                     
         except asyncio.CancelledError:
             logger.info("Periodic sync task cancelled")

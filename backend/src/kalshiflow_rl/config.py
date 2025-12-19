@@ -113,6 +113,13 @@ class RLConfig:
         # Cash Reserve Configuration
         self.RL_MIN_CASH_RESERVE: float = float(os.getenv("RL_MIN_CASH_RESERVE", "100.0"))  # Minimum cash before trading stops
         
+        # Position Management Configuration
+        self.RL_POSITION_TAKE_PROFIT_THRESHOLD: float = float(os.getenv("RL_POSITION_TAKE_PROFIT_THRESHOLD", "0.20"))  # 20% profit
+        self.RL_POSITION_STOP_LOSS_THRESHOLD: float = float(os.getenv("RL_POSITION_STOP_LOSS_THRESHOLD", "-0.10"))  # -10% loss
+        self.RL_POSITION_MAX_HOLD_TIME_SECONDS: int = int(os.getenv("RL_POSITION_MAX_HOLD_TIME_SECONDS", "3600"))  # 1 hour
+        self.RL_RECALIBRATION_INTERVAL_SECONDS: int = int(os.getenv("RL_RECALIBRATION_INTERVAL_SECONDS", "60"))  # 1 minute
+        self.RL_MARKET_CLOSING_BUFFER_SECONDS: int = int(os.getenv("RL_MARKET_CLOSING_BUFFER_SECONDS", "300"))  # 5 minutes
+        
         # Validate configuration
         self._validate_config()
     

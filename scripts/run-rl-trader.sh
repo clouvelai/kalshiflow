@@ -26,7 +26,7 @@ DEFAULT_MARKET_LIMIT=100
 DEFAULT_MODE="discovery"
 DEFAULT_ENV="paper"
 DEFAULT_STRATEGY="hardcoded"
-DEFAULT_CLEANUP="true"
+DEFAULT_CLEANUP="false"
 
 # Parse command line arguments
 PORT=$DEFAULT_PORT
@@ -241,6 +241,15 @@ export RL_ORDERBOOK_MARKET_LIMIT="$MARKET_LIMIT"
 export RL_ACTOR_ENABLED="true"  # ENABLED - trading enabled
 export RL_CLEANUP_ON_START="$CLEANUP"
 
+# Position Management & Recalibration Configuration (enabled by default for dev)
+export RL_ORDER_SYNC_ENABLED="true"  # Enable periodic sync and recalibration loop
+export RL_RECALIBRATION_INTERVAL_SECONDS="60"  # Recalibration runs every 60 seconds
+export RL_POSITION_TAKE_PROFIT_THRESHOLD="0.20"  # 20% profit threshold
+export RL_POSITION_STOP_LOSS_THRESHOLD="-0.10"  # -10% loss threshold
+export RL_POSITION_MAX_HOLD_TIME_SECONDS="3600"  # 1 hour max hold time
+export RL_MARKET_CLOSING_BUFFER_SECONDS="300"  # 5 minutes before market close
+export RL_MIN_CASH_RESERVE="100.0"  # Minimum cash reserve before recovery kicks in
+
 # Set up actor strategy and model path
 # Pass strategy directly to allow position_aware variants
 if [[ "$STRATEGY" == "rl_model" ]]; then
@@ -264,6 +273,11 @@ echo "  RL_ORDERBOOK_MARKET_LIMIT=$RL_ORDERBOOK_MARKET_LIMIT"
 echo "  RL_ACTOR_ENABLED=$RL_ACTOR_ENABLED"
 echo "  RL_ACTOR_STRATEGY=$RL_ACTOR_STRATEGY"
 echo "  RL_CLEANUP_ON_START=$RL_CLEANUP_ON_START"
+echo "  RL_ORDER_SYNC_ENABLED=$RL_ORDER_SYNC_ENABLED"
+echo "  RL_RECALIBRATION_INTERVAL_SECONDS=$RL_RECALIBRATION_INTERVAL_SECONDS"
+echo "  RL_POSITION_TAKE_PROFIT_THRESHOLD=$RL_POSITION_TAKE_PROFIT_THRESHOLD"
+echo "  RL_POSITION_STOP_LOSS_THRESHOLD=$RL_POSITION_STOP_LOSS_THRESHOLD"
+echo "  RL_POSITION_MAX_HOLD_TIME_SECONDS=$RL_POSITION_MAX_HOLD_TIME_SECONDS"
 if [[ "$STRATEGY" == "rl_model" ]]; then
     echo "  RL_ACTOR_MODEL_PATH=$RL_ACTOR_MODEL_PATH"
 fi

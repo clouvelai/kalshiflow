@@ -650,4 +650,402 @@ class TestKalshiMultiMarketOrderManager:
         assert "TEST-MARKET" in order_manager.positions
         assert order_manager.positions["TEST-MARKET"].contracts == 10
     
+    @pytest.mark.asyncio
+    async def test_close_position_long_yes(self, order_manager, mock_trading_client, sample_orderbook_snapshot):
+        """Test close_position() closes a long YES position by placing SELL YES order."""
+        order_manager.trading_client = mock_trading_client
+        
+        # Create a long YES position
+        order_manager.positions["TEST-MARKET"] = Position(
+            ticker="TEST-MARKET",
+            contracts=10,  # Long YES
+            cost_basis=500.0,  # $5.00 in cents
+            realized_pnl=0.0,
+            opened_at=time.time() - 100  # Opened 100 seconds ago
+        )
+        
+        # Mock successful order creation
+        mock_trading_client.create_order.return_value = {
+            "order": {"order_id": "kalshi_close_123"}
+        }
+        
+        # Mock orderbook snapshot retrieval
+        with patch.object(order_manager, '_get_orderbook_snapshot', new_callable=AsyncMock) as mock_snapshot:
+            mock_snapshot.return_value = sample_orderbook_snapshot
+            
+            result = await order_manager.close_position("TEST-MARKET", "take_profit")
+            
+            assert result is not None
+            assert result.get("executed") is True
+            # Should place SELL YES order (action 2)
+            mock_trading_client.create_order.assert_called_once()
+            call_kwargs = mock_trading_client.create_order.call_args[1]
+            assert call_kwargs["action"] == "sell"
+            assert call_kwargs["side"] == "yes"
+            # Should track closing reason
+            assert "TEST-MARKET" in order_manager._active_closing_reasons
+            assert order_manager._active_closing_reasons["TEST-MARKET"] == "take_profit"
+    
+    @pytest.mark.asyncio
+    async def test_close_position_long_no(self, order_manager, mock_trading_client, sample_orderbook_snapshot):
+        """Test close_position() closes a long NO position by placing SELL NO order."""
+        order_manager.trading_client = mock_trading_client
+        
+        # Create a long NO position
+        order_manager.positions["TEST-MARKET"] = Position(
+            ticker="TEST-MARKET",
+            contracts=-10,  # Long NO (negative contracts)
+            cost_basis=500.0,
+            realized_pnl=0.0,
+            opened_at=time.time() - 100
+        )
+        
+        mock_trading_client.create_order.return_value = {
+            "order": {"order_id": "kalshi_close_456"}
+        }
+        
+        with patch.object(order_manager, '_get_orderbook_snapshot', new_callable=AsyncMock) as mock_snapshot:
+            mock_snapshot.return_value = sample_orderbook_snapshot
+            
+            result = await order_manager.close_position("TEST-MARKET", "stop_loss")
+            
+            assert result is not None
+            assert result.get("executed") is True
+            # Should place SELL NO order (action 4)
+            call_kwargs = mock_trading_client.create_order.call_args[1]
+            assert call_kwargs["action"] == "sell"
+            assert call_kwargs["side"] == "no"
+            assert order_manager._active_closing_reasons["TEST-MARKET"] == "stop_loss"
+    
+    @pytest.mark.asyncio
+    async def test_close_position_flat_position(self, order_manager):
+        """Test close_position() returns None for flat positions."""
+        # Create flat position
+        order_manager.positions["TEST-MARKET"] = Position(
+            ticker="TEST-MARKET",
+            contracts=0,  # Flat
+            cost_basis=0.0,
+            realized_pnl=0.0
+        )
+        
+        result = await order_manager.close_position("TEST-MARKET", "take_profit")
+        assert result is None
+    
+    @pytest.mark.asyncio
+    async def test_close_position_no_position(self, order_manager):
+        """Test close_position() returns None when position doesn't exist."""
+        result = await order_manager.close_position("NONEXISTENT", "take_profit")
+        assert result is None
+    
+    @pytest.mark.asyncio
+    async def test_close_position_reason_propagation(self, order_manager, mock_trading_client, sample_orderbook_snapshot):
+        """Test that reason is propagated through execution result."""
+        order_manager.trading_client = mock_trading_client
+        
+        order_manager.positions["TEST-MARKET"] = Position(
+            ticker="TEST-MARKET",
+            contracts=10,
+            cost_basis=500.0,
+            realized_pnl=0.0
+        )
+        
+        mock_trading_client.create_order.return_value = {
+            "order": {"order_id": "kalshi_reason_123"}
+        }
+        
+        with patch.object(order_manager, '_get_orderbook_snapshot', new_callable=AsyncMock) as mock_snapshot:
+            mock_snapshot.return_value = sample_orderbook_snapshot
+            
+            result = await order_manager.close_position("TEST-MARKET", "cash_recovery")
+            
+            assert result is not None
+            assert result.get("reason") == "close_position:cash_recovery"
+    
+    @pytest.mark.asyncio
+    async def test_monitor_position_health_take_profit(self, order_manager, sample_orderbook_snapshot):
+        """Test _monitor_position_health() detects take profit threshold."""
+        # Set take profit threshold to 20%
+        with patch('kalshiflow_rl.trading.kalshi_multi_market_order_manager.config') as mock_config:
+            mock_config.RL_POSITION_TAKE_PROFIT_THRESHOLD = 0.20
+            mock_config.RL_POSITION_STOP_LOSS_THRESHOLD = -0.10
+            mock_config.RL_POSITION_MAX_HOLD_TIME_SECONDS = 3600
+            
+            # Create position with 25% profit (above 20% threshold)
+            # Cost basis: 500 cents, current value: 625 cents (25% profit)
+            order_manager.positions["TEST-MARKET"] = Position(
+                ticker="TEST-MARKET",
+                contracts=10,  # Long YES
+                cost_basis=500.0,  # $5.00
+                realized_pnl=0.0,
+                opened_at=time.time() - 100
+            )
+            
+            # Mock orderbook with YES price at 0.625 (62.5 cents) = 25% profit
+            orderbook = {
+                "yes_bid": 62,
+                "yes_ask": 63,
+                "no_bid": 37,
+                "no_asks": 38
+            }
+            
+            with patch.object(order_manager, '_get_orderbook_snapshot', new_callable=AsyncMock) as mock_snapshot:
+                mock_snapshot.return_value = orderbook
+                
+                positions_to_close = await order_manager._monitor_position_health()
+                
+                assert len(positions_to_close) == 1
+                assert positions_to_close[0][0] == "TEST-MARKET"
+                assert positions_to_close[0][1] == "take_profit"
+    
+    @pytest.mark.asyncio
+    async def test_monitor_position_health_stop_loss(self, order_manager):
+        """Test _monitor_position_health() detects stop loss threshold."""
+        with patch('kalshiflow_rl.trading.kalshi_multi_market_order_manager.config') as mock_config:
+            mock_config.RL_POSITION_TAKE_PROFIT_THRESHOLD = 0.20
+            mock_config.RL_POSITION_STOP_LOSS_THRESHOLD = -0.10
+            mock_config.RL_POSITION_MAX_HOLD_TIME_SECONDS = 3600
+            
+            # Create position with -15% loss (below -10% threshold)
+            order_manager.positions["TEST-MARKET"] = Position(
+                ticker="TEST-MARKET",
+                contracts=10,
+                cost_basis=500.0,  # $5.00
+                realized_pnl=0.0,
+                opened_at=time.time() - 100
+            )
+            
+            # Mock orderbook with YES price at 0.425 (42.5 cents) = -15% loss
+            orderbook = {
+                "yes_bid": 42,
+                "yes_ask": 43,
+                "no_bid": 57,
+                "no_asks": 58
+            }
+            
+            with patch.object(order_manager, '_get_orderbook_snapshot', new_callable=AsyncMock) as mock_snapshot:
+                mock_snapshot.return_value = orderbook
+                
+                positions_to_close = await order_manager._monitor_position_health()
+                
+                assert len(positions_to_close) == 1
+                assert positions_to_close[0][0] == "TEST-MARKET"
+                assert positions_to_close[0][1] == "stop_loss"
+    
+    @pytest.mark.asyncio
+    async def test_monitor_position_health_max_hold_time(self, order_manager, sample_orderbook_snapshot):
+        """Test _monitor_position_health() detects max hold time threshold."""
+        with patch('kalshiflow_rl.trading.kalshi_multi_market_order_manager.config') as mock_config:
+            mock_config.RL_POSITION_TAKE_PROFIT_THRESHOLD = 0.20
+            mock_config.RL_POSITION_STOP_LOSS_THRESHOLD = -0.10
+            mock_config.RL_POSITION_MAX_HOLD_TIME_SECONDS = 100  # 100 seconds
+            
+            # Create position opened 150 seconds ago (exceeds 100s threshold)
+            order_manager.positions["TEST-MARKET"] = Position(
+                ticker="TEST-MARKET",
+                contracts=10,
+                cost_basis=500.0,
+                realized_pnl=0.0,
+                opened_at=time.time() - 150  # 150 seconds ago
+            )
+            
+            with patch.object(order_manager, '_get_orderbook_snapshot', new_callable=AsyncMock) as mock_snapshot:
+                mock_snapshot.return_value = sample_orderbook_snapshot
+                
+                positions_to_close = await order_manager._monitor_position_health()
+                
+                assert len(positions_to_close) == 1
+                assert positions_to_close[0][0] == "TEST-MARKET"
+                assert positions_to_close[0][1] == "max_hold_time"
+    
+    @pytest.mark.asyncio
+    async def test_recover_cash_by_closing_positions(self, order_manager, mock_trading_client, sample_orderbook_snapshot):
+        """Test _recover_cash_by_closing_positions() closes worst positions when cash is low."""
+        order_manager.trading_client = mock_trading_client
+        order_manager.min_cash_reserve = 100.0
+        order_manager.cash_balance = 50.0  # Below reserve
+        
+        # Create two positions with different P&L
+        order_manager.positions["LOSER"] = Position(
+            ticker="LOSER",
+            contracts=10,
+            cost_basis=500.0,  # $5.00
+            realized_pnl=0.0,
+            opened_at=time.time() - 100
+        )
+        
+        order_manager.positions["WINNER"] = Position(
+            ticker="WINNER",
+            contracts=10,
+            cost_basis=500.0,
+            realized_pnl=0.0,
+            opened_at=time.time() - 100
+        )
+        
+        # Mock orderbook snapshots with different prices
+        loser_orderbook = {"yes_bid": 40, "yes_ask": 41, "no_bid": 59, "no_asks": 60}  # -20% loss
+        winner_orderbook = {"yes_bid": 60, "yes_ask": 61, "no_bid": 39, "no_asks": 40}  # +20% profit
+        
+        mock_trading_client.create_order.return_value = {
+            "order": {"order_id": "kalshi_recover_123"}
+        }
+        
+        async def get_snapshot(ticker):
+            if ticker == "LOSER":
+                return loser_orderbook
+            return winner_orderbook
+        
+        with patch.object(order_manager, '_get_orderbook_snapshot', side_effect=get_snapshot):
+            # Mock close_position to track calls
+            with patch.object(order_manager, 'close_position', new_callable=AsyncMock) as mock_close:
+                mock_close.return_value = {"executed": True, "order_id": "test_123"}
+                
+                await order_manager._recover_cash_by_closing_positions()
+                
+                # Should have attempted to close positions
+                assert mock_close.called
+    
+    @pytest.mark.asyncio
+    async def test_recover_cash_skips_when_sufficient(self, order_manager):
+        """Test _recover_cash_by_closing_positions() does nothing when cash is sufficient."""
+        order_manager.min_cash_reserve = 100.0
+        order_manager.cash_balance = 200.0  # Above reserve
+        
+        # Create a position
+        order_manager.positions["TEST-MARKET"] = Position(
+            ticker="TEST-MARKET",
+            contracts=10,
+            cost_basis=500.0,
+            realized_pnl=0.0
+        )
+        
+        with patch.object(order_manager, 'close_position', new_callable=AsyncMock) as mock_close:
+            await order_manager._recover_cash_by_closing_positions()
+            
+            # Should not attempt to close positions
+            assert not mock_close.called
+    
+    @pytest.mark.asyncio
+    async def test_monitor_market_states_closing_market(self, order_manager, mock_trading_client):
+        """Test _monitor_market_states() closes positions in closing markets."""
+        order_manager.trading_client = mock_trading_client
+        
+        order_manager.positions["CLOSING-MARKET"] = Position(
+            ticker="CLOSING-MARKET",
+            contracts=10,
+            cost_basis=500.0,
+            realized_pnl=0.0
+        )
+        
+        # Mock market info with closing status
+        mock_trading_client.get_markets = AsyncMock(return_value={
+            "markets": [{
+                "ticker": "CLOSING-MARKET",
+                "status": "ending"
+            }]
+        })
+        
+        mock_trading_client.create_order.return_value = {
+            "order": {"order_id": "kalshi_market_close_123"}
+        }
+        
+        with patch.object(order_manager, '_get_orderbook_snapshot', new_callable=AsyncMock) as mock_snapshot:
+            mock_snapshot.return_value = {"yes_bid": 50, "yes_ask": 51, "no_bid": 49, "no_asks": 50}
+            
+            with patch.object(order_manager, 'close_position', new_callable=AsyncMock) as mock_close:
+                mock_close.return_value = {"executed": True}
+                
+                await order_manager._monitor_market_states()
+                
+                # Should attempt to close position
+                assert mock_close.called
+                call_args = mock_close.call_args
+                assert call_args[0][0] == "CLOSING-MARKET"
+                assert call_args[0][1] == "market_closing"
+    
+    @pytest.mark.asyncio
+    async def test_execute_order_with_reason(self, order_manager, mock_trading_client, sample_orderbook_snapshot):
+        """Test execute_order() includes reason in execution result."""
+        order_manager.trading_client = mock_trading_client
+        
+        mock_trading_client.create_order.return_value = {
+            "order": {"order_id": "kalshi_reason_123"}
+        }
+        
+        result = await order_manager.execute_order(
+            market_ticker="TEST-MARKET",
+            action=1,  # BUY_YES_LIMIT
+            orderbook_snapshot=sample_orderbook_snapshot,
+            reason="close_position:take_profit"
+        )
+        
+        assert result is not None
+        assert result.get("reason") == "close_position:take_profit"
+        assert result.get("status") == "placed"
+    
+    @pytest.mark.asyncio
+    async def test_broadcast_position_update_with_closing_reason(self, order_manager):
+        """Test _broadcast_position_update_with_changes() includes closing_reason."""
+        # Create position with active closing reason
+        order_manager.positions["TEST-MARKET"] = Position(
+            ticker="TEST-MARKET",
+            contracts=10,
+            cost_basis=500.0,
+            realized_pnl=0.0
+        )
+        order_manager._active_closing_reasons["TEST-MARKET"] = "take_profit"
+        
+        # Mock websocket manager
+        mock_ws_manager = Mock()
+        mock_ws_manager.broadcast_position_update = AsyncMock()
+        order_manager._websocket_manager = mock_ws_manager
+        
+        # Broadcast position update
+        await order_manager._broadcast_position_update_with_changes(
+            market_ticker="TEST-MARKET",
+            changed_fields=["position"],
+            previous_values={"position": 10},
+            was_settled=False
+        )
+        
+        # Verify closing_reason was included
+        assert mock_ws_manager.broadcast_position_update.called
+        call_args = mock_ws_manager.broadcast_position_update.call_args[0][0]
+        assert call_args.get("closing_reason") == "take_profit"
+    
+    @pytest.mark.asyncio
+    async def test_monitor_and_close_positions(self, order_manager, mock_trading_client, sample_orderbook_snapshot):
+        """Test _monitor_and_close_positions() orchestrates health monitoring and closing."""
+        order_manager.trading_client = mock_trading_client
+        
+        with patch('kalshiflow_rl.trading.kalshi_multi_market_order_manager.config') as mock_config:
+            mock_config.RL_POSITION_TAKE_PROFIT_THRESHOLD = 0.20
+            mock_config.RL_POSITION_STOP_LOSS_THRESHOLD = -0.10
+            mock_config.RL_POSITION_MAX_HOLD_TIME_SECONDS = 3600
+            
+            # Create position that should be closed
+            order_manager.positions["TEST-MARKET"] = Position(
+                ticker="TEST-MARKET",
+                contracts=10,
+                cost_basis=500.0,
+                realized_pnl=0.0,
+                opened_at=time.time() - 100
+            )
+            
+            # Mock orderbook with profitable price
+            orderbook = {"yes_bid": 62, "yes_ask": 63, "no_bid": 37, "no_asks": 38}
+            
+            mock_trading_client.create_order.return_value = {
+                "order": {"order_id": "kalshi_monitor_123"}
+            }
+            
+            with patch.object(order_manager, '_get_orderbook_snapshot', new_callable=AsyncMock) as mock_snapshot:
+                mock_snapshot.return_value = orderbook
+                
+                with patch.object(order_manager, 'close_position', new_callable=AsyncMock) as mock_close:
+                    mock_close.return_value = {"executed": True, "order_id": "test_123"}
+                    
+                    await order_manager._monitor_and_close_positions()
+                    
+                    # Should have attempted to close position
+                    assert mock_close.called
 

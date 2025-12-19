@@ -7,9 +7,12 @@ const TraderStatePanel = ({
   showOnlyExecutionStats = false,
   showPositions = true,
   showOrders = true,
-  showActionBreakdown = true 
+  showActionBreakdown = true,
+  traderStatus = null,
+  traderStatusHistory = []
 }) => {
   const [showCents, setShowCents] = useState(false);
+  const [copyIconState, setCopyIconState] = useState('clipboard'); // 'clipboard' or 'checkmark'
   // Helper function to format currency
   const formatCurrency = (amount) => {
     if (!amount && amount !== 0) return '$--';
@@ -32,6 +35,47 @@ const TraderStatePanel = ({
   const formatNumber = (num) => {
     if (!num && num !== 0) return '--';
     return num.toLocaleString();
+  };
+
+  // Handle copying status history to clipboard
+  const handleCopyStatusHistory = async () => {
+    if (!traderStatusHistory || traderStatusHistory.length === 0) {
+      return;
+    }
+
+    // Format all entries as readable text
+    const formattedLines = traderStatusHistory
+      .slice()
+      .reverse()
+      .map((entry) => {
+        const timestamp = new Date(entry.timestamp * 1000);
+        const timeStr = timestamp.toLocaleTimeString();
+        const parts = [timeStr, entry.status];
+        
+        if (entry.result) {
+          parts.push(entry.result);
+        }
+        
+        if (entry.duration !== undefined && entry.duration !== null) {
+          parts.push(`(${entry.duration.toFixed(1)}s)`);
+        }
+        
+        return parts.join(' ');
+      });
+
+    const textToCopy = formattedLines.join('\n');
+
+    try {
+      await navigator.clipboard.writeText(textToCopy);
+      
+      // Show checkmark feedback
+      setCopyIconState('checkmark');
+      setTimeout(() => {
+        setCopyIconState('clipboard');
+      }, 1500);
+    } catch (err) {
+      console.error('Failed to copy status history:', err);
+    }
   };
 
   // Helper function to format relative time
@@ -923,6 +967,86 @@ const TraderStatePanel = ({
         </div>
       )}
 
+      {/* Trader Status Footer */}
+      <div className="bg-slate-800 border border-slate-700 rounded-lg p-5 mt-4">
+        <h3 className="text-sm font-semibold text-slate-300 uppercase tracking-wider mb-4 flex items-center">
+          <span className="mr-2">🔄</span>
+          Trader Status
+        </h3>
+        
+        {/* Current Status */}
+        <div className="mb-4">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-xs font-medium text-slate-400 uppercase tracking-wider">Current Status</span>
+          </div>
+          <div className={`text-2xl font-bold font-mono ${
+            traderStatus?.current_status?.includes('trading') ? 'text-emerald-400' :
+            traderStatus?.current_status?.includes('calibrating') ? 'text-blue-400' :
+            traderStatus?.current_status?.includes('closing') ? 'text-amber-400' :
+            'text-slate-300'
+          }`}>
+            {traderStatus?.current_status || 'unknown'}
+          </div>
+        </div>
+        
+        {/* Status History Log */}
+        <div className="border-t border-slate-700/50 pt-4">
+          <div className="flex items-center justify-between mb-2">
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-medium text-slate-400 uppercase tracking-wider">Status History</span>
+              {traderStatusHistory && traderStatusHistory.length > 0 && (
+                <button
+                  onClick={handleCopyStatusHistory}
+                  className="text-slate-500 hover:text-slate-300 transition-colors duration-200 p-1 rounded hover:bg-slate-700/50"
+                  title="Copy status history to clipboard"
+                >
+                  {copyIconState === 'checkmark' ? (
+                    <svg className="w-4 h-4 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                    </svg>
+                  ) : (
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                    </svg>
+                  )}
+                </button>
+              )}
+            </div>
+            <span className="text-xs text-slate-500">
+              {traderStatusHistory?.length || 0} entries
+            </span>
+          </div>
+          <div className="bg-slate-900/50 rounded-lg p-3 max-h-48 overflow-y-auto">
+            {traderStatusHistory && traderStatusHistory.length > 0 ? (
+              <div className="space-y-1 font-mono text-xs">
+                {traderStatusHistory.slice().reverse().map((entry, idx) => {
+                  const timestamp = new Date(entry.timestamp * 1000);
+                  const timeStr = timestamp.toLocaleTimeString();
+                  
+                  return (
+                    <div key={idx} className="flex items-start space-x-2 text-slate-300">
+                      <span className="text-slate-500 flex-shrink-0">{timeStr}</span>
+                      <span className="font-semibold flex-shrink-0 min-w-[200px]">
+                        {entry.status}
+                      </span>
+                      {entry.result && (
+                        <span className="text-slate-400 flex-1 break-words">{entry.result}</span>
+                      )}
+                      {entry.duration && (
+                        <span className="text-slate-500 flex-shrink-0">({entry.duration.toFixed(1)}s)</span>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="text-xs text-slate-500 text-center py-4">
+                No status history yet
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
 
     </div>
   );

@@ -545,6 +545,17 @@ class ActorService:
         start_time = time.time()
         market_ticker = event.market_ticker
         
+        # Update trader status to "trading" when processing market events
+        # Only update periodically to avoid spam (every 10 seconds)
+        if self._order_manager and hasattr(self._order_manager, '_update_trader_status'):
+            if not hasattr(self._order_manager, '_last_trading_status_update'):
+                self._order_manager._last_trading_status_update = 0
+            
+            current_time = time.time()
+            if current_time - self._order_manager._last_trading_status_update > 10:
+                await self._order_manager._update_trader_status("trading")
+                self._order_manager._last_trading_status_update = current_time
+        
         # Check if market should be processed (circuit breaker check)
         if not self._should_process_market(market_ticker):
             logger.debug(f"Skipping processing for disabled market: {market_ticker}")
@@ -1025,6 +1036,9 @@ class ActorService:
                     }
             
             # Build action data for broadcast
+            # Extract reason from execution result if present (for closing actions)
+            reason = execution_result.get("reason", "model_prediction")
+            
             action_data = {
                 "trade_sequence_id": trade_sequence_id,  # Unique ID for this trade
                 "timestamp": time.time(),
@@ -1037,13 +1051,14 @@ class ActorService:
                     "position_size": position_size if action != 0 else None,
                     "quantity": execution_result.get("quantity", position_size),
                     "limit_price": execution_result.get("limit_price"),
-                    "reason": "model_prediction"
+                    "reason": reason  # Include reason (e.g., "close_position:take_profit" or "model_prediction")
                 },
                 "execution_result": {
                     "executed": execution_result.get("executed", False),
                     "order_id": execution_result.get("order_id"),
                     "status": execution_result.get("status", "unknown"),
                     "error": execution_result.get("error"),
+                    "reason": reason,  # Include reason in execution result too
                     "trade_sequence_id": trade_sequence_id  # Include in execution result too
                 }
             }

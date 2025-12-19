@@ -40,15 +40,31 @@ const TradesFeed = ({ fills }) => {
   };
 
   // Helper function to get action color and background
-  const getActionStyle = (action, success) => {
+  const getActionStyle = (action, success, reason) => {
     const actionStr = typeof action === 'object' ? action.action_name : action;
     const isSuccess = success !== false;
+    
+    // Check if this is a closing action
+    const isClosing = reason && reason.startsWith('close_position:');
+    const closingReason = isClosing ? reason.replace('close_position:', '') : null;
     
     if (!isSuccess) {
       return {
         color: 'text-red-400',
         bg: 'bg-red-900/20',
         borderColor: 'border-red-600/30'
+      };
+    }
+    
+    // Special styling for closing actions
+    if (isClosing) {
+      return {
+        color: 'text-amber-400',
+        bg: 'bg-amber-900/30',
+        borderColor: 'border-amber-600/40',
+        icon: '🔒',
+        isClosing: true,
+        closingReason: closingReason
       };
     }
     
@@ -103,6 +119,19 @@ const TradesFeed = ({ fills }) => {
       bg: 'bg-gray-800/20',
       borderColor: 'border-gray-600/30'
     };
+  };
+  
+  // Helper function to format closing reason
+  const formatClosingReason = (reason) => {
+    if (!reason) return '';
+    const reasonMap = {
+      'take_profit': 'Take Profit',
+      'stop_loss': 'Stop Loss',
+      'cash_recovery': 'Cash Recovery',
+      'market_closing': 'Market Closing',
+      'max_hold_time': 'Max Hold Time'
+    };
+    return reasonMap[reason] || reason.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
   };
 
   // Helper function to format action text
@@ -291,7 +320,8 @@ const TradesFeed = ({ fills }) => {
         const action = fill.action?.action_name || fill.action;
         const positionSize = fill.action?.position_size;
         const isSuccess = fill.execution_result?.executed !== false && fill.success !== false;
-        const actionStyle = getActionStyle(action, isSuccess);
+        const reason = fill.action?.reason || fill.execution_result?.reason;
+        const actionStyle = getActionStyle(action, isSuccess, reason);
         const hasObservation = fill.observation && (fill.observation.raw_array?.length > 0 || fill.observation.features);
         const tradeId = fill.trade_sequence_id || fill.execution_result?.trade_sequence_id;
         
@@ -342,6 +372,12 @@ const TradesFeed = ({ fills }) => {
                   <span className={`${actionStyle.color} font-semibold w-24`}>
                     {formatAction(action)}
                   </span>
+                  {/* Closing Badge */}
+                  {actionStyle.isClosing && actionStyle.closingReason && (
+                    <span className="px-2 py-0.5 bg-amber-900/40 text-amber-300 rounded text-xs font-medium border border-amber-600/30">
+                      CLOSING: {formatClosingReason(actionStyle.closingReason)}
+                    </span>
+                  )}
                 </div>
 
                 {/* Position Size (for non-HOLD actions) */}

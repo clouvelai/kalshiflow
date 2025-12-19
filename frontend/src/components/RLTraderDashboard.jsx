@@ -28,6 +28,8 @@ const RLTraderDashboard = () => {
   const [priceMode, setPriceMode] = useState('dollar'); // Price display mode: 'dollar' or 'cent'
   const [initializationStatus, setInitializationStatus] = useState(null); // Initialization checklist status
   const [componentHealth, setComponentHealth] = useState({}); // Component health status
+  const [traderStatus, setTraderStatus] = useState(null); // Current trader status
+  const [traderStatusHistory, setTraderStatusHistory] = useState([]); // Status history log
   
   // Position update tracking for animations
   const [previousPositions, setPreviousPositions] = useState({}); // Track previous position values
@@ -135,6 +137,19 @@ const RLTraderDashboard = () => {
                 ...data.stats,
                 session_active: data.stats.session_active !== undefined ? data.stats.session_active : true
               });
+            }
+            break;
+            
+          case 'trader_status':
+            // Trader status update with current status and history
+            if (data.data) {
+              setTraderStatus({
+                current_status: data.data.current_status || 'unknown',
+                timestamp: data.data.timestamp
+              });
+              if (data.data.status_history) {
+                setTraderStatusHistory(data.data.status_history);
+              }
             }
             break;
             
@@ -259,7 +274,8 @@ const RLTraderDashboard = () => {
                 previous_values = {},
                 update_source = 'websocket',
                 timestamp,
-                was_settled = false
+                was_settled = false,
+                closing_reason = null  // NEW: Reason for closing position
               } = data.data;
               
               if (ticker) {
@@ -293,6 +309,8 @@ const RLTraderDashboard = () => {
                   changeDirection: shouldAnimate ? changeDirection : {},
                   isNew: shouldAnimate && isNew,
                   isSettled: was_settled,
+                  isClosing: !!closing_reason,  // NEW: Track if position is being closed
+                  closingReason: closing_reason,  // NEW: Store closing reason
                   timestamp: currentTime
                 };
                 
@@ -366,7 +384,8 @@ const RLTraderDashboard = () => {
                   volume: volume || 0,
                   market_exposure_cents: market_exposure_cents || (market_exposure ? (typeof market_exposure === 'number' ? market_exposure * 100 : parseFloat(market_exposure) * 100) : undefined),  // Prefer market_exposure_cents, fallback to converting market_exposure
                   market_exposure: market_exposure,  // Keep for backward compatibility
-                  last_updated_ts: timestamp || Date.now()
+                  last_updated_ts: timestamp || Date.now(),
+                  closing_reason: closing_reason  // NEW: Store closing reason
                 };
                 
                 setPositions(prev => ({
@@ -883,7 +902,8 @@ const RLTraderDashboard = () => {
         lastUpdatedTimestamp: pos.last_updated_ts ? new Date(pos.last_updated_ts).getTime() : 0,
         settlementDate,
         timeToExp,
-        settlementTimestamp: settlementDate ? settlementDate.getTime() : Infinity
+        settlementTimestamp: settlementDate ? settlementDate.getTime() : Infinity,
+        closingReason: pos.closing_reason  // NEW: Closing reason if position is being closed
       };
     }).filter(p => p.contracts !== 0);
     
@@ -1389,6 +1409,8 @@ const RLTraderDashboard = () => {
                   showPositions={false}
                   showOrders={false}
                   showActionBreakdown={true}
+                  traderStatus={traderStatus}
+                  traderStatusHistory={traderStatusHistory}
                 />
               </>
             ) : (
@@ -2024,9 +2046,17 @@ const RLTraderDashboard = () => {
                               <div className={`${cardClasses} h-full flex flex-col`}>
                                 {/* Header with ticker and P&L badge */}
                                 <div className="flex justify-between items-center mb-2 pb-2 border-b border-gray-700/50 flex-shrink-0">
-                                  <span className="font-mono text-[10px] text-gray-300 truncate flex-1 mr-1" title={pos.ticker}>
-                                    {pos.ticker}
-                                  </span>
+                                  <div className="flex-1 mr-1 min-w-0">
+                                    <span className="font-mono text-[10px] text-gray-300 truncate block" title={pos.ticker}>
+                                      {pos.ticker}
+                                    </span>
+                                    {/* Closing indicator badge */}
+                                    {pos.closingReason && (
+                                      <span className="inline-block mt-0.5 px-1 py-0.5 rounded text-[9px] font-medium bg-amber-900/40 text-amber-300 border border-amber-600/30">
+                                        🔒 CLOSING: {pos.closingReason.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}
+                                      </span>
+                                    )}
+                                  </div>
                                   {/* P&L Badge in top right */}
                                   <span className={`px-1.5 py-1 rounded text-[10px] font-medium flex-shrink-0 ${
                                     pos.realizedPnl >= 0 

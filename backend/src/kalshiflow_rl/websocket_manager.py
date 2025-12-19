@@ -156,6 +156,13 @@ class ComponentHealthMessage:
     data: Dict[str, Any] = None
 
 
+@dataclass
+class TraderStatusMessage:
+    """Trader status update message."""
+    type: str = "trader_status"
+    data: Dict[str, Any] = None
+
+
 class WebSocketManager:
     """
     Manages WebSocket connections and broadcasts orderbook updates.
@@ -690,6 +697,26 @@ class WebSocketManager:
         message = SettlementsUpdateMessage(data=settlements_data)
         await self._broadcast_to_all(message)
         logger.debug(f"Broadcast settlements update to {len(self._connections)} clients ({settlements_data.get('count', 0)} settlements)")
+    
+    async def broadcast_trader_status(self, status_data: Dict[str, Any]):
+        """
+        Broadcast trader status update to all connected clients.
+        
+        Args:
+            status_data: Status data containing current_status and status_history
+        """
+        if not self._connections:
+            return
+        
+        message = TraderStatusMessage(
+            data={
+                "current_status": status_data.get("current_status", "unknown"),
+                "status_history": status_data.get("status_history", []),
+                "timestamp": time.time()
+            }
+        )
+        await self._broadcast_to_all(message)
+        logger.debug(f"Broadcast trader status to {len(self._connections)} clients")
     
     async def broadcast_portfolio_update(self, portfolio_data: Dict[str, Any]):
         """

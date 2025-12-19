@@ -28,17 +28,25 @@ STARTUP
    ├─ Subscribe to orderbook events
    └─ Start event processing loop
 
-TRADING LOOP (Continuous)
+TRADING LOOP (Reactive - Continuous)
 └─ For each orderbook delta:
    ├─ Build observation (orderbook + portfolio)
    ├─ Select action (RL model or hardcoded)
    ├─ Execute action (place order if not HOLD/throttled)
    └─ Update positions (read after 100ms delay)
 
+RECALIBRATION LOOP (Proactive - Every 60s)
+└─ Periodic sync and recalibration:
+   ├─ Sync state with Kalshi (positions, orders, cash)
+   ├─ Monitor position health (P&L thresholds, max hold time)
+   ├─ Monitor market states (closing markets)
+   ├─ Close positions that meet criteria (take profit, stop loss, etc.)
+   └─ Recover cash if needed (close worst-performing positions)
+
 PARALLEL PROCESSES
 ├─ FillListener: Real-time fill notifications → update positions
 ├─ PositionListener: Real-time position updates
-└─ Periodic Sync: Every 30s, sync with Kalshi API
+└─ Periodic Sync + Recalibration: Every 60s, sync with Kalshi API and monitor positions
 ```
 
 ---
@@ -59,37 +67,77 @@ PARALLEL PROCESSES
 - Cannot adapt to changing conditions
 - Positions remain open until event settlement
 
+**Architecture:**
+- **Position closing is part of the RECALIBRATION LOOP**, not the trading loop
+- **Trading Loop** (Reactive): Responds to orderbook deltas → Opens positions
+- **Recalibration Loop** (Proactive): Runs every 60s → Closes positions, syncs state, manages risk
+- This separation ensures:
+  - Trading decisions remain fast and reactive
+  - Risk management is proactive and systematic
+  - No conflicts between opening and closing positions
+
 **Order Groups Impact:**
 - **Position closing can be implemented independently** - it's just placing opposite orders
 - Order groups are about limiting total contracts matched, not about closing positions
 - Order groups could ensure we don't exceed limits when closing positions (complementary, not blocking)
 - **Recommendation:** Implement position closing first, then enhance with order groups if needed
 
-**Fix Needed:**
-```python
-# Add to KalshiMultiMarketOrderManager
-async def close_position(self, ticker: str, reason: str):
-    """Close position by placing opposite order."""
-    position = self.positions.get(ticker)
-    if not position or position.is_flat:
-        return
-    
-    # Determine opposite side
-    if position.contracts > 0:  # Long YES
-        side = OrderSide.SELL
-        contract_side = ContractSide.YES
-    else:  # Long NO
-        side = OrderSide.SELL
-        contract_side = ContractSide.NO
-    
-    # Place closing order (order_group_id included if available)
-    await self.execute_limit_order_action(
-        action=...,  # Map to appropriate action
-        market_ticker=ticker,
-        orderbook_snapshot=...,
-        reason=f"close_position:{reason}"
-    )
+**Implementation Status:** ✅ COMPLETED
+- `close_position()` method implemented in `KalshiMultiMarketOrderManager`
+- Position health monitoring (`_monitor_position_health()`) checks P&L thresholds and max hold time
+- Cash recovery (`_recover_cash_by_closing_positions()`) closes worst-performing positions when cash is low
+- Market state monitoring (`_monitor_market_states()`) closes positions in markets that are closing
+- Recalibration loop integrated into `_start_periodic_sync()` (runs every 60s)
+- WebSocket broadcasts include closing reason for real-time UI visibility
+
+**WebSocket Message Format:**
+
+When a position is closed, the `trader_action` message includes:
+```json
+{
+  "type": "trader_action",
+  "data": {
+    "timestamp": 1702334567.89,
+    "market_ticker": "INXD-25JAN03",
+    "action": {
+      "action_id": 2,
+      "action_name": "SELL_YES_LIMIT",
+      "position_size": 10,
+      "quantity": 10,
+      "limit_price": 55,
+      "reason": "close_position:take_profit"  // Indicates closing action
+    },
+    "execution_result": {
+      "executed": true,
+      "order_id": "order_124",
+      "status": "placed",
+      "reason": "close_position:take_profit"  // Closing reason
+    }
+  }
+}
 ```
+
+When a position is being closed, the `position_update` message includes:
+```json
+{
+  "type": "position_update",
+  "data": {
+    "ticker": "INXD-25JAN03",
+    "position": 10,
+    "closing_reason": "take_profit",  // Reason for closing
+    "changed_fields": ["position"],
+    "previous_values": {"position": 10},
+    "timestamp": 1702334567.89
+  }
+}
+```
+
+**Closing Reasons:**
+- `take_profit`: Position hit take profit threshold (default: +20%)
+- `stop_loss`: Position hit stop loss threshold (default: -10%)
+- `cash_recovery`: Position closed to recover cash (when balance < reserve)
+- `market_closing`: Market is closing/ending soon
+- `max_hold_time`: Position exceeded max hold time (default: 1 hour)
 
 ### 2. **Incomplete Environment Calibration** ⚠️ HIGH
 
@@ -355,49 +403,111 @@ async def initialize(self):
 
 ## Recommended Implementation Plan
 
-### Phase 1: Position Management (Week 1) - CRITICAL
+### Phase 1: Position Management (Week 1) - ✅ COMPLETED
 
 **Goal:** Enable trader to close positions and recoup cash
 
+**Status:** ✅ **COMPLETED** - All tasks delivered and tested
+
 **Decision:** Implement position closing **before** order groups. They're independent - position closing is about placing opposite orders, order groups are about limiting total contracts. We can enhance position closing with order groups later if needed.
 
-**Tasks:**
+**Completed Tasks:**
 1. ✅ Add `close_position()` method to `KalshiMultiMarketOrderManager`
 2. ✅ Add position health monitoring (P&L, time in position)
 3. ✅ Add cash recovery strategy (close positions when cash low)
 4. ✅ Add market state monitoring (detect closing markets)
-5. ✅ Test position closing in paper trading
+5. ✅ Integrate position closing into recalibration loop (every 60s)
+6. ✅ Add trader status tracking with detailed closing breakdown
+7. ✅ Add WebSocket visibility for position closing actions
+8. ✅ Add click-to-copy functionality for status history log
 
-**Files to Modify:**
-- `backend/src/kalshiflow_rl/trading/kalshi_multi_market_order_manager.py`
-- `backend/src/kalshiflow_rl/trading/actor_service.py` (add position monitoring)
+**Delivered:**
+- Position closing based on P&L thresholds (take profit: +20%, stop loss: -10%)
+- Position closing based on max hold time (default: 1 hour)
+- Cash recovery when balance falls below reserve threshold
+- Market closing detection (closes positions before markets end)
+- Real-time status updates via WebSocket with detailed closing reasons
+- Trader status footer in UI showing current status and history log
+- Copy-to-clipboard functionality for status history
+
+**Files Modified:**
+- `backend/src/kalshiflow_rl/trading/kalshi_multi_market_order_manager.py` - Position closing logic
+- `backend/src/kalshiflow_rl/trading/actor_service.py` - Status updates
+- `backend/src/kalshiflow_rl/websocket_manager.py` - Status broadcasting
+- `frontend/src/components/TraderStatePanel.jsx` - Status display and copy feature
+- `frontend/src/components/RLTraderDashboard.jsx` - Status message handling
 
 **Note:** Order groups won't require changes to position closing logic - they're complementary features.
 
-### Phase 2: Environment Calibration (Week 2) - HIGH
+### Phase 2: Core Actor Loop Improvements (M2) - HIGH
 
-**Goal:** Complete trader calibration on startup and continuously
+**Goal:** Improve the core actor/trader loop for better decision-making, coordination, and reliability
 
-**Current State:**
-- ✅ We have `InitializationTracker` that syncs state with Kalshi (balance, positions, orders)
-- ✅ Systems tab shows initialization progress
-- ❌ Missing: Additional trader calibration checks (markets viable, portfolio health, cash flow)
-- ❌ Missing: "Last portfolio data sync X" timestamp in systems tab
+**Focus:** The core trading loop that processes orderbook events and makes trading decisions. This is the heart of the trader - where observations are built, actions are selected, and orders are executed.
 
-**Tasks:**
-1. ✅ Add "last portfolio data sync X" timestamp display to systems tab
-2. ✅ Add trader calibration step to `initialize()` (markets viable, portfolio health, cash flow)
-3. ✅ Integrate trader calibration into `InitializationTracker` workflow
-4. ✅ Add continuous recalibration loop (replace or complement periodic sync)
-5. ✅ Add state drift detection
-6. ✅ Test calibration in various states
+**Current Actor Loop (from `ActorService._process_market_update`):**
 
-**Files to Modify:**
-- `backend/src/kalshiflow_rl/trading/kalshi_multi_market_order_manager.py` (add calibration methods)
-- `backend/src/kalshiflow_rl/trading/initialization_tracker.py` (add trader calibration step)
-- `frontend/src/components/SystemHealth.jsx` (add last sync timestamp display)
+The actor loop is a 4-step pipeline that processes each orderbook delta:
 
-**Decision Point:** Should recalibration replace periodic sync or run in addition? Start with addition, then consider replacement if it provides better coverage.
+```
+1. build_observation → Convert orderbook state to model input (52-feature array)
+2. select_action → Use RL model or hardcoded selector to choose action (0-4)
+3. execute_action → Place order via OrderManager (if not HOLD/throttled)
+4. update_positions → Track portfolio state after execution
+```
+
+**Current Architecture:**
+- **Event-driven:** OrderbookClient → EventBus → ActorService queue
+- **Serial processing:** Single queue for all markets (prevents race conditions)
+- **4-step pipeline:** Each event goes through observation → action → execution → update
+- **Parallel loops:** Trading loop (reactive) and recalibration loop (proactive every 60s) run independently
+- **State sharing:** Both loops share same state (positions, cash, orders) via OrderManager
+
+**M2 Focus Areas:**
+
+1. **Actor Loop Coordination**
+   - Ensure trading loop and recalibration loop work together properly
+   - Prevent conflicts when both loops access shared state
+   - Coordinate position opening (trading loop) with position closing (recalibration loop)
+   - **Status:** Deferred from M1, needs implementation
+
+2. **State Management**
+   - Improve how actor loop accesses and updates trader state
+   - Ensure state consistency between trading and recalibration loops
+   - Better handling of state snapshots during recalibration
+
+3. **Decision Making**
+   - Enhance action selection logic (when to trade, when to hold)
+   - Smarter market condition checks before action selection
+   - Better integration with cash reserve thresholds
+   - Consider position limits and market viability
+
+4. **Error Handling**
+   - Better recovery from failures in the actor loop
+   - Graceful degradation when components fail
+   - Circuit breaker improvements
+
+5. **Performance**
+   - Optimize the 4-step pipeline
+   - Reduce latency in observation building
+   - Improve action selection speed
+
+**What to Defer:**
+- ❌ Hierarchical status display with sub-steps (thinking mode) → **Defer to post-MVP**
+- ⚠️ Enhanced calibration checks (markets viable, portfolio health) → Can be added incrementally
+- ⚠️ "Last portfolio data sync X" timestamp → Low priority, can add later
+
+**Key Files:**
+- `backend/src/kalshiflow_rl/trading/actor_service.py` - Core actor loop implementation
+- `backend/src/kalshiflow_rl/trading/kalshi_multi_market_order_manager.py` - Order execution and state management
+- `backend/src/kalshiflow_rl/trading/action_selector.py` - Action selection logic
+- `backend/src/kalshiflow_rl/environments/feature_extractors.py` - Observation building
+
+**Integration Points:**
+- ActorService uses OrderManager for execution (`execute_limit_order_action`)
+- Recalibration loop in OrderManager runs in parallel (every 60s)
+- Both loops share same state (positions, cash, orders) - potential coordination needed
+- EventBus routes orderbook deltas to ActorService queue
 
 ### Phase 3: Order Groups (Week 3) - MEDIUM
 
@@ -595,11 +705,104 @@ class OrderGroupManager:
 
 ---
 
+## M2 Accelerators & Context
+
+### Key Files to Review
+
+**Core Actor Loop:**
+- `backend/src/kalshiflow_rl/trading/actor_service.py` - Main actor service with 4-step pipeline
+  - `_process_market_update()` - Core loop implementation (line ~532)
+  - `_build_observation()` - Converts orderbook to model input
+  - `_select_action()` - Action selection logic
+  - `_safe_execute_action()` - Order execution
+  - `_update_positions()` - Portfolio state tracking
+
+**Order Execution:**
+- `backend/src/kalshiflow_rl/trading/kalshi_multi_market_order_manager.py` - Order manager
+  - `execute_limit_order_action()` - Executes actions from actor loop
+  - `_start_periodic_sync()` - Recalibration loop (line ~3677)
+  - Position closing methods (from M1)
+
+**Action Selection:**
+- `backend/src/kalshiflow_rl/trading/action_selector.py` - Action selection strategies
+  - `RLModelSelector` - Uses trained PPO model
+  - `HardcodedSelector` - Simple hardcoded strategy
+
+**Observation Building:**
+- `backend/src/kalshiflow_rl/environments/feature_extractors.py` - Feature extraction
+  - `LiveObservationAdapter` - Converts orderbook to 52-feature array
+
+### Current Architecture
+
+**Event Flow:**
+```
+OrderbookClient (WebSocket) 
+  → EventBus (internal routing)
+    → ActorService._event_queue (async queue)
+      → _event_processing_loop() (serial processing)
+        → _process_market_update() (4-step pipeline)
+```
+
+**Parallel Processes:**
+- **Trading Loop:** Reactive, processes orderbook deltas as they arrive
+- **Recalibration Loop:** Proactive, runs every 60s in `_start_periodic_sync()`
+- **FillListener:** Real-time fill notifications via WebSocket
+- **PositionListener:** Real-time position updates via WebSocket
+
+**State Management:**
+- OrderManager maintains authoritative state (cash, positions, orders)
+- ActorService reads state from OrderManager (no local copies)
+- Both loops access same OrderManager instance
+- State synced with Kalshi API periodically (every 60s)
+
+### Known Issues & Gaps
+
+1. **Trading Loop & Recalibration Loop Coordination**
+   - **Issue:** Both loops can access shared state simultaneously
+   - **Risk:** Trading loop might open positions while recalibration loop is closing them
+   - **Status:** Deferred from M1, needs coordination mechanism
+   - **Potential Solution:** Add lock/flag to prevent position opening during active recalibration
+
+2. **Action Selection Logic**
+   - **Issue:** Action selection doesn't consider market conditions deeply
+   - **Gap:** No market viability checks before action selection
+   - **Opportunity:** Add market state awareness to action selector
+
+3. **Error Recovery**
+   - **Issue:** Actor loop errors can cause queue backup
+   - **Gap:** Limited recovery mechanisms for failed observations/actions
+   - **Opportunity:** Better error handling and circuit breakers
+
+4. **Performance Optimization**
+   - **Issue:** Observation building happens on every event
+   - **Gap:** Could cache observations or optimize feature extraction
+   - **Opportunity:** Profile and optimize hot paths
+
+### Integration Points
+
+**ActorService ↔ OrderManager:**
+- ActorService calls `order_manager.execute_limit_order_action()`
+- OrderManager handles all Kalshi API interactions
+- OrderManager maintains cash, positions, orders state
+
+**ActorService ↔ Recalibration Loop:**
+- Both run in parallel (no direct communication)
+- Share same OrderManager instance
+- Recalibration loop can close positions while trading loop opens new ones
+
+**EventBus ↔ ActorService:**
+- EventBus routes orderbook deltas to ActorService queue
+- Non-blocking: EventBus doesn't wait for processing
+- Queue-based: Events queued if ActorService is busy
+
 ## Next Steps
 
-1. **Review this document** with the team
-2. **Prioritize phases** based on business needs
-3. **Start Phase 1** (position management) - most critical
+1. ✅ **Phase 1 (M1) Complete** - Position management delivered
+2. **Start Phase 2 (M2)** - Core actor loop improvements
+3. **Focus Areas:**
+   - Actor loop coordination (trading ↔ recalibration)
+   - Enhanced decision making
+   - Error recovery improvements
 4. **Test incrementally** in paper trading
 5. **Iterate** based on results
 
