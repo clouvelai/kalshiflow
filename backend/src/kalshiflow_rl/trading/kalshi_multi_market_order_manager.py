@@ -293,12 +293,15 @@ class KalshiMultiMarketOrderManager:
         
         logger.info(f"KalshiMultiMarketOrderManager initialized with ${initial_cash:.2f}")
     
-    async def initialize(self) -> None:
+    async def initialize(self, initialization_tracker=None) -> None:
         """
         Initialize the order manager and start fill processing.
         
         Requires valid Kalshi API credentials. Validates credentials before
         attempting connection and fails fast if missing.
+        
+        Args:
+            initialization_tracker: Optional InitializationTracker for reporting progress
         
         Raises:
             KalshiDemoAuthError: If credentials are missing or invalid
@@ -323,29 +326,82 @@ class KalshiMultiMarketOrderManager:
             )
         
         # Initialize trading client (will validate credentials again internally)
+        if initialization_tracker:
+            await initialization_tracker.mark_step_in_progress("trader_client_health")
+        
         self.trading_client = KalshiDemoTradingClient()
         await self.trading_client.connect()
         logger.info("✅ Demo trading client connected")
+        
+        # Report trader client health
+        if initialization_tracker:
+            from ..config import config
+            await initialization_tracker.mark_step_complete("trader_client_health", {
+                "api_url": config.KALSHI_API_URL,
+                "connected": True,
+            })
+            await initialization_tracker.update_component_health("trader_client", "healthy", {
+                "api_url": config.KALSHI_API_URL,
+                "connected": True,
+            })
         
         # Start fill processor only after successful client connection
         self._fill_processor_task = asyncio.create_task(self._process_fills())
         logger.info("✅ Fill processor started")
         
         # Start fill listener (WebSocket for real-time fill notifications)
-        try:
-            from .fill_listener import FillListener
-            self._fill_listener = FillListener(order_manager=self)
-            await self._fill_listener.start()
-            logger.info("✅ Fill listener started (WebSocket connected)")
-        except Exception as e:
-            # Fill listener is critical but we can fall back to periodic sync
-            logger.warning(f"⚠️ Fill listener failed to start: {e}. Using periodic sync as fallback.")
-            self._fill_listener = None
+        # No fallbacks - if fill listener fails, initialization fails
+        if initialization_tracker:
+            await initialization_tracker.mark_step_in_progress("fill_listener_health")
         
-        # Check if cleanup is enabled BEFORE syncing (defaults to true)
+        from .fill_listener import FillListener
+        self._fill_listener = FillListener(order_manager=self)
+        await self._fill_listener.start()
+        logger.info("✅ Fill listener started")
+        
+        # Wait for WebSocket connection to establish (connection happens asynchronously)
+        # Similar to orderbook - give it a moment to connect before health check
+        max_wait_time = 5.0  # Maximum wait time in seconds
+        wait_interval = 0.2   # Check every 200ms
+        elapsed = 0.0
+        fill_listener_healthy = False
+        
+        while elapsed < max_wait_time:
+            if self._fill_listener.is_healthy():
+                fill_listener_healthy = True
+                logger.info("✅ Fill listener WebSocket connected and healthy")
+                break
+            await asyncio.sleep(wait_interval)
+            elapsed += wait_interval
+        
+        if not fill_listener_healthy:
+            error_msg = f"FillListener not healthy after {max_wait_time}s wait - WebSocket connection failed"
+            logger.error(error_msg)
+            raise RuntimeError(error_msg)
+        
+        # Report fill listener health (wrap in try/except to handle WebSocket implementation differences)
+        if initialization_tracker:
+            try:
+                health_details = self._fill_listener.get_health_details()
+            except (AttributeError, TypeError) as e:
+                logger.warning(f"Could not get detailed fill listener health (WebSocket attribute check issue): {e}")
+                # Use basic health info - we know it's healthy since is_healthy() passed
+                health_details = {
+                    "running": self._fill_listener._running,
+                    "connected": True,  # We know it's connected if is_healthy() passed
+                    "ws_url": self._fill_listener.ws_url,
+                    "fills_received": getattr(self._fill_listener, '_fills_received', 0),
+                }
+            
+            await initialization_tracker.mark_step_complete("fill_listener_health", {
+                "details": health_details
+            })
+            await initialization_tracker.update_component_health("fill_listener", "healthy", health_details)
+        
+        # Check if cleanup is enabled BEFORE syncing (defaults to false - user requested always disabled)
         import os
         from ..config import config
-        cleanup_enabled = os.getenv("RL_CLEANUP_ON_START", "true").lower() == "true"
+        cleanup_enabled = os.getenv("RL_CLEANUP_ON_START", "false").lower() == "true"
         
         if cleanup_enabled:
             # Clean up any leftover orders/positions BEFORE syncing
@@ -366,43 +422,127 @@ class KalshiMultiMarketOrderManager:
         
         # Synchronize orders and positions with Kalshi on startup (if enabled)
         # This happens AFTER cleanup so we get fresh state
+        # No try/except wrapper - let exceptions propagate to fail initialization
         if config.RL_ORDER_SYNC_ENABLED and config.RL_ORDER_SYNC_ON_STARTUP:
             logger.info("Starting order synchronization with Kalshi...")
-            try:
-                order_stats = await self.sync_orders_with_kalshi(is_startup=True)
-                
-                # Log summary (warnings for actual discrepancies are already logged by sync_orders_with_kalshi)
-                # On startup, finding orders in Kalshi but not locally is expected, not a discrepancy
-                actual_discrepancies = order_stats.get("discrepancies", 0) + order_stats.get("removed", 0)
-                if actual_discrepancies == 0:
-                    logger.info(
-                        f"✅ Startup order sync complete: {order_stats['found_in_kalshi']} orders in Kalshi, "
-                        f"{order_stats['found_in_memory']} orders in local memory - all in sync"
-                    )
-                # If there are actual discrepancies, they're already logged as warnings by sync_orders_with_kalshi
-                
-                # Sync positions
-                await self._sync_positions_with_kalshi(is_startup=True)
-                # Position sync messages are already logged by _sync_positions_with_kalshi
-            except Exception as e:
-                logger.error(f"Error during startup sync: {e}")
-                logger.warning("Continuing without sync - local state may be out of sync")
+            
+            # Sync balance first - Kalshi API returns both balance and portfolio_value
+            # Validation is now done in demo_client.get_account_info() - will raise if missing/invalid
+            if initialization_tracker:
+                await initialization_tracker.mark_step_in_progress("sync_balance")
+            
+            # Get account info to sync balance AND portfolio_value from Kalshi
+            # According to Kalshi API docs: /portfolio/balance returns both fields
+            # Validation in demo_client ensures both fields are present and valid
+            balance_response = await self.trading_client.get_account_info()
+            
+            # Extract cash balance (guaranteed to exist after validation)
+            old_balance = self.cash_balance
+            self.cash_balance = balance_response["balance"] / 100.0  # Convert from cents to dollars
+            
+            # Extract portfolio_value (guaranteed to exist after validation)
+            self._portfolio_value_from_kalshi = balance_response["portfolio_value"] / 100.0  # Convert from cents to dollars
+            
+            logger.info(
+                f"Balance sync complete: Cash=${old_balance:.2f} → ${self.cash_balance:.2f}, "
+                f"Portfolio=${self._portfolio_value_from_kalshi:.2f} (both from Kalshi API)"
+            )
+            
+            if initialization_tracker:
+                await initialization_tracker.mark_step_complete("sync_balance", {
+                    "balance": self.cash_balance,
+                    "balance_before": old_balance,
+                    "portfolio_value": self._portfolio_value_from_kalshi,
+                })
+            
+            # Sync positions - fail fast if sync fails
+            if initialization_tracker:
+                await initialization_tracker.mark_step_in_progress("sync_positions")
+            
+            # Let exceptions propagate - no fallbacks
+            await self._sync_positions_with_kalshi(is_startup=True)
+            
+            if initialization_tracker:
+                positions_count = len(self.positions)
+                await initialization_tracker.mark_step_complete("sync_positions", {
+                    "positions_count": positions_count,
+                    "positions": {ticker: {"contracts": pos.contracts, "cost_basis": pos.cost_basis} 
+                                for ticker, pos in self.positions.items()},
+                })
+            
+            # Sync orders - fail fast if sync fails
+            if initialization_tracker:
+                await initialization_tracker.mark_step_in_progress("sync_orders")
+            
+            # Let exceptions propagate - no fallbacks
+            order_stats = await self.sync_orders_with_kalshi(is_startup=True)
+            
+            # Log summary (warnings for actual discrepancies are already logged by sync_orders_with_kalshi)
+            # On startup, finding orders in Kalshi but not locally is expected, not a discrepancy
+            actual_discrepancies = order_stats.get("discrepancies", 0) + order_stats.get("removed", 0)
+            if actual_discrepancies == 0:
+                logger.info(
+                    f"✅ Startup order sync complete: {order_stats['found_in_kalshi']} orders in Kalshi, "
+                    f"{order_stats['found_in_memory']} orders in local memory - all in sync"
+                )
+            # If there are actual discrepancies, they're already logged as warnings by sync_orders_with_kalshi
+            
+            if initialization_tracker:
+                await initialization_tracker.mark_step_complete("sync_orders", {
+                    "orders_in_kalshi": order_stats.get("found_in_kalshi", 0),
+                    "orders_in_memory": order_stats.get("found_in_memory", 0),
+                    "orders_added": order_stats.get("added", 0),
+                    "orders_removed": order_stats.get("removed", 0),
+                    "discrepancies": order_stats.get("discrepancies", 0),
+                })
         
         # Start periodic synchronization (if enabled)
         if config.RL_ORDER_SYNC_ENABLED:
             self._periodic_sync_task = asyncio.create_task(self._start_periodic_sync())
             logger.info(f"✅ Periodic sync started (interval: {config.RL_ORDER_SYNC_INTERVAL_SECONDS}s)")
         
-        # Capture session start values after sync (for session tracking)
+        # Capture session start values AFTER all sync steps complete
+        # Both cash balance and portfolio_value MUST come directly from Kalshi API - NO calculations
+        # If sync completed successfully, both values are guaranteed to be available
         if self.session_start_cash is None:
-            self.session_start_cash = self.cash_balance
-            self.session_start_portfolio_value = self.get_portfolio_value()
+            # Both values must be available from sync - fail if not
+            if not hasattr(self, '_portfolio_value_from_kalshi') or self._portfolio_value_from_kalshi is None:
+                raise RuntimeError(
+                    "Portfolio value not available from Kalshi sync. "
+                    "Both balance and portfolio_value must be fetched from /portfolio/balance endpoint. "
+                    "Cannot proceed with initialization."
+                )
+            
+            self.session_start_cash = self.cash_balance  # From Kalshi balance endpoint
+            self.session_start_portfolio_value = self._portfolio_value_from_kalshi  # From Kalshi balance endpoint
+            
             logger.info(
-                f"Session start values captured: Cash=${self.session_start_cash:.2f}, "
-                f"Portfolio=${self.session_start_portfolio_value:.2f}"
+                f"Session start values captured from Kalshi API: "
+                f"Cash=${self.session_start_cash:.2f}, "
+                f"Portfolio=${self.session_start_portfolio_value:.2f} "
+                f"(both from /portfolio/balance endpoint - no calculations)"
             )
         
+        # Update last sync time
+        self._last_sync_time = time.time()
+        
         logger.info("✅ KalshiMultiMarketOrderManager ready for trading")
+        
+        # Verify listeners are subscribed
+        if initialization_tracker:
+            await initialization_tracker.mark_step_in_progress("verify_fill_listener_subscription")
+            if self._fill_listener and self._fill_listener.is_healthy():
+                await initialization_tracker.mark_step_complete("verify_fill_listener_subscription", {
+                    "fill_listener_active": True,
+                })
+            else:
+                await initialization_tracker.mark_step_failed("verify_fill_listener_subscription", "Fill listener not active")
+            
+            await initialization_tracker.mark_step_in_progress("verify_listeners")
+            await initialization_tracker.mark_step_complete("verify_listeners", {
+                "fill_listener": self._fill_listener is not None,
+                "state_change_callbacks": True,  # Set later in app.py
+            })
         
         # Notify about initial state
         await self._notify_state_change()
@@ -2275,19 +2415,18 @@ class KalshiMultiMarketOrderManager:
                 else:
                     logger.debug(f"Position sync complete: {len(self.positions)} positions - all in sync")
             
-            # Also sync cash balance from Kalshi
-            try:
-                account_info = await self.trading_client.get_account_info()
-                if "balance" in account_info:
-                    old_balance = self.cash_balance
-                    self.cash_balance = account_info["balance"] / 100.0  # Convert cents to dollars
-                    if abs(old_balance - self.cash_balance) > 0.01:
-                        if is_startup:
-                            logger.info(f"Cash balance synced: ${old_balance:.2f} → ${self.cash_balance:.2f} (from Kalshi)")
-                        else:
-                            logger.warning(f"Cash balance synced: ${old_balance:.2f} → ${self.cash_balance:.2f}")
-            except Exception as e:
-                logger.warning(f"Could not sync cash balance: {e}")
+            # Sync cash balance from Kalshi (only if not startup - startup syncs balance separately)
+            # This makes the sync idempotent and works for periodic syncs
+            if not is_startup:
+                try:
+                    account_info = await self.trading_client.get_account_info()
+                    if "balance" in account_info:
+                        old_balance = self.cash_balance
+                        self.cash_balance = account_info["balance"] / 100.0  # Convert cents to dollars
+                        if abs(old_balance - self.cash_balance) > 0.01:
+                            logger.debug(f"Cash balance synced: ${old_balance:.2f} → ${self.cash_balance:.2f}")
+                except Exception as e:
+                    logger.warning(f"Could not sync cash balance during position sync: {e}")
             
         except Exception as e:
             logger.error(f"Error syncing positions with Kalshi: {e}")
@@ -2521,3 +2660,58 @@ class KalshiMultiMarketOrderManager:
         """Generate unique internal order ID."""
         self._order_counter += 1
         return f"order_{self._order_counter}_{int(time.time() * 1000)}"
+    
+    def is_healthy(self) -> bool:
+        """
+        Check if order manager is healthy.
+        
+        Returns:
+            True if trading client is connected and fill processor is running
+        """
+        if not self.trading_client:
+            return False
+        
+        # Check if trading client is connected
+        # Assuming trading_client has a connected property or method
+        if hasattr(self.trading_client, 'connected'):
+            if not self.trading_client.connected:
+                return False
+        
+        # Check if fill processor task is running
+        if self._fill_processor_task and self._fill_processor_task.done():
+            return False
+        
+        return True
+    
+    def get_health_details(self) -> Dict[str, Any]:
+        """
+        Get detailed health information for initialization tracker.
+        
+        Returns:
+            Dictionary with health status, connection info, and state details
+        """
+        from ..config import config
+        return {
+            "trading_client_initialized": self.trading_client is not None,
+            "trading_client_connected": (
+                self.trading_client.connected if self.trading_client and hasattr(self.trading_client, 'connected') else False
+            ),
+            "api_url": config.KALSHI_API_URL,
+            "fill_listener_active": self._fill_listener is not None,
+            "fill_processor_running": (
+                self._fill_processor_task is not None and not self._fill_processor_task.done()
+            ),
+            "cash_balance": self.cash_balance,
+            "open_orders_count": len(self.open_orders),
+            "positions_count": len(self.positions),
+            "last_sync_time": getattr(self, '_last_sync_time', None),
+        }
+    
+    def get_last_sync_time(self) -> Optional[float]:
+        """
+        Get last sync time with Kalshi.
+        
+        Returns:
+            Timestamp of last sync, or None if never synced
+        """
+        return getattr(self, '_last_sync_time', None)

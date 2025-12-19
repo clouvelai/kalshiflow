@@ -34,6 +34,7 @@ from .trading.actor_service import ActorService
 from .trading.kalshi_multi_market_order_manager import KalshiMultiMarketOrderManager
 from .trading.live_observation_adapter import LiveObservationAdapter
 from .trading.action_selector import create_action_selector
+from .trading.initialization_tracker import InitializationTracker
 
 # Background task management
 _background_tasks = []
@@ -101,7 +102,12 @@ async def lifespan(app: Starlette):
     order_manager = None
     observation_adapter = None
     
+    # Create initialization tracker
+    initialization_tracker = InitializationTracker(websocket_manager=websocket_manager)
+    
     try:
+        # Start initialization tracking
+        await initialization_tracker.start()
         # Validate authentication first (skip if ActorService enabled - OrderManager will validate)
         # OrderManager initialization will validate credentials, so we can defer validation
         # when ActorService is enabled to allow OrderManager to handle credential validation
@@ -127,6 +133,16 @@ async def lifespan(app: Starlette):
         event_bus = await get_event_bus()
         await event_bus.start()
         logger.info("EventBus started")
+        
+        # Report EventBus health
+        await initialization_tracker.mark_step_in_progress("event_bus_health")
+        if event_bus.is_healthy():
+            await initialization_tracker.mark_step_complete("event_bus_health", {
+                "details": event_bus.get_health_details()
+            })
+            await initialization_tracker.update_component_health("event_bus", "healthy", event_bus.get_health_details())
+        else:
+            await initialization_tracker.mark_step_failed("event_bus_health", "EventBus not healthy")
         
         # Select market tickers (either from discovery or config)
         market_tickers = await select_market_tickers()
@@ -160,6 +176,33 @@ async def lifespan(app: Starlette):
         orderbook_task = asyncio.create_task(orderbook_client.start())
         _background_tasks.append(orderbook_task)
         
+        # Report OrderbookClient health (after a brief wait for connection)
+        await initialization_tracker.mark_step_in_progress("orderbook_health")
+        # Wait a moment for connection to establish
+        await asyncio.sleep(2.0)
+        if orderbook_client.is_healthy():
+            health_details = orderbook_client.get_health_details()
+            await initialization_tracker.mark_step_complete("orderbook_health", {
+                "details": health_details
+            })
+            await initialization_tracker.update_component_health("orderbook_client", "healthy", health_details)
+        else:
+            await initialization_tracker.mark_step_failed("orderbook_health", "OrderbookClient not healthy", {
+                "details": orderbook_client.get_health_details()
+            })
+        
+        # Verify orderbook subscriptions
+        await initialization_tracker.mark_step_in_progress("verify_orderbook_subscriptions")
+        if orderbook_client.is_healthy():
+            stats = orderbook_client.get_stats()
+            await initialization_tracker.mark_step_complete("verify_orderbook_subscriptions", {
+                "markets_subscribed": stats.get("market_count", 0),
+                "snapshots_received": stats.get("snapshots_received", 0),
+                "deltas_received": stats.get("deltas_received", 0),
+            })
+        else:
+            await initialization_tracker.mark_step_failed("verify_orderbook_subscriptions", "OrderbookClient not healthy")
+        
         # Initialize ActorService components for trading (only if enabled)
         logger.info("=" * 60)
         logger.info(f"Actor Service: {'ENABLED' if config.RL_ACTOR_ENABLED else 'DISABLED'}")
@@ -190,7 +233,7 @@ async def lifespan(app: Starlette):
             
             # Initialize OrderManager (requires credentials - fail fast if missing)
             try:
-                await order_manager.initialize()
+                await order_manager.initialize(initialization_tracker=initialization_tracker)
                 logger.info("✅ KalshiMultiMarketOrderManager initialized successfully")
                 # Cleanup is now handled inside initialize() method before syncing
                 
@@ -216,28 +259,17 @@ async def lifespan(app: Starlette):
                 )
                 
                 # Create and set action selector based on config
-                try:
-                    selector = create_action_selector(
-                        strategy=config.RL_ACTOR_STRATEGY,
-                        model_path=config.RL_ACTOR_MODEL_PATH
-                    )
-                    actor_service.set_action_selector(selector)
-                    
-                    # Register selector with order manager for mutual exclusivity protection
-                    order_manager.register_action_selector(selector)
-                    
-                    logger.info(f"Action selector configured: {selector.get_strategy_name()}")
-                except Exception as e:
-                    logger.error(f"Failed to create action selector: {e}")
-                    logger.warning("Falling back to HardcodedSelector (always HOLD)")
-                    from .trading.hardcoded_policies import HardcodedSelector
-                    fallback_selector = HardcodedSelector()
-                    actor_service.set_action_selector(fallback_selector)
-                    
-                    # Register fallback selector with order manager
-                    order_manager.register_action_selector(fallback_selector)
-                    
-                    logger.info("Action selector configured: HardcodedSelector (fallback)")
+                # No fallbacks - if selector creation fails, initialization fails
+                selector = create_action_selector(
+                    strategy=config.RL_ACTOR_STRATEGY,
+                    model_path=config.RL_ACTOR_MODEL_PATH
+                )
+                actor_service.set_action_selector(selector)
+                
+                # Register selector with order manager for mutual exclusivity protection
+                order_manager.register_action_selector(selector)
+                
+                logger.info(f"Action selector configured: {selector.get_strategy_name()}")
                 
                 # Set order manager
                 actor_service.set_order_manager(order_manager)
@@ -271,13 +303,116 @@ async def lifespan(app: Starlette):
                 logger.info("State change callback configured for OrderManager")
                 
                 # Initialize ActorService (subscribes to event bus and starts processing loop)
+                # Only start ActorService after all initialization steps are complete
                 await actor_service.initialize()
                 logger.info("✅ ActorService initialized and ready")
+                
+                # Final verification: Wait for orderbook to be healthy before completing initialization
+                # This ensures orderbook has time to establish connection and receive data
+                logger.info("Verifying orderbook health before completing initialization...")
+                max_wait_time = 30.0  # Maximum wait time in seconds
+                wait_interval = 1.0   # Check every second
+                elapsed = 0.0
+                orderbook_healthy_at_end = False
+                
+                while elapsed < max_wait_time:
+                    if orderbook_client and orderbook_client.is_healthy():
+                        # Verify it has received some data (at least one snapshot or delta)
+                        stats = orderbook_client.get_stats()
+                        if stats.get("snapshots_received", 0) > 0 or stats.get("deltas_received", 0) > 0:
+                            orderbook_healthy_at_end = True
+                            logger.info(f"✅ Orderbook verified healthy after {elapsed:.1f}s (snapshots: {stats.get('snapshots_received', 0)}, deltas: {stats.get('deltas_received', 0)})")
+                            # Update health status one more time
+                            health_details = orderbook_client.get_health_details()
+                            await initialization_tracker.update_component_health("orderbook_client", "healthy", health_details)
+                            break
+                    
+                    await asyncio.sleep(wait_interval)
+                    elapsed += wait_interval
+                
+                if not orderbook_healthy_at_end:
+                    # Orderbook must be healthy and receiving data before initialization completes
+                    error_msg = f"Orderbook not healthy after {max_wait_time}s wait - must receive data before initialization can complete"
+                    logger.error(error_msg)
+                    if orderbook_client:
+                        health_details = orderbook_client.get_health_details()
+                        await initialization_tracker.update_component_health("orderbook_client", "unhealthy", health_details)
+                    raise RuntimeError(error_msg)
+                
+                # Complete initialization tracking
+                await initialization_tracker.complete_initialization({
+                    "starting_cash": order_manager.session_start_cash if order_manager else None,
+                    "starting_portfolio_value": order_manager.session_start_portfolio_value if order_manager else None,
+                    "positions_resumed": len(order_manager.positions) if order_manager else 0,
+                    "orders_resumed": len(order_manager.open_orders) if order_manager else 0,
+                    "markets_trading": market_tickers,
+                })
+                
+                # Start periodic health broadcasts
+                async def periodic_health_broadcast():
+                    """Periodically broadcast component health updates."""
+                    while True:
+                        try:
+                            await asyncio.sleep(10.0)  # Broadcast every 10 seconds
+                            
+                            # Update health for all components
+                            if orderbook_client:
+                                try:
+                                    health_status = "healthy" if orderbook_client.is_healthy() else "unhealthy"
+                                except Exception as e:
+                                    logger.warning(f"Error checking orderbook health: {e}, assuming healthy based on stats")
+                                    # Fallback: check if we're receiving messages
+                                    stats = orderbook_client.get_stats()
+                                    health_status = "healthy" if stats.get("messages_received", 0) > 0 else "unhealthy"
+                                
+                                await initialization_tracker.update_component_health(
+                                    "orderbook_client",
+                                    health_status,
+                                    orderbook_client.get_health_details()
+                                )
+                            
+                            if order_manager:
+                                health_status = "healthy" if order_manager.is_healthy() else "unhealthy"
+                                await initialization_tracker.update_component_health(
+                                    "trader_client",
+                                    health_status,
+                                    order_manager.get_health_details()
+                                )
+                                
+                                if order_manager._fill_listener:
+                                    fill_health_status = "healthy" if order_manager._fill_listener.is_healthy() else "unhealthy"
+                                    await initialization_tracker.update_component_health(
+                                        "fill_listener",
+                                        fill_health_status,
+                                        order_manager._fill_listener.get_health_details()
+                                    )
+                            
+                            if event_bus:
+                                health_status = "healthy" if event_bus.is_healthy() else "unhealthy"
+                                await initialization_tracker.update_component_health(
+                                    "event_bus",
+                                    health_status,
+                                    event_bus.get_health_details()
+                                )
+                            
+                        except asyncio.CancelledError:
+                            break
+                        except Exception as e:
+                            logger.error(f"Error in periodic health broadcast: {e}")
+                
+                health_broadcast_task = asyncio.create_task(periodic_health_broadcast())
+                _background_tasks.append(health_broadcast_task)
         else:
             logger.info("ActorService disabled - orderbook collector only mode")
             actor_service = None
             order_manager = None
             observation_adapter = None
+            
+            # Complete initialization even if ActorService is disabled
+            await initialization_tracker.complete_initialization({
+                "actor_service_enabled": False,
+                "markets_collecting": market_tickers,
+            })
         logger.info("=" * 60)
         
         # Log startup summary

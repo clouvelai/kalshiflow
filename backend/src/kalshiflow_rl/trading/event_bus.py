@@ -264,6 +264,58 @@ class EventBus:
             "uptime_seconds": uptime,
             "events_per_second": self._events_processed / max(uptime, 1)
         }
+    
+    def is_healthy(self) -> bool:
+        """
+        Check if event bus is healthy.
+        
+        Returns:
+            True if running and processing events normally
+        """
+        if not self._running:
+            return False
+        
+        # Check if processing task is running
+        if self._processing_task is None or self._processing_task.done():
+            return False
+        
+        # Check for excessive callback errors (indicates problems)
+        if self._callback_errors > 100:
+            return False
+        
+        return True
+    
+    def get_health_details(self) -> Dict[str, Any]:
+        """
+        Get detailed health information for initialization tracker.
+        
+        Returns:
+            Dictionary with health status and operational details
+        """
+        stats = self.get_stats()
+        return {
+            "running": self._running,
+            "processing_task_active": (
+                self._processing_task is not None and not self._processing_task.done()
+            ),
+            "events_emitted": stats.get("events_emitted", 0),
+            "events_processed": stats.get("events_processed", 0),
+            "queue_size": stats.get("queue_size", 0),
+            "subscriber_count": stats.get("subscriber_count", 0),
+            "callback_errors": stats.get("callback_errors", 0),
+            "last_error": stats.get("last_error"),
+            "uptime_seconds": stats.get("uptime_seconds", 0),
+        }
+    
+    def get_last_sync_time(self) -> Optional[float]:
+        """
+        Get last event processed time.
+        
+        Returns:
+            Timestamp when event bus started (as proxy for last activity),
+            or None if not started
+        """
+        return self._started_at
 
 
 # Global event bus instance (singleton pattern)

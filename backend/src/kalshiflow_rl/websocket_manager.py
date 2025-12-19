@@ -107,6 +107,34 @@ class StatsUpdateMessage:
     data: Dict[str, Any] = None
 
 
+@dataclass
+class InitializationStartMessage:
+    """Initialization sequence started message."""
+    type: str = "initialization_start"
+    data: Dict[str, Any] = None
+
+
+@dataclass
+class InitializationStepMessage:
+    """Initialization step progress message."""
+    type: str = "initialization_step"
+    data: Dict[str, Any] = None
+
+
+@dataclass
+class InitializationCompleteMessage:
+    """Initialization sequence completed message."""
+    type: str = "initialization_complete"
+    data: Dict[str, Any] = None
+
+
+@dataclass
+class ComponentHealthMessage:
+    """Component health status update message."""
+    type: str = "component_health"
+    data: Dict[str, Any] = None
+
+
 class WebSocketManager:
     """
     Manages WebSocket connections and broadcasts orderbook updates.
@@ -140,6 +168,9 @@ class WebSocketManager:
         # For trader state broadcasting
         self._order_manager = None
         self._actor_service = None
+        
+        # For initialization status (sent to new connections)
+        self._initialization_status = None
         
         logger.info(f"WebSocketManager initialized for {len(self._market_tickers)} markets")
     
@@ -343,6 +374,29 @@ class WebSocketManager:
                 state_msg = TraderStateMessage(data=empty_state)
                 await self._send_to_client(websocket, state_msg)
                 logger.info("Sent empty trader state to new client (OrderManager not available)")
+            
+            # Send current initialization status if available (for clients connecting after initialization)
+            if self._initialization_status:
+                try:
+                    if self._initialization_status.get("completed_at"):
+                        # Send complete message
+                        complete_msg = InitializationCompleteMessage(data=self._initialization_status)
+                        await self._send_to_client(websocket, complete_msg)
+                        logger.info("Sent initialization_complete status to new client")
+                    else:
+                        # Send start message if initialization is in progress
+                        start_msg = InitializationStartMessage(data={
+                            "started_at": self._initialization_status.get("started_at")
+                        })
+                        await self._send_to_client(websocket, start_msg)
+                        # Send all current steps
+                        steps = self._initialization_status.get("steps", {})
+                        for step_id, step_data in steps.items():
+                            step_msg = InitializationStepMessage(data=step_data)
+                            await self._send_to_client(websocket, step_msg)
+                        logger.info(f"Sent initialization status to new client ({len(steps)} steps)")
+                except Exception as e:
+                    logger.warning(f"Failed to send initialization status to new client: {e}")
             
             # Keep connection alive and handle incoming messages
             while self._running and websocket.client_state == WebSocketState.CONNECTED:
@@ -562,6 +616,80 @@ class WebSocketManager:
         )
         await self._broadcast_to_all(message)
         logger.debug(f"Broadcast fill event to {len(self._connections)} clients")
+    
+    async def broadcast_initialization_start(self, start_data: Dict[str, Any]):
+        """
+        Broadcast initialization sequence start to all connected clients.
+        
+        Args:
+            start_data: Initialization start data with started_at timestamp
+        """
+        # Store initial status
+        if not self._initialization_status:
+            self._initialization_status = {
+                "started_at": start_data.get("started_at"),
+                "steps": {},
+                "completed_at": None
+            }
+        
+        if not self._connections:
+            return
+        
+        message = InitializationStartMessage(data=start_data)
+        await self._broadcast_to_all(message)
+        logger.debug(f"Broadcast initialization_start to {len(self._connections)} clients")
+    
+    async def broadcast_initialization_step(self, step_data: Dict[str, Any]):
+        """
+        Broadcast initialization step progress to all connected clients.
+        
+        Args:
+            step_data: Step data with step_id, name, status, details
+        """
+        # Update stored status
+        if not self._initialization_status:
+            self._initialization_status = {"steps": {}}
+        if "steps" not in self._initialization_status:
+            self._initialization_status["steps"] = {}
+        self._initialization_status["steps"][step_data.get("step_id")] = step_data
+        
+        if not self._connections:
+            return
+        
+        message = InitializationStepMessage(data=step_data)
+        await self._broadcast_to_all(message)
+        logger.debug(f"Broadcast initialization_step: {step_data.get('step_id')} ({step_data.get('status')})")
+    
+    async def broadcast_initialization_complete(self, complete_data: Dict[str, Any]):
+        """
+        Broadcast initialization sequence completion to all connected clients.
+        
+        Args:
+            complete_data: Completion data with steps summary, warnings, etc.
+        """
+        # Store the initialization status for new connections
+        self._initialization_status = complete_data.copy()
+        
+        if not self._connections:
+            return
+        
+        message = InitializationCompleteMessage(data=complete_data)
+        await self._broadcast_to_all(message)
+        logger.debug(f"Broadcast initialization_complete to {len(self._connections)} clients")
+    
+    async def broadcast_component_health(self, health_data: Dict[str, Any]):
+        """
+        Broadcast component health status update to all connected clients.
+        
+        Args:
+            health_data: Health data with component, status, last_update, details
+        """
+        if not self._connections:
+            return
+        
+        message = ComponentHealthMessage(data=health_data)
+        await self._broadcast_to_all(message)
+        logger.debug(f"Broadcast component_health: {health_data.get('component')} ({health_data.get('status')})")
     
     async def _broadcast_to_all(self, message: Any):
         """

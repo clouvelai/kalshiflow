@@ -332,27 +332,86 @@ class KalshiDemoTradingClient:
             logger.error(f"HTTP request failed: {e}")
             raise KalshiDemoTradingClientError(f"HTTP request failed: {e}")
     
+    def _validate_balance_response(self, response: Dict[str, Any]) -> None:
+        """
+        Validate balance/portfolio API response structure.
+        
+        Args:
+            response: Response from /portfolio/balance endpoint
+            
+        Raises:
+            ValueError: If response structure is invalid or missing required fields
+        """
+        if not isinstance(response, dict):
+            raise ValueError(f"Balance response must be a dictionary, got {type(response)}")
+        
+        # Must have both balance and portfolio_value (per Kalshi API docs)
+        if "balance" not in response:
+            raise ValueError("Balance response missing required 'balance' field")
+        
+        if "portfolio_value" not in response:
+            raise ValueError("Balance response missing required 'portfolio_value' field")
+        
+        # Validate types - both must be integers (cents)
+        if not isinstance(response["balance"], (int, float)):
+            raise ValueError(f"Balance must be numeric, got {type(response['balance'])}: {response['balance']}")
+        
+        if not isinstance(response["portfolio_value"], (int, float)):
+            raise ValueError(f"Portfolio value must be numeric, got {type(response['portfolio_value'])}: {response['portfolio_value']}")
+    
     async def get_account_info(self) -> Dict[str, Any]:
         """
-        Get demo account information including balance.
+        Get demo account information including balance and portfolio_value.
         
         Returns:
-            Account information including balance
+            Account information including balance and portfolio_value
+            
+        Raises:
+            KalshiDemoTradingClientError: If request fails
+            ValueError: If response structure is invalid
         """
         try:
             response = await self._make_request("GET", "/portfolio/balance")
             
-            # Update balance tracking - Kalshi returns balance in cents
-            if "balance" in response:
-                self.balance = Decimal(str(response["balance"])) / 100  # Convert cents to dollars
-            elif "available_balance" in response:
-                self.balance = Decimal(str(response["available_balance"])) / 100
+            # Validate response structure strictly
+            self._validate_balance_response(response)
             
-            logger.debug(f"Demo account balance: ${self.balance}")
+            # Update balance tracking - Kalshi returns balance in cents
+            self.balance = Decimal(str(response["balance"])) / 100  # Convert cents to dollars
+            
+            logger.debug(f"Demo account balance: ${self.balance}, portfolio_value: {response.get('portfolio_value', 'N/A')}")
             return response
             
+        except ValueError as e:
+            raise KalshiDemoTradingClientError(f"Invalid balance response structure: {e}")
         except Exception as e:
             raise KalshiDemoTradingClientError(f"Failed to get account info: {e}")
+    
+    def _validate_positions_response(self, response: Dict[str, Any]) -> None:
+        """
+        Validate positions API response structure.
+        
+        Args:
+            response: Response from /portfolio/positions endpoint
+            
+        Raises:
+            ValueError: If response structure is invalid
+        """
+        if not isinstance(response, dict):
+            raise ValueError(f"Positions response must be a dictionary, got {type(response)}")
+        
+        # Must have either "positions" or "market_positions" array (can be empty)
+        positions_key = None
+        if "positions" in response:
+            positions_key = "positions"
+        elif "market_positions" in response:
+            positions_key = "market_positions"
+        else:
+            raise ValueError("Positions response missing required 'positions' or 'market_positions' field")
+        
+        # Validate it's a list/array
+        if not isinstance(response[positions_key], list):
+            raise ValueError(f"Positions field must be a list, got {type(response[positions_key])}")
     
     async def get_positions(self) -> Dict[str, Any]:
         """
@@ -363,23 +422,50 @@ class KalshiDemoTradingClient:
             
         Raises:
             KalshiDemoTradingClientError: If request fails
+            ValueError: If response structure is invalid
         """
         try:
             response = await self._make_request("GET", "/portfolio/positions")
             
+            # Validate response structure
+            self._validate_positions_response(response)
+            
             # Update positions tracking
             self.positions = {}
-            if "positions" in response:
-                for position in response["positions"]:
-                    ticker = position.get("ticker", "")
-                    if ticker:
-                        self.positions[ticker] = position
+            positions_list = response.get("positions", response.get("market_positions", []))
+            for position in positions_list:
+                ticker = position.get("ticker", "")
+                if ticker:
+                    self.positions[ticker] = position
             
             logger.debug(f"Demo account has {len(self.positions)} positions")
             return response
             
+        except ValueError as e:
+            raise KalshiDemoTradingClientError(f"Invalid positions response structure: {e}")
         except Exception as e:
             raise KalshiDemoTradingClientError(f"Failed to get positions: {e}")
+    
+    def _validate_orders_response(self, response: Dict[str, Any]) -> None:
+        """
+        Validate orders API response structure.
+        
+        Args:
+            response: Response from /portfolio/orders endpoint
+            
+        Raises:
+            ValueError: If response structure is invalid
+        """
+        if not isinstance(response, dict):
+            raise ValueError(f"Orders response must be a dictionary, got {type(response)}")
+        
+        # Must have "orders" array (can be empty)
+        if "orders" not in response:
+            raise ValueError("Orders response missing required 'orders' field")
+        
+        # Validate it's a list/array
+        if not isinstance(response["orders"], list):
+            raise ValueError(f"Orders field must be a list, got {type(response['orders'])}")
     
     async def get_orders(self, ticker: Optional[str] = None) -> Dict[str, Any]:
         """
@@ -393,6 +479,7 @@ class KalshiDemoTradingClient:
             
         Raises:
             KalshiDemoTradingClientError: If request fails
+            ValueError: If response structure is invalid
         """
         try:
             path = "/portfolio/orders"
@@ -401,16 +488,20 @@ class KalshiDemoTradingClient:
             
             response = await self._make_request("GET", path)
             
+            # Validate response structure
+            self._validate_orders_response(response)
+            
             # Update orders tracking
-            if "orders" in response:
-                for order in response["orders"]:
-                    order_id = order.get("order_id", "")
-                    if order_id:
-                        self.orders[order_id] = order
+            for order in response["orders"]:
+                order_id = order.get("order_id", "")
+                if order_id:
+                    self.orders[order_id] = order
             
             logger.debug(f"Demo account has {len(self.orders)} orders")
             return response
             
+        except ValueError as e:
+            raise KalshiDemoTradingClientError(f"Invalid orders response structure: {e}")
         except Exception as e:
             raise KalshiDemoTradingClientError(f"Failed to get orders: {e}")
     

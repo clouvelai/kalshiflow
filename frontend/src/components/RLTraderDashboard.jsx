@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import TradesFeed from './TradesFeed';
 import CollectionStatus from './CollectionStatus';
 import TraderStatePanel from './TraderStatePanel';
+import SystemHealth from './SystemHealth';
 import { ChevronDownIcon, ChevronRightIcon } from '@heroicons/react/24/outline';
 
 const RLTraderDashboard = () => {
@@ -17,6 +18,10 @@ const RLTraderDashboard = () => {
   const [allOrders, setAllOrders] = useState(new Map()); // Track ALL orders by trade_sequence_id
   const [positions, setPositions] = useState({}); // Track positions
   const [priceMode, setPriceMode] = useState('dollar'); // Price display mode: 'dollar' or 'cent'
+  const [initializationStatus, setInitializationStatus] = useState(null); // Initialization checklist status
+  const [componentHealth, setComponentHealth] = useState({}); // Component health status
+  // Default to 'system' tab if initialization is not complete
+  const [activeTab, setActiveTab] = useState('system'); // Tab selection: 'portfolio' or 'system'
   
   // Collapsible state for grid sections
   const [collapsedSections, setCollapsedSections] = useState({
@@ -108,9 +113,14 @@ const RLTraderDashboard = () => {
                 setPositions(data.data.positions);
               }
               if (data.data.open_orders) {
-                setOpenOrders(data.data.open_orders);
+                // Ensure open_orders is an array (it might be an object or other type)
+                const ordersArray = Array.isArray(data.data.open_orders) 
+                  ? data.data.open_orders 
+                  : Object.values(data.data.open_orders || {});
+                
+                setOpenOrders(ordersArray);
                 // Add to allOrders map to preserve history
-                data.data.open_orders.forEach(order => {
+                ordersArray.forEach(order => {
                   if (order.trade_sequence_id) {
                     setAllOrders(prev => {
                       const newMap = new Map(prev);
@@ -184,10 +194,15 @@ const RLTraderDashboard = () => {
                 }));
               }
               if (data.data.open_orders) {
-                setOpenOrders(data.data.open_orders);
+                // Ensure open_orders is an array
+                const ordersArray = Array.isArray(data.data.open_orders) 
+                  ? data.data.open_orders 
+                  : Object.values(data.data.open_orders || {});
+                
+                setOpenOrders(ordersArray);
                 setTraderState(prev => ({
                   ...prev,
-                  open_orders: data.data.open_orders
+                  open_orders: ordersArray
                 }));
               }
             }
@@ -288,8 +303,13 @@ const RLTraderDashboard = () => {
               }));
               // Also check for open_orders in portfolio updates
               if (data.data.open_orders) {
-                setOpenOrders(data.data.open_orders);
-                data.data.open_orders.forEach(order => {
+                // Ensure open_orders is an array
+                const ordersArray = Array.isArray(data.data.open_orders) 
+                  ? data.data.open_orders 
+                  : Object.values(data.data.open_orders || {});
+                
+                setOpenOrders(ordersArray);
+                ordersArray.forEach(order => {
                   if (order.trade_sequence_id) {
                     setAllOrders(prev => {
                       const newMap = new Map(prev);
@@ -339,6 +359,69 @@ const RLTraderDashboard = () => {
             
           case 'ping':
             // Heartbeat/ping message - ignore silently
+            break;
+            
+          case 'initialization_start':
+            // Initialization sequence started
+            if (data.data) {
+              setInitializationStatus({
+                started_at: data.data.started_at,
+                steps: {},
+                is_complete: false,
+                has_errors: false,
+                summary: {}
+              });
+              setActiveTab('system'); // Ensure system tab is open during initialization
+            }
+            break;
+            
+          case 'initialization_step':
+            // Individual initialization step progress
+            if (data.data) {
+              setInitializationStatus(prev => {
+                const updated = { ...prev };
+                if (!updated.steps) updated.steps = {};
+                updated.steps[data.data.step_id] = data.data;
+                return updated;
+              });
+            }
+            break;
+            
+          case 'initialization_complete':
+            // Initialization sequence completed
+            if (data.data) {
+              setInitializationStatus(prev => ({
+                ...prev,
+                ...data.data,
+                started_at: data.data.started_at || prev?.started_at,
+                completed_at: data.data.completed_at,
+                duration_seconds: data.data.duration_seconds,
+                warnings: data.data.warnings || [],
+                steps: data.data.steps || prev?.steps || {},
+                is_complete: true,
+                has_errors: (data.data.warnings || []).length > 0,
+                summary: {
+                  total_steps: data.data.total_steps || Object.keys(data.data.steps || {}).length,
+                  completed_steps: data.data.completed_steps || Object.values(data.data.steps || {}).filter(s => s.status === 'complete').length,
+                }
+              }));
+              // Keep system tab open to show completion status
+              // User can manually switch to portfolio tab if desired
+            }
+            break;
+            
+          case 'component_health':
+            // Component health update
+            if (data.data) {
+              setComponentHealth(prev => ({
+                ...prev,
+                [data.data.component]: {
+                  status: data.data.status,
+                  last_update: data.data.last_update,
+                  details: data.data.details || {},
+                },
+              }));
+            }
             break;
             
           default:
@@ -872,20 +955,56 @@ const RLTraderDashboard = () => {
       {/* Main Content - Kanban Board Layout */}
       <main className="max-w-full px-4 sm:px-6 lg:px-8 py-6 space-y-6">
         
-        {/* Trader State - Compact Header */}
+        {/* Trader System Section with Tabs */}
         <div className="bg-gray-800 rounded-lg shadow-lg">
+          {/* Tab Navigation */}
+          <div className="border-b border-gray-700">
+            <div className="flex space-x-1 px-4 pt-4">
+              <button
+                onClick={() => setActiveTab('portfolio')}
+                className={`px-4 py-2 text-sm font-medium rounded-t-lg transition-colors ${
+                  activeTab === 'portfolio'
+                    ? 'bg-gray-700 text-white border-b-2 border-blue-500'
+                    : 'text-gray-400 hover:text-gray-300 hover:bg-gray-700/50'
+                }`}
+              >
+                Portfolio
+              </button>
+              <button
+                onClick={() => setActiveTab('system')}
+                className={`px-4 py-2 text-sm font-medium rounded-t-lg transition-colors ${
+                  activeTab === 'system'
+                    ? 'bg-gray-700 text-white border-b-2 border-blue-500'
+                    : 'text-gray-400 hover:text-gray-300 hover:bg-gray-700/50'
+                }`}
+              >
+                System
+              </button>
+            </div>
+          </div>
+
+          {/* Tab Content */}
           <div className="p-4">
-            <h2 className="text-lg font-semibold mb-3 text-gray-100">Trader State</h2>
-            
-            {/* Portfolio Stats & Action Breakdown */}
-            <TraderStatePanel 
-              state={traderState} 
-              executionStats={executionStats}
-              showExecutionStats={false}
-              showPositions={false}
-              showOrders={false}
-              showActionBreakdown={true}
-            />
+            {activeTab === 'portfolio' ? (
+              <>
+                <h2 className="text-lg font-semibold mb-3 text-gray-100">Trader State</h2>
+                
+                {/* Portfolio Stats & Action Breakdown */}
+                <TraderStatePanel 
+                  state={traderState} 
+                  executionStats={executionStats}
+                  showExecutionStats={false}
+                  showPositions={false}
+                  showOrders={false}
+                  showActionBreakdown={true}
+                />
+              </>
+            ) : (
+              <SystemHealth 
+                initializationStatus={initializationStatus}
+                componentHealth={componentHealth}
+              />
+            )}
           </div>
         </div>
 

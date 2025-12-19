@@ -675,16 +675,72 @@ class OrderbookClient:
     
     def is_healthy(self) -> bool:
         """Check if client is healthy and receiving data."""
-        if not self._running or not self._websocket:
+        if not self._running:
             return False
         
-        # Check if we've received recent messages
+        # If websocket exists, check if it's connected
+        if self._websocket:
+            # Check if WebSocket connection is closed
+            try:
+                if hasattr(self._websocket, 'closed'):
+                    if self._websocket.closed:
+                        return False
+                elif hasattr(self._websocket, 'close_code'):
+                    # Some WebSocket implementations use close_code (None = open)
+                    if self._websocket.close_code is not None:
+                        return False
+            except (AttributeError, TypeError) as e:
+                logger.debug(f"Could not check WebSocket connection state: {e}")
+                # If we can't check, assume healthy if _websocket is not None and _running is True
+                pass
+        
+        # If we have a websocket connection but haven't received messages yet,
+        # still consider it healthy if it's been less than 10 seconds (initial connection period)
+        if self._connection_start_time:
+            time_since_connection = time.time() - self._connection_start_time
+            if time_since_connection < 10.0:
+                # During initial connection period, just check if websocket exists and is running
+                return self._websocket is not None
+        
+        # After initial period, check if we've received recent messages
         if self._last_message_time:
             time_since_message = time.time() - self._last_message_time
             if time_since_message > 60:  # No messages for 60 seconds
                 return False
         
         return True
+    
+    def get_health_details(self) -> Dict[str, Any]:
+        """
+        Get detailed health information for initialization tracker.
+        
+        Returns:
+            Dictionary with health status, connection info, and market subscription details
+        """
+        stats = self.get_stats()
+        return {
+            "connected": stats.get("connected", False),
+            "running": stats.get("running", False),
+            "ws_url": self.ws_url,
+            "markets_subscribed": len(self.market_tickers),
+            "market_tickers": self.market_tickers,
+            "messages_received": stats.get("messages_received", 0),
+            "snapshots_received": stats.get("snapshots_received", 0),
+            "deltas_received": stats.get("deltas_received", 0),
+            "last_message_time": stats.get("last_message_time"),
+            "uptime_seconds": stats.get("uptime_seconds"),
+            "reconnect_count": stats.get("reconnect_count", 0),
+            "session_id": stats.get("session_id"),
+        }
+    
+    def get_last_sync_time(self) -> Optional[float]:
+        """
+        Get last message/sync time.
+        
+        Returns:
+            Timestamp of last message received, or None if no messages yet
+        """
+        return self._last_message_time
     
     def get_orderbook_state(self, market_ticker: str) -> Optional[SharedOrderbookState]:
         """

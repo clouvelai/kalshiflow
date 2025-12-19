@@ -439,3 +439,93 @@ class FillListener:
             "ws_url": self.ws_url,
             "metrics": self.get_metrics(),
         }
+    
+    def is_healthy(self) -> bool:
+        """
+        Check if fill listener is healthy.
+        
+        Returns:
+            True if running and WebSocket is connected
+        """
+        if not self._running:
+            return False
+        
+        # Check if WebSocket is connected
+        if self._ws is None:
+            return False
+        
+        # Check if WebSocket connection is still open
+        try:
+            # Check connection state if available
+            # Handle different WebSocket implementations
+            if hasattr(self._ws, 'closed'):
+                if self._ws.closed:
+                    return False
+            elif hasattr(self._ws, 'close_code'):
+                # Some WebSocket implementations use close_code
+                # None means connection is still open
+                if self._ws.close_code is not None:
+                    return False
+        except Exception as e:
+            # If we can't check the connection state, log but don't fail
+            # This might happen if the connection object structure is different
+            logger.debug(f"Could not check WebSocket connection state: {e}")
+            # If _running is True and _ws is not None, assume healthy
+            pass
+        
+        return True
+    
+    def get_health_details(self) -> Dict[str, Any]:
+        """
+        Get detailed health information for initialization tracker.
+        
+        Returns:
+            Dictionary with health status and connection details
+        """
+        metrics = self.get_metrics()
+        
+        # Check connection status safely - wrap everything in try/except
+        # to handle any WebSocket implementation differences
+        connected = False
+        if self._ws is not None:
+            try:
+                # Try multiple ways to check connection status
+                if hasattr(self._ws, 'closed'):
+                    try:
+                        connected = not self._ws.closed
+                    except (AttributeError, TypeError):
+                        connected = True  # Assume connected if we can't check
+                elif hasattr(self._ws, 'close_code'):
+                    try:
+                        # Some WebSocket implementations use close_code (None = open)
+                        connected = self._ws.close_code is None
+                    except (AttributeError, TypeError):
+                        connected = True  # Assume connected if we can't check
+                else:
+                    # If we can't check, assume connected if _ws is not None
+                    connected = True
+            except Exception as e:
+                # If we can't check at all, assume connected if _ws is not None
+                logger.debug(f"Could not determine WebSocket connection status: {e}")
+                connected = True
+        
+        return {
+            "running": self._running,
+            "connected": connected,
+            "ws_url": self.ws_url,
+            "messages_received": metrics.get("messages_received", 0),
+            "fills_received": metrics.get("fills_received", 0),
+            "errors": metrics.get("errors", 0),
+            "reconnect_count": metrics.get("reconnect_count", 0),
+            "last_message_time": metrics.get("last_message_time"),
+        }
+    
+    def get_last_sync_time(self) -> Optional[float]:
+        """
+        Get last message/fill received time.
+        
+        Returns:
+            Timestamp of last message received, or None if no messages yet
+        """
+        metrics = self.get_metrics()
+        return metrics.get("last_message_time")
