@@ -2731,20 +2731,45 @@ class KalshiMultiMarketOrderManager:
             return {"error": "Trading client not initialized"}
         
         try:
-            # Calculate timestamp for 24 hours ago
-            from datetime import datetime, timedelta
-            twenty_four_hours_ago = datetime.utcnow() - timedelta(hours=24)
-            min_ts = int(twenty_four_hours_ago.timestamp())
-            
-            # Fetch settlements from past 24 hours
-            logger.info("Fetching settlements from past 24 hours...")
-            settlements_response = await self.trading_client.get_settlements(
-                limit=200,
-                min_ts=min_ts
-            )
+            # Fetch all settlements (no query parameters for simplicity)
+            logger.info("Fetching all settlements from Kalshi...")
+            try:
+                settlements_response = await self.trading_client.get_settlements()
+            except Exception as api_error:
+                logger.error(f"Settlements API call failed: {api_error}")
+                logger.error(f"Error type: {type(api_error).__name__}")
+                raise
             
             settlements_list = settlements_response.get("settlements", [])
             logger.info(f"Retrieved {len(settlements_list)} settlements from Kalshi")
+            
+            # Sort settlements by settled_time (most recent first)
+            # settled_time is ISO format string like "2023-11-07T05:31:56Z"
+            def get_settled_timestamp(settlement):
+                settled_time = settlement.get("settled_time", "")
+                if settled_time:
+                    try:
+                        from datetime import datetime
+                        dt = datetime.fromisoformat(settled_time.replace('Z', '+00:00'))
+                        return dt.timestamp()
+                    except (ValueError, AttributeError):
+                        return 0
+                return 0
+            
+            settlements_list.sort(key=get_settled_timestamp, reverse=True)  # Most recent first
+            logger.debug(f"Sorted {len(settlements_list)} settlements by settled_time (most recent first)")
+            
+            # Log actual field names from first settlement for debugging
+            if settlements_list:
+                first_settlement = settlements_list[0]
+                logger.debug(f"Settlement API structure - available fields: {list(first_settlement.keys())}")
+                # Specifically log revenue and value related fields
+                revenue_fields = {k: v for k, v in first_settlement.items() if 'revenue' in k.lower()}
+                value_fields = {k: v for k, v in first_settlement.items() if 'value' in k.lower()}
+                if revenue_fields:
+                    logger.debug(f"Revenue-related fields found: {revenue_fields}")
+                if value_fields:
+                    logger.debug(f"Value-related fields found: {value_fields}")
             
             stats = {
                 "total_fetched": len(settlements_list),
@@ -2761,7 +2786,12 @@ class KalshiMultiMarketOrderManager:
                     continue
                 
                 # Store exact API structure
-                settlement_data = dict(settlement)  # Copy all fields as-is
+                # This copies all fields including revenue and value (both integers in cents per Kalshi API)
+                # According to Kalshi API docs: https://docs.kalshi.com/api-reference/portfolio/get-settlements
+                # revenue: integer in cents
+                # value: integer in cents
+                # Always use API values, never calculate locally - settlements come only from API sync
+                settlement_data = dict(settlement)  # Copy all fields as-is (revenue and value already included)
                 
                 # Convert fee_cost from string dollars to cents
                 fee_cost_str = settlement.get("fee_cost", "0.0")
@@ -2773,11 +2803,16 @@ class KalshiMultiMarketOrderManager:
                     logger.warning(f"Failed to parse fee_cost '{fee_cost_str}' for {ticker}: {e}")
                     settlement_data["fee_cost_cents"] = 0
                 
+                # Extract revenue for P&L calculation (already in settlement_data via dict copy above)
+                # revenue and value are preserved in settlement_data as-is (integers in cents from API)
+                revenue = settlement.get("revenue")
+                
                 # Calculate final P&L: revenue - yes_total_cost - no_total_cost - fee_cost_cents
-                revenue = settlement.get("revenue", 0)
+                # Use revenue from API (in cents), default to 0 if not present
+                revenue_for_pnl = revenue if revenue is not None else 0
                 yes_total_cost = settlement.get("yes_total_cost", 0)
                 no_total_cost = settlement.get("no_total_cost", 0)
-                final_pnl = revenue - yes_total_cost - no_total_cost - settlement_data["fee_cost_cents"]
+                final_pnl = revenue_for_pnl - yes_total_cost - no_total_cost - settlement_data["fee_cost_cents"]
                 settlement_data["final_pnl"] = final_pnl
                 
                 # Check if settlement already exists

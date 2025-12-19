@@ -1883,10 +1883,13 @@ const RLTraderDashboard = () => {
                   {Object.keys(settledPositions).length > 0 ? (
                     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
                       {Object.entries(settledPositions).map(([ticker, settlement]) => {
-                        // All monetary values from API are in cents except fee_cost which is a string in dollars
+                        // According to Kalshi API docs, revenue and value are integers in cents
+                        // https://docs.kalshi.com/api-reference/portfolio/get-settlements
+                        // Extract directly from API response (already in cents)
                         const finalPnl = settlement.final_pnl || 0;
-                        const revenue = settlement.revenue || 0;
-                        const value = settlement.value || 0;
+                        const revenue = settlement.revenue; // Already in cents from API
+                        const value = settlement.value; // Already in cents from API
+                        
                         const yesTotalCost = settlement.yes_total_cost || 0;
                         const noTotalCost = settlement.no_total_cost || 0;
                         const yesCount = settlement.yes_count || 0;
@@ -1924,110 +1927,110 @@ const RLTraderDashboard = () => {
                               </span>
                             </div>
                             
-                            <div className="space-y-2 text-xs">
+                            <div className="space-y-3">
                               {/* Final P&L - Most prominent */}
-                              <div>
-                                <span className="text-gray-500 block">Final P&L</span>
-                                <span className={`font-mono font-bold text-lg ${
+                              <div className="bg-gray-800/40 rounded-lg p-3 border border-gray-700/50">
+                                <div className="text-gray-400 text-xs font-medium mb-1.5">Net Profit/Loss</div>
+                                <div className={`font-mono font-bold text-2xl ${
                                   finalPnl >= 0 ? 'text-green-400' : 'text-red-400'
                                 }`}>
                                   {priceMode === 'dollar' 
                                     ? `${finalPnl >= 0 ? '+' : ''}$${(finalPnl / 100).toFixed(2)}`
                                     : `${finalPnl >= 0 ? '+' : ''}${finalPnl.toFixed(0)}¢`
                                   }
-                                </span>
-                              </div>
-                              
-                              {/* Revenue and Value */}
-                              <div className="grid grid-cols-2 gap-2">
-                                <div>
-                                  <span className="text-gray-500 block">Revenue</span>
-                                  <span className="text-green-400 font-mono font-medium">
-                                    {priceMode === 'dollar' 
-                                      ? `$${(revenue / 100).toFixed(2)}`
-                                      : `${revenue.toFixed(0)}¢`
-                                    }
-                                  </span>
-                                </div>
-                                <div>
-                                  <span className="text-gray-500 block">Value</span>
-                                  <span className="text-blue-400 font-mono font-medium">
-                                    {priceMode === 'dollar' 
-                                      ? `$${(value / 100).toFixed(2)}`
-                                      : `${value.toFixed(0)}¢`
-                                    }
-                                  </span>
                                 </div>
                               </div>
-                              
-                              {/* Contract Counts */}
+
+                              {/* Trade Breakdown - Clear calculation */}
+                              <div className="space-y-2">
+                                <div className="text-gray-400 text-xs font-medium uppercase tracking-wide">Trade Summary</div>
+                                
+                                <div className="space-y-1.5">
+                                  {/* What you received */}
+                                  {revenue !== null && revenue !== undefined && revenue > 0 && (
+                                    <div className="flex justify-between items-center py-1">
+                                      <span className="text-gray-500 text-xs">Received:</span>
+                                      <span className="text-green-400 font-mono font-medium text-sm">
+                                        {priceMode === 'dollar' 
+                                          ? `+$${(revenue / 100).toFixed(2)}`
+                                          : `+${revenue.toFixed(0)}¢`
+                                        }
+                                      </span>
+                                    </div>
+                                  )}
+                                  
+                                  {/* What you paid */}
+                                  {(yesTotalCost > 0 || noTotalCost > 0) && (
+                                    <div className="flex justify-between items-center py-1">
+                                      <span className="text-gray-500 text-xs">Paid:</span>
+                                      <span className="text-red-400 font-mono text-sm">
+                                        {priceMode === 'dollar' 
+                                          ? `-$${((yesTotalCost + noTotalCost) / 100).toFixed(2)}`
+                                          : `-${(yesTotalCost + noTotalCost).toFixed(0)}¢`
+                                        }
+                                      </span>
+                                    </div>
+                                  )}
+                                  
+                                  {/* Fees */}
+                                  {feeCostCents > 0 && (
+                                    <div className="flex justify-between items-center py-1">
+                                      <span className="text-gray-500 text-xs">Fees:</span>
+                                      <span className="text-orange-400 font-mono text-sm">
+                                        {priceMode === 'dollar' 
+                                          ? `-$${(feeCostCents / 100).toFixed(2)}`
+                                          : `-${feeCostCents.toFixed(0)}¢`
+                                        }
+                                      </span>
+                                    </div>
+                                  )}
+                                  
+                                  {/* Divider */}
+                                  {(revenue > 0 || yesTotalCost > 0 || noTotalCost > 0 || feeCostCents > 0) && (
+                                    <div className="border-t border-gray-700/50 my-2"></div>
+                                  )}
+                                  
+                                  {/* Net result - emphasized */}
+                                  <div className="flex justify-between items-center pt-1">
+                                    <span className="text-gray-300 font-semibold text-xs">Net:</span>
+                                    <span className={`font-mono font-bold text-base ${
+                                      finalPnl >= 0 ? 'text-green-400' : 'text-red-400'
+                                    }`}>
+                                      {priceMode === 'dollar' 
+                                        ? `${finalPnl >= 0 ? '+' : ''}$${(finalPnl / 100).toFixed(2)}`
+                                        : `${finalPnl >= 0 ? '+' : ''}${finalPnl.toFixed(0)}¢`
+                                      }
+                                    </span>
+                                  </div>
+                                </div>
+                              </div>
+
+                              {/* Contract details (smaller, less prominent) */}
                               {(yesCount > 0 || noCount > 0) && (
-                                <div className="grid grid-cols-2 gap-2">
-                                  {yesCount > 0 && (
-                                    <div>
-                                      <span className="text-gray-500 block">YES Count</span>
-                                      <span className="text-green-400 font-mono">
-                                        {yesCount}
-                                      </span>
-                                    </div>
-                                  )}
-                                  {noCount > 0 && (
-                                    <div>
-                                      <span className="text-gray-500 block">NO Count</span>
-                                      <span className="text-red-400 font-mono">
-                                        {noCount}
-                                      </span>
-                                    </div>
-                                  )}
+                                <div className="pt-2 border-t border-yellow-700/30">
+                                  <div className="text-gray-500 text-xs mb-1.5">Contracts</div>
+                                  <div className="flex gap-4 text-xs">
+                                    {yesCount > 0 && (
+                                      <div>
+                                        <span className="text-gray-500 text-xs">YES:</span>
+                                        <span className="text-green-400 font-mono ml-1.5">{yesCount}</span>
+                                      </div>
+                                    )}
+                                    {noCount > 0 && (
+                                      <div>
+                                        <span className="text-gray-500 text-xs">NO:</span>
+                                        <span className="text-red-400 font-mono ml-1.5">{noCount}</span>
+                                      </div>
+                                    )}
+                                  </div>
                                 </div>
                               )}
-                              
-                              {/* Costs */}
-                              {(yesTotalCost > 0 || noTotalCost > 0) && (
-                                <div className="grid grid-cols-2 gap-2">
-                                  {yesTotalCost > 0 && (
-                                    <div>
-                                      <span className="text-gray-500 block">YES Cost</span>
-                                      <span className="text-gray-300 font-mono">
-                                        {priceMode === 'dollar' 
-                                          ? `$${(yesTotalCost / 100).toFixed(2)}`
-                                          : `${yesTotalCost.toFixed(0)}¢`
-                                        }
-                                      </span>
-                                    </div>
-                                  )}
-                                  {noTotalCost > 0 && (
-                                    <div>
-                                      <span className="text-gray-500 block">NO Cost</span>
-                                      <span className="text-gray-300 font-mono">
-                                        {priceMode === 'dollar' 
-                                          ? `$${(noTotalCost / 100).toFixed(2)}`
-                                          : `${noTotalCost.toFixed(0)}¢`
-                                        }
-                                      </span>
-                                    </div>
-                                  )}
-                                </div>
-                              )}
-                              
-                              {/* Fee Cost */}
-                              {feeCostCents > 0 && (
-                                <div>
-                                  <span className="text-gray-500 block">Fee Cost</span>
-                                  <span className="text-orange-400 font-mono">
-                                    {priceMode === 'dollar' 
-                                      ? `$${(feeCostCents / 100).toFixed(2)}`
-                                      : `${feeCostCents.toFixed(0)}¢`
-                                    }
-                                  </span>
-                                </div>
-                              )}
-                              
+
                               {/* Settled Time */}
                               {settledTime && (
-                                <div className="pt-2 border-t border-yellow-700/50">
-                                  <span className="text-gray-500 block">Settled At</span>
-                                  <span className="text-gray-400 text-xs">
+                                <div className="pt-2 border-t border-yellow-700/30">
+                                  <span className="text-gray-500 text-xs block mb-1">Settled</span>
+                                  <span className="text-gray-400 text-xs font-mono">
                                     {new Date(settledTime).toLocaleString()}
                                   </span>
                                 </div>

@@ -702,10 +702,18 @@ class OrderbookClient:
                 # During initial connection period, just check if websocket exists and is running
                 return self._websocket is not None
         
-        # After initial period, check if we've received recent messages
+        # After initial period, we should have received snapshots if healthy and subscribed to valid markets
+        if self._snapshots_received == 0:
+            # No snapshots received after initial period - unhealthy
+            return False
+        
+        # We've received snapshots, connection is healthy
+        # Only mark unhealthy if we haven't received ANY messages for 5 minutes
+        # This handles the case where the connection silently dies
+        # Note: When a new message arrives, _last_message_time gets updated, so this will recover to healthy
         if self._last_message_time:
             time_since_message = time.time() - self._last_message_time
-            if time_since_message > 60:  # No messages for 60 seconds
+            if time_since_message > 300:  # No messages for 5 minutes - likely disconnected
                 return False
         
         return True

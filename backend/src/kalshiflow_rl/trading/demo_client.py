@@ -718,23 +718,13 @@ class KalshiDemoTradingClient:
         except Exception as e:
             raise KalshiDemoTradingClientError(f"Failed to get markets: {e}")
     
-    async def get_settlements(
-        self,
-        limit: int = 200,
-        min_ts: Optional[int] = None,
-        cursor: Optional[str] = None
-    ) -> Dict[str, Any]:
+    async def get_settlements(self) -> Dict[str, Any]:
         """
-        Get settlements from demo account.
+        Get all settlements from demo account.
         
         According to Kalshi API docs: https://docs.kalshi.com/api-reference/portfolio/get-settlements
         All fields except fee_cost are in cents. fee_cost is a string in dollars.
         
-        Args:
-            limit: Maximum number of settlements to return (default 200, max 200)
-            min_ts: Unix timestamp in seconds - filter settlements after this time (for 24h filter)
-            cursor: Pagination cursor from previous response
-            
         Returns:
             Dictionary with settlements array and cursor for pagination
             
@@ -742,19 +732,10 @@ class KalshiDemoTradingClient:
             KalshiDemoTradingClientError: If request fails
         """
         try:
-            # Build query parameters
-            params = []
-            if limit:
-                params.append(f"limit={limit}")
-            if min_ts:
-                params.append(f"min_ts={min_ts}")
-            if cursor:
-                params.append(f"cursor={cursor}")
-            
+            # Simple path without query parameters - fetch all settlements
             path = "/portfolio/settlements"
-            if params:
-                path += "?" + "&".join(params)
             
+            logger.info(f"Fetching all settlements from demo account (same client as balance/positions)")
             response = await self._make_request("GET", path)
             
             # Validate response structure
