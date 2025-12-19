@@ -238,66 +238,60 @@
     will-change: left, opacity;
   }
 
-  /* Position update pulse - highlights changed field */
+  /* Position update pulse - highlights changed field - smoother and less intense */
   @keyframes positionUpdatePulse {
     0%, 100% { 
       background-color: transparent;
       box-shadow: 0 0 0 rgba(59, 130, 246, 0);
     }
     50% { 
-      background-color: rgba(59, 130, 246, 0.15);
-      box-shadow: 0 0 15px rgba(59, 130, 246, 0.4);
+      background-color: rgba(59, 130, 246, 0.08);
+      box-shadow: 0 0 8px rgba(59, 130, 246, 0.2);
     }
   }
 
   .animate-position-update {
-    animation: positionUpdatePulse 0.8s ease-in-out;
+    animation: positionUpdatePulse 1.2s ease-in-out;
   }
 
-  /* Value increase animation - green glow + slide up */
+  /* Value increase animation - green glow + slide up - smoother and less intense */
   @keyframes valueIncrease {
     0% { 
       transform: translateY(0);
       box-shadow: 0 0 0 rgba(34, 197, 94, 0);
-      color: inherit;
     }
     50% {
-      transform: translateY(-3px);
-      box-shadow: 0 0 20px rgba(34, 197, 94, 0.6);
-      color: rgb(34, 197, 94);
+      transform: translateY(-2px);
+      box-shadow: 0 0 8px rgba(34, 197, 94, 0.3);
     }
     100% {
       transform: translateY(0);
       box-shadow: 0 0 0 rgba(34, 197, 94, 0);
-      color: inherit;
     }
   }
 
   .animate-value-increase {
-    animation: valueIncrease 0.6s ease-out;
+    animation: valueIncrease 0.8s ease-out;
   }
 
-  /* Value decrease animation - red glow + slide down */
+  /* Value decrease animation - red glow + slide down - smoother and less intense */
   @keyframes valueDecrease {
     0% { 
       transform: translateY(0);
       box-shadow: 0 0 0 rgba(239, 68, 68, 0);
-      color: inherit;
     }
     50% {
-      transform: translateY(3px);
-      box-shadow: 0 0 20px rgba(239, 68, 68, 0.6);
-      color: rgb(239, 68, 68);
+      transform: translateY(2px);
+      box-shadow: 0 0 8px rgba(239, 68, 68, 0.3);
     }
     100% {
       transform: translateY(0);
       box-shadow: 0 0 0 rgba(239, 68, 68, 0);
-      color: inherit;
     }
   }
 
   .animate-value-decrease {
-    animation: valueDecrease 0.6s ease-out;
+    animation: valueDecrease 0.8s ease-out;
   }
 
   /* Settlement animation - golden glow */
@@ -318,17 +312,17 @@
     animation: settlementGlow 1.5s ease-in-out;
   }
 
-  /* New position animation - slide in from right with glow */
+  /* New position animation - slide in from right with glow - smoother */
   @keyframes newPosition {
     0% {
       opacity: 0;
-      transform: translateX(30px) scale(0.95);
+      transform: translateX(20px) scale(0.98);
       box-shadow: 0 0 0 rgba(59, 130, 246, 0);
     }
     50% {
       opacity: 1;
       transform: translateX(0) scale(1);
-      box-shadow: 0 0 25px rgba(59, 130, 246, 0.5);
+      box-shadow: 0 0 15px rgba(59, 130, 246, 0.3);
     }
     100% {
       opacity: 1;
@@ -338,21 +332,21 @@
   }
 
   .animate-new-position {
-    animation: newPosition 0.7s cubic-bezier(0.34, 1.56, 0.64, 1);
+    animation: newPosition 0.9s cubic-bezier(0.25, 0.46, 0.45, 0.94);
   }
 
-  /* Field-specific highlight animations */
+  /* Field-specific highlight animations - smoother and less intense */
   @keyframes fieldHighlight {
     0%, 100% {
       background-color: transparent;
     }
     50% {
-      background-color: rgba(59, 130, 246, 0.2);
+      background-color: rgba(59, 130, 246, 0.1);
     }
   }
 
   .animate-field-highlight {
-    animation: fieldHighlight 0.8s ease-in-out;
+    animation: fieldHighlight 1s ease-in-out;
   }
 
   /* Counter animation for numeric values */

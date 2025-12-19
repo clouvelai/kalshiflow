@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
+import { FixedSizeGrid as Grid } from 'react-window';
 import TradesFeed from './TradesFeed';
 import CollectionStatus from './CollectionStatus';
 import TraderStatePanel from './TraderStatePanel';
@@ -6,6 +7,13 @@ import SystemHealth from './SystemHealth';
 import { ChevronDownIcon, ChevronRightIcon } from '@heroicons/react/24/outline';
 
 const RLTraderDashboard = () => {
+  // Helper for conditional logging (useful for WebSocket debugging in production)
+  const log = (...args) => {
+    if (import.meta.env.DEV || import.meta.env.MODE === 'development') {
+      console.log(...args);
+    }
+  };
+
   const [connectionStatus, setConnectionStatus] = useState('connecting');
   const [collectionStatus, setCollectionStatus] = useState(null);
   const [traderState, setTraderState] = useState(null);
@@ -30,6 +38,22 @@ const RLTraderDashboard = () => {
   // Default to 'system' tab if initialization is not complete
   const [activeTab, setActiveTab] = useState('system'); // Tab selection: 'portfolio' or 'system'
   
+  // Filter/Sort state for positions
+  const [searchQuery, setSearchQuery] = useState('');
+  const [sortBy, setSortBy] = useState('pnl');
+  const [sortOrder, setSortOrder] = useState('desc');
+  const [filterType, setFilterType] = useState('all');
+  
+  // Window size for responsive grid
+  const [windowSize, setWindowSize] = useState({
+    width: typeof window !== 'undefined' ? window.innerWidth : 1920,
+    height: typeof window !== 'undefined' ? window.innerHeight : 1080
+  });
+  
+  // Ref for positions grid container to measure actual width
+  const positionsGridRef = useRef(null);
+  const [gridContainerWidth, setGridContainerWidth] = useState(1280);
+  
   // Collapsible state for grid sections
   const [collapsedSections, setCollapsedSections] = useState({
     orders: false,
@@ -43,6 +67,9 @@ const RLTraderDashboard = () => {
   const reconnectAttempts = useRef(0);
   const maxReconnectAttempts = 10;
   const reconnectDelay = 2000;
+  
+  // Track animation cleanup timeouts to prevent accumulation
+  const animationCleanupTimeouts = useRef(new Map());
 
   const toggleSection = (section) => {
     setCollapsedSections(prev => ({
@@ -61,7 +88,7 @@ const RLTraderDashboard = () => {
     wsRef.current = ws;
 
     ws.onopen = () => {
-      console.log('RL Trader WebSocket connected');
+      log('RL Trader WebSocket connected');
       setConnectionStatus('connected');
       reconnectAttempts.current = 0;
     };
@@ -72,7 +99,7 @@ const RLTraderDashboard = () => {
         
         switch(data.type) {
           case 'connection':
-            console.log('Connection established:', data.data);
+            log('Connection established:', data.data);
             setConnectionStatus('connected');
             
             // Initialize collection status as active when connected
@@ -193,7 +220,7 @@ const RLTraderDashboard = () => {
           case 'sync_complete':
             // Sync complete notification with updated state
             if (data.data) {
-              console.log('Order sync complete:', data.data);
+              log('Order sync complete:', data.data);
               if (data.data.cash_balance !== undefined) {
                 setTraderState(prev => ({
                   ...prev,
@@ -253,19 +280,70 @@ const RLTraderDashboard = () => {
                   }
                 });
                 
-                // Set animation flags
+                // Set animation flags with debouncing to prevent rapid flashing
+                const currentTime = timestamp || Date.now();
+                const prevAnimData = positionAnimations[ticker];
+                const timeSinceLastAnim = prevAnimData ? (currentTime - (prevAnimData.timestamp || 0)) : Infinity;
+                
+                // Only animate if enough time has passed since last animation (debounce)
+                const shouldAnimate = timeSinceLastAnim > 500; // 500ms debounce
+                
                 const animationData = {
-                  highlightField: changed_fields.length > 0 ? changed_fields[0] : null,
-                  changeDirection: changeDirection,
-                  isNew: isNew,
+                  highlightField: shouldAnimate && changed_fields.length > 0 ? changed_fields[0] : null,
+                  changeDirection: shouldAnimate ? changeDirection : {},
+                  isNew: shouldAnimate && isNew,
                   isSettled: was_settled,
-                  timestamp: timestamp || Date.now()
+                  timestamp: currentTime
                 };
                 
-                setPositionAnimations(prev => ({
-                  ...prev,
-                  [ticker]: animationData
-                }));
+                setPositionAnimations(prev => {
+                  const newAnimations = {
+                    ...prev,
+                    [ticker]: animationData
+                  };
+                  
+                  // Clear any existing cleanup timeouts for this ticker
+                  const existingTimeouts = animationCleanupTimeouts.current.get(ticker);
+                  if (existingTimeouts) {
+                    existingTimeouts.forEach(timeout => clearTimeout(timeout));
+                  }
+                  
+                  // Clear animation flags after they complete to prevent flashing
+                  const timeout1 = setTimeout(() => {
+                    setPositionAnimations(current => {
+                      const updated = { ...current };
+                      if (updated[ticker] && updated[ticker].timestamp === currentTime) {
+                        // Clear animation flags after animation completes
+                        updated[ticker] = {
+                          ...updated[ticker],
+                          isNew: false,
+                          highlightField: null
+                        };
+                      }
+                      return updated;
+                    });
+                    animationCleanupTimeouts.current.delete(ticker);
+                  }, 1200); // Clear after 1.2 seconds (longer than longest animation)
+                  
+                  // Clear changeDirection after value animations complete
+                  const timeout2 = setTimeout(() => {
+                    setPositionAnimations(current => {
+                      const updated = { ...current };
+                      if (updated[ticker] && updated[ticker].timestamp === currentTime) {
+                        updated[ticker] = {
+                          ...updated[ticker],
+                          changeDirection: {}
+                        };
+                      }
+                      return updated;
+                    });
+                  }, 900); // Clear after value animations (0.8s) complete
+                  
+                  // Store timeouts for cleanup
+                  animationCleanupTimeouts.current.set(ticker, [timeout1, timeout2]);
+                  
+                  return newAnimations;
+                });
                 
                 // Update position update history
                 setPositionUpdateHistory(prev => {
@@ -331,19 +409,29 @@ const RLTraderDashboard = () => {
                   }, 2000); // Keep in active for 2s to show settlement animation
                 }
                 
-                // Clear animation flags after animation completes
-                setTimeout(() => {
+                // Clear settlement animation after it completes
+                const settlementTimeout = setTimeout(() => {
                   setPositionAnimations(prev => {
                     const newAnim = { ...prev };
                     if (newAnim[ticker]) {
-                      delete newAnim[ticker].highlightField;
-                      if (Object.keys(newAnim[ticker]).length === 1) { // Only timestamp left
-                        delete newAnim[ticker];
-                      }
+                      newAnim[ticker] = {
+                        ...newAnim[ticker],
+                        isSettled: false
+                      };
                     }
                     return newAnim;
                   });
-                }, 1500); // Clear after 1.5s
+                  const existingTimeouts = animationCleanupTimeouts.current.get(ticker);
+                  if (existingTimeouts) {
+                    existingTimeouts.forEach(timeout => clearTimeout(timeout));
+                    animationCleanupTimeouts.current.delete(ticker);
+                  }
+                }, 2000); // Clear after settlement animation (1.5s) completes
+                
+                // Store settlement timeout
+                const existingTimeouts = animationCleanupTimeouts.current.get(ticker) || [];
+                existingTimeouts.push(settlementTimeout);
+                animationCleanupTimeouts.current.set(ticker, existingTimeouts);
               }
             }
             break;
@@ -403,7 +491,7 @@ const RLTraderDashboard = () => {
           // New standardized message types
           case 'stats_update':
             // Stats update (throttled to 10s)
-            console.log('Stats update received:', data.data);
+            log('Stats update received:', data.data);
             if (data.data) {
               // Update collection status with the new stats format
               const statsData = data.data.stats || data.data;
@@ -571,7 +659,7 @@ const RLTraderDashboard = () => {
             break;
             
           default:
-            console.log('Unknown message type:', data.type);
+            log('Unknown message type:', data.type);
         }
       } catch (error) {
         console.error('Error parsing WebSocket message:', error);
@@ -584,14 +672,14 @@ const RLTraderDashboard = () => {
     };
 
     ws.onclose = () => {
-      console.log('RL Trader WebSocket disconnected');
+      log('RL Trader WebSocket disconnected');
       setConnectionStatus('disconnected');
       wsRef.current = null;
       
       // Attempt to reconnect
       if (reconnectAttempts.current < maxReconnectAttempts) {
         reconnectAttempts.current++;
-        console.log(`Attempting to reconnect... (attempt ${reconnectAttempts.current}/${maxReconnectAttempts})`);
+        log(`Attempting to reconnect... (attempt ${reconnectAttempts.current}/${maxReconnectAttempts})`);
         reconnectTimeoutRef.current = setTimeout(() => {
           connectWebSocket();
         }, reconnectDelay * Math.min(reconnectAttempts.current, 3));
@@ -612,6 +700,49 @@ const RLTraderDashboard = () => {
       }
     };
   }, []);
+
+  // Track window size for responsive grid
+  useEffect(() => {
+    const handleResize = () => {
+      setWindowSize({
+        width: window.innerWidth,
+        height: window.innerHeight
+      });
+    };
+
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  // Measure grid container width using ResizeObserver
+  useEffect(() => {
+    if (!positionsGridRef.current) return;
+
+    const updateGridWidth = () => {
+      if (positionsGridRef.current) {
+        const width = positionsGridRef.current.offsetWidth;
+        setGridContainerWidth(width);
+      }
+    };
+
+    // Initial measurement
+    updateGridWidth();
+
+    // Use ResizeObserver for more accurate measurements
+    const resizeObserver = new ResizeObserver(() => {
+      updateGridWidth();
+    });
+
+    resizeObserver.observe(positionsGridRef.current);
+
+    // Fallback to window resize
+    window.addEventListener('resize', updateGridWidth);
+
+    return () => {
+      resizeObserver.disconnect();
+      window.removeEventListener('resize', updateGridWidth);
+    };
+  }, [collapsedSections.positions]);
 
   // Connection status helper functions
   const getConnectionColor = () => {
@@ -744,6 +875,75 @@ const RLTraderDashboard = () => {
     });
   };
 
+  // Get responsive column count based on window width
+  const getColumnCount = () => {
+    if (windowSize.width >= 1280) return 4; // xl
+    if (windowSize.width >= 1024) return 3; // lg
+    if (windowSize.width >= 640) return 2; // sm
+    return 1; // mobile
+  };
+
+  // Filtered and sorted positions
+  const filteredAndSortedPositions = useMemo(() => {
+    let filtered = formatPositions();
+    
+    // Apply search filter
+    if (searchQuery) {
+      filtered = filtered.filter(pos => 
+        pos.ticker.toLowerCase().includes(searchQuery.toLowerCase())
+      );
+    }
+    
+    // Apply type filter
+    if (filterType === 'profitable') {
+      filtered = filtered.filter(pos => pos.realizedPnl > 0);
+    } else if (filterType === 'losing') {
+      filtered = filtered.filter(pos => pos.realizedPnl < 0);
+    } else if (filterType === 'expiring') {
+      filtered = filtered.filter(pos => 
+        pos.timeToExp && pos.timeToExp.days !== undefined && pos.timeToExp.days < 1
+      );
+    }
+    
+    // Apply sorting
+    filtered.sort((a, b) => {
+      let aVal, bVal;
+      switch (sortBy) {
+        case 'pnl': 
+          aVal = a.realizedPnl; 
+          bVal = b.realizedPnl; 
+          break;
+        case 'exposure': 
+          aVal = a.marketExposure; 
+          bVal = b.marketExposure; 
+          break;
+        case 'contracts': 
+          aVal = Math.abs(a.contracts); 
+          bVal = Math.abs(b.contracts); 
+          break;
+        case 'ticker': 
+          aVal = a.ticker; 
+          bVal = b.ticker; 
+          break;
+        case 'expiration': 
+          aVal = a.timeToExp?.days ?? Infinity;
+          bVal = b.timeToExp?.days ?? Infinity;
+          break;
+        default: 
+          return 0;
+      }
+      
+      if (typeof aVal === 'string') {
+        return sortOrder === 'asc' 
+          ? aVal.localeCompare(bVal)
+          : bVal.localeCompare(aVal);
+      }
+      return sortOrder === 'asc' ? aVal - bVal : bVal - aVal;
+    });
+    
+    return filtered;
+  }, [positions, searchQuery, sortBy, sortOrder, filterType]);
+
   // Helper to format relative time
   const formatRelativeTime = (timestamp) => {
     if (!timestamp) return '--';
@@ -751,10 +951,22 @@ const RLTraderDashboard = () => {
     const time = new Date(timestamp).getTime();
     const diff = Math.floor((now - time) / 1000);
     
-    if (diff < 60) return `${diff}s ago`;
-    if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
-    if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
-    return `${Math.floor(diff / 86400)}d ago`;
+    if (diff < 60) return `${diff} second${diff !== 1 ? 's' : ''} ago`;
+    
+    const minutes = Math.floor(diff / 60);
+    if (diff < 3600) return `${minutes}min ago`;
+    
+    const hours = Math.floor(diff / 3600);
+    const remainingMinutes = Math.floor((diff % 3600) / 60);
+    if (diff < 86400) {
+      if (remainingMinutes === 0) {
+        return `${hours}h ago`;
+      }
+      return `${hours}h ${remainingMinutes}min ago`;
+    }
+    
+    const days = Math.floor(diff / 86400);
+    return `${days}d ago`;
   };
 
   // Helper function to format timestamp
@@ -1003,7 +1215,7 @@ const RLTraderDashboard = () => {
     <div className="min-h-screen bg-gray-900 text-white">
       {/* Header */}
       <header className="bg-gray-800 border-b border-gray-700">
-        <div className="max-w-full px-4 sm:px-6 lg:px-8">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           {/* Main Header Row */}
           <div className="flex items-center justify-between h-16">
             <div className="flex items-center space-x-4">
@@ -1105,7 +1317,7 @@ const RLTraderDashboard = () => {
       </header>
 
       {/* Main Content - Kanban Board Layout */}
-      <main className="max-w-full px-4 sm:px-6 lg:px-8 py-6 space-y-6">
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
         
         {/* Trader System Section with Tabs */}
         <div className="bg-gray-800 rounded-lg shadow-lg">
@@ -1720,161 +1932,217 @@ const RLTraderDashboard = () => {
                 {positionsTab === 'active' && (
                   <>
                   {formatPositions().length > 0 ? (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
-                    {formatPositions().map((pos, idx) => {
-                      const animData = positionAnimations[pos.ticker] || {};
-                      const isNew = animData.isNew;
-                      const isSettled = animData.isSettled;
-                      const highlightField = animData.highlightField;
-                      const changeDirection = animData.changeDirection || {};
-                      
-                      // Get position data with all fields
-                      const posData = positions[pos.ticker] || {};
-                      const positionCost = posData.cost_basis || pos.costBasis || 0;
-                      const feesPaid = posData.fees_paid || pos.feesPaid || 0;
-                      const volume = posData.volume || pos.totalTraded || 0;
-                      
-                      // Determine animation classes
-                      const cardClasses = [
-                        "bg-gray-700/30 hover:bg-gray-700/50 rounded-lg p-3 border transition-all",
-                        isNew ? "animate-new-position" : "",
-                        isSettled ? "animate-settlement border-yellow-500/50" : "border-gray-700 hover:border-gray-600",
-                        highlightField ? "animate-position-update" : ""
-                      ].filter(Boolean).join(" ");
-                      
-                      // Field-specific animation classes
-                      const getFieldAnimationClass = (fieldName) => {
-                        const direction = changeDirection[fieldName];
-                        if (direction === 'up') return 'animate-value-increase';
-                        if (direction === 'down') return 'animate-value-decrease';
-                        if (highlightField === fieldName) return 'animate-field-highlight animate-counter';
-                        return '';
-                      };
-                      
-                      return (
-                      <div key={`${pos.ticker}-${idx}`} className={cardClasses}>
-                        <div className="flex justify-between items-center mb-2 pb-2 border-b border-gray-700/50">
-                          <span className="font-mono text-xs text-gray-300 truncate flex-1 mr-2" title={pos.ticker}>
-                            {pos.ticker}
-                          </span>
-                          <span className={`px-2 py-1 rounded text-xs font-medium ${
-                            pos.side === 'YES' ? 'bg-green-500/20 text-green-400' : 'bg-orange-500/20 text-orange-400'
-                          }`}>
-                            {pos.side}
-                          </span>
-                        </div>
+                    <div ref={positionsGridRef} className="relative w-full overflow-hidden" style={{ height: '600px' }}>
+                      {(() => {
+                        const positionsList = formatPositions();
+                        const columnCount = getColumnCount();
+                        // Use actual measured container width, but account for parent padding (p-4 = 32px total)
+                        const parentPadding = 32; // p-4 = 16px each side
+                        const availableWidth = (gridContainerWidth || 1280) - parentPadding;
+                        // Account for gap between columns - reduced for tighter spacing
+                        const gapSize = 12; // Reduced for tighter fit
+                        const totalGapWidth = (columnCount - 1) * gapSize;
+                        const columnWidth = Math.floor((availableWidth - totalGapWidth) / columnCount);
+                        const rowCount = Math.ceil(positionsList.length / columnCount);
+                        const rowHeight = 200; // Adjusted to accommodate header (~45px), body content (~120px), footer (~25px), and padding
                         
-                        <div className="space-y-2 text-xs">
-                          <div className="grid grid-cols-2 gap-2">
-                            <div className={getFieldAnimationClass('position')}>
-                              <span className="text-gray-500 block">Contracts</span>
-                              <span className="text-gray-200 font-mono">{Math.abs(pos.contracts)}</span>
-                            </div>
-                            <div className={getFieldAnimationClass('realized_pnl')}>
-                              <span className="text-gray-500 block">P&L</span>
-                              <span className={`font-mono font-medium ${
-                                pos.realizedPnl >= 0 ? 'text-green-400' : 'text-red-400'
-                              }`}>
-                                {priceMode === 'dollar' 
-                                  ? `${pos.realizedPnl >= 0 ? '+' : ''}$${(pos.realizedPnl / 100).toFixed(2)}`
-                                  : `${pos.realizedPnl >= 0 ? '+' : ''}${pos.realizedPnl.toFixed(0)}¢`
-                                }
-                              </span>
-                            </div>
-                          </div>
+                        // Render position card
+                        const renderPositionCard = ({ columnIndex, rowIndex, style }) => {
+                          const index = rowIndex * columnCount + columnIndex;
+                          if (index >= positionsList.length) {
+                            return <div style={style} />;
+                          }
                           
-                          {/* Position Cost */}
-                          <div className={getFieldAnimationClass('position_cost')}>
-                            <span className="text-gray-500 block">Cost Basis</span>
-                            <span className="text-purple-400 font-mono font-medium">
-                              {priceMode === 'dollar' 
-                                ? `$${((pos.costBasis || 0) / 100).toFixed(2)}`
-                                : `${(pos.costBasis || 0).toFixed(0)}¢`
-                              }
-                            </span>
-                          </div>
+                          const pos = positionsList[index];
+                          const animData = positionAnimations[pos.ticker] || {};
+                          const currentTime = Date.now();
+                          const animTimestamp = animData.timestamp || 0;
+                          const timeSinceAnim = currentTime - animTimestamp;
                           
-                          {/* Market Exposure */}
-                          <div>
-                            <span className="text-gray-500 block">Market Exposure</span>
-                            <span className="text-blue-400 font-mono font-medium">
-                              {priceMode === 'dollar' 
-                                ? `$${((pos.marketExposure || 0) / 100).toFixed(2)}`
-                                : `${(pos.marketExposure || 0).toFixed(0)}¢`
-                              }
-                            </span>
-                          </div>
+                          // Only show animations if they're recent (prevent stale animations)
+                          const isNew = animData.isNew && timeSinceAnim < 1000;
+                          const isSettled = animData.isSettled && timeSinceAnim < 2000;
+                          const highlightField = animData.highlightField && timeSinceAnim < 1200 ? animData.highlightField : null;
+                          const changeDirection = (animData.changeDirection || {});
                           
-                          {/* Fees Paid */}
-                          {feesPaid > 0 && (
-                            <div className={getFieldAnimationClass('fees_paid')}>
-                              <span className="text-gray-500 block">Fees Paid</span>
-                              <span className="text-orange-400 font-mono font-medium">
-                                {priceMode === 'dollar' 
-                                  ? `$${((typeof feesPaid === 'number' ? feesPaid : parseFloat(feesPaid) || 0) / 100).toFixed(2)}`
-                                  : `${(typeof feesPaid === 'number' ? feesPaid : parseFloat(feesPaid) || 0).toFixed(0)}¢`
-                                }
-                              </span>
-                            </div>
-                          )}
+                          // Get position data with all fields
+                          const posData = positions[pos.ticker] || {};
+                          const positionCost = posData.cost_basis || pos.costBasis || 0;
+                          const feesPaid = posData.fees_paid || pos.feesPaid || 0;
+                          const volume = posData.volume || pos.totalTraded || 0;
                           
-                          {/* Volume */}
-                          {volume > 0 && (
-                            <div className={getFieldAnimationClass('volume')}>
-                              <span className="text-gray-500 block">Volume</span>
-                              <span className="text-cyan-400 font-mono font-medium">
-                                {volume}
-                              </span>
-                            </div>
-                          )}
+                          // Determine animation classes
+                          const cardClasses = [
+                            "bg-gray-700/30 hover:bg-gray-700/50 rounded-lg p-2 border transition-all h-full overflow-hidden",
+                            isNew ? "animate-new-position" : "",
+                            isSettled ? "animate-settlement border-yellow-500/50" : "border-gray-700 hover:border-gray-600",
+                            highlightField ? "animate-position-update" : ""
+                          ].filter(Boolean).join(" ");
                           
-                          {/* Last Updated */}
-                          {pos.lastUpdated && (
-                            <div className="pt-2 border-t border-gray-700/50">
-                              <span className="text-gray-500 block text-xs">Last Updated</span>
-                              <span className="text-gray-400 font-mono text-xs">
-                                {new Date(pos.lastUpdated).toLocaleString()}
-                              </span>
-                            </div>
-                          )}
+                          // Field-specific animation classes - only animate if recent
+                          const getFieldAnimationClass = (fieldName) => {
+                            // Only animate if the change was recent (within last 900ms)
+                            if (timeSinceAnim > 900) return '';
+                            
+                            const direction = changeDirection[fieldName];
+                            if (direction === 'up') return 'animate-value-increase';
+                            if (direction === 'down') return 'animate-value-decrease';
+                            if (highlightField === fieldName) return 'animate-field-highlight';
+                            return '';
+                          };
                           
-                          {/* Settlement Date & Time to Expiration */}
-                          {pos.settlementDate && pos.timeToExp && (
-                            <div className="pt-2 border-t border-gray-700/50">
-                              <div className="flex justify-between items-center mb-1">
-                                <span className="text-gray-500">Expires:</span>
-                                <span className={`font-medium ${
-                                  pos.timeToExp.expired 
-                                    ? 'text-red-400' 
-                                    : (pos.timeToExp.days !== undefined && pos.timeToExp.days < 1)
-                                    ? 'text-orange-400'
-                                    : 'text-yellow-400'
-                                }`}>
-                                  {pos.timeToExp.display}
-                                </span>
+                          return (
+                            <div style={{ ...style, padding: '4px' }}>
+                              <div className={`${cardClasses} h-full flex flex-col`}>
+                                {/* Header with ticker and P&L badge */}
+                                <div className="flex justify-between items-center mb-2 pb-2 border-b border-gray-700/50 flex-shrink-0">
+                                  <span className="font-mono text-[10px] text-gray-300 truncate flex-1 mr-1" title={pos.ticker}>
+                                    {pos.ticker}
+                                  </span>
+                                  {/* P&L Badge in top right */}
+                                  <span className={`px-1.5 py-1 rounded text-[10px] font-medium flex-shrink-0 ${
+                                    pos.realizedPnl >= 0 
+                                      ? 'bg-green-500/20 text-green-400 border border-green-500/30' 
+                                      : 'bg-red-500/20 text-red-400 border border-red-500/30'
+                                  }`}>
+                                    {priceMode === 'dollar' 
+                                      ? `${pos.realizedPnl >= 0 ? '+' : ''}$${(pos.realizedPnl / 100).toFixed(2)}`
+                                      : `${pos.realizedPnl >= 0 ? '+' : ''}${pos.realizedPnl.toFixed(0)}¢`
+                                    }
+                                  </span>
+                                </div>
+                                
+                                {/* Body content - takes remaining space */}
+                                <div className="text-[10px] flex-1 min-h-0 max-h-full overflow-y-auto">
+                                  <div className="grid grid-cols-2 gap-1.5">
+                                    {/* Left Column: Side, Contracts, Cost Basis */}
+                                    <div className="space-y-1">
+                                      {/* Side */}
+                                      <div>
+                                        <span className="text-gray-500 block text-[9px] leading-tight mb-0.5">Side</span>
+                                        <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium inline-block ${
+                                          pos.side === 'YES' ? 'bg-green-500/20 text-green-400 border border-green-500/30' : 'bg-orange-500/20 text-orange-400 border border-orange-500/30'
+                                        }`}>
+                                          {pos.side}
+                                        </span>
+                                      </div>
+                                      {/* Contracts */}
+                                      <div className={getFieldAnimationClass('position')}>
+                                        <span className="text-gray-500 block text-[9px] leading-tight">Contracts</span>
+                                        <span className="text-gray-200 font-mono text-[10px] leading-tight">{Math.abs(pos.contracts)}</span>
+                                      </div>
+                                      {/* Cost Basis */}
+                                      <div className={getFieldAnimationClass('position_cost')}>
+                                        <span className="text-gray-500 block text-[9px] leading-tight">Cost Basis</span>
+                                        <span className="text-purple-400 font-mono font-medium text-[10px] leading-tight">
+                                          {priceMode === 'dollar' 
+                                            ? `$${((pos.costBasis || 0) / 100).toFixed(2)}`
+                                            : `${(pos.costBasis || 0).toFixed(0)}¢`
+                                          }
+                                        </span>
+                                      </div>
+                                    </div>
+                                    
+                                    {/* Right Column: Market Exposure, Fees, Volume */}
+                                    <div className="space-y-1">
+                                      {/* Market Exposure */}
+                                      <div>
+                                        <span className="text-gray-500 block text-[9px] leading-tight">Market Exposure</span>
+                                        <span className="text-blue-400 font-mono font-medium text-[10px] leading-tight">
+                                          {priceMode === 'dollar' 
+                                            ? `$${((pos.marketExposure || 0) / 100).toFixed(2)}`
+                                            : `${(pos.marketExposure || 0).toFixed(0)}¢`
+                                          }
+                                        </span>
+                                      </div>
+                                      {/* Fees Paid */}
+                                      {feesPaid > 0 && (
+                                        <div className={getFieldAnimationClass('fees_paid')}>
+                                          <span className="text-gray-500 block text-[9px] leading-tight">Fees Paid</span>
+                                          <span className="text-orange-400 font-mono font-medium text-[10px] leading-tight">
+                                            {priceMode === 'dollar' 
+                                              ? `$${((typeof feesPaid === 'number' ? feesPaid : parseFloat(feesPaid) || 0) / 100).toFixed(2)}`
+                                              : `${(typeof feesPaid === 'number' ? feesPaid : parseFloat(feesPaid) || 0).toFixed(0)}¢`
+                                            }
+                                          </span>
+                                        </div>
+                                      )}
+                                      {/* Volume */}
+                                      {volume > 0 && (
+                                        <div className={getFieldAnimationClass('volume')}>
+                                          <span className="text-gray-500 block text-[9px] leading-tight">Volume</span>
+                                          <span className="text-cyan-400 font-mono font-medium text-[10px] leading-tight">
+                                            {volume}
+                                          </span>
+                                        </div>
+                                      )}
+                                    </div>
+                                  </div>
+                                </div>
+                                
+                                {/* Last Updated - Footer (outside flex-1) */}
+                                {pos.lastUpdated && (
+                                  <div className="mt-0 pt-0.5 border-t border-gray-700/50 text-center flex-shrink-0">
+                                    <span className="text-gray-400 font-mono text-[9px] leading-tight">
+                                      {formatRelativeTime(pos.lastUpdated)}
+                                    </span>
+                                  </div>
+                                )}
+                                
+                                {/* Settlement Date & Time to Expiration (outside flex-1) */}
+                                {pos.settlementDate && pos.timeToExp && (
+                                  <div className="pt-1.5 border-t border-gray-700/50 flex-shrink-0">
+                                    <div className="flex justify-between items-center mb-0.5">
+                                      <span className="text-gray-500 text-[9px] leading-tight">Expires:</span>
+                                      <span className={`font-medium text-[9px] leading-tight ${
+                                        pos.timeToExp.expired 
+                                          ? 'text-red-400' 
+                                          : (pos.timeToExp.days !== undefined && pos.timeToExp.days < 1)
+                                          ? 'text-orange-400'
+                                          : 'text-yellow-400'
+                                      }`}>
+                                        {pos.timeToExp.display}
+                                      </span>
+                                    </div>
+                                    <div className="text-gray-600 text-[9px] leading-tight">
+                                      {pos.settlementDate.toLocaleDateString('en-US', { 
+                                        month: 'short', 
+                                        day: 'numeric', 
+                                        year: 'numeric' 
+                                      })}
+                                    </div>
+                                  </div>
+                                )}
                               </div>
-                              <div className="text-gray-600 text-xs">
-                                {pos.settlementDate.toLocaleDateString('en-US', { 
-                                  month: 'short', 
-                                  day: 'numeric', 
-                                  year: 'numeric' 
-                                })}
-                              </div>
                             </div>
-                          )}
-                        </div>
-                      </div>
-                      );
-                    })}
-                  </div>
-                ) : (
-                  <div className="text-center text-gray-500 py-8">
-                    <div className="mb-2">📊</div>
-                    <div>No open positions</div>
-                    <div className="text-xs mt-1 text-gray-600">Positions will appear here when opened</div>
-                  </div>
-                )}
-                </>
+                          );
+                        };
+                        
+                        // Ensure width matches exactly what we calculated and doesn't exceed container
+                        const gridWidth = Math.min(columnWidth * columnCount + totalGapWidth, availableWidth);
+                        
+                        return (
+                          <Grid
+                            columnCount={columnCount}
+                            columnWidth={columnWidth}
+                            height={600}
+                            rowCount={rowCount}
+                            rowHeight={rowHeight}
+                            width={gridWidth}
+                          >
+                            {renderPositionCard}
+                          </Grid>
+                        );
+                      })()}
+                    </div>
+                  ) : (
+                    <div className="text-center text-gray-500 py-8">
+                      <div className="mb-2">📊</div>
+                      <div>No open positions</div>
+                      <div className="text-xs mt-1 text-gray-600">Positions will appear here when opened</div>
+                    </div>
+                  )}
+                  </>
                 )}
                 
                 {/* Settled Positions Tab */}

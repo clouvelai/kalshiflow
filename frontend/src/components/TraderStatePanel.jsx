@@ -188,103 +188,98 @@ const TraderStatePanel = ({
 
   return (
     <div className="space-y-4">
-      {/* Hero Portfolio Section */}
-      <div className="relative overflow-hidden bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 border border-slate-700/50 rounded-xl p-6 shadow-xl">
-        {/* Subtle animated background pattern */}
-        <div className="absolute inset-0 opacity-5">
-          <div className="absolute inset-0" style={{
-            backgroundImage: `radial-gradient(circle at 2px 2px, white 1px, transparent 0)`,
-            backgroundSize: '40px 40px'
-          }}></div>
-        </div>
-        
-        <div className="relative z-10">
-          {/* Portfolio Summary - Horizontal Layout */}
-          <div className="mb-6">
-            {(() => {
-              const totalValue = (displayState.portfolio_value || 0) + (displayState.cash_balance || 0);
-              const totalStartValue = (displayState.session_start_portfolio_value || 0) + (displayState.session_start_cash || 0);
-              const totalPnl = totalValue - totalStartValue;
-              const totalPnlPercent = totalStartValue > 0 ? (totalPnl / totalStartValue) * 100 : 0;
-              
-              return (
-                <div className="flex items-end gap-6 flex-wrap">
-                  {/* Position Value */}
-                  <div className="flex flex-col items-start">
-                    <p className="text-xs font-medium text-slate-400 uppercase tracking-wider mb-1">Position</p>
-                    <h2 className="text-3xl font-bold text-white tracking-tight leading-none">
-                      {formatCurrency(displayState.portfolio_value || 0)}
-                    </h2>
-                    {displayState.portfolio_value_change !== undefined && displayState.portfolio_value_change !== 0 && (
-                      <p className={`text-xs mt-1 ${
-                        displayState.portfolio_value_change >= 0 ? 'text-emerald-400' : 'text-red-400'
-                      }`}>
-                        {displayState.portfolio_value_change >= 0 ? '+' : ''}{formatCurrency(displayState.portfolio_value_change)}
-                      </p>
-                    )}
-                  </div>
-                  
-                  {/* Plus Sign */}
-                  <span className="text-2xl font-bold text-slate-500 pb-1">+</span>
-                  
-                  {/* Cash Balance */}
-                  <div className="flex flex-col items-start">
-                    <p className="text-xs font-medium text-slate-400 uppercase tracking-wider mb-1">Cash</p>
-                    <h2 className="text-3xl font-bold text-white tracking-tight leading-none">
-                      {formatCurrency(displayState.cash_balance || 0)}
-                    </h2>
-                    {displayState.cash_balance_change !== undefined && displayState.cash_balance_change !== 0 && (
-                      <p className={`text-xs mt-1 ${
-                        displayState.cash_balance_change >= 0 ? 'text-emerald-400' : 'text-red-400'
-                      }`}>
-                        {displayState.cash_balance_change >= 0 ? '+' : ''}{formatCurrency(displayState.cash_balance_change)}
-                      </p>
-                    )}
-                  </div>
-                  
-                  {/* Arrow */}
-                  <span className="text-2xl font-bold text-slate-500 pb-1">→</span>
-                  
-                  {/* Total Value */}
-                  <div className="flex flex-col items-start">
-                    <p className="text-xs font-medium text-slate-400 uppercase tracking-wider mb-1">Total Value</p>
-                    <h2 className="text-3xl font-bold text-white tracking-tight leading-none">
-                      {formatCurrency(totalValue)}
-                    </h2>
-                  </div>
-                  
-                  {/* Total P&L Badge */}
-                  {totalStartValue > 0 && (
-                    <div className={`flex flex-col items-center justify-center px-6 py-5 rounded-xl font-semibold ml-2 ${
-                      totalPnl >= 0 
-                        ? 'bg-emerald-500/20 text-emerald-400 border-2 border-emerald-500/30' 
-                        : 'bg-red-500/20 text-red-400 border-2 border-red-500/30'
-                    }`}>
-                      <p className="text-xs font-medium uppercase tracking-wider mb-1.5">Total P&L</p>
-                      <p className={`text-4xl font-bold leading-none ${totalPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                        {totalPnl >= 0 ? '+' : ''}{formatCurrency(totalPnl)}
-                      </p>
-                      <p className="text-sm mt-1.5 font-semibold">
-                        {totalPnlPercent >= 0 ? '+' : ''}{totalPnlPercent.toFixed(2)}%
-                      </p>
-                    </div>
-                  )}
+      {/* Portfolio Stats Grid - 4 Boxes */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
+        {(() => {
+          const totalValue = (displayState.portfolio_value || 0) + (displayState.cash_balance || 0);
+          const totalStartValue = (displayState.session_start_portfolio_value || 0) + (displayState.session_start_cash || 0);
+          const totalChange = totalValue - totalStartValue;
+          const totalPnlPercent = totalStartValue > 0 ? (totalChange / totalStartValue) * 100 : 0;
+          
+          // Position Box
+          const positionValue = displayState.portfolio_value || 0;
+          const positionChange = displayState.portfolio_value_change !== undefined ? displayState.portfolio_value_change : (positionValue - (displayState.session_start_portfolio_value || 0));
+          
+          // Cash Box
+          const cashValue = displayState.cash_balance || 0;
+          const cashChange = displayState.cash_balance_change !== undefined ? displayState.cash_balance_change : (cashValue - (displayState.session_start_cash || 0));
+          
+          return (
+            <>
+              {/* Position Box */}
+              <div className="bg-slate-800/70 backdrop-blur-sm rounded-2xl shadow-lg border border-slate-700/50 p-6 text-center hover:shadow-xl transition-all duration-300">
+                <div className="text-3xl font-bold text-blue-400 mb-1">
+                  {formatCurrency(positionValue)}
                 </div>
-              );
-            })()}
-          </div>
-
-
-          {/* Warning Indicator */}
-          {displayState.cash_balance === 0 && displayState.portfolio_value === 0 && (
-            <div className="mt-4 pt-4 border-t border-slate-700/50">
-              <div className="text-xs text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded-lg px-3 py-2">
-                ⚠️ Zero Balance - Add funds to continue trading
+                {positionChange !== undefined && (
+                  <div className={`text-sm mb-2 ${
+                    positionChange >= 0 ? 'text-emerald-400' : positionChange < 0 ? 'text-red-400' : 'text-slate-400'
+                  }`}>
+                    {positionChange >= 0 ? '+' : ''}{formatCurrency(positionChange)}
+                  </div>
+                )}
+                <div className="text-sm font-medium text-slate-400 uppercase tracking-wide">Position</div>
               </div>
-            </div>
-          )}
-        </div>
+              
+              {/* Cash Box */}
+              <div className="bg-slate-800/70 backdrop-blur-sm rounded-2xl shadow-lg border border-slate-700/50 p-6 text-center hover:shadow-xl transition-all duration-300">
+                <div className="text-3xl font-bold text-emerald-400 mb-1">
+                  {formatCurrency(cashValue)}
+                </div>
+                {cashChange !== undefined && (
+                  <div className={`text-sm mb-2 ${
+                    cashChange >= 0 ? 'text-emerald-400' : cashChange < 0 ? 'text-red-400' : 'text-slate-400'
+                  }`}>
+                    {cashChange >= 0 ? '+' : ''}{formatCurrency(cashChange)}
+                  </div>
+                )}
+                <div className="text-sm font-medium text-slate-400 uppercase tracking-wide">Cash</div>
+              </div>
+              
+              {/* Total Box */}
+              <div className="bg-slate-800/70 backdrop-blur-sm rounded-2xl shadow-lg border border-slate-700/50 p-6 text-center hover:shadow-xl transition-all duration-300">
+                <div className="text-3xl font-bold text-purple-400 mb-1">
+                  {formatCurrency(totalValue)}
+                </div>
+                {totalChange !== undefined && (
+                  <div className={`text-sm mb-2 ${
+                    totalChange >= 0 ? 'text-emerald-400' : totalChange < 0 ? 'text-red-400' : 'text-slate-400'
+                  }`}>
+                    {totalChange >= 0 ? '+' : ''}{formatCurrency(totalChange)}
+                  </div>
+                )}
+                <div className="text-sm font-medium text-slate-400 uppercase tracking-wide">Total</div>
+              </div>
+              
+              {/* Total P&L Box */}
+              <div className="bg-slate-800/70 backdrop-blur-sm rounded-2xl shadow-lg border border-slate-700/50 p-6 text-center hover:shadow-xl transition-all duration-300">
+                <div className={`text-3xl font-bold mb-1 ${
+                  totalChange >= 0 ? 'text-emerald-400' : totalChange < 0 ? 'text-red-400' : 'text-slate-400'
+                }`}>
+                  {totalChange >= 0 ? '+' : ''}{formatCurrency(totalChange)}
+                </div>
+                {totalStartValue > 0 && (
+                  <div className={`text-sm mb-2 ${
+                    totalPnlPercent >= 0 ? 'text-emerald-400' : totalPnlPercent < 0 ? 'text-red-400' : 'text-slate-400'
+                  }`}>
+                    {totalPnlPercent >= 0 ? '+' : ''}{totalPnlPercent.toFixed(2)}%
+                  </div>
+                )}
+                <div className="text-sm font-medium text-slate-400 uppercase tracking-wide">Total P&L</div>
+              </div>
+            </>
+          );
+        })()}
       </div>
+      
+      {/* Warning Indicator */}
+      {displayState.cash_balance === 0 && displayState.portfolio_value === 0 && (
+        <div className="bg-amber-500/10 border border-amber-500/20 rounded-lg px-3 py-2">
+          <div className="text-xs text-amber-400">
+            ⚠️ Zero Balance - Add funds to continue trading
+          </div>
+        </div>
+      )}
 
       {/* Main Content Grid */}
       <div className="grid grid-cols-2 gap-3">
