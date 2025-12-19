@@ -1308,13 +1308,55 @@ class KalshiMultiMarketOrderManager:
         fill_fee = fill_value * fee_rate
         self.session_total_fees_paid += fill_fee
         
-        # Track cashflow
-        if order.side == OrderSide.BUY:
-            # BUY: cash invested (spent)
-            self.session_cash_invested += fill_cost
-        else:
-            # SELL: cash recouped (received)
-            self.session_cash_recouped += fill_cost
+        # Track cashflow based on whether we're opening/adding or closing/reducing positions
+        # Check position state BEFORE updating to determine the nature of the trade
+        ticker = order.ticker
+        position_before = self.positions.get(ticker)
+        contracts_before = position_before.contracts if position_before else 0
+        
+        # Calculate contract change (same logic as _update_position)
+        if order.contract_side == ContractSide.YES:
+            if order.side == OrderSide.BUY:
+                contract_change = fill_quantity  # +YES
+            else:
+                contract_change = -fill_quantity  # Sell YES
+        else:  # NO contracts
+            if order.side == OrderSide.BUY:
+                contract_change = -fill_quantity  # Buy NO = -YES
+            else:
+                contract_change = fill_quantity  # Sell NO = +YES
+        
+        # Determine if opening/adding or closing/reducing
+        is_opening_or_adding = (
+            (contracts_before == 0) or  # Opening new position
+            (contracts_before > 0 and contract_change > 0) or  # Adding to long
+            (contracts_before < 0 and contract_change < 0)  # Adding to short
+        )
+        
+        is_closing_or_reducing = (
+            (contracts_before > 0 and contract_change < 0) or  # Reducing long
+            (contracts_before < 0 and contract_change > 0)  # Reducing short
+        )
+        
+        # Track cashflow correctly
+        # Invested: Cash spent to open/add to positions (positive = spending, negative = receiving)
+        # Recouped: Cash received from closing/reducing positions (positive = receiving, negative = spending)
+        if is_opening_or_adding:
+            if order.side == OrderSide.BUY:
+                # BUY opening/adding: spending cash to acquire position
+                self.session_cash_invested += fill_cost
+            else:
+                # SELL opening/adding short: receiving cash to open short position
+                # This is negative investment (we're being paid to take a position)
+                self.session_cash_invested -= fill_cost
+        elif is_closing_or_reducing:
+            if order.side == OrderSide.SELL:
+                # SELL closing/reducing: receiving cash from closing position
+                self.session_cash_recouped += fill_cost
+            else:
+                # BUY closing/reducing short: spending cash to close short position
+                # This is negative recoup (we're paying to close)
+                self.session_cash_recouped -= fill_cost
         
         # Update position using traditional method first
         self._update_position(order, fill_price, fill_quantity)

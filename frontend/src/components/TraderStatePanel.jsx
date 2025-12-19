@@ -34,6 +34,43 @@ const TraderStatePanel = ({
     return num.toLocaleString();
   };
 
+  // Helper function to format relative time
+  const formatRelativeTime = (timestamp) => {
+    if (!timestamp) return null;
+    const now = Date.now();
+    const time = typeof timestamp === 'number' ? timestamp * 1000 : new Date(timestamp).getTime();
+    if (isNaN(time)) return null;
+    const diff = Math.floor((now - time) / 1000);
+    
+    if (diff < 0) return null; // Future timestamp
+    if (diff === 0) return 'just now';
+    if (diff < 60) return `${diff} second${diff !== 1 ? 's' : ''} ago`;
+    
+    const minutes = Math.floor(diff / 60);
+    if (minutes < 60) return `${minutes} minute${minutes !== 1 ? 's' : ''} ago`;
+    
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return `${hours} hour${hours !== 1 ? 's' : ''} ago`;
+    
+    const days = Math.floor(hours / 24);
+    return `${days} day${days !== 1 ? 's' : ''} ago`;
+  };
+
+  // Helper function to format action name for display
+  const formatActionName = (action) => {
+    if (!action) return '--';
+    const actionMap = {
+      'hold': 'Hold',
+      'buy_yes': 'Buy YES',
+      'sell_yes': 'Sell YES',
+      'buy_no': 'Buy NO',
+      'sell_no': 'Sell NO',
+      'failed': 'Failed',
+      'throttled': 'Throttled'
+    };
+    return actionMap[action.toLowerCase()] || action;
+  };
+
   // Helper function to format value based on cents/dollars mode
   const formatValueFromKalshi = (position, field) => {
     // Use Kalshi's exact field names - prefer dollars format if available
@@ -284,12 +321,15 @@ const TraderStatePanel = ({
       {/* Main Content Grid */}
       <div className="grid grid-cols-2 gap-3">
 
-        {/* Action Breakdown - Redesigned with No Op and Trades sections */}
+        {/* Action Breakdown - Enhanced */}
         {showActionBreakdown && displayState.actor_metrics?.action_counts && (
-          <div className="bg-gradient-to-br from-slate-800 to-slate-800/80 border border-slate-700 rounded-lg p-4 hover:border-slate-600 transition-all">
+          <div className="bg-gradient-to-br from-slate-800 to-slate-800/80 border border-slate-700 rounded-lg p-5 hover:border-slate-600 transition-all">
             {/* Header with Events Received count */}
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-sm font-semibold text-slate-300 uppercase tracking-wider">Actions</h3>
+            <div className="flex items-center justify-between mb-5">
+              <h3 className="text-sm font-semibold text-slate-300 uppercase tracking-wider flex items-center">
+                <span className="mr-2">⚡</span>
+                Actions
+              </h3>
               <div className="flex items-center space-x-2">
                 <span className="text-xs px-2.5 py-1 bg-slate-700/50 text-slate-300 rounded-full font-medium">
                   {formatNumber(displayState.actor_metrics.events_queued || 0)} events
@@ -301,44 +341,10 @@ const TraderStatePanel = ({
             </div>
             
             <div className="space-y-3">
-              {/* No Op Section */}
-              <div className="bg-slate-900/50 border border-slate-700/50 rounded-lg p-3">
+              {/* Trades Section - Moved first for prominence */}
+              <div className="bg-slate-800/80 border border-slate-700/50 rounded-lg p-3">
                 <div className="flex items-center justify-between mb-3">
-                  <h4 className="text-xs font-medium text-slate-400 uppercase tracking-wider">No Op</h4>
-                  <span className="text-xs px-2 py-0.5 bg-slate-700/50 text-slate-300 rounded-full">
-                    {formatNumber(
-                      (displayState.actor_metrics.action_counts.hold || 0) +
-                      (displayState.actor_metrics.action_counts.failed || 0) +
-                      (displayState.actor_metrics.action_counts.throttled || 0)
-                    )}
-                  </span>
-                </div>
-                <div className="grid grid-cols-3 gap-x-3 gap-y-2">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs text-slate-500">Hold</span>
-                    <span className="text-sm font-semibold text-amber-400 font-mono">
-                      {formatNumber(displayState.actor_metrics.action_counts.hold || 0)}
-                    </span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs text-slate-500">Failed</span>
-                    <span className="text-sm font-semibold text-orange-400 font-mono">
-                      {formatNumber(displayState.actor_metrics.action_counts.failed || 0)}
-                    </span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs text-slate-500">Throttled</span>
-                    <span className="text-sm font-semibold text-yellow-400 font-mono">
-                      {formatNumber(displayState.actor_metrics.action_counts.throttled || 0)}
-                    </span>
-                  </div>
-                </div>
-              </div>
-
-              {/* Trades Section */}
-              <div className="bg-slate-800/50 border border-slate-700/50 rounded-lg p-3">
-                <div className="flex items-center justify-between mb-3">
-                  <h4 className="text-xs font-medium text-slate-300 uppercase tracking-wider">Trades</h4>
+                  <h4 className="text-xs font-medium text-slate-200 uppercase tracking-wider">Trades</h4>
                   <span className="text-xs px-2 py-0.5 bg-blue-500/20 text-blue-400 rounded-full border border-blue-500/30">
                     {formatNumber(
                       (displayState.actor_metrics.action_counts.buy_yes || 0) +
@@ -374,92 +380,241 @@ const TraderStatePanel = ({
                     </span>
                   </div>
                 </div>
+              </div>
+
+              {/* No Op Section - More subdued */}
+              <div className="bg-slate-900/30 border border-slate-700/50 rounded-lg p-3">
+                <div className="flex items-center justify-between mb-3">
+                  <h4 className="text-xs font-medium text-slate-500 uppercase tracking-wider">No Op</h4>
+                  <span className="text-xs px-2 py-0.5 bg-slate-700/50 text-slate-300 rounded-full">
+                    {formatNumber(
+                      (displayState.actor_metrics.action_counts.hold || 0) +
+                      (displayState.actor_metrics.action_counts.failed || 0) +
+                      (displayState.actor_metrics.action_counts.throttled || 0)
+                    )}
+                  </span>
+                </div>
+                <div className="grid grid-cols-3 gap-x-3 gap-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs text-slate-500">Hold</span>
+                    <span className="text-sm font-semibold text-amber-400 font-mono">
+                      {formatNumber(displayState.actor_metrics.action_counts.hold || 0)}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs text-slate-500">Failed</span>
+                    <span className="text-sm font-semibold text-orange-400 font-mono">
+                      {formatNumber(displayState.actor_metrics.action_counts.failed || 0)}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs text-slate-500">Throttled</span>
+                    <span className="text-sm font-semibold text-yellow-400 font-mono">
+                      {formatNumber(displayState.actor_metrics.action_counts.throttled || 0)}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* All Actions Stacked Bar Graph */}
+              {(() => {
+                const actionCounts = displayState.actor_metrics.action_counts;
+                const totalActions = displayState.actor_metrics.total_actions || 0;
                 
-                {/* Trade distribution bar - only show trades, exclude No Op */}
-                {(() => {
-                  const tradesTotal = 
-                    (displayState.actor_metrics.action_counts.buy_yes || 0) +
-                    (displayState.actor_metrics.action_counts.sell_yes || 0) +
-                    (displayState.actor_metrics.action_counts.buy_no || 0) +
-                    (displayState.actor_metrics.action_counts.sell_no || 0);
-                  
-                  return tradesTotal > 0 ? (
-                    <div className="mt-3 pt-3 border-t border-slate-700/50">
-                      <div className="flex h-2 rounded-full overflow-hidden bg-slate-700">
-                        {displayState.actor_metrics.action_counts.buy_yes > 0 && (
-                          <div 
-                            className="bg-emerald-400 transition-all duration-500"
-                            style={{ 
-                              width: `${(displayState.actor_metrics.action_counts.buy_yes / tradesTotal) * 100}%` 
-                            }}
-                          />
+                if (totalActions > 0) {
+                  return (
+                    <div className="mt-4 pt-4 border-t border-slate-700/50">
+                      <div className="mb-2">
+                        <h4 className="text-xs font-medium text-slate-400 uppercase tracking-wider mb-2">Action Distribution</h4>
+                        <div className="flex h-3 rounded-full overflow-hidden bg-slate-700">
+                          {actionCounts.hold > 0 && (
+                            <div 
+                              className="bg-amber-400 transition-all duration-500"
+                              style={{ 
+                                width: `${(actionCounts.hold / totalActions) * 100}%` 
+                              }}
+                            />
+                          )}
+                          {actionCounts.buy_yes > 0 && (
+                            <div 
+                              className="bg-emerald-400 transition-all duration-500"
+                              style={{ 
+                                width: `${(actionCounts.buy_yes / totalActions) * 100}%` 
+                              }}
+                            />
+                          )}
+                          {actionCounts.sell_yes > 0 && (
+                            <div 
+                              className="bg-red-400 transition-all duration-500"
+                              style={{ 
+                                width: `${(actionCounts.sell_yes / totalActions) * 100}%` 
+                              }}
+                            />
+                          )}
+                          {actionCounts.buy_no > 0 && (
+                            <div 
+                              className="bg-purple-400 transition-all duration-500"
+                              style={{ 
+                                width: `${(actionCounts.buy_no / totalActions) * 100}%` 
+                              }}
+                            />
+                          )}
+                          {actionCounts.sell_no > 0 && (
+                            <div 
+                              className="bg-blue-400 transition-all duration-500"
+                              style={{ 
+                                width: `${(actionCounts.sell_no / totalActions) * 100}%` 
+                              }}
+                            />
+                          )}
+                          {actionCounts.failed > 0 && (
+                            <div 
+                              className="bg-orange-400 transition-all duration-500"
+                              style={{ 
+                                width: `${(actionCounts.failed / totalActions) * 100}%` 
+                              }}
+                            />
+                          )}
+                          {actionCounts.throttled > 0 && (
+                            <div 
+                              className="bg-yellow-400 transition-all duration-500"
+                              style={{ 
+                                width: `${(actionCounts.throttled / totalActions) * 100}%` 
+                              }}
+                            />
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                }
+                return null;
+              })()}
+
+              {/* Last Action Display */}
+              {(() => {
+                const lastProcessedAt = displayState.actor_metrics?.last_processed_at;
+                const lastAction = displayState.actor_metrics?.last_action || displayState.last_action;
+                
+                // Only show if we have both action and timestamp
+                if (!lastAction && !lastProcessedAt) return null;
+                
+                // Determine action type - prefer explicit last_action, otherwise try to infer
+                let actionType = lastAction;
+                if (!actionType && displayState.actor_metrics?.action_counts) {
+                  // Find the most recent non-zero action (not perfect but better than nothing)
+                  const counts = displayState.actor_metrics.action_counts;
+                  const actions = [
+                    { name: 'hold', count: counts.hold },
+                    { name: 'buy_yes', count: counts.buy_yes },
+                    { name: 'sell_yes', count: counts.sell_yes },
+                    { name: 'buy_no', count: counts.buy_no },
+                    { name: 'sell_no', count: counts.sell_no },
+                    { name: 'failed', count: counts.failed },
+                    { name: 'throttled', count: counts.throttled }
+                  ];
+                  // Sort by count descending and take the first non-zero
+                  const sortedActions = actions.filter(a => a.count > 0).sort((a, b) => b.count - a.count);
+                  if (sortedActions.length > 0) {
+                    actionType = sortedActions[0].name;
+                  }
+                }
+                
+                const relativeTime = lastProcessedAt ? formatRelativeTime(lastProcessedAt) : null;
+                
+                // Only render if we have at least an action or valid time
+                if (!actionType && !relativeTime) return null;
+                
+                return (
+                  <div className="mt-4 pt-4 border-t border-slate-700/50">
+                    <div className="flex items-center justify-between py-2 bg-slate-900/30 rounded px-2 -mx-2">
+                      <span className="text-xs font-semibold text-slate-300 uppercase tracking-wide">Last Action</span>
+                      <div className="flex items-center space-x-2">
+                        {actionType && (
+                          <span className="text-sm font-mono font-semibold text-slate-200">
+                            {formatActionName(actionType)}
+                          </span>
                         )}
-                        {displayState.actor_metrics.action_counts.sell_yes > 0 && (
-                          <div 
-                            className="bg-red-400 transition-all duration-500"
-                            style={{ 
-                              width: `${(displayState.actor_metrics.action_counts.sell_yes / tradesTotal) * 100}%` 
-                            }}
-                          />
-                        )}
-                        {displayState.actor_metrics.action_counts.buy_no > 0 && (
-                          <div 
-                            className="bg-purple-400 transition-all duration-500"
-                            style={{ 
-                              width: `${(displayState.actor_metrics.action_counts.buy_no / tradesTotal) * 100}%` 
-                            }}
-                          />
-                        )}
-                        {displayState.actor_metrics.action_counts.sell_no > 0 && (
-                          <div 
-                            className="bg-blue-400 transition-all duration-500"
-                            style={{ 
-                              width: `${(displayState.actor_metrics.action_counts.sell_no / tradesTotal) * 100}%` 
-                            }}
-                          />
+                        {relativeTime && (
+                          <span className="text-xs text-slate-400">
+                            {actionType ? ' - ' : ''}{relativeTime}
+                          </span>
                         )}
                       </div>
                     </div>
-                  ) : null;
-                })()}
-              </div>
+                  </div>
+                );
+              })()}
             </div>
           </div>
         )}
 
-        {/* Session Cashflow */}
-        <div className="bg-gradient-to-br from-slate-800 to-slate-800/80 border border-slate-700 rounded-lg p-4 hover:border-slate-600 transition-all">
-          <h3 className="text-sm font-semibold text-slate-300 uppercase tracking-wider mb-4">Session Cashflow</h3>
-          <div className="space-y-1.5">
-            <div className="flex justify-between items-center">
-              <span className="text-xs text-slate-500">Invested</span>
-              <span className="text-xs font-mono font-semibold text-red-400">
-                -{formatCurrency(displayState.session_cash_invested || 0)}
+        {/* Session Cashflow - Enhanced */}
+        <div className="bg-gradient-to-br from-slate-800 to-slate-800/80 border border-slate-700 rounded-lg p-5 hover:border-slate-600 transition-all">
+          <h3 className="text-sm font-semibold text-slate-300 uppercase tracking-wider mb-5 flex items-center">
+            <span className="mr-2">💰</span>
+            Session Cashflow
+          </h3>
+          <div className="space-y-3">
+            {/* Invested */}
+            <div className="flex justify-between items-center py-1.5">
+              <span className="text-xs font-medium text-slate-400">Invested</span>
+              <span className={`text-sm font-mono font-semibold ${
+                (displayState.session_cash_invested || 0) >= 0 ? 'text-red-400' : 'text-emerald-400'
+              }`}>
+                {(displayState.session_cash_invested || 0) >= 0 ? '-' : '+'}{formatCurrency(Math.abs(displayState.session_cash_invested || 0))}
               </span>
             </div>
-            <div className="flex justify-between items-center">
-              <span className="text-xs text-slate-500">Recouped</span>
-              <span className="text-xs font-mono font-semibold text-emerald-400">
-                +{formatCurrency(displayState.session_cash_recouped || 0)}
+            
+            {/* Recouped */}
+            <div className="flex justify-between items-center py-1.5">
+              <span className="text-xs font-medium text-slate-400">Recouped</span>
+              <span className={`text-sm font-mono font-semibold ${
+                (displayState.session_cash_recouped || 0) >= 0 ? 'text-emerald-400' : 'text-red-400'
+              }`}>
+                {(displayState.session_cash_recouped || 0) >= 0 ? '+' : '-'}{formatCurrency(Math.abs(displayState.session_cash_recouped || 0))}
               </span>
             </div>
+            
+            {/* Divider */}
+            <div className="border-t border-slate-700/50 my-2"></div>
+            
+            {/* Net Cashflow */}
             {displayState.net_cashflow !== undefined && (
-              <div className="flex justify-between items-center pt-1.5 border-t border-slate-700/30">
-                <span className="text-xs font-medium text-slate-400">Net</span>
-                <span className={`text-sm font-mono font-bold ${
+              <div className="flex justify-between items-center py-2 bg-slate-900/30 rounded px-2 -mx-2">
+                <span className="text-xs font-semibold text-slate-300 uppercase tracking-wide">Net Cashflow</span>
+                <span className={`text-base font-mono font-bold ${
                   displayState.net_cashflow >= 0 ? 'text-emerald-400' : 'text-red-400'
                 }`}>
                   {displayState.net_cashflow >= 0 ? '+' : ''}{formatCurrency(displayState.net_cashflow || 0)}
                 </span>
               </div>
             )}
+            
+            {/* Fees */}
             {displayState.session_total_fees_paid !== undefined && (
-              <div className="flex justify-between items-center">
-                <span className="text-xs text-slate-500">Fees</span>
-                <span className="text-xs font-mono font-semibold text-amber-400">
+              <div className="flex justify-between items-center py-1.5">
+                <span className="text-xs font-medium text-slate-400">Fees</span>
+                <span className="text-sm font-mono font-semibold text-amber-400">
                   -{formatCurrency(displayState.session_total_fees_paid || 0)}
                 </span>
               </div>
+            )}
+            
+            {/* Net After Fees */}
+            {displayState.net_cashflow !== undefined && displayState.session_total_fees_paid !== undefined && (
+              <>
+                <div className="border-t border-slate-700/50 my-2"></div>
+                <div className="flex justify-between items-center py-2 bg-slate-900/40 rounded px-2 -mx-2 border border-slate-700/30">
+                  <span className="text-xs font-semibold text-slate-200 uppercase tracking-wide">Net After Fees</span>
+                  <span className={`text-base font-mono font-bold ${
+                    (displayState.net_cashflow - (displayState.session_total_fees_paid || 0)) >= 0 ? 'text-emerald-400' : 'text-red-400'
+                  }`}>
+                    {(displayState.net_cashflow - (displayState.session_total_fees_paid || 0)) >= 0 ? '+' : ''}
+                    {formatCurrency((displayState.net_cashflow || 0) - (displayState.session_total_fees_paid || 0))}
+                  </span>
+                </div>
+              </>
             )}
           </div>
         </div>
