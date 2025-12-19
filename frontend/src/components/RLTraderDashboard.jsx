@@ -20,6 +20,13 @@ const RLTraderDashboard = () => {
   const [priceMode, setPriceMode] = useState('dollar'); // Price display mode: 'dollar' or 'cent'
   const [initializationStatus, setInitializationStatus] = useState(null); // Initialization checklist status
   const [componentHealth, setComponentHealth] = useState({}); // Component health status
+  
+  // Position update tracking for animations
+  const [previousPositions, setPreviousPositions] = useState({}); // Track previous position values
+  const [positionUpdateHistory, setPositionUpdateHistory] = useState(new Map()); // Map<ticker, lastUpdate>
+  const [positionAnimations, setPositionAnimations] = useState({}); // Map<ticker, {highlightField, changeDirection, isNew, isSettled}>
+  const [settledPositions, setSettledPositions] = useState({}); // Track settled positions separately
+  const [positionsTab, setPositionsTab] = useState('active'); // 'active' or 'settled'
   // Default to 'system' tab if initialization is not complete
   const [activeTab, setActiveTab] = useState('system'); // Tab selection: 'portfolio' or 'system'
   
@@ -209,22 +216,161 @@ const RLTraderDashboard = () => {
             break;
             
           case 'position_update':
-            // Position update from fills or sync
+            // Position update from WebSocket with change metadata
             if (data.data) {
-              const { ticker, position, cost_basis, realized_pnl, market_exposure } = data.data;
+              const { 
+                ticker, 
+                position, 
+                position_cost,
+                cost_basis,
+                realized_pnl, 
+                fees_paid,
+                volume,
+                market_exposure,
+                market_exposure_cents,  // In cents (preferred)
+                changed_fields = [],
+                previous_values = {},
+                update_source = 'websocket',
+                timestamp,
+                was_settled = false
+              } = data.data;
+              
               if (ticker) {
+                const prevPosition = previousPositions[ticker] || {};
+                const isNew = !prevPosition.position && position !== 0;
+                
+                // Determine change direction for each changed field
+                const changeDirection = {};
+                changed_fields.forEach(field => {
+                  const prevValue = previous_values[field] ?? prevPosition[field] ?? 0;
+                  const newValue = data.data[field] ?? 0;
+                  if (newValue > prevValue) {
+                    changeDirection[field] = 'up';
+                  } else if (newValue < prevValue) {
+                    changeDirection[field] = 'down';
+                  } else {
+                    changeDirection[field] = 'neutral';
+                  }
+                });
+                
+                // Set animation flags
+                const animationData = {
+                  highlightField: changed_fields.length > 0 ? changed_fields[0] : null,
+                  changeDirection: changeDirection,
+                  isNew: isNew,
+                  isSettled: was_settled,
+                  timestamp: timestamp || Date.now()
+                };
+                
+                setPositionAnimations(prev => ({
+                  ...prev,
+                  [ticker]: animationData
+                }));
+                
+                // Update position update history
+                setPositionUpdateHistory(prev => {
+                  const newMap = new Map(prev);
+                  newMap.set(ticker, {
+                    timestamp: timestamp || Date.now(),
+                    changed_fields,
+                    previous_values,
+                    update_source
+                  });
+                  return newMap;
+                });
+                
+                // Update positions - all monetary values are in cents
+                const positionData = {
+                  position: position || 0,
+                  cost_basis: position_cost || cost_basis || 0,  // In cents
+                  realized_pnl: realized_pnl || 0,  // In cents
+                  fees_paid: fees_paid || 0,  // In cents
+                  volume: volume || 0,
+                  market_exposure_cents: market_exposure_cents || (market_exposure ? (typeof market_exposure === 'number' ? market_exposure * 100 : parseFloat(market_exposure) * 100) : undefined),  // Prefer market_exposure_cents, fallback to converting market_exposure
+                  market_exposure: market_exposure,  // Keep for backward compatibility
+                  last_updated_ts: timestamp || Date.now()
+                };
+                
                 setPositions(prev => ({
                   ...prev,
-                  [ticker]: { position, cost_basis, realized_pnl, market_exposure }
+                  [ticker]: positionData
                 }));
+                
                 setTraderState(prev => ({
                   ...prev,
                   positions: {
                     ...prev.positions,
-                    [ticker]: { position, cost_basis, realized_pnl, market_exposure }
+                    [ticker]: positionData
                   }
                 }));
+                
+                // Update previous positions tracking
+                setPreviousPositions(prev => ({
+                  ...prev,
+                  [ticker]: positionData
+                }));
+                
+                // Handle settlement - move to settled positions
+                if (was_settled || (prevPosition.position !== 0 && position === 0)) {
+                  setSettledPositions(prev => ({
+                    ...prev,
+                    [ticker]: {
+                      ...positionData,
+                      settled_at: timestamp || Date.now(),
+                      final_pnl: realized_pnl || 0
+                    }
+                  }));
+                  
+                  // Remove from active positions after a delay to show animation
+                  setTimeout(() => {
+                    setPositions(prev => {
+                      const newPos = { ...prev };
+                      delete newPos[ticker];
+                      return newPos;
+                    });
+                  }, 2000); // Keep in active for 2s to show settlement animation
+                }
+                
+                // Clear animation flags after animation completes
+                setTimeout(() => {
+                  setPositionAnimations(prev => {
+                    const newAnim = { ...prev };
+                    if (newAnim[ticker]) {
+                      delete newAnim[ticker].highlightField;
+                      if (Object.keys(newAnim[ticker]).length === 1) { // Only timestamp left
+                        delete newAnim[ticker];
+                      }
+                    }
+                    return newAnim;
+                  });
+                }, 1500); // Clear after 1.5s
               }
+            }
+            break;
+            
+          case 'settlements_update':
+            // Settlements update from API sync
+            if (data.data && data.data.settlements) {
+              const settlements = data.data.settlements;
+              const updateTimestamp = data.data.timestamp || Date.now();
+              
+              setSettledPositions(prev => {
+                const updated = { ...prev };
+                
+                // Merge new settlements, preferring newer settled_time
+                Object.entries(settlements).forEach(([ticker, settlement]) => {
+                  const existing = prev[ticker];
+                  if (!existing || !existing.settled_time || 
+                      (settlement.settled_time && settlement.settled_time > existing.settled_time)) {
+                    updated[ticker] = {
+                      ...settlement,
+                      synced_at: updateTimestamp
+                    };
+                  }
+                });
+                
+                return updated;
+              });
             }
             break;
             
@@ -405,8 +551,8 @@ const RLTraderDashboard = () => {
                   completed_steps: data.data.completed_steps || Object.values(data.data.steps || {}).filter(s => s.status === 'complete').length,
                 }
               }));
-              // Keep system tab open to show completion status
-              // User can manually switch to portfolio tab if desired
+              // Switch to portfolio tab after initialization completes
+              setActiveTab('portfolio');
             }
             break;
             
@@ -547,48 +693,54 @@ const RLTraderDashboard = () => {
       const settlementDate = parseSettlementDate(ticker);
       const timeToExp = getTimeToExpiration(settlementDate);
       
-      // Calculate market exposure - prefer market_exposure_dollars, fallback to cost_basis calculation
-      let marketExposure = 0;
-      if (pos.market_exposure_dollars !== undefined && pos.market_exposure_dollars !== null) {
-        marketExposure = typeof pos.market_exposure_dollars === 'number' 
+      // Calculate market exposure - all values are in cents
+      let marketExposureCents = 0;
+      if (pos.market_exposure_cents !== undefined && pos.market_exposure_cents !== null) {
+        marketExposureCents = typeof pos.market_exposure_cents === 'number' 
+          ? pos.market_exposure_cents 
+          : parseFloat(pos.market_exposure_cents) || 0;
+      } else if (pos.market_exposure_dollars !== undefined && pos.market_exposure_dollars !== null) {
+        // Convert dollars to cents
+        const exposureDollars = typeof pos.market_exposure_dollars === 'number' 
           ? pos.market_exposure_dollars 
           : parseFloat(pos.market_exposure_dollars) || 0;
+        marketExposureCents = exposureDollars * 100.0;
       } else if (pos.market_exposure !== undefined && pos.market_exposure !== null) {
-        // market_exposure could be in dollars or cents, try both
+        // If market_exposure is provided, assume it's in centi-cents, convert to cents
         const exposure = typeof pos.market_exposure === 'number' 
           ? pos.market_exposure 
           : parseFloat(pos.market_exposure) || 0;
-        // If it's a large number (> 1000 for typical positions), assume it's in cents
-        marketExposure = exposure > 1000 ? exposure / 100 : exposure;
-      } else {
-        // Fallback: estimate from contracts and cost basis
-        const costBasisDollars = (pos.cost_basis || 0) * Math.abs(contracts);
-        marketExposure = costBasisDollars;
+        marketExposureCents = exposure / 100.0;  // Convert centi-cents to cents
       }
       
       return {
         ticker,
         contracts,
         side: contracts > 0 ? 'YES' : 'NO',
-        costBasis: pos.cost_basis || 0,
-        realizedPnl: pos.realized_pnl || 0,
-        marketExposure,
+        costBasis: pos.cost_basis || 0,  // In cents
+        realizedPnl: pos.realized_pnl || 0,  // In cents
+        marketExposure: marketExposureCents,  // In cents
         totalTraded: pos.total_traded,
-        feesPaid: pos.fees_paid || 0,
+        feesPaid: pos.fees_paid || 0,  // In cents
         lastUpdated: pos.last_updated_ts,
+        lastUpdatedTimestamp: pos.last_updated_ts ? new Date(pos.last_updated_ts).getTime() : 0,
         settlementDate,
         timeToExp,
         settlementTimestamp: settlementDate ? settlementDate.getTime() : Infinity
       };
     }).filter(p => p.contracts !== 0);
     
-    // Sort by settlement date (earliest first)
+    // Sort by last updated date (most recent first), with stable sorting to prevent jumping
+    // Use a combination of last_updated_ts and ticker for stable sort
     return formatted.sort((a, b) => {
-      // Expired positions go to the end
-      if (a.timeToExp?.expired && !b.timeToExp?.expired) return 1;
-      if (!a.timeToExp?.expired && b.timeToExp?.expired) return -1;
-      // Both expired or both not expired - sort by date
-      return a.settlementTimestamp - b.settlementTimestamp;
+      // First, sort by last updated timestamp (most recent first)
+      const aTime = a.lastUpdatedTimestamp || 0;
+      const bTime = b.lastUpdatedTimestamp || 0;
+      if (aTime !== bTime) {
+        return bTime - aTime;  // Descending (newest first)
+      }
+      // If timestamps are equal (or both 0), use ticker for stable sort
+      return a.ticker.localeCompare(b.ticker);
     });
   };
 
@@ -1521,10 +1673,15 @@ const RLTraderDashboard = () => {
             >
               <h3 className="text-lg font-semibold text-gray-100 flex items-center">
                 <span className="mr-2">📈</span>
-                Open Positions
-                {formatPositions().length > 0 && (
+                Positions
+                {positionsTab === 'active' && formatPositions().length > 0 && (
                   <span className="ml-2 text-sm text-gray-400 font-normal">
-                    ({formatPositions().length} active, sorted by settlement date)
+                    ({formatPositions().length} active)
+                  </span>
+                )}
+                {positionsTab === 'settled' && Object.keys(settledPositions).length > 0 && (
+                  <span className="ml-2 text-sm text-gray-400 font-normal">
+                    ({Object.keys(settledPositions).length} settled)
                   </span>
                 )}
               </h3>
@@ -1535,10 +1692,67 @@ const RLTraderDashboard = () => {
             
             {!collapsedSections.positions && (
               <div className="mt-4">
-                {formatPositions().length > 0 ? (
+                {/* Tabs */}
+                <div className="flex space-x-2 mb-4 border-b border-gray-700">
+                  <button
+                    onClick={() => setPositionsTab('active')}
+                    className={`px-4 py-2 text-sm font-medium transition-colors ${
+                      positionsTab === 'active'
+                        ? 'text-blue-400 border-b-2 border-blue-400'
+                        : 'text-gray-400 hover:text-gray-300'
+                    }`}
+                  >
+                    Active ({formatPositions().length})
+                  </button>
+                  <button
+                    onClick={() => setPositionsTab('settled')}
+                    className={`px-4 py-2 text-sm font-medium transition-colors ${
+                      positionsTab === 'settled'
+                        ? 'text-yellow-400 border-b-2 border-yellow-400'
+                        : 'text-gray-400 hover:text-gray-300'
+                    }`}
+                  >
+                    Settled ({Object.keys(settledPositions).length})
+                  </button>
+                </div>
+                
+                {/* Active Positions Tab */}
+                {positionsTab === 'active' && (
+                  <>
+                  {formatPositions().length > 0 ? (
                   <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
-                    {formatPositions().map((pos, idx) => (
-                      <div key={`${pos.ticker}-${idx}`} className="bg-gray-700/30 hover:bg-gray-700/50 rounded-lg p-3 border border-gray-700 hover:border-gray-600 transition-all">
+                    {formatPositions().map((pos, idx) => {
+                      const animData = positionAnimations[pos.ticker] || {};
+                      const isNew = animData.isNew;
+                      const isSettled = animData.isSettled;
+                      const highlightField = animData.highlightField;
+                      const changeDirection = animData.changeDirection || {};
+                      
+                      // Get position data with all fields
+                      const posData = positions[pos.ticker] || {};
+                      const positionCost = posData.cost_basis || pos.costBasis || 0;
+                      const feesPaid = posData.fees_paid || pos.feesPaid || 0;
+                      const volume = posData.volume || pos.totalTraded || 0;
+                      
+                      // Determine animation classes
+                      const cardClasses = [
+                        "bg-gray-700/30 hover:bg-gray-700/50 rounded-lg p-3 border transition-all",
+                        isNew ? "animate-new-position" : "",
+                        isSettled ? "animate-settlement border-yellow-500/50" : "border-gray-700 hover:border-gray-600",
+                        highlightField ? "animate-position-update" : ""
+                      ].filter(Boolean).join(" ");
+                      
+                      // Field-specific animation classes
+                      const getFieldAnimationClass = (fieldName) => {
+                        const direction = changeDirection[fieldName];
+                        if (direction === 'up') return 'animate-value-increase';
+                        if (direction === 'down') return 'animate-value-decrease';
+                        if (highlightField === fieldName) return 'animate-field-highlight animate-counter';
+                        return '';
+                      };
+                      
+                      return (
+                      <div key={`${pos.ticker}-${idx}`} className={cardClasses}>
                         <div className="flex justify-between items-center mb-2 pb-2 border-b border-gray-700/50">
                           <span className="font-mono text-xs text-gray-300 truncate flex-1 mr-2" title={pos.ticker}>
                             {pos.ticker}
@@ -1552,27 +1766,77 @@ const RLTraderDashboard = () => {
                         
                         <div className="space-y-2 text-xs">
                           <div className="grid grid-cols-2 gap-2">
-                            <div>
+                            <div className={getFieldAnimationClass('position')}>
                               <span className="text-gray-500 block">Contracts</span>
                               <span className="text-gray-200 font-mono">{Math.abs(pos.contracts)}</span>
                             </div>
-                            <div>
+                            <div className={getFieldAnimationClass('realized_pnl')}>
                               <span className="text-gray-500 block">P&L</span>
                               <span className={`font-mono font-medium ${
                                 pos.realizedPnl >= 0 ? 'text-green-400' : 'text-red-400'
                               }`}>
-                                {pos.realizedPnl >= 0 ? '+' : ''}${(pos.realizedPnl / 100).toFixed(2)}
+                                {priceMode === 'dollar' 
+                                  ? `${pos.realizedPnl >= 0 ? '+' : ''}$${(pos.realizedPnl / 100).toFixed(2)}`
+                                  : `${pos.realizedPnl >= 0 ? '+' : ''}${pos.realizedPnl.toFixed(0)}¢`
+                                }
                               </span>
                             </div>
+                          </div>
+                          
+                          {/* Position Cost */}
+                          <div className={getFieldAnimationClass('position_cost')}>
+                            <span className="text-gray-500 block">Cost Basis</span>
+                            <span className="text-purple-400 font-mono font-medium">
+                              {priceMode === 'dollar' 
+                                ? `$${((pos.costBasis || 0) / 100).toFixed(2)}`
+                                : `${(pos.costBasis || 0).toFixed(0)}¢`
+                              }
+                            </span>
                           </div>
                           
                           {/* Market Exposure */}
                           <div>
                             <span className="text-gray-500 block">Market Exposure</span>
                             <span className="text-blue-400 font-mono font-medium">
-                              ${pos.marketExposure.toFixed(2)}
+                              {priceMode === 'dollar' 
+                                ? `$${((pos.marketExposure || 0) / 100).toFixed(2)}`
+                                : `${(pos.marketExposure || 0).toFixed(0)}¢`
+                              }
                             </span>
                           </div>
+                          
+                          {/* Fees Paid */}
+                          {feesPaid > 0 && (
+                            <div className={getFieldAnimationClass('fees_paid')}>
+                              <span className="text-gray-500 block">Fees Paid</span>
+                              <span className="text-orange-400 font-mono font-medium">
+                                {priceMode === 'dollar' 
+                                  ? `$${((typeof feesPaid === 'number' ? feesPaid : parseFloat(feesPaid) || 0) / 100).toFixed(2)}`
+                                  : `${(typeof feesPaid === 'number' ? feesPaid : parseFloat(feesPaid) || 0).toFixed(0)}¢`
+                                }
+                              </span>
+                            </div>
+                          )}
+                          
+                          {/* Volume */}
+                          {volume > 0 && (
+                            <div className={getFieldAnimationClass('volume')}>
+                              <span className="text-gray-500 block">Volume</span>
+                              <span className="text-cyan-400 font-mono font-medium">
+                                {volume}
+                              </span>
+                            </div>
+                          )}
+                          
+                          {/* Last Updated */}
+                          {pos.lastUpdated && (
+                            <div className="pt-2 border-t border-gray-700/50">
+                              <span className="text-gray-500 block text-xs">Last Updated</span>
+                              <span className="text-gray-400 font-mono text-xs">
+                                {new Date(pos.lastUpdated).toLocaleString()}
+                              </span>
+                            </div>
+                          )}
                           
                           {/* Settlement Date & Time to Expiration */}
                           {pos.settlementDate && pos.timeToExp && (
@@ -1600,7 +1864,8 @@ const RLTraderDashboard = () => {
                           )}
                         </div>
                       </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 ) : (
                   <div className="text-center text-gray-500 py-8">
@@ -1608,6 +1873,178 @@ const RLTraderDashboard = () => {
                     <div>No open positions</div>
                     <div className="text-xs mt-1 text-gray-600">Positions will appear here when opened</div>
                   </div>
+                )}
+                </>
+                )}
+                
+                {/* Settled Positions Tab */}
+                {positionsTab === 'settled' && (
+                  <>
+                  {Object.keys(settledPositions).length > 0 ? (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+                      {Object.entries(settledPositions).map(([ticker, settlement]) => {
+                        // All monetary values from API are in cents except fee_cost which is a string in dollars
+                        const finalPnl = settlement.final_pnl || 0;
+                        const revenue = settlement.revenue || 0;
+                        const value = settlement.value || 0;
+                        const yesTotalCost = settlement.yes_total_cost || 0;
+                        const noTotalCost = settlement.no_total_cost || 0;
+                        const yesCount = settlement.yes_count || 0;
+                        const noCount = settlement.no_count || 0;
+                        const feeCostStr = settlement.fee_cost || "0.0";
+                        const feeCostCents = settlement.fee_cost_cents || (parseFloat(feeCostStr) * 100);
+                        const marketResult = settlement.market_result || "unknown";
+                        const eventTicker = settlement.event_ticker || "";
+                        const settledTime = settlement.settled_time || settlement.settled_at;
+                        
+                        return (
+                          <div 
+                            key={ticker} 
+                            className="bg-yellow-900/20 border border-yellow-500/30 rounded-lg p-3 animate-settlement"
+                          >
+                            <div className="flex justify-between items-center mb-2 pb-2 border-b border-yellow-700/50">
+                              <div className="flex-1 mr-2 min-w-0">
+                                <span className="font-mono text-xs text-gray-300 truncate block" title={ticker}>
+                                  {ticker}
+                                </span>
+                                {eventTicker && eventTicker !== ticker && (
+                                  <span className="font-mono text-xs text-gray-500 truncate block" title={eventTicker}>
+                                    {eventTicker}
+                                  </span>
+                                )}
+                              </div>
+                              <span className={`px-2 py-1 rounded text-xs font-medium ${
+                                marketResult === 'yes' 
+                                  ? 'bg-green-500/20 text-green-400' 
+                                  : marketResult === 'no'
+                                  ? 'bg-red-500/20 text-red-400'
+                                  : 'bg-yellow-500/20 text-yellow-400'
+                              }`}>
+                                {marketResult.toUpperCase()}
+                              </span>
+                            </div>
+                            
+                            <div className="space-y-2 text-xs">
+                              {/* Final P&L - Most prominent */}
+                              <div>
+                                <span className="text-gray-500 block">Final P&L</span>
+                                <span className={`font-mono font-bold text-lg ${
+                                  finalPnl >= 0 ? 'text-green-400' : 'text-red-400'
+                                }`}>
+                                  {priceMode === 'dollar' 
+                                    ? `${finalPnl >= 0 ? '+' : ''}$${(finalPnl / 100).toFixed(2)}`
+                                    : `${finalPnl >= 0 ? '+' : ''}${finalPnl.toFixed(0)}¢`
+                                  }
+                                </span>
+                              </div>
+                              
+                              {/* Revenue and Value */}
+                              <div className="grid grid-cols-2 gap-2">
+                                <div>
+                                  <span className="text-gray-500 block">Revenue</span>
+                                  <span className="text-green-400 font-mono font-medium">
+                                    {priceMode === 'dollar' 
+                                      ? `$${(revenue / 100).toFixed(2)}`
+                                      : `${revenue.toFixed(0)}¢`
+                                    }
+                                  </span>
+                                </div>
+                                <div>
+                                  <span className="text-gray-500 block">Value</span>
+                                  <span className="text-blue-400 font-mono font-medium">
+                                    {priceMode === 'dollar' 
+                                      ? `$${(value / 100).toFixed(2)}`
+                                      : `${value.toFixed(0)}¢`
+                                    }
+                                  </span>
+                                </div>
+                              </div>
+                              
+                              {/* Contract Counts */}
+                              {(yesCount > 0 || noCount > 0) && (
+                                <div className="grid grid-cols-2 gap-2">
+                                  {yesCount > 0 && (
+                                    <div>
+                                      <span className="text-gray-500 block">YES Count</span>
+                                      <span className="text-green-400 font-mono">
+                                        {yesCount}
+                                      </span>
+                                    </div>
+                                  )}
+                                  {noCount > 0 && (
+                                    <div>
+                                      <span className="text-gray-500 block">NO Count</span>
+                                      <span className="text-red-400 font-mono">
+                                        {noCount}
+                                      </span>
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+                              
+                              {/* Costs */}
+                              {(yesTotalCost > 0 || noTotalCost > 0) && (
+                                <div className="grid grid-cols-2 gap-2">
+                                  {yesTotalCost > 0 && (
+                                    <div>
+                                      <span className="text-gray-500 block">YES Cost</span>
+                                      <span className="text-gray-300 font-mono">
+                                        {priceMode === 'dollar' 
+                                          ? `$${(yesTotalCost / 100).toFixed(2)}`
+                                          : `${yesTotalCost.toFixed(0)}¢`
+                                        }
+                                      </span>
+                                    </div>
+                                  )}
+                                  {noTotalCost > 0 && (
+                                    <div>
+                                      <span className="text-gray-500 block">NO Cost</span>
+                                      <span className="text-gray-300 font-mono">
+                                        {priceMode === 'dollar' 
+                                          ? `$${(noTotalCost / 100).toFixed(2)}`
+                                          : `${noTotalCost.toFixed(0)}¢`
+                                        }
+                                      </span>
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+                              
+                              {/* Fee Cost */}
+                              {feeCostCents > 0 && (
+                                <div>
+                                  <span className="text-gray-500 block">Fee Cost</span>
+                                  <span className="text-orange-400 font-mono">
+                                    {priceMode === 'dollar' 
+                                      ? `$${(feeCostCents / 100).toFixed(2)}`
+                                      : `${feeCostCents.toFixed(0)}¢`
+                                    }
+                                  </span>
+                                </div>
+                              )}
+                              
+                              {/* Settled Time */}
+                              {settledTime && (
+                                <div className="pt-2 border-t border-yellow-700/50">
+                                  <span className="text-gray-500 block">Settled At</span>
+                                  <span className="text-gray-400 text-xs">
+                                    {new Date(settledTime).toLocaleString()}
+                                  </span>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <div className="text-center text-gray-500 py-8">
+                      <div className="mb-2">🏆</div>
+                      <div>No settled positions</div>
+                      <div className="text-xs mt-1 text-gray-600">Settled positions will appear here</div>
+                    </div>
+                  )}
+                  </>
                 )}
               </div>
             )}

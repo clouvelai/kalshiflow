@@ -89,16 +89,19 @@ class InitializationTracker:
         "orderbook_health": "Orderbook Client Health Check",
         "trader_client_health": "Trader Client Health Check",
         "fill_listener_health": "Fill Listener Health Check",
+        "position_listener_health": "Position Listener Health Check",
         "event_bus_health": "Event Bus Health Check",
         
         # Phase 2: State Discovery & Sync
         "sync_balance": "Sync Portfolio Balance/Cash",
         "sync_positions": "Sync Positions",
+        "sync_settlements": "Sync Settlements",
         "sync_orders": "Sync Orders",
         
         # Phase 3: Listener Subscription Verification
         "verify_orderbook_subscriptions": "Verify Orderbook Subscriptions",
         "verify_fill_listener_subscription": "Verify Fill Listener Subscription",
+        "verify_position_listener_subscription": "Verify Position Listener Subscription",
         "verify_listeners": "Verify Order/Position/Fill Listeners",
         
         # Phase 4: Ready to Resume

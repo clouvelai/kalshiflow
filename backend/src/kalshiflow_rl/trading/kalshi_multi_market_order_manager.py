@@ -84,9 +84,10 @@ class Position:
     """Position in a specific market using Kalshi convention."""
     ticker: str
     contracts: int       # +contracts for YES, -contracts for NO
-    cost_basis: float    # Total cost in dollars (position_cost from Kalshi)
-    realized_pnl: float  # Cumulative realized P&L
+    cost_basis: float    # Total cost in cents (position_cost from Kalshi, converted from centi-cents)
+    realized_pnl: float  # Cumulative realized P&L in cents
     kalshi_data: Dict[str, Any] = field(default_factory=dict)  # Raw Kalshi API response
+    last_updated_ts: Optional[str] = None  # ISO timestamp of last update from Kalshi
     
     @property
     def is_flat(self) -> bool:
@@ -230,7 +231,10 @@ class KalshiMultiMarketOrderManager:
             initial_cash: Starting cash balance in dollars
         """
         # Cash management (Option B)
-        self.cash_balance = initial_cash      # Available cash
+        # cash_balance = synced from Kalshi (only updated on sync)
+        # _calculated_cash_balance = real-time tracking (updated from fills/orders)
+        self.cash_balance = initial_cash      # Synced from Kalshi (authoritative)
+        self._calculated_cash_balance = initial_cash  # Real-time calculated (internal tracking)
         self.promised_cash = 0.0              # Cash reserved for open orders
         self.initial_cash = initial_cash
         
@@ -242,6 +246,12 @@ class KalshiMultiMarketOrderManager:
         self.session_start_cash: Optional[float] = None
         self.session_start_portfolio_value: Optional[float] = None
         
+        # Calculated vs synced tracking (for drift monitoring)
+        # Synced values come from Kalshi API (only updated on sync)
+        # Calculated values are our internal real-time tracking
+        self._last_sync_drift_cash: Optional[float] = None  # How far off calculated was from synced at last sync (None = not synced yet)
+        self._last_sync_drift_portfolio: Optional[float] = None  # How far off calculated was from synced at last sync (None = not synced yet)
+        
         # Cashflow tracking
         self.session_cash_invested: float = 0.0  # Total cash spent on BUY orders
         self.session_cash_recouped: float = 0.0   # Total cash received from SELL orders
@@ -250,6 +260,7 @@ class KalshiMultiMarketOrderManager:
         # Order and position tracking
         self.open_orders: Dict[str, OrderInfo] = {}  # {our_order_id: OrderInfo}
         self.positions: Dict[str, Position] = {}     # {ticker: Position}
+        self.settled_positions: Dict[str, Dict[str, Any]] = {}  # {ticker: settlement_data} - API-synced settlements
         
         # Order ID mapping
         self._kalshi_to_internal: Dict[str, str] = {}  # {kalshi_id: our_id}
@@ -276,6 +287,9 @@ class KalshiMultiMarketOrderManager:
         
         # State change callbacks (for UI updates)
         self._state_change_callbacks: List[Callable] = []
+        
+        # Track previous position state for change detection
+        self._previous_position_state: Dict[str, Dict[str, Any]] = {}
         
         # Execution history tracking (maxlen=100)
         self.execution_history: Deque[TradeDetail] = deque(maxlen=100)
@@ -398,6 +412,55 @@ class KalshiMultiMarketOrderManager:
             })
             await initialization_tracker.update_component_health("fill_listener", "healthy", health_details)
         
+        # Start position listener (WebSocket for real-time position updates)
+        # No fallbacks - if position listener fails, initialization fails
+        if initialization_tracker:
+            await initialization_tracker.mark_step_in_progress("position_listener_health")
+        
+        from .position_listener import PositionListener
+        self._position_listener = PositionListener(order_manager=self)
+        await self._position_listener.start()
+        logger.info("✅ Position listener started")
+        
+        # Wait for WebSocket connection to establish (connection happens asynchronously)
+        # Similar to fill listener - give it a moment to connect before health check
+        max_wait_time = 5.0  # Maximum wait time in seconds
+        wait_interval = 0.2   # Check every 200ms
+        elapsed = 0.0
+        position_listener_healthy = False
+        
+        while elapsed < max_wait_time:
+            if self._position_listener.is_healthy():
+                position_listener_healthy = True
+                logger.info("✅ Position listener WebSocket connected and healthy")
+                break
+            await asyncio.sleep(wait_interval)
+            elapsed += wait_interval
+        
+        if not position_listener_healthy:
+            error_msg = f"PositionListener not healthy after {max_wait_time}s wait - WebSocket connection failed"
+            logger.error(error_msg)
+            raise RuntimeError(error_msg)
+        
+        # Report position listener health (wrap in try/except to handle WebSocket implementation differences)
+        if initialization_tracker:
+            try:
+                health_details = self._position_listener.get_health_details()
+            except (AttributeError, TypeError) as e:
+                logger.warning(f"Could not get detailed position listener health (WebSocket attribute check issue): {e}")
+                # Use basic health info - we know it's healthy since is_healthy() passed
+                health_details = {
+                    "running": self._position_listener._running,
+                    "connected": True,  # We know it's connected if is_healthy() passed
+                    "ws_url": self._position_listener.ws_url,
+                    "positions_received": getattr(self._position_listener, '_positions_received', 0),
+                }
+            
+            await initialization_tracker.mark_step_complete("position_listener_health", {
+                "details": health_details
+            })
+            await initialization_tracker.update_component_health("position_listener", "healthy", health_details)
+        
         # Check if cleanup is enabled BEFORE syncing (defaults to false - user requested always disabled)
         import os
         from ..config import config
@@ -438,10 +501,31 @@ class KalshiMultiMarketOrderManager:
             
             # Extract cash balance (guaranteed to exist after validation)
             old_balance = self.cash_balance
-            self.cash_balance = balance_response["balance"] / 100.0  # Convert from cents to dollars
+            new_balance = balance_response["balance"] / 100.0  # Convert from cents to dollars
+            
+            # On startup (first sync), initialize calculated to match synced
+            # After that, calculated tracks independently
+            if self._last_sync_drift_cash is None:
+                # First sync: initialize calculated to match synced
+                self._calculated_cash_balance = new_balance
+                self._last_sync_drift_cash = 0.0
+            else:
+                # Subsequent syncs: calculate drift (how far off our calculation was)
+                calculated_cash = self._calculated_cash_balance
+                self._last_sync_drift_cash = calculated_cash - new_balance
+            
+            # Update synced value from Kalshi (authoritative)
+            self.cash_balance = new_balance
             
             # Extract portfolio_value (guaranteed to exist after validation)
             self._portfolio_value_from_kalshi = balance_response["portfolio_value"] / 100.0  # Convert from cents to dollars
+            
+            # On startup (first sync), initialize drift tracking (no drift yet since we just synced)
+            # This is the initial sync, so calculated should match synced (no drift)
+            if self._last_sync_drift_cash is None:
+                self._last_sync_drift_cash = 0.0
+            if self._last_sync_drift_portfolio is None:
+                self._last_sync_drift_portfolio = 0.0
             
             logger.info(
                 f"Balance sync complete: Cash=${old_balance:.2f} → ${self.cash_balance:.2f}, "
@@ -463,11 +547,44 @@ class KalshiMultiMarketOrderManager:
             await self._sync_positions_with_kalshi(is_startup=True)
             
             if initialization_tracker:
+                await initialization_tracker.mark_step_complete("sync_positions", {
+                    "positions_count": len(self.positions),
+                })
+            
+            # Sync settlements - fetch past 24 hours
+            if initialization_tracker:
+                await initialization_tracker.mark_step_in_progress("sync_settlements")
+            
+            settlement_stats = await self.sync_settlements_with_kalshi()
+            
+            if initialization_tracker:
+                await initialization_tracker.mark_step_complete("sync_settlements", {
+                    "total_fetched": settlement_stats.get("total_fetched", 0),
+                    "new": settlement_stats.get("new", 0),
+                    "updated": settlement_stats.get("updated", 0),
+                    "unchanged": settlement_stats.get("unchanged", 0),
+                })
+            
+            if initialization_tracker:
                 positions_count = len(self.positions)
                 await initialization_tracker.mark_step_complete("sync_positions", {
                     "positions_count": positions_count,
                     "positions": {ticker: {"contracts": pos.contracts, "cost_basis": pos.cost_basis} 
                                 for ticker, pos in self.positions.items()},
+                })
+            
+            # Sync settlements - fetch past 24 hours
+            if initialization_tracker:
+                await initialization_tracker.mark_step_in_progress("sync_settlements")
+            
+            settlement_stats = await self.sync_settlements_with_kalshi()
+            
+            if initialization_tracker:
+                await initialization_tracker.mark_step_complete("sync_settlements", {
+                    "total_fetched": settlement_stats.get("total_fetched", 0),
+                    "new": settlement_stats.get("new", 0),
+                    "updated": settlement_stats.get("updated", 0),
+                    "unchanged": settlement_stats.get("unchanged", 0),
                 })
             
             # Sync orders - fail fast if sync fails
@@ -538,9 +655,18 @@ class KalshiMultiMarketOrderManager:
             else:
                 await initialization_tracker.mark_step_failed("verify_fill_listener_subscription", "Fill listener not active")
             
+            await initialization_tracker.mark_step_in_progress("verify_position_listener_subscription")
+            if self._position_listener and self._position_listener.is_healthy():
+                await initialization_tracker.mark_step_complete("verify_position_listener_subscription", {
+                    "position_listener_active": True,
+                })
+            else:
+                await initialization_tracker.mark_step_failed("verify_position_listener_subscription", "Position listener not active")
+            
             await initialization_tracker.mark_step_in_progress("verify_listeners")
             await initialization_tracker.mark_step_complete("verify_listeners", {
                 "fill_listener": self._fill_listener is not None,
+                "position_listener": self._position_listener is not None,
                 "state_change_callbacks": True,  # Set later in app.py
             })
         
@@ -772,6 +898,15 @@ class KalshiMultiMarketOrderManager:
                 logger.warning(f"Error stopping fill listener: {e}")
             self._fill_listener = None
         
+        # Stop position listener
+        if self._position_listener:
+            try:
+                await self._position_listener.stop()
+                logger.info("✅ Position listener stopped")
+            except Exception as e:
+                logger.warning(f"Error stopping position listener: {e}")
+            self._position_listener = None
+        
         # Stop periodic sync task
         if self._periodic_sync_task:
             self._periodic_sync_task.cancel()
@@ -960,8 +1095,8 @@ class KalshiMultiMarketOrderManager:
             promised_cash = 0.0
             if side == OrderSide.BUY:
                 promised_cash = (limit_price / 100.0) * quantity
-                # Reserve cash immediately
-                self.cash_balance -= promised_cash
+                # Reserve cash immediately (update calculated, not synced)
+                self._calculated_cash_balance -= promised_cash
                 self.promised_cash += promised_cash
             
             # Place order via Kalshi
@@ -977,9 +1112,9 @@ class KalshiMultiMarketOrderManager:
             # Extract Kalshi order ID
             kalshi_order_id = response.get("order", {}).get("order_id", "")
             if not kalshi_order_id:
-                # Restore cash on failure
+                # Restore cash on failure (update calculated, not synced)
                 if side == OrderSide.BUY:
-                    self.cash_balance += promised_cash
+                    self._calculated_cash_balance += promised_cash
                     self.promised_cash -= promised_cash
                 logger.error(f"No Kalshi order ID in response: {response}")
                 return None
@@ -1012,9 +1147,9 @@ class KalshiMultiMarketOrderManager:
             }
             
         except Exception as e:
-            # Restore cash on error
+            # Restore cash on error (update calculated, not synced)
             if side == OrderSide.BUY and 'promised_cash' in locals():
-                self.cash_balance += promised_cash
+                self._calculated_cash_balance += promised_cash
                 self.promised_cash -= promised_cash
             logger.error(f"Error placing Kalshi order: {e}")
             return None
@@ -1033,8 +1168,8 @@ class KalshiMultiMarketOrderManager:
             
             # Update local state (Option B cash management)
             if order.side == OrderSide.BUY:
-                # Restore promised cash
-                self.cash_balance += order.promised_cash
+                # Restore promised cash (update calculated, not synced)
+                self._calculated_cash_balance += order.promised_cash
                 self.promised_cash -= order.promised_cash
             
             # Remove from tracking
@@ -1151,14 +1286,17 @@ class KalshiMultiMarketOrderManager:
             self.promised_cash -= promised_cash_released
             order.promised_cash -= promised_cash_released
             
+            # BUY: deduct cash for the filled quantity (update calculated)
+            self._calculated_cash_balance -= fill_cost
+            
             logger.debug(
                 f"BUY fill cash: released ${promised_cash_released:.2f} of ${order.promised_cash + promised_cash_released:.2f} "
-                f"({fill_quantity}/{order.quantity} contracts)"
+                f"({fill_quantity}/{order.quantity} contracts), deducted ${fill_cost:.2f} from calculated cash"
             )
         else:
-            # SELL: add cash received for the filled quantity
-            self.cash_balance += fill_cost
-            logger.debug(f"SELL fill cash: received ${fill_cost:.2f}")
+            # SELL: add cash received for the filled quantity (update calculated)
+            self._calculated_cash_balance += fill_cost
+            logger.debug(f"SELL fill cash: received ${fill_cost:.2f} (added to calculated cash)")
         
         # Track cashflow and fees for this fill
         fill_value = fill_cost  # fill_cost already calculated as (fill_price / 100.0) * fill_quantity
@@ -1538,24 +1676,36 @@ class KalshiMultiMarketOrderManager:
         if not self._websocket_manager:
             return
             
-        # Calculate total portfolio value
-        portfolio_value = self.cash_balance + self.promised_cash
-        for position in self.positions.values():
-            if hasattr(position, 'market_exposure_dollars') and position.market_exposure_dollars:
-                portfolio_value += position.market_exposure_dollars
-            else:
-                # Fallback calculation if market_exposure_dollars not available
-                portfolio_value += position.cost_basis * abs(position.contracts)
+        # Portfolio value: Use Kalshi API value (synced), calculate internal value separately
+        if hasattr(self, '_portfolio_value_from_kalshi') and self._portfolio_value_from_kalshi is not None:
+            portfolio_value = self._portfolio_value_from_kalshi  # Synced from Kalshi
+        else:
+            portfolio_value = self._calculate_portfolio_value()  # Fallback to calculated
         
         # Get positions data for broadcast
+        # All monetary values from Kalshi API are in cents - use directly, no conversion
         positions_data = {}
         for ticker, position in self.positions.items():
+            # Extract market exposure from kalshi_data - API provides both cents and dollars
+            kalshi_data = position.kalshi_data or {}
+            market_exposure_cents = kalshi_data.get("market_exposure")  # Already in cents from API
+            market_exposure_dollars = kalshi_data.get("market_exposure_dollars")  # String dollars for reference
+            
+            # Convert to float if needed
+            if market_exposure_cents is not None:
+                market_exposure_cents = float(market_exposure_cents) if isinstance(market_exposure_cents, str) else market_exposure_cents
+            
             positions_data[ticker] = {
+                "position": position.contracts,
                 "contracts": position.contracts,
-                "average_cost_cents": int(position.cost_basis * 100),  # Convert dollars to cents
-                "market_exposure_dollars": getattr(position, 'market_exposure_dollars', None),
-                "realized_pnl": position.realized_pnl,
-                "fees_paid": getattr(position, 'fees_paid', 0.0)
+                "cost_basis": position.cost_basis,  # In cents
+                "average_cost_cents": int(position.cost_basis),  # Already in cents
+                "market_exposure_cents": market_exposure_cents,  # In cents (from API)
+                "market_exposure_dollars": market_exposure_dollars,  # String dollars (from API, for reference)
+                "realized_pnl": position.realized_pnl,  # In cents
+                "fees_paid": getattr(position, 'fees_paid', 0.0),  # In cents
+                "volume": getattr(position, 'volume', 0),
+                "last_updated_ts": position.last_updated_ts
             }
         
         await self._websocket_manager.broadcast_positions_update(
@@ -1577,13 +1727,11 @@ class KalshiMultiMarketOrderManager:
         if not self._websocket_manager:
             return
             
-        # Calculate portfolio value
-        portfolio_value = self.cash_balance + self.promised_cash
-        for position in self.positions.values():
-            if hasattr(position, 'market_exposure_dollars') and position.market_exposure_dollars:
-                portfolio_value += position.market_exposure_dollars
-            else:
-                portfolio_value += position.cost_basis * abs(position.contracts)
+        # Portfolio value: Use Kalshi API value (synced), calculate internal value separately
+        if hasattr(self, '_portfolio_value_from_kalshi') and self._portfolio_value_from_kalshi is not None:
+            portfolio_value = self._portfolio_value_from_kalshi  # Synced from Kalshi
+        else:
+            portfolio_value = self._calculate_portfolio_value()  # Fallback to calculated
         
         await self._websocket_manager.broadcast_portfolio_update({
             "cash_balance": self.cash_balance,
@@ -1626,8 +1774,41 @@ class KalshiMultiMarketOrderManager:
     
     
     def get_cash_balance(self) -> float:
-        """Get available cash balance."""
+        """Get available cash balance (synced from Kalshi)."""
         return self.cash_balance
+    
+    def _calculate_cash_balance(self) -> float:
+        """
+        Get calculated cash balance from internal real-time tracking.
+        
+        This is our real-time calculated value based on:
+        - Initial cash
+        - Orders placed (deducted)
+        - Orders cancelled (restored)
+        - Fills processed
+        """
+        return self._calculated_cash_balance
+    
+    def _calculate_portfolio_value(self) -> float:
+        """
+        Calculate portfolio value from internal tracking (positions + cash).
+        
+        This is our real-time calculated value based on:
+        - Cash balance (calculated)
+        - Position values (cost basis + unrealized P&L)
+        """
+        total = self._calculate_cash_balance() + self.promised_cash
+        
+        # Add position values (cost basis + realized P&L + unrealized P&L if we have prices)
+        # Note: position.cost_basis and position.realized_pnl are in cents, convert to dollars
+        for position in self.positions.values():
+            if not position.is_flat:
+                # Convert cents to dollars
+                total += (position.cost_basis + position.realized_pnl) / 100.0
+                # Note: We don't add unrealized P&L here since we don't have current prices
+                # This matches the calculation used in get_portfolio_value() without prices
+        
+        return total
     
     def get_positions(self) -> Dict[str, Dict[str, Any]]:
         """Get all positions in UnifiedPositionTracker format."""
@@ -2024,9 +2205,9 @@ class KalshiMultiMarketOrderManager:
                             promised_cash_released = local_order.promised_cash * fill_ratio
                             self.promised_cash -= promised_cash_released
                         else:
-                            # SELL: add cash received
+                            # SELL: add cash received (update calculated, not synced)
                             fill_cost = (fill_price / 100.0) * filled_quantity
-                            self.cash_balance += fill_cost
+                            self._calculated_cash_balance += fill_cost
                         
                         # Update position
                         self._update_position(local_order, fill_price, filled_quantity)
@@ -2035,8 +2216,8 @@ class KalshiMultiMarketOrderManager:
                     
                     # Remove from tracking
                     if local_order.side == OrderSide.BUY:
-                        # Release any remaining promised cash
-                        self.cash_balance += local_order.promised_cash
+                        # Release any remaining promised cash (update calculated, not synced)
+                        self._calculated_cash_balance += local_order.promised_cash
                         self.promised_cash -= local_order.promised_cash
                     
                     del self.open_orders[our_order_id]
@@ -2044,9 +2225,9 @@ class KalshiMultiMarketOrderManager:
                     stats["updated"] += 1
                     
                 elif kalshi_status_mapped == OrderStatus.CANCELLED:
-                    # Order was cancelled - restore cash if BUY
+                    # Order was cancelled - restore cash if BUY (update calculated, not synced)
                     if local_order.side == OrderSide.BUY:
-                        self.cash_balance += local_order.promised_cash
+                        self._calculated_cash_balance += local_order.promised_cash
                         self.promised_cash -= local_order.promised_cash
                     
                     del self.open_orders[our_order_id]
@@ -2121,8 +2302,8 @@ class KalshiMultiMarketOrderManager:
             self.promised_cash -= promised_cash_released
             local_order.promised_cash -= promised_cash_released
         else:
-            # SELL: add cash received
-            self.cash_balance += fill_cost
+            # SELL: add cash received (update calculated, not synced)
+            self._calculated_cash_balance += fill_cost
         
         # Update position
         self._update_position(local_order, fill_price, fill_count)
@@ -2236,7 +2417,7 @@ class KalshiMultiMarketOrderManager:
                 # Update cash if SELL
                 if side == OrderSide.SELL:
                     fill_cost = (fill_price / 100.0) * fill_count
-                    self.cash_balance += fill_cost
+                    self._calculated_cash_balance += fill_cost
                 self._orders_filled += 1
                 self._total_volume_traded += (fill_price / 100.0) * fill_count
             return
@@ -2248,8 +2429,8 @@ class KalshiMultiMarketOrderManager:
         promised_cash = 0.0
         if side == OrderSide.BUY and status == OrderStatus.PENDING:
             promised_cash = (limit_price / 100.0) * remaining_count
-            # Reserve cash
-            self.cash_balance -= promised_cash
+            # Reserve cash (update calculated, not synced)
+            self._calculated_cash_balance -= promised_cash
             self.promised_cash += promised_cash
         
         # Create order info
@@ -2302,9 +2483,9 @@ class KalshiMultiMarketOrderManager:
             f"This indicates external cancellation or state mismatch. Removing from local tracking."
         )
         
-        # Restore promised cash if BUY order
+        # Restore promised cash if BUY order (update calculated, not synced)
         if order.side == OrderSide.BUY:
-            self.cash_balance += order.promised_cash
+            self._calculated_cash_balance += order.promised_cash
             self.promised_cash -= order.promised_cash
         
         # Remove from tracking
@@ -2351,15 +2532,53 @@ class KalshiMultiMarketOrderManager:
             for ticker, kalshi_pos in kalshi_positions_dict.items():
                 contracts = kalshi_pos.get("position", 0)
                 
+                # Extract cost basis from API data
+                # Kalshi API provides values in cents (numeric fields) and dollars (string _dollars fields)
+                # We use the cents values directly - no conversion needed
+                # Cost basis = what we paid = market_exposure - realized_pnl (approximate)
+                cost_basis = 0.0
+                market_exposure_cents = kalshi_pos.get("market_exposure")  # Already in cents from API
+                realized_pnl_cents = kalshi_pos.get("realized_pnl")  # Already in cents from API
+                
+                if market_exposure_cents is not None and realized_pnl_cents is not None:
+                    # Both values are already in cents from API
+                    exposure = float(market_exposure_cents) if isinstance(market_exposure_cents, str) else market_exposure_cents
+                    pnl = float(realized_pnl_cents) if isinstance(realized_pnl_cents, str) else realized_pnl_cents
+                    # Cost basis = what we paid = current value - profit (all in cents)
+                    cost_basis = exposure - pnl
+                elif "position_cost" in kalshi_pos:
+                    # If position_cost is in the API response (shouldn't happen but handle it)
+                    # Assume it's in centi-cents, convert to cents
+                    cost_basis = float(kalshi_pos["position_cost"]) / 100.0 if isinstance(kalshi_pos["position_cost"], (int, float)) else 0.0
+                
+                # Extract realized P&L - use cents value directly from API
+                realized_pnl = 0.0
+                if realized_pnl_cents is not None:
+                    realized_pnl = float(realized_pnl_cents) if isinstance(realized_pnl_cents, str) else realized_pnl_cents
+                elif "realized_pnl" in kalshi_pos:
+                    # Fallback: assume it's in centi-cents, convert to cents
+                    realized_pnl = float(kalshi_pos["realized_pnl"]) / 100.0 if isinstance(kalshi_pos["realized_pnl"], (int, float)) else 0.0
+                
+                # Extract last_updated_ts
+                last_updated_ts = kalshi_pos.get("last_updated_ts")
+                
+                # Extract fees_paid from API (already in cents)
+                fees_paid_cents = kalshi_pos.get("fees_paid", 0)
+                fees_paid_value = float(fees_paid_cents) if isinstance(fees_paid_cents, str) else fees_paid_cents
+                
                 if ticker not in self.positions:
                     # New position - store the entire Kalshi response
-                    self.positions[ticker] = Position(
+                    new_position = Position(
                         ticker=ticker,
                         contracts=contracts,
-                        cost_basis=0.0,  # Will be calculated if needed
-                        realized_pnl=0.0,  # Will be calculated if needed
-                        kalshi_data=kalshi_pos  # Store complete Kalshi response
+                        cost_basis=cost_basis,
+                        realized_pnl=realized_pnl,
+                        kalshi_data=kalshi_pos,  # Store complete Kalshi response
+                        last_updated_ts=last_updated_ts
                     )
+                    # Store fees_paid as attribute (in cents)
+                    new_position.fees_paid = fees_paid_value
+                    self.positions[ticker] = new_position
                     if is_startup:
                         logger.info(
                             f"Restoring position from Kalshi: {ticker} = {contracts} contracts "
@@ -2384,9 +2603,43 @@ class KalshiMultiMarketOrderManager:
                             f"{ticker}: {local_pos.contracts} -> {contracts}"
                         )
                     
+                    # Preserve cost_basis from WebSocket if available (more accurate than API calculation)
+                    # Only update if we don't have a cost_basis or if API provides better data
+                    if cost_basis > 0.0 and (local_pos.cost_basis == 0.0 or local_pos.cost_basis is None):
+                        local_pos.cost_basis = cost_basis
+                    
+                    # Update realized P&L from API (already in cents)
+                    if realized_pnl != 0.0 or local_pos.realized_pnl == 0.0:
+                        local_pos.realized_pnl = realized_pnl
+                    
+                    # Update fees_paid from API (already in cents)
+                    fees_paid_cents = kalshi_pos.get("fees_paid")
+                    if fees_paid_cents is not None:
+                        fees_paid_value = float(fees_paid_cents) if isinstance(fees_paid_cents, str) else fees_paid_cents
+                        local_pos.fees_paid = fees_paid_value
+                    
                     # Always update with complete Kalshi response (authoritative source)
                     local_pos.contracts = contracts
                     local_pos.kalshi_data = kalshi_pos
+                    
+                    # Update last_updated_ts if provided and newer than current
+                    if last_updated_ts:
+                        from datetime import datetime
+                        current_ts = local_pos.last_updated_ts
+                        if current_ts:
+                            # Parse both timestamps and compare
+                            try:
+                                current_dt = datetime.fromisoformat(current_ts.replace('Z', '+00:00'))
+                                new_dt = datetime.fromisoformat(last_updated_ts.replace('Z', '+00:00'))
+                                if new_dt > current_dt:
+                                    local_pos.last_updated_ts = last_updated_ts
+                            except (ValueError, AttributeError) as e:
+                                # If parsing fails, log and use the new timestamp
+                                logger.warning(f"Failed to parse timestamp for {ticker}: {e}, using new timestamp")
+                                local_pos.last_updated_ts = last_updated_ts
+                        else:
+                            # No existing timestamp, use the new one
+                            local_pos.last_updated_ts = last_updated_ts
             
             # Remove positions that don't exist in Kalshi
             for ticker in list(self.positions.keys()):
@@ -2415,21 +2668,407 @@ class KalshiMultiMarketOrderManager:
                 else:
                     logger.debug(f"Position sync complete: {len(self.positions)} positions - all in sync")
             
-            # Sync cash balance from Kalshi (only if not startup - startup syncs balance separately)
+            # Sync cash balance and portfolio value from Kalshi (only if not startup - startup syncs balance separately)
             # This makes the sync idempotent and works for periodic syncs
             if not is_startup:
                 try:
                     account_info = await self.trading_client.get_account_info()
+                    
+                    # Calculate drift before updating synced values
+                    calculated_cash = self._calculate_cash_balance()
+                    calculated_portfolio = self._calculate_portfolio_value()
+                    
                     if "balance" in account_info:
                         old_balance = self.cash_balance
-                        self.cash_balance = account_info["balance"] / 100.0  # Convert cents to dollars
+                        new_balance = account_info["balance"] / 100.0  # Convert cents to dollars
+                        
+                        # Calculate drift (how far off our calculation was)
+                        self._last_sync_drift_cash = calculated_cash - new_balance
+                        
+                        # Update synced value from Kalshi (authoritative)
+                        self.cash_balance = new_balance
+                        # Note: We do NOT update _calculated_cash_balance here - it continues tracking independently
+                        
                         if abs(old_balance - self.cash_balance) > 0.01:
-                            logger.debug(f"Cash balance synced: ${old_balance:.2f} → ${self.cash_balance:.2f}")
+                            logger.debug(f"Cash balance synced: ${old_balance:.2f} → ${self.cash_balance:.2f} (calculated: ${calculated_cash:.2f}, drift: ${self._last_sync_drift_cash:.2f})")
+                    
+                    if "portfolio_value" in account_info:
+                        old_portfolio_value = getattr(self, '_portfolio_value_from_kalshi', None)
+                        new_portfolio_value = account_info["portfolio_value"] / 100.0  # Convert cents to dollars
+                        
+                        # On startup (first sync), initialize drift to 0
+                        # After that, calculate drift (how far off our calculation was)
+                        if self._last_sync_drift_portfolio is None:
+                            # First sync: initialize drift to 0
+                            self._last_sync_drift_portfolio = 0.0
+                        else:
+                            # Subsequent syncs: calculate drift
+                            self._last_sync_drift_portfolio = calculated_portfolio - new_portfolio_value
+                        
+                        # Update synced value from Kalshi
+                        self._portfolio_value_from_kalshi = new_portfolio_value
+                        
+                        if old_portfolio_value is None or abs(old_portfolio_value - self._portfolio_value_from_kalshi) > 0.01:
+                            logger.debug(f"Portfolio value synced: ${old_portfolio_value or 0:.2f} → ${self._portfolio_value_from_kalshi:.2f} (calculated: ${calculated_portfolio:.2f}, drift: ${self._last_sync_drift_portfolio:.2f})")
                 except Exception as e:
                     logger.warning(f"Could not sync cash balance during position sync: {e}")
             
         except Exception as e:
             logger.error(f"Error syncing positions with Kalshi: {e}")
+    
+    async def sync_settlements_with_kalshi(self) -> Dict[str, Any]:
+        """
+        Sync settlements from Kalshi API.
+        
+        Fetches settlements from the past 24 hours and stores them with exact API structure.
+        All fields except fee_cost are in cents. fee_cost is a string in dollars.
+        
+        Returns:
+            Dictionary with sync statistics (count, new, updated, etc.)
+        """
+        if not self.trading_client:
+            logger.error("Cannot sync settlements: trading client not initialized")
+            return {"error": "Trading client not initialized"}
+        
+        try:
+            # Calculate timestamp for 24 hours ago
+            from datetime import datetime, timedelta
+            twenty_four_hours_ago = datetime.utcnow() - timedelta(hours=24)
+            min_ts = int(twenty_four_hours_ago.timestamp())
+            
+            # Fetch settlements from past 24 hours
+            logger.info("Fetching settlements from past 24 hours...")
+            settlements_response = await self.trading_client.get_settlements(
+                limit=200,
+                min_ts=min_ts
+            )
+            
+            settlements_list = settlements_response.get("settlements", [])
+            logger.info(f"Retrieved {len(settlements_list)} settlements from Kalshi")
+            
+            stats = {
+                "total_fetched": len(settlements_list),
+                "new": 0,
+                "updated": 0,
+                "unchanged": 0
+            }
+            
+            # Process each settlement
+            for settlement in settlements_list:
+                ticker = settlement.get("ticker", "")
+                if not ticker:
+                    logger.warning(f"Settlement missing ticker: {settlement}")
+                    continue
+                
+                # Store exact API structure
+                settlement_data = dict(settlement)  # Copy all fields as-is
+                
+                # Convert fee_cost from string dollars to cents
+                fee_cost_str = settlement.get("fee_cost", "0.0")
+                try:
+                    fee_cost_dollars = float(fee_cost_str)
+                    fee_cost_cents = int(fee_cost_dollars * 100)
+                    settlement_data["fee_cost_cents"] = fee_cost_cents
+                except (ValueError, TypeError) as e:
+                    logger.warning(f"Failed to parse fee_cost '{fee_cost_str}' for {ticker}: {e}")
+                    settlement_data["fee_cost_cents"] = 0
+                
+                # Calculate final P&L: revenue - yes_total_cost - no_total_cost - fee_cost_cents
+                revenue = settlement.get("revenue", 0)
+                yes_total_cost = settlement.get("yes_total_cost", 0)
+                no_total_cost = settlement.get("no_total_cost", 0)
+                final_pnl = revenue - yes_total_cost - no_total_cost - settlement_data["fee_cost_cents"]
+                settlement_data["final_pnl"] = final_pnl
+                
+                # Check if settlement already exists
+                existing_settlement = self.settled_positions.get(ticker)
+                if existing_settlement:
+                    # Compare settled_time to determine if this is newer
+                    existing_time = existing_settlement.get("settled_time", "")
+                    new_time = settlement_data.get("settled_time", "")
+                    
+                    if new_time > existing_time:
+                        # Newer settlement - update
+                        self.settled_positions[ticker] = settlement_data
+                        stats["updated"] += 1
+                        logger.debug(f"Updated settlement for {ticker} (newer settled_time)")
+                    else:
+                        # Older or same - keep existing
+                        stats["unchanged"] += 1
+                else:
+                    # New settlement
+                    self.settled_positions[ticker] = settlement_data
+                    stats["new"] += 1
+                    logger.debug(f"New settlement added: {ticker}")
+                
+                # Emit to event bus
+                try:
+                    from ..trading.event_bus import get_event_bus, EventType
+                    event_bus = await get_event_bus()
+                    
+                    # Parse settled_time to get timestamp
+                    settled_time_str = settlement_data.get("settled_time", "")
+                    timestamp_ms = int(time.time() * 1000)  # Default to now if parsing fails
+                    if settled_time_str:
+                        try:
+                            from datetime import datetime
+                            dt = datetime.fromisoformat(settled_time_str.replace('Z', '+00:00'))
+                            timestamp_ms = int(dt.timestamp() * 1000)
+                        except (ValueError, AttributeError):
+                            pass
+                    
+                    # Emit settlement event with full data in metadata
+                    await event_bus.emit(
+                        event_type=EventType.SETTLEMENT,
+                        market_ticker=ticker,
+                        sequence_number=0,
+                        timestamp_ms=timestamp_ms,
+                        metadata={
+                            "settlement": settlement_data
+                        }
+                    )
+                except Exception as e:
+                    logger.debug(f"Event bus not available for settlement emission: {e}")
+            
+            logger.info(
+                f"Settlement sync complete: {stats['new']} new, {stats['updated']} updated, "
+                f"{stats['unchanged']} unchanged (total: {stats['total_fetched']})"
+            )
+            
+            # Broadcast settlements update via WebSocket
+            await self._broadcast_settlements_update()
+            
+            return stats
+            
+        except Exception as e:
+            logger.error(f"Error syncing settlements with Kalshi: {e}")
+            return {"error": str(e)}
+    
+    async def _broadcast_settlements_update(self) -> None:
+        """
+        Broadcast settlements update via WebSocket.
+        """
+        if not self._websocket_manager:
+            return
+        
+        await self._websocket_manager.broadcast_settlements_update({
+            "settlements": self.settled_positions,
+            "count": len(self.settled_positions),
+            "timestamp": time.time()
+        })
+        logger.debug(f"Broadcast settlements update: {len(self.settled_positions)} settlements")
+    
+    def get_settled_positions(self) -> Dict[str, Dict[str, Any]]:
+        """
+        Get all settled positions.
+        
+        Returns:
+            Dictionary of settlements keyed by ticker
+        """
+        return self.settled_positions.copy()
+    
+    async def update_position_from_websocket(self, position_data: Dict[str, Any]) -> None:
+        """
+        Update position from WebSocket position update message.
+        
+        This method is called by PositionListener when a real-time position update
+        is received from Kalshi's market_positions WebSocket channel.
+        
+        Args:
+            position_data: Position data from WebSocket, containing:
+                - market_ticker: str
+                - position: int (contracts)
+                - position_cost: float (in cents, already converted from centi-cents)
+                - realized_pnl: float (in cents, already converted from centi-cents)
+                - fees_paid: float (in cents, already converted from centi-cents)
+                - volume: int (trading volume)
+                - raw_data: Dict (original Kalshi message)
+        """
+        market_ticker = position_data.get("market_ticker", "")
+        if not market_ticker:
+            logger.warning("Position update missing market_ticker")
+            return
+        
+        # Get current position state for change detection
+        current_position = self.positions.get(market_ticker)
+        previous_state = self._previous_position_state.get(market_ticker, {})
+        
+        # Extract values from websocket data
+        new_contracts = position_data.get("position", 0)
+        new_position_cost = position_data.get("position_cost", 0.0)
+        new_realized_pnl = position_data.get("realized_pnl", 0.0)
+        new_fees_paid = position_data.get("fees_paid", 0.0)
+        new_volume = position_data.get("volume", 0)
+        
+        # Extract last_updated_ts from raw_data if available, or use current time
+        raw_data = position_data.get("raw_data", {})
+        new_last_updated_ts = raw_data.get("last_updated_ts")
+        if not new_last_updated_ts:
+            # Use current timestamp as ISO string
+            from datetime import datetime
+            new_last_updated_ts = datetime.utcnow().isoformat() + "Z"
+        
+        # Track which fields changed
+        changed_fields = []
+        previous_values = {}
+        
+        # Check for changes
+        if current_position:
+            if current_position.contracts != new_contracts:
+                changed_fields.append("position")
+                previous_values["position"] = current_position.contracts
+            
+            if abs(current_position.cost_basis - new_position_cost) > 0.01:
+                changed_fields.append("position_cost")
+                previous_values["position_cost"] = current_position.cost_basis
+            
+            if abs(current_position.realized_pnl - new_realized_pnl) > 0.01:
+                changed_fields.append("realized_pnl")
+                previous_values["realized_pnl"] = current_position.realized_pnl
+            
+            # Check fees_paid if stored
+            current_fees = getattr(current_position, 'fees_paid', 0.0)
+            if abs(current_fees - new_fees_paid) > 0.01:
+                changed_fields.append("fees_paid")
+                previous_values["fees_paid"] = current_fees
+            
+            # Check volume if stored
+            current_volume = getattr(current_position, 'volume', 0)
+            if current_volume != new_volume:
+                changed_fields.append("volume")
+                previous_values["volume"] = current_volume
+        else:
+            # New position
+            changed_fields.append("position")
+            changed_fields.append("position_cost")
+            changed_fields.append("realized_pnl")
+            if new_fees_paid > 0:
+                changed_fields.append("fees_paid")
+            if new_volume > 0:
+                changed_fields.append("volume")
+        
+        # Detect settlement: position goes to 0
+        was_settled = False
+        if current_position and current_position.contracts != 0 and new_contracts == 0:
+            was_settled = True
+            logger.info(
+                f"🎯 Position settled: {market_ticker} - "
+                f"Final P&L: ${new_realized_pnl:.2f}"
+            )
+        
+        # Update or create position
+        if current_position:
+            # Update existing position
+            current_position.contracts = new_contracts
+            current_position.cost_basis = new_position_cost  # WebSocket provides accurate position_cost
+            current_position.realized_pnl = new_realized_pnl
+            current_position.kalshi_data = position_data.get("raw_data", {})
+            current_position.last_updated_ts = new_last_updated_ts
+            
+            # Store additional fields as attributes
+            current_position.fees_paid = new_fees_paid
+            current_position.volume = new_volume
+        else:
+            # Create new position
+            new_position = Position(
+                ticker=market_ticker,
+                contracts=new_contracts,
+                cost_basis=new_position_cost,  # WebSocket provides accurate position_cost
+                realized_pnl=new_realized_pnl,
+                kalshi_data=position_data.get("raw_data", {}),
+                last_updated_ts=new_last_updated_ts
+            )
+            # Store additional fields as attributes
+            new_position.fees_paid = new_fees_paid
+            new_position.volume = new_volume
+            self.positions[market_ticker] = new_position
+            logger.info(f"New position created from WebSocket: {market_ticker} = {new_contracts} contracts")
+        
+        # Update previous state tracking
+        self._previous_position_state[market_ticker] = {
+            "position": new_contracts,
+            "position_cost": new_position_cost,
+            "realized_pnl": new_realized_pnl,
+            "fees_paid": new_fees_paid,
+            "volume": new_volume
+        }
+        
+        # If position is now flat, we might want to keep it for a bit to show settlement
+        # but we'll let the frontend handle the settled positions UI
+        
+        # Broadcast position update with change metadata
+        if changed_fields:
+            logger.debug(
+                f"Position update: {market_ticker} - "
+                f"Changed fields: {', '.join(changed_fields)}"
+            )
+            
+            # Broadcast with change metadata for frontend animations
+            await self._broadcast_position_update_with_changes(
+                market_ticker,
+                changed_fields,
+                previous_values,
+                was_settled
+            )
+        
+        # Notify state change
+        await self._notify_state_change()
+    
+    async def _broadcast_position_update_with_changes(
+        self,
+        market_ticker: str,
+        changed_fields: List[str],
+        previous_values: Dict[str, Any],
+        was_settled: bool
+    ) -> None:
+        """
+        Broadcast position update with change metadata for frontend animations.
+        
+        Args:
+            market_ticker: Market ticker
+            changed_fields: List of field names that changed
+            previous_values: Previous values for changed fields
+            was_settled: Whether this position was just settled
+        """
+        if not self._websocket_manager:
+            return
+        
+        position = self.positions.get(market_ticker)
+        if not position:
+            return
+        
+        # Extract market exposure - API provides both cents and dollars
+        # Use cents value directly from API - no conversion needed
+        kalshi_data = position.kalshi_data or {}
+        market_exposure_cents = kalshi_data.get("market_exposure")  # Already in cents from API
+        market_exposure_dollars = kalshi_data.get("market_exposure_dollars")  # String dollars from API
+        
+        # Convert to float if needed
+        if market_exposure_cents is not None:
+            market_exposure_cents = float(market_exposure_cents) if isinstance(market_exposure_cents, str) else market_exposure_cents
+        
+        # Prepare position data with change metadata
+        # All monetary values are in cents for consistency
+        position_update_data = {
+            "ticker": market_ticker,
+            "position": position.contracts,
+            "position_cost": position.cost_basis,  # In cents
+            "cost_basis": position.cost_basis,  # In cents (alias)
+            "realized_pnl": position.realized_pnl,  # In cents
+            "fees_paid": getattr(position, 'fees_paid', 0.0),  # In cents
+            "volume": getattr(position, 'volume', 0),
+            "market_exposure_cents": market_exposure_cents,  # In cents (preferred)
+            "market_exposure": market_exposure_dollars,  # In dollars (for backward compatibility)
+            # Change metadata for animations
+            "changed_fields": changed_fields,
+            "previous_values": previous_values,
+            "update_source": "websocket",
+            "timestamp": time.time(),
+            "was_settled": was_settled
+        }
+        
+        # Broadcast via WebSocket manager
+        await self._websocket_manager.broadcast_position_update(position_update_data)
     
     async def _start_periodic_sync(self) -> None:
         """
@@ -2458,6 +3097,9 @@ class KalshiMultiMarketOrderManager:
                     
                     # Also sync positions periodically
                     await self._sync_positions_with_kalshi()
+                    
+                    # Also sync settlements periodically
+                    await self.sync_settlements_with_kalshi()
                     
                     # Broadcast specific updates after periodic sync
                     await self._broadcast_positions_update("periodic_sync")
@@ -2501,15 +3143,17 @@ class KalshiMultiMarketOrderManager:
         Returns:
             Dictionary containing portfolio state, positions, orders, and metrics
         """
-        # Calculate portfolio value using actual market exposure from Kalshi
-        portfolio_value = self.cash_balance + self.promised_cash
-        for position in self.positions.values():
-            # Use market_exposure_dollars if available, otherwise convert from cents
-            kalshi_data = position.kalshi_data
-            if "market_exposure_dollars" in kalshi_data:
-                portfolio_value += float(kalshi_data["market_exposure_dollars"])
-            elif "market_exposure" in kalshi_data:
-                portfolio_value += float(kalshi_data["market_exposure"]) / 100.0
+        # Portfolio value: Use Kalshi API value (synced), calculate internal value separately
+        if hasattr(self, '_portfolio_value_from_kalshi') and self._portfolio_value_from_kalshi is not None:
+            portfolio_value = self._portfolio_value_from_kalshi  # Synced from Kalshi
+        else:
+            portfolio_value = self._calculate_portfolio_value()  # Fallback to calculated
+        
+        # Calculate internal portfolio value (real-time tracking)
+        calculated_portfolio_value = self._calculate_portfolio_value()
+        
+        # Calculate internal cash balance (real-time tracking)
+        calculated_cash_balance = self._calculate_cash_balance()
         
         # Calculate fill rate
         total_orders = self._orders_placed
@@ -2529,8 +3173,16 @@ class KalshiMultiMarketOrderManager:
         net_cashflow = self.session_cash_recouped - self.session_cash_invested
         
         return {
+            # Synced values (from Kalshi API, only updated on sync)
             "portfolio_value": portfolio_value,
             "cash_balance": self.cash_balance,
+            # Calculated values (internal real-time tracking)
+            "calculated_portfolio_value": calculated_portfolio_value,
+            "calculated_cash_balance": calculated_cash_balance,
+            # Drift tracking (how far off calculated was from synced at last sync)
+            "last_sync_drift_portfolio": self._last_sync_drift_portfolio,
+            "last_sync_drift_cash": self._last_sync_drift_cash,
+            # Other fields
             "promised_cash": self.promised_cash,
             # Session tracking
             "session_start_cash": self.session_start_cash if self.session_start_cash is not None else self.cash_balance,
@@ -2556,9 +3208,15 @@ class KalshiMultiMarketOrderManager:
             "positions": {
                 ticker: {
                     "ticker": ticker,
+                    "position": position.contracts,
                     "side": "YES" if position.contracts > 0 else "NO",
                     "contracts": abs(position.contracts),
-                    **position.kalshi_data  # Pass through complete Kalshi API response
+                    "cost_basis": position.cost_basis,  # How much we paid (in cents)
+                    "realized_pnl": position.realized_pnl,  # Realized P&L (in cents)
+                    "fees_paid": getattr(position, 'fees_paid', 0.0),  # Fees paid (in cents)
+                    "volume": getattr(position, 'volume', 0),  # Trading volume
+                    "last_updated_ts": position.last_updated_ts,  # ISO timestamp
+                    **position.kalshi_data  # Pass through complete Kalshi API response (includes market_exposure_dollars, etc.)
                 }
                 for ticker, position in self.positions.items()
                 if not position.is_flat

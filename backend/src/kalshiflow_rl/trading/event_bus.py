@@ -20,6 +20,7 @@ class EventType(Enum):
     """Event types for the trading system."""
     ORDERBOOK_SNAPSHOT = "orderbook_snapshot"
     ORDERBOOK_DELTA = "orderbook_delta"
+    SETTLEMENT = "settlement"
 
 
 @dataclass

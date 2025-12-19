@@ -87,6 +87,20 @@ class PositionsUpdateMessage:
 
 
 @dataclass
+class PositionUpdateMessage:
+    """Individual position update message with change metadata."""
+    type: str = "position_update"
+    data: Dict[str, Any] = None
+
+
+@dataclass
+class SettlementsUpdateMessage:
+    """Settlements update message."""
+    type: str = "settlements_update"
+    data: Dict[str, Any] = None
+
+
+@dataclass
 class PortfolioUpdateMessage:
     """Portfolio/Balance update message."""
     type: str = "portfolio_update"
@@ -576,6 +590,48 @@ class WebSocketManager:
         )
         await self._broadcast_to_all(message)
         logger.debug(f"Broadcast positions update to {len(self._connections)} clients (source: {source})")
+    
+    async def broadcast_position_update(self, position_data: Dict[str, Any]):
+        """
+        Broadcast individual position update with change metadata for animations.
+        
+        Args:
+            position_data: Position data containing:
+                - ticker: Market ticker
+                - position: Current position (contracts)
+                - position_cost: Position cost in dollars
+                - realized_pnl: Realized P&L in dollars
+                - fees_paid: Fees paid in dollars
+                - volume: Trading volume
+                - changed_fields: List of field names that changed
+                - previous_values: Previous values for changed fields
+                - update_source: "websocket" or "api_sync"
+                - timestamp: Update timestamp
+                - was_settled: Whether position was just settled
+        """
+        if not self._connections:
+            return
+        
+        message = PositionUpdateMessage(data=position_data)
+        await self._broadcast_to_all(message)
+        logger.debug(f"Broadcast position update for {position_data.get('ticker', 'unknown')} to {len(self._connections)} clients")
+    
+    async def broadcast_settlements_update(self, settlements_data: Dict[str, Any]):
+        """
+        Broadcast settlements update to all connected clients.
+        
+        Args:
+            settlements_data: Settlements data containing:
+                - settlements: Dict of settlements keyed by ticker
+                - count: Number of settlements
+                - timestamp: Update timestamp
+        """
+        if not self._connections:
+            return
+        
+        message = SettlementsUpdateMessage(data=settlements_data)
+        await self._broadcast_to_all(message)
+        logger.debug(f"Broadcast settlements update to {len(self._connections)} clients ({settlements_data.get('count', 0)} settlements)")
     
     async def broadcast_portfolio_update(self, portfolio_data: Dict[str, Any]):
         """

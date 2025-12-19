@@ -386,6 +386,14 @@ async def lifespan(app: Starlette):
                                         fill_health_status,
                                         order_manager._fill_listener.get_health_details()
                                     )
+                                
+                                if order_manager._position_listener:
+                                    position_health_status = "healthy" if order_manager._position_listener.is_healthy() else "unhealthy"
+                                    await initialization_tracker.update_component_health(
+                                        "position_listener",
+                                        position_health_status,
+                                        order_manager._position_listener.get_health_details()
+                                    )
                             
                             if event_bus:
                                 health_status = "healthy" if event_bus.is_healthy() else "unhealthy"
@@ -790,6 +798,10 @@ async def trader_sync_endpoint(request):
         logger.info("Starting manual position sync...")
         await order_manager._sync_positions_with_kalshi()
         
+        # Perform settlement sync
+        logger.info("Starting manual settlement sync...")
+        settlement_stats = await order_manager.sync_settlements_with_kalshi()
+        
         # Get current state for broadcasting
         current_state = await order_manager.get_current_state()
         
@@ -823,6 +835,7 @@ async def trader_sync_endpoint(request):
         return JSONResponse({
             "message": "Trader sync completed successfully",
             "order_sync": order_stats,
+            "settlement_sync": settlement_stats,
             "trader_state": current_state,
             "timestamp": time.time()
         })

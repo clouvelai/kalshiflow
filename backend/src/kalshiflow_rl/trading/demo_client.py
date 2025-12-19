@@ -718,6 +718,65 @@ class KalshiDemoTradingClient:
         except Exception as e:
             raise KalshiDemoTradingClientError(f"Failed to get markets: {e}")
     
+    async def get_settlements(
+        self,
+        limit: int = 200,
+        min_ts: Optional[int] = None,
+        cursor: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Get settlements from demo account.
+        
+        According to Kalshi API docs: https://docs.kalshi.com/api-reference/portfolio/get-settlements
+        All fields except fee_cost are in cents. fee_cost is a string in dollars.
+        
+        Args:
+            limit: Maximum number of settlements to return (default 200, max 200)
+            min_ts: Unix timestamp in seconds - filter settlements after this time (for 24h filter)
+            cursor: Pagination cursor from previous response
+            
+        Returns:
+            Dictionary with settlements array and cursor for pagination
+            
+        Raises:
+            KalshiDemoTradingClientError: If request fails
+        """
+        try:
+            # Build query parameters
+            params = []
+            if limit:
+                params.append(f"limit={limit}")
+            if min_ts:
+                params.append(f"min_ts={min_ts}")
+            if cursor:
+                params.append(f"cursor={cursor}")
+            
+            path = "/portfolio/settlements"
+            if params:
+                path += "?" + "&".join(params)
+            
+            response = await self._make_request("GET", path)
+            
+            # Validate response structure
+            if not isinstance(response, dict):
+                raise ValueError(f"Settlements response must be a dictionary, got {type(response)}")
+            
+            if "settlements" not in response:
+                raise ValueError("Settlements response missing required 'settlements' field")
+            
+            if not isinstance(response["settlements"], list):
+                raise ValueError(f"Settlements field must be a list, got {type(response['settlements'])}")
+            
+            settlements_count = len(response.get("settlements", []))
+            logger.debug(f"Retrieved {settlements_count} settlements from demo account")
+            
+            return response
+            
+        except ValueError as e:
+            raise KalshiDemoTradingClientError(f"Invalid settlements response structure: {e}")
+        except Exception as e:
+            raise KalshiDemoTradingClientError(f"Failed to get settlements: {e}")
+    
     async def connect_websocket(self) -> None:
         """
         Connect to demo account WebSocket for real-time updates.

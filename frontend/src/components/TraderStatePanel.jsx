@@ -204,9 +204,27 @@ const TraderStatePanel = ({
             <div className="flex items-baseline justify-between mb-2">
               <p className="text-sm font-medium text-slate-400 uppercase tracking-wider">Portfolio Value</p>
               {displayState.session_start_portfolio_value !== undefined && (
-                <p className="text-xs text-slate-500">
-                  Started at {formatCurrency(displayState.session_start_portfolio_value)}
-                </p>
+                <div>
+                  <p className="text-xs text-slate-500">
+                    Started at {formatCurrency(displayState.session_start_portfolio_value)}
+                  </p>
+                  {displayState.calculated_portfolio_value !== undefined && displayState.portfolio_value !== undefined && (
+                    <p className="text-xs text-slate-400 mt-0.5">
+                      Calculated: {formatCurrency(displayState.calculated_portfolio_value)}
+                      {(() => {
+                        const currentDrift = displayState.calculated_portfolio_value - displayState.portfolio_value;
+                        if (Math.abs(currentDrift) > 0.01) {
+                          return (
+                            <span className={`ml-2 ${currentDrift >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                              ({currentDrift >= 0 ? '+' : ''}{formatCurrency(currentDrift)})
+                            </span>
+                          );
+                        }
+                        return null;
+                      })()}
+                    </p>
+                  )}
+                </div>
               )}
             </div>
             <div className="flex items-baseline gap-3 mb-2">
@@ -242,9 +260,27 @@ const TraderStatePanel = ({
                 </p>
                 <div className="flex items-center gap-2">
                   {displayState.session_start_cash !== undefined && (
-                    <p className="text-xs text-slate-500">
-                      Start: {formatCurrency(displayState.session_start_cash)}
-                    </p>
+                    <div>
+                      <p className="text-xs text-slate-500">
+                        Start: {formatCurrency(displayState.session_start_cash)}
+                      </p>
+                      {displayState.calculated_cash_balance !== undefined && displayState.cash_balance !== undefined && (
+                        <p className="text-xs text-slate-400 mt-0.5">
+                          Calculated: {formatCurrency(displayState.calculated_cash_balance)}
+                          {(() => {
+                            const currentDrift = displayState.calculated_cash_balance - displayState.cash_balance;
+                            if (Math.abs(currentDrift) > 0.01) {
+                              return (
+                                <span className={`ml-2 ${currentDrift >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                                  ({currentDrift >= 0 ? '+' : ''}{formatCurrency(currentDrift)})
+                                </span>
+                              );
+                            }
+                            return null;
+                          })()}
+                        </p>
+                      )}
+                    </div>
                   )}
                   {displayState.cash_balance_change !== undefined && displayState.cash_balance_change !== 0 && (
                     <span className={`text-xs font-medium ${
