@@ -116,8 +116,15 @@ class FillEventMessage:
 
 @dataclass
 class StatsUpdateMessage:
-    """Stats update message (throttled to 10s)."""
+    """Stats update message (full stats, sent every 60s)."""
     type: str = "stats_update"
+    data: Dict[str, Any] = None
+
+
+@dataclass
+class StatsSummaryMessage:
+    """Lightweight stats summary message (sent every 1s)."""
+    type: str = "stats_summary"
     data: Dict[str, Any] = None
 
 
@@ -165,7 +172,8 @@ class WebSocketManager:
         """Initialize WebSocket manager."""
         self._connections: Set[WebSocket] = set()
         self._running = False
-        self._stats_task: Optional[asyncio.Task] = None
+        self._summary_stats_task: Optional[asyncio.Task] = None
+        self._full_stats_task: Optional[asyncio.Task] = None
         self._orderbook_states: Dict[str, SharedOrderbookState] = {}
         self._market_tickers = config.RL_MARKET_TICKERS
         
@@ -226,8 +234,11 @@ class WebSocketManager:
                 state.add_subscriber(create_callback(market_ticker))
                 logger.info(f"Subscribed to orderbook updates for: {market_ticker}")
         
-        # Start statistics broadcast task (10-second interval)
-        self._stats_task = asyncio.create_task(self._stats_broadcast_loop())
+        # Start statistics broadcast tasks
+        # Summary stats every 1 second (lightweight)
+        self._summary_stats_task = asyncio.create_task(self._summary_stats_loop())
+        # Full stats every 60 seconds (includes large payloads)
+        self._full_stats_task = asyncio.create_task(self._full_stats_loop())
         
         logger.info("WebSocketManager started successfully")
     
@@ -239,11 +250,18 @@ class WebSocketManager:
         logger.info("Stopping WebSocketManager...")
         self._running = False
         
-        # Stop statistics task
-        if self._stats_task:
-            self._stats_task.cancel()
+        # Stop statistics tasks
+        if self._summary_stats_task:
+            self._summary_stats_task.cancel()
             try:
-                await self._stats_task
+                await self._summary_stats_task
+            except asyncio.CancelledError:
+                pass
+        
+        if self._full_stats_task:
+            self._full_stats_task.cancel()
+            try:
+                await self._full_stats_task
             except asyncio.CancelledError:
                 pass
         
@@ -412,6 +430,21 @@ class WebSocketManager:
                 except Exception as e:
                     logger.warning(f"Failed to send initialization status to new client: {e}")
             
+            # Send full stats immediately on connection (client will receive summary updates every 1s after this)
+            try:
+                stats = await self._gather_stats()
+                full_stats_msg = StatsUpdateMessage(
+                    data={
+                        "stats": stats,
+                        "timestamp": time.time(),
+                        "source": "stats_collector"
+                    }
+                )
+                await self._send_to_client(websocket, full_stats_msg)
+                logger.info("Sent initial full stats to new client")
+            except Exception as e:
+                logger.warning(f"Failed to send initial full stats to new client: {e}")
+            
             # Keep connection alive and handle incoming messages
             while self._running and websocket.client_state == WebSocketState.CONNECTED:
                 try:
@@ -501,10 +534,10 @@ class WebSocketManager:
     
     async def broadcast_stats(self, stats: Dict[str, Any]):
         """
-        Broadcast statistics to all connected clients.
+        Broadcast full statistics to all connected clients.
         
         Args:
-            stats: Statistics data
+            stats: Full statistics data (includes per_market, orderbook_client, etc.)
         """
         if not self._connections:
             return
@@ -519,6 +552,31 @@ class WebSocketManager:
         )
         await self._broadcast_to_all(message)
         self._stats_broadcast += 1
+    
+    async def broadcast_summary_stats(self, summary_stats: Dict[str, Any]):
+        """
+        Broadcast lightweight summary statistics to all connected clients.
+        
+        This method sends only essential stats (uptime, snapshots, deltas, etc.)
+        without the large payloads (per_market, orderbook_client details, etc.).
+        Used for frequent updates (every 1 second).
+        
+        Args:
+            summary_stats: Lightweight summary statistics data
+        """
+        if not self._connections:
+            return
+        
+        # Use StatsSummaryMessage for lightweight updates
+        message = StatsSummaryMessage(
+            data={
+                "stats": summary_stats,
+                "timestamp": time.time(),
+                "source": "stats_collector"
+            }
+        )
+        await self._broadcast_to_all(message)
+        # Note: We don't increment _stats_broadcast here to keep it separate from full stats
     
     async def broadcast_trader_state(self, state_data: Dict[str, Any]):
         """
@@ -823,22 +881,39 @@ class WebSocketManager:
                 # Can be optimized later to send only the delta
                 await self.broadcast_snapshot(market_ticker, snapshot)
     
-    async def _stats_broadcast_loop(self):
-        """Broadcast statistics every 10 seconds."""
+    async def _summary_stats_loop(self):
+        """Broadcast lightweight summary statistics every 1 second."""
         while self._running:
             try:
-                await asyncio.sleep(10.0)
+                await asyncio.sleep(1.0)
                 
-                # Gather statistics
+                # Get lightweight summary stats
+                if self.stats_collector:
+                    summary_stats = self.stats_collector.get_summary_stats()
+                    # Broadcast summary stats
+                    await self.broadcast_summary_stats(summary_stats)
+                
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Error in summary stats broadcast loop: {e}")
+    
+    async def _full_stats_loop(self):
+        """Broadcast full statistics every 60 seconds."""
+        while self._running:
+            try:
+                await asyncio.sleep(60.0)
+                
+                # Gather full statistics
                 stats = await self._gather_stats()
                 
-                # Broadcast to all clients
+                # Broadcast full stats to all clients
                 await self.broadcast_stats(stats)
                 
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.error(f"Error in stats broadcast loop: {e}")
+                logger.error(f"Error in full stats broadcast loop: {e}")
     
     async def _gather_stats(self) -> Dict[str, Any]:
         """

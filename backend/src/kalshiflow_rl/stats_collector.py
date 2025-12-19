@@ -159,6 +159,44 @@ class StatsCollector:
                 "websocket_manager": websocket_stats
             }
     
+    def get_summary_stats(self) -> Dict[str, Any]:
+        """
+        Get lightweight summary statistics for frequent updates (every 1 second).
+        
+        Returns only the essential fields needed for header display, avoiding
+        large payloads like per_market data, orderbook_client stats, etc.
+        
+        Returns:
+            Dictionary with summary statistics only
+        """
+        with self._lock:
+            uptime = time.time() - self._start_time
+            
+            # Get database queue stats (lightweight)
+            queue_stats = get_write_queue().get_stats()
+            
+            # Get websocket connections count (lightweight)
+            websocket_stats = {}
+            if self.websocket_manager:
+                websocket_stats = self.websocket_manager.get_stats()
+            
+            # Derive session_active from health checks
+            session_active = (
+                queue_stats.get("is_healthy", True) and
+                websocket_stats.get("active_connections", 0) > 0
+            )
+            
+            return {
+                "uptime_seconds": int(uptime),
+                "snapshots_processed": self._total_snapshots,
+                "deltas_processed": self._total_deltas,
+                "messages_per_second": round(self._messages_per_second, 2),
+                "db_queue_healthy": queue_stats.get("is_healthy", True),
+                "websocket_connections": websocket_stats.get("active_connections", 0),
+                "last_update_ms": int(time.time() * 1000),
+                "session_active": session_active
+            }
+    
     def get_summary(self) -> Dict[str, Any]:
         """
         Get simplified statistics summary for health checks.

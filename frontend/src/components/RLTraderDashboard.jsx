@@ -490,10 +490,10 @@ const RLTraderDashboard = () => {
             
           // New standardized message types
           case 'stats_update':
-            // Stats update (throttled to 10s)
-            log('Stats update received:', data.data);
+            // Full stats update (sent on connection and every 60s)
+            log('Full stats update received:', data.data);
             if (data.data) {
-              // Update collection status with the new stats format
+              // Update collection status with the full stats format
               const statsData = data.data.stats || data.data;
               setCollectionStatus(prev => ({
                 ...prev,
@@ -501,6 +501,32 @@ const RLTraderDashboard = () => {
                 session_active: statsData.session_active !== undefined ? statsData.session_active : (prev?.session_active ?? true),
                 lastUpdate: new Date().toISOString()
               }));
+            }
+            break;
+            
+          case 'stats_summary':
+            // Lightweight summary stats update (sent every 1s)
+            // Only update the summary fields, preserve large payloads from full stats
+            if (data.data) {
+              const summaryData = data.data.stats || data.data;
+              setCollectionStatus(prev => {
+                // Merge summary stats with existing state, preserving large payloads
+                return {
+                  ...prev,
+                  // Update only summary fields
+                  uptime_seconds: summaryData.uptime_seconds ?? prev?.uptime_seconds,
+                  snapshots_processed: summaryData.snapshots_processed ?? prev?.snapshots_processed,
+                  deltas_processed: summaryData.deltas_processed ?? prev?.deltas_processed,
+                  messages_per_second: summaryData.messages_per_second ?? prev?.messages_per_second,
+                  db_queue_healthy: summaryData.db_queue_healthy ?? prev?.db_queue_healthy,
+                  websocket_connections: summaryData.websocket_connections ?? prev?.websocket_connections,
+                  last_update_ms: summaryData.last_update_ms ?? prev?.last_update_ms,
+                  session_active: summaryData.session_active !== undefined ? summaryData.session_active : (prev?.session_active ?? true),
+                  lastUpdate: new Date().toISOString()
+                  // Note: Large payloads (per_market, orderbook_client, websocket_manager) 
+                  // are preserved from previous full stats_update
+                };
+              });
             }
             break;
             
@@ -1302,13 +1328,15 @@ const RLTraderDashboard = () => {
                     </div>
                   )}
                   
-                  {/* Last Updated */}
-                  <div className="flex items-center space-x-1">
-                    <span className="text-gray-500">Updated:</span>
-                    <span className="text-gray-400">
-                      {formatRelativeTime(collectionStatus.lastUpdate || collectionStatus.last_update_time)}
-                    </span>
-                  </div>
+                  {/* WebSocket URL */}
+                  {apiUrls?.kalshi_ws_url && (
+                    <div className="flex items-center space-x-1">
+                      <span className="text-gray-500">WS:</span>
+                      <span className="text-gray-400 font-mono truncate max-w-xs">
+                        {apiUrls.kalshi_ws_url.replace('wss://', '').replace('ws://', '')}
+                      </span>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
