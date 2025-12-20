@@ -1957,13 +1957,22 @@ class KalshiMultiMarketOrderManager:
         """
         Extract base state from status string.
         
-        Base states: "initializing", "trading", "calibrating", "paused", "stopping"
+        Base states: "initializing", "trading", "calibrating", "paused", "stopping", "low_cash"
         Sub-states like "calibrating -> syncing state" return "calibrating"
         """
         if " -> " in status:
             # Extract base state before arrow (e.g., "calibrating -> syncing state" -> "calibrating")
             return status.split(" -> ")[0]
         return status
+    
+    def get_current_status(self) -> str:
+        """
+        Get current trader status.
+        
+        Returns:
+            Current trader status string
+        """
+        return self._trader_status
     
     async def _update_trader_status(
         self, 
@@ -3819,10 +3828,16 @@ class KalshiMultiMarketOrderManager:
                     sync_result = ", ".join(sync_details) if sync_details else "no changes"
                     await self._update_trader_status("calibrating -> syncing state", sync_result, duration=sync_duration)
                     
-                    # Check for low cash balance
+                    # Check current base state to see if we're transitioning from low_cash
+                    current_base_state = self._extract_base_state(self._trader_status)
+                    
+                    # Check for low cash balance after sync
                     if self.cash_balance < self.min_cash_reserve:
                         low_cash_msg = f"${self.cash_balance:.2f} < ${self.min_cash_reserve:.2f} (low balance mode)"
                         await self._update_trader_status("calibrating -> low cash balance", low_cash_msg)
+                    elif current_base_state == "low_cash":
+                        # Cash was restored - log transition during calibration
+                        logger.info(f"Cash restored: ${self.cash_balance:.2f} >= ${self.min_cash_reserve:.2f} - will return to trading after calibration")
                     
                     # 2. Position health monitoring and closing (NEW - recalibration loop)
                     closing_start = time.time()
@@ -3842,12 +3857,14 @@ class KalshiMultiMarketOrderManager:
                     await self._monitor_market_states()
                     
                     # 4. Cash recovery if needed (NEW - recalibration loop)
+                    cash_recovery_attempted = False
                     if self.cash_balance < self.min_cash_reserve:
                         recovery_start = time.time()
                         cash_before_recovery = self.cash_balance
                         await self._recover_cash_by_closing_positions()
                         recovery_duration = time.time() - recovery_start
                         cash_after_recovery = self.cash_balance
+                        cash_recovery_attempted = True
                         
                         recovery_result = f"cash ${cash_before_recovery:.2f} -> ${cash_after_recovery:.2f}"
                         if cash_after_recovery >= self.min_cash_reserve:
@@ -3861,9 +3878,14 @@ class KalshiMultiMarketOrderManager:
                     # Notify about state changes after periodic sync
                     await self._notify_state_change()
                     
-                    # Update status back to trading
-                    # Stats will be reset when entering trading state
-                    await self._update_trader_status("trading", f"cash ${self.cash_balance:.2f}")
+                    # Update status based on cash balance after recovery
+                    # If cash is still low, transition to low_cash state to prevent actor from trading
+                    if self.cash_balance < self.min_cash_reserve:
+                        low_cash_reason = f"cash ${self.cash_balance:.2f} < ${self.min_cash_reserve:.2f}"
+                        await self._update_trader_status("low_cash", low_cash_reason)
+                    else:
+                        # Stats will be reset when entering trading state
+                        await self._update_trader_status("trading", f"cash ${self.cash_balance:.2f}")
                     
                 except Exception as e:
                     logger.error(f"Error in periodic sync and recalibration: {e}")

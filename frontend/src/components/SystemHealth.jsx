@@ -1,10 +1,28 @@
 import React, { useState } from 'react';
 import { CheckCircleIcon, XCircleIcon, ClockIcon, ExclamationTriangleIcon } from '@heroicons/react/24/solid';
 import { CheckCircleIcon as CheckCircleOutline, XCircleIcon as XCircleOutline, ClockIcon as ClockOutline, ChevronDownIcon, ChevronRightIcon } from '@heroicons/react/24/outline';
+import TraderStatePanel from './TraderStatePanel';
 
-const SystemHealth = ({ initializationStatus, componentHealth }) => {
-  // State to track which phases are expanded/collapsed
+const SystemHealth = ({ initializationStatus, componentHealth, traderStatus, traderStatusHistory }) => {
+  // Phase grouping for better visualization (defined early for useState initialization)
+  const phases = [
+    {
+      name: 'Connection & Health Checks',
+      steps: ['orderbook_health', 'trader_client_health', 'fill_listener_health', 'position_listener_health', 'event_bus_health']
+    },
+    {
+      name: 'State Discovery & Sync',
+      steps: ['sync_balance', 'sync_positions', 'sync_settlements', 'sync_orders']
+    },
+    {
+      name: 'Listener Verification',
+      steps: ['verify_orderbook_subscriptions', 'verify_fill_listener_subscription', 'verify_position_listener_subscription', 'verify_listeners']
+    }
+  ];
+
+  // Initialize expandedPhases as empty set (collapsed by default)
   const [expandedPhases, setExpandedPhases] = useState(new Set());
+
   const getStatusIcon = (status) => {
     switch (status) {
       case 'complete':
@@ -47,26 +65,6 @@ const SystemHealth = ({ initializationStatus, componentHealth }) => {
     const secs = (seconds % 60).toFixed(0);
     return `${minutes}m ${secs}s`;
   };
-
-  // Phase grouping for better visualization
-  const phases = [
-    {
-      name: 'Connection & Health Checks',
-      steps: ['orderbook_health', 'trader_client_health', 'fill_listener_health', 'event_bus_health']
-    },
-    {
-      name: 'State Discovery & Sync',
-      steps: ['sync_balance', 'sync_positions', 'sync_orders']
-    },
-    {
-      name: 'Listener Verification',
-      steps: ['verify_orderbook_subscriptions', 'verify_fill_listener_subscription', 'verify_listeners']
-    },
-    {
-      name: 'Ready to Resume',
-      steps: ['initialization_complete']
-    }
-  ];
 
   const getStepDetails = (stepId) => {
     if (!initializationStatus || !initializationStatus.steps) return null;
@@ -111,57 +109,235 @@ const SystemHealth = ({ initializationStatus, componentHealth }) => {
     );
   }
 
+  // Calculate summary stats for hero view dynamically from steps
+  const allSteps = initializationStatus.steps || {};
+  const stepEntries = Object.values(allSteps);
+  
+  // Calculate total expected steps from all phases (including initialization_complete)
+  const allExpectedStepIds = phases.flatMap(phase => phase.steps);
+  allExpectedStepIds.push('initialization_complete'); // Add the final step that's not in phases anymore
+  const expectedTotalSteps = allExpectedStepIds.length;
+  
+  // Use the count of actual steps if we have them, otherwise use expected total or provided total_steps
+  const actualStepCount = stepEntries.length;
+  const totalSteps = actualStepCount > 0 ? actualStepCount : 
+                     (initializationStatus.total_steps || expectedTotalSteps);
+  
+  const completedSteps = stepEntries.filter(step => step.status === 'complete').length;
+  const failedSteps = stepEntries.filter(step => step.status === 'failed').length;
+  const inProgressSteps = stepEntries.filter(step => step.status === 'in_progress').length;
+  const hasFailures = failedSteps > 0;
+  const isComplete = initializationStatus.completed_at !== null && !hasFailures;
+
   return (
     <div className="space-y-6">
-      {/* Initialization Status Header */}
-      <div className="bg-gray-800 rounded-lg border border-gray-700 p-6">
-          <div className="flex items-center justify-between mb-6">
-            <h3 className="text-xl font-semibold text-gray-100">System Initialization</h3>
-            {initializationStatus.completed_at ? (
-              <div className="flex items-center space-x-2 px-4 py-2 bg-green-900/30 border border-green-700/50 rounded-lg">
-                <CheckCircleIcon className="h-5 w-5 text-green-400" />
-                <span className="font-medium text-green-400">
-                  Ready
-                </span>
-              </div>
-            ) : (
-              <div className="flex items-center space-x-2 px-4 py-2 bg-blue-900/30 border border-blue-700/50 rounded-lg">
-                <ClockOutline className="h-5 w-5 text-blue-400 animate-spin" />
-                <span className="font-medium text-blue-400">
-                  Initializing...
-                </span>
-              </div>
-            )}
-          </div>
-          
-          {initializationStatus.completed_at && (
-            <div className="mb-6 p-4 bg-gray-900/50 rounded-lg border border-gray-700">
-              <div className="flex items-center justify-between">
-                <div>
-                  <div className="text-sm text-gray-400">Initialization completed in</div>
-                  <div className="text-lg font-semibold text-gray-100">
-                    {formatDuration(initializationStatus.duration_seconds)} at {formatTime(initializationStatus.completed_at)}
-                  </div>
-                </div>
-                {initializationStatus.warnings && initializationStatus.warnings.length > 0 && (
-                  <div className="flex items-start">
-                    <ExclamationTriangleIcon className="h-5 w-5 text-yellow-400 mr-2 mt-0.5" />
-                    <div>
-                      <div className="font-semibold text-yellow-400 text-sm">Warnings:</div>
-                      <ul className="list-disc list-inside text-xs text-yellow-300 mt-1">
-                        {initializationStatus.warnings.map((warning, idx) => (
-                          <li key={idx}>{warning}</li>
-                        ))}
-                      </ul>
-                    </div>
+      {/* Hero View - System Status */}
+      <div className={`rounded-lg border p-6 ${
+        isComplete 
+          ? 'bg-gradient-to-r from-green-900/20 to-green-800/10 border-green-700/50' 
+          : hasFailures
+          ? 'bg-gradient-to-r from-red-900/20 to-red-800/10 border-red-700/50'
+          : 'bg-gradient-to-r from-blue-900/20 to-blue-800/10 border-blue-700/50'
+      }`}>
+        <div className="flex items-start justify-between">
+          <div className="flex items-start space-x-4 flex-1">
+            {/* Status Icon */}
+            <div className="flex-shrink-0 mt-1">
+              {isComplete ? (
+                <CheckCircleIcon className="h-8 w-8 text-green-400" />
+              ) : hasFailures ? (
+                <XCircleIcon className="h-8 w-8 text-red-400" />
+              ) : (
+                <ClockOutline className="h-8 w-8 text-blue-400 animate-spin" />
+              )}
+            </div>
+
+            {/* Status Content */}
+            <div className="flex-1">
+              <div className="flex items-center gap-3 mb-2">
+                <h2 className={`text-2xl font-bold ${
+                  isComplete ? 'text-green-400' : hasFailures ? 'text-red-400' : 'text-blue-400'
+                }`}>
+                  {isComplete 
+                    ? 'System Checks and Calibration Complete' 
+                    : hasFailures
+                    ? 'Initialization Failed'
+                    : 'Initializing System...'}
+                </h2>
+                {traderStatus?.current_status?.includes('low_cash') && (
+                  <div className="flex items-center space-x-1.5 px-2.5 py-1 bg-red-500/10 border border-red-500/30 rounded-md">
+                    <span className="text-red-400 text-xs">⚠️</span>
+                    <span className="text-red-400 text-xs font-medium">Low Cash</span>
                   </div>
                 )}
               </div>
-            </div>
-          )}
 
-          {/* Initialization Steps by Phase - 3 Column Grid */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+              {/* Show progress during initialization or summary on completion */}
+              {initializationStatus.completed_at ? (
+                <div className="space-y-3">
+                  {/* Summary Stats - Shown on completion */}
+                  <div className="flex flex-wrap gap-4 text-sm">
+                    <div className="flex items-center space-x-2">
+                      <span className="text-gray-400">Completed:</span>
+                      <span className={`font-semibold ${isComplete ? 'text-green-400' : 'text-gray-300'}`}>
+                        {completedSteps}/{totalSteps} steps
+                      </span>
+                    </div>
+                    {failedSteps > 0 && (
+                      <div className="flex items-center space-x-2">
+                        <span className="text-gray-400">Failed:</span>
+                        <span className="font-semibold text-red-400">{failedSteps}</span>
+                      </div>
+                    )}
+                    <div className="flex items-center space-x-2">
+                      <span className="text-gray-400">Duration:</span>
+                      <span className="font-semibold text-gray-300">
+                        {formatDuration(initializationStatus.duration_seconds)}
+                      </span>
+                    </div>
+                    <div className="flex items-center space-x-2">
+                      <span className="text-gray-400">Completed at:</span>
+                      <span className="font-mono text-gray-300">
+                        {formatTime(initializationStatus.completed_at)}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Trading Session Details */}
+                  {(initializationStatus.starting_cash !== undefined || 
+                    initializationStatus.starting_portfolio_value !== undefined ||
+                    initializationStatus.positions_resumed !== undefined ||
+                    initializationStatus.orders_resumed !== undefined ||
+                    initializationStatus.markets_trading) && (
+                    <div className="pt-2 border-t border-gray-700/50">
+                      <div className="text-sm text-gray-400 font-semibold mb-2">Session Details:</div>
+                      <div className="flex flex-wrap gap-4 text-sm">
+                        {initializationStatus.starting_cash !== undefined && (
+                          <div className="flex items-center space-x-2">
+                            <span className="text-gray-400">Starting Cash:</span>
+                            <span className="font-semibold text-gray-300">
+                              ${Number(initializationStatus.starting_cash).toFixed(2)}
+                            </span>
+                          </div>
+                        )}
+                        {initializationStatus.starting_portfolio_value !== undefined && (
+                          <div className="flex items-center space-x-2">
+                            <span className="text-gray-400">Starting Portfolio:</span>
+                            <span className="font-semibold text-gray-300">
+                              ${Number(initializationStatus.starting_portfolio_value).toFixed(2)}
+                            </span>
+                          </div>
+                        )}
+                        {initializationStatus.positions_resumed !== undefined && (
+                          <div className="flex items-center space-x-2">
+                            <span className="text-gray-400">Positions Resumed:</span>
+                            <span className="font-semibold text-gray-300">
+                              {initializationStatus.positions_resumed}
+                            </span>
+                          </div>
+                        )}
+                        {initializationStatus.orders_resumed !== undefined && (
+                          <div className="flex items-center space-x-2">
+                            <span className="text-gray-400">Orders Resumed:</span>
+                            <span className="font-semibold text-gray-300">
+                              {initializationStatus.orders_resumed}
+                            </span>
+                          </div>
+                        )}
+                        {initializationStatus.markets_trading && (
+                          <div className="flex items-center space-x-2">
+                            <span className="text-gray-400">Markets:</span>
+                            <span className="font-semibold text-gray-300">
+                              {Array.isArray(initializationStatus.markets_trading) 
+                                ? initializationStatus.markets_trading.length 
+                                : initializationStatus.markets_trading}
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Warnings */}
+                  {initializationStatus.warnings && initializationStatus.warnings.length > 0 && (
+                    <div className="pt-2 border-t border-gray-700/50">
+                      <div className="flex items-start space-x-2">
+                        <ExclamationTriangleIcon className="h-5 w-5 text-yellow-400 mt-0.5 flex-shrink-0" />
+                        <div>
+                          <div className="font-semibold text-yellow-400 text-sm mb-1">Warnings:</div>
+                          <ul className="text-sm text-yellow-300 space-y-0.5">
+                            {initializationStatus.warnings.map((warning, idx) => (
+                              <li key={idx}>• {warning}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Failed Steps Details */}
+                  {hasFailures && (
+                    <div className="pt-2 border-t border-red-700/50">
+                      <div className="text-sm text-red-400 font-semibold mb-2">Failed Steps:</div>
+                      <ul className="text-sm text-red-300 space-y-1">
+                        {Object.entries(initializationStatus.steps || {}).map(([stepId, step]) => {
+                          if (step.status === 'failed') {
+                            return (
+                              <li key={stepId} className="flex items-start space-x-2">
+                                <span>•</span>
+                                <span>{step.name}: {step.error || 'Unknown error'}</span>
+                              </li>
+                            );
+                          }
+                          return null;
+                        })}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {/* Progress during initialization */}
+                  <div className="text-gray-400 text-sm">
+                    System initialization in progress...
+                  </div>
+                  <div className="flex flex-wrap gap-4 text-sm">
+                    <div className="flex items-center space-x-2">
+                      <span className="text-gray-400">Completed:</span>
+                      <span className="font-semibold text-green-400">
+                        {completedSteps}/{totalSteps} steps
+                      </span>
+                    </div>
+                    {inProgressSteps > 0 && (
+                      <div className="flex items-center space-x-2">
+                        <span className="text-gray-400">In progress:</span>
+                        <span className="font-semibold text-blue-400">{inProgressSteps}</span>
+                      </div>
+                    )}
+                    {failedSteps > 0 && (
+                      <div className="flex items-center space-x-2">
+                        <span className="text-gray-400">Failed:</span>
+                        <span className="font-semibold text-red-400">{failedSteps}</span>
+                      </div>
+                    )}
+                    {initializationStatus.started_at && (
+                      <div className="flex items-center space-x-2">
+                        <span className="text-gray-400">Started at:</span>
+                        <span className="font-mono text-gray-300">
+                          {formatTime(initializationStatus.started_at)}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Initialization Steps by Phase - 3 Column Grid */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
             {phases.map((phase, phaseIdx) => {
               const stats = getPhaseStats(phase);
               const isExpanded = isPhaseExpanded(phase.name);
@@ -322,7 +498,6 @@ const SystemHealth = ({ initializationStatus, componentHealth }) => {
               );
             })}
           </div>
-        </div>
 
       {/* Component Health Status */}
       {componentHealth && Object.keys(componentHealth).length > 0 && (
@@ -387,6 +562,20 @@ const SystemHealth = ({ initializationStatus, componentHealth }) => {
           </div>
         </div>
       )}
+
+      {/* Trader Status */}
+      <TraderStatePanel 
+        state={null}
+        executionStats={null}
+        showExecutionStats={false}
+        showPositions={false}
+        showOrders={false}
+        showActionBreakdown={false}
+        showPortfolioStats={false}
+        showSessionCashflow={false}
+        traderStatus={traderStatus}
+        traderStatusHistory={traderStatusHistory}
+      />
     </div>
   );
 };

@@ -8,6 +8,8 @@ const TraderStatePanel = ({
   showPositions = true,
   showOrders = true,
   showActionBreakdown = true,
+  showPortfolioStats = true,
+  showSessionCashflow = true,
   traderStatus = null,
   traderStatusHistory = []
 }) => {
@@ -270,6 +272,7 @@ const TraderStatePanel = ({
   return (
     <div className="space-y-4">
       {/* Portfolio Stats Grid - 4 Boxes */}
+      {showPortfolioStats && (
       <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
         {(() => {
           const totalValue = (displayState.portfolio_value || 0) + (displayState.cash_balance || 0);
@@ -303,8 +306,19 @@ const TraderStatePanel = ({
               </div>
               
               {/* Cash Box */}
-              <div className="bg-slate-800/70 backdrop-blur-sm rounded-2xl shadow-lg border border-slate-700/50 p-6 text-center hover:shadow-xl transition-all duration-300">
-                <div className="text-3xl font-bold text-emerald-400 mb-1">
+              <div className={`bg-slate-800/70 backdrop-blur-sm rounded-2xl shadow-lg border p-6 text-center hover:shadow-xl transition-all duration-300 relative ${
+                traderStatus?.current_status?.includes('low_cash') 
+                  ? 'border-red-500/40 bg-red-500/5' 
+                  : 'border-slate-700/50'
+              }`}>
+                {traderStatus?.current_status?.includes('low_cash') && (
+                  <div className="absolute top-2 right-2">
+                    <span className="text-red-400 text-xs" title="Low cash - trading paused">⚠️</span>
+                  </div>
+                )}
+                <div className={`text-3xl font-bold mb-1 ${
+                  traderStatus?.current_status?.includes('low_cash') ? 'text-red-400' : 'text-emerald-400'
+                }`}>
                   {formatCurrency(cashValue)}
                 </div>
                 {cashChange !== undefined && (
@@ -352,9 +366,10 @@ const TraderStatePanel = ({
           );
         })()}
       </div>
+      )}
       
       {/* Warning Indicator */}
-      {displayState.cash_balance === 0 && displayState.portfolio_value === 0 && (
+      {showPortfolioStats && displayState.cash_balance === 0 && displayState.portfolio_value === 0 && (
         <div className="bg-amber-500/10 border border-amber-500/20 rounded-lg px-3 py-2">
           <div className="text-xs text-amber-400">
             ⚠️ Zero Balance - Add funds to continue trading
@@ -594,6 +609,7 @@ const TraderStatePanel = ({
         )}
 
         {/* Session Cashflow - Enhanced */}
+        {showSessionCashflow && (
         <div className="bg-gradient-to-br from-slate-800 to-slate-800/80 border border-slate-700 rounded-lg p-5 hover:border-slate-600 transition-all">
           <h3 className="text-sm font-semibold text-slate-300 uppercase tracking-wider mb-5 flex items-center">
             <span className="mr-2">💰</span>
@@ -662,6 +678,8 @@ const TraderStatePanel = ({
             )}
           </div>
         </div>
+        )}
+
       </div>
 
       {/* Enhanced Positions Section */}
@@ -981,8 +999,10 @@ const TraderStatePanel = ({
           </div>
           <div className={`text-2xl font-bold font-mono ${
             traderStatus?.current_status?.includes('trading') ? 'text-emerald-400' :
+            traderStatus?.current_status?.includes('low_cash') ? 'text-red-400' :
             traderStatus?.current_status?.includes('calibrating') ? 'text-blue-400' :
             traderStatus?.current_status?.includes('closing') ? 'text-amber-400' :
+            traderStatus?.current_status?.includes('paused') ? 'text-orange-400' :
             'text-slate-300'
           }`}>
             {traderStatus?.current_status || 'unknown'}

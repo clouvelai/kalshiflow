@@ -545,25 +545,36 @@ class ActorService:
         start_time = time.time()
         market_ticker = event.market_ticker
         
-        # Update trader status to "trading" when processing market events
-        # Only update periodically to avoid spam (configurable interval, default 10 seconds)
-        if self._order_manager and hasattr(self._order_manager, '_update_trader_status'):
-            if not hasattr(self._order_manager, '_last_trading_status_update'):
-                self._order_manager._last_trading_status_update = 0
+        # Check trader status - skip processing if in non-trading states
+        if self._order_manager:
+            current_status = self._order_manager.get_current_status()
+            # Extract base state (e.g., "low_cash", "paused", "calibrating" from "calibrating -> syncing state")
+            base_state = current_status.split(" -> ")[0] if " -> " in current_status else current_status
             
-            current_time = time.time()
-            update_interval = config.RL_TRADING_STATUS_UPDATE_INTERVAL_SECONDS
-            if current_time - self._order_manager._last_trading_status_update > update_interval:
-                # Include trading stats in periodic update
-                if hasattr(self._order_manager, '_trading_stats'):
-                    trades = self._order_manager._trading_stats.get("trades", 0)
-                    no_ops = self._order_manager._trading_stats.get("no_ops", 0)
-                    cash_balance = self._order_manager.get_cash_balance()
-                    status_result = f"cash ${cash_balance:.2f} | {trades} trades | {no_ops} no-ops"
-                    await self._order_manager._update_trader_status("trading", status_result)
-                else:
-                    await self._order_manager._update_trader_status("trading")
-                self._order_manager._last_trading_status_update = current_time
+            # Skip processing if in non-trading states that should halt the actor loop
+            if base_state in ["low_cash", "paused", "calibrating", "stopping"]:
+                logger.debug(f"Skipping processing for {market_ticker} - trader status: {base_state}")
+                return
+            
+            # Only update trader status to "trading" when actually in trading state
+            # Only update periodically to avoid spam (configurable interval, default 10 seconds)
+            if base_state == "trading" and hasattr(self._order_manager, '_update_trader_status'):
+                if not hasattr(self._order_manager, '_last_trading_status_update'):
+                    self._order_manager._last_trading_status_update = 0
+                
+                current_time = time.time()
+                update_interval = config.RL_TRADING_STATUS_UPDATE_INTERVAL_SECONDS
+                if current_time - self._order_manager._last_trading_status_update > update_interval:
+                    # Include trading stats in periodic update
+                    if hasattr(self._order_manager, '_trading_stats'):
+                        trades = self._order_manager._trading_stats.get("trades", 0)
+                        no_ops = self._order_manager._trading_stats.get("no_ops", 0)
+                        cash_balance = self._order_manager.get_cash_balance()
+                        status_result = f"cash ${cash_balance:.2f} | {trades} trades | {no_ops} no-ops"
+                        await self._order_manager._update_trader_status("trading", status_result)
+                    else:
+                        await self._order_manager._update_trader_status("trading")
+                    self._order_manager._last_trading_status_update = current_time
         
         # Check if market should be processed (circuit breaker check)
         if not self._should_process_market(market_ticker):
@@ -583,34 +594,13 @@ class ActorService:
                 self.metrics.events_processed += 1
                 return
             
-            # Check cash reserve threshold before action selection
-            # If cash balance is below reserve, force HOLD to prevent trading
-            if self._order_manager:
-                cash_balance = self._order_manager.get_cash_balance()
-                from ..config import config
-                min_cash_reserve = config.RL_MIN_CASH_RESERVE
-                
-                if cash_balance < min_cash_reserve:
-                    logger.warning(
-                        f"Cash reserve threshold hit: ${cash_balance:.2f} < ${min_cash_reserve:.2f}. "
-                        f"Forcing HOLD action for {market_ticker}"
-                    )
-                    # Force HOLD action (0) instead of selecting action
-                    action = 0
-                    # Track forced HOLDs in metrics
-                    self.metrics.forced_holds += 1
-                else:
-                    # Step 2: Select action (requires ActionSelector)
-                    action = await self._select_action(observation, market_ticker)
-                    if action is None:
-                        logger.debug(f"No action selected for {market_ticker} - treating as HOLD")
-                        action = 0  # Convert None to explicit HOLD action (0)
-            else:
-                # Step 2: Select action (requires ActionSelector)
-                action = await self._select_action(observation, market_ticker)
-                if action is None:
-                    logger.debug(f"No action selected for {market_ticker} - treating as HOLD")
-                    action = 0  # Convert None to explicit HOLD action (0)
+            # Step 2: Select action (requires ActionSelector)
+            # Note: Cash reserve check is now handled via trader status (low_cash state)
+            # This ensures the actor loop is properly halted during low cash conditions
+            action = await self._select_action(observation, market_ticker)
+            if action is None:
+                logger.debug(f"No action selected for {market_ticker} - treating as HOLD")
+                action = 0  # Convert None to explicit HOLD action (0)
             
             # Step 3: Safe execute action (requires OrderManager) 
             execution_result = await self._safe_execute_action(action, market_ticker, trade_sequence_id)

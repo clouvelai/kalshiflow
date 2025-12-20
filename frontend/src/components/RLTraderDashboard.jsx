@@ -1417,23 +1417,34 @@ const RLTraderDashboard = () => {
               <SystemHealth 
                 initializationStatus={initializationStatus}
                 componentHealth={componentHealth}
+                traderStatus={traderStatus}
+                traderStatusHistory={traderStatusHistory}
               />
             )}
           </div>
         </div>
 
-        {/* Trade Lifecycle Kanban Board */}
+        {/* Trade Lifecycle Kanban Board - Only show on Portfolio tab */}
+        {activeTab === 'portfolio' && (
         <div className="bg-gray-800 rounded-lg shadow-lg">
           <div className="p-4">
             {/* Kanban Header */}
             <div className="flex items-center justify-between mb-4">
-              <h2 className="text-lg font-semibold text-gray-100 flex items-center">
-                <span className="mr-2">📊</span>
-                Trade Lifecycle Board
-                <span className="ml-2 text-sm text-gray-400 font-normal">
-                  ({tradeLifecycleRows.length} active trades)
-                </span>
-              </h2>
+              <div className="flex items-center space-x-3">
+                <h2 className="text-lg font-semibold text-gray-100 flex items-center">
+                  <span className="mr-2">📊</span>
+                  Trade Lifecycle Board
+                  <span className="ml-2 text-sm text-gray-400 font-normal">
+                    ({tradeLifecycleRows.length} active trades)
+                  </span>
+                </h2>
+                {traderStatus?.current_status?.includes('low_cash') && (
+                  <div className="flex items-center space-x-1.5 px-2.5 py-1 bg-red-500/10 border border-red-500/30 rounded-md">
+                    <span className="text-red-400 text-xs">⚠️</span>
+                    <span className="text-red-400 text-xs font-medium">Low Cash</span>
+                  </div>
+                )}
+              </div>
               {/* Price Mode Toggle */}
               <div className="flex items-center space-x-2">
                 <span className="text-sm text-gray-400">Price Display:</span>
@@ -1925,8 +1936,10 @@ const RLTraderDashboard = () => {
             </div>
           </div>
         </div>
+        )}
 
-        {/* Open Positions Section - Keep as separate card */}
+        {/* Open Positions Section - Only show on Portfolio tab */}
+        {activeTab === 'portfolio' && (
         <div className="bg-gray-800 rounded-lg shadow-lg">
           <div className="p-4">
             <div 
@@ -2379,6 +2392,7 @@ const RLTraderDashboard = () => {
             )}
           </div>
         </div>
+        )}
 
         {/* Connection Status Message (if disconnected) */}
         {connectionStatus !== 'connected' && (

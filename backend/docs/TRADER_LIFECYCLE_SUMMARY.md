@@ -517,13 +517,16 @@ The actor loop is a 4-step pipeline that processes each orderbook delta:
 
 The trader operates in one state at a time, with clear transitions and full visibility in `trader_status`:
 
-1. **`initializing`** - Startup state
-   - Syncing initial state with Kalshi (balance, positions, orders)
-   - Loading RL model
-   - Setting up infrastructure
-   - **Transition to:** `trading` when ready
+**Note on `initializing` state:** We intentionally do not use an `initializing` trader status during startup. The initialization/launch sequence (connection verification, component health checks, state sync) is tracked separately via the `InitializationTracker` and displayed in the System tab. This separation makes sense because:
+- The initialization sequence is primarily infrastructure setup (DB, WebSockets, listeners) that happens on deploy
+- In production, we'll rarely see the initialization sequence - it's mainly visible during deployment
+- The `calibrating` state handles the same core functionality (syncing state with Kalshi) but during runtime
+- Focusing on getting `calibrating` right in production is more valuable than adding an `initializing` trader status that would only be seen during startup
+- The System tab already provides comprehensive visibility into the initialization sequence
 
-2. **`trading`** - Active trading state
+The trader status goes directly from startup to `trading` after initialization completes, with `calibrating` handling periodic state synchronization during runtime.
+
+1. **`trading`** - Active trading state
    - Processing orderbook deltas through 4-step pipeline
    - Making trading decisions (opening positions)
    - **Can transition to:** `calibrating` (periodic), `paused` (errors), `stopping` (shutdown)
@@ -1124,15 +1127,47 @@ OrderbookClient (WebSocket)
 
 1. ✅ **Phase 1 (M1) Complete** - Position management delivered
 2. ✅ **Phase 2 (M2) Status Logging Complete** - Simplified status logging, removed transition entries
-3. **Continue Phase 2 (M2)** - Core actor loop improvements
-4. **Focus Areas:**
+3. ✅ **Phase 2 (M2) Low Cash State UI Complete** - Visual warnings and indicators for low cash state
+4. **Continue Phase 2 (M2)** - Core actor loop improvements
+5. **Focus Areas:**
    - Actor loop coordination (trading ↔ recalibration)
    - Enhanced decision making
    - Error recovery improvements
-5. **Test incrementally** in paper trading
-6. **Iterate** based on results
+6. **Test incrementally** in paper trading
+7. **Iterate** based on results
 
-## Recent Changes (Status Logging Simplification)
+## Recent Changes
+
+### Low Cash State UI (M2 Milestone) - ✅ COMPLETED
+
+**Completed:** Added comprehensive low cash state visual indicators across the UI
+
+**UI Components Updated:**
+- **Trade Lifecycle Board Header** (`RLTraderDashboard.jsx`): Added low cash warning badge next to board title
+- **SystemHealth Hero Component** (`SystemHealth.jsx`): Added low cash warning badge in hero view (System tab)
+- **TraderStatePanel Cash Box** (`TraderStatePanel.jsx`): Enhanced with low cash visual indicators:
+  - Red border and background tint when in low_cash state
+  - Warning emoji icon in top-right corner
+  - Red text color for cash value
+- **Trader Status Footer** (`TraderStatePanel.jsx`): Displays low_cash status in red text
+
+**Visual Design:**
+- Consistent warning badge styling: `bg-red-500/10 border border-red-500/30 rounded-md`
+- Red color scheme (`text-red-400`) for all low cash indicators
+- Warning emoji (⚠️) for visual attention
+- "Low Cash" text label for clarity
+
+**Status Detection:**
+- All components check `traderStatus?.current_status?.includes('low_cash')`
+- Backend transitions to `low_cash` state when `cash_balance < min_cash_reserve` during recalibration
+- UI updates in real-time via WebSocket status broadcasts
+
+**Files Modified:**
+- `frontend/src/components/RLTraderDashboard.jsx` - Trade lifecycle header warning
+- `frontend/src/components/SystemHealth.jsx` - Hero view warning badge
+- `frontend/src/components/TraderStatePanel.jsx` - Cash box styling and JSX structure fix
+
+### Status Logging Simplification (M2) - ✅ COMPLETED
 
 **Completed:** Simplified trader status logging by removing transition entry complexity
 - Removed separate transition entries (e.g., "trading -> calibrating") from status history
