@@ -3787,6 +3787,115 @@ class KalshiMultiMarketOrderManager:
         logger.info(f"Position closing complete: {result_summary}")
         return result_summary, details
     
+    async def _calibration_sync_state(self) -> Dict[str, Any]:
+        """
+        Stage 1 of calibration: Sync trader state with Kalshi API.
+        
+        Mirrors the initialization sync logic but for periodic calibration.
+        Uses ONLY Kalshi values (no internal calculations).
+        
+        Returns:
+            Dictionary with sync results including:
+            - cash_balance: Cash balance from Kalshi (in dollars)
+            - portfolio_value: Portfolio value from Kalshi (in dollars)
+            - positions_value: Sum of (cost_basis + realized_pnl) for all positions (in dollars)
+            - total_pnl: Sum of realized_pnl for all positions (in dollars)
+            - active_positions: Count of non-flat positions
+            - order_stats: Order sync statistics
+            - settlement_stats: Settlement sync statistics
+            - duration: Time taken for sync (in seconds)
+        """
+        sync_start = time.time()
+        
+        # Capture before state (using Kalshi values if available)
+        cash_before = self.cash_balance  # Already from Kalshi
+        portfolio_before = (
+            self._portfolio_value_from_kalshi 
+            if hasattr(self, '_portfolio_value_from_kalshi') and self._portfolio_value_from_kalshi is not None
+            else None
+        )
+        positions_before = len([p for p in self.positions.values() if not p.is_flat])
+        
+        # Sync orders with Kalshi
+        order_stats = await self.sync_orders_with_kalshi()
+        
+        # Sync positions with Kalshi (this also syncs cash balance and portfolio value)
+        await self._sync_positions_with_kalshi(is_startup=False)
+        
+        # Sync settlements with Kalshi
+        settlement_stats = await self.sync_settlements_with_kalshi()
+        
+        sync_duration = time.time() - sync_start
+        
+        # Capture after state (all from Kalshi)
+        cash_after = self.cash_balance  # Synced from Kalshi in _sync_positions_with_kalshi
+        portfolio_after = (
+            self._portfolio_value_from_kalshi 
+            if hasattr(self, '_portfolio_value_from_kalshi') and self._portfolio_value_from_kalshi is not None
+            else None
+        )
+        positions_after = len([p for p in self.positions.values() if not p.is_flat])
+        
+        # Calculate positions value and total P&L from position data (all in cents, convert to dollars)
+        positions_value = sum(
+            (p.cost_basis + p.realized_pnl) / 100.0 
+            for p in self.positions.values() 
+            if not p.is_flat
+        )
+        total_pnl = sum(
+            p.realized_pnl / 100.0 
+            for p in self.positions.values() 
+            if not p.is_flat
+        )
+        
+        # Build detailed status message (mirroring initialization sync format)
+        status_parts = []
+        
+        # Portfolio section
+        portfolio_info = f"Portfolio: cash ${cash_after:.2f}"
+        if portfolio_after is not None:
+            portfolio_info += f" | positions ${positions_value:.2f} | total ${portfolio_after:.2f}"
+        else:
+            portfolio_info += f" | positions ${positions_value:.2f} | total N/A"
+        if abs(total_pnl) > 0.01:  # Only show P&L if significant
+            pnl_sign = "+" if total_pnl >= 0 else ""
+            portfolio_info += f" | P&L {pnl_sign}${total_pnl:.2f}"
+        status_parts.append(portfolio_info)
+        
+        # Positions section
+        status_parts.append(f"Positions: active: {positions_after}")
+        
+        # Settlements section
+        if settlement_stats and "total_fetched" in settlement_stats:
+            status_parts.append(
+                f"Settlements: fetched {settlement_stats.get('total_fetched', 0)}"
+            )
+        
+        # Orders section
+        if order_stats and "found_in_kalshi" in order_stats:
+            kalshi_orders = order_stats.get("found_in_kalshi", 0)
+            local_orders = order_stats.get("found_in_memory", 0)
+            status_parts.append(f"Orders: Kalshi {kalshi_orders} | Local {local_orders}")
+        
+        sync_result = " | ".join(status_parts)
+        
+        # Update trader status with detailed sync information
+        await self._update_trader_status("calibrating -> syncing state", sync_result, duration=sync_duration)
+        
+        return {
+            "cash_balance": cash_after,
+            "portfolio_value": portfolio_after,
+            "positions_value": positions_value,
+            "total_pnl": total_pnl,
+            "active_positions": positions_after,
+            "order_stats": order_stats,
+            "settlement_stats": settlement_stats,
+            "duration": sync_duration,
+            "cash_before": cash_before,
+            "portfolio_before": portfolio_before,
+            "positions_before": positions_before,
+        }
+    
     async def _start_periodic_sync(self) -> None:
         """
         Background task for periodic order synchronization and recalibration.
@@ -3821,32 +3930,8 @@ class KalshiMultiMarketOrderManager:
                         # Already in calibrating or other state
                         await self._update_trader_status("calibrating", "periodic sync")
                     
-                    # 1. Sync state with Kalshi - track state changes
-                    sync_start = time.time()
-                    cash_before = self.cash_balance
-                    portfolio_before = self._calculate_portfolio_value()
-                    positions_before = len([p for p in self.positions.values() if not p.is_flat])
-                    
-                    stats = await self.sync_orders_with_kalshi()
-                    await self._sync_positions_with_kalshi()
-                    await self.sync_settlements_with_kalshi()
-                    
-                    sync_duration = time.time() - sync_start
-                    cash_after = self.cash_balance
-                    portfolio_after = self._calculate_portfolio_value()
-                    positions_after = len([p for p in self.positions.values() if not p.is_flat])
-                    
-                    # Build sync result with state changes
-                    sync_details = []
-                    if abs(cash_before - cash_after) > 0.01:  # Only show if change > 1 cent
-                        sync_details.append(f"cash ${cash_before:.2f} -> ${cash_after:.2f}")
-                    if abs(portfolio_before - portfolio_after) > 0.01:
-                        sync_details.append(f"portfolio ${portfolio_before:.2f} -> ${portfolio_after:.2f}")
-                    if positions_before != positions_after:
-                        sync_details.append(f"positions {positions_before} -> {positions_after}")
-                    
-                    sync_result = ", ".join(sync_details) if sync_details else "no changes"
-                    await self._update_trader_status("calibrating -> syncing state", sync_result, duration=sync_duration)
+                    # 1. Sync state with Kalshi (Stage 1: syncing_state)
+                    sync_results = await self._calibration_sync_state()
                     
                     # Check current base state to see if we're transitioning from low_cash
                     current_base_state = self._extract_base_state(self._trader_status)
