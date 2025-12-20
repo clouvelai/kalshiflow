@@ -298,6 +298,11 @@ class KalshiMultiMarketOrderManager:
         # Trader status tracking
         self._trader_status: str = "trading"  # Current trader status
         self._trader_status_history: List[Dict[str, Any]] = []  # Status transition history (max 50 entries)
+        self._state_entry_time: Optional[float] = None  # When current state started
+        self._previous_state: Optional[str] = None  # Previous state before current
+        self._previous_state_duration: Optional[float] = None  # How long we were in previous state
+        self._trading_stats: Dict[str, int] = {"trades": 0, "no_ops": 0}  # Trading session stats
+        self._trading_stats_start_time: Optional[float] = None  # When current trading session started
         
         # Execution history tracking (maxlen=100)
         self.execution_history: Deque[TradeDetail] = deque(maxlen=100)
@@ -626,10 +631,10 @@ class KalshiMultiMarketOrderManager:
             self._periodic_sync_task = asyncio.create_task(self._start_periodic_sync())
             logger.info(f"✅ Periodic sync and recalibration started (interval: {config.RL_RECALIBRATION_INTERVAL_SECONDS}s)")
         
-        # Set initial trader status
-        await self._update_trader_status("trading", "initialized and ready")
-        
-        # Set initial trader status
+        # Set initial trader status and initialize stats
+        # Stats will be reset when transitioning to trading in future, but need to initialize here
+        self._reset_trading_stats()
+        self._state_entry_time = time.time()  # Initialize state entry time
         await self._update_trader_status("trading", "initialized and ready")
         
         # Capture session start values AFTER all sync steps complete
@@ -1948,6 +1953,18 @@ class KalshiMultiMarketOrderManager:
         })
         logger.debug(f"Broadcast portfolio update: cash={self.cash_balance:.2f}, portfolio={portfolio_value:.2f} (event: {event_type})")
     
+    def _extract_base_state(self, status: str) -> str:
+        """
+        Extract base state from status string.
+        
+        Base states: "initializing", "trading", "calibrating", "paused", "stopping"
+        Sub-states like "calibrating -> syncing state" return "calibrating"
+        """
+        if " -> " in status:
+            # Extract base state before arrow (e.g., "calibrating -> syncing state" -> "calibrating")
+            return status.split(" -> ")[0]
+        return status
+    
     async def _update_trader_status(
         self, 
         status: str, 
@@ -1964,8 +1981,43 @@ class KalshiMultiMarketOrderManager:
         """
         timestamp = time.time()
         
-        # Update current status
-        self._trader_status = status
+        # Extract base states for comparison (before updating _trader_status)
+        current_base_state = self._extract_base_state(self._trader_status)
+        new_base_state = self._extract_base_state(status)
+        
+        # Calculate time in current state
+        if self._state_entry_time is None:
+            time_in_status = 0.0
+        else:
+            time_in_status = timestamp - self._state_entry_time
+        
+        # Check if base state changed
+        state_changed = current_base_state != new_base_state
+        
+        # Handle state change: track previous state and reset timers/stats
+        if state_changed:
+            # Calculate and store previous state info for header display
+            if self._state_entry_time is not None:
+                self._previous_state_duration = timestamp - self._state_entry_time
+            else:
+                self._previous_state_duration = 0.0
+            
+            # Store previous state info for header display
+            if current_base_state and current_base_state != "initializing":
+                self._previous_state = current_base_state
+            else:
+                self._previous_state = None
+                self._previous_state_duration = None
+            
+            # Reset state entry time for new state
+            self._state_entry_time = timestamp
+            
+            # Reset trading stats if entering trading state
+            if new_base_state == "trading":
+                self._reset_trading_stats()
+            
+            # Reset time_in_status for new state entry
+            time_in_status = 0.0
         
         # Build result with timing if provided
         full_result = result
@@ -1974,26 +2026,58 @@ class KalshiMultiMarketOrderManager:
         elif duration is not None:
             full_result = f"({duration:.1f}s)"
         
-        # Append to history (keep last 50 entries)
+        # Always log status entry (single code path)
         status_entry = {
             "timestamp": timestamp,
             "status": status,
             "result": full_result,
-            "duration": duration
+            "duration": duration,
+            "time_in_status": time_in_status
         }
         self._trader_status_history.append(status_entry)
         if len(self._trader_status_history) > 50:
             self._trader_status_history.pop(0)
         
+        # Update current status
+        self._trader_status = status
+        
         # Broadcast status update via WebSocket
         if self._websocket_manager:
             status_data = {
                 "current_status": status,
+                "time_in_status": time_in_status,
+                "previous_state": self._previous_state,
+                "previous_state_duration": self._previous_state_duration,
                 "status_history": self._trader_status_history[-20:]  # Send last 20 entries
             }
             await self._websocket_manager.broadcast_trader_status(status_data)
         
         logger.info(f"Trader status: {status}" + (f" - {full_result}" if full_result else ""))
+    
+    def _update_trading_stats(self, action: int, executed: bool) -> None:
+        """
+        Update trading session statistics.
+        
+        Args:
+            action: Action taken (0=HOLD, 1=BUY_YES, 2=SELL_YES, 3=BUY_NO, 4=SELL_NO)
+            executed: Whether the order was successfully executed (placed)
+        """
+        # Only track stats when in trading state
+        if self._extract_base_state(self._trader_status) != "trading":
+            return
+        
+        # Trades: executed orders (non-HOLD actions that were placed)
+        if executed and action != 0:  # 0 is HOLD
+            self._trading_stats["trades"] += 1
+        
+        # No-ops: HOLD actions, failed actions, or throttled actions
+        if action == 0 or not executed:
+            self._trading_stats["no_ops"] += 1
+    
+    def _reset_trading_stats(self) -> None:
+        """Reset trading session statistics."""
+        self._trading_stats = {"trades": 0, "no_ops": 0}
+        self._trading_stats_start_time = time.time()
     
     async def _broadcast_fill_event(self, fill_data: Dict[str, Any]) -> None:
         """
@@ -3695,16 +3779,24 @@ class KalshiMultiMarketOrderManager:
                     calibration_start = time.time()
                     logger.debug("Starting periodic sync and recalibration...")
                     
-                    # Update status to calibrating
-                    await self._update_trader_status("calibrating", "periodic sync")
+                    # Capture trading stats before transitioning away from trading
+                    # (if we were in trading state)
+                    if self._extract_base_state(self._trader_status) == "trading":
+                        trades = self._trading_stats["trades"]
+                        no_ops = self._trading_stats["no_ops"]
+                        time_in_trading = time.time() - self._state_entry_time if self._state_entry_time else 0
+                        trading_result = f"cash ${self.cash_balance:.2f} | {trades} trades | {no_ops} no-ops | {time_in_trading:.1f}s"
+                        # Update status to calibrating (transition will be logged, stats reset when entering trading again)
+                        await self._update_trader_status("calibrating", trading_result)
+                    else:
+                        # Already in calibrating or other state
+                        await self._update_trader_status("calibrating", "periodic sync")
                     
                     # 1. Sync state with Kalshi - track state changes
                     sync_start = time.time()
                     cash_before = self.cash_balance
                     portfolio_before = self._calculate_portfolio_value()
                     positions_before = len([p for p in self.positions.values() if not p.is_flat])
-                    
-                    await self._update_trader_status("calibrating -> syncing state")
                     
                     stats = await self.sync_orders_with_kalshi()
                     await self._sync_positions_with_kalshi()
@@ -3734,7 +3826,6 @@ class KalshiMultiMarketOrderManager:
                     
                     # 2. Position health monitoring and closing (NEW - recalibration loop)
                     closing_start = time.time()
-                    await self._update_trader_status("calibrating -> closing positions")
                     
                     closing_result, closing_details = await self._monitor_and_close_positions_detailed()
                     closing_duration = time.time() - closing_start
@@ -3754,7 +3845,6 @@ class KalshiMultiMarketOrderManager:
                     if self.cash_balance < self.min_cash_reserve:
                         recovery_start = time.time()
                         cash_before_recovery = self.cash_balance
-                        await self._update_trader_status("calibrating -> cash recovery")
                         await self._recover_cash_by_closing_positions()
                         recovery_duration = time.time() - recovery_start
                         cash_after_recovery = self.cash_balance
@@ -3772,8 +3862,8 @@ class KalshiMultiMarketOrderManager:
                     await self._notify_state_change()
                     
                     # Update status back to trading
-                    total_duration = time.time() - calibration_start
-                    await self._update_trader_status("trading", "recalibration complete", duration=total_duration)
+                    # Stats will be reset when entering trading state
+                    await self._update_trader_status("trading", f"cash ${self.cash_balance:.2f}")
                     
                 except Exception as e:
                     logger.error(f"Error in periodic sync and recalibration: {e}")
