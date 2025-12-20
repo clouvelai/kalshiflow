@@ -520,131 +520,57 @@ class KalshiMultiMarketOrderManager:
         # This happens AFTER cleanup so we get fresh state
         # No try/except wrapper - let exceptions propagate to fail initialization
         if config.RL_ORDER_SYNC_ENABLED and config.RL_ORDER_SYNC_ON_STARTUP:
-            logger.info("Starting order synchronization with Kalshi...")
+            logger.info("Starting state synchronization with Kalshi...")
             
-            # Sync balance first - Kalshi API returns both balance and portfolio_value
-            # Validation is now done in demo_client.get_account_info() - will raise if missing/invalid
+            # Use shared sync method for all state synchronization
             if initialization_tracker:
                 await initialization_tracker.mark_step_in_progress("sync_balance")
             
-            # Get account info to sync balance AND portfolio_value from Kalshi
-            # According to Kalshi API docs: /portfolio/balance returns both fields
-            # Validation in demo_client ensures both fields are present and valid
-            balance_response = await self.trading_client.get_account_info()
+            sync_results = await self._sync_state_with_kalshi()
             
-            # Extract cash balance (guaranteed to exist after validation)
-            old_balance = self.cash_balance
-            new_balance = balance_response["balance"] / 100.0  # Convert from cents to dollars
-            
-            # On startup (first sync), initialize calculated to match synced
-            # After that, calculated tracks independently
-            if self._last_sync_drift_cash is None:
-                # First sync: initialize calculated to match synced
-                self._calculated_cash_balance = new_balance
-                self._last_sync_drift_cash = 0.0
-            else:
-                # Subsequent syncs: calculate drift (how far off our calculation was)
-                calculated_cash = self._calculated_cash_balance
-                self._last_sync_drift_cash = calculated_cash - new_balance
-            
-            # Update synced value from Kalshi (authoritative)
-            self.cash_balance = new_balance
-            
-            # Extract portfolio_value (guaranteed to exist after validation)
-            self._portfolio_value_from_kalshi = balance_response["portfolio_value"] / 100.0  # Convert from cents to dollars
-            
-            # On startup (first sync), initialize drift tracking (no drift yet since we just synced)
-            # This is the initial sync, so calculated should match synced (no drift)
-            if self._last_sync_drift_cash is None:
-                self._last_sync_drift_cash = 0.0
-            if self._last_sync_drift_portfolio is None:
-                self._last_sync_drift_portfolio = 0.0
-            
-            logger.info(
-                f"Balance sync complete: Cash=${old_balance:.2f} → ${self.cash_balance:.2f}, "
-                f"Portfolio=${self._portfolio_value_from_kalshi:.2f} (both from Kalshi API)"
-            )
-            
+            # Report sync results to initialization tracker
             if initialization_tracker:
                 await initialization_tracker.mark_step_complete("sync_balance", {
-                    "balance": self.cash_balance,
-                    "balance_before": old_balance,
-                    "portfolio_value": self._portfolio_value_from_kalshi,
+                    "balance": sync_results["cash_balance"],
+                    "balance_before": sync_results["cash_before"],
+                    "portfolio_value": sync_results["portfolio_value"],
                 })
             
-            # Sync positions - fail fast if sync fails
             if initialization_tracker:
                 await initialization_tracker.mark_step_in_progress("sync_positions")
-            
-            # Let exceptions propagate - no fallbacks
-            await self._sync_positions_with_kalshi(is_startup=True)
-            
-            if initialization_tracker:
                 await initialization_tracker.mark_step_complete("sync_positions", {
-                    "positions_count": len(self.positions),
-                })
-            
-            # Sync settlements - fetch past 24 hours
-            if initialization_tracker:
-                await initialization_tracker.mark_step_in_progress("sync_settlements")
-            
-            settlement_stats = await self.sync_settlements_with_kalshi()
-            
-            if initialization_tracker:
-                await initialization_tracker.mark_step_complete("sync_settlements", {
-                    "total_fetched": settlement_stats.get("total_fetched", 0),
-                    "new": settlement_stats.get("new", 0),
-                    "updated": settlement_stats.get("updated", 0),
-                    "unchanged": settlement_stats.get("unchanged", 0),
-                })
-            
-            if initialization_tracker:
-                positions_count = len(self.positions)
-                await initialization_tracker.mark_step_complete("sync_positions", {
-                    "positions_count": positions_count,
+                    "positions_count": sync_results["active_positions"],
                     "positions": {ticker: {"contracts": pos.contracts, "cost_basis": pos.cost_basis} 
                                 for ticker, pos in self.positions.items()},
                 })
             
-            # Sync settlements - fetch past 24 hours
             if initialization_tracker:
                 await initialization_tracker.mark_step_in_progress("sync_settlements")
-            
-            settlement_stats = await self.sync_settlements_with_kalshi()
-            
-            if initialization_tracker:
                 await initialization_tracker.mark_step_complete("sync_settlements", {
-                    "total_fetched": settlement_stats.get("total_fetched", 0),
-                    "new": settlement_stats.get("new", 0),
-                    "updated": settlement_stats.get("updated", 0),
-                    "unchanged": settlement_stats.get("unchanged", 0),
+                    "total_fetched": sync_results["settlement_stats"].get("total_fetched", 0),
+                    "new": sync_results["settlement_stats"].get("new", 0),
+                    "updated": sync_results["settlement_stats"].get("updated", 0),
+                    "unchanged": sync_results["settlement_stats"].get("unchanged", 0),
                 })
             
-            # Sync orders - fail fast if sync fails
             if initialization_tracker:
                 await initialization_tracker.mark_step_in_progress("sync_orders")
-            
-            # Let exceptions propagate - no fallbacks
-            order_stats = await self.sync_orders_with_kalshi(is_startup=True)
-            
-            # Log summary (warnings for actual discrepancies are already logged by sync_orders_with_kalshi)
-            # On startup, finding orders in Kalshi but not locally is expected, not a discrepancy
-            actual_discrepancies = order_stats.get("discrepancies", 0) + order_stats.get("removed", 0)
-            if actual_discrepancies == 0:
-                logger.info(
-                    f"✅ Startup order sync complete: {order_stats['found_in_kalshi']} orders in Kalshi, "
-                    f"{order_stats['found_in_memory']} orders in local memory - all in sync"
-                )
-            # If there are actual discrepancies, they're already logged as warnings by sync_orders_with_kalshi
-            
-            if initialization_tracker:
+                order_stats = sync_results.get("order_stats", {})
                 await initialization_tracker.mark_step_complete("sync_orders", {
-                    "orders_in_kalshi": order_stats.get("found_in_kalshi", 0),
-                    "orders_in_memory": order_stats.get("found_in_memory", 0),
+                    "found_in_kalshi": order_stats.get("found_in_kalshi", 0),
+                    "found_in_memory": order_stats.get("found_in_memory", 0),
                     "orders_added": order_stats.get("added", 0),
                     "orders_removed": order_stats.get("removed", 0),
                     "discrepancies": order_stats.get("discrepancies", 0),
                 })
+            
+            order_stats = sync_results.get("order_stats", {})
+            logger.info(
+                f"State sync complete: Cash=${sync_results['cash_before']:.2f} → ${sync_results['cash_balance']:.2f}, "
+                f"Portfolio=${sync_results['portfolio_value']:.2f}, "
+                f"Positions={sync_results['active_positions']}, "
+                f"Orders={order_stats.get('found_in_kalshi', 0)}"
+            )
         
         # Start periodic synchronization (if enabled)
         if config.RL_ORDER_SYNC_ENABLED:
@@ -839,11 +765,9 @@ class KalshiMultiMarketOrderManager:
             # Step 4: Re-sync with Kalshi to verify cleanup and update cash balance
             logger.info("Re-syncing with Kalshi to verify cleanup...")
             
-            # Sync positions first (affects cash calculation)
-            await self._sync_positions_with_kalshi(is_startup=True)
-            
-            # Sync orders to ensure cleanup was successful
-            sync_stats = await self.sync_orders_with_kalshi(is_startup=True)
+            # Sync state to verify cleanup was successful
+            sync_results = await self._sync_state_with_kalshi()
+            sync_stats = sync_results["order_stats"]
             final_orders = sync_stats.get("found_in_kalshi", 0)
             
             # Update final metrics
@@ -2376,15 +2300,11 @@ class KalshiMultiMarketOrderManager:
             logger.error(f"Error calculating limit price: {e}, using default (50)")
             return 50
     
-    async def sync_orders_with_kalshi(self, is_startup: bool = False) -> Dict[str, Any]:
+    async def sync_orders_with_kalshi(self) -> Dict[str, Any]:
         """
         Sync local order state with Kalshi.
         
         Kalshi is the source of truth - local state is updated to match Kalshi.
-        
-        Args:
-            is_startup: If True, orders found in Kalshi but not locally are expected
-                       (process restart scenario) and won't trigger warnings.
         
         Returns:
             Dictionary with sync statistics
@@ -2414,7 +2334,7 @@ class KalshiMultiMarketOrderManager:
             
             # Reconcile each Kalshi order (Kalshi is authoritative)
             for kalshi_order_id, kalshi_order in kalshi_orders.items():
-                await self._reconcile_order(kalshi_order_id, kalshi_order, stats, is_startup=is_startup)
+                await self._reconcile_order(kalshi_order_id, kalshi_order, stats)
             
             # Check for orders in memory but not in Kalshi
             # If Kalshi doesn't have it, it doesn't exist - remove from local state
@@ -2424,43 +2344,23 @@ class KalshiMultiMarketOrderManager:
                     # Trust Kalshi: remove from local tracking
                     await self._handle_external_cancellation(order, stats)
             
-            # Log clear warning if discrepancies were found
-            # On startup, finding orders in Kalshi but not locally is expected, not a discrepancy
+            # Log warnings if discrepancies were found
             actual_discrepancies = stats["discrepancies"] + stats["removed"]
-            if is_startup:
-                # On startup, only warn about actual discrepancies (not orders added from Kalshi)
-                if actual_discrepancies > 0:
-                    logger.warning(
-                        f"⚠️ STARTUP ORDER SYNC DISCREPANCIES DETECTED: "
-                        f"{stats['discrepancies']} discrepancies (status/fill mismatches), "
-                        f"{stats['removed']} orders removed (not in Kalshi), "
-                        f"{stats['partial_fills']} partial fills processed. "
-                        f"Local state was out of sync with Kalshi."
-                    )
-                elif stats["added"] > 0:
-                    logger.info(
-                        f"Startup sync: Found {stats['added']} order(s) in Kalshi from previous session "
-                        f"(expected on restart). Restored to local tracking."
-                    )
-                elif stats["found_in_kalshi"] == 0:
-                    logger.info("Startup sync: No orders found in Kalshi (clean state)")
-            else:
-                # During periodic sync, warn about any discrepancies including added orders
-                if actual_discrepancies > 0 or stats["added"] > 0:
-                    logger.warning(
-                        f"⚠️ ORDER SYNC DISCREPANCIES DETECTED: "
-                        f"{stats['discrepancies']} discrepancies, "
-                        f"{stats['added']} orders added (not in local memory), "
-                        f"{stats['updated']} orders updated, "
-                        f"{stats['removed']} orders removed (not in Kalshi), "
-                        f"{stats['partial_fills']} partial fills processed. "
-                        f"Local state was out of sync with Kalshi."
-                    )
-                elif stats["found_in_kalshi"] > 0 or stats["found_in_memory"] > 0:
-                    logger.debug(
-                        f"Order sync complete: {stats['found_in_kalshi']} orders in Kalshi, "
-                        f"{stats['found_in_memory']} orders in local memory - all in sync"
-                    )
+            if actual_discrepancies > 0 or stats["added"] > 0:
+                logger.warning(
+                    f"⚠️ ORDER SYNC DISCREPANCIES DETECTED: "
+                    f"{stats['discrepancies']} discrepancies, "
+                    f"{stats['added']} orders added (not in local memory), "
+                    f"{stats['updated']} orders updated, "
+                    f"{stats['removed']} orders removed (not in Kalshi), "
+                    f"{stats['partial_fills']} partial fills processed. "
+                    f"Local state was out of sync with Kalshi."
+                )
+            elif stats["found_in_kalshi"] > 0 or stats["found_in_memory"] > 0:
+                logger.debug(
+                    f"Order sync complete: {stats['found_in_kalshi']} orders in Kalshi, "
+                    f"{stats['found_in_memory']} orders in local memory - all in sync"
+                )
             
             return stats
             
@@ -2472,8 +2372,7 @@ class KalshiMultiMarketOrderManager:
         self, 
         kalshi_order_id: str, 
         kalshi_order: Dict[str, Any], 
-        stats: Dict[str, Any],
-        is_startup: bool = False
+        stats: Dict[str, Any]
     ) -> None:
         """
         Reconcile a single Kalshi order with local state.
@@ -2618,19 +2517,11 @@ class KalshiMultiMarketOrderManager:
         else:
             # Order not in local memory - add it (restart scenario or missed order)
             ticker = kalshi_order.get("ticker", "UNKNOWN")
-            if is_startup:
-                # On startup, this is expected behavior (process restart)
-                logger.info(
-                    f"Restoring order from Kalshi: {kalshi_order_id} ({ticker}) - "
-                    f"found in Kalshi from previous session, adding to local tracking"
-                )
-            else:
-                # During periodic sync, this indicates a missed order (unexpected)
-                logger.warning(
-                    f"⚠️ ORDER NOT IN LOCAL MEMORY: Order {kalshi_order_id} ({ticker}) "
-                    f"found in Kalshi but not tracked locally. "
-                    f"This indicates a missed order. Adding to local tracking."
-                )
+            logger.warning(
+                f"⚠️ ORDER NOT IN LOCAL MEMORY: Order {kalshi_order_id} ({ticker}) "
+                f"found in Kalshi but not tracked locally. "
+                f"Adding to local tracking."
+            )
             await self._add_order_from_kalshi(kalshi_order_id, kalshi_order, stats)
             stats["added"] += 1
     
@@ -2865,15 +2756,11 @@ class KalshiMultiMarketOrderManager:
         stats["removed"] += 1
         self._orders_cancelled += 1
     
-    async def _sync_positions_with_kalshi(self, is_startup: bool = False) -> None:
+    async def _sync_positions_with_kalshi(self) -> None:
         """
         Sync positions with Kalshi.
         
         Kalshi positions are authoritative - update local positions to match.
-        
-        Args:
-            is_startup: If True, positions found in Kalshi but not locally are expected
-                       (process restart scenario) and won't trigger warnings.
         """
         if not self.trading_client:
             logger.error("Cannot sync positions: trading client not initialized")
@@ -2948,17 +2835,11 @@ class KalshiMultiMarketOrderManager:
                     # Store fees_paid as attribute (in cents)
                     new_position.fees_paid = fees_paid_value
                     self.positions[ticker] = new_position
-                    if is_startup:
-                        logger.info(
-                            f"Restoring position from Kalshi: {ticker} = {contracts} contracts "
-                            f"(expected on restart)"
-                        )
-                    else:
-                        logger.warning(
-                            f"⚠️ POSITION NOT IN LOCAL MEMORY: {ticker} = {contracts} contracts "
-                            f"found in Kalshi but not tracked locally. Adding to local tracking."
-                        )
-                        position_discrepancies.append(f"{ticker}: added ({contracts} contracts)")
+                    logger.warning(
+                        f"⚠️ POSITION NOT IN LOCAL MEMORY: {ticker} = {contracts} contracts "
+                        f"found in Kalshi but not tracked locally. Adding to local tracking."
+                    )
+                    position_discrepancies.append(f"{ticker}: added ({contracts} contracts)")
                 else:
                     # Update existing position with Kalshi data
                     local_pos = self.positions[ticker]
@@ -3021,66 +2902,12 @@ class KalshiMultiMarketOrderManager:
                     position_discrepancies.append(f"{ticker}: removed")
             
             if position_discrepancies:
-                if is_startup:
-                    logger.info(
-                        f"Startup position sync: Restored {len(position_discrepancies)} position(s) "
-                        f"from Kalshi - {', '.join(position_discrepancies)}"
-                    )
-                else:
-                    logger.warning(
-                        f"⚠️ POSITION SYNC DISCREPANCIES DETECTED: "
-                        f"{len(position_discrepancies)} position(s) out of sync - {', '.join(position_discrepancies)}"
-                    )
+                logger.warning(
+                    f"⚠️ POSITION SYNC DISCREPANCIES DETECTED: "
+                    f"{len(position_discrepancies)} position(s) out of sync - {', '.join(position_discrepancies)}"
+                )
             else:
-                if is_startup and len(self.positions) == 0:
-                    logger.info("Startup position sync: No positions found in Kalshi (clean state)")
-                else:
-                    logger.debug(f"Position sync complete: {len(self.positions)} positions - all in sync")
-            
-            # Sync cash balance and portfolio value from Kalshi (only if not startup - startup syncs balance separately)
-            # This makes the sync idempotent and works for periodic syncs
-            if not is_startup:
-                try:
-                    account_info = await self.trading_client.get_account_info()
-                    
-                    # Calculate drift before updating synced values
-                    calculated_cash = self._calculate_cash_balance()
-                    calculated_portfolio = self._calculate_portfolio_value()
-                    
-                    if "balance" in account_info:
-                        old_balance = self.cash_balance
-                        new_balance = account_info["balance"] / 100.0  # Convert cents to dollars
-                        
-                        # Calculate drift (how far off our calculation was)
-                        self._last_sync_drift_cash = calculated_cash - new_balance
-                        
-                        # Update synced value from Kalshi (authoritative)
-                        self.cash_balance = new_balance
-                        # Note: We do NOT update _calculated_cash_balance here - it continues tracking independently
-                        
-                        if abs(old_balance - self.cash_balance) > 0.01:
-                            logger.debug(f"Cash balance synced: ${old_balance:.2f} → ${self.cash_balance:.2f} (calculated: ${calculated_cash:.2f}, drift: ${self._last_sync_drift_cash:.2f})")
-                    
-                    if "portfolio_value" in account_info:
-                        old_portfolio_value = getattr(self, '_portfolio_value_from_kalshi', None)
-                        new_portfolio_value = account_info["portfolio_value"] / 100.0  # Convert cents to dollars
-                        
-                        # On startup (first sync), initialize drift to 0
-                        # After that, calculate drift (how far off our calculation was)
-                        if self._last_sync_drift_portfolio is None:
-                            # First sync: initialize drift to 0
-                            self._last_sync_drift_portfolio = 0.0
-                        else:
-                            # Subsequent syncs: calculate drift
-                            self._last_sync_drift_portfolio = calculated_portfolio - new_portfolio_value
-                        
-                        # Update synced value from Kalshi
-                        self._portfolio_value_from_kalshi = new_portfolio_value
-                        
-                        if old_portfolio_value is None or abs(old_portfolio_value - self._portfolio_value_from_kalshi) > 0.01:
-                            logger.debug(f"Portfolio value synced: ${old_portfolio_value or 0:.2f} → ${self._portfolio_value_from_kalshi:.2f} (calculated: ${calculated_portfolio:.2f}, drift: ${self._last_sync_drift_portfolio:.2f})")
-                except Exception as e:
-                    logger.warning(f"Could not sync cash balance during position sync: {e}")
+                logger.debug(f"Position sync complete: {len(self.positions)} positions - all in sync")
             
         except Exception as e:
             logger.error(f"Error syncing positions with Kalshi: {e}")
@@ -3787,12 +3614,17 @@ class KalshiMultiMarketOrderManager:
         logger.info(f"Position closing complete: {result_summary}")
         return result_summary, details
     
-    async def _calibration_sync_state(self) -> Dict[str, Any]:
+    async def _sync_state_with_kalshi(self) -> Dict[str, Any]:
         """
-        Stage 1 of calibration: Sync trader state with Kalshi API.
+        Shared method to sync all trader state with Kalshi API.
         
-        Mirrors the initialization sync logic but for periodic calibration.
-        Uses ONLY Kalshi values (no internal calculations).
+        This is the single source of truth for syncing:
+        - Balance and portfolio value
+        - Positions
+        - Settlements
+        - Orders
+        
+        Used by both initialization and calibration.
         
         Returns:
             Dictionary with sync results including:
@@ -3808,7 +3640,7 @@ class KalshiMultiMarketOrderManager:
         sync_start = time.time()
         
         # Capture before state (using Kalshi values if available)
-        cash_before = self.cash_balance  # Already from Kalshi
+        cash_before = self.cash_balance
         portfolio_before = (
             self._portfolio_value_from_kalshi 
             if hasattr(self, '_portfolio_value_from_kalshi') and self._portfolio_value_from_kalshi is not None
@@ -3816,11 +3648,57 @@ class KalshiMultiMarketOrderManager:
         )
         positions_before = len([p for p in self.positions.values() if not p.is_flat])
         
+        # Sync balance and portfolio value from Kalshi
+        try:
+            account_info = await self.trading_client.get_account_info()
+            
+            # Calculate drift before updating synced values
+            calculated_cash = self._calculate_cash_balance()
+            calculated_portfolio = self._calculate_portfolio_value()
+            
+            if "balance" in account_info:
+                old_balance = self.cash_balance
+                new_balance = account_info["balance"] / 100.0  # Convert cents to dollars
+                
+                # Calculate drift (how far off our calculation was)
+                if self._last_sync_drift_cash is None:
+                    # First sync: initialize calculated to match synced
+                    self._calculated_cash_balance = new_balance
+                    self._last_sync_drift_cash = 0.0
+                else:
+                    # Subsequent syncs: calculate drift
+                    self._last_sync_drift_cash = calculated_cash - new_balance
+                
+                # Update synced value from Kalshi (authoritative)
+                self.cash_balance = new_balance
+                
+                if abs(old_balance - self.cash_balance) > 0.01:
+                    logger.debug(f"Cash balance synced: ${old_balance:.2f} → ${self.cash_balance:.2f} (calculated: ${calculated_cash:.2f}, drift: ${self._last_sync_drift_cash:.2f})")
+            
+            if "portfolio_value" in account_info:
+                old_portfolio_value = getattr(self, '_portfolio_value_from_kalshi', None)
+                new_portfolio_value = account_info["portfolio_value"] / 100.0  # Convert cents to dollars
+                
+                # Initialize drift tracking if first sync
+                if self._last_sync_drift_portfolio is None:
+                    self._last_sync_drift_portfolio = 0.0
+                else:
+                    # Subsequent syncs: calculate drift
+                    self._last_sync_drift_portfolio = calculated_portfolio - new_portfolio_value
+                
+                # Update synced value from Kalshi
+                self._portfolio_value_from_kalshi = new_portfolio_value
+                
+                if old_portfolio_value is None or abs(old_portfolio_value - self._portfolio_value_from_kalshi) > 0.01:
+                    logger.debug(f"Portfolio value synced: ${old_portfolio_value or 0:.2f} → ${self._portfolio_value_from_kalshi:.2f} (calculated: ${calculated_portfolio:.2f}, drift: ${self._last_sync_drift_portfolio:.2f})")
+        except Exception as e:
+            logger.warning(f"Could not sync balance/portfolio: {e}")
+        
         # Sync orders with Kalshi
         order_stats = await self.sync_orders_with_kalshi()
         
-        # Sync positions with Kalshi (this also syncs cash balance and portfolio value)
-        await self._sync_positions_with_kalshi(is_startup=False)
+        # Sync positions with Kalshi
+        await self._sync_positions_with_kalshi()
         
         # Sync settlements with Kalshi
         settlement_stats = await self.sync_settlements_with_kalshi()
@@ -3828,7 +3706,7 @@ class KalshiMultiMarketOrderManager:
         sync_duration = time.time() - sync_start
         
         # Capture after state (all from Kalshi)
-        cash_after = self.cash_balance  # Synced from Kalshi in _sync_positions_with_kalshi
+        cash_after = self.cash_balance
         portfolio_after = (
             self._portfolio_value_from_kalshi 
             if hasattr(self, '_portfolio_value_from_kalshi') and self._portfolio_value_from_kalshi is not None
@@ -3848,40 +3726,6 @@ class KalshiMultiMarketOrderManager:
             if not p.is_flat
         )
         
-        # Build detailed status message (mirroring initialization sync format)
-        status_parts = []
-        
-        # Portfolio section
-        portfolio_info = f"Portfolio: cash ${cash_after:.2f}"
-        if portfolio_after is not None:
-            portfolio_info += f" | positions ${positions_value:.2f} | total ${portfolio_after:.2f}"
-        else:
-            portfolio_info += f" | positions ${positions_value:.2f} | total N/A"
-        if abs(total_pnl) > 0.01:  # Only show P&L if significant
-            pnl_sign = "+" if total_pnl >= 0 else ""
-            portfolio_info += f" | P&L {pnl_sign}${total_pnl:.2f}"
-        status_parts.append(portfolio_info)
-        
-        # Positions section
-        status_parts.append(f"Positions: active: {positions_after}")
-        
-        # Settlements section
-        if settlement_stats and "total_fetched" in settlement_stats:
-            status_parts.append(
-                f"Settlements: fetched {settlement_stats.get('total_fetched', 0)}"
-            )
-        
-        # Orders section
-        if order_stats and "found_in_kalshi" in order_stats:
-            kalshi_orders = order_stats.get("found_in_kalshi", 0)
-            local_orders = order_stats.get("found_in_memory", 0)
-            status_parts.append(f"Orders: Kalshi {kalshi_orders} | Local {local_orders}")
-        
-        sync_result = " | ".join(status_parts)
-        
-        # Update trader status with detailed sync information
-        await self._update_trader_status("calibrating -> syncing state", sync_result, duration=sync_duration)
-        
         return {
             "cash_balance": cash_after,
             "portfolio_value": portfolio_after,
@@ -3895,6 +3739,128 @@ class KalshiMultiMarketOrderManager:
             "portfolio_before": portfolio_before,
             "positions_before": positions_before,
         }
+    
+    async def _calibration_sync_state(self) -> Dict[str, Any]:
+        """
+        Stage 1 of calibration: Sync trader state with Kalshi API.
+        
+        Uses the shared _sync_state_with_kalshi() method and formats
+        results for calibration status messages.
+        
+        Returns:
+            Dictionary with sync results (same format as _sync_state_with_kalshi)
+        """
+        # Use shared sync method
+        sync_results = await self._sync_state_with_kalshi()
+        
+        # Build detailed status message for calibration
+        status_parts = []
+        
+        # Portfolio section
+        portfolio_info = f"Portfolio: cash ${sync_results['cash_balance']:.2f}"
+        if sync_results['portfolio_value'] is not None:
+            portfolio_info += f" | positions ${sync_results['positions_value']:.2f} | total ${sync_results['portfolio_value']:.2f}"
+        else:
+            portfolio_info += f" | positions ${sync_results['positions_value']:.2f} | total N/A"
+        if abs(sync_results['total_pnl']) > 0.01:  # Only show P&L if significant
+            pnl_sign = "+" if sync_results['total_pnl'] >= 0 else ""
+            portfolio_info += f" | P&L {pnl_sign}${sync_results['total_pnl']:.2f}"
+        status_parts.append(portfolio_info)
+        
+        # Positions section
+        status_parts.append(f"Positions: active: {sync_results['active_positions']}")
+        
+        # Settlements section
+        if sync_results['settlement_stats'] and "total_fetched" in sync_results['settlement_stats']:
+            status_parts.append(
+                f"Settlements: fetched {sync_results['settlement_stats'].get('total_fetched', 0)}"
+            )
+        
+        # Orders section
+        if sync_results['order_stats'] and "found_in_kalshi" in sync_results['order_stats']:
+            kalshi_orders = sync_results['order_stats'].get("found_in_kalshi", 0)
+            local_orders = sync_results['order_stats'].get("found_in_memory", 0)
+            status_parts.append(f"Orders: Kalshi {kalshi_orders} | Local {local_orders}")
+        
+        sync_result = " | ".join(status_parts)
+        
+        # Update trader status with detailed sync information
+        await self._update_trader_status("calibrating -> syncing state", sync_result, duration=sync_results['duration'])
+        
+        return sync_results
+    
+    async def _calibration_navigate(self, sync_results: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Stage 2 of calibration: Navigate - evaluate trader state and determine next action.
+        
+        Evaluates conditions based on synced state and determines what the trader
+        should do next. Sets trader_state conditions (low_cash, rate_limit_exceeded, etc.)
+        and returns the action to take.
+        
+        Args:
+            sync_results: Results from _calibration_sync_state() containing synced state
+            
+        Returns:
+            Dictionary with:
+            - action: Next action to take ("recover_cash", "close_positions", "ready_to_trade")
+            - conditions: Dict of trader_state conditions (e.g., {"low_cash": True})
+            - reason: Human-readable reason for the action
+        """
+        conditions = {}
+        actions = []
+        reasons = []
+        
+        # Evaluate cash balance condition
+        cash_balance = sync_results["cash_balance"]
+        if cash_balance < self.min_cash_reserve:
+            conditions["low_cash"] = True
+            actions.append("recover_cash")
+            reasons.append(f"cash ${cash_balance:.2f} < ${self.min_cash_reserve:.2f}")
+        else:
+            conditions["low_cash"] = False
+            # Check if we were in low_cash and now recovered
+            current_base_state = self._extract_base_state(self._trader_status)
+            if current_base_state == "low_cash":
+                reasons.append(f"cash restored: ${cash_balance:.2f} >= ${self.min_cash_reserve:.2f}")
+        
+        # Evaluate rate limit condition (future - placeholder)
+        # TODO: Add rate limit tracking and evaluation
+        conditions["rate_limit_exceeded"] = False
+        
+        # Evaluate position health condition
+        active_positions = sync_results["active_positions"]
+        if active_positions > 0:
+            # Check if positions need closing (will be evaluated in action stage)
+            # For now, just note that we have positions
+            conditions["has_positions"] = True
+        else:
+            conditions["has_positions"] = False
+        
+        # Determine primary action based on conditions
+        # Priority: recover_cash > close_positions > ready_to_trade
+        if conditions.get("low_cash", False):
+            primary_action = "recover_cash"
+        elif conditions.get("has_positions", False):
+            # Positions exist - check if they need closing (handled in action stage)
+            primary_action = "ready_to_trade"
+        else:
+            primary_action = "ready_to_trade"
+        
+        # Build navigation result
+        navigation_result = {
+            "action": primary_action,
+            "conditions": conditions,
+            "reason": " | ".join(reasons) if reasons else f"State: {primary_action}",
+            "cash_balance": cash_balance,
+            "active_positions": active_positions,
+        }
+        
+        # Update trader status with navigation result
+        nav_reason = navigation_result["reason"]
+        await self._update_trader_status(f"calibrating -> navigating", nav_reason)
+        
+        logger.debug(f"Navigation result: {navigation_result}")
+        return navigation_result
     
     async def _start_periodic_sync(self) -> None:
         """
@@ -3933,24 +3899,32 @@ class KalshiMultiMarketOrderManager:
                     # 1. Sync state with Kalshi (Stage 1: syncing_state)
                     sync_results = await self._calibration_sync_state()
                     
-                    # Check current base state to see if we're transitioning from low_cash
-                    current_base_state = self._extract_base_state(self._trader_status)
+                    # 2. Navigate - evaluate conditions and determine next action (Stage 2: navigating)
+                    navigation_result = await self._calibration_navigate(sync_results)
                     
-                    # Check for low cash balance after sync
-                    if self.cash_balance < self.min_cash_reserve:
-                        low_cash_msg = f"${self.cash_balance:.2f} < ${self.min_cash_reserve:.2f} (low balance mode)"
-                        await self._update_trader_status("calibrating -> low cash balance", low_cash_msg)
-                    elif current_base_state == "low_cash":
-                        # Cash was restored - log transition during calibration
-                        logger.info(f"Cash restored: ${self.cash_balance:.2f} >= ${self.min_cash_reserve:.2f} - will return to trading after calibration")
+                    # 3. Execute action based on navigation (Stage 3: action states)
+                    action = navigation_result["action"]
+                    conditions = navigation_result["conditions"]
                     
-                    # 2. Position health monitoring and closing (NEW - recalibration loop)
+                    # Execute action based on navigation decision
+                    if action == "recover_cash":
+                        # Recover cash by closing worst-performing positions
+                        recovery_start = time.time()
+                        cash_before_recovery = self.cash_balance
+                        await self._recover_cash_by_closing_positions()
+                        recovery_duration = time.time() - recovery_start
+                        cash_after_recovery = self.cash_balance
+                        
+                        recovery_result = f"cash ${cash_before_recovery:.2f} -> ${cash_after_recovery:.2f}"
+                        if cash_after_recovery >= self.min_cash_reserve:
+                            recovery_result += " (restored)"
+                        await self._update_trader_status("calibrating -> recovering cash", recovery_result, duration=recovery_duration)
+                    
+                    # Always check position health and close positions that meet criteria
                     closing_start = time.time()
-                    
                     closing_result, closing_details = await self._monitor_and_close_positions_detailed()
                     closing_duration = time.time() - closing_start
                     
-                    # Include details in result if available
                     if closing_details:
                         full_closing_result = f"{closing_result} | " + " | ".join(closing_details)
                     else:
@@ -3958,23 +3932,8 @@ class KalshiMultiMarketOrderManager:
                     
                     await self._update_trader_status("calibrating -> closing positions", full_closing_result, duration=closing_duration)
                     
-                    # 3. Market state monitoring (NEW - recalibration loop)
+                    # Always monitor market states and close positions in closing markets
                     await self._monitor_market_states()
-                    
-                    # 4. Cash recovery if needed (NEW - recalibration loop)
-                    cash_recovery_attempted = False
-                    if self.cash_balance < self.min_cash_reserve:
-                        recovery_start = time.time()
-                        cash_before_recovery = self.cash_balance
-                        await self._recover_cash_by_closing_positions()
-                        recovery_duration = time.time() - recovery_start
-                        cash_after_recovery = self.cash_balance
-                        cash_recovery_attempted = True
-                        
-                        recovery_result = f"cash ${cash_before_recovery:.2f} -> ${cash_after_recovery:.2f}"
-                        if cash_after_recovery >= self.min_cash_reserve:
-                            recovery_result += " (restored)"
-                        await self._update_trader_status("calibrating -> cash recovery", recovery_result, duration=recovery_duration)
                     
                     # Broadcast specific updates after periodic sync
                     await self._broadcast_positions_update("periodic_sync")
@@ -3983,8 +3942,8 @@ class KalshiMultiMarketOrderManager:
                     # Notify about state changes after periodic sync
                     await self._notify_state_change()
                     
-                    # Update status based on cash balance after recovery
-                    # If cash is still low, transition to low_cash state to prevent actor from trading
+                    # Final state transition based on conditions
+                    # If cash is still low after all actions, transition to low_cash state
                     if self.cash_balance < self.min_cash_reserve:
                         low_cash_reason = f"cash ${self.cash_balance:.2f} < ${self.min_cash_reserve:.2f}"
                         await self._update_trader_status("low_cash", low_cash_reason)
