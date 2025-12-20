@@ -86,6 +86,7 @@ class InitializationTracker:
     # Define all initialization steps in order
     STEP_IDS = {
         # Phase 1: Connection & Health Checks
+        "exchange_status_health": "Exchange Status Health Check",
         "orderbook_health": "Orderbook Client Health Check",
         "trader_client_health": "Trader Client Health Check",
         "fill_listener_health": "Fill Listener Health Check",

@@ -281,28 +281,50 @@ class FillListener:
         
         logger.info(f"Connecting to WebSocket: {self.ws_url}")
         
-        async with websockets.connect(
-            self.ws_url,
-            additional_headers=ws_headers,
-            ping_interval=20,
-            ping_timeout=10,
-        ) as ws:
-            self._ws = ws
-            self._connection_count += 1
-            self._last_heartbeat_time = time.time()
+        try:
+            # Add timeout to connection attempt to avoid hanging on 503 errors
+            # Create the connection manager
+            connection_manager = websockets.connect(
+                self.ws_url,
+                additional_headers=ws_headers,
+                ping_interval=20,
+                ping_timeout=10,
+            )
             
-            logger.info(f"✅ WebSocket connected (connection #{self._connection_count})")
+            # Use wait_for to timeout the connection attempt
+            # We need to enter the context manager with a timeout
+            async def connect_with_timeout():
+                return await connection_manager.__aenter__()
             
-            # Subscribe to fill channel
-            await self._subscribe_to_fills()
+            ws = await asyncio.wait_for(connect_with_timeout(), timeout=10.0)
             
-            # Listen for messages
-            async for message in ws:
-                if self._shutdown_requested:
-                    break
-                
+            try:
+                self._ws = ws
+                self._connection_count += 1
                 self._last_heartbeat_time = time.time()
-                await self._handle_message(message)
+                
+                logger.info(f"✅ WebSocket connected (connection #{self._connection_count})")
+                
+                # Subscribe to fill channel
+                await self._subscribe_to_fills()
+                
+                # Listen for messages
+                async for message in ws:
+                    if self._shutdown_requested:
+                        break
+                    
+                    self._last_heartbeat_time = time.time()
+                    await self._handle_message(message)
+            finally:
+                # Exit the context manager
+                await connection_manager.__aexit__(None, None, None)
+                
+        except asyncio.TimeoutError:
+            logger.error(f"WebSocket connection timeout to {self.ws_url}")
+            raise  # Re-raise to trigger reconnection logic
+        except Exception as e:
+            logger.error(f"WebSocket connection error: {e}")
+            raise  # Re-raise to trigger reconnection logic
     
     async def _subscribe_to_fills(self) -> None:
         """

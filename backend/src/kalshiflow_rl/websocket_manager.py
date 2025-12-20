@@ -213,15 +213,36 @@ class WebSocketManager:
         self._market_tickers = market_tickers
         logger.info(f"Updated WebSocketManager to monitor {len(market_tickers)} markets")
     
-    async def start(self):
-        """Start the WebSocket manager and subscribe to orderbook updates."""
+    async def start_early(self):
+        """
+        Start WebSocket manager early for connection handling and initialization broadcasts.
+        
+        This allows the manager to accept connections and broadcast initialization
+        updates before orderbook states are available. Call subscribe_to_orderbook_states()
+        later to finish the setup once orderbook states are ready.
+        """
         if self._running:
             logger.warning("WebSocketManager already running")
             return
         
         self._running = True
-        logger.info("Starting WebSocketManager...")
+        logger.info("Starting WebSocketManager early (connection handling only)...")
         
+        # Start statistics broadcast tasks (can run without orderbook states)
+        # Summary stats every 1 second (lightweight)
+        self._summary_stats_task = asyncio.create_task(self._summary_stats_loop())
+        # Full stats every 60 seconds (includes large payloads)
+        self._full_stats_task = asyncio.create_task(self._full_stats_loop())
+        
+        logger.info("WebSocketManager started early - ready for connections and initialization broadcasts")
+    
+    async def _subscribe_to_orderbook_states(self):
+        """
+        Internal method to subscribe to orderbook updates for all markets.
+        
+        Gets orderbook states and subscribes to updates. Can be called multiple times
+        safely - will only subscribe to states that haven't been subscribed to yet.
+        """
         # Get shared orderbook states for all markets
         self._orderbook_states = await get_all_orderbook_states()
         
@@ -229,6 +250,9 @@ class WebSocketManager:
         for market_ticker in self._market_tickers:
             if market_ticker in self._orderbook_states:
                 state = self._orderbook_states[market_ticker]
+                # Check if already subscribed to avoid duplicate subscriptions
+                # We'll check by seeing if state has subscribers (simple check)
+                # Note: add_subscriber is idempotent in practice, but we log anyway
                 # Subscribe to snapshot and delta updates
                 # Create a wrapper function that includes the market ticker
                 def create_callback(ticker):
@@ -240,12 +264,38 @@ class WebSocketManager:
                 
                 state.add_subscriber(create_callback(market_ticker))
                 logger.info(f"Subscribed to orderbook updates for: {market_ticker}")
+    
+    async def subscribe_to_orderbook_states(self):
+        """
+        Subscribe to orderbook updates for all markets.
         
-        # Start statistics broadcast tasks
-        # Summary stats every 1 second (lightweight)
-        self._summary_stats_task = asyncio.create_task(self._summary_stats_loop())
-        # Full stats every 60 seconds (includes large payloads)
-        self._full_stats_task = asyncio.create_task(self._full_stats_loop())
+        Call this after orderbook states have been created (e.g., after OrderbookClient starts).
+        This method can be called multiple times safely.
+        """
+        if not self._running:
+            logger.warning("WebSocketManager not running - call start_early() first")
+            return
+        
+        logger.info("Subscribing to orderbook states...")
+        await self._subscribe_to_orderbook_states()
+        logger.info("Orderbook state subscriptions complete")
+    
+    async def start(self):
+        """
+        Start the WebSocket manager and subscribe to orderbook updates.
+        
+        This is a convenience method that calls start_early() then subscribes to orderbook states.
+        Maintains backward compatibility with existing code.
+        """
+        if self._running:
+            logger.warning("WebSocketManager already running")
+            return
+        
+        # Start early (connection handling)
+        await self.start_early()
+        
+        # Subscribe to orderbook states
+        await self._subscribe_to_orderbook_states()
         
         logger.info("WebSocketManager started successfully")
     

@@ -394,6 +394,20 @@ class KalshiMultiMarketOrderManager:
         fill_listener_healthy = False
         
         while elapsed < max_wait_time:
+            # Check if the listener task has failed/exited
+            if self._fill_listener._listener_task and self._fill_listener._listener_task.done():
+                try:
+                    await self._fill_listener._listener_task  # This will raise the exception if task failed
+                except Exception as e:
+                    error_msg = f"FillListener connection failed: {e}"
+                    logger.error(error_msg)
+                    if initialization_tracker:
+                        health_details = self._fill_listener.get_health_details()
+                        await initialization_tracker.mark_step_failed("fill_listener_health", error_msg, {
+                            "details": health_details
+                        })
+                    raise RuntimeError(error_msg)
+            
             if self._fill_listener.is_healthy():
                 fill_listener_healthy = True
                 logger.info("✅ Fill listener WebSocket connected and healthy")
@@ -402,8 +416,14 @@ class KalshiMultiMarketOrderManager:
             elapsed += wait_interval
         
         if not fill_listener_healthy:
+            # If not healthy and task is still running, connection is failing
             error_msg = f"FillListener not healthy after {max_wait_time}s wait - WebSocket connection failed"
             logger.error(error_msg)
+            if initialization_tracker:
+                health_details = self._fill_listener.get_health_details()
+                await initialization_tracker.mark_step_failed("fill_listener_health", error_msg, {
+                    "details": health_details
+                })
             raise RuntimeError(error_msg)
         
         # Report fill listener health (wrap in try/except to handle WebSocket implementation differences)

@@ -14,6 +14,8 @@ import time
 from contextlib import asynccontextmanager
 from typing import Dict, Any, Optional
 
+import aiohttp
+
 from starlette.applications import Starlette
 from starlette.responses import JSONResponse
 from starlette.routing import Route, WebSocketRoute
@@ -84,6 +86,76 @@ async def select_market_tickers() -> list[str]:
         return config.RL_MARKET_TICKERS
 
 
+async def check_exchange_status(api_url: str) -> Dict[str, Any]:
+    """
+    Check Kalshi exchange status by calling the /exchange/status endpoint.
+    
+    Args:
+        api_url: Base API URL (e.g., https://demo-api.kalshi.co/trade-api/v2)
+        
+    Returns:
+        Dictionary with exchange status information including:
+        - exchange_active: bool
+        - trading_active: bool
+        - exchange_estimated_resume_time: str | None
+        - api_status: "healthy" | "unhealthy" | "error"
+        - error: str | None (if error occurred)
+    """
+    status_url = f"{api_url}/exchange/status"
+    
+    try:
+        timeout = aiohttp.ClientTimeout(total=10, connect=5)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(status_url) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    exchange_active = data.get("exchange_active", False)
+                    trading_active = data.get("trading_active", False)
+                    estimated_resume_time = data.get("exchange_estimated_resume_time")
+                    
+                    # Consider unhealthy if exchange is not active
+                    api_status = "healthy" if exchange_active else "unhealthy"
+                    
+                    return {
+                        "exchange_active": exchange_active,
+                        "trading_active": trading_active,
+                        "exchange_estimated_resume_time": estimated_resume_time,
+                        "api_status": api_status,
+                        "error": None,
+                        "http_status": response.status,
+                    }
+                else:
+                    # Non-200 status codes indicate service issues
+                    error_text = await response.text()
+                    return {
+                        "exchange_active": False,
+                        "trading_active": False,
+                        "exchange_estimated_resume_time": None,
+                        "api_status": "unhealthy",
+                        "error": f"HTTP {response.status}: {error_text}",
+                        "http_status": response.status,
+                    }
+    except asyncio.TimeoutError:
+        return {
+            "exchange_active": False,
+            "trading_active": False,
+            "exchange_estimated_resume_time": None,
+            "api_status": "error",
+            "error": "Request timeout",
+            "http_status": None,
+        }
+    except Exception as e:
+        logger.error(f"Failed to check exchange status: {e}")
+        return {
+            "exchange_active": False,
+            "trading_active": False,
+            "exchange_estimated_resume_time": None,
+            "api_status": "error",
+            "error": str(e),
+            "http_status": None,
+        }
+
+
 @asynccontextmanager
 async def lifespan(app: Starlette):
     """
@@ -106,8 +178,35 @@ async def lifespan(app: Starlette):
     initialization_tracker = InitializationTracker(websocket_manager=websocket_manager)
     
     try:
-        # Start initialization tracking
+        # Start WebSocket manager early so it can accept connections and broadcast initialization updates
+        await websocket_manager.start_early()
+        logger.info("WebSocket manager started early for initialization tracking")
+        
+        # Start initialization tracking (can now broadcast)
         await initialization_tracker.start()
+        
+        # Check exchange status FIRST before anything else
+        await initialization_tracker.mark_step_in_progress("exchange_status_health")
+        exchange_status = await check_exchange_status(config.KALSHI_API_URL)
+        
+        # Determine if exchange is healthy
+        # Exchange is healthy if exchange_active is True
+        exchange_healthy = exchange_status.get("exchange_active", False) and exchange_status.get("api_status") == "healthy"
+        
+        if exchange_healthy:
+            await initialization_tracker.mark_step_complete("exchange_status_health", {
+                "details": exchange_status
+            })
+            await initialization_tracker.update_component_health("exchange_status", "healthy", exchange_status)
+        else:
+            error_msg = f"Exchange status unhealthy: {exchange_status.get('error', 'exchange_active=False')}"
+            if exchange_status.get("exchange_estimated_resume_time"):
+                error_msg += f" (estimated resume: {exchange_status['exchange_estimated_resume_time']})"
+            await initialization_tracker.mark_step_failed("exchange_status_health", error_msg, {
+                "details": exchange_status
+            })
+            # FAIL INITIALIZATION if exchange is unhealthy
+            raise RuntimeError(f"Kalshi exchange is unavailable: {error_msg}")
         # Validate authentication first (skip if ActorService enabled - OrderManager will validate)
         # OrderManager initialization will validate credentials, so we can defer validation
         # when ActorService is enabled to allow OrderManager to handle credential validation
@@ -165,16 +264,18 @@ async def lifespan(app: Starlette):
         
         # Update WebSocket manager with discovered markets
         websocket_manager.set_market_tickers(market_tickers)
-        
-        # Start WebSocket manager
         websocket_manager.stats_collector = stats_collector
-        await websocket_manager.start()
-        logger.info("WebSocket manager started")
         
         # Start orderbook client as background task
         # Note: Stats tracking is now handled directly inside orderbook_client via passed stats_collector
         orderbook_task = asyncio.create_task(orderbook_client.start())
         _background_tasks.append(orderbook_task)
+        
+        # Wait a moment for orderbook client to create orderbook states, then subscribe to them
+        # OrderbookClient creates states synchronously at the start of start(), so a brief wait is sufficient
+        await asyncio.sleep(0.5)  # Brief wait for orderbook states to be created
+        await websocket_manager.subscribe_to_orderbook_states()
+        logger.info("WebSocket manager subscribed to orderbook states")
         
         # Report OrderbookClient health (after a brief wait for connection)
         await initialization_tracker.mark_step_in_progress("orderbook_health")
