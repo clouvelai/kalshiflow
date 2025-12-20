@@ -3932,9 +3932,6 @@ class KalshiMultiMarketOrderManager:
                     
                     await self._update_trader_status("calibrating -> closing positions", full_closing_result, duration=closing_duration)
                     
-                    # Always monitor market states and close positions in closing markets
-                    await self._monitor_market_states()
-                    
                     # Broadcast specific updates after periodic sync
                     await self._broadcast_positions_update("periodic_sync")
                     await self._broadcast_portfolio_update("periodic_sync")
