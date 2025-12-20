@@ -986,7 +986,20 @@ const TraderStatePanel = ({
             'text-slate-300'
           }`}>
             {traderStatus?.current_status || 'unknown'}
+            {traderStatus?.time_in_status !== undefined && (
+              <span className="text-lg text-slate-400 ml-2">
+                {traderStatus.time_in_status.toFixed(1)}s in state
+              </span>
+            )}
           </div>
+          {traderStatus?.previous_state && (
+            <div className="text-xs text-slate-500 mt-1">
+              previous status: {traderStatus.previous_state}
+              {traderStatus?.previous_state_duration !== undefined && (
+                <span> ({traderStatus.previous_state_duration.toFixed(1)}s)</span>
+              )}
+            </div>
+          )}
         </div>
         
         {/* Status History Log */}
@@ -1029,6 +1042,11 @@ const TraderStatePanel = ({
                       <span className="font-semibold flex-shrink-0 min-w-[200px]">
                         {entry.status}
                       </span>
+                      {entry.time_in_status !== undefined && (
+                        <span className="text-slate-500 flex-shrink-0">
+                          {entry.time_in_status.toFixed(1)}s in state
+                        </span>
+                      )}
                       {entry.result && (
                         <span className="text-slate-400 flex-1 break-words">{entry.result}</span>
                       )}

@@ -119,6 +119,7 @@ class RLConfig:
         self.RL_POSITION_MAX_HOLD_TIME_SECONDS: int = int(os.getenv("RL_POSITION_MAX_HOLD_TIME_SECONDS", "3600"))  # 1 hour
         self.RL_RECALIBRATION_INTERVAL_SECONDS: int = int(os.getenv("RL_RECALIBRATION_INTERVAL_SECONDS", "60"))  # 1 minute
         self.RL_MARKET_CLOSING_BUFFER_SECONDS: int = int(os.getenv("RL_MARKET_CLOSING_BUFFER_SECONDS", "300"))  # 5 minutes
+        self.RL_TRADING_STATUS_UPDATE_INTERVAL_SECONDS: int = int(os.getenv("RL_TRADING_STATUS_UPDATE_INTERVAL_SECONDS", "10"))  # 10 seconds
         
         # Validate configuration
         self._validate_config()

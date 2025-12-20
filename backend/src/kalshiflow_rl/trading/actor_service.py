@@ -546,14 +546,23 @@ class ActorService:
         market_ticker = event.market_ticker
         
         # Update trader status to "trading" when processing market events
-        # Only update periodically to avoid spam (every 10 seconds)
+        # Only update periodically to avoid spam (configurable interval, default 10 seconds)
         if self._order_manager and hasattr(self._order_manager, '_update_trader_status'):
             if not hasattr(self._order_manager, '_last_trading_status_update'):
                 self._order_manager._last_trading_status_update = 0
             
             current_time = time.time()
-            if current_time - self._order_manager._last_trading_status_update > 10:
-                await self._order_manager._update_trader_status("trading")
+            update_interval = config.RL_TRADING_STATUS_UPDATE_INTERVAL_SECONDS
+            if current_time - self._order_manager._last_trading_status_update > update_interval:
+                # Include trading stats in periodic update
+                if hasattr(self._order_manager, '_trading_stats'):
+                    trades = self._order_manager._trading_stats.get("trades", 0)
+                    no_ops = self._order_manager._trading_stats.get("no_ops", 0)
+                    cash_balance = self._order_manager.get_cash_balance()
+                    status_result = f"cash ${cash_balance:.2f} | {trades} trades | {no_ops} no-ops"
+                    await self._order_manager._update_trader_status("trading", status_result)
+                else:
+                    await self._order_manager._update_trader_status("trading")
                 self._order_manager._last_trading_status_update = current_time
         
         # Check if market should be processed (circuit breaker check)
@@ -879,6 +888,9 @@ class ActorService:
         
         # Early return for HOLD actions (no execution needed)
         if action == 0:
+            # Update trading stats for HOLD
+            if self._order_manager and hasattr(self._order_manager, '_update_trading_stats'):
+                self._order_manager._update_trading_stats(action, False)
             return {"status": "hold", "action": action, "market": market_ticker, "executed": False}
         
         # Check throttling BEFORE execution (for non-HOLD actions)
@@ -891,6 +903,9 @@ class ActorService:
                 )
                 # Track throttled action (already counted in total_actions when action was selected)
                 self.metrics.action_counts["throttled"] += 1
+                # Update trading stats for throttled action
+                if self._order_manager and hasattr(self._order_manager, '_update_trading_stats'):
+                    self._order_manager._update_trading_stats(action, False)
                 return {"status": "throttled", "executed": False, "throttled": True}
         
         try:
@@ -944,6 +959,11 @@ class ActorService:
                 # This ensures throttling is based on actual action execution time, not queue time
                 self._per_market_throttle[market_ticker] = time.time()
             
+            # Update trading stats for order manager
+            if self._order_manager and hasattr(self._order_manager, '_update_trading_stats'):
+                executed = result.get("executed", False) if result else False
+                self._order_manager._update_trading_stats(action, executed)
+            
             return result
         except Exception as e:
             logger.error(f"Error executing action for {market_ticker}: {e}")
@@ -951,6 +971,9 @@ class ActorService:
             self._error_counts[market_ticker] += 1
             self.metrics.errors += 1
             self.metrics.last_error = str(e)
+            # Update trading stats for failed action
+            if self._order_manager and hasattr(self._order_manager, '_update_trading_stats'):
+                self._order_manager._update_trading_stats(action, False)
             # Check circuit breaker
             self._check_circuit_breaker(market_ticker)
             return None

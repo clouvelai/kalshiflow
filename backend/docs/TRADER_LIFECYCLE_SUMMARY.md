@@ -509,6 +509,331 @@ The actor loop is a 4-step pipeline that processes each orderbook delta:
 - Both loops share same state (positions, cash, orders) - potential coordination needed
 - EventBus routes orderbook deltas to ActorService queue
 
+---
+
+## Post-M2 Trader Loop Architecture
+
+### Trader States (Mutually Exclusive)
+
+The trader operates in one state at a time, with clear transitions and full visibility in `trader_status`:
+
+1. **`initializing`** - Startup state
+   - Syncing initial state with Kalshi (balance, positions, orders)
+   - Loading RL model
+   - Setting up infrastructure
+   - **Transition to:** `trading` when ready
+
+2. **`trading`** - Active trading state
+   - Processing orderbook deltas through 4-step pipeline
+   - Making trading decisions (opening positions)
+   - **Can transition to:** `calibrating` (periodic), `paused` (errors), `stopping` (shutdown)
+   - **Status details:** Shows last processed event, current queue depth, action counts
+
+3. **`calibrating`** - Recalibration state
+   - Synchronizing state with Kalshi
+   - Monitoring position health
+   - Closing positions that meet criteria
+   - Monitoring market states
+   - Recovering cash if needed
+   - **Sub-states tracked in status:**
+     - `calibrating -> syncing state` - Syncing with Kalshi API
+     - `calibrating -> closing positions` - Closing positions based on health
+     - `calibrating -> monitoring markets` - Checking market states
+     - `calibrating -> cash recovery` - Recovering cash if needed
+   - **Transition to:** `trading` when complete (or `paused` if errors)
+   - **Duration:** Target < 5 seconds for brute-force halt approach
+
+4. **`paused`** - Error/Recovery state
+   - Trader encountered an error that requires attention
+   - Trading loop halted
+   - Can be manually resumed or auto-resume after recovery
+   - **Transition to:** `trading` (resume) or `stopping` (shutdown)
+
+5. **`stopping`** - Shutdown state
+   - Graceful shutdown in progress
+   - Closing remaining positions (optional)
+   - Saving state
+   - **Transition to:** None (terminal state)
+
+### Available Actions
+
+The trader has two types of actions:
+
+**Trading Actions (Actor Loop - 5-action space):**
+- **0: HOLD** - No action, wait for next event
+- **1: BUY_YES_LIMIT** - Place buy limit order for YES contracts (5 contracts)
+- **2: SELL_YES_LIMIT** - Place sell limit order for YES contracts (5 contracts)
+- **3: BUY_NO_LIMIT** - Place buy limit order for NO contracts (5 contracts)
+- **4: SELL_NO_LIMIT** - Place sell limit order for NO contracts (5 contracts)
+
+**Position Management Actions (Recalibration Loop):**
+- **`close_position(reason)`** - Close a position by placing opposite order
+  - Reasons: `take_profit`, `stop_loss`, `cash_recovery`, `market_closing`, `max_hold_time`
+  - Automatically determines correct opposite action (SELL YES if long YES, etc.)
+
+### State Machine Flow
+
+```
+STARTUP
+  ↓
+[initializing] ──────────────────┐
+  ↓                              │
+[trading] ←──────────────────────┼── (every 60s)
+  ↓      │                       │
+  │      │ (error)               │
+  │      ↓                       │
+  │  [paused] ─── (resume) ────┘
+  │      │
+  │      │ (shutdown)
+  │      ↓
+  └──→ [stopping]
+```
+
+**Key Behaviors:**
+- **Mutually Exclusive States:** Only one state active at a time
+- **Trading Halted During Calibration:** Trading loop paused during `calibrating` state
+- **State Visibility:** Current state always visible in `trader_status.current_status`
+- **Status History:** All state changes logged sequentially with timestamps, results, and time_in_status
+- **Simplified Logging:** State changes are clear from sequential log entries (no separate transition entries)
+
+### Actor Loop (Trading State)
+
+When in `trading` state, the loop processes events through 4-step pipeline:
+
+```
+Orderbook Delta Event
+  ↓
+1. build_observation()
+   - Get orderbook snapshot
+   - Extract 52 features
+   - Include portfolio state (cash, positions)
+  ↓
+2. select_action()
+   - Check market viability
+   - Check cash reserves
+   - Check position limits
+   - Use RL model or hardcoded selector
+   - Returns: 0-4 (HOLD or trading action)
+  ↓
+3. execute_action()
+   - Validate action (cash, limits, throttling)
+   - Place order via OrderManager
+   - Track execution result
+  ↓
+4. update_positions()
+   - Update portfolio state tracking
+   - Log metrics
+  ↓
+Next Event
+```
+
+**Pre-Action Checks (Enhanced in M2):**
+- Market viability (market still active/open)
+- Cash reserve threshold (force HOLD if below minimum)
+- Position limits (prevent over-leveraging)
+- Throttling (respect rate limits per market)
+- Circuit breakers (skip disabled markets)
+
+### Recalibration Loop (Calibrating State)
+
+When transitioning to `calibrating` state:
+
+```
+Every 60s (configurable)
+  ↓
+[State: calibrating]
+  ↓
+1. calibrating -> syncing state
+   - Sync orders with Kalshi
+   - Sync positions with Kalshi
+   - Sync cash balance
+   - Track state changes
+  ↓
+2. calibrating -> closing positions
+   - Monitor position health (P&L, time)
+   - Close positions meeting criteria
+   - Track closing results
+  ↓
+3. calibrating -> monitoring markets
+   - Check market states
+   - Close positions in closing markets
+  ↓
+4. calibrating -> cash recovery (if needed)
+   - Check cash balance vs reserve
+   - Close worst-performing positions if low
+  ↓
+[State: trading] (resume trading loop)
+```
+
+**Performance Targets:**
+- Total calibration duration: **< 5 seconds** (enables brute-force halt)
+- Individual steps: **< 2 seconds each** (where possible)
+- Atomic operations: Each step is self-contained and recoverable
+
+---
+
+## Event Handling During Calibration
+
+### Problem Statement
+
+When the trader enters `calibrating` state, the trading loop is halted. During this time:
+- Orderbook deltas continue arriving via WebSocket
+- Events queue up in `ActorService._event_queue`
+- If calibration takes too long, queue can overflow or events become stale
+- Lost events mean missed trading opportunities
+
+**Current Situation:**
+- Calibration runs every 60s
+- Target calibration duration: < 5 seconds
+- Queue size: 1000 events (configurable)
+- Average event rate: Variable (depends on market activity)
+
+### Strategy Options
+
+#### Option 1: Brute-Force Halt (M2 Approach)
+
+**Description:** Simply halt trading loop during calibration, accept event loss if calibration < 5s.
+
+**Implementation:**
+- Trading loop checks state before processing events
+- If state == `calibrating`, skip event processing
+- Queue up to capacity (1000 events)
+- Resume processing when state returns to `trading`
+
+**Pros:**
+- ✅ Simple to implement
+- ✅ Minimal coordination complexity
+- ✅ Acceptable if calibration < 5s (at 10 events/sec, ~50 events lost max)
+- ✅ No queue manipulation needed
+
+**Cons:**
+- ❌ Event loss during calibration
+- ❌ Stale events may be processed after calibration
+- ❌ Queue overflow if calibration takes longer than expected
+
+**Target:** Keep calibration under 5 seconds to make this acceptable for M2.
+
+#### Option 2: Pause and Dequeue (Future Enhancement)
+
+**Description:** Pause trading loop, clear processed events, resume with fresh events.
+
+**Implementation:**
+- When entering `calibrating`:
+  - Stop dequeuing new events
+  - Clear already-processed events from queue
+  - Keep unprocessed events (with timestamp checks)
+- When exiting `calibrating`:
+  - Resume dequeuing
+  - Process events with freshness checks (skip stale events)
+
+**Pros:**
+- ✅ No processed event waste
+- ✅ Fresh events processed immediately after calibration
+- ✅ Better handling of event freshness
+
+**Cons:**
+- ⚠️ More complex queue management
+- ⚠️ Need to track event freshness/validity
+- ⚠️ May still have some event loss
+
+**When to Use:** If calibration takes > 5 seconds regularly, or if event freshness is critical.
+
+#### Option 3: Atomic Calibration with Event Buffering (Long-Term)
+
+**Description:** Make calibration truly atomic and non-blocking, process events during calibration.
+
+**Implementation:**
+- Calibration runs as atomic operations with state locks
+- Trading loop continues processing events
+- State updates locked during calibration sync points
+- Calibration uses snapshots for consistency
+
+**Pros:**
+- ✅ Zero event loss
+- ✅ Continuous trading
+- ✅ Seamless operation
+
+**Cons:**
+- ⚠️ Complex state synchronization
+- ⚠️ Requires careful locking mechanisms
+- ⚠️ Potential race conditions
+- ⚠️ Significant architectural changes
+
+**When to Use:** Post-MVP when we need zero-downtime trading.
+
+#### Option 4: Incremental Calibration (Hybrid)
+
+**Description:** Break calibration into smaller, faster chunks that don't require full halt.
+
+**Implementation:**
+- Sync state: < 1s (can run alongside trading)
+- Monitor positions: < 1s (read-only, non-blocking)
+- Close positions: Queue closing actions (non-blocking)
+- Only halt for critical operations (if any)
+
+**Pros:**
+- ✅ Minimal trading disruption
+- ✅ Faster perceived calibration
+- ✅ Better user experience
+
+**Cons:**
+- ⚠️ More complex coordination
+- ⚠️ Some operations may still need coordination
+
+**When to Use:** If we can make calibration operations truly non-blocking.
+
+### Recommended Approach for M2
+
+**Primary Strategy: Option 1 (Brute-Force Halt)**
+
+For M2, we'll use brute-force halt with strict performance targets:
+- **Calibration duration target: < 5 seconds**
+- **Monitoring:** Track calibration duration in metrics
+- **Alerts:** Warn if calibration exceeds 5 seconds
+- **Optimization focus:** Make calibration operations atomic and fast
+
+**Implementation Checklist:**
+- [ ] Add state check in `_process_market_update()` - skip if `calibrating`
+- [ ] Add calibration duration tracking
+- [ ] Add metrics/alerts for slow calibration
+- [ ] Optimize calibration operations (see below)
+
+**Performance Optimization for Calibration:**
+
+1. **Parallel Operations:**
+   - Sync orders, positions, cash in parallel (if possible)
+   - Batch API calls where supported
+
+2. **Caching:**
+   - Cache market info between calibrations
+   - Only fetch changed data
+
+3. **Incremental Processing:**
+   - Only check positions that changed since last calibration
+   - Skip markets with no positions
+
+4. **Timeout Protection:**
+   - Set timeouts on all API calls
+   - Abort calibration if any step exceeds threshold
+
+### Future Enhancement Path
+
+**Short-Term (Post-M2):**
+- Implement Option 2 (Pause and Dequeue) if calibration consistently > 5s
+- Add event freshness checks (skip events older than 10s)
+
+**Long-Term (Post-MVP):**
+- Implement Option 3 (Atomic Calibration) for zero-downtime trading
+- Full state synchronization with minimal locks
+
+**Metrics to Track:**
+- Calibration duration (target: < 5s)
+- Events queued during calibration
+- Events lost/stale events processed
+- Queue overflow frequency
+
+---
+
 ### Phase 3: Order Groups (Week 3) - MEDIUM
 
 **Goal:** Use order groups for simplified position management and fail-safe limits
@@ -798,13 +1123,23 @@ OrderbookClient (WebSocket)
 ## Next Steps
 
 1. ✅ **Phase 1 (M1) Complete** - Position management delivered
-2. **Start Phase 2 (M2)** - Core actor loop improvements
-3. **Focus Areas:**
+2. ✅ **Phase 2 (M2) Status Logging Complete** - Simplified status logging, removed transition entries
+3. **Continue Phase 2 (M2)** - Core actor loop improvements
+4. **Focus Areas:**
    - Actor loop coordination (trading ↔ recalibration)
    - Enhanced decision making
    - Error recovery improvements
-4. **Test incrementally** in paper trading
-5. **Iterate** based on results
+5. **Test incrementally** in paper trading
+6. **Iterate** based on results
+
+## Recent Changes (Status Logging Simplification)
+
+**Completed:** Simplified trader status logging by removing transition entry complexity
+- Removed separate transition entries (e.g., "trading -> calibrating") from status history
+- Simplified `_update_trader_status` to use single code path for all status updates
+- State changes are now clear from sequential log entries without cluttering the history
+- Maintained all essential tracking: `previous_state`, `time_in_status`, trading stats reset
+- Status history shows clean sequential entries: `trading` → `calibrating` → `calibrating -> syncing state` → `trading`
 
 ---
 
@@ -850,4 +1185,5 @@ OrderbookClient (WebSocket)
 - [Current Actor Loop Documentation](./orderbook_delta_flow.md)
 - [Startup Flow Documentation](./STARTUP_FLOW_MAPPING.md)
 - [Initialization Tracker Implementation](../src/kalshiflow_rl/trading/initialization_tracker.py)
+- [M2 Trader Status Console Example](./M2_TRADER_STATUS_EXAMPLE.md) - Example output of trader status at end of M2
 
