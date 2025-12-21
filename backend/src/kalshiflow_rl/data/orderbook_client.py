@@ -13,7 +13,7 @@ import time
 import traceback
 from typing import Dict, Any, Optional, Callable, List
 import websockets
-from websockets.exceptions import ConnectionClosed, InvalidMessage
+from websockets.exceptions import ConnectionClosed, InvalidMessage, InvalidStatus
 
 from .auth import get_rl_auth
 from .orderbook_state import get_shared_orderbook_state, SharedOrderbookState
@@ -137,17 +137,8 @@ class OrderbookClient:
         while self._running:
             try:
                 await self._connect_and_subscribe()
-                # If we get here, the connection was successful and then closed normally
-                # Reset reconnect count only if we successfully received messages
-                # (indicated by _last_message_time being set)
-                if self._last_message_time is not None:
-                    logger.info("Connection closed after successful operation, resetting reconnect count")
-                    self._reconnect_count = 0
             except Exception as e:
-                logger.error(f"Connection loop error: {e}")
-                # Clear websocket reference immediately on error
-                self._websocket = None
-                self._connection_start_time = None
+                logger.error(f"Connection loop error: {e}", exc_info=True)
                 if self._on_error:
                     try:
                         await self._on_error(e)
@@ -155,27 +146,22 @@ class OrderbookClient:
                         pass
             
             if self._running:
-                # Increment reconnect count BEFORE calculating delay (for proper exponential backoff)
+                # Calculate reconnect delay with exponential backoff
+                delay = min(config.WEBSOCKET_RECONNECT_DELAY * (2 ** self._reconnect_count), 60)
+                logger.info(f"Reconnecting in {delay}s (attempt {self._reconnect_count + 1})")
+                await asyncio.sleep(delay)
                 self._reconnect_count += 1
                 
-                # Check max attempts before delay
                 if self._reconnect_count >= config.MAX_RECONNECT_ATTEMPTS:
                     logger.error(f"Max reconnect attempts ({config.MAX_RECONNECT_ATTEMPTS}) reached")
                     self._running = False
                     break
-                
-                # Calculate reconnect delay with exponential backoff
-                # Use (reconnect_count - 1) because we already incremented above
-                delay = min(config.WEBSOCKET_RECONNECT_DELAY * (2 ** (self._reconnect_count - 1)), 60)
-                logger.info(f"Reconnecting in {delay}s (attempt {self._reconnect_count})")
-                await asyncio.sleep(delay)
     
     async def _connect_and_subscribe(self) -> None:
         """Connect to WebSocket and subscribe to orderbook."""
         auth = get_rl_auth()
         headers = auth.create_websocket_headers()
-        
-        logger.info(f"Connecting to WebSocket: {self.ws_url}")
+        logger.info(f"Connecting to WebSocket: {self.ws_url} (reconnect_count={self._reconnect_count})")
         
         async with websockets.connect(
             self.ws_url,
@@ -185,28 +171,9 @@ class OrderbookClient:
             max_size=1024*1024,  # 1MB max message size
             compression=None  # Disable compression for lower latency
         ) as websocket:
-            
-            # #region agent log
-            import json as json_lib
-            with open('/Users/samuelclark/Desktop/kalshiflow/.cursor/debug.log', 'a') as f:
-                f.write(json_lib.dumps({
-                    "sessionId": "debug-session",
-                    "runId": "run1",
-                    "hypothesisId": "B",
-                    "location": "orderbook_client.py:_connect_and_subscribe:websocket_set",
-                    "message": "WebSocket connection established - setting _websocket",
-                    "data": {
-                        "websocket_closed": websocket.closed if hasattr(websocket, 'closed') else None,
-                        "websocket_close_code": websocket.close_code if hasattr(websocket, 'close_code') else None
-                    },
-                    "timestamp": int(time.time() * 1000)
-                }) + "\n")
-            # #endregion
-            
             self._websocket = websocket
             self._connection_start_time = time.time()
-            # Note: reconnect_count is NOT reset here - only reset after successful message reception
-            # This ensures exponential backoff continues if connection fails before receiving data
+            self._reconnect_count = 0  # Reset on successful connection
             
             # Create new session
             self._session_id = await rl_db.create_session(
@@ -233,25 +200,6 @@ class OrderbookClient:
             await self._message_loop()
         
         # Clear websocket when context exits (connection closed)
-        # #region agent log
-        import json as json_lib
-        with open('/Users/samuelclark/Desktop/kalshiflow/.cursor/debug.log', 'a') as f:
-            f.write(json_lib.dumps({
-                "sessionId": "debug-session",
-                "runId": "run1",
-                "hypothesisId": "B",
-                "location": "orderbook_client.py:_connect_and_subscribe:context_exited",
-                "message": "WebSocket context manager exited - clearing websocket",
-                "data": {
-                    "websocket_was_none": self._websocket is None,
-                    "websocket_closed": self._websocket.closed if self._websocket and hasattr(self._websocket, 'closed') else None,
-                    "connection_start_time_was": self._connection_start_time,
-                    "messages_received": self._messages_received,
-                    "snapshots_received": self._snapshots_received
-                },
-                "timestamp": int(time.time() * 1000)
-            }) + "\n")
-        # #endregion
         self._websocket = None
         self._connection_start_time = None
     
@@ -273,23 +221,6 @@ class OrderbookClient:
     
     async def _message_loop(self) -> None:
         """Process incoming WebSocket messages."""
-        # #region agent log
-        import json as json_lib
-        with open('/Users/samuelclark/Desktop/kalshiflow/.cursor/debug.log', 'a') as f:
-            f.write(json_lib.dumps({
-                "sessionId": "debug-session",
-                "runId": "run1",
-                "hypothesisId": "C",
-                "location": "orderbook_client.py:_message_loop:start",
-                "message": "Message loop started",
-                "data": {
-                    "websocket_is_none": self._websocket is None,
-                    "running": self._running
-                },
-                "timestamp": int(time.time() * 1000)
-            }) + "\n")
-        # #endregion
-        
         try:
             async for message in self._websocket:
                 if not self._running:
@@ -298,23 +229,6 @@ class OrderbookClient:
                 await self._process_message(message)
                 
         except ConnectionClosed as e:
-            # #region agent log
-            with open('/Users/samuelclark/Desktop/kalshiflow/.cursor/debug.log', 'a') as f:
-                f.write(json_lib.dumps({
-                    "sessionId": "debug-session",
-                    "runId": "run1",
-                    "hypothesisId": "C",
-                    "location": "orderbook_client.py:_message_loop:ConnectionClosed",
-                    "message": "WebSocket connection closed exception",
-                    "data": {
-                        "code": e.code,
-                        "reason": e.reason,
-                        "messages_received": self._messages_received,
-                        "snapshots_received": self._snapshots_received
-                    },
-                    "timestamp": int(time.time() * 1000)
-                }) + "\n")
-            # #endregion
             logger.warning(f"WebSocket connection closed: {e}")
             
             # Close session on disconnect
@@ -337,36 +251,8 @@ class OrderbookClient:
                 except Exception:
                     pass
         except InvalidMessage as e:
-            # #region agent log
-            with open('/Users/samuelclark/Desktop/kalshiflow/.cursor/debug.log', 'a') as f:
-                f.write(json_lib.dumps({
-                    "sessionId": "debug-session",
-                    "runId": "run1",
-                    "hypothesisId": "C",
-                    "location": "orderbook_client.py:_message_loop:InvalidMessage",
-                    "message": "Invalid WebSocket message exception",
-                    "data": {"error": str(e)},
-                    "timestamp": int(time.time() * 1000)
-                }) + "\n")
-            # #endregion
             logger.error(f"Invalid WebSocket message: {e}")
         except Exception as e:
-            # #region agent log
-            with open('/Users/samuelclark/Desktop/kalshiflow/.cursor/debug.log', 'a') as f:
-                f.write(json_lib.dumps({
-                    "sessionId": "debug-session",
-                    "runId": "run1",
-                    "hypothesisId": "C",
-                    "location": "orderbook_client.py:_message_loop:Exception",
-                    "message": "Message loop exception",
-                    "data": {
-                        "error_type": type(e).__name__,
-                        "error": str(e),
-                        "traceback": traceback.format_exc()[:500]
-                    },
-                    "timestamp": int(time.time() * 1000)
-                }) + "\n")
-            # #endregion
             logger.error(f"Message loop error: {e}\n{traceback.format_exc()}")
             raise
     
@@ -580,24 +466,6 @@ class OrderbookClient:
             self._last_sequences[market_ticker] = snapshot_data["sequence_number"]
             self._snapshots_received += 1
             
-            # #region agent log
-            import json as json_lib
-            with open('/Users/samuelclark/Desktop/kalshiflow/.cursor/debug.log', 'a') as f:
-                f.write(json_lib.dumps({
-                    "sessionId": "debug-session",
-                    "runId": "run1",
-                    "hypothesisId": "E",
-                    "location": "orderbook_client.py:_process_snapshot:counter_incremented",
-                    "message": "Snapshot counter incremented",
-                    "data": {
-                        "snapshots_received": self._snapshots_received,
-                        "market_ticker": market_ticker,
-                        "sequence_number": sequence_number
-                    },
-                    "timestamp": int(time.time() * 1000)
-                }) + "\n")
-            # #endregion
-            
             # Track in stats collector if available
             if self._stats_collector:
                 self._stats_collector.track_snapshot(market_ticker)
@@ -809,56 +677,10 @@ class OrderbookClient:
             "session_id": self._session_id
         }
         
-        # #region agent log
-        import json as json_lib
-        with open('/Users/samuelclark/Desktop/kalshiflow/.cursor/debug.log', 'a') as f:
-            f.write(json_lib.dumps({
-                "sessionId": "debug-session",
-                "runId": "run1",
-                "hypothesisId": "F",
-                "location": "orderbook_client.py:get_stats:return",
-                "message": "get_stats() returning values",
-                "data": {
-                    "snapshots_received": stats["snapshots_received"],
-                    "messages_received": stats["messages_received"],
-                    "connected": stats["connected"],
-                    "_snapshots_received_attr": self._snapshots_received,
-                    "_messages_received_attr": self._messages_received,
-                    "_websocket_is_none": self._websocket is None
-                },
-                "timestamp": int(time.time() * 1000)
-            }) + "\n")
-        # #endregion
-        
         return stats
     
     def is_healthy(self) -> bool:
         """Check if client is healthy and receiving data."""
-        # #region agent log
-        import json as json_lib
-        current_time = time.time()
-        with open('/Users/samuelclark/Desktop/kalshiflow/.cursor/debug.log', 'a') as f:
-            f.write(json_lib.dumps({
-                "sessionId": "debug-session",
-                "runId": "run1",
-                "hypothesisId": "A",
-                "location": "orderbook_client.py:is_healthy:start",
-                "message": "is_healthy() called",
-                "data": {
-                    "running": self._running,
-                    "websocket_is_none": self._websocket is None,
-                    "client_start_time": self._client_start_time,
-                    "connection_start_time": self._connection_start_time,
-                    "snapshots_received": self._snapshots_received,
-                    "messages_received": self._messages_received,
-                    "time_since_client_start": current_time - self._client_start_time if self._client_start_time else None,
-                    "time_since_connection_start": current_time - self._connection_start_time if self._connection_start_time else None,
-                    "websocket_closed": self._websocket.closed if self._websocket and hasattr(self._websocket, 'closed') else None
-                },
-                "timestamp": int(current_time * 1000)
-            }) + "\n")
-        # #endregion
-        
         if not self._running:
             return False
         
@@ -868,23 +690,6 @@ class OrderbookClient:
         if self._client_start_time:
             time_since_start = time.time() - self._client_start_time
             if time_since_start < 10.0:  # Short grace period for initial connection
-                # #region agent log
-                with open('/Users/samuelclark/Desktop/kalshiflow/.cursor/debug.log', 'a') as f:
-                    f.write(json_lib.dumps({
-                        "sessionId": "debug-session",
-                        "runId": "run1",
-                        "hypothesisId": "A",
-                        "location": "orderbook_client.py:is_healthy:grace_period",
-                        "message": "In grace period",
-                        "data": {
-                            "time_since_start": time_since_start,
-                            "websocket_is_none": self._websocket is None,
-                            "websocket_closed": self._websocket.closed if self._websocket and hasattr(self._websocket, 'closed') else None
-                        },
-                        "timestamp": int(time.time() * 1000)
-                    }) + "\n")
-                # #endregion
-                
                 # During grace period, only return True if websocket exists (connection succeeded)
                 # Don't return True if websocket is None - that means connection hasn't succeeded yet
                 if self._websocket is not None:
@@ -892,62 +697,14 @@ class OrderbookClient:
                     try:
                         if hasattr(self._websocket, 'closed'):
                             if self._websocket.closed:
-                                # #region agent log
-                                with open('/Users/samuelclark/Desktop/kalshiflow/.cursor/debug.log', 'a') as f:
-                                    f.write(json_lib.dumps({
-                                        "sessionId": "debug-session",
-                                        "runId": "run1",
-                                        "hypothesisId": "A",
-                                        "location": "orderbook_client.py:is_healthy:grace_period_closed",
-                                        "message": "Not healthy: websocket closed during grace period",
-                                        "data": {},
-                                        "timestamp": int(time.time() * 1000)
-                                    }) + "\n")
-                                # #endregion
                                 return False  # Connection closed, not healthy
                         elif hasattr(self._websocket, 'close_code'):
                             if self._websocket.close_code is not None:
-                                # #region agent log
-                                with open('/Users/samuelclark/Desktop/kalshiflow/.cursor/debug.log', 'a') as f:
-                                    f.write(json_lib.dumps({
-                                        "sessionId": "debug-session",
-                                        "runId": "run1",
-                                        "hypothesisId": "A",
-                                        "location": "orderbook_client.py:is_healthy:grace_period_closed_code",
-                                        "message": "Not healthy: websocket has close_code during grace period",
-                                        "data": {},
-                                        "timestamp": int(time.time() * 1000)
-                                    }) + "\n")
-                                # #endregion
                                 return False  # Connection closed, not healthy
                     except (AttributeError, TypeError):
                         pass
-                    # #region agent log
-                    with open('/Users/samuelclark/Desktop/kalshiflow/.cursor/debug.log', 'a') as f:
-                        f.write(json_lib.dumps({
-                            "sessionId": "debug-session",
-                            "runId": "run1",
-                            "hypothesisId": "A",
-                            "location": "orderbook_client.py:is_healthy:grace_period_healthy",
-                            "message": "Healthy: websocket exists and open during grace period",
-                            "data": {},
-                            "timestamp": int(time.time() * 1000)
-                        }) + "\n")
-                    # #endregion
                     # Websocket exists and appears open - healthy during grace period
                     return True
-                # #region agent log
-                with open('/Users/samuelclark/Desktop/kalshiflow/.cursor/debug.log', 'a') as f:
-                    f.write(json_lib.dumps({
-                        "sessionId": "debug-session",
-                        "runId": "run1",
-                        "hypothesisId": "A",
-                        "location": "orderbook_client.py:is_healthy:grace_period_no_websocket",
-                        "message": "Not healthy: websocket None during grace period",
-                        "data": {},
-                        "timestamp": int(time.time() * 1000)
-                    }) + "\n")
-                # #endregion
                 # Websocket is None - connection hasn't been established yet, not healthy
                 return False
         
@@ -1020,27 +777,6 @@ class OrderbookClient:
             "reconnect_count": stats.get("reconnect_count", 0),
             "session_id": stats.get("session_id"),
         }
-        
-        # #region agent log
-        import json as json_lib
-        with open('/Users/samuelclark/Desktop/kalshiflow/.cursor/debug.log', 'a') as f:
-            f.write(json_lib.dumps({
-                "sessionId": "debug-session",
-                "runId": "run1",
-                "hypothesisId": "G",
-                "location": "orderbook_client.py:get_health_details:return",
-                "message": "get_health_details() returning values",
-                "data": {
-                    "snapshots_received": health_details["snapshots_received"],
-                    "messages_received": health_details["messages_received"],
-                    "connected": health_details["connected"],
-                    "stats_snapshots": stats.get("snapshots_received", 0),
-                    "stats_messages": stats.get("messages_received", 0),
-                    "stats_connected": stats.get("connected", False)
-                },
-                "timestamp": int(time.time() * 1000)
-            }) + "\n")
-        # #endregion
         
         return health_details
     
