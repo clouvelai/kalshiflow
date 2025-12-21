@@ -81,6 +81,9 @@ class OrderbookClient:
         self._on_disconnected: Optional[Callable] = None
         self._on_error: Optional[Callable] = None
         
+        # Connection tracking for proper initialization
+        self._connection_established = asyncio.Event()
+        
         # Stats collector for metrics tracking
         self._stats_collector = stats_collector
         
@@ -131,6 +134,24 @@ class OrderbookClient:
             f"messages={self._messages_received}, snapshots={self._snapshots_received}, "
             f"deltas={self._deltas_received}, reconnects={self._reconnect_count}"
         )
+    
+    async def wait_for_connection(self, timeout: float = 30.0) -> bool:
+        """
+        Wait for WebSocket connection to be established.
+        
+        Args:
+            timeout: Maximum time to wait for connection (seconds)
+            
+        Returns:
+            True if connection established, False if timeout
+        """
+        try:
+            await asyncio.wait_for(self._connection_established.wait(), timeout=timeout)
+            logger.info("OrderbookClient connection established successfully")
+            return True
+        except asyncio.TimeoutError:
+            logger.error(f"OrderbookClient connection timeout after {timeout}s")
+            return False
     
     async def _connection_loop(self) -> None:
         """Main connection loop with automatic reconnection."""
@@ -202,6 +223,7 @@ class OrderbookClient:
         # Clear websocket when context exits (connection closed)
         self._websocket = None
         self._connection_start_time = None
+        self._connection_established.clear()
     
     async def _subscribe_to_orderbook(self) -> None:
         """Subscribe to orderbook channels for all markets."""
@@ -218,6 +240,9 @@ class OrderbookClient:
         logger.info(f"Sending subscription: {json.dumps(subscription_message)}")
         await self._websocket.send(json.dumps(subscription_message))
         logger.info(f"Subscribed to orderbook_delta channel for {len(self.market_tickers)} markets: {', '.join(self.market_tickers)}")
+        
+        # Signal that connection is established after successful subscription
+        self._connection_established.set()
     
     async def _message_loop(self) -> None:
         """Process incoming WebSocket messages."""
@@ -230,6 +255,9 @@ class OrderbookClient:
                 
         except ConnectionClosed as e:
             logger.warning(f"WebSocket connection closed: {e}")
+            
+            # Clear connection event since we're disconnected
+            self._connection_established.clear()
             
             # Close session on disconnect
             if self._session_id:

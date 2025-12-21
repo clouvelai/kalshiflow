@@ -156,6 +156,45 @@ async def check_exchange_status(api_url: str) -> Dict[str, Any]:
         }
 
 
+async def verify_orderbook_health(orderbook_client, initialization_tracker, max_wait_time: float = 30.0):
+    """
+    Verify orderbook client health and data reception.
+    
+    Args:
+        orderbook_client: The orderbook client to verify
+        initialization_tracker: Tracker for initialization status
+        max_wait_time: Maximum time to wait for health verification
+        
+    Returns:
+        True if healthy, False otherwise
+    """
+    logger.info("Verifying orderbook health...")
+    wait_interval = 1.0
+    elapsed = 0.0
+    
+    while elapsed < max_wait_time:
+        if orderbook_client and orderbook_client.is_healthy():
+            # Verify it has received some data (at least one snapshot or delta)
+            stats = orderbook_client.get_stats()
+            if stats.get("snapshots_received", 0) > 0 or stats.get("deltas_received", 0) > 0:
+                logger.info(f"✅ Orderbook verified healthy after {elapsed:.1f}s (snapshots: {stats.get('snapshots_received', 0)}, deltas: {stats.get('deltas_received', 0)})")
+                # Update health status
+                health_details = orderbook_client.get_health_details()
+                await initialization_tracker.update_component_health("orderbook_client", "healthy", health_details)
+                return True
+        
+        await asyncio.sleep(wait_interval)
+        elapsed += wait_interval
+    
+    # Not healthy after timeout
+    if orderbook_client:
+        health_details = orderbook_client.get_health_details()
+        await initialization_tracker.update_component_health("orderbook_client", "unhealthy", health_details)
+    
+    logger.warning(f"Orderbook not healthy after {max_wait_time}s wait")
+    return False
+
+
 @asynccontextmanager
 async def lifespan(app: Starlette):
     """
@@ -273,36 +312,42 @@ async def lifespan(app: Starlette):
         orderbook_task = asyncio.create_task(orderbook_client.start())
         _background_tasks.append(orderbook_task)
         
-        # Wait a moment for orderbook client to create orderbook states, then subscribe to them
-        # OrderbookClient creates states synchronously at the start of start(), so a brief wait is sufficient
-        await asyncio.sleep(0.5)  # Brief wait for orderbook states to be created
-        await websocket_manager.subscribe_to_orderbook_states()
-        logger.info("WebSocket manager subscribed to orderbook states")
+        # Wait for orderbook client to establish WebSocket connection
+        await initialization_tracker.mark_step_in_progress("orderbook_connection")
+        connection_established = await orderbook_client.wait_for_connection(timeout=30.0)
         
-        # Report OrderbookClient health
-        await initialization_tracker.mark_step_in_progress("orderbook_health")
-        if orderbook_client.is_healthy():
-            health_details = orderbook_client.get_health_details()
-            await initialization_tracker.mark_step_complete("orderbook_health", {
-                "details": health_details
+        if connection_established:
+            await initialization_tracker.mark_step_complete("orderbook_connection", {
+                "status": "connected",
+                "markets": len(orderbook_client.market_tickers)
             })
-            await initialization_tracker.update_component_health("orderbook_client", "healthy", health_details)
+            
+            # Subscribe to orderbook states after connection is confirmed
+            await websocket_manager.subscribe_to_orderbook_states()
+            logger.info("WebSocket manager subscribed to orderbook states")
         else:
-            await initialization_tracker.mark_step_failed("orderbook_health", "OrderbookClient not healthy", {
-                "details": orderbook_client.get_health_details()
-            })
+            await initialization_tracker.mark_step_failed("orderbook_connection", 
+                "Failed to establish WebSocket connection within timeout", {
+                    "timeout": 30.0,
+                    "markets": orderbook_client.market_tickers
+                })
+            # Continue anyway - orderbook client will keep retrying
         
-        # Verify orderbook subscriptions
-        await initialization_tracker.mark_step_in_progress("verify_orderbook_subscriptions")
-        if orderbook_client.is_healthy():
+        # Verify orderbook health and data reception
+        await initialization_tracker.mark_step_in_progress("orderbook_health")
+        orderbook_healthy = await verify_orderbook_health(orderbook_client, initialization_tracker, max_wait_time=30.0)
+        
+        if orderbook_healthy:
             stats = orderbook_client.get_stats()
-            await initialization_tracker.mark_step_complete("verify_orderbook_subscriptions", {
+            await initialization_tracker.mark_step_complete("orderbook_health", {
                 "markets_subscribed": stats.get("market_count", 0),
                 "snapshots_received": stats.get("snapshots_received", 0),
                 "deltas_received": stats.get("deltas_received", 0),
             })
         else:
-            await initialization_tracker.mark_step_failed("verify_orderbook_subscriptions", "OrderbookClient not healthy")
+            await initialization_tracker.mark_step_failed("orderbook_health", "OrderbookClient failed health verification", {
+                "details": orderbook_client.get_health_details() if orderbook_client else None
+            })
         
         # Initialize ActorService components for trading (only if enabled)
         logger.info("=" * 60)
@@ -408,32 +453,13 @@ async def lifespan(app: Starlette):
                 await actor_service.initialize()
                 logger.info("✅ ActorService initialized and ready")
                 
-                # Final verification: Wait for orderbook to be healthy before completing initialization
-                # This ensures orderbook has time to establish connection and receive data
-                logger.info("Verifying orderbook health before completing initialization...")
-                max_wait_time = 30.0  # Maximum wait time in seconds
-                wait_interval = 1.0   # Check every second
-                elapsed = 0.0
-                orderbook_healthy_at_end = False
-                
-                while elapsed < max_wait_time:
-                    if orderbook_client and orderbook_client.is_healthy():
-                        # Verify it has received some data (at least one snapshot or delta)
-                        stats = orderbook_client.get_stats()
-                        if stats.get("snapshots_received", 0) > 0 or stats.get("deltas_received", 0) > 0:
-                            orderbook_healthy_at_end = True
-                            logger.info(f"✅ Orderbook verified healthy after {elapsed:.1f}s (snapshots: {stats.get('snapshots_received', 0)}, deltas: {stats.get('deltas_received', 0)})")
-                            # Update health status one more time
-                            health_details = orderbook_client.get_health_details()
-                            await initialization_tracker.update_component_health("orderbook_client", "healthy", health_details)
-                            break
-                    
-                    await asyncio.sleep(wait_interval)
-                    elapsed += wait_interval
+                # Final verification: Ensure orderbook is still healthy before completing initialization
+                logger.info("Final orderbook health verification before completing initialization...")
+                orderbook_healthy_at_end = await verify_orderbook_health(orderbook_client, initialization_tracker, max_wait_time=10.0)
                 
                 if not orderbook_healthy_at_end:
                     # Orderbook must be healthy and receiving data before initialization completes
-                    error_msg = f"Orderbook not healthy after {max_wait_time}s wait - must receive data before initialization can complete"
+                    error_msg = "Orderbook not healthy after final verification - must receive data before initialization can complete"
                     logger.error(error_msg)
                     if orderbook_client:
                         health_details = orderbook_client.get_health_details()

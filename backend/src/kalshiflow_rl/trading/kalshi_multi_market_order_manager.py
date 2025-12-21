@@ -274,8 +274,8 @@ class KalshiMultiMarketOrderManager:
         # Fill listener (WebSocket connection for real-time fill notifications)
         self._fill_listener = None  # Type: FillListener (imported lazily)
         
-        # Periodic sync task
-        self._periodic_sync_task: Optional[asyncio.Task] = None
+        # Calibration state
+        self._calibration_in_progress: bool = False
         
         # Trading client
         self.trading_client: Optional[KalshiDemoTradingClient] = None
@@ -572,10 +572,9 @@ class KalshiMultiMarketOrderManager:
                 f"Orders={order_stats.get('found_in_kalshi', 0)}"
             )
         
-        # Start periodic synchronization (if enabled)
-        if config.RL_ORDER_SYNC_ENABLED:
-            self._periodic_sync_task = asyncio.create_task(self._start_periodic_sync())
-            logger.info(f"✅ Periodic sync and recalibration started (interval: {config.RL_RECALIBRATION_INTERVAL_SECONDS}s)")
+        # Run initial calibration on startup
+        asyncio.create_task(self.run_calibration("startup"))
+        logger.info("✅ Initial calibration started")
         
         # Set initial trader status and initialize stats
         # Stats will be reset when transitioning to trading in future, but need to initialize here
@@ -891,13 +890,11 @@ class KalshiMultiMarketOrderManager:
                 logger.warning(f"Error stopping position listener: {e}")
             self._position_listener = None
         
-        # Stop periodic sync task
-        if self._periodic_sync_task:
-            self._periodic_sync_task.cancel()
-            try:
-                await self._periodic_sync_task
-            except asyncio.CancelledError:
-                pass
+        # Wait for any ongoing calibration to complete
+        if self._calibration_in_progress:
+            logger.info("Waiting for calibration to complete before cleanup...")
+            # Give it a moment to finish
+            await asyncio.sleep(1.0)
         
         # Stop fill processor
         if self._fill_processor_task:
@@ -1140,6 +1137,238 @@ class KalshiMultiMarketOrderManager:
             logger.error(f"Failed to close position {ticker} ({reason}): status={status}, error={error_msg}, result={result}")
         
         return result
+    
+    async def close_bulk_positions(self, force_all: bool = False) -> Dict[str, Any]:
+        """
+        Bulk close all or selected positions to recover cash.
+        
+        When force_all is True, closes ALL positions regardless of P&L.
+        This is used for emergency cash recovery when balance is critically low.
+        
+        Args:
+            force_all: If True, close all positions. If False, use selection criteria.
+            
+        Returns:
+            Dictionary with:
+            - total_positions: Number of positions to close
+            - orders_submitted: Number of orders successfully submitted  
+            - batches_submitted: Number of batches processed
+            - client_order_ids: List of order IDs created
+            - estimated_recovery: Estimated cash to be recovered
+            - errors: List of any errors encountered
+        """
+        logger.info(f"Starting bulk position close (force_all={force_all})")
+        
+        # Collect all active positions
+        active_positions = {
+            ticker: pos for ticker, pos in self.positions.items()
+            if not pos.is_flat
+        }
+        
+        if not active_positions:
+            logger.info("No active positions to close")
+            return {
+                "total_positions": 0,
+                "orders_submitted": 0,
+                "batches_submitted": 0,
+                "client_order_ids": [],
+                "estimated_recovery": 0.0,
+                "errors": []
+            }
+        
+        logger.info(f"Found {len(active_positions)} active positions to close")
+        
+        # Update status to show we're analyzing positions
+        if self._websocket_manager:
+            await self._update_trader_status(
+                "calibrating -> closing positions",
+                f"analyzing {len(active_positions)} positions"
+            )
+        
+        # Collect unique market tickers
+        market_tickers = list(active_positions.keys())
+        
+        # Fetch market info for all positions in bulk
+        # Note: We'll fetch in chunks if there are too many
+        market_info_map = {}
+        chunk_size = 20  # Process markets in chunks
+        total_chunks = (len(market_tickers) + chunk_size - 1) // chunk_size
+        
+        for i in range(0, len(market_tickers), chunk_size):
+            chunk = market_tickers[i:i + chunk_size]
+            chunk_num = i//chunk_size + 1
+            logger.info(f"Fetching market info for chunk {chunk_num}/{total_chunks} ({len(chunk)} markets)")
+            
+            # Update status for market fetching
+            if self._websocket_manager:
+                await self._update_trader_status(
+                    "calibrating -> closing positions",
+                    f"fetching market data (chunk {chunk_num}/{total_chunks})"
+                )
+            
+            try:
+                # Get all markets and filter for our tickers
+                markets_response = await self.trading_client.get_markets(limit=500)
+                markets = markets_response.get("markets", [])
+                
+                for market in markets:
+                    ticker = market.get("ticker")
+                    if ticker in chunk:
+                        market_info_map[ticker] = market
+                        
+            except Exception as e:
+                logger.error(f"Error fetching market info for chunk: {e}")
+        
+        logger.info(f"Retrieved market info for {len(market_info_map)} markets")
+        
+        # Prepare close orders
+        close_orders = []
+        estimated_recovery = 0.0
+        errors = []
+        
+        for ticker, position in active_positions.items():
+            try:
+                # Get market info
+                market_info = market_info_map.get(ticker, {})
+                
+                # Skip if market is closed or settled
+                market_status = market_info.get("status", "").lower()
+                if market_status in ["closed", "settled"]:
+                    logger.warning(f"Skipping {ticker} - market status: {market_status}")
+                    errors.append(f"{ticker}: market {market_status}")
+                    continue
+                
+                # Get orderbook snapshot for pricing
+                orderbook_snapshot = await self._get_orderbook_snapshot(ticker)
+                
+                # Determine close action and price
+                if position.contracts > 0:
+                    # Long YES -> SELL YES
+                    side = OrderSide.SELL
+                    contract_side = ContractSide.YES
+                    quantity = position.contracts
+                    
+                    # Use bid price for immediate execution
+                    if orderbook_snapshot:
+                        price = orderbook_snapshot.get("yes_bid", 50)
+                    else:
+                        price = 50  # Default to mid price if no orderbook
+                else:
+                    # Short (Long NO) -> BUY YES (cover short)
+                    side = OrderSide.BUY
+                    contract_side = ContractSide.YES
+                    quantity = abs(position.contracts)
+                    
+                    # Use ask price for immediate execution
+                    if orderbook_snapshot:
+                        price = orderbook_snapshot.get("yes_ask", 50)
+                    else:
+                        price = 50  # Default to mid price if no orderbook
+                
+                # Estimate recovery (rough estimate)
+                if side == OrderSide.SELL:
+                    # Selling to close long - we get cash
+                    estimated_recovery += (price / 100.0) * quantity
+                else:
+                    # Buying to close short - we pay cash but free up margin
+                    # The short position cost basis represents cash we received
+                    estimated_recovery += abs(position.cost_basis / 100.0)
+                
+                close_orders.append({
+                    "ticker": ticker,
+                    "side": side,
+                    "contract_side": contract_side,
+                    "quantity": quantity,
+                    "price": price,
+                    "reason": "bulk_close_cash_recovery"
+                })
+                
+            except Exception as e:
+                logger.error(f"Error preparing close order for {ticker}: {e}")
+                errors.append(f"{ticker}: {str(e)}")
+        
+        logger.info(f"Prepared {len(close_orders)} close orders, estimated recovery: ${estimated_recovery:.2f}")
+        
+        # Update status to show we're preparing orders
+        if self._websocket_manager:
+            await self._update_trader_status(
+                "calibrating -> closing positions",
+                f"prepared {len(close_orders)} close orders (est. recovery: ${estimated_recovery:.2f})"
+            )
+        
+        # Submit orders in batches
+        batch_size = 10
+        client_order_ids = []
+        orders_submitted = 0
+        batches_submitted = 0
+        total_batches = (len(close_orders) + batch_size - 1) // batch_size
+        
+        for i in range(0, len(close_orders), batch_size):
+            batch = close_orders[i:i + batch_size]
+            batches_submitted += 1
+            logger.info(f"Submitting batch {batches_submitted}/{total_batches} with {len(batch)} orders")
+            
+            # Update status for batch submission
+            if self._websocket_manager:
+                await self._update_trader_status(
+                    "calibrating -> closing positions",
+                    f"submitting batch {batches_submitted}/{total_batches} ({len(batch)} orders)"
+                )
+            
+            for order in batch:
+                try:
+                    # Use _place_kalshi_order directly
+                    result = await self._place_kalshi_order(
+                        ticker=order["ticker"],
+                        side=order["side"],
+                        contract_side=order["contract_side"],
+                        quantity=order["quantity"],
+                        limit_price=order["price"],
+                        trade_sequence_id=f"bulk_close_{order['ticker']}"
+                    )
+                    
+                    if result and result.get("order_id"):
+                        orders_submitted += 1
+                        client_order_ids.append(result.get("order_id"))
+                        logger.info(f"Closed position {order['ticker']}: {order['quantity']} contracts at price {order['price']}")
+                    else:
+                        error_msg = f"{order['ticker']}: order failed"
+                        errors.append(error_msg)
+                        logger.warning(error_msg)
+                        
+                except Exception as e:
+                    error_msg = f"{order['ticker']}: {str(e)}"
+                    errors.append(error_msg)
+                    logger.error(f"Error submitting close order: {error_msg}")
+            
+            # Small delay between batches to avoid rate limiting
+            if i + batch_size < len(close_orders):
+                await asyncio.sleep(0.5)
+        
+        # Log final results
+        logger.info(
+            f"Bulk close complete: {orders_submitted}/{len(close_orders)} orders submitted, "
+            f"estimated recovery: ${estimated_recovery:.2f}"
+        )
+        
+        # Update status with final results
+        if self._websocket_manager:
+            await self._update_trader_status(
+                "calibrating -> closing positions",
+                f"submitted {orders_submitted}/{len(active_positions)} orders (est. recovery: ${estimated_recovery:.2f})"
+            )
+        
+        if errors:
+            logger.warning(f"Encountered {len(errors)} errors during bulk close: {errors[:5]}")  # Show first 5 errors
+        
+        return {
+            "total_positions": len(active_positions),
+            "orders_submitted": orders_submitted,
+            "batches_submitted": batches_submitted,
+            "client_order_ids": client_order_ids,
+            "estimated_recovery": estimated_recovery,
+            "errors": errors
+        }
     
     async def _get_orderbook_snapshot(self, ticker: str) -> Optional[Dict[str, Any]]:
         """
@@ -3852,100 +4081,136 @@ class KalshiMultiMarketOrderManager:
         logger.debug(f"Navigation result: {navigation_result}")
         return navigation_result
     
-    async def _start_periodic_sync(self) -> None:
+    async def run_calibration(self, reason: str = "manual") -> None:
         """
-        Background task for periodic order synchronization and recalibration.
+        Run a single calibration cycle.
         
-        Runs continuously, syncing orders with Kalshi and monitoring positions
-        at configured intervals. This combines periodic sync with recalibration loop.
+        This syncs with Kalshi, evaluates conditions, and takes appropriate action.
+        After recovery actions, it will automatically re-calibrate to verify results.
+        
+        Args:
+            reason: Reason for calibration (e.g., "startup", "post-recovery", "manual")
         """
-        from ..config import config
-        
-        logger.info("Periodic sync and recalibration task started")
+        # Prevent concurrent calibrations
+        if self._calibration_in_progress:
+            logger.debug(f"Calibration already in progress, skipping {reason}")
+            return
+            
+        self._calibration_in_progress = True
         
         try:
-            while True:
-                # Use recalibration interval if configured, otherwise use order sync interval
-                interval = config.RL_RECALIBRATION_INTERVAL_SECONDS
-                await asyncio.sleep(interval)
+            calibration_start = time.time()
+            logger.info(f"Starting calibration: {reason}")
+            
+            # Capture trading stats before transitioning away from trading
+            # (if we were in trading state)
+            if self._extract_base_state(self._trader_status) == "trading":
+                trades = self._trading_stats["trades"]
+                no_ops = self._trading_stats["no_ops"]
+                time_in_trading = time.time() - self._state_entry_time if self._state_entry_time else 0
+                trading_result = f"cash ${self.cash_balance:.2f} | {trades} trades | {no_ops} no-ops | {time_in_trading:.1f}s"
+                # Update status to calibrating (transition will be logged, stats reset when entering trading again)
+                await self._update_trader_status("calibrating", trading_result)
+            else:
+                # Already in calibrating or other state
+                await self._update_trader_status("calibrating", reason)
+            
+            # 1. Sync state with Kalshi (Stage 1: syncing_state)
+            sync_results = await self._calibration_sync_state()
+            
+            # 2. Navigate - evaluate conditions and determine next action (Stage 2: navigating)
+            navigation_result = await self._calibration_navigate(sync_results)
+            
+            # 3. Execute action based on navigation (Stage 3: action states)
+            action = navigation_result["action"]
+            conditions = navigation_result["conditions"]
+            
+            # Execute action based on navigation decision
+            if action == "recover_cash":
+                # Use bulk close to recover cash when critically low
+                recovery_start = time.time()
+                cash_before_recovery = self.cash_balance
                 
-                try:
-                    calibration_start = time.time()
-                    logger.debug("Starting periodic sync and recalibration...")
+                # Update status to show we're entering recovery
+                await self._update_trader_status("calibrating -> recovering cash", f"initiating recovery (cash ${self.cash_balance:.2f})")
+                
+                # First try selective closing based on health criteria
+                positions_to_close = await self._monitor_position_health()
+                selective_closed = 0
+                
+                if positions_to_close:
+                    logger.info(f"Attempting selective close of {len(positions_to_close)} positions")
+                    for ticker, reason in positions_to_close:
+                        result = await self.close_position(ticker, reason)
+                        if result and result.get("executed"):
+                            selective_closed += 1
+                
+                # If cash still low and no positions were closed, use bulk close
+                if self.cash_balance < self.min_cash_reserve and selective_closed == 0:
+                    logger.warning(
+                        f"Cash still low (${self.cash_balance:.2f}) after selective closing. "
+                        f"Initiating bulk position close."
+                    )
                     
-                    # Capture trading stats before transitioning away from trading
-                    # (if we were in trading state)
-                    if self._extract_base_state(self._trader_status) == "trading":
-                        trades = self._trading_stats["trades"]
-                        no_ops = self._trading_stats["no_ops"]
-                        time_in_trading = time.time() - self._state_entry_time if self._state_entry_time else 0
-                        trading_result = f"cash ${self.cash_balance:.2f} | {trades} trades | {no_ops} no-ops | {time_in_trading:.1f}s"
-                        # Update status to calibrating (transition will be logged, stats reset when entering trading again)
-                        await self._update_trader_status("calibrating", trading_result)
-                    else:
-                        # Already in calibrating or other state
-                        await self._update_trader_status("calibrating", "periodic sync")
+                    # Get active positions count for status
+                    active_positions = len([p for t, p in self.positions.items() if not p.is_flat])
+                    await self._update_trader_status("calibrating -> closing positions", f"bulk closing {active_positions} positions")
                     
-                    # 1. Sync state with Kalshi (Stage 1: syncing_state)
-                    sync_results = await self._calibration_sync_state()
+                    # Bulk close ALL positions to recover cash
+                    bulk_result = await self.close_bulk_positions(force_all=True)
                     
-                    # 2. Navigate - evaluate conditions and determine next action (Stage 2: navigating)
-                    navigation_result = await self._calibration_navigate(sync_results)
+                    recovery_duration = time.time() - recovery_start
                     
-                    # 3. Execute action based on navigation (Stage 3: action states)
-                    action = navigation_result["action"]
-                    conditions = navigation_result["conditions"]
+                    # Format recovery result
+                    orders_submitted = bulk_result.get("orders_submitted", 0)
+                    total_positions = bulk_result.get("total_positions", 0)
+                    estimated_recovery = bulk_result.get("estimated_recovery", 0)
                     
-                    # Execute action based on navigation decision
-                    if action == "recover_cash":
-                        # Recover cash by closing worst-performing positions
-                        recovery_start = time.time()
-                        cash_before_recovery = self.cash_balance
-                        await self._recover_cash_by_closing_positions()
-                        recovery_duration = time.time() - recovery_start
-                        cash_after_recovery = self.cash_balance
-                        
-                        recovery_result = f"cash ${cash_before_recovery:.2f} -> ${cash_after_recovery:.2f}"
-                        if cash_after_recovery >= self.min_cash_reserve:
-                            recovery_result += " (restored)"
-                        await self._update_trader_status("calibrating -> recovering cash", recovery_result, duration=recovery_duration)
+                    recovery_result = (
+                        f"submitted {orders_submitted}/{total_positions} close orders | "
+                        f"estimated recovery ${estimated_recovery:.2f}"
+                    )
                     
-                    # Always check position health and close positions that meet criteria
-                    closing_start = time.time()
-                    closing_result, closing_details = await self._monitor_and_close_positions_detailed()
-                    closing_duration = time.time() - closing_start
+                    await self._update_trader_status("calibrating -> closing positions", f"complete - {recovery_result}", duration=recovery_duration)
                     
-                    if closing_details:
-                        full_closing_result = f"{closing_result} | " + " | ".join(closing_details)
-                    else:
-                        full_closing_result = closing_result
+                    # After recovery, immediately recalibrate to verify results
+                    await self._update_trader_status("calibrating", "verifying recovery")
                     
-                    await self._update_trader_status("calibrating -> closing positions", full_closing_result, duration=closing_duration)
+                    # Recursively call calibration to verify recovery
+                    self._calibration_in_progress = False  # Reset flag before recursive call
+                    await self.run_calibration("post-recovery verification")
+                    return  # Exit after recursive call completes
                     
-                    # Broadcast specific updates after periodic sync
-                    await self._broadcast_positions_update("periodic_sync")
-                    await self._broadcast_portfolio_update("periodic_sync")
+                else:
+                    # Selective closing was sufficient or no recovery needed
+                    recovery_duration = time.time() - recovery_start
+                    cash_after_recovery = self.cash_balance
                     
-                    # Notify about state changes after periodic sync
-                    await self._notify_state_change()
-                    
-                    # Final state transition based on conditions
-                    # If cash is still low after all actions, transition to low_cash state
-                    if self.cash_balance < self.min_cash_reserve:
-                        low_cash_reason = f"cash ${self.cash_balance:.2f} < ${self.min_cash_reserve:.2f}"
-                        await self._update_trader_status("low_cash", low_cash_reason)
-                    else:
-                        # Stats will be reset when entering trading state
-                        await self._update_trader_status("trading", f"cash ${self.cash_balance:.2f}")
-                    
-                except Exception as e:
-                    logger.error(f"Error in periodic sync and recalibration: {e}")
-                    
-        except asyncio.CancelledError:
-            logger.info("Periodic sync task cancelled")
-            raise
+                    recovery_result = f"selective close: {selective_closed} positions | cash ${cash_before_recovery:.2f} -> ${cash_after_recovery:.2f}"
+                    await self._update_trader_status("calibrating -> recovering cash", recovery_result, duration=recovery_duration)
+            
+            # Broadcast updates after calibration
+            await self._broadcast_positions_update("calibration")
+            await self._broadcast_portfolio_update("calibration")
+            
+            # Notify about state changes
+            await self._notify_state_change()
+            
+            # Final state transition based on conditions
+            # If cash is still low after all actions, transition to low_cash state
+            if self.cash_balance < self.min_cash_reserve:
+                low_cash_reason = f"cash ${self.cash_balance:.2f} < ${self.min_cash_reserve:.2f}"
+                await self._update_trader_status("low_cash", low_cash_reason)
+            else:
+                # Stats will be reset when entering trading state
+                await self._update_trader_status("trading", f"cash ${self.cash_balance:.2f}")
+                
         except Exception as e:
-            logger.error(f"Periodic sync task error: {e}")
+            logger.error(f"Error in calibration ({reason}): {e}")
+            # On error, transition to a safe state
+            await self._update_trader_status("error", f"calibration failed: {str(e)[:50]}")
+        finally:
+            self._calibration_in_progress = False
     
     def add_state_change_callback(self, callback) -> None:
         """
