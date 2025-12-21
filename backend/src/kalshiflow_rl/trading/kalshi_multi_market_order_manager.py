@@ -3508,16 +3508,6 @@ class KalshiMultiMarketOrderManager:
                 except Exception as e:
                     logger.debug(f"Could not parse end_time for {ticker}: {e}")
     
-    async def _monitor_and_close_positions(self) -> str:
-        """
-        Monitor position health and close positions that meet criteria.
-        
-        Returns:
-            Result summary string (e.g., "closed 2 positions (take_profit: 1, stop_loss: 1)" or "no positions to close")
-        """
-        closing_result, _ = await self._monitor_and_close_positions_detailed()
-        return closing_result
-    
     async def _monitor_and_close_positions_detailed(self) -> tuple[str, List[str]]:
         """
         Monitor position health and close positions with detailed breakdown.
