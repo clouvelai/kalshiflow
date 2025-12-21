@@ -274,6 +274,15 @@ class KalshiMultiMarketOrderManager:
         # Fill listener (WebSocket connection for real-time fill notifications)
         self._fill_listener = None  # Type: FillListener (imported lazily)
         
+        # Fill tracking for calibration and health checks
+        self._fills_received = 0
+        self._last_fill_time: Optional[float] = None
+        self._recent_fills: List[Dict[str, Any]] = []  # Track last N fills for reporting
+        self._max_recent_fills = 20  # Keep last 20 fills
+        
+        # Order tracking for health checks
+        self._last_order_update_time: Optional[float] = None
+        
         # Calibration state
         self._calibration_in_progress: bool = False
         
@@ -1483,6 +1492,9 @@ class KalshiMultiMarketOrderManager:
             self.open_orders[our_order_id] = order_info
             self._kalshi_to_internal[kalshi_order_id] = our_order_id
             
+            # Update order tracking time for health checks
+            self._last_order_update_time = time.time()
+            
             logger.debug(f"Order tracked: {our_order_id} -> {kalshi_order_id}")
             
             return {
@@ -1619,6 +1631,29 @@ class KalshiMultiMarketOrderManager:
         
         # Determine if this is a partial or complete fill
         is_partial_fill = remaining_quantity > 0
+        
+        # Track fill for health checks and reporting
+        self._fills_received += 1
+        self._last_fill_time = time.time()
+        
+        # Add to recent fills (for calibration reporting)
+        fill_record = {
+            "order_id": kalshi_order_id,
+            "ticker": order.ticker,
+            "side": "buy" if order.side == OrderSide.BUY else "sell",
+            "contract_side": "yes" if order.contract_side == ContractSide.YES else "no",
+            "quantity": fill_quantity,
+            "price": fill_price,
+            "cost": fill_cost,
+            "timestamp": time.time(),
+            "is_partial": is_partial_fill
+        }
+        
+        self._recent_fills.append(fill_record)
+        
+        # Keep only max recent fills
+        if len(self._recent_fills) > self._max_recent_fills:
+            self._recent_fills = self._recent_fills[-self._max_recent_fills:]
         
         # Option B cash management - PROPORTIONAL release for partial fills
         if order.side == OrderSide.BUY:
@@ -3959,54 +3994,438 @@ class KalshiMultiMarketOrderManager:
             "positions_before": positions_before,
         }
     
-    async def _calibration_sync_state(self) -> Dict[str, Any]:
+    # ============ Health Check Methods (Phase 1) ============
+    
+    async def _check_orderbook_health_gracefully(self) -> Dict[str, Any]:
         """
-        Stage 1 of calibration: Sync trader state with Kalshi API.
-        
-        Uses the shared _sync_state_with_kalshi() method and formats
-        results for calibration status messages.
+        Check orderbook connection health without triggering re-subscription.
         
         Returns:
-            Dictionary with sync results (same format as _sync_state_with_kalshi)
+            Dict with health status and connection details
+        """
+        from ..data.orderbook_client import orderbook_client
+        
+        # Check if orderbook client exists and is healthy
+        if not orderbook_client:
+            return {
+                "healthy": False,
+                "reason": "orderbook_client_not_initialized",
+                "connected": False,
+                "snapshots": 0,
+                "deltas": 0
+            }
+        
+        # Get health details without re-subscribing
+        health_details = orderbook_client.get_health_details()
+        is_healthy = orderbook_client.is_healthy()
+        
+        # Check message recency
+        last_msg_time = health_details.get("last_message_time")
+        if last_msg_time:
+            time_since_msg = time.time() - last_msg_time
+            recent_activity = time_since_msg < 30  # Activity within last 30 seconds
+        else:
+            time_since_msg = None
+            recent_activity = False
+        
+        return {
+            "healthy": is_healthy and recent_activity,
+            "connected": health_details.get("connected", False),
+            "snapshots": health_details.get("snapshots_received", 0),
+            "deltas": health_details.get("deltas_received", 0),
+            "messages": health_details.get("messages_received", 0),
+            "markets_subscribed": health_details.get("markets_subscribed", 0),
+            "last_msg_ago": round(time_since_msg, 1) if time_since_msg else None,
+            "session_id": health_details.get("session_id"),
+            "reason": "healthy" if (is_healthy and recent_activity) else "no_recent_activity"
+        }
+    
+    async def _check_fill_listener_health(self) -> Dict[str, Any]:
+        """
+        Check fill listener health without re-subscribing.
+        
+        Returns:
+            Dict with fill listener status
+        """
+        # Check if we have a fills queue subscription
+        fills_active = hasattr(self, '_fills_queue') and self._fills_queue is not None
+        
+        # Check last fill activity
+        last_fill_time = getattr(self, '_last_fill_time', None)
+        if last_fill_time:
+            time_since_fill = time.time() - last_fill_time
+            # Note: It's okay if we haven't had fills recently - just means no trades
+            recent_fill = time_since_fill < 3600  # Within last hour
+        else:
+            time_since_fill = None
+            recent_fill = False
+        
+        fills_received = getattr(self, '_fills_received', 0)
+        
+        return {
+            "healthy": fills_active,  # Health is just whether listener is active
+            "active": fills_active,
+            "fills_received": fills_received,
+            "last_fill_ago": round(time_since_fill, 1) if time_since_fill else None,
+            "recent_activity": recent_fill,
+            "subscribed_to": "fills" if fills_active else None
+        }
+    
+    async def _check_order_listener_health(self) -> Dict[str, Any]:
+        """
+        Check order listener health without re-subscribing.
+        
+        Returns:
+            Dict with order listener status
+        """
+        # For now, order tracking is synchronous via API calls
+        # We track orders in memory after placing them
+        orders_tracked = len(self.open_orders)
+        
+        # Check last order update
+        last_order_time = getattr(self, '_last_order_update_time', None)
+        if last_order_time:
+            time_since_order = time.time() - last_order_time
+            recent_order = time_since_order < 3600  # Within last hour
+        else:
+            time_since_order = None
+            recent_order = False
+        
+        return {
+            "healthy": True,  # Order tracking is always "healthy" as it's synchronous
+            "active": True,
+            "orders_tracked": orders_tracked,
+            "pending_orders": len([o for o in self.open_orders.values() if o.status == OrderStatus.PENDING]),
+            "last_order_ago": round(time_since_order, 1) if time_since_order else None,
+            "recent_activity": recent_order,
+            "subscribed_to": "orders"
+        }
+    
+    # ============ Phase 1: Connection & Health Checks ============
+    
+    async def _calibration_health_checks(self) -> Dict[str, Any]:
+        """
+        Phase 1 of calibration: Check all connections and health status.
+        Non-destructive health verification with detailed context.
+        
+        Returns:
+            Dict with health check results for all components
+        """
+        health_results = {}
+        
+        # Check exchange status (lightweight, no heavy API calls)
+        await self._update_trader_status("calibrating -> checking exchange")
+        try:
+            # Quick exchange check - just verify we can reach the API
+            exchange_status = await self._client.get_exchange_status()
+            exchange_healthy = exchange_status.get("exchange_active", False)
+            health_results["exchange"] = {
+                "healthy": exchange_healthy,
+                "trading_active": exchange_status.get("trading_active", False),
+                "api_accessible": True
+            }
+            context = f"Exchange: {'active' if exchange_healthy else 'inactive'}"
+        except Exception as e:
+            health_results["exchange"] = {
+                "healthy": False,
+                "trading_active": False,
+                "api_accessible": False,
+                "error": str(e)
+            }
+            context = f"Exchange: unreachable"
+        
+        # Check orderbook connection
+        await self._update_trader_status("calibrating -> checking orderbook")
+        ob_health = await self._check_orderbook_health_gracefully()
+        health_results["orderbook"] = ob_health
+        context = f"Orderbook: {ob_health['snapshots']} snapshots, last msg {ob_health.get('last_msg_ago', 'N/A')}s ago"
+        
+        # Check fill listener
+        await self._update_trader_status("calibrating -> checking fill listener")
+        fill_health = await self._check_fill_listener_health()
+        health_results["fill_listener"] = fill_health
+        context = f"Fill listener: {fill_health['fills_received']} fills, active: {fill_health['active']}"
+        
+        # Check order listener
+        await self._update_trader_status("calibrating -> checking order listener")
+        order_health = await self._check_order_listener_health()
+        health_results["order_listener"] = order_health
+        context = f"Order listener: {order_health['orders_tracked']} orders tracked"
+        
+        # Compile overall health status
+        all_healthy = all([
+            health_results["exchange"]["healthy"],
+            health_results["orderbook"]["healthy"],
+            health_results["fill_listener"]["healthy"],
+            health_results["order_listener"]["healthy"]
+        ])
+        
+        # Broadcast health check results to frontend
+        if self._websocket_manager:
+            await self._websocket_manager.broadcast_trader_state({
+                "status": "calibrating -> health checks complete",
+                "health_results": health_results,
+                "all_healthy": all_healthy,
+                "timestamp": time.time()
+            })
+        
+        # Update status with summary
+        summary_parts = []
+        if not health_results["exchange"]["healthy"]:
+            summary_parts.append("Exchange unavailable")
+        if not health_results["orderbook"]["healthy"]:
+            summary_parts.append(f"Orderbook issue: {ob_health['reason']}")
+        if not health_results["fill_listener"]["healthy"]:
+            summary_parts.append("Fill listener inactive")
+        
+        if all_healthy:
+            summary = "All systems healthy"
+        else:
+            summary = " | ".join(summary_parts) if summary_parts else "Some systems unhealthy"
+        
+        await self._update_trader_status("calibrating -> health checks", summary)
+        
+        return {
+            "all_healthy": all_healthy,
+            "components": health_results,
+            "summary": summary
+        }
+    
+    # ============ Phase 2: State Discovery & Sync (Enhanced) ============
+    
+    async def _calibration_sync_state(self) -> Dict[str, Any]:
+        """
+        Phase 2 of calibration: Sync trader state with Kalshi API.
+        Enhanced with change detection and meaningful context reporting.
+        
+        Returns:
+            Dictionary with sync results including detected changes
         """
         # Use shared sync method
         sync_results = await self._sync_state_with_kalshi()
         
-        # Build detailed status message for calibration
+        # Detect and report balance changes
+        cash_before = sync_results.get("cash_before", 0)
+        cash_after = sync_results.get("cash_balance", 0)
+        cash_change = cash_after - cash_before
+        
+        # Broadcast balance update if changed
+        if abs(cash_change) > 0.01:
+            balance_event = {
+                "type": "balance_update",
+                "old": cash_before,
+                "new": cash_after,
+                "change": cash_change,
+                "reason": "calibration_sync",
+                "timestamp": time.time()
+            }
+            
+            # Broadcast to trade status board
+            if self._websocket_manager:
+                await self._websocket_manager.broadcast_trader_state(balance_event)
+            
+            # Log for context
+            logger.info(f"Balance change detected: ${cash_before:.2f} → ${cash_after:.2f} (Δ ${cash_change:+.2f})")
+        
+        # Detect position changes
+        positions_before = sync_results.get("positions_before", 0)
+        positions_after = sync_results.get("active_positions", 0)
+        position_changes = []
+        
+        # Check for position updates (detailed in sync_results["order_stats"])
+        if positions_after != positions_before:
+            position_event = {
+                "type": "positions_sync",
+                "before": positions_before,
+                "after": positions_after,
+                "change": positions_after - positions_before,
+                "positions_value": sync_results.get("positions_value", 0),
+                "timestamp": time.time()
+            }
+            
+            # Broadcast position changes
+            if self._websocket_manager:
+                await self._websocket_manager.broadcast_trader_state(position_event)
+        
+        # Report pending orders to trade board
+        order_stats = sync_results.get("order_stats", {})
+        if order_stats.get("found_in_kalshi", 0) > 0:
+            # Send order status updates to trade board
+            for order_id, order_info in self.open_orders.items():
+                if order_info.status == OrderStatus.PENDING:
+                    order_event = {
+                        "type": "pending_order",
+                        "order_id": order_info.kalshi_order_id,
+                        "ticker": order_info.ticker,
+                        "side": "buy" if order_info.side == OrderSide.BUY else "sell",
+                        "contract_side": "yes" if order_info.contract_side == ContractSide.YES else "no",
+                        "quantity": order_info.quantity,
+                        "limit_price": order_info.limit_price,
+                        "placed_at": order_info.placed_at,
+                        "timestamp": time.time()
+                    }
+                    
+                    if self._websocket_manager:
+                        await self._websocket_manager.broadcast_trader_state(order_event)
+        
+        # Build detailed status message with meaningful changes
         status_parts = []
         
-        # Portfolio section
-        portfolio_info = f"Portfolio: cash ${sync_results['cash_balance']:.2f}"
-        if sync_results['portfolio_value'] is not None:
-            portfolio_info += f" | positions ${sync_results['positions_value']:.2f} | total ${sync_results['portfolio_value']:.2f}"
+        # Balance section with change detection
+        if abs(cash_change) > 0.01:
+            portfolio_info = f"Balance: ${cash_before:.2f} → ${cash_after:.2f} (Δ ${cash_change:+.2f})"
         else:
-            portfolio_info += f" | positions ${sync_results['positions_value']:.2f} | total N/A"
-        if abs(sync_results['total_pnl']) > 0.01:  # Only show P&L if significant
+            portfolio_info = f"Balance: ${cash_after:.2f} (unchanged)"
+        
+        # Add portfolio value if available
+        if sync_results['portfolio_value'] is not None:
+            portfolio_info += f" | Portfolio: ${sync_results['portfolio_value']:.2f}"
+        
+        # Add P&L if significant
+        if abs(sync_results['total_pnl']) > 0.01:
             pnl_sign = "+" if sync_results['total_pnl'] >= 0 else ""
             portfolio_info += f" | P&L {pnl_sign}${sync_results['total_pnl']:.2f}"
         status_parts.append(portfolio_info)
         
-        # Positions section
-        status_parts.append(f"Positions: active: {sync_results['active_positions']}")
+        # Positions section with changes
+        if positions_after != positions_before:
+            status_parts.append(f"Positions: {positions_before} → {positions_after} (Δ {positions_after - positions_before:+d})")
+        else:
+            status_parts.append(f"Positions: {positions_after} active")
         
         # Settlements section
-        if sync_results['settlement_stats'] and "total_fetched" in sync_results['settlement_stats']:
-            status_parts.append(
-                f"Settlements: fetched {sync_results['settlement_stats'].get('total_fetched', 0)}"
-            )
+        if sync_results['settlement_stats'] and sync_results['settlement_stats'].get('total_fetched', 0) > 0:
+            status_parts.append(f"Settlements: {sync_results['settlement_stats'].get('total_fetched', 0)} fetched")
         
-        # Orders section
-        if sync_results['order_stats'] and "found_in_kalshi" in sync_results['order_stats']:
-            kalshi_orders = sync_results['order_stats'].get("found_in_kalshi", 0)
-            local_orders = sync_results['order_stats'].get("found_in_memory", 0)
-            status_parts.append(f"Orders: Kalshi {kalshi_orders} | Local {local_orders}")
+        # Orders section with detail
+        if order_stats.get("found_in_kalshi", 0) > 0:
+            kalshi_orders = order_stats.get("found_in_kalshi", 0)
+            local_orders = order_stats.get("found_in_memory", 0)
+            status_parts.append(f"Orders: {kalshi_orders} in Kalshi, {local_orders} tracked locally")
         
         sync_result = " | ".join(status_parts)
         
-        # Update trader status with detailed sync information
+        # Update trader status with meaningful sync information
         await self._update_trader_status("calibrating -> syncing state", sync_result, duration=sync_results['duration'])
         
+        # Add detected changes to results
+        sync_results["changes_detected"] = {
+            "balance_changed": abs(cash_change) > 0.01,
+            "balance_change": cash_change,
+            "positions_changed": positions_after != positions_before,
+            "position_change": positions_after - positions_before
+        }
+        
         return sync_results
+    
+    # ============ Phase 3: Listener Verification ============
+    
+    async def _calibration_verify_listeners(self) -> Dict[str, Any]:
+        """
+        Phase 3 of calibration: Verify all listeners are working properly.
+        Check data flow without re-subscribing.
+        
+        Returns:
+            Dict with listener verification results
+        """
+        verification_results = {}
+        
+        # Verify orderbook subscription is receiving data
+        await self._update_trader_status("calibrating -> verifying orderbook")
+        ob_health = await self._check_orderbook_health_gracefully()
+        
+        if ob_health["healthy"]:
+            # Check if we're getting fresh data
+            verification_results["orderbook"] = {
+                "verified": True,
+                "snapshots": ob_health["snapshots"],
+                "deltas": ob_health["deltas"],
+                "markets": ob_health["markets_subscribed"],
+                "last_activity": f"{ob_health.get('last_msg_ago', 'N/A')}s ago"
+            }
+            context = f"Orderbook active: {ob_health['snapshots']} snapshots, {ob_health['deltas']} deltas"
+        else:
+            verification_results["orderbook"] = {
+                "verified": False,
+                "reason": ob_health.get("reason", "unhealthy")
+            }
+            context = "Orderbook not receiving data"
+        
+        # Verify fill listener
+        await self._update_trader_status("calibrating -> verifying fill listener")
+        fill_health = await self._check_fill_listener_health()
+        
+        # Get recent fill activity if available
+        recent_fills = []
+        if hasattr(self, '_recent_fills'):
+            recent_fills = self._recent_fills[-5:]  # Last 5 fills
+        
+        verification_results["fill_listener"] = {
+            "verified": fill_health["active"],
+            "fills_total": fill_health["fills_received"],
+            "recent_fills": len(recent_fills),
+            "last_activity": f"{fill_health.get('last_fill_ago', 'N/A')}s ago" if fill_health.get('last_fill_ago') else "No fills yet"
+        }
+        
+        # Broadcast recent fills to trade board
+        for fill in recent_fills:
+            fill_event = {
+                "type": "historical_fill",
+                "order_id": fill.get("order_id"),
+                "ticker": fill.get("ticker"),
+                "quantity": fill.get("quantity"),
+                "price": fill.get("price"),
+                "timestamp": fill.get("timestamp", time.time())
+            }
+            if self._websocket_manager:
+                await self._websocket_manager.broadcast_trader_state(fill_event)
+        
+        context = f"Fill listener: {fill_health['fills_received']} total fills"
+        
+        # Verify order tracking
+        await self._update_trader_status("calibrating -> verifying orders")
+        order_health = await self._check_order_listener_health()
+        
+        verification_results["order_tracking"] = {
+            "verified": True,  # Always true as it's synchronous
+            "orders_tracked": order_health["orders_tracked"],
+            "pending_orders": order_health["pending_orders"],
+            "last_activity": f"{order_health.get('last_order_ago', 'N/A')}s ago" if order_health.get('last_order_ago') else "No recent orders"
+        }
+        
+        context = f"Orders: {order_health['pending_orders']} pending, {order_health['orders_tracked']} total"
+        
+        # Overall verification status
+        all_verified = all([
+            verification_results["orderbook"]["verified"],
+            verification_results["fill_listener"]["verified"],
+            verification_results["order_tracking"]["verified"]
+        ])
+        
+        # Build summary
+        summary_parts = []
+        summary_parts.append(f"Orderbook: {'✓' if verification_results['orderbook']['verified'] else '✗'}")
+        summary_parts.append(f"Fills: {'✓' if verification_results['fill_listener']['verified'] else '✗'}")
+        summary_parts.append(f"Orders: {'✓' if verification_results['order_tracking']['verified'] else '✗'}")
+        
+        summary = " | ".join(summary_parts)
+        
+        await self._update_trader_status("calibrating -> listener verification", summary)
+        
+        # Broadcast verification results
+        if self._websocket_manager:
+            await self._websocket_manager.broadcast_trader_state({
+                "status": "calibrating -> listener verification complete",
+                "verification_results": verification_results,
+                "all_verified": all_verified,
+                "timestamp": time.time()
+            })
+        
+        return {
+            "all_verified": all_verified,
+            "listeners": verification_results,
+            "summary": summary
+        }
     
     async def _calibration_navigate(self, sync_results: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -4115,13 +4534,40 @@ class KalshiMultiMarketOrderManager:
                 # Already in calibrating or other state
                 await self._update_trader_status("calibrating", reason)
             
-            # 1. Sync state with Kalshi (Stage 1: syncing_state)
+            # ========== PHASE 1: CONNECTION & HEALTH CHECKS ==========
+            health_results = await self._calibration_health_checks()
+            
+            # If critical systems are unhealthy, we may need to pause trading
+            if not health_results["all_healthy"]:
+                logger.warning(f"Health checks failed: {health_results['summary']}")
+                # Continue with calibration but note the issues
+            
+            # ========== PHASE 2: STATE DISCOVERY & SYNC ==========
             sync_results = await self._calibration_sync_state()
             
-            # 2. Navigate - evaluate conditions and determine next action (Stage 2: navigating)
+            # ========== PHASE 3: LISTENER VERIFICATION ==========
+            verification_results = await self._calibration_verify_listeners()
+            
+            # Navigate - evaluate conditions and determine next action
             navigation_result = await self._calibration_navigate(sync_results)
             
-            # 3. Execute action based on navigation (Stage 3: action states)
+            # Broadcast complete calibration status
+            calibration_summary = {
+                "type": "calibration_complete",
+                "health": health_results["all_healthy"],
+                "sync": sync_results.get("changes_detected", {}),
+                "verification": verification_results["all_verified"],
+                "balance": sync_results.get("cash_balance", 0),
+                "positions": sync_results.get("active_positions", 0),
+                "pending_orders": len([o for o in self.open_orders.values() if o.status == OrderStatus.PENDING]),
+                "duration": time.time() - calibration_start,
+                "timestamp": time.time()
+            }
+            
+            if self._websocket_manager:
+                await self._websocket_manager.broadcast_trader_state(calibration_summary)
+            
+            # Execute action based on navigation (recovery, etc.)
             action = navigation_result["action"]
             conditions = navigation_result["conditions"]
             
