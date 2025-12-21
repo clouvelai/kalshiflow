@@ -137,8 +137,17 @@ class OrderbookClient:
         while self._running:
             try:
                 await self._connect_and_subscribe()
+                # If we get here, the connection was successful and then closed normally
+                # Reset reconnect count only if we successfully received messages
+                # (indicated by _last_message_time being set)
+                if self._last_message_time is not None:
+                    logger.info("Connection closed after successful operation, resetting reconnect count")
+                    self._reconnect_count = 0
             except Exception as e:
                 logger.error(f"Connection loop error: {e}")
+                # Clear websocket reference immediately on error
+                self._websocket = None
+                self._connection_start_time = None
                 if self._on_error:
                     try:
                         await self._on_error(e)
@@ -146,16 +155,20 @@ class OrderbookClient:
                         pass
             
             if self._running:
-                # Calculate reconnect delay with exponential backoff
-                delay = min(config.WEBSOCKET_RECONNECT_DELAY * (2 ** self._reconnect_count), 60)
-                logger.info(f"Reconnecting in {delay}s (attempt {self._reconnect_count + 1})")
-                await asyncio.sleep(delay)
+                # Increment reconnect count BEFORE calculating delay (for proper exponential backoff)
                 self._reconnect_count += 1
                 
+                # Check max attempts before delay
                 if self._reconnect_count >= config.MAX_RECONNECT_ATTEMPTS:
                     logger.error(f"Max reconnect attempts ({config.MAX_RECONNECT_ATTEMPTS}) reached")
                     self._running = False
                     break
+                
+                # Calculate reconnect delay with exponential backoff
+                # Use (reconnect_count - 1) because we already incremented above
+                delay = min(config.WEBSOCKET_RECONNECT_DELAY * (2 ** (self._reconnect_count - 1)), 60)
+                logger.info(f"Reconnecting in {delay}s (attempt {self._reconnect_count})")
+                await asyncio.sleep(delay)
     
     async def _connect_and_subscribe(self) -> None:
         """Connect to WebSocket and subscribe to orderbook."""
@@ -192,7 +205,8 @@ class OrderbookClient:
             
             self._websocket = websocket
             self._connection_start_time = time.time()
-            self._reconnect_count = 0  # Reset on successful connection
+            # Note: reconnect_count is NOT reset here - only reset after successful message reception
+            # This ensures exponential backoff continues if connection fails before receiving data
             
             # Create new session
             self._session_id = await rl_db.create_session(
