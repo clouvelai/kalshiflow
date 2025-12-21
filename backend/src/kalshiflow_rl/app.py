@@ -207,6 +207,8 @@ async def lifespan(app: Starlette):
             })
             # FAIL INITIALIZATION if exchange is unhealthy
             raise RuntimeError(f"Kalshi exchange is unavailable: {error_msg}")
+        
+        
         # Validate authentication first (skip if ActorService enabled - OrderManager will validate)
         # OrderManager initialization will validate credentials, so we can defer validation
         # when ActorService is enabled to allow OrderManager to handle credential validation
@@ -277,10 +279,8 @@ async def lifespan(app: Starlette):
         await websocket_manager.subscribe_to_orderbook_states()
         logger.info("WebSocket manager subscribed to orderbook states")
         
-        # Report OrderbookClient health (after a brief wait for connection)
+        # Report OrderbookClient health
         await initialization_tracker.mark_step_in_progress("orderbook_health")
-        # Wait a moment for connection to establish
-        await asyncio.sleep(2.0)
         if orderbook_client.is_healthy():
             health_details = orderbook_client.get_health_details()
             await initialization_tracker.mark_step_complete("orderbook_health", {

@@ -263,7 +263,7 @@ class FillListener:
                 break
             except Exception as e:
                 if not self._shutdown_requested:
-                    logger.error(f"WebSocket error: {e}")
+                    logger.error(f"WebSocket error: {e}", exc_info=True)
                     logger.info(f"Reconnecting in {self.reconnect_delay}s...")
                     await asyncio.sleep(self.reconnect_delay)
     
@@ -320,10 +320,10 @@ class FillListener:
                 await connection_manager.__aexit__(None, None, None)
                 
         except asyncio.TimeoutError:
-            logger.error(f"WebSocket connection timeout to {self.ws_url}")
+            logger.error(f"WebSocket connection timeout to {self.ws_url}", exc_info=True)
             raise  # Re-raise to trigger reconnection logic
         except Exception as e:
-            logger.error(f"WebSocket connection error: {e}")
+            logger.error(f"WebSocket connection error: {e}", exc_info=True)
             raise  # Re-raise to trigger reconnection logic
     
     async def _subscribe_to_fills(self) -> None:
