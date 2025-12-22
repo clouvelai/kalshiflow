@@ -329,7 +329,7 @@ class KalshiMultiMarketOrderManager:
         
         logger.info(f"KalshiMultiMarketOrderManager initialized with ${initial_cash:.2f}")
     
-    async def initialize(self, initialization_tracker=None) -> None:
+    async def initialize(self, initialization_tracker=None, websocket_manager=None) -> None:
         """
         Initialize the order manager and start fill processing.
         
@@ -338,12 +338,21 @@ class KalshiMultiMarketOrderManager:
         
         Args:
             initialization_tracker: Optional InitializationTracker for reporting progress
+            websocket_manager: Optional WebSocketManager for broadcasting status updates
         
         Raises:
             KalshiDemoAuthError: If credentials are missing or invalid
             Exception: If client connection fails
         """
         logger.info("Initializing KalshiMultiMarketOrderManager...")
+        
+        # Set WebSocket manager if provided (needed for status broadcasts during init)
+        if websocket_manager:
+            self._websocket_manager = websocket_manager
+            logger.info("WebSocket manager configured for initialization broadcasts")
+        
+        # Set initial status to "starting"
+        await self._update_trader_status("starting", "initializing trader")
         
         # Initialize action selector tracking
         self.action_selector = None
@@ -581,15 +590,15 @@ class KalshiMultiMarketOrderManager:
                 f"Orders={order_stats.get('found_in_kalshi', 0)}"
             )
         
-        # Run initial calibration on startup
-        asyncio.create_task(self.run_calibration("startup"))
-        logger.info("✅ Initial calibration started")
+        # Run initial calibration on startup - await it to ensure proper status flow
+        logger.info("Starting initial calibration...")
+        await self.run_calibration("startup")
+        logger.info("✅ Initial calibration completed")
         
-        # Set initial trader status and initialize stats
+        # Initialize stats after calibration
         # Stats will be reset when transitioning to trading in future, but need to initialize here
         self._reset_trading_stats()
         self._state_entry_time = time.time()  # Initialize state entry time
-        await self._update_trader_status("trading", "initialized and ready")
         
         # Capture session start values AFTER all sync steps complete
         # Both cash balance and portfolio_value MUST come directly from Kalshi API - NO calculations
@@ -4778,6 +4787,14 @@ class KalshiMultiMarketOrderManager:
                 "strategy": config.RL_ACTOR_STRATEGY,
                 "enabled": config.RL_ACTOR_ENABLED,
                 "throttle_ms": config.RL_ACTOR_THROTTLE_MS
+            },
+            # Trader status (critical for frontend display)
+            "trader_status": {
+                "current_status": self._trader_status,
+                "status_history": self._trader_status_history[-20:],  # Last 20 status entries
+                "time_in_status": time.time() - self._state_entry_time if self._state_entry_time else 0,
+                "previous_state": self._previous_state,
+                "previous_state_duration": self._previous_state_duration
             }
         }
         

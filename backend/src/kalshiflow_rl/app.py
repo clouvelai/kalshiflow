@@ -379,7 +379,10 @@ async def lifespan(app: Starlette):
             
             # Initialize OrderManager (requires credentials - fail fast if missing)
             try:
-                await order_manager.initialize(initialization_tracker=initialization_tracker)
+                await order_manager.initialize(
+                    initialization_tracker=initialization_tracker,
+                    websocket_manager=websocket_manager
+                )
                 logger.info("✅ KalshiMultiMarketOrderManager initialized successfully")
                 # Cleanup is now handled inside initialize() method before syncing
                 
@@ -429,8 +432,8 @@ async def lifespan(app: Starlette):
                 websocket_manager.set_order_manager(order_manager)
                 websocket_manager.set_actor_service(actor_service)
                 
-                # Set websocket manager reference in order manager for specific event broadcasts
-                order_manager.set_websocket_manager(websocket_manager)
+                # WebSocket manager already set in order_manager during initialize()
+                # No need to call order_manager.set_websocket_manager() again
                 
                 # Add state change callback to order manager for UI updates
                 async def broadcast_state(state):

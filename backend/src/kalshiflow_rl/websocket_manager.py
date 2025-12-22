@@ -434,6 +434,19 @@ class WebSocketManager:
                     state_msg = TraderStateMessage(data=initial_state)
                     await self._send_to_client(websocket, state_msg)
                     logger.info("Sent initial trader state to new client")
+                    
+                    # Also send trader status separately for the status widget
+                    if "trader_status" in initial_state:
+                        status_data = initial_state["trader_status"]
+                        status_msg = TraderStatusMessage(
+                            data={
+                                "current_status": status_data.get("current_status", "unknown"),
+                                "status_history": status_data.get("status_history", []),
+                                "timestamp": time.time()
+                            }
+                        )
+                        await self._send_to_client(websocket, status_msg)
+                        logger.info("Sent initial trader status to new client")
                 except Exception as e:
                     logger.error(f"Failed to send initial trader state: {e}")
                     # Send empty trader state on error
