@@ -17,6 +17,7 @@ Architecture:
 
 import asyncio
 import logging
+import os
 import time
 from typing import Dict, Any, Optional, List, Callable, Deque
 from dataclasses import dataclass, field
@@ -271,6 +272,10 @@ class KalshiMultiMarketOrderManager:
         self.fills_queue: asyncio.Queue[FillEvent] = asyncio.Queue()
         self._fill_processor_task: Optional[asyncio.Task] = None
         
+        # State machine loop task
+        self._state_machine_task: Optional[asyncio.Task] = None
+        self._running: bool = False
+        
         # Fill listener (WebSocket connection for real-time fill notifications)
         self._fill_listener = None  # Type: FillListener (imported lazily)
         
@@ -285,6 +290,10 @@ class KalshiMultiMarketOrderManager:
         
         # Calibration state
         self._calibration_in_progress: bool = False
+        self._last_calibration_time: float = 0.0
+        self._calibration_count: int = 0
+        self._trades_since_calibration: int = 0
+        self._errors_since_calibration: int = 0
         
         # Trading client
         self.trading_client: Optional[KalshiDemoTradingClient] = None
@@ -303,6 +312,12 @@ class KalshiMultiMarketOrderManager:
         
         # Track active closing reasons per ticker (cleared after position goes flat)
         self._active_closing_reasons: Dict[str, str] = {}  # {ticker: reason}
+        
+        # Trading pause state management
+        self._trading_paused: bool = False  # Whether trading is currently paused
+        self._trading_pause_reason: Optional[str] = None  # Reason for current pause
+        self._trading_pause_start_time: Optional[float] = None  # When trading was paused
+        self._last_orderbook_health_check: Optional[float] = None  # Last time we checked orderbook health
         
         # Trader status tracking
         self._trader_status: str = "trading"  # Current trader status
@@ -329,7 +344,7 @@ class KalshiMultiMarketOrderManager:
         
         logger.info(f"KalshiMultiMarketOrderManager initialized with ${initial_cash:.2f}")
     
-    async def initialize(self, initialization_tracker=None, websocket_manager=None) -> None:
+    async def initialize(self, websocket_manager=None) -> None:
         """
         Initialize the order manager and start fill processing.
         
@@ -337,7 +352,6 @@ class KalshiMultiMarketOrderManager:
         attempting connection and fails fast if missing.
         
         Args:
-            initialization_tracker: Optional InitializationTracker for reporting progress
             websocket_manager: Optional WebSocketManager for broadcasting status updates
         
         Raises:
@@ -371,41 +385,26 @@ class KalshiMultiMarketOrderManager:
             )
         
         # Initialize trading client (will validate credentials again internally)
-        if initialization_tracker:
-            await initialization_tracker.mark_step_in_progress("trader_client_health")
-        
         self.trading_client = KalshiDemoTradingClient()
         await self.trading_client.connect()
         logger.info("✅ Demo trading client connected")
-        
-        # Report trader client health
-        if initialization_tracker:
-            from ..config import config
-            await initialization_tracker.mark_step_complete("trader_client_health", {
-                "api_url": config.KALSHI_API_URL,
-                "connected": True,
-            })
-            await initialization_tracker.update_component_health("trader_client", "healthy", {
-                "api_url": config.KALSHI_API_URL,
-                "connected": True,
-            })
         
         # Start fill processor only after successful client connection
         self._fill_processor_task = asyncio.create_task(self._process_fills())
         logger.info("✅ Fill processor started")
         
-        # Start fill listener (WebSocket for real-time fill notifications)
-        # No fallbacks - if fill listener fails, initialization fails
-        if initialization_tracker:
-            await initialization_tracker.mark_step_in_progress("fill_listener_health")
+        # Start continuous state machine loop
+        self._running = True
+        self._state_machine_task = asyncio.create_task(self._state_machine_loop())
+        logger.info("✅ State machine loop started")
         
+        # Start fill listener (WebSocket for real-time fill notifications)
         from .fill_listener import FillListener
         self._fill_listener = FillListener(order_manager=self)
         await self._fill_listener.start()
         logger.info("✅ Fill listener started")
         
         # Wait for WebSocket connection to establish (connection happens asynchronously)
-        # Similar to orderbook - give it a moment to connect before health check
         max_wait_time = 5.0  # Maximum wait time in seconds
         wait_interval = 0.2   # Check every 200ms
         elapsed = 0.0
@@ -419,11 +418,6 @@ class KalshiMultiMarketOrderManager:
                 except Exception as e:
                     error_msg = f"FillListener connection failed: {e}"
                     logger.error(error_msg)
-                    if initialization_tracker:
-                        health_details = self._fill_listener.get_health_details()
-                        await initialization_tracker.mark_step_failed("fill_listener_health", error_msg, {
-                            "details": health_details
-                        })
                     raise RuntimeError(error_msg)
             
             if self._fill_listener.is_healthy():
@@ -434,47 +428,20 @@ class KalshiMultiMarketOrderManager:
             elapsed += wait_interval
         
         if not fill_listener_healthy:
-            # If not healthy and task is still running, connection is failing
-            error_msg = f"FillListener not healthy after {max_wait_time}s wait - WebSocket connection failed"
-            logger.error(error_msg)
-            if initialization_tracker:
-                health_details = self._fill_listener.get_health_details()
-                await initialization_tracker.mark_step_failed("fill_listener_health", error_msg, {
-                    "details": health_details
-                })
-            raise RuntimeError(error_msg)
-        
-        # Report fill listener health (wrap in try/except to handle WebSocket implementation differences)
-        if initialization_tracker:
-            try:
-                health_details = self._fill_listener.get_health_details()
-            except (AttributeError, TypeError) as e:
-                logger.warning(f"Could not get detailed fill listener health (WebSocket attribute check issue): {e}")
-                # Use basic health info - we know it's healthy since is_healthy() passed
-                health_details = {
-                    "running": self._fill_listener._running,
-                    "connected": True,  # We know it's connected if is_healthy() passed
-                    "ws_url": self._fill_listener.ws_url,
-                    "fills_received": getattr(self._fill_listener, '_fills_received', 0),
-                }
-            
-            await initialization_tracker.mark_step_complete("fill_listener_health", {
-                "details": health_details
-            })
-            await initialization_tracker.update_component_health("fill_listener", "healthy", health_details)
+            # If not healthy, mark as degraded but continue
+            logger.warning(f"⚠️ FillListener not healthy after {max_wait_time}s wait - continuing in degraded mode")
+            logger.warning("Fill notifications will be delayed - using REST API polling instead")
+            self._fill_listener_healthy = False
+        else:
+            self._fill_listener_healthy = True
         
         # Start position listener (WebSocket for real-time position updates)
-        # No fallbacks - if position listener fails, initialization fails
-        if initialization_tracker:
-            await initialization_tracker.mark_step_in_progress("position_listener_health")
-        
         from .position_listener import PositionListener
         self._position_listener = PositionListener(order_manager=self)
         await self._position_listener.start()
         logger.info("✅ Position listener started")
         
         # Wait for WebSocket connection to establish (connection happens asynchronously)
-        # Similar to fill listener - give it a moment to connect before health check
         max_wait_time = 5.0  # Maximum wait time in seconds
         wait_interval = 0.2   # Check every 200ms
         elapsed = 0.0
@@ -489,28 +456,12 @@ class KalshiMultiMarketOrderManager:
             elapsed += wait_interval
         
         if not position_listener_healthy:
-            error_msg = f"PositionListener not healthy after {max_wait_time}s wait - WebSocket connection failed"
-            logger.error(error_msg)
-            raise RuntimeError(error_msg)
-        
-        # Report position listener health (wrap in try/except to handle WebSocket implementation differences)
-        if initialization_tracker:
-            try:
-                health_details = self._position_listener.get_health_details()
-            except (AttributeError, TypeError) as e:
-                logger.warning(f"Could not get detailed position listener health (WebSocket attribute check issue): {e}")
-                # Use basic health info - we know it's healthy since is_healthy() passed
-                health_details = {
-                    "running": self._position_listener._running,
-                    "connected": True,  # We know it's connected if is_healthy() passed
-                    "ws_url": self._position_listener.ws_url,
-                    "positions_received": getattr(self._position_listener, '_positions_received', 0),
-                }
-            
-            await initialization_tracker.mark_step_complete("position_listener_health", {
-                "details": health_details
-            })
-            await initialization_tracker.update_component_health("position_listener", "healthy", health_details)
+            # If not healthy, mark as degraded but continue
+            logger.warning(f"⚠️ PositionListener not healthy after {max_wait_time}s wait - continuing in degraded mode")
+            logger.warning("Position updates will be fetched via periodic sync instead")
+            self._position_listener_healthy = False
+        else:
+            self._position_listener_healthy = True
         
         # Check if cleanup is enabled BEFORE syncing (defaults to false - user requested always disabled)
         import os
@@ -541,46 +492,7 @@ class KalshiMultiMarketOrderManager:
             logger.info("Starting state synchronization with Kalshi...")
             
             # Use shared sync method for all state synchronization
-            if initialization_tracker:
-                await initialization_tracker.mark_step_in_progress("sync_balance")
-            
             sync_results = await self._sync_state_with_kalshi()
-            
-            # Report sync results to initialization tracker
-            if initialization_tracker:
-                await initialization_tracker.mark_step_complete("sync_balance", {
-                    "balance": sync_results["cash_balance"],
-                    "balance_before": sync_results["cash_before"],
-                    "portfolio_value": sync_results["portfolio_value"],
-                })
-            
-            if initialization_tracker:
-                await initialization_tracker.mark_step_in_progress("sync_positions")
-                await initialization_tracker.mark_step_complete("sync_positions", {
-                    "positions_count": sync_results["active_positions"],
-                    "positions": {ticker: {"contracts": pos.contracts, "cost_basis": pos.cost_basis} 
-                                for ticker, pos in self.positions.items()},
-                })
-            
-            if initialization_tracker:
-                await initialization_tracker.mark_step_in_progress("sync_settlements")
-                await initialization_tracker.mark_step_complete("sync_settlements", {
-                    "total_fetched": sync_results["settlement_stats"].get("total_fetched", 0),
-                    "new": sync_results["settlement_stats"].get("new", 0),
-                    "updated": sync_results["settlement_stats"].get("updated", 0),
-                    "unchanged": sync_results["settlement_stats"].get("unchanged", 0),
-                })
-            
-            if initialization_tracker:
-                await initialization_tracker.mark_step_in_progress("sync_orders")
-                order_stats = sync_results.get("order_stats", {})
-                await initialization_tracker.mark_step_complete("sync_orders", {
-                    "found_in_kalshi": order_stats.get("found_in_kalshi", 0),
-                    "found_in_memory": order_stats.get("found_in_memory", 0),
-                    "orders_added": order_stats.get("added", 0),
-                    "orders_removed": order_stats.get("removed", 0),
-                    "discrepancies": order_stats.get("discrepancies", 0),
-                })
             
             order_stats = sync_results.get("order_stats", {})
             logger.info(
@@ -627,51 +539,11 @@ class KalshiMultiMarketOrderManager:
         
         logger.info("✅ KalshiMultiMarketOrderManager ready for trading")
         
-        # Verify listeners are subscribed
-        if initialization_tracker:
-            await initialization_tracker.mark_step_in_progress("verify_fill_listener_subscription")
-            if self._fill_listener and self._fill_listener.is_healthy():
-                await initialization_tracker.mark_step_complete("verify_fill_listener_subscription", {
-                    "fill_listener_active": True,
-                })
-            else:
-                await initialization_tracker.mark_step_failed("verify_fill_listener_subscription", "Fill listener not active")
-            
-            await initialization_tracker.mark_step_in_progress("verify_position_listener_subscription")
-            if self._position_listener and self._position_listener.is_healthy():
-                await initialization_tracker.mark_step_complete("verify_position_listener_subscription", {
-                    "position_listener_active": True,
-                })
-            else:
-                await initialization_tracker.mark_step_failed("verify_position_listener_subscription", "Position listener not active")
-            
-            await initialization_tracker.mark_step_in_progress("verify_listeners")
-            # Gather listener details for context
-            listener_details = {
-                "fill_listener": self._fill_listener is not None,
-                "position_listener": self._position_listener is not None,
-                "state_change_callbacks": True,  # Set later in app.py
-            }
-            
-            # Add fill listener details if available
-            if self._fill_listener:
-                try:
-                    fill_health = self._fill_listener.get_health_details() if hasattr(self._fill_listener, 'get_health_details') else {}
-                    listener_details["fill_listener_ws_url"] = getattr(self._fill_listener, 'ws_url', 'N/A')
-                    listener_details["fill_listener_connected"] = self._fill_listener.is_healthy() if hasattr(self._fill_listener, 'is_healthy') else True
-                except Exception:
-                    pass
-            
-            # Add position listener details if available
-            if self._position_listener:
-                try:
-                    pos_health = self._position_listener.get_health_details() if hasattr(self._position_listener, 'get_health_details') else {}
-                    listener_details["position_listener_ws_url"] = getattr(self._position_listener, 'ws_url', 'N/A')
-                    listener_details["position_listener_connected"] = self._position_listener.is_healthy() if hasattr(self._position_listener, 'is_healthy') else True
-                except Exception:
-                    pass
-            
-            await initialization_tracker.mark_step_complete("verify_listeners", listener_details)
+        # Verify listeners are active
+        if not (self._fill_listener and self._fill_listener.is_healthy()):
+            logger.warning("Fill listener not active - this may affect trading")
+        if not (self._position_listener and self._position_listener.is_healthy()):
+            logger.warning("Position listener not active - this may affect trading")
         
         # Notify about initial state
         await self._notify_state_change()
@@ -922,6 +794,15 @@ class KalshiMultiMarketOrderManager:
             except asyncio.CancelledError:
                 pass
         
+        # Stop state machine loop
+        if self._state_machine_task:
+            self._running = False
+            self._state_machine_task.cancel()
+            try:
+                await self._state_machine_task
+            except asyncio.CancelledError:
+                pass
+        
         # Disconnect trading client
         if self.trading_client:
             await self.trading_client.disconnect()
@@ -949,6 +830,26 @@ class KalshiMultiMarketOrderManager:
         """
         if action == 0:  # HOLD
             return {"status": "hold", "action": action, "market": market_ticker, "trade_sequence_id": trade_sequence_id}
+        
+        # Check if trading is paused due to system issues
+        if self._trading_paused:
+            pause_duration = time.time() - (self._trading_pause_start_time or 0)
+            action_names = {1: "BUY_YES", 2: "SELL_YES", 3: "BUY_NO", 4: "SELL_NO"}
+            action_name = action_names.get(action, f"ACTION_{action}")
+            logger.warning(f"🚫 {action_name} order blocked for {market_ticker}")
+            logger.warning(f"   Reason: Trading paused due to {self._trading_pause_reason}")
+            logger.warning(f"   Pause duration: {pause_duration:.1f}s")
+            logger.warning(f"   System will auto-resume when services recover")
+            
+            return {
+                "status": "trading_paused",
+                "action": action,
+                "market": market_ticker,
+                "pause_reason": self._trading_pause_reason,
+                "pause_duration": pause_duration,
+                "message": f"Trading paused: {self._trading_pause_reason}",
+                "trade_sequence_id": trade_sequence_id
+            }
         
         if not self.trading_client:
             logger.error("Trading client not initialized")
@@ -1801,6 +1702,7 @@ class KalshiMultiMarketOrderManager:
         # Update metrics
         self._orders_filled += 1
         self._total_volume_traded += fill_cost
+        self._trades_since_calibration += 1
         
         # Add debug logging
         logger.debug(f"Fill processed: {order.ticker} {order.side.name} {fill_quantity} @ {fill_price}¢")
@@ -2304,6 +2206,74 @@ class KalshiMultiMarketOrderManager:
         """Reset trading session statistics."""
         self._trading_stats = {"trades": 0, "no_ops": 0}
         self._trading_stats_start_time = time.time()
+    
+    def _pause_trading(self, reason: str) -> None:
+        """
+        Pause trading with the given reason.
+        
+        Args:
+            reason: Reason for pausing trading (e.g., "orderbook_unavailable", "api_503_errors")
+        """
+        if not self._trading_paused:
+            self._trading_paused = True
+            self._trading_pause_reason = reason
+            self._trading_pause_start_time = time.time()
+            logger.warning(f"🛑 Trading PAUSED: {reason}")
+            logger.warning(f"   All trading actions will be blocked until systems recover")
+            logger.warning(f"   HOLD actions will still be processed normally")
+            
+            # Record pause event in status history for tracking
+            if hasattr(self, '_trader_status_history'):
+                self._trader_status_history.append({
+                    "timestamp": time.time(),
+                    "status": f"trading_paused: {reason}",
+                    "event": "trading_pause",
+                    "reason": reason
+                })
+    
+    def _resume_trading(self) -> None:
+        """Resume trading and clear pause state."""
+        if self._trading_paused:
+            pause_duration = time.time() - (self._trading_pause_start_time or 0)
+            previous_reason = self._trading_pause_reason
+            logger.info(f"✅ Trading RESUMED after {pause_duration:.1f}s pause")
+            logger.info(f"   Previous pause reason: {previous_reason}")
+            logger.info(f"   Normal trading actions are now enabled")
+            
+            # Record resume event in status history for tracking
+            if hasattr(self, '_trader_status_history'):
+                self._trader_status_history.append({
+                    "timestamp": time.time(),
+                    "status": f"trading_resumed after {pause_duration:.1f}s",
+                    "event": "trading_resume",
+                    "previous_reason": previous_reason,
+                    "pause_duration": pause_duration
+                })
+            
+            self._trading_paused = False
+            self._trading_pause_reason = None
+            self._trading_pause_start_time = None
+    
+    def is_trading_paused(self) -> bool:
+        """Check if trading is currently paused."""
+        return self._trading_paused
+    
+    def get_trading_pause_info(self) -> Optional[Dict[str, Any]]:
+        """
+        Get information about current trading pause.
+        
+        Returns:
+            Dictionary with pause info or None if not paused
+        """
+        if not self._trading_paused:
+            return None
+        
+        return {
+            "paused": True,
+            "reason": self._trading_pause_reason,
+            "duration": time.time() - (self._trading_pause_start_time or 0),
+            "started_at": self._trading_pause_start_time
+        }
     
     async def _broadcast_fill_event(self, fill_data: Dict[str, Any]) -> None:
         """
@@ -2848,6 +2818,7 @@ class KalshiMultiMarketOrderManager:
         # Update metrics
         self._orders_filled += 1
         self._total_volume_traded += fill_cost
+        self._trades_since_calibration += 1
         
         stats["partial_fills"] += 1
         logger.info(
@@ -4005,199 +3976,654 @@ class KalshiMultiMarketOrderManager:
     
     # ============ Health Check Methods (Phase 1) ============
     
+    async def _activate_fallback_strategies(self, health_results: Dict[str, Any]) -> None:
+        """
+        Activate fallback strategies for unhealthy optional components.
+        
+        Args:
+            health_results: Health check results from calibration
+        """
+        try:
+            for component_name, component_health in health_results.get("components", {}).items():
+                if component_health["category"] == "optional" and not component_health["healthy"]:
+                    fallback = component_health.get("fallback")
+                    if fallback:
+                        strategy = fallback.get("strategy")
+                        logger.info(f"Activating fallback strategy for {component_name}: {strategy}")
+                        
+                        if component_name == "orderbook" and strategy == "rest_api_polling":
+                            # Start periodic orderbook refresh via REST
+                            self._fallback_orderbook_enabled = True
+                            logger.info("Enabled REST API orderbook polling fallback")
+                            
+                        elif component_name == "fill_listener" and strategy == "order_status_polling":
+                            # Enable order status polling
+                            self._fallback_fill_polling_enabled = True
+                            logger.info("Enabled order status polling fallback")
+                            
+                        elif component_name == "position_listener" and strategy == "periodic_sync":
+                            # Enable periodic position sync
+                            self._fallback_position_sync_enabled = True
+                            logger.info("Enabled periodic position sync fallback")
+        except Exception as e:
+            logger.error(f"Error activating fallback strategies: {e}")
+    
+    async def _refresh_fallback_data(self) -> None:
+        """
+        Refresh data using REST API fallbacks when WebSockets are unavailable.
+        Called periodically in degraded mode.
+        """
+        try:
+            logger.debug("Refreshing fallback data in degraded mode")
+            
+            # Refresh orderbook data via REST if needed
+            if getattr(self, '_fallback_orderbook_enabled', False):
+                await self._refresh_orderbook_via_rest()
+            
+            # Poll order status if fill listener is down
+            if getattr(self, '_fallback_fill_polling_enabled', False):
+                await self._poll_order_status()
+            
+            # Sync positions if position listener is down
+            if getattr(self, '_fallback_position_sync_enabled', False):
+                await self._sync_positions_via_rest()
+                
+        except Exception as e:
+            logger.error(f"Error refreshing fallback data: {e}")
+    
+    async def _refresh_orderbook_via_rest(self) -> None:
+        """
+        Fetch orderbook snapshots via REST API when WebSocket is unavailable.
+        """
+        try:
+            # Only refresh for markets we're actively tracking
+            markets_to_refresh = list(self.positions.keys())[:10]  # Limit to avoid rate limits
+            
+            for ticker in markets_to_refresh:
+                try:
+                    # Use the trading client to get orderbook
+                    if hasattr(self.trading_client, 'get_orderbook'):
+                        orderbook = await self.trading_client.get_orderbook(ticker)
+                        # Store in a fallback cache
+                        if not hasattr(self, '_fallback_orderbook_cache'):
+                            self._fallback_orderbook_cache = {}
+                        self._fallback_orderbook_cache[ticker] = {
+                            'data': orderbook,
+                            'timestamp': time.time()
+                        }
+                        logger.debug(f"Refreshed orderbook for {ticker} via REST")
+                except Exception as e:
+                    logger.warning(f"Failed to refresh orderbook for {ticker}: {e}")
+                    
+        except Exception as e:
+            logger.error(f"Error refreshing orderbooks via REST: {e}")
+    
+    async def _poll_order_status(self) -> None:
+        """
+        Poll order status via REST API when fill listener is unavailable.
+        """
+        try:
+            # Poll status for pending orders
+            for order_id, order_info in list(self.open_orders.items()):
+                if order_info.status == OrderStatus.PENDING:
+                    try:
+                        # Get order status from API
+                        order_status = await self.trading_client.get_order(order_info.kalshi_order_id)
+                        
+                        # Check if order was filled
+                        if order_status.get("status") == "executed":
+                            # Process as a fill
+                            logger.info(f"Detected fill via polling: order {order_id}")
+                            # Update order status
+                            order_info.status = OrderStatus.FILLED
+                            order_info.filled_at = time.time()
+                            
+                            # Update position if we have fill details
+                            if order_status.get("filled_count"):
+                                await self._process_fill_from_polling(order_info, order_status)
+                                
+                        elif order_status.get("status") == "cancelled":
+                            order_info.status = OrderStatus.CANCELLED
+                            logger.info(f"Order {order_id} cancelled (detected via polling)")
+                            
+                    except Exception as e:
+                        logger.warning(f"Failed to poll status for order {order_id}: {e}")
+                        
+        except Exception as e:
+            logger.error(f"Error polling order status: {e}")
+    
+    async def _sync_positions_via_rest(self) -> None:
+        """
+        Sync positions via REST API when position listener is unavailable.
+        """
+        try:
+            # Sync positions from API
+            positions_response = await self.trading_client.get_positions()
+            api_positions = positions_response.get("positions", [])
+            
+            # Update our local positions
+            for api_pos in api_positions:
+                ticker = api_pos.get("market_ticker")
+                if ticker:
+                    position = self.positions.get(ticker)
+                    if position:
+                        # Update existing position
+                        position.contracts = api_pos.get("position", 0)
+                        position.cost_basis = api_pos.get("position_cost", 0) / 100  # Convert from centi-cents
+                        position.last_updated_ts = api_pos.get("last_updated_ts")
+                        logger.debug(f"Updated position for {ticker} via REST sync")
+                        
+        except Exception as e:
+            logger.error(f"Error syncing positions via REST: {e}")
+    
+    async def _process_fill_from_polling(self, order_info: OrderInfo, order_status: Dict[str, Any]) -> None:
+        """
+        Process a fill detected via order status polling.
+        
+        Args:
+            order_info: Our internal order info
+            order_status: Order status from API
+        """
+        try:
+            filled_count = order_status.get("filled_count", 0)
+            if filled_count > 0:
+                # Update position
+                ticker = order_info.ticker
+                position = self.positions.get(ticker)
+                
+                if not position:
+                    position = Position(
+                        ticker=ticker,
+                        contracts=0,
+                        cost_basis=0.0,
+                        realized_pnl=0.0,
+                        opened_at=time.time()
+                    )
+                    self.positions[ticker] = position
+                
+                # Update position based on order side
+                if order_info.contract_side == ContractSide.YES:
+                    if order_info.side == OrderSide.BUY:
+                        position.contracts += filled_count
+                    else:  # SELL
+                        position.contracts -= filled_count
+                else:  # NO
+                    if order_info.side == OrderSide.BUY:
+                        position.contracts -= filled_count
+                    else:  # SELL
+                        position.contracts += filled_count
+                
+                # Update cost basis (simplified)
+                fill_price = order_info.limit_price
+                if order_info.side == OrderSide.BUY:
+                    position.cost_basis += filled_count * (fill_price / 100)
+                else:
+                    position.cost_basis -= filled_count * (fill_price / 100)
+                
+                logger.info(f"Processed fill from polling: {filled_count} contracts for {ticker}")
+                
+        except Exception as e:
+            logger.error(f"Error processing fill from polling: {e}")
+    
+    async def _handle_degraded_trading(self) -> None:
+        """
+        Adjust trading behavior when operating in degraded mode.
+        This method is called when making trading decisions with limited data.
+        """
+        try:
+            if not getattr(self, '_degraded_mode', False):
+                return
+            
+            logger.debug("Adjusting trading for degraded mode")
+            
+            # In degraded mode, we should:
+            # 1. Be more conservative with position sizing
+            # 2. Use wider spreads for safety
+            # 3. Avoid rapid trading
+            # 4. Focus on closing positions rather than opening new ones
+            
+            # Reduce position limits in degraded mode
+            if hasattr(self, 'max_position_size'):
+                self.max_position_size = min(self.max_position_size, 50)  # Cap at 50 contracts
+            
+            # Increase minimum cash reserve
+            if hasattr(self, 'min_cash_reserve'):
+                self.min_cash_reserve = max(self.min_cash_reserve, 1000)  # Keep more cash
+            
+            # Add a flag to prefer closing positions
+            self._prefer_closing_positions = True
+            
+            logger.info("Degraded mode adjustments applied: reduced position sizes, increased cash reserve")
+            
+        except Exception as e:
+            logger.error(f"Error handling degraded trading: {e}")
+    
     async def _check_orderbook_health_gracefully(self) -> Dict[str, Any]:
         """
         Check orderbook connection health without triggering re-subscription.
+        Gracefully handles failures and never throws exceptions.
         
         Returns:
             Dict with health status and connection details
         """
-        from ..data.orderbook_client import orderbook_client
-        
-        # Check if orderbook client exists and is healthy
-        if not orderbook_client:
+        try:
+            from ..data.orderbook_client import orderbook_client
+            
+            # Check if orderbook client exists and is healthy
+            if not orderbook_client:
+                return {
+                    "healthy": False,
+                    "reason": "orderbook_client_not_initialized",
+                    "connected": False,
+                    "snapshots": 0,
+                    "deltas": 0,
+                    "error": "OrderbookClient not available"
+                }
+            
+            # Get health details without re-subscribing
+            try:
+                health_details = orderbook_client.get_health_details()
+                is_healthy = orderbook_client.is_healthy()
+            except Exception as e:
+                logger.warning(f"Error getting orderbook health details: {e}")
+                return {
+                    "healthy": False,
+                    "reason": "orderbook_client_error",
+                    "connected": False,
+                    "snapshots": 0,
+                    "deltas": 0,
+                    "error": f"Failed to get health details: {str(e)}"
+                }
+            
+            # Check message recency
+            last_msg_time = health_details.get("last_message_time")
+            if last_msg_time:
+                time_since_msg = time.time() - last_msg_time
+                recent_activity = time_since_msg < 30  # Activity within last 30 seconds
+            else:
+                time_since_msg = None
+                recent_activity = False
+            
+            # OrderbookClient is healthy if connected and has received some data
+            # Don't require recent activity (within 30s) as markets may be quiet
+            has_data = health_details.get("snapshots_received", 0) > 0 or health_details.get("deltas_received", 0) > 0
+            is_truly_healthy = is_healthy and has_data
+            
+            return {
+                "healthy": is_truly_healthy,
+                "connected": health_details.get("connected", False),
+                "snapshots": health_details.get("snapshots_received", 0),
+                "deltas": health_details.get("deltas_received", 0),
+                "messages": health_details.get("messages_received", 0),
+                "markets_subscribed": health_details.get("markets_subscribed", 0),
+                "last_msg_ago": round(time_since_msg, 1) if time_since_msg else None,
+                "session_id": health_details.get("session_id"),
+                "reason": "healthy" if is_truly_healthy else ("no_data_received" if is_healthy else "connection_issue")
+            }
+            
+        except Exception as e:
+            logger.warning(f"Graceful orderbook health check failed: {e}")
             return {
                 "healthy": False,
-                "reason": "orderbook_client_not_initialized",
+                "reason": "orderbook_health_check_failed",
                 "connected": False,
                 "snapshots": 0,
-                "deltas": 0
+                "deltas": 0,
+                "error": f"Health check exception: {str(e)}"
             }
-        
-        # Get health details without re-subscribing
-        health_details = orderbook_client.get_health_details()
-        is_healthy = orderbook_client.is_healthy()
-        
-        # Check message recency
-        last_msg_time = health_details.get("last_message_time")
-        if last_msg_time:
-            time_since_msg = time.time() - last_msg_time
-            recent_activity = time_since_msg < 30  # Activity within last 30 seconds
-        else:
-            time_since_msg = None
-            recent_activity = False
-        
-        return {
-            "healthy": is_healthy and recent_activity,
-            "connected": health_details.get("connected", False),
-            "snapshots": health_details.get("snapshots_received", 0),
-            "deltas": health_details.get("deltas_received", 0),
-            "messages": health_details.get("messages_received", 0),
-            "markets_subscribed": health_details.get("markets_subscribed", 0),
-            "last_msg_ago": round(time_since_msg, 1) if time_since_msg else None,
-            "session_id": health_details.get("session_id"),
-            "reason": "healthy" if (is_healthy and recent_activity) else "no_recent_activity"
-        }
     
     async def _check_fill_listener_health(self) -> Dict[str, Any]:
         """
         Check fill listener health without re-subscribing.
+        Gracefully handles failures and never throws exceptions.
         
         Returns:
             Dict with fill listener status
         """
-        # Check if we have a fills queue subscription
-        fills_active = hasattr(self, '_fills_queue') and self._fills_queue is not None
-        
-        # Check last fill activity
-        last_fill_time = getattr(self, '_last_fill_time', None)
-        if last_fill_time:
-            time_since_fill = time.time() - last_fill_time
-            # Note: It's okay if we haven't had fills recently - just means no trades
-            recent_fill = time_since_fill < 3600  # Within last hour
-        else:
-            time_since_fill = None
-            recent_fill = False
-        
-        fills_received = getattr(self, '_fills_received', 0)
-        
-        return {
-            "healthy": fills_active,  # Health is just whether listener is active
-            "active": fills_active,
-            "fills_received": fills_received,
-            "last_fill_ago": round(time_since_fill, 1) if time_since_fill else None,
-            "recent_activity": recent_fill,
-            "subscribed_to": "fills" if fills_active else None
-        }
+        try:
+            # Check if fill listener exists and is healthy
+            fills_active = False
+            error_msg = None
+            
+            try:
+                fills_active = self._fill_listener is not None and self._fill_listener.is_healthy()
+            except Exception as e:
+                error_msg = f"Error checking fill listener status: {str(e)}"
+                logger.warning(error_msg)
+            
+            # Get fill statistics from fill listener if available
+            fills_received = 0
+            last_fill_time = None
+            
+            if self._fill_listener:
+                try:
+                    fills_received = getattr(self._fill_listener, '_fills_received', 0)
+                    # Try to get last fill time from fill listener
+                    last_fill_time = getattr(self._fill_listener, '_last_fill_time', None)
+                except Exception as e:
+                    logger.warning(f"Error getting fill listener stats: {e}")
+            
+            # Calculate time since last fill
+            if last_fill_time:
+                time_since_fill = time.time() - last_fill_time
+                # Note: It's okay if we haven't had fills recently - just means no trades
+                recent_fill = time_since_fill < 3600  # Within last hour
+            else:
+                time_since_fill = None
+                recent_fill = False
+            
+            result = {
+                "healthy": fills_active,  # Health is whether listener exists and is healthy
+                "active": fills_active,
+                "fills_received": fills_received,
+                "last_fill_ago": round(time_since_fill, 1) if time_since_fill else None,
+                "recent_activity": recent_fill,
+                "subscribed_to": "fills" if fills_active else None
+            }
+            
+            if error_msg:
+                result["error"] = error_msg
+                
+            return result
+            
+        except Exception as e:
+            logger.warning(f"Graceful fill listener health check failed: {e}")
+            return {
+                "healthy": False,
+                "active": False,
+                "fills_received": 0,
+                "last_fill_ago": None,
+                "recent_activity": False,
+                "subscribed_to": None,
+                "error": f"Health check exception: {str(e)}"
+            }
     
     async def _check_order_listener_health(self) -> Dict[str, Any]:
         """
         Check order listener health without re-subscribing.
+        Gracefully handles failures and never throws exceptions.
         
         Returns:
             Dict with order listener status
         """
-        # For now, order tracking is synchronous via API calls
-        # We track orders in memory after placing them
-        orders_tracked = len(self.open_orders)
-        
-        # Check last order update
-        last_order_time = getattr(self, '_last_order_update_time', None)
-        if last_order_time:
-            time_since_order = time.time() - last_order_time
-            recent_order = time_since_order < 3600  # Within last hour
-        else:
-            time_since_order = None
-            recent_order = False
-        
-        return {
-            "healthy": True,  # Order tracking is always "healthy" as it's synchronous
-            "active": True,
-            "orders_tracked": orders_tracked,
-            "pending_orders": len([o for o in self.open_orders.values() if o.status == OrderStatus.PENDING]),
-            "last_order_ago": round(time_since_order, 1) if time_since_order else None,
-            "recent_activity": recent_order,
-            "subscribed_to": "orders"
-        }
+        try:
+            # For now, order tracking is synchronous via API calls
+            # We track orders in memory after placing them
+            orders_tracked = len(self.open_orders)
+            
+            # Check last order update
+            last_order_time = getattr(self, '_last_order_update_time', None)
+            if last_order_time:
+                time_since_order = time.time() - last_order_time
+                recent_order = time_since_order < 3600  # Within last hour
+            else:
+                time_since_order = None
+                recent_order = False
+            
+            try:
+                pending_orders = len([o for o in self.open_orders.values() if o.status == OrderStatus.PENDING])
+            except Exception as e:
+                logger.warning(f"Error counting pending orders: {e}")
+                pending_orders = 0
+            
+            return {
+                "healthy": True,  # Order tracking is always "healthy" as it's synchronous
+                "active": True,
+                "orders_tracked": orders_tracked,
+                "pending_orders": pending_orders,
+                "last_order_ago": round(time_since_order, 1) if time_since_order else None,
+                "recent_activity": recent_order,
+                "subscribed_to": "orders"
+            }
+            
+        except Exception as e:
+            logger.warning(f"Graceful order listener health check failed: {e}")
+            return {
+                "healthy": False,
+                "active": False,
+                "orders_tracked": 0,
+                "pending_orders": 0,
+                "last_order_ago": None,
+                "recent_activity": False,
+                "subscribed_to": "orders",
+                "error": f"Health check exception: {str(e)}"
+            }
     
     # ============ Phase 1: Connection & Health Checks ============
     
     async def _calibration_health_checks(self) -> Dict[str, Any]:
         """
         Phase 1 of calibration: Check all connections and health status.
-        Non-destructive health verification with detailed context.
+        Non-destructive health verification with detailed context and fallback options.
         
         Returns:
-            Dict with health check results for all components
+            Dict with health check results for all components including:
+            - Component classification (critical/optional)
+            - Per-component health details
+            - Fallback strategies for degraded components
+            - Overall trading capability assessment
         """
         health_results = {}
         
-        # Check exchange status (lightweight, no heavy API calls)
+        # Check exchange status (CRITICAL - required for all trading)
         await self._update_trader_status("calibrating -> checking exchange")
         try:
             # Quick exchange check - just verify we can reach the API
-            exchange_status = await self._client.get_exchange_status()
+            exchange_status = await self.trading_client.get_exchange_status()
             exchange_healthy = exchange_status.get("exchange_active", False)
             health_results["exchange"] = {
                 "healthy": exchange_healthy,
+                "category": "critical",
                 "trading_active": exchange_status.get("trading_active", False),
-                "api_accessible": True
+                "api_accessible": True,
+                "status": "operational" if exchange_healthy else "unavailable",
+                "details": exchange_status,
+                "fallback": None  # No fallback for exchange - it's required
             }
             context = f"Exchange: {'active' if exchange_healthy else 'inactive'}"
         except Exception as e:
+            # Handle 503 Service Unavailable or other errors gracefully
+            error_str = str(e)
+            is_503 = "503" in error_str or "Service Unavailable" in error_str
             health_results["exchange"] = {
                 "healthy": False,
+                "category": "critical",
                 "trading_active": False,
                 "api_accessible": False,
-                "error": str(e)
+                "status": "error",
+                "error": error_str,
+                "is_503": is_503,
+                "details": {"error": error_str, "error_type": type(e).__name__},
+                "fallback": None
             }
-            context = f"Exchange: unreachable"
+            context = f"Exchange: {'temporarily unavailable (503)' if is_503 else 'unreachable'}"
         
-        # Check orderbook connection
+        # Check orderbook connection (OPTIONAL - enhances trading but not required)
         await self._update_trader_status("calibrating -> checking orderbook")
         ob_health = await self._check_orderbook_health_gracefully()
+        ob_health["category"] = "optional"
+        ob_health["status"] = "operational" if ob_health["healthy"] else "degraded"
+        ob_health["fallback"] = {
+            "strategy": "rest_api_polling",
+            "description": "Can use REST API to fetch orderbook snapshots periodically",
+            "impact": "Reduced real-time price updates, may miss rapid market movements"
+        }
         health_results["orderbook"] = ob_health
         context = f"Orderbook: {ob_health['snapshots']} snapshots, last msg {ob_health.get('last_msg_ago', 'N/A')}s ago"
         
-        # Check fill listener
+        # Handle trading pause/resume based on orderbook and exchange health
+        self._last_orderbook_health_check = time.time()
+        exchange_healthy = health_results["exchange"]["healthy"]
+        orderbook_healthy = ob_health["healthy"]
+        
+        # Determine if we should pause trading due to critical systems being down
+        should_pause_trading = False
+        pause_reasons = []
+        
+        # Pause if exchange is unavailable (critical system)
+        if not exchange_healthy:
+            should_pause_trading = True
+            exchange_error = health_results["exchange"].get("error", "unknown error")
+            if health_results["exchange"].get("is_503", False):
+                pause_reasons.append("kalshi_api_503_errors")
+            else:
+                pause_reasons.append(f"exchange_unavailable: {exchange_error}")
+        
+        # Pause if orderbook is not connected (operating on stale data)
+        # Real-time trading requires live WebSocket connection for current prices
+        if not orderbook_healthy:
+            ob_connected = ob_health.get("connected", False)
+            if not ob_connected:
+                should_pause_trading = True
+                if ob_health.get("snapshots", 0) == 0:
+                    pause_reasons.append("orderbook_no_data")
+                else:
+                    pause_reasons.append("orderbook_stale_data")  # Has data but WebSocket disconnected
+            elif ob_health.get("snapshots", 0) == 0:
+                # Connected but no data yet
+                should_pause_trading = True  
+                pause_reasons.append("orderbook_no_data")
+        
+        # Apply trading pause/resume logic
+        if should_pause_trading:
+            if not self._trading_paused:
+                # New pause condition detected
+                combined_reason = " + ".join(pause_reasons)
+                self._pause_trading(combined_reason)
+                await self._update_trader_status(f"paused: {combined_reason}")
+            # else: already paused, keep existing pause
+        else:
+            # Systems are healthy enough for trading
+            if self._trading_paused:
+                # Resume trading - systems have recovered
+                self._resume_trading()
+                await self._update_trader_status("trading resumed - systems recovered")
+            # else: not paused, continue normally
+        
+        # Check fill listener (OPTIONAL - helpful but can work without)
         await self._update_trader_status("calibrating -> checking fill listener")
         fill_health = await self._check_fill_listener_health()
+        fill_health["category"] = "optional"
+        fill_health["status"] = "operational" if fill_health["healthy"] else "degraded"
+        fill_health["fallback"] = {
+            "strategy": "order_status_polling",
+            "description": "Can poll order status via REST API to detect fills",
+            "impact": "Delayed fill notifications, may affect rapid trading strategies"
+        }
         health_results["fill_listener"] = fill_health
         context = f"Fill listener: {fill_health['fills_received']} fills, active: {fill_health['active']}"
         
-        # Check order listener
+        # Check order listener (CRITICAL - needed to track order state)
         await self._update_trader_status("calibrating -> checking order listener")
         order_health = await self._check_order_listener_health()
+        order_health["category"] = "critical"
+        order_health["status"] = "operational" if order_health["healthy"] else "error"
+        order_health["fallback"] = {
+            "strategy": "synchronous_tracking",
+            "description": "Track orders synchronously via REST API responses",
+            "impact": "Basic order tracking maintained, but may miss external changes"
+        }
         health_results["order_listener"] = order_health
         context = f"Order listener: {order_health['orders_tracked']} orders tracked"
         
-        # Compile overall health status
-        all_healthy = all([
-            health_results["exchange"]["healthy"],
-            health_results["orderbook"]["healthy"],
-            health_results["fill_listener"]["healthy"],
-            health_results["order_listener"]["healthy"]
-        ])
+        # Check position listener (OPTIONAL - can sync via REST)
+        position_health = {
+            "healthy": self._position_listener and self._position_listener.is_healthy() if hasattr(self, '_position_listener') else False,
+            "category": "optional",
+            "status": "operational" if (self._position_listener and self._position_listener.is_healthy() if hasattr(self, '_position_listener') else False) else "degraded",
+            "fallback": {
+                "strategy": "periodic_sync",
+                "description": "Sync positions via REST API every 30 seconds",
+                "impact": "Position updates may be delayed, but still accurate"
+            }
+        }
+        health_results["position_listener"] = position_health
         
-        # Broadcast health check results to frontend
+        # Compile overall health status with graceful degradation
+        # Critical components: Exchange and order tracking (required for trading)
+        critical_components = {k: v for k, v in health_results.items() if v["category"] == "critical"}
+        critical_healthy = all(c["healthy"] for c in critical_components.values())
+        
+        # Optional components: Orderbook, fill listener, position listener (enhance trading but not required)
+        optional_components = {k: v for k, v in health_results.items() if v["category"] == "optional"}
+        optional_healthy = all(c["healthy"] for c in optional_components.values())
+        
+        # Determine trading capability
+        can_trade = critical_healthy  # Can trade if critical components work
+        all_healthy = critical_healthy and optional_healthy
+        
+        # Determine overall status
+        if all_healthy:
+            overall_status = "fully_operational"
+        elif critical_healthy:
+            overall_status = "degraded"  # Can trade but with limitations
+        else:
+            overall_status = "paused"  # Cannot safely trade
+        
+        # Build detailed component status for frontend
+        component_details = {}
+        for name, component in health_results.items():
+            component_details[name] = {
+                "healthy": component["healthy"],
+                "category": component["category"],
+                "status": component["status"],
+                "fallback": component.get("fallback"),
+                "error": component.get("error"),
+                "details": component.get("details", {})
+            }
+        
+        # Broadcast detailed health check results to frontend
         if self._websocket_manager:
             await self._websocket_manager.broadcast_trader_state({
+                "type": "health_check",
                 "status": "calibrating -> health checks complete",
-                "health_results": health_results,
-                "all_healthy": all_healthy,
+                "overall_status": overall_status,
+                "can_trade": can_trade,
+                "components": component_details,
+                "critical_healthy": critical_healthy,
+                "optional_healthy": optional_healthy,
                 "timestamp": time.time()
             })
         
-        # Update status with summary
-        summary_parts = []
-        if not health_results["exchange"]["healthy"]:
-            summary_parts.append("Exchange unavailable")
-        if not health_results["orderbook"]["healthy"]:
-            summary_parts.append(f"Orderbook issue: {ob_health['reason']}")
-        if not health_results["fill_listener"]["healthy"]:
-            summary_parts.append("Fill listener inactive")
+        # Build human-readable summary
+        critical_issues = []
+        optional_issues = []
+        fallback_strategies = []
+        
+        for name, component in health_results.items():
+            if not component["healthy"]:
+                issue_desc = f"{name}: {component.get('reason', component.get('error', 'unhealthy'))}"
+                if component["category"] == "critical":
+                    critical_issues.append(issue_desc)
+                else:
+                    optional_issues.append(issue_desc)
+                    if component.get("fallback"):
+                        fallback_strategies.append(f"{name} -> {component['fallback']['strategy']}")
         
         if all_healthy:
             summary = "All systems healthy"
+        elif can_trade:
+            summary = f"Trading operational (degraded mode)"
+            if fallback_strategies:
+                summary += f" - using fallbacks: {', '.join(fallback_strategies)}"
         else:
-            summary = " | ".join(summary_parts) if summary_parts else "Some systems unhealthy"
+            summary = f"Trading paused - critical failures: {', '.join(critical_issues)}"
+            if optional_issues:
+                summary += f" | Optional issues: {', '.join(optional_issues)}"
         
         await self._update_trader_status("calibrating -> health checks", summary)
         
         return {
+            "overall_status": overall_status,
+            "can_trade": can_trade,
             "all_healthy": all_healthy,
+            "critical_healthy": critical_healthy,
+            "optional_healthy": optional_healthy,
             "components": health_results,
-            "summary": summary
+            "summary": summary,
+            "critical_issues": critical_issues,
+            "optional_issues": optional_issues,
+            "fallback_strategies": fallback_strategies
         }
     
     # ============ Phase 2: State Discovery & Sync (Enhanced) ============
@@ -4509,6 +4935,146 @@ class KalshiMultiMarketOrderManager:
         logger.debug(f"Navigation result: {navigation_result}")
         return navigation_result
     
+    async def _state_machine_loop(self) -> None:
+        """
+        Continuous state machine execution loop with resilience and recovery.
+        
+        This loop runs continuously and evaluates the current state to decide
+        when to calibrate, trade, or take other actions. Enhanced with:
+        - Graceful error handling
+        - Periodic recovery attempts 
+        - Degraded mode support
+        - Fallback data refresh for unhealthy components
+        """
+        logger.info("State machine loop started")
+        
+        # Track recovery attempts
+        recovery_attempts = 0
+        last_recovery_attempt = 0
+        
+        while self._running:
+            try:
+                current_state = self._extract_base_state(self._trader_status)
+                
+                # Check if we're in degraded mode and need to refresh fallback data
+                if getattr(self, '_degraded_mode', False):
+                    # Refresh fallback data every 30 seconds in degraded mode
+                    if not hasattr(self, '_last_fallback_refresh') or \
+                       time.time() - self._last_fallback_refresh > 30:
+                        asyncio.create_task(self._refresh_fallback_data())
+                        self._last_fallback_refresh = time.time()
+                
+                if current_state == "trading":
+                    # Check if trading is still enabled
+                    if not getattr(self, '_trading_enabled', True):
+                        logger.info("Trading disabled due to critical failures - transitioning to paused state")
+                        await self._update_trader_status("paused", "critical components unhealthy")
+                        continue
+                    
+                    # Check conditions for recalibration
+                    time_since_calibration = time.time() - self._last_calibration_time
+                    
+                    # Calibration triggers (event-driven)
+                    should_calibrate = False
+                    calibration_reason = ""
+                    
+                    # Time-based trigger (configurable, more frequent in degraded mode)
+                    calibration_interval = float(os.getenv("RL_RECALIBRATION_INTERVAL_SECONDS", "60"))
+                    if getattr(self, '_degraded_mode', False):
+                        calibration_interval = min(calibration_interval, 30)  # More frequent checks in degraded mode
+                    
+                    if time_since_calibration > calibration_interval:
+                        should_calibrate = True
+                        calibration_reason = f"periodic ({int(time_since_calibration)}s elapsed)"
+                        if getattr(self, '_degraded_mode', False):
+                            calibration_reason += " - degraded mode check"
+                    
+                    # Error-based trigger
+                    elif self._errors_since_calibration >= 3:
+                        should_calibrate = True
+                        calibration_reason = f"error threshold ({self._errors_since_calibration} errors)"
+                    
+                    # Trade-based trigger (after many trades)
+                    elif self._trades_since_calibration >= 50:
+                        should_calibrate = True
+                        calibration_reason = f"trade threshold ({self._trades_since_calibration} trades)"
+                    
+                    # Recovery needed trigger
+                    elif getattr(self, '_needs_recovery', False):
+                        should_calibrate = True
+                        calibration_reason = "recovery_needed"
+                    
+                    if should_calibrate and not self._calibration_in_progress:
+                        logger.info(f"State machine triggering calibration: {calibration_reason}")
+                        await self.run_calibration(calibration_reason)
+                        # Reset counters after calibration
+                        self._trades_since_calibration = 0
+                        self._errors_since_calibration = 0
+                        self._needs_recovery = False
+                    
+                elif current_state == "calibrating":
+                    # Calibration is handling its own flow
+                    pass
+                
+                elif current_state == "paused":
+                    # Periodic recovery attempts from paused state
+                    time_since_recovery = time.time() - last_recovery_attempt
+                    
+                    # Progressive backoff: 10s, 20s, 30s, then cap at 60s
+                    recovery_interval = min(10 * (2 ** min(recovery_attempts, 3)), 60)
+                    
+                    if time_since_recovery > recovery_interval:
+                        logger.info(f"Attempting recovery from paused state (attempt {recovery_attempts + 1})")
+                        last_recovery_attempt = time.time()
+                        recovery_attempts += 1
+                        
+                        # Try calibration to check if systems have recovered
+                        await self.run_calibration("periodic_recovery_check")
+                        
+                        # If we successfully transitioned out of paused, reset counter
+                        new_state = self._extract_base_state(self._trader_status)
+                        if new_state != "paused":
+                            recovery_attempts = 0
+                            logger.info("Successfully recovered from paused state")
+                
+                elif current_state in ["monitoring", "waiting"]:
+                    # Check if conditions are met to resume trading
+                    # This could include checking balance, positions, etc.
+                    time_since_calibration = time.time() - self._last_calibration_time
+                    if time_since_calibration > 30:  # Check every 30s
+                        await self.run_calibration("condition_check")
+                
+                elif current_state in ["error", "low_cash", "max_exposure"]:
+                    # Error states - calibration will handle recovery
+                    time_since_calibration = time.time() - self._last_calibration_time
+                    if time_since_calibration > 30:  # Try recovery every 30s in error states
+                        logger.info(f"State machine attempting recovery from {current_state}")
+                        await self.run_calibration(f"recovery_from_{current_state}")
+                        self._errors_since_calibration = 0
+                
+                # Small sleep to prevent CPU spinning
+                await asyncio.sleep(0.5)
+                
+            except asyncio.CancelledError:
+                logger.info("State machine loop cancelled")
+                break
+            except Exception as e:
+                logger.error(f"Error in state machine loop: {e}", exc_info=True)
+                self._errors_since_calibration += 1
+                
+                # If too many errors, try to recover
+                if self._errors_since_calibration >= 5:
+                    logger.warning("Too many errors in state machine - attempting recovery")
+                    try:
+                        await self._update_trader_status("paused", "too many errors - recovering")
+                        await self.run_calibration("error_recovery")
+                    except Exception as recovery_error:
+                        logger.error(f"Recovery attempt failed: {recovery_error}")
+                
+                await asyncio.sleep(1.0)  # Back off on errors
+        
+        logger.info("State machine loop stopped")
+    
     async def run_calibration(self, reason: str = "manual") -> None:
         """
         Run a single calibration cycle.
@@ -4530,6 +5096,13 @@ class KalshiMultiMarketOrderManager:
             calibration_start = time.time()
             logger.info(f"Starting calibration: {reason}")
             
+            # Broadcast calibration start
+            if self._websocket_manager:
+                await self._websocket_manager.broadcast_calibration_start({
+                    "started_at": calibration_start,
+                    "reason": reason
+                })
+            
             # Capture trading stats before transitioning away from trading
             # (if we were in trading state)
             if self._extract_base_state(self._trader_status) == "trading":
@@ -4544,37 +5117,183 @@ class KalshiMultiMarketOrderManager:
                 await self._update_trader_status("calibrating", reason)
             
             # ========== PHASE 1: CONNECTION & HEALTH CHECKS ==========
+            if self._websocket_manager:
+                await self._websocket_manager.broadcast_calibration_step({
+                    "phase": "health_checks",
+                    "step": "checking_connections",
+                    "step_id": "orderbook_health",
+                    "name": "Orderbook Health Check",
+                    "status": "in_progress",
+                    "details": {"message": "Verifying system health and connections"}
+                })
+            
             health_results = await self._calibration_health_checks()
             
-            # If critical systems are unhealthy, we may need to pause trading
-            if not health_results["all_healthy"]:
-                logger.warning(f"Health checks failed: {health_results['summary']}")
-                # Continue with calibration but note the issues
+            if self._websocket_manager:
+                # Send individual health check results as separate steps
+                for component_name, component_data in health_results.get("components", {}).items():
+                    step_id_map = {
+                        "exchange": "trader_client_health",
+                        "orderbook": "orderbook_health",
+                        "fill_listener": "fill_listener_health",
+                        "order_listener": "position_listener_health",
+                        "event_bus": "event_bus_health"
+                    }
+                    step_id = step_id_map.get(component_name, component_name + "_health")
+                    await self._websocket_manager.broadcast_calibration_step({
+                        "phase": "health_checks",
+                        "step_id": step_id,
+                        "name": component_name.replace("_", " ").title() + " Health Check",
+                        "status": "complete" if component_data.get("healthy") else "failed",
+                        "details": component_data,
+                        "completed_at": time.time()
+                    })
+            
+            # Determine trading mode based on health results
+            # can_trade indicates if we have minimum requirements to place orders
+            if not health_results["can_trade"]:
+                logger.error(f"Cannot trade due to critical failures: {health_results['summary']}")
+                # Mark system as paused but continue calibration to gather more info
+                self._trading_enabled = False
+                
+                # If exchange is temporarily unavailable (503), we should retry soon
+                exchange_health = health_results["components"].get("exchange", {})
+                if exchange_health.get("is_503"):
+                    logger.info("Exchange temporarily unavailable (503) - will retry in recovery cycle")
+                    self._needs_recovery = True
+            elif not health_results["all_healthy"]:
+                logger.warning(f"Trading in degraded mode: {health_results['summary']}")
+                # Continue with limited functionality - activate fallback strategies
+                self._trading_enabled = True
+                self._degraded_mode = True
+                
+                # Activate fallback strategies for unhealthy optional components
+                if health_results["fallback_strategies"]:
+                    logger.info(f"Activating fallback strategies: {health_results['fallback_strategies']}")
+                    asyncio.create_task(self._activate_fallback_strategies(health_results))
+            else:
+                logger.info("All systems healthy - full trading capabilities available")
+                self._trading_enabled = True
+                self._degraded_mode = False
             
             # ========== PHASE 2: STATE DISCOVERY & SYNC ==========
+            if self._websocket_manager:
+                # Send state sync step updates
+                await self._websocket_manager.broadcast_calibration_step({
+                    "phase": "state_sync",
+                    "step_id": "sync_balance",
+                    "name": "Sync Balance",
+                    "status": "in_progress",
+                    "details": {"message": "Synchronizing account balance"}
+                })
+            
             sync_results = await self._calibration_sync_state()
             
+            if self._websocket_manager:
+                # Send individual state sync results as separate steps
+                sync_steps = [
+                    ("sync_balance", "Sync Balance", {"balance": sync_results.get("balance_synced", {})}),
+                    ("sync_positions", "Sync Positions", {"positions_count": sync_results.get("positions_synced", {}).get("count", 0)}),
+                    ("sync_settlements", "Sync Settlements", {"settlements_count": sync_results.get("settlements_synced", {}).get("count", 0)}),
+                    ("sync_orders", "Sync Orders", {"orders_in_kalshi": sync_results.get("order_stats", {}).get("found_in_kalshi", 0)})
+                ]
+                for step_id, name, details in sync_steps:
+                    await self._websocket_manager.broadcast_calibration_step({
+                        "phase": "state_sync",
+                        "step_id": step_id,
+                        "name": name,
+                        "status": "complete",
+                        "details": details,
+                        "completed_at": time.time()
+                    })
+            
             # ========== PHASE 3: LISTENER VERIFICATION ==========
+            if self._websocket_manager:
+                # Send listener verification step updates
+                await self._websocket_manager.broadcast_calibration_step({
+                    "phase": "listener_verification",
+                    "step_id": "verify_orderbook_subscriptions",
+                    "name": "Verify Orderbook Subscriptions",
+                    "status": "in_progress",
+                    "details": {"message": "Verifying orderbook data streams"}
+                })
+            
             verification_results = await self._calibration_verify_listeners()
+            
+            if self._websocket_manager:
+                # Send individual listener verification results as separate steps
+                listener_steps = [
+                    ("verify_orderbook_subscriptions", "Verify Orderbook Subscriptions", verification_results.get("orderbook", {})),
+                    ("verify_fill_listener_subscription", "Verify Fill Listener", verification_results.get("fill_listener", {})),
+                    ("verify_position_listener_subscription", "Verify Position Listener", verification_results.get("order_tracking", {})),
+                    ("verify_listeners", "Verify All Listeners", {"all_verified": verification_results.get("all_verified", False)})
+                ]
+                for step_id, name, details in listener_steps:
+                    status = "complete" if details.get("verified", False) else "failed"
+                    await self._websocket_manager.broadcast_calibration_step({
+                        "phase": "listener_verification",
+                        "step_id": step_id,
+                        "name": name,
+                        "status": status,
+                        "details": details,
+                        "completed_at": time.time()
+                    })
             
             # Navigate - evaluate conditions and determine next action
             navigation_result = await self._calibration_navigate(sync_results)
             
             # Broadcast complete calibration status
             calibration_summary = {
-                "type": "calibration_complete",
                 "health": health_results["all_healthy"],
+                "overall_status": health_results["overall_status"],
+                "can_trade": health_results["can_trade"],
+                "critical_health": health_results["critical_healthy"],
+                "optional_health": health_results["optional_healthy"],
                 "sync": sync_results.get("changes_detected", {}),
                 "verification": verification_results["all_verified"],
                 "balance": sync_results.get("cash_balance", 0),
                 "positions": sync_results.get("active_positions", 0),
                 "pending_orders": len([o for o in self.open_orders.values() if o.status == OrderStatus.PENDING]),
                 "duration": time.time() - calibration_start,
-                "timestamp": time.time()
+                "timestamp": time.time(),
+                "action": navigation_result["action"],
+                "reason": navigation_result["reason"],
+                "health_summary": health_results["summary"],
+                "critical_issues": health_results.get("critical_issues", []),
+                "optional_issues": health_results.get("optional_issues", []),
+                "fallback_strategies": health_results.get("fallback_strategies", []),
+                "degraded_mode": getattr(self, '_degraded_mode', False),
+                "trading_enabled": getattr(self, '_trading_enabled', True),
+                # Add detailed component results for frontend display
+                "component_results": health_results.get("components", {}),
+                "status": health_results["overall_status"]  # For legacy compatibility
             }
             
+            # Send final calibration complete step
             if self._websocket_manager:
-                await self._websocket_manager.broadcast_trader_state(calibration_summary)
+                await self._websocket_manager.broadcast_calibration_step({
+                    "phase": "calibration",
+                    "step_id": "calibration_complete",
+                    "name": "Calibration Complete",
+                    "status": "complete",
+                    "details": {
+                        "overall_status": health_results["overall_status"],
+                        "can_trade": health_results["can_trade"],
+                        "duration_seconds": time.time() - calibration_start
+                    },
+                    "completed_at": time.time()
+                })
+            
+            # Broadcast calibration complete via new dedicated message
+            if self._websocket_manager:
+                await self._websocket_manager.broadcast_calibration_complete(calibration_summary)
+            
+            # Also keep existing trader state broadcast for backward compatibility
+            if self._websocket_manager:
+                await self._websocket_manager.broadcast_trader_state({
+                    "type": "calibration_complete",
+                    **calibration_summary
+                })
             
             # Execute action based on navigation (recovery, etc.)
             action = navigation_result["action"]
@@ -4652,12 +5371,21 @@ class KalshiMultiMarketOrderManager:
             await self._notify_state_change()
             
             # Final state transition based on conditions
-            # If cash is still low after all actions, transition to low_cash state
+            # Priority: low cash > trading paused > degraded mode > normal trading
             if self.cash_balance < self.min_cash_reserve:
                 low_cash_reason = f"cash ${self.cash_balance:.2f} < ${self.min_cash_reserve:.2f}"
                 await self._update_trader_status("low_cash", low_cash_reason)
+            elif self._trading_paused:
+                # Trading is paused due to critical system failures
+                pause_info = self.get_trading_pause_info() or {}
+                pause_reason = pause_info.get("reason", "unknown")
+                await self._update_trader_status("paused", f"trading paused: {pause_reason}")
+            elif getattr(self, '_degraded_mode', False):
+                # System is operational but in degraded mode - calibration successful but limited capability
+                degraded_reason = f"degraded mode: {health_results.get('summary', 'using fallbacks')}"
+                await self._update_trader_status("trading_degraded", degraded_reason)
             else:
-                # Stats will be reset when entering trading state
+                # All systems healthy - normal trading mode
                 await self._update_trader_status("trading", f"cash ${self.cash_balance:.2f}")
                 
         except Exception as e:
@@ -4666,6 +5394,8 @@ class KalshiMultiMarketOrderManager:
             await self._update_trader_status("error", f"calibration failed: {str(e)[:50]}")
         finally:
             self._calibration_in_progress = False
+            self._last_calibration_time = time.time()
+            self._calibration_count += 1
     
     def add_state_change_callback(self, callback) -> None:
         """
@@ -4795,7 +5525,10 @@ class KalshiMultiMarketOrderManager:
                 "time_in_status": time.time() - self._state_entry_time if self._state_entry_time else 0,
                 "previous_state": self._previous_state,
                 "previous_state_duration": self._previous_state_duration
-            }
+            },
+            # Trading pause status (critical for understanding system health)
+            "trading_pause": self.get_trading_pause_info(),
+            "trading_enabled": not self._trading_paused
         }
         
     async def _notify_state_change(self) -> None:

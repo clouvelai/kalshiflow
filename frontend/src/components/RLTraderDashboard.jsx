@@ -26,7 +26,7 @@ const RLTraderDashboard = () => {
   const [allOrders, setAllOrders] = useState(new Map()); // Track ALL orders by trade_sequence_id
   const [positions, setPositions] = useState({}); // Track positions
   const [priceMode, setPriceMode] = useState('dollar'); // Price display mode: 'dollar' or 'cent'
-  const [initializationStatus, setInitializationStatus] = useState(null); // Initialization checklist status
+  const [calibrationStatus, setCalibrationStatus] = useState(null); // Calibration checklist status
   const [componentHealth, setComponentHealth] = useState({}); // Component health status
   const [traderStatus, setTraderStatus] = useState(null); // Current trader status
   const [traderStatusHistory, setTraderStatusHistory] = useState([]); // Status history log
@@ -86,7 +86,7 @@ const RLTraderDashboard = () => {
     }
 
     // Connect to RL trader WebSocket on port 8003 (paper trading)
-    const ws = new WebSocket('ws://localhost:8003/rl/ws');
+    const ws = new WebSocket('ws://localhost:8004/rl/ws');
     wsRef.current = ws;
 
     ws.onopen = () => {
@@ -640,36 +640,47 @@ const RLTraderDashboard = () => {
             // Heartbeat/ping message - ignore silently
             break;
             
-          case 'initialization_start':
-            // Initialization sequence started
+          case 'calibration_start':
+            // Calibration sequence started
             if (data.data) {
-              setInitializationStatus({
+              setCalibrationStatus({
                 started_at: data.data.started_at,
                 steps: {},
                 is_complete: false,
                 has_errors: false,
                 summary: {}
               });
-              setActiveTab('system'); // Ensure system tab is open during initialization
+              setActiveTab('system'); // Ensure system tab is open during calibration
             }
             break;
             
-          case 'initialization_step':
-            // Individual initialization step progress
+          case 'calibration_step':
+            // Individual calibration step progress
             if (data.data) {
-              setInitializationStatus(prev => {
+              setCalibrationStatus(prev => {
                 const updated = { ...prev };
                 if (!updated.steps) updated.steps = {};
                 updated.steps[data.data.step_id] = data.data;
+                
+                // Extract component results if present
+                if (data.data.component_results) {
+                  updated.component_results = data.data.component_results;
+                }
+                
                 return updated;
               });
+              
+              // Update component health if present
+              if (data.data.component_results) {
+                setComponentHealth(data.data.component_results);
+              }
             }
             break;
             
-          case 'initialization_complete':
-            // Initialization sequence completed
+          case 'calibration_complete':
+            // Calibration sequence completed
             if (data.data) {
-              setInitializationStatus(prev => ({
+              setCalibrationStatus(prev => ({
                 ...prev,
                 ...data.data,
                 started_at: data.data.started_at || prev?.started_at,
@@ -677,6 +688,7 @@ const RLTraderDashboard = () => {
                 duration_seconds: data.data.duration_seconds,
                 warnings: data.data.warnings || [],
                 steps: data.data.steps || prev?.steps || {},
+                component_results: data.data.component_results,
                 is_complete: true,
                 has_errors: (data.data.warnings || []).length > 0,
                 summary: {
@@ -684,7 +696,13 @@ const RLTraderDashboard = () => {
                   completed_steps: data.data.completed_steps || Object.values(data.data.steps || {}).filter(s => s.status === 'complete').length,
                 }
               }));
-              // Switch to portfolio tab after initialization completes
+              
+              // Update component health if present
+              if (data.data.component_results) {
+                setComponentHealth(data.data.component_results);
+              }
+              
+              // Switch to portfolio tab after calibration completes
               setActiveTab('portfolio');
             }
             break;
@@ -1415,7 +1433,7 @@ const RLTraderDashboard = () => {
               </>
             ) : (
               <SystemHealth 
-                initializationStatus={initializationStatus}
+                calibrationStatus={calibrationStatus}
                 componentHealth={componentHealth}
                 traderStatus={traderStatus}
                 traderStatusHistory={traderStatusHistory}
