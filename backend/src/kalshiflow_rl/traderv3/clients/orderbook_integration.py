@@ -141,6 +141,27 @@ class V3OrderbookIntegration:
         
         logger.info(f"✅ V3 Orderbook Integration stopped - Metrics: {self.get_metrics()}")
     
+    async def ensure_session_for_recovery(self) -> bool:
+        """
+        Ensure session is ready for recovery scenarios.
+        
+        This is called by the coordinator when recovering from ERROR state
+        to ensure the session lifecycle is properly managed.
+        
+        Returns:
+            True if session is ready, False if session creation failed
+        """
+        if not self._running:
+            logger.warning("Cannot ensure session - integration not running")
+            return False
+        
+        if hasattr(self._client, '_ensure_session_for_recovery'):
+            logger.info("Ensuring session is ready for recovery")
+            return await self._client._ensure_session_for_recovery()
+        else:
+            logger.debug("Client does not support session recovery - assuming ready")
+            return True
+    
     async def wait_for_connection(self, timeout: float = 30.0) -> bool:
         """
         Wait for orderbook client to establish connection.
@@ -182,17 +203,26 @@ class V3OrderbookIntegration:
         
         start_time = time.time()
         while time.time() - start_time < timeout:
-            # Check both our metrics and the client's snapshot tracking
-            if self._first_snapshot_received or self._client.has_received_snapshots():
+            # Wait for actual metrics update via event bus, not just client's report
+            # This ensures markets_connected is properly populated before we proceed
+            if self._metrics.markets_connected:
+                # We have actual market connections tracked in our metrics
                 snapshot_markets = self._client.get_snapshot_received_markets()
                 logger.info(
                     f"✅ First snapshot received after {time.time() - start_time:.1f}s. "
-                    f"Markets with snapshots: {', '.join(snapshot_markets)}"
+                    f"Markets connected: {len(self._metrics.markets_connected)} "
+                    f"({', '.join(list(self._metrics.markets_connected)[:5])}{'...' if len(self._metrics.markets_connected) > 5 else ''})"
                 )
                 if not self._first_snapshot_received:
                     self._first_snapshot_received = True
                     self._first_snapshot_time = time.time()
                 return True
+            # Also check client tracking as backup
+            elif self._client.has_received_snapshots():
+                # Client has snapshots but event bus hasn't processed them yet
+                # Give it a bit more time for event bus to catch up
+                await asyncio.sleep(0.1)
+                continue
             await asyncio.sleep(0.1)
         
         logger.warning(f"⚠️ No snapshot received within {timeout}s")
@@ -223,28 +253,38 @@ class V3OrderbookIntegration:
         
         # Check if we have active market connections (received at least one snapshot)
         if not self._metrics.markets_connected:
-            # During initial startup (first 30s), be lenient
-            if self._started_at and (time.time() - self._started_at) < 30.0:
+            # During initial startup (first 20s), be lenient
+            if self._started_at and (time.time() - self._started_at) < 20.0:
                 return True  # Still starting up
             return False
         
-        # If we've received snapshots and the underlying client is healthy, we're good
-        # Markets might be quiet with no deltas - that's normal for low-volume markets
-        if self._first_snapshot_received and self._client and self._client.is_healthy():
+        # If we've received snapshots and have connected markets, trust our own tracking
+        # This prevents cascade failures from brief client health flickers
+        if self._first_snapshot_received and self._metrics.markets_connected:
+            # We have data - we're healthy regardless of client's brief health flickers
             return True
         
         # Fallback: Check if we're still in the startup phase
         now = time.time()
-        if self._started_at and (now - self._started_at) > 30.0:
-            # If we've been running for 30s and never received any snapshots, that's unhealthy
+        if self._started_at and (now - self._started_at) > 20.0:
+            # If we've been running for 20s and never received any snapshots, that's unhealthy
             if not self._first_snapshot_received:
-                logger.warning(f"No orderbook snapshots received after {now - self._started_at:.1f}s - marking unhealthy")
+                # Only log warning every 60 seconds to avoid spam
+                if not hasattr(self, '_last_health_warning') or (now - self._last_health_warning) > 60.0:
+                    logger.warning(f"No orderbook snapshots received after {now - self._started_at:.1f}s - marking unhealthy")
+                    self._last_health_warning = now
                 return False
         
-        # If the client connection is broken, we're unhealthy
-        if self._client and not self._client.is_healthy():
-            logger.warning("Orderbook client connection is unhealthy")
-            return False
+        # Only check client health during startup (before we have data)
+        # Once we have data, we trust our own tracking
+        if not self._first_snapshot_received:
+            if self._client and not self._client.is_healthy():
+                # Only log warning every 30 seconds to avoid spam
+                now = time.time()
+                if not hasattr(self, '_last_client_warning') or (now - self._last_client_warning) > 30.0:
+                    logger.warning("Orderbook client connection is unhealthy during startup")
+                    self._last_client_warning = now
+                return False
         
         return True
     

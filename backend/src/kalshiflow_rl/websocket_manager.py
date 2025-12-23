@@ -10,7 +10,7 @@ import json
 import logging
 import time
 from typing import Dict, Set, Optional, Any
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 from contextlib import asynccontextmanager
 
 from starlette.websockets import WebSocket, WebSocketState

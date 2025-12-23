@@ -89,6 +89,10 @@ class OrderbookClient:
         # Stats collector for metrics tracking
         self._stats_collector = stats_collector
         
+        # Health state tracking for session management
+        self._last_health_state = False
+        self._session_state = "inactive"  # inactive, active, closed
+        
         # V3 integration: Use provided event bus or fallback to global
         # This allows V3 trader to receive events directly without global coupling
         self._v3_event_bus = event_bus
@@ -137,11 +141,13 @@ class OrderbookClient:
             except Exception as e:
                 logger.error(f"Failed to close session {self._session_id}: {e}")
             self._session_id = None
+            self._session_state = "closed"
         
         logger.info(
             f"OrderbookClient stopped. Final stats: "
             f"messages={self._messages_received}, snapshots={self._snapshots_received}, "
-            f"deltas={self._deltas_received}, reconnects={self._reconnect_count}"
+            f"deltas={self._deltas_received}, reconnects={self._reconnect_count}, "
+            f"session_state={self._session_state}"
         )
     
     async def wait_for_connection(self, timeout: float = 30.0) -> bool:
@@ -212,6 +218,8 @@ class OrderbookClient:
                 environment=config.ENVIRONMENT
             )
             
+            self._session_state = "active"
+            
             # Pass session ID to write queue
             get_write_queue().set_session_id(self._session_id)
             
@@ -278,9 +286,11 @@ class OrderbookClient:
                         snapshots=self._snapshots_received, 
                         deltas=self._deltas_received
                     )
+                    logger.info(f"Session {self._session_id} closed on disconnect")
                 except Exception as e:
                     logger.error(f"Failed to update session on disconnect: {e}")
                 self._session_id = None
+                self._session_state = "closed"
             
             if self._on_disconnected:
                 try:
@@ -736,7 +746,9 @@ class OrderbookClient:
             "deltas_received": self._deltas_received,
             "uptime_seconds": uptime,
             "last_message_time": self._last_message_time,
-            "session_id": self._session_id
+            "session_id": self._session_id,
+            "session_state": self._session_state,
+            "health_state": "healthy" if self._last_health_state else "unhealthy"
         }
         
         return stats
@@ -744,6 +756,8 @@ class OrderbookClient:
     def is_healthy(self) -> bool:
         """Check if client is healthy and receiving data."""
         if not self._running:
+            # Handle health state change for proper session management
+            asyncio.create_task(self._handle_health_state_change(False))
             return False
         
         # During initial connection period (first 10 seconds), be lenient:
@@ -766,8 +780,10 @@ class OrderbookClient:
                     except (AttributeError, TypeError):
                         pass
                     # Websocket exists and appears open - healthy during grace period
+                    asyncio.create_task(self._handle_health_state_change(True))
                     return True
                 # Websocket is None - connection hasn't been established yet, not healthy
+                asyncio.create_task(self._handle_health_state_change(False))
                 return False
         
         # After grace period, check websocket state strictly
@@ -784,6 +800,7 @@ class OrderbookClient:
                 if websocket_closed:
                     # Clear websocket reference since it's closed
                     self._websocket = None
+                    asyncio.create_task(self._handle_health_state_change(False))
                     return False
             except (AttributeError, TypeError) as e:
                 logger.debug(f"Could not check WebSocket connection state: {e}")
@@ -791,6 +808,7 @@ class OrderbookClient:
                 pass
         else:
             # No websocket after grace period - not healthy
+            asyncio.create_task(self._handle_health_state_change(False))
             return False
         
         # If we have a websocket connection but haven't received messages yet,
@@ -799,23 +817,132 @@ class OrderbookClient:
             time_since_connection = time.time() - self._connection_start_time
             if time_since_connection < 10.0:
                 # During initial connection period, just check if websocket exists and is running
-                return self._websocket is not None
+                is_healthy = self._websocket is not None
+                asyncio.create_task(self._handle_health_state_change(is_healthy))
+                return is_healthy
         
         # After initial period, we should have received snapshots if healthy and subscribed to valid markets
         if self._snapshots_received == 0:
             # No snapshots received after initial period - unhealthy
+            asyncio.create_task(self._handle_health_state_change(False))
             return False
         
         # We've received snapshots, connection is healthy
-        # Only mark unhealthy if we haven't received ANY messages for 5 minutes
+        # Only mark unhealthy if we haven't received ANY messages for 30 minutes
         # This handles the case where the connection silently dies
         # Note: When a new message arrives, _last_message_time gets updated, so this will recover to healthy
         if self._last_message_time:
             time_since_message = time.time() - self._last_message_time
-            if time_since_message > 300:  # No messages for 5 minutes - likely disconnected
+            if time_since_message > 1800:  # No messages for 30 minutes - likely disconnected
+                asyncio.create_task(self._handle_health_state_change(False))
                 return False
         
+        # If we reach here, system is healthy
+        asyncio.create_task(self._handle_health_state_change(True))
         return True
+    
+    async def _handle_health_state_change(self, new_health_state: bool) -> None:
+        """
+        Handle health state transitions for session management.
+        
+        When health transitions from True -> False, close current session
+        while preserving metrics for continuity.
+        """
+        if self._last_health_state == new_health_state:
+            return  # No state change
+        
+        previous_state = "healthy" if self._last_health_state else "unhealthy"
+        new_state = "healthy" if new_health_state else "unhealthy"
+        
+        logger.info(f"Health state transition: {previous_state} -> {new_state}")
+        
+        # When transitioning to unhealthy, close session but preserve metrics
+        if self._last_health_state and not new_health_state:
+            logger.info("Health failure detected - closing current session while preserving metrics")
+            await self._cleanup_session_on_health_failure()
+        
+        self._last_health_state = new_health_state
+    
+    async def _cleanup_session_on_health_failure(self) -> None:
+        """
+        Close current session on health failure while preserving metrics.
+        
+        This ensures clean session lifecycle without losing data continuity.
+        Metrics are preserved to maintain monitoring and debugging capabilities.
+        """
+        if not self._session_id or self._session_state != "active":
+            logger.debug("No active session to cleanup on health failure")
+            return
+        
+        try:
+            # Update session stats before closing
+            await rl_db.update_session_stats(
+                self._session_id,
+                messages=self._messages_received,
+                snapshots=self._snapshots_received,
+                deltas=self._deltas_received
+            )
+            
+            # Close session with health failure status
+            await rl_db.close_session(
+                self._session_id,
+                status='health_failure',
+                error_message='Health check failed - session closed for cleanup'
+            )
+            
+            logger.info(f"Closed session {self._session_id} due to health failure (metrics preserved)")
+            
+            # Mark session as closed but preserve metrics
+            # DO NOT reset _messages_received, _snapshots_received, _deltas_received
+            # These metrics should continue across health failures for monitoring continuity
+            self._session_id = None
+            self._session_state = "closed"
+            
+            # Clear write queue session reference
+            get_write_queue().set_session_id(None)
+            
+        except Exception as e:
+            logger.error(f"Failed to cleanup session on health failure: {e}")
+    
+    async def _ensure_session_for_recovery(self) -> bool:
+        """
+        Ensure a session exists for recovery scenarios.
+        
+        Returns True if session is ready, False if creation failed.
+        """
+        if self._session_id and self._session_state == "active":
+            logger.debug("Active session already exists for recovery")
+            return True
+        
+        # Only create new session if we have an active websocket connection
+        if not self._websocket:
+            logger.debug("No websocket connection - cannot create session yet")
+            return False
+        
+        try:
+            # Create new session for recovery
+            self._session_id = await rl_db.create_session(
+                market_tickers=self.market_tickers,
+                websocket_url=self.ws_url,
+                environment=config.ENVIRONMENT
+            )
+            
+            self._session_state = "active"
+            
+            # Pass session ID to write queue
+            get_write_queue().set_session_id(self._session_id)
+            
+            logger.info(
+                f"Created recovery session {self._session_id} "
+                f"(preserved metrics: messages={self._messages_received}, "
+                f"snapshots={self._snapshots_received}, deltas={self._deltas_received})"
+            )
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to create recovery session: {e}")
+            return False
     
     def get_health_details(self) -> Dict[str, Any]:
         """
@@ -838,6 +965,8 @@ class OrderbookClient:
             "uptime_seconds": stats.get("uptime_seconds"),
             "reconnect_count": stats.get("reconnect_count", 0),
             "session_id": stats.get("session_id"),
+            "session_state": stats.get("session_state", "unknown"),
+            "health_state": stats.get("health_state", "unknown"),
         }
         
         return health_details

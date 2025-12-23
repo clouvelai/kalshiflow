@@ -277,17 +277,49 @@ class V3Coordinator:
                         context="Component health check failed",
                         metadata={
                             "reason": "Component health check failed",
-                            "unhealthy_components": unhealthy
+                            "unhealthy_components": unhealthy,
+                            "session_cleanup_triggered": True  # Health failure will trigger session cleanup
                         }
                     )
                 
                 # If in ERROR state and everything is healthy, attempt recovery
                 elif self._state_machine.current_state == V3State.ERROR and all_healthy:
-                    logger.info("All components healthy, attempting recovery...")
-                    await self._state_machine.transition_to(
-                        V3State.ORDERBOOK_CONNECT,
-                        context="Attempting recovery after all components healthy"
-                    )
+                    logger.info("All components healthy, attempting recovery from ERROR state...")
+                    
+                    # Ensure session is ready for recovery
+                    session_ready = await self._orderbook_integration.ensure_session_for_recovery()
+                    if not session_ready:
+                        logger.warning("Session not ready for recovery, will retry next health check")
+                        continue
+                    
+                    # Check if orderbook integration has received snapshots to determine recovery state
+                    orderbook_metrics = self._orderbook_integration.get_metrics()
+                    has_data = orderbook_metrics["snapshots_received"] > 0
+                    
+                    if has_data:
+                        # Direct to READY if we already have data flowing
+                        logger.info("Data flow confirmed, recovering to READY state")
+                        await self._state_machine.transition_to(
+                            V3State.READY,
+                            context=f"Recovered from error - {orderbook_metrics['markets_connected']} markets operational",
+                            metadata={
+                                "recovery": True,
+                                "session_recovery": session_ready,
+                                "markets_connected": orderbook_metrics["markets_connected"],
+                                "snapshots_received": orderbook_metrics["snapshots_received"]
+                            }
+                        )
+                    else:
+                        # Go through connection process if no data yet
+                        logger.info("No data flow yet, recovering via ORDERBOOK_CONNECT")
+                        await self._state_machine.transition_to(
+                            V3State.ORDERBOOK_CONNECT,
+                            context="Recovering connection after components healthy",
+                            metadata={
+                                "recovery": True,
+                                "session_recovery": session_ready
+                            }
+                        )
                 
             except asyncio.CancelledError:
                 break
@@ -303,6 +335,16 @@ class V3Coordinator:
             
             # Get detailed health information including connection status fields
             health_details = self._orderbook_integration.get_health_details()
+            
+            # Get session information if available
+            session_info = {}
+            if hasattr(self._orderbook_integration, '_client') and self._orderbook_integration._client:
+                client_stats = self._orderbook_integration._client.get_stats()
+                session_info = {
+                    "session_id": client_stats.get("session_id"),
+                    "session_state": client_stats.get("session_state", "unknown"),
+                    "health_state": client_stats.get("health_state", "unknown")
+                }
             
             uptime = time.time() - self._started_at if self._started_at else 0
             
@@ -325,7 +367,11 @@ class V3Coordinator:
                     "health": "healthy" if self.is_healthy() else "unhealthy",
                     # Add connection status fields (fix for Issue 2)
                     "connection_established": health_details.get("connection_established"),
-                    "first_snapshot_received": health_details.get("first_snapshot_received")
+                    "first_snapshot_received": health_details.get("first_snapshot_received"),
+                    # Add session information for debugging
+                    "session_id": session_info.get("session_id"),
+                    "session_state": session_info.get("session_state"),
+                    "health_state": session_info.get("health_state")
                 },
                 timestamp=time.time()
             )
@@ -339,13 +385,15 @@ class V3Coordinator:
                 f"first_snapshot_received={event.metrics.get('first_snapshot_received')}"
             )
             
-            # Log summary
+            # Log summary with session information
+            session_display = f"Session: {session_info.get('session_id', 'N/A')} ({session_info.get('session_state', 'unknown')})" if session_info.get('session_id') else "Session: None"
             logger.info(
                 f"STATUS: {self._state_machine.current_state.value} | "
                 f"Markets: {orderbook_metrics['markets_connected']} | "
                 f"Snapshots: {orderbook_metrics['snapshots_received']} | "
                 f"Deltas: {orderbook_metrics['deltas_received']} | "
-                f"WS Clients: {ws_stats['active_connections']}"
+                f"WS Clients: {ws_stats['active_connections']} | "
+                f"{session_display}"
                 f"{' | ' + context if context else ''}"
             )
             

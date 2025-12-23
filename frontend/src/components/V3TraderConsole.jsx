@@ -147,7 +147,7 @@ const V3TraderConsole = () => {
     }
 
     try {
-      const ws = new WebSocket('ws://localhost:8005/v3/ws');
+      const ws = new WebSocket('ws://localhost:8006/v3/ws');
       
       ws.onopen = () => {
         setWsStatus('connected');
