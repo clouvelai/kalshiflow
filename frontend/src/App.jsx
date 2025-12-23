@@ -8,6 +8,7 @@ import TradeFlowRiver from './components/TradeFlowRiver';
 import TopTradesList from './components/TopTradesList';
 import FAQ from './components/FAQ';
 import RLTraderDashboard from './components/RLTraderDashboard';
+import V3TraderConsole from './components/V3TraderConsole';
 
 const MainDashboard = () => {
   const {
@@ -83,6 +84,14 @@ function App() {
         <Route 
           path="/trader" 
           element={<RLTraderDashboard />} 
+        />
+        <Route 
+          path="/v3-trader" 
+          element={<V3TraderConsole />} 
+        />
+        <Route 
+          path="/v3" 
+          element={<V3TraderConsole />} 
         />
       </Routes>
     </Router>
