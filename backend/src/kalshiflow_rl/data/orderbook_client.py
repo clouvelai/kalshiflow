@@ -11,7 +11,7 @@ import json
 import logging
 import time
 import traceback
-from typing import Dict, Any, Optional, Callable, List
+from typing import Dict, Any, Optional, Callable, List, Set
 import websockets
 from websockets.exceptions import ConnectionClosed, InvalidMessage, InvalidStatus
 
@@ -21,6 +21,7 @@ from .write_queue import get_write_queue
 from .database import rl_db
 from ..config import config
 from ..trading.event_bus import emit_orderbook_snapshot, emit_orderbook_delta
+from ..trading.event_bus import EventBus as GlobalEventBus, EventType as GlobalEventType
 
 logger = logging.getLogger("kalshiflow_rl.orderbook_client")
 
@@ -39,13 +40,14 @@ class OrderbookClient:
     - Per-market sequence number tracking and validation
     """
     
-    def __init__(self, market_tickers: Optional[List[str]] = None, stats_collector=None):
+    def __init__(self, market_tickers: Optional[List[str]] = None, stats_collector=None, event_bus: Optional[Any] = None):
         """
         Initialize orderbook client.
         
         Args:
             market_tickers: List of market tickers to subscribe to (defaults to config)
             stats_collector: Optional stats collector for tracking metrics
+            event_bus: Optional event bus to use instead of global bus (for v3 integration)
         """
         # Support backward compatibility - accept single ticker as string
         if isinstance(market_tickers, str):
@@ -86,6 +88,13 @@ class OrderbookClient:
         
         # Stats collector for metrics tracking
         self._stats_collector = stats_collector
+        
+        # V3 integration: Use provided event bus or fallback to global
+        # This allows V3 trader to receive events directly without global coupling
+        self._v3_event_bus = event_bus
+        
+        # Track which markets have received snapshots (for V3 integration)
+        self._snapshot_received_markets: Set[str] = set()
         
         logger.info(f"OrderbookClient initialized for {len(self.market_tickers)} markets: {', '.join(self.market_tickers)}")
     
@@ -510,17 +519,31 @@ class OrderbookClient:
             # Queue for database persistence with session ID (non-blocking)
             enqueue_success = await get_write_queue().enqueue_snapshot(snapshot_data)
             
-            # Trigger actor event via event bus after successful database enqueue (non-blocking)
-            if enqueue_success:
-                try:
+            # Track that this market has received a snapshot (always, not just on enqueue success)
+            self._snapshot_received_markets.add(market_ticker)
+            
+            # Trigger actor event via event bus (always emit, not dependent on database enqueue)
+            try:
+                # Dual event bus strategy for V3 integration:
+                # 1. Emit to V3's event bus if provided (direct integration without global coupling)
+                # 2. Fallback to global event bus (maintains backward compatibility)
+                if self._v3_event_bus:
+                    # Direct V3 event bus emission for isolated operation
+                    await self._v3_event_bus.emit_orderbook_snapshot(
+                        market_ticker=market_ticker,
+                        metadata={"sequence_number": snapshot_data["sequence_number"],
+                                "timestamp_ms": snapshot_data["timestamp_ms"]}
+                    )
+                else:
+                    # Fallback to global event bus for backward compatibility
                     await emit_orderbook_snapshot(
                         market_ticker=market_ticker,
                         sequence_number=snapshot_data["sequence_number"],
                         timestamp_ms=snapshot_data["timestamp_ms"]
                     )
-                except Exception as e:
-                    # Don't let event bus errors break orderbook processing
-                    logger.debug(f"Event bus emit failed for {market_ticker} snapshot: {e}")
+            except Exception as e:
+                # Don't let event bus errors break orderbook processing
+                logger.debug(f"Event bus emit failed for {market_ticker} snapshot: {e}")
             
             # Log snapshot processing (less verbose for production)
             total_levels = (len(snapshot_data['yes_bids']) + len(snapshot_data['yes_asks']) + 
@@ -616,17 +639,28 @@ class OrderbookClient:
             # Queue for database persistence with session ID (non-blocking)
             enqueue_success = await get_write_queue().enqueue_delta(delta_data)
             
-            # Trigger actor event via event bus after successful database enqueue (non-blocking)
-            if enqueue_success:
-                try:
+            # Trigger actor event via event bus (always emit, not dependent on database enqueue)
+            try:
+                # Dual event bus strategy for V3 integration:
+                # 1. Emit to V3's event bus if provided (direct integration without global coupling)
+                # 2. Fallback to global event bus (maintains backward compatibility)
+                if self._v3_event_bus:
+                    # Direct V3 event bus emission for isolated operation
+                    await self._v3_event_bus.emit_orderbook_delta(
+                        market_ticker=market_ticker,
+                        metadata={"sequence_number": delta_data["sequence_number"],
+                                "timestamp_ms": delta_data["timestamp_ms"]}
+                    )
+                else:
+                    # Fallback to global event bus for backward compatibility
                     await emit_orderbook_delta(
                         market_ticker=market_ticker,
                         sequence_number=delta_data["sequence_number"],
                         timestamp_ms=delta_data["timestamp_ms"]
                     )
-                except Exception as e:
-                    # Don't let event bus errors break orderbook processing
-                    logger.debug(f"Event bus emit failed for {market_ticker} delta: {e}")
+            except Exception as e:
+                # Don't let event bus errors break orderbook processing
+                logger.debug(f"Event bus emit failed for {market_ticker} delta: {e}")
             
             # Log periodically at info level for production monitoring
             if self._deltas_received % 1000 == 0:
@@ -807,6 +841,24 @@ class OrderbookClient:
         }
         
         return health_details
+    
+    def has_received_snapshots(self) -> bool:
+        """
+        Check if we've received at least one snapshot.
+        
+        Returns:
+            True if any market has received a snapshot, False otherwise
+        """
+        return len(self._snapshot_received_markets) > 0
+    
+    def get_snapshot_received_markets(self) -> Set[str]:
+        """
+        Get the set of markets that have received snapshots.
+        
+        Returns:
+            Set of market tickers that have received snapshots
+        """
+        return self._snapshot_received_markets.copy()
     
     def get_last_sync_time(self) -> Optional[float]:
         """

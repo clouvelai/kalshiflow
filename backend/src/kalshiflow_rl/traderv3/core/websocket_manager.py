@@ -1,0 +1,450 @@
+"""
+TRADER V3 WebSocket Manager - Simple Status Broadcasting.
+
+Lightweight WebSocket manager focused only on V3 trader status broadcasting.
+Provides real-time updates for state machine transitions, orderbook metrics,
+and system health to the frontend console.
+"""
+
+import asyncio
+import json
+import logging
+import time
+from typing import Dict, Any, List, Optional, Set
+from dataclasses import dataclass, asdict
+from collections import deque
+import weakref
+
+from starlette.websockets import WebSocket, WebSocketDisconnect
+
+from .event_bus import EventBus, EventType, StateTransitionEvent, TraderStatusEvent, MarketEvent
+
+logger = logging.getLogger("kalshiflow_rl.traderv3.websocket_manager")
+
+
+@dataclass
+class WebSocketClient:
+    """Represents a connected WebSocket client."""
+    websocket: WebSocket
+    client_id: str
+    connected_at: float
+    last_ping: Optional[float] = None
+    subscriptions: Set[str] = None
+    
+    def __post_init__(self):
+        if self.subscriptions is None:
+            self.subscriptions = {"state_transitions", "trader_status", "orderbook_metrics"}
+
+
+class V3WebSocketManager:
+    """
+    Simple WebSocket manager for TRADER V3 status broadcasting.
+    
+    Features:
+    - Real-time state machine transition broadcasting
+    - Orderbook metrics and health status updates
+    - Console-style message formatting for frontend
+    - Connection management with automatic cleanup
+    - Event bus integration for seamless updates
+    """
+    
+    def __init__(self, event_bus: Optional[EventBus] = None, state_machine=None):
+        """
+        Initialize WebSocket manager.
+        
+        Args:
+            event_bus: EventBus instance for subscribing to events
+            state_machine: State machine instance for getting current state
+        """
+        self._event_bus = event_bus
+        self._state_machine = state_machine
+        self._clients: Dict[str, WebSocketClient] = {}
+        self._client_counter = 0
+        self._started_at: Optional[float] = None
+        self._running = False
+        
+        # Message statistics
+        self._messages_sent = 0
+        self._connection_count = 0
+        self._active_connections = 0
+        
+        # Ping task for connection health
+        self._ping_task: Optional[asyncio.Task] = None
+        self._ping_interval = 30.0  # seconds
+        
+        # State transition history buffer (last 20 transitions)
+        # This ensures late-connecting clients can see the startup sequence
+        self._state_transition_history: deque = deque(maxlen=20)
+        
+        logger.info("TRADER V3 WebSocket Manager initialized")
+    
+    async def start(self) -> None:
+        """Start the WebSocket manager."""
+        if self._running:
+            logger.warning("WebSocket manager is already running")
+            return
+        
+        self._running = True
+        self._started_at = time.time()
+        
+        # Subscribe to event bus if provided
+        if self._event_bus:
+            self._event_bus.subscribe(EventType.STATE_TRANSITION, self._handle_state_transition)
+            self._event_bus.subscribe(EventType.TRADER_STATUS, self._handle_trader_status)
+            # Don't subscribe to orderbook events - they're too noisy for the console
+            # self._event_bus.subscribe(EventType.ORDERBOOK_SNAPSHOT, self._handle_orderbook_event)
+            # self._event_bus.subscribe(EventType.ORDERBOOK_DELTA, self._handle_orderbook_event)
+            logger.info("Subscribed to event bus for real-time updates")
+        
+        # Start periodic ping task
+        self._ping_task = asyncio.create_task(self._ping_clients())
+        
+        logger.info("✅ TRADER V3 WebSocket Manager started")
+    
+    async def stop(self) -> None:
+        """Stop the WebSocket manager and disconnect all clients."""
+        if not self._running:
+            return
+        
+        logger.info("Stopping TRADER V3 WebSocket Manager...")
+        self._running = False
+        
+        # Cancel ping task
+        if self._ping_task:
+            self._ping_task.cancel()
+            try:
+                await self._ping_task
+            except asyncio.CancelledError:
+                pass
+        
+        # Disconnect all clients
+        disconnect_tasks = []
+        for client in list(self._clients.values()):
+            disconnect_tasks.append(self._disconnect_client(client.client_id))
+        
+        if disconnect_tasks:
+            await asyncio.gather(*disconnect_tasks, return_exceptions=True)
+        
+        logger.info(f"✅ TRADER V3 WebSocket Manager stopped. Messages sent: {self._messages_sent}")
+    
+    async def handle_websocket(self, websocket: WebSocket) -> None:
+        """
+        Handle new WebSocket connection.
+        
+        Args:
+            websocket: WebSocket connection to handle
+        """
+        try:
+            # Accept the connection first
+            await websocket.accept()
+            
+            # Generate unique client ID
+            self._client_counter += 1
+            client_id = f"client_{self._client_counter}_{int(time.time())}"
+            
+            # Create client record
+            client = WebSocketClient(
+                websocket=websocket,
+                client_id=client_id,
+                connected_at=time.time()
+            )
+            
+            self._clients[client_id] = client
+            self._connection_count += 1
+            self._active_connections += 1
+            
+            logger.info(f"WebSocket client connected: {client_id}")
+            
+            # Send initial connection acknowledgment
+            await self._send_to_client(client_id, {
+                "type": "connection",
+                "data": {
+                    "client_id": client_id,
+                    "timestamp": time.strftime("%H:%M:%S"),
+                    "message": "Connected to TRADER V3 console"
+                }
+            })
+            
+            # Small delay to ensure connection is stable
+            await asyncio.sleep(0.1)
+            
+            # Replay historical state transitions to bring new clients up to date
+            # This ensures late-connecting clients see the full startup sequence
+            # including calibration steps and state changes
+            if self._state_transition_history:
+                logger.info(f"Replaying {len(self._state_transition_history)} historical state transitions to client {client_id}")
+                
+                # Send transitions in a batch to avoid overwhelming the connection
+                history_batch = {
+                    "type": "history_replay", 
+                    "data": {
+                        "transitions": [msg["data"] for msg in self._state_transition_history],
+                        "count": len(self._state_transition_history)
+                    }
+                }
+                
+                # Ensure client still exists before sending
+                if client_id in self._clients:
+                    await self._send_to_client(client_id, history_batch)
+                    await asyncio.sleep(0.1)  # Brief pause after history replay
+            
+            # Now handle incoming messages
+            # (Current state is already included in the historical transitions replay)
+            async for message in websocket.iter_text():
+                await self._handle_client_message(client_id, message)
+                    
+        except WebSocketDisconnect:
+            logger.info(f"WebSocket client disconnected: {client_id}")
+        except Exception as e:
+            logger.error(f"Error handling WebSocket client {client_id}: {e}")
+        finally:
+            await self._disconnect_client(client_id)
+    
+    async def broadcast_message(self, message_type: str, data: Dict[str, Any]) -> None:
+        """
+        Broadcast message to all connected clients.
+        
+        Args:
+            message_type: Type of message
+            data: Message data
+        """
+        if not self._clients:
+            return
+        
+        message = {
+            "type": message_type,
+            "data": data,
+            "timestamp": time.time()
+        }
+        
+        # Send to all connected clients
+        send_tasks = []
+        for client_id in list(self._clients.keys()):
+            send_tasks.append(self._send_to_client(client_id, message))
+        
+        if send_tasks:
+            await asyncio.gather(*send_tasks, return_exceptions=True)
+    
+    async def broadcast_console_message(self, level: str, message: str, context: Optional[Dict[str, Any]] = None) -> None:
+        """
+        Broadcast console-style message to all clients.
+        
+        Args:
+            level: Log level (info, warning, error, debug)
+            message: Console message
+            context: Optional additional context
+        """
+        timestamp_str = time.strftime("%H:%M:%S", time.localtime())
+        
+        await self.broadcast_message("console", {
+            "level": level,
+            "timestamp": timestamp_str,
+            "message": message,
+            "context": context or {}
+        })
+    
+    async def _handle_state_transition(self, event: StateTransitionEvent) -> None:
+        """Handle state transition events from event bus."""
+        logger.debug(f"Handling state transition event: {event.from_state} → {event.to_state}")
+        
+        # Use state names directly - they're already uppercase
+        to_display = event.to_state.upper()
+        
+        # Create the transition message with ALL metadata
+        transition_message = {
+            "type": "state_transition",
+            "data": {
+                "timestamp": time.strftime("%H:%M:%S", time.localtime(event.timestamp)),
+                "state": to_display,
+                "message": f"State: {event.from_state} → {event.to_state}",
+                "context": event.context,
+                "from_state": event.from_state,
+                "to_state": event.to_state,
+                "metadata": event.metadata  # Pass through ALL metadata from the event
+            }
+        }
+        
+        # Store in history buffer for late-connecting clients
+        self._state_transition_history.append(transition_message)
+        
+        # Broadcast to currently connected clients
+        await self.broadcast_message("state_transition", transition_message["data"])
+    
+    async def _handle_trader_status(self, event: TraderStatusEvent) -> None:
+        """Handle trader status events from event bus."""
+        logger.debug(f"Handling trader status event: {event.state}")
+        
+        # Only send trader_status for metrics updates, not console messages
+        # The frontend will update metrics silently
+        await self.broadcast_message("trader_status", {
+            "timestamp": time.strftime("%H:%M:%S", time.localtime(event.timestamp)),
+            "state": event.state,
+            "health": event.health,
+            "metrics": event.metrics
+        })
+    
+    async def _handle_orderbook_event(self, event: MarketEvent) -> None:
+        """Handle orderbook events from event bus."""
+        # Only broadcast summary updates, not every single event (would be too noisy)
+        # This will be used for periodic metrics updates
+        pass
+    
+    async def _handle_client_message(self, client_id: str, message: str) -> None:
+        """
+        Handle message from WebSocket client.
+        
+        Args:
+            client_id: Client ID
+            message: Raw message string
+        """
+        try:
+            data = json.loads(message)
+            message_type = data.get("type")
+            
+            if message_type == "ping":
+                # Respond to ping with pong
+                await self._send_to_client(client_id, {
+                    "type": "pong",
+                    "timestamp": time.time()
+                })
+                
+                # Update last ping time
+                if client_id in self._clients:
+                    self._clients[client_id].last_ping = time.time()
+                    
+            elif message_type == "subscribe":
+                # Handle subscription changes
+                subscriptions = set(data.get("subscriptions", []))
+                if client_id in self._clients:
+                    self._clients[client_id].subscriptions = subscriptions
+                    logger.info(f"Client {client_id} subscribed to: {subscriptions}")
+                    
+            else:
+                logger.debug(f"Unknown message type from client {client_id}: {message_type}")
+                
+        except json.JSONDecodeError:
+            logger.warning(f"Invalid JSON from client {client_id}: {message}")
+        except Exception as e:
+            logger.error(f"Error handling message from client {client_id}: {e}")
+    
+    async def _send_to_client(self, client_id: str, message: Dict[str, Any]) -> None:
+        """
+        Send message to specific client with proper error handling.
+        
+        Args:
+            client_id: Target client ID
+            message: Message to send
+        """
+        if client_id not in self._clients:
+            logger.debug(f"Client {client_id} not found, skipping message")
+            return
+        
+        client = self._clients.get(client_id)
+        if not client:
+            return
+        
+        try:
+            # Send message directly - starlette websockets handle their own state internally
+            await client.websocket.send_text(json.dumps(message))
+            self._messages_sent += 1
+                
+        except (RuntimeError, ConnectionError) as e:
+            # Connection errors are expected when clients disconnect
+            logger.debug(f"Connection error for client {client_id}: {e}")
+            await self._disconnect_client(client_id)
+        except Exception as e:
+            # Log unexpected errors as warnings
+            logger.warning(f"Unexpected error sending to client {client_id}: {e}")
+            await self._disconnect_client(client_id)
+    
+    async def _disconnect_client(self, client_id: str) -> None:
+        """
+        Disconnect and remove client safely.
+        
+        Args:
+            client_id: Client ID to disconnect
+        """
+        if client_id not in self._clients:
+            return
+        
+        client = self._clients.pop(client_id, None)
+        if not client:
+            return
+        
+        # Update connection count
+        self._active_connections = max(0, self._active_connections - 1)
+        
+        try:
+            # Try to close the WebSocket connection gracefully
+            await client.websocket.close()
+        except Exception:
+            pass  # Connection might already be closed
+        
+        logger.info(f"WebSocket client removed: {client_id} (active: {self._active_connections})")
+    
+    async def _ping_clients(self) -> None:
+        """Periodic ping to maintain client connections."""
+        while self._running:
+            try:
+                await asyncio.sleep(self._ping_interval)
+                
+                if not self._clients:
+                    continue
+                
+                # Send ping to all clients
+                ping_tasks = []
+                for client_id in list(self._clients.keys()):
+                    ping_tasks.append(self._send_to_client(client_id, {
+                        "type": "ping",
+                        "timestamp": time.time()
+                    }))
+                
+                if ping_tasks:
+                    await asyncio.gather(*ping_tasks, return_exceptions=True)
+                
+                logger.debug(f"Sent ping to {len(self._clients)} connected clients")
+                
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Error in ping task: {e}")
+    
+    def get_stats(self) -> Dict[str, Any]:
+        """Get WebSocket manager statistics."""
+        uptime = time.time() - self._started_at if self._started_at else 0
+        
+        return {
+            "running": self._running,
+            "active_connections": self._active_connections,
+            "total_connections": self._connection_count,
+            "messages_sent": self._messages_sent,
+            "uptime_seconds": uptime,
+            "messages_per_second": self._messages_sent / max(uptime, 1),
+            "clients": [
+                {
+                    "client_id": client.client_id,
+                    "connected_at": client.connected_at,
+                    "connection_duration": time.time() - client.connected_at,
+                    "last_ping": client.last_ping,
+                    "subscriptions": list(client.subscriptions)
+                }
+                for client in self._clients.values()
+            ]
+        }
+    
+    def is_healthy(self) -> bool:
+        """Check if WebSocket manager is healthy."""
+        return self._running and self._ping_task is not None and not self._ping_task.done()
+    
+    def get_health_details(self) -> Dict[str, Any]:
+        """Get detailed health information."""
+        stats = self.get_stats()
+        return {
+            "running": self._running,
+            "ping_task_active": self._ping_task is not None and not self._ping_task.done(),
+            "active_connections": stats["active_connections"],
+            "total_connections": stats["total_connections"],
+            "messages_sent": stats["messages_sent"],
+            "uptime_seconds": stats["uptime_seconds"],
+            "event_bus_connected": self._event_bus is not None
+        }
