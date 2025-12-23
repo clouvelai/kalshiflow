@@ -66,6 +66,8 @@ class V3OrderbookIntegration:
         self._started_at: Optional[float] = None
         self._connection_established = False
         self._first_snapshot_received = False
+        self._connection_established_time: Optional[float] = None
+        self._first_snapshot_time: Optional[float] = None
         
         # Subscribe to V3 event bus for tracking snapshots
         self._snapshot_subscription = None
@@ -80,7 +82,9 @@ class V3OrderbookIntegration:
         # Update metrics
         self._metrics.snapshots_received += 1
         self._metrics.last_snapshot_time = time.time()
-        self._first_snapshot_received = True
+        if not self._first_snapshot_received:
+            self._first_snapshot_received = True
+            self._first_snapshot_time = time.time()
         # Track market as connected only when we receive its first snapshot
         # This ensures accurate connection state tracking
         self._metrics.markets_connected.add(market_ticker)
@@ -154,6 +158,7 @@ class V3OrderbookIntegration:
         if connected:
             logger.info("✅ Orderbook client connected to WebSocket")
             self._connection_established = True
+            self._connection_established_time = time.time()
             
             # Note: Markets are tracked as connected only when we receive their snapshots
             # This ensures accurate connection state (handled in _handle_snapshot_event)
@@ -184,7 +189,9 @@ class V3OrderbookIntegration:
                     f"✅ First snapshot received after {time.time() - start_time:.1f}s. "
                     f"Markets with snapshots: {', '.join(snapshot_markets)}"
                 )
-                self._first_snapshot_received = True
+                if not self._first_snapshot_received:
+                    self._first_snapshot_received = True
+                    self._first_snapshot_time = time.time()
                 return True
             await asyncio.sleep(0.1)
         
@@ -214,31 +221,29 @@ class V3OrderbookIntegration:
         if not self._running:
             return False
         
-        # Check if we have active market connections
+        # Check if we have active market connections (received at least one snapshot)
         if not self._metrics.markets_connected:
+            # During initial startup (first 30s), be lenient
+            if self._started_at and (time.time() - self._started_at) < 30.0:
+                return True  # Still starting up
             return False
         
-        # Check if we're receiving data (snapshots OR deltas)
+        # If we've received snapshots and the underlying client is healthy, we're good
+        # Markets might be quiet with no deltas - that's normal for low-volume markets
+        if self._first_snapshot_received and self._client and self._client.is_healthy():
+            return True
+        
+        # Fallback: Check if we're still in the startup phase
         now = time.time()
-        
-        # After initial snapshots, we only get deltas. So check both:
-        last_data_time = None
-        if self._metrics.last_delta_time:
-            last_data_time = self._metrics.last_delta_time
-        if self._metrics.last_snapshot_time:
-            if last_data_time is None or self._metrics.last_snapshot_time > last_data_time:
-                last_data_time = self._metrics.last_snapshot_time
-        
-        # If we have received data at some point, check if it's recent
-        if last_data_time:
-            time_since_data = now - last_data_time
-            # No data (snapshot OR delta) in 60 seconds is unhealthy
-            if time_since_data > 60.0:
-                logger.warning(f"No orderbook data in {time_since_data:.1f}s - marking unhealthy")
+        if self._started_at and (now - self._started_at) > 30.0:
+            # If we've been running for 30s and never received any snapshots, that's unhealthy
+            if not self._first_snapshot_received:
+                logger.warning(f"No orderbook snapshots received after {now - self._started_at:.1f}s - marking unhealthy")
                 return False
-        elif self._started_at and (now - self._started_at) > 30.0:
-            # If we've been running for 30s and never received any data, that's unhealthy
-            logger.warning(f"No orderbook data received after {now - self._started_at:.1f}s - marking unhealthy")
+        
+        # If the client connection is broken, we're unhealthy
+        if self._client and not self._client.is_healthy():
+            logger.warning("Orderbook client connection is unhealthy")
             return False
         
         return True
@@ -267,6 +272,7 @@ class V3OrderbookIntegration:
             "time_since_delta": time_since_delta,
             "uptime_seconds": metrics["uptime_seconds"],
             "client_connected": self._client.is_healthy() if self._client else False,
-            "connection_established": self._connection_established,
-            "first_snapshot_received": self._first_snapshot_received
+            # Return timestamp strings for display in console
+            "connection_established": time.strftime("%H:%M:%S", time.localtime(self._connection_established_time)) if self._connection_established_time else None,
+            "first_snapshot_received": time.strftime("%H:%M:%S", time.localtime(self._first_snapshot_time)) if self._first_snapshot_time else None
         }

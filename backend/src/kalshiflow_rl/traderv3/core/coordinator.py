@@ -301,13 +301,17 @@ class V3Coordinator:
             orderbook_metrics = self._orderbook_integration.get_metrics()
             ws_stats = self._websocket_manager.get_stats()
             
+            # Get detailed health information including connection status fields
+            health_details = self._orderbook_integration.get_health_details()
+            
             uptime = time.time() - self._started_at if self._started_at else 0
             
             # Publish status event with proper event_type
+            # Note: health field is now removed from top level (will be in metrics)
             event = TraderStatusEvent(
                 event_type=EventType.TRADER_STATUS,
                 state=self._state_machine.current_state.value,
-                health="healthy" if self.is_healthy() else "unhealthy",
+                health="",  # Keep for backwards compatibility but empty
                 metrics={
                     "uptime": uptime,
                     "state": self._state_machine.current_state.value,
@@ -316,12 +320,24 @@ class V3Coordinator:
                     "deltas_received": orderbook_metrics["deltas_received"],
                     "ws_clients": ws_stats["active_connections"],
                     "ws_messages_sent": ws_stats["messages_sent"],
-                    "context": context
+                    "context": context,
+                    # Add health status INSIDE metrics (fix for Issue 1)
+                    "health": "healthy" if self.is_healthy() else "unhealthy",
+                    # Add connection status fields (fix for Issue 2)
+                    "connection_established": health_details.get("connection_established"),
+                    "first_snapshot_received": health_details.get("first_snapshot_received")
                 },
                 timestamp=time.time()
             )
             
             await self._event_bus.publish(event)
+            
+            # Debug log to verify fields are present
+            logger.debug(
+                f"Broadcasting status with connection fields: "
+                f"connection_established={event.metrics.get('connection_established')}, "
+                f"first_snapshot_received={event.metrics.get('first_snapshot_received')}"
+            )
             
             # Log summary
             logger.info(
