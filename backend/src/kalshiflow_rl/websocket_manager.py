@@ -163,6 +163,13 @@ class TraderStatusMessage:
     data: Dict[str, Any] = None
 
 
+@dataclass
+class StateTransitionMessage:
+    """State machine transition message."""
+    type: str = "state_transition"
+    data: Dict[str, Any] = None
+
+
 class WebSocketManager:
     """
     Manages WebSocket connections and broadcasts orderbook updates.
@@ -774,12 +781,34 @@ class WebSocketManager:
         message = TraderStatusMessage(
             data={
                 "current_status": status_data.get("current_status", "unknown"),
+                "time_in_status": status_data.get("time_in_status", 0),
+                "previous_state": status_data.get("previous_state"),
+                "previous_state_duration": status_data.get("previous_state_duration"),
                 "status_history": status_data.get("status_history", []),
-                "timestamp": time.time()
+                "timestamp": status_data.get("timestamp", time.time())
             }
         )
         await self._broadcast_to_all(message)
         logger.debug(f"Broadcast trader status to {len(self._connections)} clients")
+    
+    async def broadcast_state_transition(self, transition_data: Dict[str, Any]):
+        """
+        Broadcast state machine transition to all connected clients.
+        
+        Args:
+            transition_data: State transition data containing:
+                - from_state: Previous state
+                - to_state: New state
+                - reason: Optional reason for transition
+                - time_in_previous_state: Time spent in previous state (seconds)
+                - timestamp: Transition timestamp
+        """
+        if not self._connections:
+            return
+        
+        message = StateTransitionMessage(data=transition_data)
+        await self._broadcast_to_all(message)
+        logger.debug(f"Broadcast state transition {transition_data.get('from_state')} → {transition_data.get('to_state')} to {len(self._connections)} clients")
     
     async def broadcast_portfolio_update(self, portfolio_data: Dict[str, Any]):
         """

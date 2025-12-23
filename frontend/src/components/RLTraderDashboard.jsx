@@ -30,6 +30,9 @@ const RLTraderDashboard = () => {
   const [componentHealth, setComponentHealth] = useState({}); // Component health status
   const [traderStatus, setTraderStatus] = useState(null); // Current trader status
   const [traderStatusHistory, setTraderStatusHistory] = useState([]); // Status history log
+  const [stateTransitions, setStateTransitions] = useState([]); // State machine transitions
+  const [tradeLifecycle, setTradeLifecycle] = useState([]); // Trade lifecycle data (orders->fills->settlements)
+  const [portfolio, setPortfolio] = useState({}); // Portfolio metrics (cash, P&L, etc.)
   
   // Position update tracking for animations
   const [previousPositions, setPreviousPositions] = useState({}); // Track previous position values
@@ -86,7 +89,7 @@ const RLTraderDashboard = () => {
     }
 
     // Connect to RL trader WebSocket on port 8003 (paper trading)
-    const ws = new WebSocket('ws://localhost:8004/rl/ws');
+    const ws = new WebSocket('ws://localhost:8003/rl/ws');
     wsRef.current = ws;
 
     ws.onopen = () => {
@@ -143,8 +146,12 @@ const RLTraderDashboard = () => {
           case 'trader_status':
             // Trader status update with current status and history
             if (data.data) {
+              if (!data.data.current_status) {
+                console.error('trader_status message missing current_status field:', data.data);
+              }
               setTraderStatus({
-                current_status: data.data.current_status || 'unknown',
+                current_status: data.data.current_status,  // Don't default to 'unknown'
+                time_in_status: data.data.time_in_status,
                 timestamp: data.data.timestamp
               });
               if (data.data.status_history) {
@@ -153,14 +160,82 @@ const RLTraderDashboard = () => {
             }
             break;
             
+          case 'state_transition':
+            // State machine transition message
+            if (data.data) {
+              log('State transition:', data.data);
+              const transition = {
+                ...data.data,
+                id: Date.now() + Math.random(), // Add unique ID for key
+                received_at: new Date().toISOString()
+              };
+              
+              setStateTransitions(prev => [transition, ...prev].slice(0, 50)); // Keep last 50 transitions
+              
+              // Also update trader status to reflect current state
+              if (!data.data.to_state) {
+                console.error('state_transition message missing to_state field:', data.data);
+              }
+              setTraderStatus(prev => ({
+                ...prev,
+                current_status: data.data.to_state,  // Don't default to 'unknown'
+                last_transition: transition,
+                timestamp: data.data.timestamp
+              }));
+            }
+            break;
+            
           case 'trader_state':
             // Combined trader state with all info
             if (data.data) {
               setTraderState(data.data);
-              // Extract positions and orders from state
-              if (data.data.positions) {
-                setPositions(data.data.positions);
+              
+              // Update trader status if provided
+              if (data.data.trader_status) {
+                setTraderStatus({
+                  current_status: data.data.trader_status.current_status,
+                  time_in_status: data.data.trader_status.time_in_status,
+                  timestamp: data.data.timestamp || Date.now() / 1000
+                });
+                
+                // Update status history if provided
+                if (data.data.trader_status.status_history) {
+                  setTraderStatusHistory(data.data.trader_status.status_history);
+                }
               }
+              
+              // Extract positions from state
+              if (data.data.positions) {
+                // Convert array to object keyed by ticker if needed
+                if (Array.isArray(data.data.positions)) {
+                  const positionsObj = {};
+                  data.data.positions.forEach(pos => {
+                    if (pos.ticker) {
+                      positionsObj[pos.ticker] = pos;
+                    }
+                  });
+                  setPositions(positionsObj);
+                } else {
+                  setPositions(data.data.positions);
+                }
+              }
+              
+              // Extract fills from state
+              if (data.data.fills) {
+                setRecentFills(data.data.fills);
+              }
+              
+              // Extract trade lifecycle data
+              if (data.data.trade_lifecycle) {
+                setTradeLifecycle(data.data.trade_lifecycle);
+              }
+              
+              // Extract portfolio metrics
+              if (data.data.portfolio) {
+                setPortfolio(data.data.portfolio);
+              }
+              
+              // Extract open orders from state
               if (data.data.open_orders) {
                 // Ensure open_orders is an array (it might be an object or other type)
                 const ordersArray = Array.isArray(data.data.open_orders) 
@@ -203,8 +278,11 @@ const RLTraderDashboard = () => {
               // Add the new trader action to recent fills
               setRecentFills(prev => {
                 // Create a properly formatted fill entry
+                if (!data.data.timestamp) {
+                  console.warn('trader_action missing timestamp, using client time');
+                }
                 const actionEntry = {
-                  timestamp: data.data.timestamp || new Date().toISOString(),
+                  timestamp: data.data.timestamp || new Date().toISOString(),  // OK to fallback for non-critical field
                   market_ticker: data.data.market_ticker,
                   action: data.data.action,
                   observation: data.data.observation,
@@ -575,10 +653,17 @@ const RLTraderDashboard = () => {
           case 'portfolio_update':
             // Portfolio/balance update
             if (data.data) {
+              // Log if critical fields are missing
+              if (data.data.cash_balance === undefined) {
+                console.error('portfolio_update missing cash_balance:', data.data);
+              }
+              if (data.data.portfolio_value === undefined) {
+                console.error('portfolio_update missing portfolio_value:', data.data);
+              }
               setTraderState(prev => ({
                 ...prev,
-                cash_balance: data.data.cash_balance || prev.cash_balance,
-                portfolio_value: data.data.portfolio_value || prev.portfolio_value
+                cash_balance: data.data.cash_balance !== undefined ? data.data.cash_balance : prev.cash_balance,
+                portfolio_value: data.data.portfolio_value !== undefined ? data.data.portfolio_value : prev.portfolio_value
               }));
               // Also check for open_orders in portfolio updates
               if (data.data.open_orders) {
@@ -718,6 +803,32 @@ const RLTraderDashboard = () => {
                   details: data.data.details || {},
                 },
               }));
+            }
+            break;
+            
+          case 'initialization_complete':
+            // Handle initialization complete message from the backend
+            log('Initialization complete:', data.data);
+            // The backend sends this when the trader is ready
+            // Extract trader state if provided
+            if (data.data) {
+              // Set calibration status as complete
+              setCalibrationStatus({
+                started_at: data.data.started_at,
+                completed_at: data.data.completed_at || new Date().toISOString(),
+                duration_seconds: data.data.duration_seconds,
+                is_complete: true,
+                has_errors: false,
+                steps: data.data.steps || {},
+                summary: data.data.summary || {}
+              });
+              
+              if (data.data.trader_state) {
+                setTraderState(data.data.trader_state);
+              }
+              if (data.data.stats_collector) {
+                setCollectionStatus(data.data.stats_collector);
+              }
             }
             break;
             
@@ -1182,6 +1293,22 @@ const RLTraderDashboard = () => {
   const tradeLifecycleRows = useMemo(() => {
     const rows = new Map();
     
+    // First, process trade lifecycle data from backend if available
+    if (tradeLifecycle && tradeLifecycle.length > 0) {
+      tradeLifecycle.forEach((lifecycle) => {
+        const tradeId = lifecycle.trade_id;
+        if (tradeId) {
+          rows.set(tradeId, {
+            trade_sequence_id: tradeId,
+            trade: lifecycle.trade || null,
+            order: lifecycle.order || null,
+            fill: lifecycle.fills?.[0] || null, // Use first fill if multiple
+            timestamp: lifecycle.order?.placed_at ? new Date(lifecycle.order.placed_at * 1000).toISOString() : null
+          });
+        }
+      });
+    }
+    
     // Process trades (AI decisions)
     recentFills.forEach((trade) => {
       const tradeId = trade.trade_sequence_id || trade.execution_result?.trade_sequence_id;
@@ -1248,7 +1375,7 @@ const RLTraderDashboard = () => {
         return timeB - timeA;
       })
       .slice(0, 50); // Limit to 50 most recent for performance
-  }, [recentFills, allOrders, actualFills]);
+  }, [recentFills, allOrders, actualFills, tradeLifecycle]);
 
   // Track expanded rows for trade details
   const [expandedTradeRows, setExpandedTradeRows] = useState(new Set());
@@ -1433,10 +1560,11 @@ const RLTraderDashboard = () => {
               </>
             ) : (
               <SystemHealth 
-                calibrationStatus={calibrationStatus}
+                initializationStatus={calibrationStatus}
                 componentHealth={componentHealth}
                 traderStatus={traderStatus}
                 traderStatusHistory={traderStatusHistory}
+                stateTransitions={stateTransitions}
               />
             )}
           </div>

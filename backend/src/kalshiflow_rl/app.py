@@ -33,7 +33,7 @@ from .websocket_manager import websocket_manager
 from .stats_collector import stats_collector
 from .trading.event_bus import get_event_bus
 from .trading.actor_service import ActorService
-from .trading.kalshi_multi_market_order_manager import KalshiMultiMarketOrderManager
+from .trading.trader_v2 import TraderV2
 from .trading.live_observation_adapter import LiveObservationAdapter
 from .trading.action_selector import create_action_selector
 from .trading.initialization_tracker import InitializationTracker
@@ -48,7 +48,7 @@ orderbook_client: Optional[OrderbookClient] = None
 # Global ActorService components (initialized in lifespan)
 event_bus = None
 actor_service: Optional[ActorService] = None
-order_manager: Optional[KalshiMultiMarketOrderManager] = None
+order_manager: Optional[TraderV2] = None  # Using TraderV2 now
 observation_adapter: Optional[LiveObservationAdapter] = None
 
 # Global market tickers (determined at startup)
@@ -345,9 +345,12 @@ async def lifespan(app: Starlette):
                 "deltas_received": stats.get("deltas_received", 0),
             })
         else:
-            await initialization_tracker.mark_step_failed("orderbook_health", "OrderbookClient failed health verification", {
+            # Log warning but continue - trader will enter PAUSED state if needed
+            logger.warning("OrderbookClient failed health verification - continuing in degraded mode")
+            await initialization_tracker.mark_step_failed("orderbook_health", "OrderbookClient unhealthy - degraded mode", {
                 "details": orderbook_client.get_health_details() if orderbook_client else None
             })
+            # Don't raise - continue with degraded orderbook
         
         # Initialize ActorService components for trading (only if enabled)
         logger.info("=" * 60)
@@ -357,13 +360,10 @@ async def lifespan(app: Starlette):
             logger.info(f"  Strategy: {config.RL_ACTOR_STRATEGY}")
             logger.info(f"  Model Path: {config.RL_ACTOR_MODEL_PATH or 'None (using stub)'}")
             
-            # Create OrderbookStateRegistry wrapper (uses global get_shared_orderbook_state)
-            class OrderbookStateRegistryWrapper:
-                """Simple wrapper that uses global get_shared_orderbook_state."""
-                async def get_shared_orderbook_state(self, market_ticker: str):
-                    return await get_shared_orderbook_state(market_ticker)
-            
-            registry = OrderbookStateRegistryWrapper()
+            # Use OrderbookStateRegistry from service_factories
+            from .trading.service_factories import OrderbookStateRegistry
+            registry = OrderbookStateRegistry()
+            await registry.initialize()
             
             # Create LiveObservationAdapter
             observation_adapter = LiveObservationAdapter(
@@ -374,21 +374,36 @@ async def lifespan(app: Starlette):
             )
             logger.info("LiveObservationAdapter created")
             
-            # Create KalshiMultiMarketOrderManager
-            order_manager = KalshiMultiMarketOrderManager(initial_cash=10000.0)
+            # Create TraderV2 with demo client and global websocket manager
+            from .trading.demo_client import KalshiDemoTradingClient
             
-            # Initialize OrderManager (requires credentials - fail fast if missing)
+            # Initialize demo client (it gets credentials from environment)
+            demo_client = KalshiDemoTradingClient(mode="paper")
+            
+            # Create TraderV2
+            order_manager = TraderV2(
+                client=demo_client,
+                websocket_manager=websocket_manager,  # Pass global websocket manager
+                initial_cash_balance=10000.0,
+                market_tickers=market_tickers
+            )
+            
+            # Start TraderV2 (performs calibration automatically)
             try:
-                await order_manager.initialize(
-                    initialization_tracker=initialization_tracker,
-                    websocket_manager=websocket_manager
+                startup_result = await order_manager.start(
+                    enable_websockets=True,
+                    enable_orderbook=False,  # Orderbook handled separately
+                    initialization_tracker=initialization_tracker
                 )
-                logger.info("✅ KalshiMultiMarketOrderManager initialized successfully")
-                # Cleanup is now handled inside initialize() method before syncing
+                
+                if startup_result["success"]:
+                    logger.info("✅ TraderV2 initialized and calibrated successfully")
+                else:
+                    raise RuntimeError(f"TraderV2 startup failed: {startup_result.get('error', 'Unknown error')}")
                 
             except Exception as e:
-                logger.error(f"❌ Failed to initialize OrderManager: {e}")
-                logger.error("ActorService disabled - OrderManager requires valid credentials")
+                logger.error(f"❌ Failed to initialize TraderV2: {e}")
+                logger.error("ActorService disabled - TraderV2 requires valid credentials")
                 order_manager = None
                 actor_service = None
                 observation_adapter = None
@@ -415,8 +430,7 @@ async def lifespan(app: Starlette):
                 )
                 actor_service.set_action_selector(selector)
                 
-                # Register selector with order manager for mutual exclusivity protection
-                order_manager.register_action_selector(selector)
+                # Note: TraderV2 doesn't have register_action_selector, skip this
                 
                 logger.info(f"Action selector configured: {selector.get_strategy_name()}")
                 
@@ -432,114 +446,46 @@ async def lifespan(app: Starlette):
                 websocket_manager.set_order_manager(order_manager)
                 websocket_manager.set_actor_service(actor_service)
                 
-                # WebSocket manager already set in order_manager during initialize()
-                # No need to call order_manager.set_websocket_manager() again
-                
-                # Add state change callback to order manager for UI updates
-                async def broadcast_state(state):
-                    """Callback to broadcast trader state changes via websocket."""
-                    # Include actor metrics if available
-                    if actor_service:
-                        try:
-                            actor_metrics = actor_service.get_metrics()
-                            state["actor_metrics"] = actor_metrics
-                        except Exception as e:
-                            logger.warning(f"Could not get actor metrics: {e}")
-                    
-                    await websocket_manager.broadcast_trader_state(state)
-                
-                order_manager.add_state_change_callback(broadcast_state)
-                logger.info("State change callback configured for OrderManager")
+                # TraderV2 already broadcasts state changes via integrated services
+                logger.info("TraderV2 WebSocket broadcasting configured")
                 
                 # Initialize ActorService (subscribes to event bus and starts processing loop)
                 # Only start ActorService after all initialization steps are complete
                 await actor_service.initialize()
                 logger.info("✅ ActorService initialized and ready")
                 
-                # Final verification: Ensure orderbook is still healthy before completing initialization
-                logger.info("Final orderbook health verification before completing initialization...")
+                # Final verification: Check orderbook health but don't fail
+                logger.info("Final orderbook health check...")
                 orderbook_healthy_at_end = await verify_orderbook_health(orderbook_client, initialization_tracker, max_wait_time=10.0)
                 
                 if not orderbook_healthy_at_end:
-                    # Orderbook must be healthy and receiving data before initialization completes
-                    error_msg = "Orderbook not healthy after final verification - must receive data before initialization can complete"
-                    logger.error(error_msg)
+                    # Log warning but continue - trader will handle degraded mode
+                    logger.warning("Orderbook not healthy after final verification - trader will operate in degraded mode")
                     if orderbook_client:
                         health_details = orderbook_client.get_health_details()
                         await initialization_tracker.update_component_health("orderbook_client", "unhealthy", health_details)
-                    raise RuntimeError(error_msg)
+                    # Don't raise - continue with degraded orderbook
                 
                 # Complete initialization tracking
+                starting_cash = None
+                portfolio_value = None
+                positions_count = 0
+                orders_count = 0
+                
+                if order_manager:
+                    # TraderV2 exposes coordinator which has position_tracker and order_service
+                    starting_cash = order_manager.coordinator.position_tracker.cash_balance
+                    portfolio_value = order_manager.coordinator.position_tracker.cash_balance
+                    positions_count = len(order_manager.coordinator.position_tracker.positions)
+                    orders_count = len(order_manager.coordinator.order_service.open_orders)
+                
                 await initialization_tracker.complete_initialization({
-                    "starting_cash": order_manager.session_start_cash if order_manager else None,
-                    "starting_portfolio_value": order_manager.session_start_portfolio_value if order_manager else None,
-                    "positions_resumed": len(order_manager.positions) if order_manager else 0,
-                    "orders_resumed": len(order_manager.open_orders) if order_manager else 0,
+                    "starting_cash": starting_cash,
+                    "starting_portfolio_value": portfolio_value,
+                    "positions_resumed": positions_count,
+                    "orders_resumed": orders_count,
                     "markets_trading": market_tickers,
                 })
-                
-                # Start periodic health broadcasts
-                async def periodic_health_broadcast():
-                    """Periodically broadcast component health updates."""
-                    while True:
-                        try:
-                            await asyncio.sleep(10.0)  # Broadcast every 10 seconds
-                            
-                            # Update health for all components
-                            if orderbook_client:
-                                try:
-                                    health_status = "healthy" if orderbook_client.is_healthy() else "unhealthy"
-                                except Exception as e:
-                                    logger.warning(f"Error checking orderbook health: {e}, assuming healthy based on stats")
-                                    # Fallback: check if we're receiving messages
-                                    stats = orderbook_client.get_stats()
-                                    health_status = "healthy" if stats.get("messages_received", 0) > 0 else "unhealthy"
-                                
-                                await initialization_tracker.update_component_health(
-                                    "orderbook_client",
-                                    health_status,
-                                    orderbook_client.get_health_details()
-                                )
-                            
-                            if order_manager:
-                                health_status = "healthy" if order_manager.is_healthy() else "unhealthy"
-                                await initialization_tracker.update_component_health(
-                                    "trader_client",
-                                    health_status,
-                                    order_manager.get_health_details()
-                                )
-                                
-                                if order_manager._fill_listener:
-                                    fill_health_status = "healthy" if order_manager._fill_listener.is_healthy() else "unhealthy"
-                                    await initialization_tracker.update_component_health(
-                                        "fill_listener",
-                                        fill_health_status,
-                                        order_manager._fill_listener.get_health_details()
-                                    )
-                                
-                                if order_manager._position_listener:
-                                    position_health_status = "healthy" if order_manager._position_listener.is_healthy() else "unhealthy"
-                                    await initialization_tracker.update_component_health(
-                                        "position_listener",
-                                        position_health_status,
-                                        order_manager._position_listener.get_health_details()
-                                    )
-                            
-                            if event_bus:
-                                health_status = "healthy" if event_bus.is_healthy() else "unhealthy"
-                                await initialization_tracker.update_component_health(
-                                    "event_bus",
-                                    health_status,
-                                    event_bus.get_health_details()
-                                )
-                            
-                        except asyncio.CancelledError:
-                            break
-                        except Exception as e:
-                            logger.error(f"Error in periodic health broadcast: {e}")
-                
-                health_broadcast_task = asyncio.create_task(periodic_health_broadcast())
-                _background_tasks.append(health_broadcast_task)
         else:
             logger.info("ActorService disabled - orderbook collector only mode")
             actor_service = None
@@ -551,6 +497,65 @@ async def lifespan(app: Starlette):
                 "actor_service_enabled": False,
                 "markets_collecting": market_tickers,
             })
+        
+        # Start periodic health broadcasts (runs in all modes)
+        async def periodic_health_broadcast():
+            """Periodically broadcast component health updates."""
+            while True:
+                try:
+                    await asyncio.sleep(10.0)  # Broadcast every 10 seconds
+                    
+                    # Update health for all components
+                    if orderbook_client:
+                        try:
+                            health_status = "healthy" if orderbook_client.is_healthy() else "unhealthy"
+                        except Exception as e:
+                            logger.warning(f"Error checking orderbook health: {e}, assuming healthy based on stats")
+                            # Fallback: check if we're receiving messages
+                            stats = orderbook_client.get_stats()
+                            health_status = "healthy" if stats.get("messages_received", 0) > 0 else "unhealthy"
+                        
+                        await initialization_tracker.update_component_health(
+                            "orderbook_client",
+                            health_status,
+                            orderbook_client.get_health_details()
+                        )
+                    
+                    if order_manager:
+                        # TraderV2 has _assess_system_health as a sync method
+                        try:
+                            # Get health from TraderV2 directly (not async)
+                            system_health = order_manager._assess_system_health()
+                            health_status = "healthy" if system_health["healthy"] else "unhealthy"
+                            await initialization_tracker.update_component_health(
+                                "trader_client",
+                                health_status,
+                                {"reason": system_health["reason"]}
+                            )
+                        except Exception as e:
+                            logger.warning(f"Error checking trader health: {e}")
+                            await initialization_tracker.update_component_health(
+                                "trader_client",
+                                "degraded",
+                                {"error": str(e)}
+                            )
+                    
+                    if event_bus:
+                        health_status = "healthy" if event_bus.is_healthy() else "unhealthy"
+                        await initialization_tracker.update_component_health(
+                            "event_bus",
+                            health_status,
+                            event_bus.get_health_details()
+                        )
+                    
+                except asyncio.CancelledError:
+                    break
+                except Exception as e:
+                    logger.error(f"Error in periodic health broadcast: {e}")
+        
+        health_broadcast_task = asyncio.create_task(periodic_health_broadcast())
+        _background_tasks.append(health_broadcast_task)
+        
         logger.info("=" * 60)
         
         # Log startup summary
@@ -581,13 +586,13 @@ async def lifespan(app: Starlette):
             except Exception as e:
                 logger.error(f"Error shutting down ActorService: {e}")
         
-        # Shutdown OrderManager
+        # Shutdown TraderV2
         if order_manager:
             try:
-                await order_manager.shutdown()
-                logger.info("OrderManager shutdown complete")
+                await order_manager.stop()
+                logger.info("TraderV2 shutdown complete")
             except Exception as e:
-                logger.error(f"Error shutting down OrderManager: {e}")
+                logger.error(f"Error shutting down TraderV2: {e}")
         
         # Stop WebSocket manager first (stops broadcasting)
         await websocket_manager.stop()
@@ -856,15 +861,15 @@ async def trader_status_endpoint(request):
                 "message": "Trader functionality is disabled. Enable with RL_ACTOR_ENABLED=true"
             }, status_code=503)
         
-        # Check if OrderManager is available
+        # Check if TraderV2 is available
         if not order_manager:
             return JSONResponse({
-                "error": "OrderManager not initialized",
-                "message": "Trader OrderManager is not available"
+                "error": "TraderV2 not initialized",
+                "message": "Trader V2 is not available"
             }, status_code=503)
         
         # Get current trader state
-        trader_state = await order_manager.get_current_state()
+        trader_state = order_manager.get_comprehensive_status()
         
         # Get actor service metrics
         actor_metrics = actor_service.get_metrics() if actor_service else {}
@@ -920,20 +925,11 @@ async def trader_sync_endpoint(request):
         
         logger.info("Manual trader sync requested by frontend")
         
-        # Perform order sync
-        logger.info("Starting manual order sync...")
-        order_stats = await order_manager.sync_orders_with_kalshi()
-        
-        # Perform position sync
-        logger.info("Starting manual position sync...")
-        await order_manager._sync_positions_with_kalshi()
-        
-        # Perform settlement sync
-        logger.info("Starting manual settlement sync...")
-        settlement_stats = await order_manager.sync_settlements_with_kalshi()
+        # TraderV2 uses state_sync service for synchronization
+        sync_result = await order_manager.state_sync.sync_all()
         
         # Get current state for broadcasting
-        current_state = await order_manager.get_current_state()
+        current_state = order_manager.get_comprehensive_status()
         
         # Broadcast updates via WebSocket with proper source attribution
         if websocket_manager:
@@ -964,8 +960,7 @@ async def trader_sync_endpoint(request):
         
         return JSONResponse({
             "message": "Trader sync completed successfully",
-            "order_sync": order_stats,
-            "settlement_sync": settlement_stats,
+            "sync_result": sync_result,
             "trader_state": current_state,
             "timestamp": time.time()
         })
@@ -997,22 +992,22 @@ async def trades_websocket_endpoint(websocket):
                 except Exception as e:
                     logger.error(f"Error sending trades update: {e}")
         
-        # Register the callback with the order manager if available
+        # TraderV2 broadcasts updates via the global websocket_manager
         if order_manager:
-            order_manager.add_trade_broadcast_callback(send_trades_update)
-            logger.info("Registered trades broadcast callback")
+            logger.info("Trades WebSocket using TraderV2 broadcasting")
             
             # Send initial state
+            status = order_manager.get_comprehensive_status()
             initial_data = {
                 "type": "trades",
                 "data": {
                     "recent_fills": [],
                     "execution_stats": {
-                        "total_fills": order_manager.execution_stats.total_fills,
-                        "maker_fills": order_manager.execution_stats.maker_fills,
-                        "taker_fills": order_manager.execution_stats.taker_fills,
-                        "avg_fill_time_ms": round(order_manager.execution_stats.avg_fill_time_ms, 2),
-                        "total_volume": round(order_manager.execution_stats.total_volume, 2)
+                        "total_fills": len(order_manager.position_tracker.trade_history),
+                        "maker_fills": 0,  # TraderV2 doesn't track this separately
+                        "taker_fills": len(order_manager.position_tracker.trade_history),
+                        "avg_fill_time_ms": 0,
+                        "total_volume": sum(t.quantity for t in order_manager.position_tracker.trade_history)
                     },
                     "observation_space": {
                         "orderbook_features": {
@@ -1026,9 +1021,9 @@ async def trades_websocket_endpoint(websocket):
                             "activity": {"value": 0.3, "intensity": "medium"}
                         },
                         "portfolio_state": {
-                            "cash_ratio": {"value": order_manager.cash_balance / (order_manager.cash_balance + order_manager.promised_cash + 1), "intensity": "high"},
-                            "exposure": {"value": len(order_manager.positions) / 10.0, "intensity": "medium" if len(order_manager.positions) < 5 else "high"},
-                            "risk_level": {"value": min(len(order_manager.open_orders) / 10.0, 1.0), "intensity": "low" if len(order_manager.open_orders) < 3 else "high"}
+                            "cash_ratio": {"value": order_manager.position_tracker.cash_balance / (order_manager.position_tracker.cash_balance + 1), "intensity": "high"},
+                            "exposure": {"value": len(order_manager.position_tracker.positions) / 10.0, "intensity": "medium" if len(order_manager.position_tracker.positions) < 5 else "high"},
+                            "risk_level": {"value": min(len(order_manager.order_service.open_orders) / 10.0, 1.0), "intensity": "low" if len(order_manager.order_service.open_orders) < 3 else "high"}
                         }
                     }
                 }

@@ -275,17 +275,30 @@ const TraderStatePanel = ({
       {showPortfolioStats && (
       <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
         {(() => {
-          const totalValue = (displayState.portfolio_value || 0) + (displayState.cash_balance || 0);
+          // Check if we have the required data
+          if (displayState.portfolio_value === undefined || displayState.cash_balance === undefined) {
+            return (
+              <div className="col-span-4 text-center py-8">
+                <div className="text-red-400 text-lg">Missing portfolio data from backend</div>
+                <div className="text-gray-400 text-sm mt-2">
+                  Portfolio: {displayState.portfolio_value === undefined ? 'missing' : formatCurrency(displayState.portfolio_value)} | 
+                  Cash: {displayState.cash_balance === undefined ? 'missing' : formatCurrency(displayState.cash_balance)}
+                </div>
+              </div>
+            );
+          }
+          
+          const totalValue = displayState.portfolio_value + displayState.cash_balance;
           const totalStartValue = (displayState.session_start_portfolio_value || 0) + (displayState.session_start_cash || 0);
           const totalChange = totalValue - totalStartValue;
           const totalPnlPercent = totalStartValue > 0 ? (totalChange / totalStartValue) * 100 : 0;
           
           // Position Box
-          const positionValue = displayState.portfolio_value || 0;
+          const positionValue = displayState.portfolio_value;
           const positionChange = displayState.portfolio_value_change !== undefined ? displayState.portfolio_value_change : (positionValue - (displayState.session_start_portfolio_value || 0));
           
           // Cash Box
-          const cashValue = displayState.cash_balance || 0;
+          const cashValue = displayState.cash_balance;
           const cashChange = displayState.cash_balance_change !== undefined ? displayState.cash_balance_change : (cashValue - (displayState.session_start_cash || 0));
           
           return (

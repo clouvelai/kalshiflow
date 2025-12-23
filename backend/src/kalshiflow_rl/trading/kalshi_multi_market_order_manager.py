@@ -463,30 +463,10 @@ class KalshiMultiMarketOrderManager:
         else:
             self._position_listener_healthy = True
         
-        # Check if cleanup is enabled BEFORE syncing (defaults to false - user requested always disabled)
-        import os
-        from ..config import config
-        cleanup_enabled = os.getenv("RL_CLEANUP_ON_START", "false").lower() == "true"
-        
-        if cleanup_enabled:
-            # Clean up any leftover orders/positions BEFORE syncing
-            logger.info("Running startup cleanup to reset trader state...")
-            cleanup_summary = await self.cleanup_orders_and_positions()
-            
-            if cleanup_summary.get("cleanup_success"):
-                logger.info("✅ Startup cleanup completed successfully")
-                # Broadcast cleanup summary to any connected WebSocket clients
-                await self.broadcast_cleanup_summary(cleanup_summary)
-            else:
-                warnings = cleanup_summary.get("warnings", [])
-                logger.warning(f"⚠️ Startup cleanup had issues: {'; '.join(warnings)}")
-                # Still broadcast the summary so UI can show warnings
-                await self.broadcast_cleanup_summary(cleanup_summary)
-        else:
-            logger.info("Startup cleanup disabled via RL_CLEANUP_ON_START=false")
-        
         # Synchronize orders and positions with Kalshi on startup (if enabled)
-        # This happens AFTER cleanup so we get fresh state
+        # Note: Cleanup functionality removed - trader uses natural state machine flow
+        # (LOW_CASH → RECOVER_CASH) to handle position cleanup when needed
+        from ..config import config
         # No try/except wrapper - let exceptions propagate to fail initialization
         if config.RL_ORDER_SYNC_ENABLED and config.RL_ORDER_SYNC_ON_STARTUP:
             logger.info("Starting state synchronization with Kalshi...")
@@ -4948,9 +4928,10 @@ class KalshiMultiMarketOrderManager:
         """
         logger.info("State machine loop started")
         
-        # Track recovery attempts
+        # Track recovery attempts and broadcasting
         recovery_attempts = 0
         last_recovery_attempt = 0
+        last_state_broadcast = time.time()
         
         while self._running:
             try:
@@ -5052,6 +5033,11 @@ class KalshiMultiMarketOrderManager:
                         await self.run_calibration(f"recovery_from_{current_state}")
                         self._errors_since_calibration = 0
                 
+                # Periodic state broadcast for frontend updates
+                if time.time() - last_state_broadcast > 2.0:
+                    await self.broadcast_full_trader_state()
+                    last_state_broadcast = time.time()
+                
                 # Small sleep to prevent CPU spinning
                 await asyncio.sleep(0.5)
                 
@@ -5074,6 +5060,105 @@ class KalshiMultiMarketOrderManager:
                 await asyncio.sleep(1.0)  # Back off on errors
         
         logger.info("State machine loop stopped")
+    
+    async def broadcast_full_trader_state(self) -> None:
+        """
+        Broadcast comprehensive trader state to frontend.
+        Includes positions, fills, orders, and trade lifecycle data.
+        """
+        if not self._websocket_manager:
+            return
+        
+        try:
+            # Prepare positions data with full Kalshi information
+            positions_data = []
+            for ticker, position in self.positions.items():
+                if position.is_flat:
+                    continue
+                
+                # Get market data from orderbook if available
+                orderbook_snapshot = await self._get_orderbook_snapshot(ticker)
+                current_price = None
+                if orderbook_snapshot:
+                    yes_bid = orderbook_snapshot.get("yes_bid", 0)
+                    yes_ask = orderbook_snapshot.get("yes_ask", 0)
+                    if yes_bid > 0 and yes_ask > 0:
+                        current_price = (yes_bid + yes_ask) / 2.0
+                
+                position_dict = {
+                    "ticker": ticker,
+                    "contracts": position.contracts,
+                    "cost_basis": position.cost_basis,
+                    "average_cost_cents": int(position.cost_basis / abs(position.contracts)) if position.contracts else 0,
+                    "realized_pnl": position.realized_pnl,
+                    "unrealized_pnl": position.get_unrealized_pnl(current_price / 100.0) if current_price else 0,
+                    "current_price": current_price,
+                    "fees_paid": getattr(position, 'fees_paid', 0.0),
+                    "volume": getattr(position, 'volume', 0),
+                    "opened_at": position.opened_at,
+                    "last_updated": position.last_updated_ts
+                }
+                
+                # Include Kalshi API data if available
+                if position.kalshi_data:
+                    position_dict["market_exposure_cents"] = position.kalshi_data.get("market_exposure")
+                    position_dict["market_exposure_dollars"] = position.kalshi_data.get("market_exposure_dollars")
+                
+                positions_data.append(position_dict)
+            
+            # Prepare recent fills data (last 20 fills)
+            recent_fills = list(self._recent_fills[-20:]) if hasattr(self, '_recent_fills') else []
+            
+            # Prepare active orders for trade lifecycle
+            active_trades = []
+            for order_id, order in self.open_orders.items():
+                trade_lifecycle = {
+                    "trade_id": order.trade_sequence_id if hasattr(order, 'trade_sequence_id') else order_id,
+                    "ticker": order.ticker,
+                    "status": "pending",
+                    "order": {
+                        "order_id": order.order_id,
+                        "side": order.side.name,
+                        "contract_side": order.contract_side.name,
+                        "quantity": order.quantity,
+                        "limit_price": order.limit_price,
+                        "placed_at": order.placed_at,
+                        "status": order.status.name if hasattr(order, 'status') else "PENDING"
+                    },
+                    "fills": [],  # Will be populated when order fills
+                    "settlement": None  # Will be populated when position closes
+                }
+                active_trades.append(trade_lifecycle)
+            
+            # Prepare portfolio metrics
+            portfolio_value = self._calculate_portfolio_value() if hasattr(self, '_calculate_portfolio_value') else self.get_portfolio_value()
+            portfolio_metrics = {
+                "cash_balance": self.cash_balance,
+                "promised_cash": self.promised_cash,
+                "available_cash": self.cash_balance - self.promised_cash,
+                "portfolio_value": portfolio_value,
+                "open_positions": len(positions_data),
+                "open_orders": len(self.open_orders),
+                "total_realized_pnl": sum(p.realized_pnl for p in self.positions.values()),
+                "total_unrealized_pnl": sum(p.get("unrealized_pnl", 0) for p in positions_data),
+                "total_fees_paid": sum(getattr(p, 'fees_paid', 0) for p in self.positions.values())
+            }
+            
+            # Broadcast comprehensive trader state
+            await self._websocket_manager.broadcast_trader_state({
+                "timestamp": time.time(),
+                "trader_status": self._trader_status,
+                "positions": positions_data,
+                "fills": recent_fills,
+                "trade_lifecycle": active_trades,
+                "portfolio": portfolio_metrics,
+                "metrics": self.get_metrics()
+            })
+            
+            logger.debug(f"Broadcast full trader state: {len(positions_data)} positions, {len(recent_fills)} fills, {len(active_trades)} active trades")
+            
+        except Exception as e:
+            logger.error(f"Error broadcasting full trader state: {e}", exc_info=True)
     
     async def run_calibration(self, reason: str = "manual") -> None:
         """

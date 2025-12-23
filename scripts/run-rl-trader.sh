@@ -214,10 +214,45 @@ if [[ "$ENVIRONMENT" == "paper" ]]; then
     echo ""
 fi
 
-# Check if port is available
+# Function to cleanup existing RL traders
+cleanup_existing_traders() {
+    echo -e "${YELLOW}Checking for existing RL trader processes...${NC}"
+    
+    # Kill any existing uvicorn processes running kalshiflow_rl.app
+    local pids=$(ps aux | grep -E "(uvicorn|python).*kalshiflow_rl\.app" | grep -v grep | awk '{print $2}')
+    if [ ! -z "$pids" ]; then
+        echo -e "${YELLOW}Found existing RL trader processes: $pids${NC}"
+        echo -e "${YELLOW}Shutting down existing traders...${NC}"
+        for pid in $pids; do
+            echo "  Killing process $pid"
+            kill -TERM "$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null
+        done
+        sleep 2
+        
+        # Double-check they're gone
+        local remaining=$(ps aux | grep -E "(uvicorn|python).*kalshiflow_rl\.app" | grep -v grep | awk '{print $2}')
+        if [ ! -z "$remaining" ]; then
+            echo -e "${RED}Warning: Some processes still running: $remaining${NC}"
+            echo -e "${YELLOW}Force killing remaining processes...${NC}"
+            for pid in $remaining; do
+                kill -KILL "$pid" 2>/dev/null
+            done
+            sleep 1
+        fi
+        echo -e "${GREEN}✅ Existing traders shut down successfully${NC}"
+    else
+        echo -e "${GREEN}✅ No existing RL traders found${NC}"
+    fi
+    echo ""
+}
+
+# Cleanup any existing traders first
+cleanup_existing_traders
+
+# Check if port is available after cleanup
 if lsof -Pi :$PORT -sTCP:LISTEN -t >/dev/null 2>&1; then
-    echo -e "${RED}Error: Port $PORT is already in use.${NC}"
-    echo "Please stop the service using it or choose a different port with -p"
+    echo -e "${RED}Error: Port $PORT is still in use after cleanup.${NC}"
+    echo "Please manually stop the service using it or choose a different port with -p"
     exit 1
 fi
 
