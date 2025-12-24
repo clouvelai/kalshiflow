@@ -69,8 +69,9 @@ class V3OrderbookIntegration:
         self._connection_established_time: Optional[float] = None
         self._first_snapshot_time: Optional[float] = None
         
-        # Subscribe to V3 event bus for tracking snapshots
-        self._snapshot_subscription = None
+        # Track subscription callbacks for proper cleanup
+        self._snapshot_callback = None
+        self._delta_callback = None
         
         logger.info(f"V3 Orderbook Integration initialized for {len(market_tickers)} markets")
     
@@ -114,8 +115,11 @@ class V3OrderbookIntegration:
         
         # Subscribe to V3 event bus to track snapshots and deltas
         # OrderbookClient now publishes directly to V3 event bus
-        await self._event_bus.subscribe_to_orderbook_snapshot(self._handle_snapshot_event)
-        await self._event_bus.subscribe_to_orderbook_delta(self._handle_delta_event)
+        # Store callbacks for proper cleanup
+        self._snapshot_callback = self._handle_snapshot_event
+        self._delta_callback = self._handle_delta_event
+        await self._event_bus.subscribe_to_orderbook_snapshot(self._snapshot_callback)
+        await self._event_bus.subscribe_to_orderbook_delta(self._delta_callback)
         logger.info("✅ Subscribed to V3 event bus for orderbook events")
         
         # Start the orderbook client (it will publish to V3 event bus directly)
@@ -132,7 +136,10 @@ class V3OrderbookIntegration:
         logger.info("Stopping V3 orderbook integration...")
         self._running = False
         
-        # No need to unsubscribe - V3 event bus manages its own subscriptions
+        # Cleanup: Event bus clears all subscribers on stop, so explicit unsubscribe isn't needed
+        # If we needed to unsubscribe without stopping event bus, we would do:
+        # self._event_bus.unsubscribe(EventType.ORDERBOOK_SNAPSHOT, self._snapshot_callback)
+        # self._event_bus.unsubscribe(EventType.ORDERBOOK_DELTA, self._delta_callback)
         
         # Stop the orderbook client
         await self._client.stop()

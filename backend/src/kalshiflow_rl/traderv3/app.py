@@ -32,6 +32,10 @@ from src.kalshiflow_rl.traderv3.config.environment import load_config
 # Import existing orderbook client
 from src.kalshiflow_rl.data.orderbook_client import OrderbookClient
 
+# Import database and write queue for orderbook data persistence
+from src.kalshiflow_rl.data.database import rl_db
+from src.kalshiflow_rl.data.write_queue import get_write_queue
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -56,6 +60,15 @@ async def lifespan(app):
         # Load environment configuration
         load_dotenv()
         config = load_config()
+        
+        # Initialize database for orderbook data persistence
+        logger.info("Initializing database...")
+        await rl_db.initialize()
+        
+        # Start write queue for async database writes
+        logger.info("Starting write queue...")
+        write_queue = get_write_queue()
+        await write_queue.start()
         
         # Create core components
         logger.info("Creating V3 components...")
@@ -132,7 +145,22 @@ async def lifespan(app):
             try:
                 await coordinator.stop()
             except Exception as e:
-                logger.error(f"Error during shutdown: {e}")
+                logger.error(f"Error during coordinator shutdown: {e}")
+        
+        # Stop write queue
+        try:
+            write_queue = get_write_queue()
+            await write_queue.stop()
+            logger.info("Write queue stopped")
+        except Exception as e:
+            logger.error(f"Error stopping write queue: {e}")
+        
+        # Close database
+        try:
+            await rl_db.close()
+            logger.info("Database closed")
+        except Exception as e:
+            logger.error(f"Error closing database: {e}")
         
         logger.info("TRADER V3 shutdown complete")
 

@@ -336,12 +336,9 @@ class EventBus:
         if EventType.ORDERBOOK_SNAPSHOT not in self._subscribers:
             self._subscribers[EventType.ORDERBOOK_SNAPSHOT] = []
         
-        # Create a wrapper that extracts the data from the MarketEvent
-        async def wrapper(event: MarketEvent):
-            if event.event_type == EventType.ORDERBOOK_SNAPSHOT:
-                await callback(event.market_ticker, event.metadata or {})
-        
-        self._subscribers[EventType.ORDERBOOK_SNAPSHOT].append(wrapper)
+        # Store the callback directly without a wrapper
+        # The _notify_subscribers method will handle the parameter extraction
+        self._subscribers[EventType.ORDERBOOK_SNAPSHOT].append(callback)
         logger.debug(f"Added orderbook snapshot subscriber: {callback.__name__}")
     
     async def subscribe_to_orderbook_delta(self, callback: Callable) -> None:
@@ -355,12 +352,9 @@ class EventBus:
         if EventType.ORDERBOOK_DELTA not in self._subscribers:
             self._subscribers[EventType.ORDERBOOK_DELTA] = []
         
-        # Create a wrapper that extracts the data from the MarketEvent
-        async def wrapper(event: MarketEvent):
-            if event.event_type == EventType.ORDERBOOK_DELTA:
-                await callback(event.market_ticker, event.metadata or {})
-        
-        self._subscribers[EventType.ORDERBOOK_DELTA].append(wrapper)
+        # Store the callback directly without a wrapper
+        # The _notify_subscribers method will handle the parameter extraction
+        self._subscribers[EventType.ORDERBOOK_DELTA].append(callback)
         logger.debug(f"Added orderbook delta subscriber: {callback.__name__}")
     
     async def _queue_event(self, event: Any) -> bool:
@@ -476,7 +470,13 @@ class EventBus:
         # Call all subscribers concurrently with error isolation
         tasks = []
         for callback in subscribers:
-            task = asyncio.create_task(self._safe_call_subscriber(callback, event))
+            # For orderbook events, extract the parameters for callbacks
+            if isinstance(event, MarketEvent) and event.event_type in [EventType.ORDERBOOK_SNAPSHOT, EventType.ORDERBOOK_DELTA]:
+                # Call with extracted parameters (market_ticker, metadata)
+                task = asyncio.create_task(self._safe_call_subscriber(callback, event.market_ticker, event.metadata or {}))
+            else:
+                # Call with the full event object
+                task = asyncio.create_task(self._safe_call_subscriber(callback, event))
             tasks.append(task)
         
         # Wait for all callbacks to complete (with timeout)
@@ -486,19 +486,19 @@ class EventBus:
             except asyncio.TimeoutError:
                 logger.warning(f"Subscriber callbacks timeout for {event.event_type.value}")
     
-    async def _safe_call_subscriber(self, callback: Callable, event: Any) -> None:
+    async def _safe_call_subscriber(self, callback: Callable, *args) -> None:
         """
         Safely call a subscriber callback with error isolation.
         
         Args:
             callback: Subscriber callback to call
-            event: Event data to pass
+            *args: Variable arguments to pass to the callback
         """
         try:
             if asyncio.iscoroutinefunction(callback):
-                await callback(event)
+                await callback(*args)
             else:
-                callback(event)
+                callback(*args)
                 
         except Exception as e:
             self._callback_errors += 1
