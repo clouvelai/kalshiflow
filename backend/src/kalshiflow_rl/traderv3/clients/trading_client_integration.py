@@ -105,6 +105,11 @@ class V3TradingClientIntegration:
             f"(mode={trading_client.mode}, max_orders={max_orders}, max_position={max_position_size})"
         )
     
+    @property
+    def api_url(self) -> str:
+        """Get the API URL being used by the trading client."""
+        return self._client.rest_base_url
+    
     async def start(self) -> None:
         """Start trading client integration."""
         if self._running:

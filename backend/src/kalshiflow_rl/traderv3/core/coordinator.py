@@ -177,7 +177,8 @@ class V3Coordinator:
                     context="Connecting to trading API",
                     metadata={
                         "mode": self._trading_client_integration._client.mode,
-                        "environment": self._config.get_environment_name()
+                        "environment": self._config.get_environment_name(),
+                        "api_url": self._trading_client_integration.api_url
                     }
                 )
                 

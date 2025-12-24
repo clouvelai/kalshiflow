@@ -14,7 +14,9 @@ const V3TraderConsole = () => {
     uptime: 0,
     health: 'unknown',
     ping_health: 'unknown',
-    last_ping_age: null
+    last_ping_age: null,
+    api_connected: false,
+    api_url: null
   });
   const [copied, setCopied] = useState(false);
   const wsRef = useRef(null);
@@ -193,6 +195,23 @@ const V3TraderConsole = () => {
               const toState = data.data.to_state || data.data.state;
               setCurrentState(toState);
               
+              // Update API connection status based on state
+              if (toState === 'trading_client_connect' && data.data.metadata?.api_url) {
+                // Store API URL when connecting and set connected status
+                setMetrics(prev => ({
+                  ...prev,
+                  api_url: data.data.metadata.api_url,
+                  api_connected: true
+                }));
+              }
+              
+              // Update API connection status based on state
+              if (toState === 'ready' || toState === 'calibrating' || toState === 'acting' || toState === 'trading_client_connect') {
+                setMetrics(prev => ({ ...prev, api_connected: true }));
+              } else if (toState === 'error' || toState === 'idle') {
+                setMetrics(prev => ({ ...prev, api_connected: false }));
+              }
+              
               // Only add message if it's not just a current state update
               if (!data.data.is_current || data.data.message !== `Current state: ${toState}`) {
                 addMessage('state', data.data.message, {
@@ -217,7 +236,7 @@ const V3TraderConsole = () => {
                 });
                 
                 // Extract all metrics including Kalshi API ping health
-                setMetrics({
+                setMetrics(prev => ({
                   markets_connected: data.data.metrics.markets_connected || 0,
                   snapshots_received: data.data.metrics.snapshots_received || 0,
                   deltas_received: data.data.metrics.deltas_received || 0,
@@ -225,8 +244,11 @@ const V3TraderConsole = () => {
                   health: data.data.metrics.health || 'unknown',
                   // Use ping health from Kalshi API connection
                   ping_health: data.data.metrics.ping_health || 'unknown',
-                  last_ping_age: data.data.metrics.last_ping_age || null
-                });
+                  last_ping_age: data.data.metrics.last_ping_age || null,
+                  // Preserve API connection info
+                  api_connected: prev.api_connected,
+                  api_url: prev.api_url
+                }));
               }
               if (data.data.state) {
                 setCurrentState(data.data.state);
@@ -486,6 +508,26 @@ const V3TraderConsole = () => {
                     </div>
                   </div>
                 </div>
+              </div>
+              
+              {/* API Status */}
+              <div className="pt-4 border-t border-gray-700">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-xs text-gray-500 uppercase tracking-wider">API Status</span>
+                  <div className={`px-3 py-1 rounded-full text-xs font-bold ${
+                    metrics.api_connected ? 'bg-green-900/30 text-green-400' : 'bg-red-900/30 text-red-400'
+                  }`}>
+                    {metrics.api_connected ? 'CONNECTED' : 'DISCONNECTED'}
+                  </div>
+                </div>
+                {metrics.api_url && (
+                  <div className="mt-2">
+                    <span className="text-xs text-gray-500">Endpoint:</span>
+                    <div className="text-xs text-gray-300 font-mono mt-1 truncate" title={metrics.api_url}>
+                      {metrics.api_url.replace('https://', '').replace('/trade-api/v2', '')}
+                    </div>
+                  </div>
+                )}
               </div>
               
               {/* Activity Indicator */}
