@@ -356,6 +356,8 @@ const V3TraderConsole = () => {
       'startup': 'text-gray-400 bg-gray-900/50',
       'initializing': 'text-yellow-400 bg-yellow-900/30',
       'orderbook_connect': 'text-blue-400 bg-blue-900/30',
+      'trading_client_connect': 'text-purple-400 bg-purple-900/30',
+      'kalshi_data_sync': 'text-cyan-400 bg-cyan-900/30',
       'ready': 'text-green-400 bg-green-900/30',
       'error': 'text-red-400 bg-red-900/30',
       'shutdown': 'text-gray-500 bg-gray-900/50'

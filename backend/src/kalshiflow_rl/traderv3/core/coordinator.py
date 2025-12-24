@@ -124,31 +124,12 @@ class V3Coordinator:
             # Now transition to orderbook connectivity
             logger.info("Transitioning to orderbook connectivity...")
             
-            # Prepare metadata for the ORDERBOOK_CONNECT state
-            # Note: Don't include API URL here - it belongs in TRADING_CLIENT_CONNECT
-            orderbook_connect_metadata = {
-                "ws_url": self._config.ws_url,
-                "markets": self._config.market_tickers[:2] + (["...and {} more".format(len(self._config.market_tickers) - 2)] if len(self._config.market_tickers) > 2 else []),
-                "market_count": len(self._config.market_tickers),
-                "environment": self._config.get_environment_name()
-            }
-            
-            await self._state_machine.transition_to(
-                V3State.ORDERBOOK_CONNECT,
-                context=f"Connecting to {len(self._config.market_tickers)} markets",
-                metadata=orderbook_connect_metadata
-            )
-            
-            # Emit connecting status
-            await self._emit_status_update(f"Connecting to {len(self._config.market_tickers)} markets")
-            
-            # ACTUALLY WAIT FOR CONNECTION - No smoke and mirrors!
+            # ACTUALLY WAIT FOR CONNECTION FIRST - Then transition with real data!
             connection_success = False
             data_flowing = False
             
             # Step 1: Wait for WebSocket connection
             logger.info("🔄 ORDERBOOK_CONNECT: Actually connecting to orderbook WebSocket...")
-            logger.debug(f"ORDERBOOK_CONNECT: Current state metadata does NOT contain trading data")
             connection_success = await self._orderbook_integration.wait_for_connection(timeout=30.0)
             
             if not connection_success:
@@ -169,6 +150,29 @@ class V3Coordinator:
             # Get ACTUAL metrics after connection
             orderbook_metrics = self._orderbook_integration.get_metrics()
             health_details = self._orderbook_integration.get_health_details()
+            
+            # NOW transition with REAL connection data
+            orderbook_connect_metadata = {
+                "ws_url": self._config.ws_url,
+                "markets": self._config.market_tickers[:2] + (["...and {} more".format(len(self._config.market_tickers) - 2)] if len(self._config.market_tickers) > 2 else []),
+                "market_count": len(self._config.market_tickers),
+                "environment": self._config.get_environment_name(),
+                # Add REAL metrics from actual connection
+                "markets_connected": orderbook_metrics["markets_connected"],
+                "snapshots_received": orderbook_metrics["snapshots_received"],
+                "deltas_received": orderbook_metrics["deltas_received"],
+                "connection_established": health_details.get("connection_established"),
+                "first_snapshot_received": health_details.get("first_snapshot_received")
+            }
+            
+            await self._state_machine.transition_to(
+                V3State.ORDERBOOK_CONNECT,
+                context=f"Connected to {orderbook_metrics['markets_connected']} markets",
+                metadata=orderbook_connect_metadata
+            )
+            
+            # Emit connected status
+            await self._emit_status_update(f"Connected to {orderbook_metrics['markets_connected']} markets")
             
             # Check if trading client is configured
             sync_result_metadata = None  # Will be populated if trading is enabled
@@ -202,36 +206,38 @@ class V3Coordinator:
                     )
                     return
                 
-                # Transition to KALSHI_DATA_SYNC state with its own metadata
+                # Perform synchronization with Kalshi FIRST
                 logger.info("Trading client connected - syncing with Kalshi...")
-                logger.debug("💰 Moving to KALSHI_DATA_SYNC - About to fetch actual trading data!")
-                
-                sync_start_metadata = {
-                    "mode": self._trading_client_integration._client.mode,
-                    "sync_type": "initial"
-                }
-                
-                await self._state_machine.transition_to(
-                    V3State.KALSHI_DATA_SYNC,
-                    context="Syncing positions and orders with Kalshi",
-                    metadata=sync_start_metadata
-                )
-                
-                # Perform synchronization with Kalshi
                 logger.info("🔄 KALSHI_DATA_SYNC: Actually calling Kalshi API for positions/orders...")
                 try:
                     state, changes = await self._trading_client_integration.sync_with_kalshi()
                     
-                    # Build sync result metadata - this is for READY state, not KALSHI_DATA_SYNC
-                    sync_result_metadata = {
+                    # Build sync metadata with ACTUAL sync results
+                    sync_metadata = {
+                        "mode": self._trading_client_integration._client.mode,
+                        "sync_type": "initial",
                         "balance": state.balance,  # In cents
                         "portfolio_value": state.portfolio_value,  # In cents
                         "positions": state.position_count,
                         "orders": state.order_count
                     }
                     
+                    # Also save for READY state (keep this for later)
+                    sync_result_metadata = {
+                        "balance": state.balance,
+                        "portfolio_value": state.portfolio_value,
+                        "positions": state.position_count,
+                        "orders": state.order_count
+                    }
+                    
                     # Add changes if this isn't the first sync
                     if changes:
+                        sync_metadata.update({
+                            "balance_change": f"{changes.balance_change:+d}",
+                            "portfolio_change": f"{changes.portfolio_value_change:+d}",
+                            "positions_change": f"{changes.position_count_change:+d}",
+                            "orders_change": f"{changes.order_count_change:+d}"
+                        })
                         sync_result_metadata.update({
                             "balance_change": f"{changes.balance_change:+d}",
                             "portfolio_change": f"{changes.portfolio_value_change:+d}",
@@ -248,6 +254,13 @@ class V3Coordinator:
                             f"Initial Kalshi sync - Balance: {state.balance} cents, "
                             f"Positions: {state.position_count}, Orders: {state.order_count}"
                         )
+                    
+                    # NOW transition with REAL sync data
+                    await self._state_machine.transition_to(
+                        V3State.KALSHI_DATA_SYNC,
+                        context=f"Synced: {state.position_count} positions, {state.order_count} orders, Balance: ${state.balance/100:.2f}",
+                        metadata=sync_metadata
+                    )
                     
                 except Exception as e:
                     logger.error(f"Kalshi data sync failed: {e}")
