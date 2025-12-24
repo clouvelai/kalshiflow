@@ -21,6 +21,8 @@ class TraderState(Enum):
     STARTUP = "startup"
     INITIALIZING = "initializing"
     ORDERBOOK_CONNECT = "orderbook_connect"
+    TRADING_CLIENT_CONNECT = "trading_client_connect"  # NEW: Connect to trading API
+    CALIBRATING = "calibrating"  # NEW: Sync positions and orders
     READY = "ready"
     ERROR = "error"
     SHUTDOWN = "shutdown"
@@ -96,7 +98,18 @@ class TraderStateMachine:
                 TraderState.SHUTDOWN
             },
             TraderState.ORDERBOOK_CONNECT: {
-                TraderState.READY,
+                TraderState.TRADING_CLIENT_CONNECT,  # NEW: After orderbook, connect trading
+                TraderState.READY,  # Can skip trading if not enabled
+                TraderState.ERROR,
+                TraderState.SHUTDOWN
+            },
+            TraderState.TRADING_CLIENT_CONNECT: {
+                TraderState.CALIBRATING,  # NEW: After connection, calibrate
+                TraderState.ERROR,
+                TraderState.SHUTDOWN
+            },
+            TraderState.CALIBRATING: {
+                TraderState.READY,  # NEW: After calibration, ready to trade
                 TraderState.ERROR,
                 TraderState.SHUTDOWN
             },
@@ -117,6 +130,8 @@ class TraderStateMachine:
             TraderState.STARTUP: 30.0,  # 30s to start up
             TraderState.INITIALIZING: 60.0,  # 1m to initialize
             TraderState.ORDERBOOK_CONNECT: 120.0,  # 2m to connect orderbook
+            TraderState.TRADING_CLIENT_CONNECT: 60.0,  # 1m to connect trading API
+            TraderState.CALIBRATING: 60.0,  # 1m to calibrate positions
             TraderState.READY: float('inf'),  # Can stay ready indefinitely
             TraderState.ERROR: 300.0,  # 5m before forcing shutdown
             TraderState.SHUTDOWN: 30.0  # 30s to shutdown
@@ -465,7 +480,9 @@ def get_state_description(state: TraderState) -> str:
         TraderState.STARTUP: "System starting up, loading configuration",
         TraderState.INITIALIZING: "Initializing core components (event bus, WebSocket manager)",
         TraderState.ORDERBOOK_CONNECT: "Connecting to Kalshi, starting orderbook client",
-        TraderState.READY: "System ready, orderbook connected, monitoring markets",
+        TraderState.TRADING_CLIENT_CONNECT: "Connecting to trading API for order management",
+        TraderState.CALIBRATING: "Syncing positions and orders with exchange",
+        TraderState.READY: "System ready, all connections established, monitoring markets",
         TraderState.ERROR: "System error, attempting recovery or requiring intervention",
         TraderState.SHUTDOWN: "System shutting down gracefully"
     }
@@ -495,6 +512,17 @@ def get_next_states(current_state: TraderState) -> Set[TraderState]:
             TraderState.SHUTDOWN
         },
         TraderState.ORDERBOOK_CONNECT: {
+            TraderState.TRADING_CLIENT_CONNECT,
+            TraderState.READY,  # Can skip trading if not enabled
+            TraderState.ERROR,
+            TraderState.SHUTDOWN
+        },
+        TraderState.TRADING_CLIENT_CONNECT: {
+            TraderState.CALIBRATING,
+            TraderState.ERROR,
+            TraderState.SHUTDOWN
+        },
+        TraderState.CALIBRATING: {
             TraderState.READY,
             TraderState.ERROR,
             TraderState.SHUTDOWN

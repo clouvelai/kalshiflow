@@ -35,6 +35,12 @@ class V3Config:
     orderbook_depth: int = 5
     snapshot_interval: float = 1.0  # seconds
     
+    # Trading Client Configuration (optional, only for paper/live trading)
+    enable_trading_client: bool = False
+    trading_max_orders: int = 10
+    trading_max_position_size: int = 100
+    trading_mode: str = "paper"  # paper or production
+    
     # State Machine Configuration
     calibration_duration: float = 10.0  # seconds
     health_check_interval: float = 5.0  # seconds
@@ -105,6 +111,17 @@ class V3Config:
         orderbook_depth = int(os.environ.get("V3_ORDERBOOK_DEPTH", "5"))
         snapshot_interval = float(os.environ.get("V3_SNAPSHOT_INTERVAL", "1.0"))
         
+        # Trading client configuration
+        enable_trading_client = os.environ.get("V3_ENABLE_TRADING_CLIENT", "false").lower() == "true"
+        trading_max_orders = int(os.environ.get("V3_TRADING_MAX_ORDERS", "10"))
+        trading_max_position_size = int(os.environ.get("V3_TRADING_MAX_POSITION_SIZE", "100"))
+        # Determine trading mode based on environment or explicit setting
+        environment = os.environ.get("ENVIRONMENT", "local")
+        if environment == "paper" or "demo-api" in ws_url.lower():
+            trading_mode = "paper"
+        else:
+            trading_mode = os.environ.get("V3_TRADING_MODE", "paper")
+        
         calibration_duration = float(os.environ.get("V3_CALIBRATION_DURATION", "10.0"))
         health_check_interval = float(os.environ.get("V3_HEALTH_CHECK_INTERVAL", "5.0"))
         error_recovery_delay = float(os.environ.get("V3_ERROR_RECOVERY_DELAY", "30.0"))
@@ -127,6 +144,10 @@ class V3Config:
             max_markets=max_markets,
             orderbook_depth=orderbook_depth,
             snapshot_interval=snapshot_interval,
+            enable_trading_client=enable_trading_client,
+            trading_max_orders=trading_max_orders,
+            trading_max_position_size=trading_max_position_size,
+            trading_mode=trading_mode,
             calibration_duration=calibration_duration,
             health_check_interval=health_check_interval,
             error_recovery_delay=error_recovery_delay,
@@ -146,6 +167,11 @@ class V3Config:
         logger.info(f"  - Calibration: {calibration_duration}s")
         logger.info(f"  - Server: {host}:{port}")
         logger.info(f"  - Log level: {log_level}")
+        if enable_trading_client:
+            logger.info(f"  - Trading enabled: {trading_mode} mode")
+            logger.info(f"  - Max orders: {trading_max_orders}, Max position: {trading_max_position_size}")
+        else:
+            logger.info(f"  - Trading: DISABLED (orderbook only)")
         
         return config
     

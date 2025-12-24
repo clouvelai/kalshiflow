@@ -27,6 +27,7 @@ from src.kalshiflow_rl.traderv3.core.event_bus import EventBus
 from src.kalshiflow_rl.traderv3.core.websocket_manager import V3WebSocketManager
 from src.kalshiflow_rl.traderv3.core.coordinator import V3Coordinator
 from src.kalshiflow_rl.traderv3.clients.orderbook_integration import V3OrderbookIntegration
+from src.kalshiflow_rl.traderv3.clients.trading_client_integration import V3TradingClientIntegration
 from src.kalshiflow_rl.traderv3.config.environment import load_config
 
 # Import existing orderbook client
@@ -114,7 +115,33 @@ async def lifespan(app):
             market_tickers=market_tickers  # Use discovered/configured tickers
         )
         
-        # 7. Create coordinator with discovered/configured markets
+        # 7. Trading client integration (optional)
+        trading_client_integration = None
+        if config.enable_trading_client:
+            logger.info(f"Creating trading client integration (mode={config.trading_mode})...")
+            
+            # Import and create the demo trading client
+            from src.kalshiflow_rl.trading.demo_client import KalshiDemoTradingClient
+            
+            # Create trading client (paper mode for now)
+            trading_client = KalshiDemoTradingClient(mode="paper")
+            
+            # Create integration wrapper
+            trading_client_integration = V3TradingClientIntegration(
+                trading_client=trading_client,
+                event_bus=event_bus,
+                max_orders=config.trading_max_orders,
+                max_position_size=config.trading_max_position_size
+            )
+            
+            # Start the trading client integration
+            await trading_client_integration.start()
+            
+            logger.info(f"Trading client integration created (max_orders={config.trading_max_orders}, max_position={config.trading_max_position_size})")
+        else:
+            logger.info("Trading client disabled - orderbook only mode")
+        
+        # 8. Create coordinator with discovered/configured markets
         # Update config with the actual markets being used
         config.market_tickers = market_tickers
         
@@ -123,7 +150,8 @@ async def lifespan(app):
             state_machine=state_machine,
             event_bus=event_bus,
             websocket_manager=websocket_manager,
-            orderbook_integration=orderbook_integration
+            orderbook_integration=orderbook_integration,
+            trading_client_integration=trading_client_integration
         )
         
         # Start the system

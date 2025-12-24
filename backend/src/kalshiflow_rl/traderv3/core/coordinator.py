@@ -8,7 +8,10 @@ Simple, clean orchestration without business logic.
 import asyncio
 import logging
 import time
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ..clients.trading_client_integration import V3TradingClientIntegration
 
 from .state_machine import TraderStateMachine as V3StateMachine, TraderState as V3State
 from .event_bus import EventBus, EventType, StateTransitionEvent, TraderStatusEvent
@@ -38,7 +41,8 @@ class V3Coordinator:
         state_machine: V3StateMachine,
         event_bus: EventBus,
         websocket_manager: V3WebSocketManager,
-        orderbook_integration: V3OrderbookIntegration
+        orderbook_integration: V3OrderbookIntegration,
+        trading_client_integration: Optional['V3TradingClientIntegration'] = None
     ):
         """
         Initialize coordinator.
@@ -49,12 +53,14 @@ class V3Coordinator:
             event_bus: Event bus instance
             websocket_manager: WebSocket manager instance
             orderbook_integration: Orderbook integration instance
+            trading_client_integration: Optional trading client integration
         """
         self._config = config
         self._state_machine = state_machine
         self._event_bus = event_bus
         self._websocket_manager = websocket_manager
         self._orderbook_integration = orderbook_integration
+        self._trading_client_integration = trading_client_integration
         
         self._started_at: Optional[float] = None
         self._running = False
@@ -161,6 +167,54 @@ class V3Coordinator:
             orderbook_metrics = self._orderbook_integration.get_metrics()
             health_details = self._orderbook_integration.get_health_details()
             
+            # Check if trading client is configured
+            if self._trading_client_integration:
+                logger.info("Trading client is configured - connecting to trading API...")
+                
+                # Transition to TRADING_CLIENT_CONNECT state
+                await self._state_machine.transition_to(
+                    V3State.TRADING_CLIENT_CONNECT,
+                    context="Connecting to trading API",
+                    metadata={
+                        "mode": self._trading_client_integration._client.mode,
+                        "environment": self._config.get_environment_name()
+                    }
+                )
+                
+                # Wait for trading client connection
+                trading_connected = await self._trading_client_integration.wait_for_connection(timeout=30.0)
+                
+                if not trading_connected:
+                    logger.error("Failed to connect to trading API!")
+                    await self._state_machine.enter_error_state(
+                        "Trading client connection failed",
+                        Exception("Trading API connection timeout")
+                    )
+                    return
+                
+                # Transition to CALIBRATING state
+                logger.info("Trading client connected - calibrating positions...")
+                await self._state_machine.transition_to(
+                    V3State.CALIBRATING,
+                    context="Syncing positions and orders",
+                    metadata={"mode": self._trading_client_integration._client.mode}
+                )
+                
+                # Perform calibration
+                try:
+                    calibration_data = await self._trading_client_integration.calibrate()
+                    logger.info(
+                        f"Calibration complete - Positions: {len(calibration_data.positions)}, "
+                        f"Orders: {len(calibration_data.orders)}, Balance: ${calibration_data.balance}"
+                    )
+                except Exception as e:
+                    logger.error(f"Calibration failed: {e}")
+                    await self._state_machine.enter_error_state(
+                        "Calibration failed",
+                        e
+                    )
+                    return
+            
             # Transition to ready state with REAL connection status
             logger.info("Transitioning to ready state...")
             
@@ -173,9 +227,22 @@ class V3Coordinator:
                 "environment": self._config.get_environment_name()
             }
             
+            # Add trading client info if available
+            if self._trading_client_integration:
+                trading_metrics = self._trading_client_integration.get_metrics()
+                metadata["trading_client"] = {
+                    "connected": trading_metrics["connected"],
+                    "mode": trading_metrics["mode"],
+                    "positions_count": trading_metrics["positions_count"],
+                    "balance": trading_metrics["balance"]
+                }
+            
             # Determine context based on actual connection status
             if connection_success and data_flowing:
-                context = f"System fully operational with {orderbook_metrics['markets_connected']} markets"
+                if self._trading_client_integration:
+                    context = f"System fully operational with {orderbook_metrics['markets_connected']} markets and trading enabled"
+                else:
+                    context = f"System fully operational with {orderbook_metrics['markets_connected']} markets (orderbook only)"
             elif connection_success:
                 context = f"System connected (waiting for data) - {orderbook_metrics['markets_connected']} markets"
             else:
@@ -188,7 +255,10 @@ class V3Coordinator:
             )
             
             # Emit ready status
-            await self._emit_status_update(f"System ready with {len(self._config.market_tickers)} markets")
+            status_msg = f"System ready with {len(self._config.market_tickers)} markets"
+            if self._trading_client_integration:
+                status_msg += f" (trading enabled in {self._trading_client_integration._client.mode} mode)"
+            await self._emit_status_update(status_msg)
             
             logger.info("=" * 60)
             logger.info("✅ TRADER V3 STARTED SUCCESSFULLY")
@@ -227,22 +297,34 @@ class V3Coordinator:
         
         # Stop components in reverse order
         try:
-            logger.info("1/5 Stopping Orderbook Integration...")
-            await self._orderbook_integration.stop()
+            step = 1
+            total_steps = 6 if self._trading_client_integration else 5
             
-            logger.info("2/5 Transitioning to SHUTDOWN state...")
+            if self._trading_client_integration:
+                logger.info(f"{step}/{total_steps} Stopping Trading Client Integration...")
+                await self._trading_client_integration.stop()
+                step += 1
+            
+            logger.info(f"{step}/{total_steps} Stopping Orderbook Integration...")
+            await self._orderbook_integration.stop()
+            step += 1
+            
+            logger.info(f"{step}/{total_steps} Transitioning to SHUTDOWN state...")
             await self._state_machine.transition_to(
                 V3State.SHUTDOWN,
                 context="Graceful shutdown initiated"
             )
+            step += 1
             
-            logger.info("3/5 Stopping State Machine...")
+            logger.info(f"{step}/{total_steps} Stopping State Machine...")
             await self._state_machine.stop()
+            step += 1
             
-            logger.info("4/5 Stopping WebSocket Manager...")
+            logger.info(f"{step}/{total_steps} Stopping WebSocket Manager...")
             await self._websocket_manager.stop()
+            step += 1
             
-            logger.info("5/5 Stopping Event Bus...")
+            logger.info(f"{step}/{total_steps} Stopping Event Bus...")
             await self._event_bus.stop()
             
         except Exception as e:
@@ -266,6 +348,10 @@ class V3Coordinator:
                     "websocket_manager": self._websocket_manager.is_healthy(),
                     "orderbook_integration": self._orderbook_integration.is_healthy()
                 }
+                
+                # Add trading client health if configured
+                if self._trading_client_integration:
+                    components_health["trading_client"] = self._trading_client_integration.is_healthy()
                 
                 all_healthy = all(components_health.values())
                 
@@ -426,31 +512,49 @@ class V3Coordinator:
         """Get comprehensive system status."""
         uptime = time.time() - self._started_at if self._started_at else 0
         
-        return {
+        components = {
+            "state_machine": self._state_machine.get_health_details(),
+            "event_bus": self._event_bus.get_health_details(),
+            "websocket_manager": self._websocket_manager.get_health_details(),
+            "orderbook_integration": self._orderbook_integration.get_health_details()
+        }
+        
+        # Add trading client if configured
+        if self._trading_client_integration:
+            components["trading_client"] = self._trading_client_integration.get_health_details()
+        
+        status = {
             "running": self._running,
             "uptime": uptime,
             "state": self._state_machine.current_state.value,
             "environment": self._config.get_environment_name(),
             "markets": self._config.market_tickers,
-            "components": {
-                "state_machine": self._state_machine.get_health_details(),
-                "event_bus": self._event_bus.get_health_details(),
-                "websocket_manager": self._websocket_manager.get_health_details(),
-                "orderbook_integration": self._orderbook_integration.get_health_details()
-            }
+            "components": components
         }
+        
+        # Add trading mode if trading client is configured
+        if self._trading_client_integration:
+            status["trading_mode"] = self._trading_client_integration._client.mode
+        
+        return status
     
     def is_healthy(self) -> bool:
         """Check if system is healthy."""
         if not self._running:
             return False
         
-        return all([
+        health_checks = [
             self._state_machine.is_healthy(),
             self._event_bus.is_healthy(),
             self._websocket_manager.is_healthy(),
             self._orderbook_integration.is_healthy()
-        ])
+        ]
+        
+        # Add trading client health if configured
+        if self._trading_client_integration:
+            health_checks.append(self._trading_client_integration.is_healthy())
+        
+        return all(health_checks)
     
     def get_health(self) -> Dict[str, Any]:
         """Get health status."""

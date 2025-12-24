@@ -47,6 +47,17 @@ export V3_CALIBRATION_DURATION="10.0"
 export V3_HEALTH_CHECK_INTERVAL="5.0"
 export V3_WS_RECONNECT_INTERVAL="5.0"
 
+# Trading client configuration (enabled for paper environment)
+if [ "$ENVIRONMENT" = "paper" ]; then
+    export V3_ENABLE_TRADING_CLIENT="true"
+    export V3_TRADING_MAX_ORDERS="10"
+    export V3_TRADING_MAX_POSITION_SIZE="100"
+    echo -e "${GREEN}✓ Trading client enabled (paper mode)${NC}"
+else
+    export V3_ENABLE_TRADING_CLIENT="false"
+    echo -e "${YELLOW}⚠ Trading client disabled (production safety)${NC}"
+fi
+
 # Check if .env file exists
 ENV_FILE=".env.$ENVIRONMENT"
 if [ ! -f "$ENV_FILE" ]; then
