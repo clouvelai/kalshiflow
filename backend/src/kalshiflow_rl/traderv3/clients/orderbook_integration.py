@@ -301,6 +301,22 @@ class V3OrderbookIntegration:
         if self._metrics.last_delta_time:
             time_since_delta = now - self._metrics.last_delta_time
         
+        # Get message-based health from underlying client
+        # The websockets library handles ping/pong at protocol level automatically
+        ping_health = "unknown"
+        last_ping_age = None
+        if self._client:
+            client_stats = self._client.get_stats()
+            last_ping_age = client_stats.get("last_message_age_seconds")
+            # Determine health based on message age
+            if last_ping_age is not None:
+                if last_ping_age < 60:  # Less than 1 minute = healthy
+                    ping_health = "healthy"
+                elif last_ping_age < 300:  # 1-5 minutes = degraded
+                    ping_health = "degraded"
+                else:  # More than 5 minutes = unhealthy
+                    ping_health = "unhealthy"
+        
         return {
             "healthy": self.is_healthy(),
             "running": self._running,
@@ -312,6 +328,9 @@ class V3OrderbookIntegration:
             "time_since_delta": time_since_delta,
             "uptime_seconds": metrics["uptime_seconds"],
             "client_connected": self._client.is_healthy() if self._client else False,
+            # Ping/heartbeat health
+            "ping_health": ping_health,
+            "last_ping_age_seconds": last_ping_age,
             # Return timestamp strings for display in console
             "connection_established": time.strftime("%H:%M:%S", time.localtime(self._connection_established_time)) if self._connection_established_time else None,
             "first_snapshot_received": time.strftime("%H:%M:%S", time.localtime(self._first_snapshot_time)) if self._first_snapshot_time else None

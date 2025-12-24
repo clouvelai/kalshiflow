@@ -88,6 +88,7 @@ class V3Coordinator:
             await self._event_bus.start()
             
             logger.info("2/5 Starting WebSocket Manager...")
+            self._websocket_manager.set_coordinator(self)  # Set reference for metrics broadcasting
             await self._websocket_manager.start()
             
             logger.info("3/5 Starting State Machine...")
@@ -348,6 +349,10 @@ class V3Coordinator:
             
             uptime = time.time() - self._started_at if self._started_at else 0
             
+            # Get Kalshi API ping health from orderbook integration
+            ping_health = health_details.get("ping_health", "unknown")
+            last_ping_age = health_details.get("last_ping_age_seconds")
+            
             # Publish status event with proper event_type
             # Note: health field is now removed from top level (will be in metrics)
             event = TraderStatusEvent(
@@ -365,6 +370,9 @@ class V3Coordinator:
                     "context": context,
                     # Add health status INSIDE metrics (fix for Issue 1)
                     "health": "healthy" if self.is_healthy() else "unhealthy",
+                    # Add Kalshi API ping health
+                    "ping_health": ping_health,
+                    "last_ping_age": last_ping_age,
                     # Add connection status fields (fix for Issue 2)
                     "connection_established": health_details.get("connection_established"),
                     "first_snapshot_received": health_details.get("first_snapshot_received"),
@@ -382,7 +390,9 @@ class V3Coordinator:
             logger.debug(
                 f"Broadcasting status with connection fields: "
                 f"connection_established={event.metrics.get('connection_established')}, "
-                f"first_snapshot_received={event.metrics.get('first_snapshot_received')}"
+                f"first_snapshot_received={event.metrics.get('first_snapshot_received')}, "
+                f"ping_health={event.metrics.get('ping_health')}, "
+                f"last_ping_age={event.metrics.get('last_ping_age')}"
             )
             
             # Log summary with session information

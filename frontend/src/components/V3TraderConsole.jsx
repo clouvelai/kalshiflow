@@ -12,7 +12,9 @@ const V3TraderConsole = () => {
     snapshots_received: 0,
     deltas_received: 0,
     uptime: 0,
-    health: 'unknown'
+    health: 'unknown',
+    ping_health: 'unknown',
+    last_ping_age: null
   });
   const [copied, setCopied] = useState(false);
   const wsRef = useRef(null);
@@ -147,7 +149,7 @@ const V3TraderConsole = () => {
     }
 
     try {
-      const ws = new WebSocket('ws://localhost:8006/v3/ws');
+      const ws = new WebSocket('ws://localhost:8005/v3/ws');
       
       ws.onopen = () => {
         setWsStatus('connected');
@@ -156,6 +158,9 @@ const V3TraderConsole = () => {
       ws.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data);
+          
+          // Debug: Log ALL messages to see what's coming through
+          console.log('WebSocket message received:', { type: data.type, hasMetrics: !!data.data?.metrics });
           
           switch(data.type) {
             case 'connection':
@@ -202,9 +207,26 @@ const V3TraderConsole = () => {
               break;
               
             case 'trader_status':
-              // Silent update of metrics only
+              // Update metrics from single source of truth
               if (data.data.metrics) {
-                setMetrics(data.data.metrics);
+                // Debug: Log the full metrics object
+                console.log('Full metrics object:', data.data.metrics);
+                console.log('Received trader_status metrics:', {
+                  ping_health: data.data.metrics.ping_health,
+                  last_ping_age: data.data.metrics.last_ping_age
+                });
+                
+                // Extract all metrics including Kalshi API ping health
+                setMetrics({
+                  markets_connected: data.data.metrics.markets_connected || 0,
+                  snapshots_received: data.data.metrics.snapshots_received || 0,
+                  deltas_received: data.data.metrics.deltas_received || 0,
+                  uptime: data.data.metrics.uptime || 0,
+                  health: data.data.metrics.health || 'unknown',
+                  // Use ping health from Kalshi API connection
+                  ping_health: data.data.metrics.ping_health || 'unknown',
+                  last_ping_age: data.data.metrics.last_ping_age || null
+                });
               }
               if (data.data.state) {
                 setCurrentState(data.data.state);
@@ -217,6 +239,9 @@ const V3TraderConsole = () => {
                 ws.send(JSON.stringify({ type: 'pong', timestamp: Date.now() }));
               }
               break;
+              
+            // system_metrics case removed - all metrics now come from trader_status
+            // This case is no longer needed as trader_status is the single source of truth
               
             default:
               // Ignore all other message types
@@ -422,6 +447,29 @@ const V3TraderConsole = () => {
                     <span className="text-sm text-gray-500">Uptime</span>
                     <span className="text-lg font-mono font-bold text-green-400">
                       {metrics.uptime ? `${Math.floor(metrics.uptime)}s` : '0s'}
+                    </span>
+                  </div>
+                  
+                  <div className="flex justify-between items-center">
+                    <span className="text-sm text-gray-500">Ping Health</span>
+                    <div className={`px-3 py-1 rounded-full text-xs font-bold ${
+                      metrics.ping_health === 'healthy' ? 'bg-green-900/30 text-green-400' : 
+                      metrics.ping_health === 'degraded' ? 'bg-yellow-900/30 text-yellow-400' : 
+                      metrics.ping_health === 'unhealthy' ? 'bg-red-900/30 text-red-400' : 
+                      'bg-gray-900/30 text-gray-400'
+                    }`}>
+                      {metrics.ping_health?.toUpperCase() || 'UNKNOWN'}
+                    </div>
+                  </div>
+                  
+                  <div className="flex justify-between items-center">
+                    <span className="text-sm text-gray-500">Last Message</span>
+                    <span className={`text-lg font-mono font-bold ${
+                      metrics.last_ping_age === null ? 'text-gray-400' :
+                      metrics.last_ping_age < 10 ? 'text-green-400' :
+                      metrics.last_ping_age < 30 ? 'text-yellow-400' : 'text-red-400'
+                    }`}>
+                      {metrics.last_ping_age !== null ? `${Math.floor(metrics.last_ping_age)}s ago` : 'N/A'}
                     </span>
                   </div>
                 </div>

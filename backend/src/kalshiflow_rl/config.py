@@ -65,8 +65,12 @@ class RLConfig:
         self.ORDERBOOK_MAX_QUEUE_SIZE: int = int(os.getenv("RL_ORDERBOOK_MAX_QUEUE_SIZE", "10000"))
         
         # WebSocket and Performance Settings
-        self.WEBSOCKET_PING_INTERVAL: int = int(os.getenv("RL_WEBSOCKET_PING_INTERVAL", "30"))
-        self.WEBSOCKET_TIMEOUT: int = int(os.getenv("RL_WEBSOCKET_TIMEOUT", "60"))
+        # Aligned with Kalshi's 10-second ping interval - we ping at 20s
+        self.WEBSOCKET_PING_INTERVAL: int = int(os.getenv("RL_WEBSOCKET_PING_INTERVAL", "20"))
+        # Reduced timeout for faster failure detection
+        self.WEBSOCKET_PING_TIMEOUT: int = int(os.getenv("RL_WEBSOCKET_PING_TIMEOUT", "30"))
+        # Legacy timeout (keeping for backward compatibility)
+        self.WEBSOCKET_TIMEOUT: int = int(os.getenv("RL_WEBSOCKET_TIMEOUT", "30"))
         self.WEBSOCKET_RECONNECT_DELAY: int = int(os.getenv("RL_WEBSOCKET_RECONNECT_DELAY", "5"))
         self.MAX_RECONNECT_ATTEMPTS: int = int(os.getenv("RL_MAX_RECONNECT_ATTEMPTS", "10"))
         

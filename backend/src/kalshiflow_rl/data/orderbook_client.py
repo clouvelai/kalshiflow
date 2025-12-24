@@ -203,7 +203,7 @@ class OrderbookClient:
             self.ws_url,
             additional_headers=headers,
             ping_interval=config.WEBSOCKET_PING_INTERVAL,
-            ping_timeout=config.WEBSOCKET_TIMEOUT,
+            ping_timeout=config.WEBSOCKET_PING_TIMEOUT,
             max_size=1024*1024,  # 1MB max message size
             compression=None  # Disable compression for lower latency
         ) as websocket:
@@ -359,10 +359,6 @@ class OrderbookClient:
         # Check for acknowledgment (Kalshi uses type: "subscribed")
         if message.get("type") == "subscribed":
             return "subscription_ack"
-        
-        # Check for heartbeat
-        if "ping" in message or "pong" in message:
-            return "heartbeat"
         
         return "unknown"
     
@@ -734,6 +730,11 @@ class OrderbookClient:
         if self._connection_start_time:
             uptime = time.time() - self._connection_start_time
         
+        # Calculate message age for health monitoring
+        message_age = None
+        if self._last_message_time:
+            message_age = time.time() - self._last_message_time
+        
         stats = {
             "market_tickers": self.market_tickers,
             "market_count": len(self.market_tickers),
@@ -746,6 +747,7 @@ class OrderbookClient:
             "deltas_received": self._deltas_received,
             "uptime_seconds": uptime,
             "last_message_time": self._last_message_time,
+            "last_message_age_seconds": message_age,
             "session_id": self._session_id,
             "session_state": self._session_state,
             "health_state": "healthy" if self._last_health_state else "unhealthy"
@@ -754,88 +756,54 @@ class OrderbookClient:
         return stats
     
     def is_healthy(self) -> bool:
-        """Check if client is healthy and receiving data."""
+        """
+        Check if client is healthy based on message activity.
+        
+        The websockets library handles ping/pong at the protocol level,
+        so we track health based on actual orderbook message flow.
+        """
+        # Basic checks
         if not self._running:
-            # Handle health state change for proper session management
             asyncio.create_task(self._handle_health_state_change(False))
             return False
         
-        # During initial connection period (first 10 seconds), be lenient:
-        # - Allow time for initial connection attempt (503 errors may cause retries)
-        # - But only return True if websocket actually exists (connection succeeded)
-        if self._client_start_time:
-            time_since_start = time.time() - self._client_start_time
-            if time_since_start < 10.0:  # Short grace period for initial connection
-                # During grace period, only return True if websocket exists (connection succeeded)
-                # Don't return True if websocket is None - that means connection hasn't succeeded yet
-                if self._websocket is not None:
-                    # Check if websocket is closed
-                    try:
-                        if hasattr(self._websocket, 'closed'):
-                            if self._websocket.closed:
-                                return False  # Connection closed, not healthy
-                        elif hasattr(self._websocket, 'close_code'):
-                            if self._websocket.close_code is not None:
-                                return False  # Connection closed, not healthy
-                    except (AttributeError, TypeError):
-                        pass
-                    # Websocket exists and appears open - healthy during grace period
-                    asyncio.create_task(self._handle_health_state_change(True))
-                    return True
-                # Websocket is None - connection hasn't been established yet, not healthy
+        if not self._websocket:
+            asyncio.create_task(self._handle_health_state_change(False))
+            return False
+        
+        # Check if WebSocket is closed
+        try:
+            if hasattr(self._websocket, 'closed') and self._websocket.closed:
+                self._websocket = None
                 asyncio.create_task(self._handle_health_state_change(False))
                 return False
+        except (AttributeError, TypeError):
+            pass  # Can't check, assume open if websocket exists
         
-        # After grace period, check websocket state strictly
-        if self._websocket:
-            # Check if WebSocket connection is closed
-            try:
-                websocket_closed = False
-                if hasattr(self._websocket, 'closed'):
-                    websocket_closed = self._websocket.closed
-                elif hasattr(self._websocket, 'close_code'):
-                    # Some WebSocket implementations use close_code (None = open)
-                    websocket_closed = self._websocket.close_code is not None
-                
-                if websocket_closed:
-                    # Clear websocket reference since it's closed
-                    self._websocket = None
-                    asyncio.create_task(self._handle_health_state_change(False))
-                    return False
-            except (AttributeError, TypeError) as e:
-                logger.debug(f"Could not check WebSocket connection state: {e}")
-                # If we can't check, assume healthy if _websocket is not None and _running is True
-                pass
-        else:
-            # No websocket after grace period - not healthy
-            asyncio.create_task(self._handle_health_state_change(False))
-            return False
+        # Message-based health check (websockets library handles ping/pong at protocol level)
+        current_time = time.time()
         
-        # If we have a websocket connection but haven't received messages yet,
-        # still consider it healthy if it's been less than 10 seconds since connection
-        if self._connection_start_time:
-            time_since_connection = time.time() - self._connection_start_time
-            if time_since_connection < 10.0:
-                # During initial connection period, just check if websocket exists and is running
-                is_healthy = self._websocket is not None
-                asyncio.create_task(self._handle_health_state_change(is_healthy))
-                return is_healthy
-        
-        # After initial period, we should have received snapshots if healthy and subscribed to valid markets
-        if self._snapshots_received == 0:
-            # No snapshots received after initial period - unhealthy
-            asyncio.create_task(self._handle_health_state_change(False))
-            return False
-        
-        # We've received snapshots, connection is healthy
-        # Only mark unhealthy if we haven't received ANY messages for 30 minutes
-        # This handles the case where the connection silently dies
-        # Note: When a new message arrives, _last_message_time gets updated, so this will recover to healthy
         if self._last_message_time:
-            time_since_message = time.time() - self._last_message_time
-            if time_since_message > 1800:  # No messages for 30 minutes - likely disconnected
+            time_since_message = current_time - self._last_message_time
+            
+            if time_since_message > 300:  # No message for 5 minutes = unhealthy
                 asyncio.create_task(self._handle_health_state_change(False))
                 return False
+            elif time_since_message > 60:  # Degraded if > 1 minute
+                # Still healthy but degraded - log warning periodically
+                if not hasattr(self, '_last_degraded_warning') or (current_time - self._last_degraded_warning) > 60:
+                    logger.warning(f"Connection degraded: {time_since_message:.1f}s since last message")
+                    self._last_degraded_warning = current_time
+        elif self._connection_start_time:
+            # Grace period for first message after connection
+            time_since_connection = current_time - self._connection_start_time
+            if time_since_connection > 15:  # 15 seconds grace period for first message
+                asyncio.create_task(self._handle_health_state_change(False))
+                return False
+        else:
+            # No connection time tracked - unhealthy
+            asyncio.create_task(self._handle_health_state_change(False))
+            return False
         
         # If we reach here, system is healthy
         asyncio.create_task(self._handle_health_state_change(True))
@@ -967,6 +935,8 @@ class OrderbookClient:
             "session_id": stats.get("session_id"),
             "session_state": stats.get("session_state", "unknown"),
             "health_state": stats.get("health_state", "unknown"),
+            # Message-based health (websockets handles ping/pong at protocol level)
+            "last_message_age_seconds": stats.get("last_message_age_seconds")
         }
         
         return health_details

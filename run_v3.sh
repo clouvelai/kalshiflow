@@ -18,7 +18,7 @@ export TRADER_VERSION=v3
 export BACKEND_PORT=8005
 export ENVIRONMENT=${ENVIRONMENT:-paper}
 export RL_MODE=discovery
-export RL_ORDERBOOK_MARKET_LIMIT=100
+export RL_ORDERBOOK_MARKET_LIMIT=${RL_ORDERBOOK_MARKET_LIMIT:-100}
 
 echo "Starting V3 Trader..."
 echo "  Version: $TRADER_VERSION"

@@ -68,9 +68,12 @@ class V3WebSocketManager:
         self._connection_count = 0
         self._active_connections = 0
         
-        # Ping task for connection health
+        # Periodic tasks
         self._ping_task: Optional[asyncio.Task] = None
         self._ping_interval = 30.0  # seconds
+        
+        # Coordinator reference (set later)
+        self._coordinator = None
         
         # State transition history buffer (last 20 transitions)
         # This ensures late-connecting clients can see the startup sequence
@@ -96,7 +99,7 @@ class V3WebSocketManager:
             # self._event_bus.subscribe(EventType.ORDERBOOK_DELTA, self._handle_orderbook_event)
             logger.info("Subscribed to event bus for real-time updates")
         
-        # Start periodic ping task
+        # Start periodic tasks
         self._ping_task = asyncio.create_task(self._ping_clients())
         
         logger.info("✅ TRADER V3 WebSocket Manager started")
@@ -109,7 +112,7 @@ class V3WebSocketManager:
         logger.info("Stopping TRADER V3 WebSocket Manager...")
         self._running = False
         
-        # Cancel ping task
+        # Cancel periodic tasks
         if self._ping_task:
             self._ping_task.cancel()
             try:
@@ -274,6 +277,10 @@ class V3WebSocketManager:
         """Handle trader status events from event bus."""
         logger.debug(f"Handling trader status event: {event.state}")
         
+        # Debug: Check if ping data is in the metrics
+        if event.metrics:
+            logger.debug(f"WebSocket manager metrics contains ping_health: {event.metrics.get('ping_health')}, last_ping_age: {event.metrics.get('last_ping_age')}")
+        
         # Only send trader_status for metrics updates, not console messages
         # The frontend will update metrics silently
         await self.broadcast_message("trader_status", {
@@ -409,6 +416,7 @@ class V3WebSocketManager:
             except Exception as e:
                 logger.error(f"Error in ping task: {e}")
     
+    
     def get_stats(self) -> Dict[str, Any]:
         """Get WebSocket manager statistics."""
         uptime = time.time() - self._started_at if self._started_at else 0
@@ -448,3 +456,13 @@ class V3WebSocketManager:
             "uptime_seconds": stats["uptime_seconds"],
             "event_bus_connected": self._event_bus is not None
         }
+    
+    def set_coordinator(self, coordinator) -> None:
+        """
+        Set reference to the coordinator for metrics broadcasting.
+        
+        Args:
+            coordinator: V3Coordinator instance
+        """
+        self._coordinator = coordinator
+        logger.info("Coordinator reference configured for WebSocket broadcasting")
