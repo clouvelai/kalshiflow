@@ -42,7 +42,7 @@ class V3Config:
     trading_mode: str = "paper"  # paper or production
     
     # State Machine Configuration
-    calibration_duration: float = 10.0  # seconds
+    sync_duration: float = 10.0  # seconds for Kalshi data sync
     health_check_interval: float = 5.0  # seconds
     error_recovery_delay: float = 30.0  # seconds
     
@@ -122,7 +122,7 @@ class V3Config:
         else:
             trading_mode = os.environ.get("V3_TRADING_MODE", "paper")
         
-        calibration_duration = float(os.environ.get("V3_CALIBRATION_DURATION", "10.0"))
+        sync_duration = float(os.environ.get("V3_SYNC_DURATION", os.environ.get("V3_CALIBRATION_DURATION", "10.0")))
         health_check_interval = float(os.environ.get("V3_HEALTH_CHECK_INTERVAL", "5.0"))
         error_recovery_delay = float(os.environ.get("V3_ERROR_RECOVERY_DELAY", "30.0"))
         
@@ -148,7 +148,7 @@ class V3Config:
             trading_max_orders=trading_max_orders,
             trading_max_position_size=trading_max_position_size,
             trading_mode=trading_mode,
-            calibration_duration=calibration_duration,
+            sync_duration=sync_duration,
             health_check_interval=health_check_interval,
             error_recovery_delay=error_recovery_delay,
             ws_reconnect_interval=ws_reconnect_interval,
@@ -164,7 +164,7 @@ class V3Config:
         logger.info(f"  - WebSocket URL: {ws_url}")
         logger.info(f"  - Markets: {', '.join(market_tickers[:3])}{'...' if len(market_tickers) > 3 else ''} ({len(market_tickers)} total)")
         logger.info(f"  - Max markets: {max_markets}")
-        logger.info(f"  - Calibration: {calibration_duration}s")
+        logger.info(f"  - Sync duration: {sync_duration}s")
         logger.info(f"  - Server: {host}:{port}")
         logger.info(f"  - Log level: {log_level}")
         if enable_trading_client:
@@ -208,8 +208,8 @@ class V3Config:
             self.market_tickers = self.market_tickers[:self.max_markets]
         
         # Validate timing configuration
-        if self.calibration_duration < 1.0:
-            raise ValueError(f"Calibration duration too short: {self.calibration_duration}s")
+        if self.sync_duration < 1.0:
+            raise ValueError(f"Sync duration too short: {self.sync_duration}s")
         
         if self.snapshot_interval < 0.1:
             raise ValueError(f"Snapshot interval too short: {self.snapshot_interval}s")

@@ -3,7 +3,7 @@
 Test script for TRADER V3 Trading Client Integration.
 
 Tests the new trading client integration with the V3 architecture.
-Verifies state transitions: ORDERBOOK_CONNECT -> TRADING_CLIENT_CONNECT -> CALIBRATING -> READY
+Verifies state transitions: ORDERBOOK_CONNECT -> TRADING_CLIENT_CONNECT -> KALSHI_DATA_SYNC -> READY
 """
 
 import asyncio
@@ -148,7 +148,7 @@ async def test_trading_client_integration():
         # Check expected states were visited
         expected_states = ["initializing", "orderbook_connect"]
         if config.enable_trading_client:
-            expected_states.extend(["trading_client_connect", "calibrating"])
+            expected_states.extend(["trading_client_connect", "kalshi_data_sync"])
         expected_states.append("ready")
         
         for state in expected_states:

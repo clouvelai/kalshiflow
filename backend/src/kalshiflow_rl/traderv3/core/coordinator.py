@@ -71,6 +71,7 @@ class V3Coordinator:
         # Status reporting task
         self._status_task: Optional[asyncio.Task] = None
         
+        
         logger.info("V3 Coordinator initialized")
     
     async def start(self) -> None:
@@ -124,6 +125,7 @@ class V3Coordinator:
             logger.info("Transitioning to orderbook connectivity...")
             
             # Prepare metadata for the ORDERBOOK_CONNECT state
+            # Note: Don't include API URL here - it belongs in TRADING_CLIENT_CONNECT
             metadata = {
                 "ws_url": self._config.ws_url,
                 "markets": self._config.market_tickers[:2] + (["...and {} more".format(len(self._config.market_tickers) - 2)] if len(self._config.market_tickers) > 2 else []),
@@ -178,7 +180,7 @@ class V3Coordinator:
                     metadata={
                         "mode": self._trading_client_integration._client.mode,
                         "environment": self._config.get_environment_name(),
-                        "api_url": self._trading_client_integration.api_url
+                        "api_url": self._trading_client_integration.api_url  # API URL belongs HERE
                     }
                 )
                 
@@ -193,25 +195,52 @@ class V3Coordinator:
                     )
                     return
                 
-                # Transition to CALIBRATING state
-                logger.info("Trading client connected - calibrating positions...")
+                # Transition to KALSHI_DATA_SYNC state
+                logger.info("Trading client connected - syncing with Kalshi...")
                 await self._state_machine.transition_to(
-                    V3State.CALIBRATING,
-                    context="Syncing positions and orders",
+                    V3State.KALSHI_DATA_SYNC,
+                    context="Syncing positions and orders with Kalshi",
                     metadata={"mode": self._trading_client_integration._client.mode}
                 )
                 
-                # Perform calibration
+                # Perform synchronization with Kalshi
                 try:
-                    calibration_data = await self._trading_client_integration.calibrate()
-                    logger.info(
-                        f"Calibration complete - Positions: {len(calibration_data.positions)}, "
-                        f"Orders: {len(calibration_data.orders)}, Balance: ${calibration_data.balance}"
-                    )
+                    state, changes = await self._trading_client_integration.sync_with_kalshi()
+                    
+                    # Build metadata showing current state and changes
+                    sync_metadata = {
+                        "balance": f"{state.balance}",  # In cents
+                        "portfolio_value": f"{state.portfolio_value}",  # In cents
+                        "positions": state.position_count,
+                        "orders": state.order_count
+                    }
+                    
+                    # Add changes if this isn't the first sync
+                    if changes:
+                        sync_metadata.update({
+                            "balance_change": f"{changes.balance_change:+d}",
+                            "portfolio_change": f"{changes.portfolio_value_change:+d}",
+                            "positions_change": f"{changes.position_count_change:+d}",
+                            "orders_change": f"{changes.order_count_change:+d}"
+                        })
+                        logger.info(
+                            f"Kalshi sync complete - Balance: {state.balance} cents ({changes.balance_change:+d}), "
+                            f"Positions: {state.position_count} ({changes.position_count_change:+d}), "
+                            f"Orders: {state.order_count} ({changes.order_count_change:+d})"
+                        )
+                    else:
+                        logger.info(
+                            f"Initial Kalshi sync - Balance: {state.balance} cents, "
+                            f"Positions: {state.position_count}, Orders: {state.order_count}"
+                        )
+                    
+                    # Store sync results in the metadata that will be passed to READY state
+                    metadata.update(sync_metadata)
+                    
                 except Exception as e:
-                    logger.error(f"Calibration failed: {e}")
+                    logger.error(f"Kalshi data sync failed: {e}")
                     await self._state_machine.enter_error_state(
-                        "Calibration failed",
+                        "Kalshi data sync failed",
                         e
                     )
                     return
@@ -417,9 +446,11 @@ class V3Coordinator:
     async def _emit_status_update(self, context: str = "") -> None:
         """Emit status update event immediately."""
         try:
-            # Gather metrics
+            # Gather metrics from orderbook integration (includes persistent metrics)
             orderbook_metrics = self._orderbook_integration.get_metrics()
             ws_stats = self._websocket_manager.get_stats()
+            
+            # Metrics removed - no persistence needed
             
             # Get detailed health information including connection status fields
             health_details = self._orderbook_integration.get_health_details()
@@ -434,11 +465,23 @@ class V3Coordinator:
                     "health_state": client_stats.get("health_state", "unknown")
                 }
             
-            uptime = time.time() - self._started_at if self._started_at else 0
+            # Calculate uptime
+            uptime = time.time() - self._started_at if self._started_at else 0.0
             
             # Get Kalshi API ping health from orderbook integration
             ping_health = health_details.get("ping_health", "unknown")
+            # Get last message age from orderbook integration
             last_ping_age = health_details.get("last_ping_age_seconds")
+            
+            # Determine API connection status for the UI
+            api_connected = False
+            if self._trading_client_integration:
+                trading_metrics = self._trading_client_integration.get_metrics()
+                if trading_metrics.get("connected"):
+                    api_connected = True
+            elif orderbook_metrics["markets_connected"] > 0:
+                # If we have orderbook data but no trading client, we're still connected to Kalshi
+                api_connected = True
             
             # Publish status event with proper event_type
             # Note: health field is now removed from top level (will be in metrics)
@@ -450,17 +493,20 @@ class V3Coordinator:
                     "uptime": uptime,
                     "state": self._state_machine.current_state.value,
                     "markets_connected": orderbook_metrics["markets_connected"],
+                    # Use local session metrics
                     "snapshots_received": orderbook_metrics["snapshots_received"],
                     "deltas_received": orderbook_metrics["deltas_received"],
                     "ws_clients": ws_stats["active_connections"],
-                    "ws_messages_sent": ws_stats["messages_sent"],
+                    "ws_messages_sent": ws_stats.get("total_messages_sent", 0),
                     "context": context,
-                    # Add health status INSIDE metrics (fix for Issue 1)
+                    # Add health status INSIDE metrics
                     "health": "healthy" if self.is_healthy() else "unhealthy",
                     # Add Kalshi API ping health
                     "ping_health": ping_health,
                     "last_ping_age": last_ping_age,
-                    # Add connection status fields (fix for Issue 2)
+                    # Add API connection status as boolean
+                    "api_connected": api_connected,
+                    # Add connection status fields
                     "connection_established": health_details.get("connection_established"),
                     "first_snapshot_received": health_details.get("first_snapshot_received"),
                     # Add session information for debugging
@@ -509,9 +555,26 @@ class V3Coordinator:
             except Exception as e:
                 logger.error(f"Error in status reporting: {e}")
     
+    async def _update_metrics_regularly(self) -> None:
+        """Update metrics and save periodically."""
+        while self._running:
+            try:
+                await asyncio.sleep(1.0)  # Update every second for real-time last_ping_age
+                
+                # Emit status with updated last_ping_age
+                await self._emit_status_update()
+                
+                # Metrics persistence removed
+                
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Error in metrics update: {e}")
+    
     def get_status(self) -> Dict[str, Any]:
         """Get comprehensive system status."""
-        uptime = time.time() - self._started_at if self._started_at else 0
+        # Calculate uptime directly
+        uptime = time.time() - self._started_at if self._started_at else 0.0
         
         components = {
             "state_machine": self._state_machine.get_health_details(),

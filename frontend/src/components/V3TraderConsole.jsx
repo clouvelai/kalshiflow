@@ -88,10 +88,23 @@ const V3TraderConsole = () => {
     // Clean up the content for display
     let cleanContent = content;
     if (isTransition && fromState && toState) {
-      // Remove the state transition part from the message
-      cleanContent = content.replace(/.*?→.*?:?\s*/, '').trim();
-      if (!cleanContent) {
-        cleanContent = 'State transition completed';
+      // For state transitions, remove all the transition-related text
+      // We'll display the transition as nice badges instead
+      
+      // Remove various patterns that might appear
+      cleanContent = content
+        .replace(new RegExp(`${fromState}\\s*→\\s*${toState}:?\\s*`, 'gi'), '')
+        .replace(/→\s*State:\s*/gi, '')
+        .replace(/State:\s*/gi, '')
+        .replace(/→\s*\w+/gi, '')
+        .trim();
+      
+      // If what's left is just a state name, remove it
+      if (cleanContent.toLowerCase() === toState.toLowerCase() || 
+          cleanContent.toLowerCase() === fromState.toLowerCase() ||
+          cleanContent === 'State' ||
+          cleanContent === '→') {
+        cleanContent = '';
       }
     }
     
@@ -252,6 +265,13 @@ const V3TraderConsole = () => {
               }
               if (data.data.state) {
                 setCurrentState(data.data.state);
+              }
+              // Also update api_connected from metrics
+              if (data.data.metrics && typeof data.data.metrics.api_connected === 'boolean') {
+                setMetrics(prev => ({
+                  ...prev,
+                  api_connected: data.data.metrics.api_connected
+                }));
               }
               break;
               
@@ -646,10 +666,15 @@ const V3TraderConsole = () => {
                               {getMessageIcon(message.type, message.metadata)}
                             </div>
                             
-                            {/* Message Content */}
-                            <div className={`flex-1 ${getMessageColor(message.type)}`}>
-                              <div className="leading-relaxed">{message.content}</div>
-                            </div>
+                            {/* Message Content - only show if there's content */}
+                            {message.content && (
+                              <div className={`flex-1 ${getMessageColor(message.type)}`}>
+                                <div className="leading-relaxed">{message.content}</div>
+                              </div>
+                            )}
+                            {!message.content && (
+                              <div className="flex-1"></div>
+                            )}
                             
                             {/* Expand/Collapse Button */}
                             {hasMetadata && (

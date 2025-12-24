@@ -21,8 +21,8 @@ class TraderState(Enum):
     STARTUP = "startup"
     INITIALIZING = "initializing"
     ORDERBOOK_CONNECT = "orderbook_connect"
-    TRADING_CLIENT_CONNECT = "trading_client_connect"  # NEW: Connect to trading API
-    CALIBRATING = "calibrating"  # NEW: Sync positions and orders
+    TRADING_CLIENT_CONNECT = "trading_client_connect"  # Connect to trading API
+    KALSHI_DATA_SYNC = "kalshi_data_sync"  # Sync positions and orders with Kalshi
     READY = "ready"
     ERROR = "error"
     SHUTDOWN = "shutdown"
@@ -104,12 +104,12 @@ class TraderStateMachine:
                 TraderState.SHUTDOWN
             },
             TraderState.TRADING_CLIENT_CONNECT: {
-                TraderState.CALIBRATING,  # NEW: After connection, calibrate
+                TraderState.KALSHI_DATA_SYNC,  # After connection, sync with Kalshi
                 TraderState.ERROR,
                 TraderState.SHUTDOWN
             },
-            TraderState.CALIBRATING: {
-                TraderState.READY,  # NEW: After calibration, ready to trade
+            TraderState.KALSHI_DATA_SYNC: {
+                TraderState.READY,  # After sync, ready to trade
                 TraderState.ERROR,
                 TraderState.SHUTDOWN
             },
@@ -131,7 +131,7 @@ class TraderStateMachine:
             TraderState.INITIALIZING: 60.0,  # 1m to initialize
             TraderState.ORDERBOOK_CONNECT: 120.0,  # 2m to connect orderbook
             TraderState.TRADING_CLIENT_CONNECT: 60.0,  # 1m to connect trading API
-            TraderState.CALIBRATING: 60.0,  # 1m to calibrate positions
+            TraderState.KALSHI_DATA_SYNC: 60.0,  # 1m to sync with Kalshi
             TraderState.READY: float('inf'),  # Can stay ready indefinitely
             TraderState.ERROR: 300.0,  # 5m before forcing shutdown
             TraderState.SHUTDOWN: 30.0  # 30s to shutdown
@@ -481,7 +481,7 @@ def get_state_description(state: TraderState) -> str:
         TraderState.INITIALIZING: "Initializing core components (event bus, WebSocket manager)",
         TraderState.ORDERBOOK_CONNECT: "Connecting to Kalshi, starting orderbook client",
         TraderState.TRADING_CLIENT_CONNECT: "Connecting to trading API for order management",
-        TraderState.CALIBRATING: "Syncing positions and orders with exchange",
+        TraderState.KALSHI_DATA_SYNC: "Syncing positions and orders with exchange",
         TraderState.READY: "System ready, all connections established, monitoring markets",
         TraderState.ERROR: "System error, attempting recovery or requiring intervention",
         TraderState.SHUTDOWN: "System shutting down gracefully"
@@ -518,11 +518,11 @@ def get_next_states(current_state: TraderState) -> Set[TraderState]:
             TraderState.SHUTDOWN
         },
         TraderState.TRADING_CLIENT_CONNECT: {
-            TraderState.CALIBRATING,
+            TraderState.KALSHI_DATA_SYNC,
             TraderState.ERROR,
             TraderState.SHUTDOWN
         },
-        TraderState.CALIBRATING: {
+        TraderState.KALSHI_DATA_SYNC: {
             TraderState.READY,
             TraderState.ERROR,
             TraderState.SHUTDOWN

@@ -8,12 +8,14 @@ Provides clean abstraction for order management and position tracking.
 import asyncio
 import logging
 import time
-from typing import Dict, Any, List, Optional, Set
+from typing import Dict, Any, List, Optional, Set, Tuple
 from dataclasses import dataclass, field
 from decimal import Decimal
 
 from ...trading.demo_client import KalshiDemoTradingClient
 from ..core.event_bus import EventBus, EventType
+from ..sync.kalshi_data_sync import KalshiDataSync
+from ..state.trader_state import TraderState, StateChange
 
 logger = logging.getLogger("kalshiflow_rl.traderv3.clients.trading_client_integration")
 
@@ -42,16 +44,7 @@ class TradingClientMetrics:
     portfolio_value: Decimal = Decimal("0.00")
 
 
-@dataclass
-class CalibrationData:
-    """Data collected during calibration phase."""
-    positions: Dict[str, Any]
-    orders: Dict[str, Any]
-    balance: Decimal
-    portfolio_value: Decimal
-    settlements: List[Dict[str, Any]]
-    timestamp: float
-    duration_ms: float
+# CalibrationData removed - replaced by TraderState and KalshiDataSync
 
 
 class V3TradingClientIntegration:
@@ -88,11 +81,15 @@ class V3TradingClientIntegration:
         self._max_orders = max_orders
         self._max_position_size = max_position_size
         
+        # Initialize sync service
+        self._kalshi_data_sync = KalshiDataSync(trading_client)
+        self._trader_state: Optional[TraderState] = None
+        
         self._metrics = TradingClientMetrics()
         self._running = False
         self._started_at: Optional[float] = None
         self._connected = False
-        self._calibration_complete = False
+        self._sync_complete = False  # Renamed from calibration_complete
         self._last_health_check: Optional[float] = None
         
         # Health monitoring thresholds
@@ -191,87 +188,38 @@ class V3TradingClientIntegration:
             self._metrics.api_errors += 1
             return False
     
-    async def calibrate(self, fetch_settlements: bool = True) -> CalibrationData:
+    async def sync_with_kalshi(self) -> Tuple[TraderState, Optional[StateChange]]:
         """
-        Calibrate by syncing current positions and orders.
+        Sync trader state with Kalshi.
+        Replaces the old calibrate() method.
         
-        This is called during the CALIBRATING state to sync our internal
-        state with the exchange's current state.
-        
-        Args:
-            fetch_settlements: Whether to fetch settlement history
-            
         Returns:
-            CalibrationData with current positions, orders, and balance
+            Tuple of (new_state, changes_from_previous)
+            changes will be None on first sync
         """
         if not self._connected:
-            raise RuntimeError("Cannot calibrate - trading client not connected")
+            raise RuntimeError("Cannot sync - trading client not connected")
         
-        logger.info("Starting calibration - syncing positions and orders...")
-        start_time = time.time()
+        # Delegate to sync service
+        state, changes = await self._kalshi_data_sync.sync_with_kalshi()
+        self._trader_state = state
+        self._sync_complete = True
         
-        try:
-            # Fetch current positions
-            positions_response = await self._client.get_positions()
-            positions = self._client.positions  # Client updates internal state
-            
-            # Fetch open orders
-            orders_response = await self._client.get_orders()
-            orders = self._client.orders  # Client updates internal state
-            
-            # Fetch current balance
-            account_info = await self._client.get_account_info()
-            balance = self._client.balance
-            portfolio_value = Decimal(str(account_info.get("portfolio_value", 0))) / 100
-            
-            # Optionally fetch settlements (for P&L tracking)
-            settlements = []
-            if fetch_settlements:
-                try:
-                    settlements_response = await self._client.get_settlements()
-                    settlements = settlements_response.get("settlements", [])
-                    logger.info(f"Fetched {len(settlements)} settlements")
-                except Exception as e:
-                    logger.warning(f"Could not fetch settlements: {e}")
-            
-            # Update metrics
-            self._metrics.active_positions = dict(positions)
-            self._metrics.open_orders = dict(orders)
-            self._metrics.balance = balance
-            self._metrics.portfolio_value = portfolio_value
-            self._metrics.positions_synced = len(positions)
-            self._metrics.last_sync_time = time.time()
-            
-            duration_ms = (time.time() - start_time) * 1000
-            
-            # Create calibration data
-            calibration_data = CalibrationData(
-                positions=dict(positions),
-                orders=dict(orders),
-                balance=balance,
-                portfolio_value=portfolio_value,
-                settlements=settlements,
-                timestamp=start_time,
-                duration_ms=duration_ms
-            )
-            
-            self._calibration_complete = True
-            
-            logger.info(
-                f"✅ Calibration complete in {duration_ms:.1f}ms - "
-                f"Positions: {len(positions)}, Orders: {len(orders)}, "
-                f"Balance: ${balance}, Portfolio: ${portfolio_value}"
-            )
-            
-            # Note: Custom events would require extending EventBus with a generic emit method
-            # Calibration complete is tracked via state transition to READY
-            
-            return calibration_data
-            
-        except Exception as e:
-            logger.error(f"❌ Calibration failed: {e}")
-            self._metrics.api_errors += 1
-            raise
+        # Update metrics for backward compatibility
+        # Note: These are in CENTS now, not dollars
+        self._metrics.balance = Decimal(state.balance) / 100  # Keep as dollars for old metrics
+        self._metrics.portfolio_value = Decimal(state.portfolio_value) / 100
+        self._metrics.active_positions = state.positions
+        self._metrics.open_orders = state.orders
+        self._metrics.positions_synced = state.position_count
+        self._metrics.last_sync_time = state.sync_timestamp
+        
+        return state, changes
+    
+    @property
+    def trader_state(self) -> Optional[TraderState]:
+        """Get current trader state."""
+        return self._trader_state
     
     async def place_order(
         self,
@@ -479,7 +427,7 @@ class V3TradingClientIntegration:
             "running": self._running,
             "connected": self._connected,
             "mode": self._client.mode if self._client else "unknown",
-            "calibrated": self._calibration_complete,
+            "calibrated": self._sync_complete,
             "orders_placed": self._metrics.orders_placed,
             "orders_cancelled": self._metrics.orders_cancelled,
             "orders_filled": self._metrics.orders_filled,
@@ -533,7 +481,7 @@ class V3TradingClientIntegration:
             "healthy": self.is_healthy(),
             "running": self._running,
             "connected": self._connected,
-            "calibrated": self._calibration_complete,
+            "calibrated": self._sync_complete,
             "mode": self._client.mode if self._client else "unknown",
             "positions_count": len(self._metrics.active_positions),
             "open_orders_count": len(self._metrics.open_orders),

@@ -75,14 +75,16 @@ class V3OrderbookIntegration:
         
         logger.info(f"V3 Orderbook Integration initialized for {len(market_tickers)} markets")
     
+    
     async def _handle_snapshot_event(self, market_ticker: str, metadata: Dict[str, Any]) -> None:
         """Handle snapshot events from V3 event bus."""
         if not self._running:
             return
         
-        # Update metrics
+        # Update local metrics
         self._metrics.snapshots_received += 1
         self._metrics.last_snapshot_time = time.time()
+        
         if not self._first_snapshot_received:
             self._first_snapshot_received = True
             self._first_snapshot_time = time.time()
@@ -99,7 +101,7 @@ class V3OrderbookIntegration:
         if not self._running:
             return
         
-        # Update metrics
+        # Update local metrics
         self._metrics.deltas_received += 1
         self._metrics.last_delta_time = time.time()
     
@@ -243,6 +245,7 @@ class V3OrderbookIntegration:
             "running": self._running,
             "markets_connected": len(self._metrics.markets_connected),
             "markets_list": list(self._metrics.markets_connected),
+            # Use local session values
             "snapshots_received": self._metrics.snapshots_received,
             "deltas_received": self._metrics.deltas_received,
             "errors": self._metrics.errors,
@@ -308,21 +311,23 @@ class V3OrderbookIntegration:
         if self._metrics.last_delta_time:
             time_since_delta = now - self._metrics.last_delta_time
         
-        # Get message-based health from underlying client
-        # The websockets library handles ping/pong at protocol level automatically
+        # Get message-based health from client
         ping_health = "unknown"
         last_ping_age = None
+        
+        # Get message time for ping/pong from client
         if self._client:
             client_stats = self._client.get_stats()
             last_ping_age = client_stats.get("last_message_age_seconds")
-            # Determine health based on message age
-            if last_ping_age is not None:
-                if last_ping_age < 60:  # Less than 1 minute = healthy
-                    ping_health = "healthy"
-                elif last_ping_age < 300:  # 1-5 minutes = degraded
-                    ping_health = "degraded"
-                else:  # More than 5 minutes = unhealthy
-                    ping_health = "unhealthy"
+        
+        # Determine health based on message age
+        if last_ping_age is not None:
+            if last_ping_age < 60:  # Less than 1 minute = healthy
+                ping_health = "healthy"
+            elif last_ping_age < 300:  # 1-5 minutes = degraded
+                ping_health = "degraded"
+            else:  # More than 5 minutes = unhealthy
+                ping_health = "unhealthy"
         
         return {
             "healthy": self.is_healthy(),
