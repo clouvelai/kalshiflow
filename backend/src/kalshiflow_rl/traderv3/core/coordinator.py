@@ -126,7 +126,7 @@ class V3Coordinator:
             
             # Prepare metadata for the ORDERBOOK_CONNECT state
             # Note: Don't include API URL here - it belongs in TRADING_CLIENT_CONNECT
-            metadata = {
+            orderbook_connect_metadata = {
                 "ws_url": self._config.ws_url,
                 "markets": self._config.market_tickers[:2] + (["...and {} more".format(len(self._config.market_tickers) - 2)] if len(self._config.market_tickers) > 2 else []),
                 "market_count": len(self._config.market_tickers),
@@ -136,7 +136,7 @@ class V3Coordinator:
             await self._state_machine.transition_to(
                 V3State.ORDERBOOK_CONNECT,
                 context=f"Connecting to {len(self._config.market_tickers)} markets",
-                metadata=metadata
+                metadata=orderbook_connect_metadata
             )
             
             # Emit connecting status
@@ -147,7 +147,8 @@ class V3Coordinator:
             data_flowing = False
             
             # Step 1: Wait for WebSocket connection
-            logger.info("Waiting for orderbook WebSocket connection...")
+            logger.info("🔄 ORDERBOOK_CONNECT: Actually connecting to orderbook WebSocket...")
+            logger.debug(f"ORDERBOOK_CONNECT: Current state metadata does NOT contain trading data")
             connection_success = await self._orderbook_integration.wait_for_connection(timeout=30.0)
             
             if not connection_success:
@@ -170,21 +171,27 @@ class V3Coordinator:
             health_details = self._orderbook_integration.get_health_details()
             
             # Check if trading client is configured
+            sync_result_metadata = None  # Will be populated if trading is enabled
+            
             if self._trading_client_integration:
                 logger.info("Trading client is configured - connecting to trading API...")
+                logger.debug("📊 Moving to TRADING_CLIENT_CONNECT - No trading data in metadata yet!")
                 
-                # Transition to TRADING_CLIENT_CONNECT state
+                # Transition to TRADING_CLIENT_CONNECT state with its own metadata
+                trading_connect_metadata = {
+                    "mode": self._trading_client_integration._client.mode,
+                    "environment": self._config.get_environment_name(),
+                    "api_url": self._trading_client_integration.api_url  # API URL belongs HERE
+                }
+                
                 await self._state_machine.transition_to(
                     V3State.TRADING_CLIENT_CONNECT,
                     context="Connecting to trading API",
-                    metadata={
-                        "mode": self._trading_client_integration._client.mode,
-                        "environment": self._config.get_environment_name(),
-                        "api_url": self._trading_client_integration.api_url  # API URL belongs HERE
-                    }
+                    metadata=trading_connect_metadata
                 )
                 
                 # Wait for trading client connection
+                logger.info("🔌 TRADING_CLIENT_CONNECT: Actually connecting to Kalshi Trading API...")
                 trading_connected = await self._trading_client_integration.wait_for_connection(timeout=30.0)
                 
                 if not trading_connected:
@@ -195,29 +202,37 @@ class V3Coordinator:
                     )
                     return
                 
-                # Transition to KALSHI_DATA_SYNC state
+                # Transition to KALSHI_DATA_SYNC state with its own metadata
                 logger.info("Trading client connected - syncing with Kalshi...")
+                logger.debug("💰 Moving to KALSHI_DATA_SYNC - About to fetch actual trading data!")
+                
+                sync_start_metadata = {
+                    "mode": self._trading_client_integration._client.mode,
+                    "sync_type": "initial"
+                }
+                
                 await self._state_machine.transition_to(
                     V3State.KALSHI_DATA_SYNC,
                     context="Syncing positions and orders with Kalshi",
-                    metadata={"mode": self._trading_client_integration._client.mode}
+                    metadata=sync_start_metadata
                 )
                 
                 # Perform synchronization with Kalshi
+                logger.info("🔄 KALSHI_DATA_SYNC: Actually calling Kalshi API for positions/orders...")
                 try:
                     state, changes = await self._trading_client_integration.sync_with_kalshi()
                     
-                    # Build metadata showing current state and changes
-                    sync_metadata = {
-                        "balance": f"{state.balance}",  # In cents
-                        "portfolio_value": f"{state.portfolio_value}",  # In cents
+                    # Build sync result metadata - this is for READY state, not KALSHI_DATA_SYNC
+                    sync_result_metadata = {
+                        "balance": state.balance,  # In cents
+                        "portfolio_value": state.portfolio_value,  # In cents
                         "positions": state.position_count,
                         "orders": state.order_count
                     }
                     
                     # Add changes if this isn't the first sync
                     if changes:
-                        sync_metadata.update({
+                        sync_result_metadata.update({
                             "balance_change": f"{changes.balance_change:+d}",
                             "portfolio_change": f"{changes.portfolio_value_change:+d}",
                             "positions_change": f"{changes.position_count_change:+d}",
@@ -234,9 +249,6 @@ class V3Coordinator:
                             f"Positions: {state.position_count}, Orders: {state.order_count}"
                         )
                     
-                    # Store sync results in the metadata that will be passed to READY state
-                    metadata.update(sync_metadata)
-                    
                 except Exception as e:
                     logger.error(f"Kalshi data sync failed: {e}")
                     await self._state_machine.enter_error_state(
@@ -247,8 +259,11 @@ class V3Coordinator:
             
             # Transition to ready state with REAL connection status
             logger.info("Transitioning to ready state...")
+            logger.debug(f"✅ READY state will include: orderbook metrics={orderbook_metrics['markets_connected']} markets, "
+                        f"trading={'enabled with sync data' if sync_result_metadata else 'disabled'}")
             
-            metadata = {
+            # Build READY state metadata - clean and specific
+            ready_metadata = {
                 "markets_connected": orderbook_metrics["markets_connected"],
                 "snapshots_received": orderbook_metrics["snapshots_received"],
                 "deltas_received": orderbook_metrics["deltas_received"],
@@ -257,15 +272,22 @@ class V3Coordinator:
                 "environment": self._config.get_environment_name()
             }
             
-            # Add trading client info if available
-            if self._trading_client_integration:
-                trading_metrics = self._trading_client_integration.get_metrics()
-                metadata["trading_client"] = {
-                    "connected": trading_metrics["connected"],
-                    "mode": trading_metrics["mode"],
-                    "positions_count": trading_metrics["positions_count"],
-                    "balance": trading_metrics["balance"]
+            # Add trading client info if available (using sync results, not raw metrics)
+            if self._trading_client_integration and sync_result_metadata:
+                ready_metadata["trading_client"] = {
+                    "connected": True,
+                    "mode": self._trading_client_integration._client.mode,
+                    "balance": sync_result_metadata["balance"],
+                    "portfolio_value": sync_result_metadata["portfolio_value"],
+                    "positions": sync_result_metadata["positions"],
+                    "orders": sync_result_metadata["orders"]
                 }
+                # Add change info if available
+                if "balance_change" in sync_result_metadata:
+                    ready_metadata["trading_client"]["balance_change"] = sync_result_metadata["balance_change"]
+                    ready_metadata["trading_client"]["portfolio_change"] = sync_result_metadata["portfolio_change"]
+                    ready_metadata["trading_client"]["positions_change"] = sync_result_metadata["positions_change"]
+                    ready_metadata["trading_client"]["orders_change"] = sync_result_metadata["orders_change"]
             
             # Determine context based on actual connection status
             if connection_success and data_flowing:
@@ -281,7 +303,7 @@ class V3Coordinator:
             await self._state_machine.transition_to(
                 V3State.READY,
                 context=context,
-                metadata=metadata
+                metadata=ready_metadata  # Use clean ready_metadata, not polluted metadata
             )
             
             # Emit ready status
