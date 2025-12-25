@@ -671,8 +671,11 @@ class V3Coordinator:
                         # Use the sync service to get fresh data
                         state, changes = await self._trading_client_integration.sync_with_kalshi()
                         
+                        # Always update sync timestamp to reflect that we checked
+                        state.sync_timestamp = time.time()
+                        
                         # Update state container
-                        self._state_container.update_trading_state(state)
+                        state_changed = self._state_container.update_trading_state(state, changes)
                         
                         # Log significant changes
                         if changes and (abs(changes.balance_change) > 0 or 
@@ -684,6 +687,10 @@ class V3Coordinator:
                                 f"Positions: {state.position_count} ({changes.position_count_change:+d}), "
                                 f"Orders: {state.order_count} ({changes.order_count_change:+d})"
                             )
+                        
+                        # Force broadcast every 30s even if no changes (to update sync timestamp)
+                        if not state_changed:
+                            await self._emit_trading_state()
                         
                         last_sync_time = time.time()
                         

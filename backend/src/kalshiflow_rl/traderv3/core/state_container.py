@@ -116,6 +116,7 @@ class V3StateContainer:
         Compare two trading states for equality.
         
         Only compares the important fields, not timestamps.
+        Note: Intentionally ignores sync_timestamp as that updates every sync.
         """
         return (
             state1.balance == state2.balance and
