@@ -612,8 +612,142 @@ async def _run_event_loop(self) -> None:
     logger.info("Event loop stopped")
 ```
 
+## SystemActivityEvent Design Pattern
+
+### Overview
+The V3 trader uses a **unified SystemActivityEvent** for all console-visible activities. This provides a single, consistent pattern for emitting messages about what the system is doing, whether it's changing states, syncing data, or executing trades.
+
+### Event Structure
+```python
+@dataclass 
+class SystemActivityEvent:
+    event_type: EventType = EventType.SYSTEM_ACTIVITY
+    activity_type: str = ""  # Category of activity
+    message: str = ""  # Human-readable message (no emojis)
+    metadata: Optional[Dict[str, Any]] = None  # Rich contextual data
+    timestamp: float = 0.0
+```
+
+### Activity Types
+- **`state_transition`**: State machine changes (READY → ACTING, etc.)
+- **`sync`**: Data synchronization with Kalshi
+- **`health_check`**: Component health monitoring
+- **`operation`**: General system operations
+- **`trading`**: (Future) Trading decisions and executions
+- **`recovery`**: Error recovery attempts
+
+### Emitting Activities
+
+#### From Coordinator
+```python
+# Emit activity for any significant operation
+await self._event_bus.emit_system_activity(
+    activity_type="sync",
+    message="Starting periodic sync with Kalshi",
+    metadata={"sync_interval": 30.0}
+)
+
+# Include results in metadata
+await self._event_bus.emit_system_activity(
+    activity_type="sync", 
+    message=f"Sync complete: Balance {changes.balance_change:+d} cents",
+    metadata={
+        "balance_change": changes.balance_change,
+        "position_count": state.position_count,
+        "order_count": state.order_count
+    }
+)
+```
+
+#### For Future Trading Activities
+```python
+# When we add trading, emit activities like:
+await self._event_bus.emit_system_activity(
+    activity_type="trading",
+    message=f"Evaluating opportunity in {market_ticker}",
+    metadata={
+        "market": market_ticker,
+        "bid": best_bid,
+        "ask": best_ask,
+        "spread": spread
+    }
+)
+
+await self._event_bus.emit_system_activity(
+    activity_type="trading",
+    message=f"Placing BUY order: {market_ticker} @ {price}",
+    metadata={
+        "market": market_ticker,
+        "side": "BUY",
+        "price": price,
+        "contracts": contracts,
+        "order_type": "limit"
+    }
+)
+```
+
+### Console Display
+Activities are displayed in the V3TraderConsole with:
+- **Timestamp**: When it occurred
+- **Message**: Clean, informative text
+- **Icon**: Visual indicator based on activity_type
+- **Color**: Semantic coloring (purple for transitions, blue for sync, etc.)
+- **Expandable Metadata**: Rich details available on demand
+
+### Best Practices
+
+1. **Keep Messages Clean**: No emojis, just informative text
+2. **Use Appropriate Activity Type**: Choose the right category
+3. **Include Relevant Metadata**: Add context that helps debugging
+4. **Avoid Spam**: Use throttling for frequent activities (e.g., health checks every 5th iteration)
+5. **Maintain Consistency**: Similar activities should have similar message formats
+
+### Example: Adding a New Activity Type
+
+To add position monitoring activities:
+
+```python
+# 1. Define the activity type (conceptually - no enum needed)
+ACTIVITY_TYPE = "position_monitor"
+
+# 2. Emit from the appropriate handler
+async def _monitor_positions(self):
+    """Monitor position changes and emit activities."""
+    for market, position in self.positions.items():
+        if position.has_significant_change():
+            await self._event_bus.emit_system_activity(
+                activity_type="position_monitor",
+                message=f"Position alert: {market} P&L {position.pnl:+.2f}",
+                metadata={
+                    "market": market,
+                    "contracts": position.contracts,
+                    "avg_price": position.avg_price,
+                    "current_price": position.current_price,
+                    "pnl": position.pnl
+                }
+            )
+
+# 3. Update frontend icon/color mapping if needed
+case 'position_monitor': return <TrendingUp className="w-4 h-4 text-yellow-400" />;
+```
+
+### Migration from Legacy Events
+
+State transitions currently emit both legacy StateTransitionEvent and SystemActivityEvent for backward compatibility. Once all consumers are updated, we can remove the legacy events:
+
+```python
+# Current (dual emission)
+await self._event_bus.emit_system_activity(...)  # New
+await self._event_bus.emit_state_transition(...)  # Legacy
+
+# Future (single emission)
+await self._event_bus.emit_system_activity(...)  # Only this
+```
+
 ## Conclusion
 
 This refactoring plan transforms the monolithic `start()` function into a clean event loop architecture without changing any functionality. The new structure provides a solid foundation for future trading features while maintaining all existing operations. The implementation can be done incrementally with full testing at each step, ensuring no regression or functionality loss.
 
 The key insight is that the current code already has the right components - it just needs better organization. By extracting focused methods and creating a central event loop, we make the code more maintainable, testable, and ready for future enhancements.
+
+The SystemActivityEvent pattern provides a unified way to communicate what the system is doing, making it easy to add new types of activities (like trading operations) while maintaining consistency in how information flows to the console.
