@@ -340,6 +340,10 @@ class V3Coordinator:
                 metadata=ready_metadata  # Use clean ready_metadata, not polluted metadata
             )
             
+            # Emit trading state immediately when READY (so UI shows data right away)
+            if self._trading_client_integration and self._state_container.trading_state:
+                await self._emit_trading_state()
+            
             # Emit ready status
             status_msg = f"System ready with {len(self._config.market_tickers)} markets"
             if self._trading_client_integration:
@@ -652,7 +656,7 @@ class V3Coordinator:
     
     async def _monitor_trading_state(self) -> None:
         """Monitor and broadcast trading state changes, plus periodic sync."""
-        last_version = 0
+        last_version = -1  # Start at -1 to ensure first check always broadcasts
         last_sync_time = time.time()
         sync_interval = 30.0  # Sync with Kalshi every 30 seconds
         
