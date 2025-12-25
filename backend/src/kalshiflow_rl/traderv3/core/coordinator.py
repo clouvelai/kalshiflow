@@ -16,6 +16,7 @@ if TYPE_CHECKING:
 from .state_machine import TraderStateMachine as V3StateMachine, TraderState as V3State
 from .event_bus import EventBus, EventType, StateTransitionEvent, TraderStatusEvent
 from .websocket_manager import V3WebSocketManager
+from .state_container import V3StateContainer
 from ..clients.orderbook_integration import V3OrderbookIntegration
 from ..config.environment import V3Config
 
@@ -62,6 +63,9 @@ class V3Coordinator:
         self._orderbook_integration = orderbook_integration
         self._trading_client_integration = trading_client_integration
         
+        # Initialize state container
+        self._state_container = V3StateContainer()
+        
         self._started_at: Optional[float] = None
         self._running = False
         
@@ -71,6 +75,8 @@ class V3Coordinator:
         # Status reporting task
         self._status_task: Optional[asyncio.Task] = None
         
+        # Trading state broadcast task
+        self._trading_state_task: Optional[asyncio.Task] = None
         
         logger.info("V3 Coordinator initialized")
     
@@ -119,6 +125,7 @@ class V3Coordinator:
             logger.info("5/5 Starting monitoring tasks...")
             self._health_task = asyncio.create_task(self._monitor_health())
             self._status_task = asyncio.create_task(self._report_status())
+            self._trading_state_task = asyncio.create_task(self._monitor_trading_state())
             
             # The state machine already transitioned to INITIALIZING in start()
             # Now transition to orderbook connectivity
@@ -171,6 +178,13 @@ class V3Coordinator:
                 metadata=orderbook_connect_metadata
             )
             
+            # Update state container with machine state
+            self._state_container.update_machine_state(
+                V3State.ORDERBOOK_CONNECT,
+                f"Connected to {orderbook_metrics['markets_connected']} markets",
+                orderbook_connect_metadata
+            )
+            
             # Emit connected status
             await self._emit_status_update(f"Connected to {orderbook_metrics['markets_connected']} markets")
             
@@ -211,6 +225,13 @@ class V3Coordinator:
                 logger.info("🔄 KALSHI_DATA_SYNC: Actually calling Kalshi API for positions/orders...")
                 try:
                     state, changes = await self._trading_client_integration.sync_with_kalshi()
+                    
+                    # Store the trading state in our container
+                    state_changed = self._state_container.update_trading_state(state, changes)
+                    
+                    # Emit trading state if it changed
+                    if state_changed:
+                        await self._emit_trading_state()
                     
                     # Build sync metadata with ACTUAL sync results
                     sync_metadata = {
@@ -360,6 +381,13 @@ class V3Coordinator:
             except asyncio.CancelledError:
                 pass
         
+        if self._trading_state_task:
+            self._trading_state_task.cancel()
+            try:
+                await self._trading_state_task
+            except asyncio.CancelledError:
+                pass
+        
         # Stop components in reverse order
         try:
             step = 1
@@ -417,6 +445,10 @@ class V3Coordinator:
                 # Add trading client health if configured
                 if self._trading_client_integration:
                     components_health["trading_client"] = self._trading_client_integration.is_healthy()
+                
+                # Update state container with health status
+                for name, healthy in components_health.items():
+                    self._state_container.update_component_health(name, healthy)
                 
                 all_healthy = all(components_health.values())
                 
@@ -477,6 +509,34 @@ class V3Coordinator:
                 break
             except Exception as e:
                 logger.error(f"Error in health monitoring: {e}")
+    
+    async def _emit_trading_state(self) -> None:
+        """Emit trading state update event."""
+        try:
+            trading_summary = self._state_container.get_trading_summary()
+            
+            if not trading_summary.get("has_state"):
+                return  # No trading state to broadcast
+            
+            # Create a custom event for trading state
+            # Since EventBus doesn't have a TradingStateEvent yet, we'll use the websocket directly
+            await self._websocket_manager.broadcast_message("trading_state", {
+                "timestamp": time.time(),
+                "version": trading_summary["version"],
+                "balance": trading_summary["balance"],
+                "portfolio_value": trading_summary["portfolio_value"],
+                "position_count": trading_summary["position_count"],
+                "order_count": trading_summary["order_count"],
+                "positions": trading_summary["positions"],
+                "open_orders": trading_summary["open_orders"],
+                "sync_timestamp": trading_summary["sync_timestamp"],
+                "changes": trading_summary.get("changes")
+            })
+            
+            logger.debug(f"Broadcast trading state v{trading_summary['version']}")
+            
+        except Exception as e:
+            logger.error(f"Error emitting trading state: {e}")
     
     async def _emit_status_update(self, context: str = "") -> None:
         """Emit status update event immediately."""
@@ -590,6 +650,59 @@ class V3Coordinator:
             except Exception as e:
                 logger.error(f"Error in status reporting: {e}")
     
+    async def _monitor_trading_state(self) -> None:
+        """Monitor and broadcast trading state changes, plus periodic sync."""
+        last_version = 0
+        last_sync_time = time.time()
+        sync_interval = 30.0  # Sync with Kalshi every 30 seconds
+        
+        while self._running:
+            try:
+                await asyncio.sleep(1.0)  # Check every second
+                
+                # Only sync in READY state and if trading client is configured
+                if (self._state_machine.current_state == V3State.READY and 
+                    self._trading_client_integration and
+                    time.time() - last_sync_time > sync_interval):
+                    
+                    # Perform periodic sync with Kalshi
+                    logger.debug("Performing periodic trading state sync...")
+                    try:
+                        # Use the sync service to get fresh data
+                        state, changes = await self._trading_client_integration.sync_with_kalshi()
+                        
+                        # Update state container
+                        self._state_container.update_trading_state(state)
+                        
+                        # Log significant changes
+                        if changes and (abs(changes.balance_change) > 0 or 
+                                      changes.position_count_change != 0 or 
+                                      changes.order_count_change != 0):
+                            logger.info(
+                                f"Trading state updated - "
+                                f"Balance: ${state.balance/100:.2f} ({changes.balance_change:+d} cents), "
+                                f"Positions: {state.position_count} ({changes.position_count_change:+d}), "
+                                f"Orders: {state.order_count} ({changes.order_count_change:+d})"
+                            )
+                        
+                        last_sync_time = time.time()
+                        
+                    except Exception as e:
+                        logger.error(f"Periodic trading sync failed: {e}")
+                
+                # Get current trading state version
+                current_version = self._state_container.trading_state_version
+                
+                # Only broadcast if state changed
+                if current_version > last_version:
+                    await self._emit_trading_state()
+                    last_version = current_version
+                    
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Error in trading state monitoring: {e}")
+    
     async def _update_metrics_regularly(self) -> None:
         """Update metrics and save periodically."""
         while self._running:
@@ -663,3 +776,8 @@ class V3Coordinator:
             "state": self._state_machine.current_state.value,
             "uptime": time.time() - self._started_at if self._started_at else 0
         }
+    
+    @property
+    def state_container(self) -> V3StateContainer:
+        """Get state container for external access."""
+        return self._state_container

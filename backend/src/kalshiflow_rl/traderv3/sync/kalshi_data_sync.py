@@ -134,3 +134,22 @@ class KalshiDataSync:
     def sync_count(self) -> int:
         """Get number of syncs performed."""
         return self._sync_count
+    
+    def has_state(self) -> bool:
+        """Check if we have synced state."""
+        return self._current_state is not None
+    
+    async def refresh_state(self) -> Optional[TraderState]:
+        """
+        Refresh the current state without tracking changes.
+        Useful for periodic updates.
+        
+        Returns:
+            Current trader state or None on error
+        """
+        try:
+            state, _ = await self.sync_with_kalshi()
+            return state
+        except Exception as e:
+            logger.error(f"Failed to refresh state: {e}")
+            return None

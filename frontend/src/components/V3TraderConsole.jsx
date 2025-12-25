@@ -1,5 +1,130 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Activity, Wifi, WifiOff, Circle, ChevronRight, ChevronDown, Zap, Database, TrendingUp, AlertCircle, Copy, Check, Info, CheckCircle, XCircle, ArrowRight } from 'lucide-react';
+import { Activity, Wifi, WifiOff, Circle, ChevronRight, ChevronDown, Zap, Database, TrendingUp, AlertCircle, Copy, Check, Info, CheckCircle, XCircle, ArrowRight, DollarSign, Briefcase, ShoppingCart, FileText, TrendingDown, Clock } from 'lucide-react';
+
+// TradingData Component - Displays real-time trading state
+const TradingData = ({ tradingState }) => {
+  if (!tradingState || !tradingState.has_state) {
+    return (
+      <div className="bg-gray-900/50 backdrop-blur-sm rounded-xl border border-gray-800 p-4">
+        <div className="flex items-center justify-between">
+          <h3 className="text-sm font-bold text-gray-300 uppercase tracking-wider">Trading Data</h3>
+          <span className="text-xs text-gray-500 font-mono">No data available</span>
+        </div>
+      </div>
+    );
+  }
+
+  const formatCurrency = (cents) => {
+    const dollars = cents / 100;
+    return new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency: 'USD',
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2
+    }).format(dollars);
+  };
+
+  const formatTime = (timestamp) => {
+    if (!timestamp) return 'N/A';
+    const date = new Date(timestamp * 1000);
+    return date.toLocaleTimeString('en-US', { 
+      hour12: false, 
+      hour: '2-digit', 
+      minute: '2-digit', 
+      second: '2-digit' 
+    });
+  };
+
+  const getChangeIndicator = (value, isPositive = true) => {
+    if (value === 0 || value === null || value === undefined) return null;
+    const color = (isPositive && value > 0) || (!isPositive && value < 0) ? 'text-green-400' : 'text-red-400';
+    const icon = value > 0 ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />;
+    return (
+      <span className={`flex items-center space-x-1 ${color} text-xs font-medium`}>
+        {icon}
+        <span>{value > 0 ? '+' : ''}{isPositive ? formatCurrency(value) : value}</span>
+      </span>
+    );
+  };
+
+  const changes = tradingState.changes || {};
+
+  return (
+    <div className="bg-gray-900/50 backdrop-blur-sm rounded-xl border border-gray-800 p-4">
+      <div className="flex items-center justify-between mb-4">
+        <h3 className="text-sm font-bold text-gray-300 uppercase tracking-wider">Trading Data</h3>
+        <div className="flex items-center space-x-2">
+          <Clock className="w-4 h-4 text-gray-500" />
+          <span className="text-xs text-gray-400 font-mono">
+            Last sync: {formatTime(tradingState.sync_timestamp)}
+          </span>
+        </div>
+      </div>
+      
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        {/* Balance */}
+        <div className="bg-gray-800/30 rounded-lg p-3 border border-gray-700/50">
+          <div className="flex items-center space-x-2 mb-1">
+            <DollarSign className="w-4 h-4 text-green-400" />
+            <span className="text-xs text-gray-500 uppercase">Balance</span>
+          </div>
+          <div className="text-lg font-mono font-bold text-white">
+            {formatCurrency(tradingState.balance)}
+          </div>
+          {changes.balance_change && getChangeIndicator(changes.balance_change)}
+        </div>
+
+        {/* Portfolio Value */}
+        <div className="bg-gray-800/30 rounded-lg p-3 border border-gray-700/50">
+          <div className="flex items-center space-x-2 mb-1">
+            <Briefcase className="w-4 h-4 text-blue-400" />
+            <span className="text-xs text-gray-500 uppercase">Portfolio</span>
+          </div>
+          <div className="text-lg font-mono font-bold text-white">
+            {formatCurrency(tradingState.portfolio_value)}
+          </div>
+          {changes.portfolio_change && getChangeIndicator(changes.portfolio_change)}
+        </div>
+
+        {/* Positions */}
+        <div className="bg-gray-800/30 rounded-lg p-3 border border-gray-700/50">
+          <div className="flex items-center space-x-2 mb-1">
+            <ShoppingCart className="w-4 h-4 text-purple-400" />
+            <span className="text-xs text-gray-500 uppercase">Positions</span>
+          </div>
+          <div className="text-lg font-mono font-bold text-white">
+            {tradingState.position_count || 0}
+          </div>
+          {changes.position_count_change !== undefined && changes.position_count_change !== 0 && (
+            <span className={`text-xs font-medium ${
+              changes.position_count_change > 0 ? 'text-green-400' : 'text-red-400'
+            }`}>
+              {changes.position_count_change > 0 ? '+' : ''}{changes.position_count_change}
+            </span>
+          )}
+        </div>
+
+        {/* Orders */}
+        <div className="bg-gray-800/30 rounded-lg p-3 border border-gray-700/50">
+          <div className="flex items-center space-x-2 mb-1">
+            <FileText className="w-4 h-4 text-yellow-400" />
+            <span className="text-xs text-gray-500 uppercase">Orders</span>
+          </div>
+          <div className="text-lg font-mono font-bold text-white">
+            {tradingState.order_count || 0}
+          </div>
+          {changes.order_count_change !== undefined && changes.order_count_change !== 0 && (
+            <span className={`text-xs font-medium ${
+              changes.order_count_change > 0 ? 'text-yellow-400' : 'text-gray-400'
+            }`}>
+              {changes.order_count_change > 0 ? '+' : ''}{changes.order_count_change}
+            </span>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
 
 const V3TraderConsole = () => {
   const [messages, setMessages] = useState([]);
@@ -7,6 +132,7 @@ const V3TraderConsole = () => {
   const [expandedMessages, setExpandedMessages] = useState(new Set());
   const [wsStatus, setWsStatus] = useState('disconnected');
   const [currentState, setCurrentState] = useState('UNKNOWN');
+  const [tradingState, setTradingState] = useState(null);
   const [metrics, setMetrics] = useState({
     markets_connected: 0,
     snapshots_received: 0,
@@ -178,6 +304,24 @@ const V3TraderConsole = () => {
           console.log('WebSocket message received:', { type: data.type, hasMetrics: !!data.data?.metrics });
           
           switch(data.type) {
+            case 'trading_state':
+              // Update trading state from WebSocket
+              if (data.data) {
+                setTradingState({
+                  has_state: true,
+                  version: data.data.version,
+                  balance: data.data.balance,
+                  portfolio_value: data.data.portfolio_value,
+                  position_count: data.data.position_count,
+                  order_count: data.data.order_count,
+                  positions: data.data.positions,
+                  open_orders: data.data.open_orders,
+                  sync_timestamp: data.data.sync_timestamp,
+                  changes: data.data.changes
+                });
+              }
+              break;
+              
             case 'connection':
               // Initial connection acknowledgment - client registered with server
               // data.data.client_id contains the unique client identifier
@@ -464,6 +608,11 @@ const V3TraderConsole = () => {
       </div>
 
       <div className="max-w-7xl mx-auto px-6 py-6">
+        {/* Trading Data Panel - Full width above everything */}
+        <div className="mb-6">
+          <TradingData tradingState={tradingState} />
+        </div>
+        
         <div className="grid grid-cols-12 gap-6">
           {/* Metrics Panel */}
           <div className="col-span-3">
