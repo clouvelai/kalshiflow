@@ -313,6 +313,37 @@ const V3TraderConsole = () => {
           console.log('WebSocket message received:', { type: data.type, hasMetrics: !!data.data?.metrics });
           
           switch(data.type) {
+            case 'system_activity':
+              // Handle unified system activity messages
+              if (data.data) {
+                const { activity_type, message, metadata, timestamp } = data.data;
+                
+                // Handle state transitions specially
+                if (activity_type === 'state_transition' && metadata) {
+                  if (metadata.to_state) {
+                    setCurrentState(metadata.to_state);
+                  }
+                  
+                  // Update API connection status based on state
+                  if (metadata.to_state === 'trading_client_connect' && metadata.api_url) {
+                    setMetrics(prev => ({
+                      ...prev,
+                      api_url: metadata.api_url,
+                      api_connected: true
+                    }));
+                  }
+                }
+                
+                // Add message to console
+                addMessage('activity', message, {
+                  activity_type,
+                  timestamp,
+                  metadata,
+                  state: metadata?.to_state || currentState
+                });
+              }
+              break;
+              
             case 'trading_state':
               // Update trading state from WebSocket
               if (data.data) {
@@ -539,6 +570,18 @@ const V3TraderConsole = () => {
     if (metadata?.isTransition) {
       return <ArrowRight className="w-4 h-4 text-purple-400" />;
     }
+    
+    // Handle activity messages based on activity_type
+    if (type === 'activity' && metadata?.activity_type) {
+      switch(metadata.activity_type) {
+        case 'state_transition': return <ArrowRight className="w-4 h-4 text-purple-400" />;
+        case 'sync': return <Activity className="w-4 h-4 text-blue-400" />;
+        case 'health_check': return <Activity className="w-4 h-4 text-green-400" />;
+        case 'operation': return <ChevronRight className="w-4 h-4 text-gray-400" />;
+        default: return <ChevronRight className="w-4 h-4 text-gray-500" />;
+      }
+    }
+    
     switch(type) {
       case 'state': return <Zap className="w-4 h-4 text-purple-400" />;
       case 'data': return <Database className="w-4 h-4 text-blue-400" />;
@@ -550,7 +593,18 @@ const V3TraderConsole = () => {
     }
   };
 
-  const getMessageColor = (type) => {
+  const getMessageColor = (type, metadata) => {
+    // Handle activity messages based on activity_type
+    if (type === 'activity' && metadata?.activity_type) {
+      switch(metadata.activity_type) {
+        case 'state_transition': return 'text-purple-200';
+        case 'sync': return 'text-blue-200';
+        case 'health_check': return 'text-green-200';
+        case 'operation': return 'text-gray-200';
+        default: return 'text-gray-200';
+      }
+    }
+    
     switch(type) {
       case 'state': return 'text-purple-200';
       case 'data': return 'text-blue-200';
@@ -558,6 +612,7 @@ const V3TraderConsole = () => {
       case 'warning': return 'text-yellow-200';
       case 'error': return 'text-red-200';
       case 'info': return 'text-blue-200';
+      case 'activity': return 'text-gray-200';
       default: return 'text-gray-200';
     }
   };
@@ -831,7 +886,7 @@ const V3TraderConsole = () => {
                             
                             {/* Message Content - only show if there's content */}
                             {message.content && (
-                              <div className={`flex-1 ${getMessageColor(message.type)}`}>
+                              <div className={`flex-1 ${getMessageColor(message.type, message.metadata)}`}>
                                 <div className="leading-relaxed">{message.content}</div>
                               </div>
                             )}

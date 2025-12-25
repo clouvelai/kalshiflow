@@ -214,8 +214,21 @@ class TraderStateMachine:
             if len(self._transition_history) > 50:
                 self._transition_history = self._transition_history[-50:]
             
-            # Emit state transition event
+            # Emit state transition as system activity (unified messaging)
             if self._event_bus:
+                # Also emit as system activity for unified console messaging
+                await self._event_bus.emit_system_activity(
+                    activity_type="state_transition",
+                    message=f"{previous_state.value} → {new_state.value}: {context}",
+                    metadata={
+                        "from_state": previous_state.value,
+                        "to_state": new_state.value,
+                        "context": context,
+                        **(metadata or {})
+                    }
+                )
+                
+                # Keep emitting old event for backward compatibility (can be removed later)
                 await self._event_bus.emit_state_transition(
                     from_state=previous_state.value,
                     to_state=new_state.value,

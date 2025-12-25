@@ -33,6 +33,7 @@ class EventType(Enum):
     STATE_TRANSITION = "state_transition"
     TRADER_STATUS = "trader_status"
     CONNECTION_STATUS = "connection_status"
+    SYSTEM_ACTIVITY = "system_activity"  # Unified console messaging
 
 
 @dataclass
@@ -72,6 +73,24 @@ class TraderStatusEvent:
     
     # Optional additional data
     metadata: Optional[Dict[str, Any]] = None
+
+
+@dataclass 
+class SystemActivityEvent:
+    """
+    Unified event for all system activity console messages.
+    Replaces multiple console messaging patterns with a single clean approach.
+    """
+    event_type: EventType = EventType.SYSTEM_ACTIVITY
+    activity_type: str = ""  # "state_transition", "sync", "health_check", "operation"
+    message: str = ""  # Clean informative text (no emojis)
+    metadata: Optional[Dict[str, Any]] = None  # Rich contextual data
+    timestamp: float = 0.0
+    
+    def __post_init__(self):
+        """Set defaults after initialization."""
+        if self.timestamp == 0.0:
+            self.timestamp = time.time()
 
 
 class EventBus:
@@ -273,6 +292,36 @@ class EventBus:
         
         return await self._queue_event(event)
     
+    async def emit_system_activity(
+        self,
+        activity_type: str,
+        message: str,
+        metadata: Optional[Dict[str, Any]] = None
+    ) -> bool:
+        """
+        Emit a unified system activity event for console messaging.
+        
+        Args:
+            activity_type: Type of activity ("state_transition", "sync", "health_check", etc.)
+            message: Clean informative message text (no emojis)
+            metadata: Optional contextual data for the activity
+            
+        Returns:
+            True if event was queued, False if queue full
+        """
+        if not self._running:
+            return False
+        
+        event = SystemActivityEvent(
+            event_type=EventType.SYSTEM_ACTIVITY,
+            activity_type=activity_type,
+            message=message,
+            metadata=metadata,
+            timestamp=time.time()
+        )
+        
+        return await self._queue_event(event)
+    
     async def emit_orderbook_snapshot(
         self,
         market_ticker: str,
@@ -419,12 +468,18 @@ class EventBus:
         based on event type.
         
         Args:
-            event: Event to publish (TraderStatusEvent, StateTransitionEvent, or MarketEvent)
+            event: Event to publish (TraderStatusEvent, StateTransitionEvent, SystemActivityEvent, or MarketEvent)
             
         Returns:
             True if event was published successfully
         """
-        if isinstance(event, TraderStatusEvent):
+        if isinstance(event, SystemActivityEvent):
+            return await self.emit_system_activity(
+                activity_type=event.activity_type,
+                message=event.message,
+                metadata=event.metadata
+            )
+        elif isinstance(event, TraderStatusEvent):
             return await self.emit_trader_status(
                 state=event.state,
                 metrics=event.metrics,

@@ -335,6 +335,12 @@ class V3Coordinator:
                     # Check if sync needed
                     if self._trading_client_integration and \
                        time.time() - last_sync_time > sync_interval:
+                        # Emit system activity for sync start
+                        await self._event_bus.emit_system_activity(
+                            activity_type="sync",
+                            message="Starting periodic sync with Kalshi",
+                            metadata={"sync_interval": sync_interval}
+                        )
                         await self._handle_trading_sync()
                         last_sync_time = time.time()
                     
@@ -399,7 +405,7 @@ class V3Coordinator:
             # Update state container
             state_changed = self._state_container.update_trading_state(state, changes)
             
-            # Log significant changes
+            # Log and emit system activity for sync results
             if changes and (abs(changes.balance_change) > 0 or 
                           changes.position_count_change != 0 or 
                           changes.order_count_change != 0):
@@ -409,6 +415,33 @@ class V3Coordinator:
                     f"Positions: {state.position_count} ({changes.position_count_change:+d}), "
                     f"Orders: {state.order_count} ({changes.order_count_change:+d})"
                 )
+                # Emit activity with changes
+                await self._event_bus.emit_system_activity(
+                    activity_type="sync",
+                    message=f"Sync complete: Balance {changes.balance_change:+d} cents, Positions {changes.position_count_change:+d}, Orders {changes.order_count_change:+d}",
+                    metadata={
+                        "sync_type": "periodic",
+                        "balance_change": changes.balance_change,
+                        "position_count_change": changes.position_count_change,
+                        "order_count_change": changes.order_count_change,
+                        "balance": state.balance,
+                        "position_count": state.position_count,
+                        "order_count": state.order_count
+                    }
+                )
+            else:
+                # Emit activity for no-change sync
+                await self._event_bus.emit_system_activity(
+                    activity_type="sync",
+                    message="Sync complete: No changes",
+                    metadata={
+                        "sync_type": "periodic",
+                        "no_changes": True,
+                        "balance": state.balance,
+                        "position_count": state.position_count,
+                        "order_count": state.order_count
+                    }
+                )
             
             # Broadcast state (even if unchanged, to update sync timestamp)
             if state_changed or True:  # Always broadcast on sync
@@ -416,6 +449,12 @@ class V3Coordinator:
                 
         except Exception as e:
             logger.error(f"Periodic trading sync failed: {e}")
+            # Emit error activity
+            await self._event_bus.emit_system_activity(
+                activity_type="sync",
+                message=f"Sync failed: {str(e)}",
+                metadata={"error": str(e), "sync_type": "periodic"}
+            )
             # Don't transition to ERROR for sync failures - just log and continue
     
     async def stop(self) -> None:
@@ -522,6 +561,23 @@ class V3Coordinator:
                     self._state_container.update_component_health(name, healthy)
                 
                 all_healthy = all(components_health.values())
+                
+                # Emit health check activity (only occasionally to avoid spam)
+                if self._state_machine.current_state == V3State.READY:
+                    # Emit health activity every 5th check (150 seconds) or if unhealthy
+                    if not hasattr(self, '_health_check_count'):
+                        self._health_check_count = 0
+                    self._health_check_count += 1
+                    
+                    if not all_healthy or self._health_check_count % 5 == 0:
+                        await self._event_bus.emit_system_activity(
+                            activity_type="health_check",
+                            message=f"Health check: {'All components healthy' if all_healthy else 'Some components unhealthy'}",
+                            metadata={
+                                "components": components_health,
+                                "all_healthy": all_healthy
+                            }
+                        )
                 
                 # If in READY state and something is unhealthy, transition to ERROR
                 if self._state_machine.current_state == V3State.READY and not all_healthy:
