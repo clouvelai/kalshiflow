@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Activity, Wifi, WifiOff, Circle, ChevronRight, ChevronDown, Zap, Database, TrendingUp, AlertCircle, Copy, Check, Info, CheckCircle, XCircle, ArrowRight, DollarSign, Briefcase, ShoppingCart, FileText, TrendingDown, Clock } from 'lucide-react';
 
 // TradingData Component - Displays real-time trading state
-const TradingData = ({ tradingState }) => {
+const TradingData = ({ tradingState, lastUpdateTime }) => {
   if (!tradingState || !tradingState.has_state) {
     return (
       <div className="bg-gray-900/50 backdrop-blur-sm rounded-xl border border-gray-800 p-4">
@@ -53,11 +53,19 @@ const TradingData = ({ tradingState }) => {
     <div className="bg-gray-900/50 backdrop-blur-sm rounded-xl border border-gray-800 p-4">
       <div className="flex items-center justify-between mb-4">
         <h3 className="text-sm font-bold text-gray-300 uppercase tracking-wider">Trading Data</h3>
-        <div className="flex items-center space-x-2">
-          <Clock className="w-4 h-4 text-gray-500" />
-          <span className="text-xs text-gray-400 font-mono">
-            Last sync: {formatTime(tradingState.sync_timestamp)}
-          </span>
+        <div className="flex items-center space-x-4">
+          <div className="flex items-center space-x-2">
+            <Clock className="w-3.5 h-3.5 text-blue-400" />
+            <span className="text-xs text-gray-400 font-mono">
+              <span className="text-gray-500">Sync:</span> {formatTime(tradingState.sync_timestamp)}
+            </span>
+          </div>
+          <div className="flex items-center space-x-2">
+            <Activity className="w-3.5 h-3.5 text-green-400" />
+            <span className="text-xs text-gray-400 font-mono">
+              <span className="text-gray-500">Update:</span> {formatTime(lastUpdateTime)}
+            </span>
+          </div>
         </div>
       </div>
       
@@ -133,6 +141,7 @@ const V3TraderConsole = () => {
   const [wsStatus, setWsStatus] = useState('disconnected');
   const [currentState, setCurrentState] = useState('UNKNOWN');
   const [tradingState, setTradingState] = useState(null);
+  const [lastUpdateTime, setLastUpdateTime] = useState(null);
   const [metrics, setMetrics] = useState({
     markets_connected: 0,
     snapshots_received: 0,
@@ -307,6 +316,9 @@ const V3TraderConsole = () => {
             case 'trading_state':
               // Update trading state from WebSocket
               if (data.data) {
+                // Update the last update time whenever we receive a trading_state message
+                setLastUpdateTime(Math.floor(Date.now() / 1000));
+                
                 setTradingState({
                   has_state: true,
                   version: data.data.version,
@@ -610,7 +622,7 @@ const V3TraderConsole = () => {
       <div className="max-w-7xl mx-auto px-6 py-6">
         {/* Trading Data Panel - Full width above everything */}
         <div className="mb-6">
-          <TradingData tradingState={tradingState} />
+          <TradingData tradingState={tradingState} lastUpdateTime={lastUpdateTime} />
         </div>
         
         <div className="grid grid-cols-12 gap-6">

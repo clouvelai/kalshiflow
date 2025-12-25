@@ -14,7 +14,7 @@ if TYPE_CHECKING:
     from ..clients.trading_client_integration import V3TradingClientIntegration
 
 from .state_machine import TraderStateMachine as V3StateMachine, TraderState as V3State
-from .event_bus import EventBus, EventType, StateTransitionEvent, TraderStatusEvent
+from .event_bus import EventBus, EventType, TraderStatusEvent
 from .websocket_manager import V3WebSocketManager
 from .state_container import V3StateContainer
 from ..clients.orderbook_integration import V3OrderbookIntegration
@@ -78,277 +78,27 @@ class V3Coordinator:
         # Trading state broadcast task
         self._trading_state_task: Optional[asyncio.Task] = None
         
+        # Main event loop task
+        self._event_loop_task: Optional[asyncio.Task] = None
+        
         logger.info("V3 Coordinator initialized")
     
     async def start(self) -> None:
-        """Start the V3 trader system."""
+        """Start the V3 trader system - just initialization."""
         if self._running:
             logger.warning("V3 Coordinator is already running")
             return
         
-        logger.info("=" * 60)
-        logger.info("STARTING TRADER V3")
-        logger.info(f"Environment: {self._config.get_environment_name()}")
-        logger.info(f"Markets: {', '.join(self._config.market_tickers[:3])}{'...' if len(self._config.market_tickers) > 3 else ''}")
-        logger.info("=" * 60)
-        
-        self._running = True
-        self._started_at = time.time()
-        
         try:
-            # Start components in order
-            logger.info("1/5 Starting Event Bus...")
-            await self._event_bus.start()
+            # Phase 1: Initialize components
+            await self._initialize_components()
             
-            logger.info("2/5 Starting WebSocket Manager...")
-            self._websocket_manager.set_coordinator(self)  # Set reference for metrics broadcasting
-            await self._websocket_manager.start()
+            # Phase 2: Establish connections
+            await self._establish_connections()
             
-            logger.info("3/5 Starting State Machine...")
-            await self._state_machine.start()
-            
-            # Add metadata to STARTUP → INITIALIZING transition (retroactively)
-            # The state machine already did this transition, but we can emit additional info
-            startup_metadata = {
-                "environment": self._config.get_environment_name(),
-                "host": f"{self._config.host}:{self._config.port}",
-                "log_level": self._config.log_level,
-                "mode": "discovery" if "DISCOVERY" in str(self._config.market_tickers) else "config"
-            }
-            
-            # Emit initial status
-            await self._emit_status_update("System initializing")
-            
-            logger.info("4/5 Starting Orderbook Integration...")
-            await self._orderbook_integration.start()
-            
-            logger.info("5/5 Starting monitoring tasks...")
-            self._health_task = asyncio.create_task(self._monitor_health())
-            self._status_task = asyncio.create_task(self._report_status())
-            self._trading_state_task = asyncio.create_task(self._monitor_trading_state())
-            
-            # The state machine already transitioned to INITIALIZING in start()
-            # Now transition to orderbook connectivity
-            logger.info("Transitioning to orderbook connectivity...")
-            
-            # ACTUALLY WAIT FOR CONNECTION FIRST - Then transition with real data!
-            connection_success = False
-            data_flowing = False
-            
-            # Step 1: Wait for WebSocket connection
-            logger.info("🔄 ORDERBOOK_CONNECT: Actually connecting to orderbook WebSocket...")
-            connection_success = await self._orderbook_integration.wait_for_connection(timeout=30.0)
-            
-            if not connection_success:
-                logger.error("Failed to connect to orderbook WebSocket!")
-                await self._state_machine.enter_error_state(
-                    "Orderbook connection failed",
-                    Exception("WebSocket connection timeout")
-                )
-                return
-            
-            # Step 2: Wait for first snapshot to confirm data flow
-            logger.info("Waiting for initial orderbook snapshot...")
-            data_flowing = await self._orderbook_integration.wait_for_first_snapshot(timeout=10.0)
-            
-            if not data_flowing:
-                logger.warning("No orderbook data received - continuing anyway but system may not be fully operational")
-            
-            # Get ACTUAL metrics after connection
-            orderbook_metrics = self._orderbook_integration.get_metrics()
-            health_details = self._orderbook_integration.get_health_details()
-            
-            # NOW transition with REAL connection data
-            orderbook_connect_metadata = {
-                "ws_url": self._config.ws_url,
-                "markets": self._config.market_tickers[:2] + (["...and {} more".format(len(self._config.market_tickers) - 2)] if len(self._config.market_tickers) > 2 else []),
-                "market_count": len(self._config.market_tickers),
-                "environment": self._config.get_environment_name(),
-                # Add REAL metrics from actual connection
-                "markets_connected": orderbook_metrics["markets_connected"],
-                "snapshots_received": orderbook_metrics["snapshots_received"],
-                "deltas_received": orderbook_metrics["deltas_received"],
-                "connection_established": health_details.get("connection_established"),
-                "first_snapshot_received": health_details.get("first_snapshot_received")
-            }
-            
-            await self._state_machine.transition_to(
-                V3State.ORDERBOOK_CONNECT,
-                context=f"Connected to {orderbook_metrics['markets_connected']} markets",
-                metadata=orderbook_connect_metadata
-            )
-            
-            # Update state container with machine state
-            self._state_container.update_machine_state(
-                V3State.ORDERBOOK_CONNECT,
-                f"Connected to {orderbook_metrics['markets_connected']} markets",
-                orderbook_connect_metadata
-            )
-            
-            # Emit connected status
-            await self._emit_status_update(f"Connected to {orderbook_metrics['markets_connected']} markets")
-            
-            # Check if trading client is configured
-            sync_result_metadata = None  # Will be populated if trading is enabled
-            
-            if self._trading_client_integration:
-                logger.info("Trading client is configured - connecting to trading API...")
-                logger.debug("📊 Moving to TRADING_CLIENT_CONNECT - No trading data in metadata yet!")
-                
-                # Transition to TRADING_CLIENT_CONNECT state with its own metadata
-                trading_connect_metadata = {
-                    "mode": self._trading_client_integration._client.mode,
-                    "environment": self._config.get_environment_name(),
-                    "api_url": self._trading_client_integration.api_url  # API URL belongs HERE
-                }
-                
-                await self._state_machine.transition_to(
-                    V3State.TRADING_CLIENT_CONNECT,
-                    context="Connecting to trading API",
-                    metadata=trading_connect_metadata
-                )
-                
-                # Wait for trading client connection
-                logger.info("🔌 TRADING_CLIENT_CONNECT: Actually connecting to Kalshi Trading API...")
-                trading_connected = await self._trading_client_integration.wait_for_connection(timeout=30.0)
-                
-                if not trading_connected:
-                    logger.error("Failed to connect to trading API!")
-                    await self._state_machine.enter_error_state(
-                        "Trading client connection failed",
-                        Exception("Trading API connection timeout")
-                    )
-                    return
-                
-                # Perform synchronization with Kalshi FIRST
-                logger.info("Trading client connected - syncing with Kalshi...")
-                logger.info("🔄 KALSHI_DATA_SYNC: Actually calling Kalshi API for positions/orders...")
-                try:
-                    state, changes = await self._trading_client_integration.sync_with_kalshi()
-                    
-                    # Store the trading state in our container
-                    state_changed = self._state_container.update_trading_state(state, changes)
-                    
-                    # Emit trading state if it changed
-                    if state_changed:
-                        await self._emit_trading_state()
-                    
-                    # Build sync metadata with ACTUAL sync results
-                    sync_metadata = {
-                        "mode": self._trading_client_integration._client.mode,
-                        "sync_type": "initial",
-                        "balance": state.balance,  # In cents
-                        "portfolio_value": state.portfolio_value,  # In cents
-                        "positions": state.position_count,
-                        "orders": state.order_count
-                    }
-                    
-                    # Also save for READY state (keep this for later)
-                    sync_result_metadata = {
-                        "balance": state.balance,
-                        "portfolio_value": state.portfolio_value,
-                        "positions": state.position_count,
-                        "orders": state.order_count
-                    }
-                    
-                    # Add changes if this isn't the first sync
-                    if changes:
-                        sync_metadata.update({
-                            "balance_change": f"{changes.balance_change:+d}",
-                            "portfolio_change": f"{changes.portfolio_value_change:+d}",
-                            "positions_change": f"{changes.position_count_change:+d}",
-                            "orders_change": f"{changes.order_count_change:+d}"
-                        })
-                        sync_result_metadata.update({
-                            "balance_change": f"{changes.balance_change:+d}",
-                            "portfolio_change": f"{changes.portfolio_value_change:+d}",
-                            "positions_change": f"{changes.position_count_change:+d}",
-                            "orders_change": f"{changes.order_count_change:+d}"
-                        })
-                        logger.info(
-                            f"Kalshi sync complete - Balance: {state.balance} cents ({changes.balance_change:+d}), "
-                            f"Positions: {state.position_count} ({changes.position_count_change:+d}), "
-                            f"Orders: {state.order_count} ({changes.order_count_change:+d})"
-                        )
-                    else:
-                        logger.info(
-                            f"Initial Kalshi sync - Balance: {state.balance} cents, "
-                            f"Positions: {state.position_count}, Orders: {state.order_count}"
-                        )
-                    
-                    # NOW transition with REAL sync data
-                    await self._state_machine.transition_to(
-                        V3State.KALSHI_DATA_SYNC,
-                        context=f"Synced: {state.position_count} positions, {state.order_count} orders, Balance: ${state.balance/100:.2f}",
-                        metadata=sync_metadata
-                    )
-                    
-                except Exception as e:
-                    logger.error(f"Kalshi data sync failed: {e}")
-                    await self._state_machine.enter_error_state(
-                        "Kalshi data sync failed",
-                        e
-                    )
-                    return
-            
-            # Transition to ready state with REAL connection status
-            logger.info("Transitioning to ready state...")
-            logger.debug(f"✅ READY state will include: orderbook metrics={orderbook_metrics['markets_connected']} markets, "
-                        f"trading={'enabled with sync data' if sync_result_metadata else 'disabled'}")
-            
-            # Build READY state metadata - clean and specific
-            ready_metadata = {
-                "markets_connected": orderbook_metrics["markets_connected"],
-                "snapshots_received": orderbook_metrics["snapshots_received"],
-                "deltas_received": orderbook_metrics["deltas_received"],
-                "connection_established": health_details["connection_established"],
-                "first_snapshot_received": health_details["first_snapshot_received"],
-                "environment": self._config.get_environment_name()
-            }
-            
-            # Add trading client info if available (using sync results, not raw metrics)
-            if self._trading_client_integration and sync_result_metadata:
-                ready_metadata["trading_client"] = {
-                    "connected": True,
-                    "mode": self._trading_client_integration._client.mode,
-                    "balance": sync_result_metadata["balance"],
-                    "portfolio_value": sync_result_metadata["portfolio_value"],
-                    "positions": sync_result_metadata["positions"],
-                    "orders": sync_result_metadata["orders"]
-                }
-                # Add change info if available
-                if "balance_change" in sync_result_metadata:
-                    ready_metadata["trading_client"]["balance_change"] = sync_result_metadata["balance_change"]
-                    ready_metadata["trading_client"]["portfolio_change"] = sync_result_metadata["portfolio_change"]
-                    ready_metadata["trading_client"]["positions_change"] = sync_result_metadata["positions_change"]
-                    ready_metadata["trading_client"]["orders_change"] = sync_result_metadata["orders_change"]
-            
-            # Determine context based on actual connection status
-            if connection_success and data_flowing:
-                if self._trading_client_integration:
-                    context = f"System fully operational with {orderbook_metrics['markets_connected']} markets and trading enabled"
-                else:
-                    context = f"System fully operational with {orderbook_metrics['markets_connected']} markets (orderbook only)"
-            elif connection_success:
-                context = f"System connected (waiting for data) - {orderbook_metrics['markets_connected']} markets"
-            else:
-                context = f"System started (connection pending) - {len(self._config.market_tickers)} markets configured"
-            
-            await self._state_machine.transition_to(
-                V3State.READY,
-                context=context,
-                metadata=ready_metadata  # Use clean ready_metadata, not polluted metadata
-            )
-            
-            # Emit trading state immediately when READY (so UI shows data right away)
-            if self._trading_client_integration and self._state_container.trading_state:
-                await self._emit_trading_state()
-            
-            # Emit ready status
-            status_msg = f"System ready with {len(self._config.market_tickers)} markets"
-            if self._trading_client_integration:
-                status_msg += f" (trading enabled in {self._trading_client_integration._client.mode} mode)"
-            await self._emit_status_update(status_msg)
+            # Phase 3: Start event loop
+            self._running = True
+            self._event_loop_task = asyncio.create_task(self._run_event_loop())
             
             logger.info("=" * 60)
             logger.info("✅ TRADER V3 STARTED SUCCESSFULLY")
@@ -358,6 +108,315 @@ class V3Coordinator:
             logger.error(f"Failed to start V3 Coordinator: {e}")
             await self.stop()
             raise
+    
+    async def _initialize_components(self) -> None:
+        """Initialize all core components in order."""
+        logger.info("=" * 60)
+        logger.info("STARTING TRADER V3")
+        logger.info(f"Environment: {self._config.get_environment_name()}")
+        logger.info(f"Markets: {', '.join(self._config.market_tickers[:3])}{'...' if len(self._config.market_tickers) > 3 else ''}")
+        logger.info("=" * 60)
+        
+        self._started_at = time.time()
+        
+        # Start components (no connections yet)
+        logger.info("1/3 Starting Event Bus...")
+        await self._event_bus.start()
+        
+        logger.info("2/3 Starting WebSocket Manager...")
+        self._websocket_manager.set_coordinator(self)
+        await self._websocket_manager.start()
+        
+        logger.info("3/3 Starting State Machine...")
+        await self._state_machine.start()
+        
+        await self._emit_status_update("System initializing")
+    
+    async def _establish_connections(self) -> None:
+        """Establish all external connections."""
+        # Orderbook connection
+        await self._connect_orderbook()
+        
+        # Trading client connection (if configured)
+        if self._trading_client_integration:
+            await self._connect_trading_client()
+            await self._sync_trading_state()
+        
+        # Transition to READY with actual metrics
+        await self._transition_to_ready()
+    
+    async def _connect_orderbook(self) -> None:
+        """Connect to orderbook WebSocket and wait for data."""
+        logger.info("Connecting to orderbook...")
+        
+        # Start integration
+        await self._orderbook_integration.start()
+        
+        # Wait for connection
+        logger.info("🔄 Waiting for orderbook connection...")
+        connection_success = await self._orderbook_integration.wait_for_connection(timeout=30.0)
+        
+        if not connection_success:
+            raise RuntimeError("Failed to connect to orderbook WebSocket")
+        
+        # Wait for first snapshot
+        logger.info("Waiting for initial orderbook snapshot...")
+        data_flowing = await self._orderbook_integration.wait_for_first_snapshot(timeout=10.0)
+        
+        if not data_flowing:
+            logger.warning("No orderbook data received - continuing anyway")
+        
+        # Collect metrics and transition
+        metrics = self._orderbook_integration.get_metrics()
+        health_details = self._orderbook_integration.get_health_details()
+        
+        await self._state_machine.transition_to(
+            V3State.ORDERBOOK_CONNECT,
+            context=f"Connected to {metrics['markets_connected']} markets",
+            metadata={
+                "ws_url": self._config.ws_url,
+                "markets": self._config.market_tickers[:2] + (["...and {} more".format(len(self._config.market_tickers) - 2)] if len(self._config.market_tickers) > 2 else []),
+                "market_count": len(self._config.market_tickers),
+                "environment": self._config.get_environment_name(),
+                "markets_connected": metrics["markets_connected"],
+                "snapshots_received": metrics["snapshots_received"],
+                "deltas_received": metrics["deltas_received"],
+                "connection_established": health_details.get("connection_established"),
+                "first_snapshot_received": health_details.get("first_snapshot_received")
+            }
+        )
+        
+        # Update state container
+        self._state_container.update_machine_state(
+            V3State.ORDERBOOK_CONNECT,
+            f"Connected to {metrics['markets_connected']} markets",
+            {
+                "markets_connected": metrics["markets_connected"],
+                "snapshots_received": metrics["snapshots_received"],
+                "ws_url": self._config.ws_url
+            }
+        )
+        
+        await self._emit_status_update(f"Connected to {metrics['markets_connected']} markets")
+    
+    async def _connect_trading_client(self) -> None:
+        """Connect to trading API."""
+        logger.info("Connecting to trading API...")
+        
+        await self._state_machine.transition_to(
+            V3State.TRADING_CLIENT_CONNECT,
+            context="Connecting to trading API",
+            metadata={
+                "mode": self._trading_client_integration._client.mode,
+                "environment": self._config.get_environment_name(),
+                "api_url": self._trading_client_integration.api_url
+            }
+        )
+        
+        logger.info("🔌 TRADING_CLIENT_CONNECT: Actually connecting to Kalshi Trading API...")
+        connected = await self._trading_client_integration.wait_for_connection(timeout=30.0)
+        
+        if not connected:
+            raise RuntimeError("Failed to connect to trading API")
+    
+    async def _sync_trading_state(self) -> None:
+        """Perform initial trading state sync."""
+        logger.info("🔄 Syncing with Kalshi...")
+        
+        state, changes = await self._trading_client_integration.sync_with_kalshi()
+        
+        # Store in container
+        state_changed = self._state_container.update_trading_state(state, changes)
+        
+        # Emit trading state if changed
+        if state_changed:
+            await self._emit_trading_state()
+        
+        # Log the sync results
+        if changes and (abs(changes.balance_change) > 0 or 
+                      changes.position_count_change != 0 or 
+                      changes.order_count_change != 0):
+            logger.info(
+                f"Kalshi sync complete - Balance: {state.balance} cents ({changes.balance_change:+d}), "
+                f"Positions: {state.position_count} ({changes.position_count_change:+d}), "
+                f"Orders: {state.order_count} ({changes.order_count_change:+d})"
+            )
+        else:
+            logger.info(
+                f"Initial Kalshi sync - Balance: {state.balance} cents, "
+                f"Positions: {state.position_count}, Orders: {state.order_count}"
+            )
+        
+        await self._state_machine.transition_to(
+            V3State.KALSHI_DATA_SYNC,
+            context=f"Synced: {state.position_count} positions, {state.order_count} orders",
+            metadata={
+                "mode": self._trading_client_integration._client.mode,
+                "sync_type": "initial",
+                "balance": state.balance,
+                "portfolio_value": state.portfolio_value,
+                "positions": state.position_count,
+                "orders": state.order_count
+            }
+        )
+    
+    async def _transition_to_ready(self) -> None:
+        """Transition to READY state with collected metrics."""
+        # Gather metrics
+        orderbook_metrics = self._orderbook_integration.get_metrics()
+        health_details = self._orderbook_integration.get_health_details()
+        
+        # Build READY state metadata
+        ready_metadata = {
+            "markets_connected": orderbook_metrics["markets_connected"],
+            "snapshots_received": orderbook_metrics["snapshots_received"],
+            "deltas_received": orderbook_metrics["deltas_received"],
+            "connection_established": health_details["connection_established"],
+            "first_snapshot_received": health_details["first_snapshot_received"],
+            "environment": self._config.get_environment_name()
+        }
+        
+        # Add trading client info if available
+        if self._trading_client_integration and self._state_container.trading_state:
+            trading_state = self._state_container.trading_state
+            ready_metadata["trading_client"] = {
+                "connected": True,
+                "mode": self._trading_client_integration._client.mode,
+                "balance": trading_state.balance,
+                "portfolio_value": trading_state.portfolio_value,
+                "positions": trading_state.position_count,
+                "orders": trading_state.order_count
+            }
+        
+        # Determine context
+        if orderbook_metrics["snapshots_received"] > 0:
+            if self._trading_client_integration:
+                context = f"System fully operational with {orderbook_metrics['markets_connected']} markets and trading enabled"
+            else:
+                context = f"System fully operational with {orderbook_metrics['markets_connected']} markets (orderbook only)"
+        else:
+            context = f"System connected (waiting for data) - {orderbook_metrics['markets_connected']} markets"
+        
+        await self._state_machine.transition_to(
+            V3State.READY,
+            context=context,
+            metadata=ready_metadata
+        )
+        
+        # Emit trading state immediately when READY
+        if self._trading_client_integration and self._state_container.trading_state:
+            await self._emit_trading_state()
+        
+        # Emit ready status
+        status_msg = f"System ready with {len(self._config.market_tickers)} markets"
+        if self._trading_client_integration:
+            status_msg += f" (trading enabled in {self._trading_client_integration._client.mode} mode)"
+        await self._emit_status_update(status_msg)
+    
+    async def _run_event_loop(self) -> None:
+        """
+        Main event loop - handles all periodic operations.
+        This is the heart of the V3 trader after startup.
+        """
+        # Start monitoring tasks
+        self._start_monitoring_tasks()
+        
+        last_sync_time = time.time()
+        sync_interval = 30.0  # Sync every 30 seconds
+        
+        logger.info("Event loop started")
+        
+        while self._running:
+            try:
+                current_state = self._state_machine.current_state
+                
+                # State-specific handlers
+                if current_state == V3State.READY:
+                    # Check if sync needed
+                    if self._trading_client_integration and \
+                       time.time() - last_sync_time > sync_interval:
+                        await self._handle_trading_sync()
+                        last_sync_time = time.time()
+                    
+                    # Future: This is where ACTING state logic would go
+                    # if self._has_pending_actions():
+                    #     await self._handle_acting_state()
+                    
+                elif current_state == V3State.ERROR:
+                    # Error recovery is handled by _monitor_health()
+                    # Just sleep longer in error state
+                    await asyncio.sleep(1.0)
+                    continue
+                
+                elif current_state == V3State.SHUTDOWN:
+                    # Exit loop on shutdown
+                    break
+                
+                # Small sleep to prevent CPU spinning
+                await asyncio.sleep(0.1)
+                
+            except asyncio.CancelledError:
+                logger.info("Event loop cancelled")
+                break
+            except Exception as e:
+                logger.error(f"Error in event loop: {e}")
+                await self._state_machine.enter_error_state(
+                    "Event loop error", e
+                )
+        
+        logger.info("Event loop stopped")
+    
+    def _start_monitoring_tasks(self) -> None:
+        """Start background monitoring tasks."""
+        # Health monitoring - critical for error recovery
+        self._health_task = asyncio.create_task(self._monitor_health())
+        
+        # Status reporting - for UI updates
+        self._status_task = asyncio.create_task(self._report_status())
+        
+        # Trading state monitoring - now simplified to just track version changes
+        self._trading_state_task = asyncio.create_task(self._monitor_trading_state())
+    
+    async def _handle_trading_sync(self) -> None:
+        """
+        Handle periodic trading state synchronization.
+        Extracted from _monitor_trading_state() lines 671-702.
+        """
+        if not self._trading_client_integration:
+            return
+        
+        if self._state_machine.current_state != V3State.READY:
+            return
+        
+        logger.debug("Performing periodic trading state sync...")
+        try:
+            # Use the sync service to get fresh data
+            state, changes = await self._trading_client_integration.sync_with_kalshi()
+            
+            # Always update sync timestamp
+            state.sync_timestamp = time.time()
+            
+            # Update state container
+            state_changed = self._state_container.update_trading_state(state, changes)
+            
+            # Log significant changes
+            if changes and (abs(changes.balance_change) > 0 or 
+                          changes.position_count_change != 0 or 
+                          changes.order_count_change != 0):
+                logger.info(
+                    f"Trading state updated - "
+                    f"Balance: ${state.balance/100:.2f} ({changes.balance_change:+d} cents), "
+                    f"Positions: {state.position_count} ({changes.position_count_change:+d}), "
+                    f"Orders: {state.order_count} ({changes.order_count_change:+d})"
+                )
+            
+            # Broadcast state (even if unchanged, to update sync timestamp)
+            if state_changed or True:  # Always broadcast on sync
+                await self._emit_trading_state()
+                
+        except Exception as e:
+            logger.error(f"Periodic trading sync failed: {e}")
+            # Don't transition to ERROR for sync failures - just log and continue
     
     async def stop(self) -> None:
         """Stop the V3 trader system."""
@@ -369,6 +428,14 @@ class V3Coordinator:
         logger.info("=" * 60)
         
         self._running = False
+        
+        # Cancel event loop task
+        if self._event_loop_task:
+            self._event_loop_task.cancel()
+            try:
+                await self._event_loop_task
+            except asyncio.CancelledError:
+                pass
         
         # Cancel monitoring tasks
         if self._health_task:
@@ -655,53 +722,15 @@ class V3Coordinator:
                 logger.error(f"Error in status reporting: {e}")
     
     async def _monitor_trading_state(self) -> None:
-        """Monitor and broadcast trading state changes, plus periodic sync."""
+        """Monitor trading state version for broadcasts."""
         last_version = -1  # Start at -1 to ensure first check always broadcasts
-        last_sync_time = time.time()
-        sync_interval = 30.0  # Sync with Kalshi every 30 seconds
         
         while self._running:
             try:
                 await asyncio.sleep(1.0)  # Check every second
                 
-                # Only sync in READY state and if trading client is configured
-                if (self._state_machine.current_state == V3State.READY and 
-                    self._trading_client_integration and
-                    time.time() - last_sync_time > sync_interval):
-                    
-                    # Perform periodic sync with Kalshi
-                    logger.debug("Performing periodic trading state sync...")
-                    try:
-                        # Use the sync service to get fresh data
-                        state, changes = await self._trading_client_integration.sync_with_kalshi()
-                        
-                        # Always update sync timestamp to reflect that we checked
-                        state.sync_timestamp = time.time()
-                        
-                        # Update state container
-                        state_changed = self._state_container.update_trading_state(state, changes)
-                        
-                        # Log significant changes
-                        if changes and (abs(changes.balance_change) > 0 or 
-                                      changes.position_count_change != 0 or 
-                                      changes.order_count_change != 0):
-                            logger.info(
-                                f"Trading state updated - "
-                                f"Balance: ${state.balance/100:.2f} ({changes.balance_change:+d} cents), "
-                                f"Positions: {state.position_count} ({changes.position_count_change:+d}), "
-                                f"Orders: {state.order_count} ({changes.order_count_change:+d})"
-                            )
-                        
-                        # Force broadcast every 30s even if no changes (to update sync timestamp)
-                        if not state_changed:
-                            await self._emit_trading_state()
-                        
-                        last_sync_time = time.time()
-                        
-                    except Exception as e:
-                        logger.error(f"Periodic trading sync failed: {e}")
-                
-                # Get current trading state version
+                # Just check for version changes
+                # Syncing now happens in main event loop via _handle_trading_sync
                 current_version = self._state_container.trading_state_version
                 
                 # Only broadcast if state changed
