@@ -93,7 +93,8 @@ class V3WebSocketManager:
         # Subscribe to event bus if provided
         if self._event_bus:
             self._event_bus.subscribe(EventType.SYSTEM_ACTIVITY, self._handle_system_activity)
-            self._event_bus.subscribe(EventType.STATE_TRANSITION, self._handle_state_transition)
+            # Don't subscribe to STATE_TRANSITION anymore - it's handled by SYSTEM_ACTIVITY now
+            # self._event_bus.subscribe(EventType.STATE_TRANSITION, self._handle_state_transition)
             self._event_bus.subscribe(EventType.TRADER_STATUS, self._handle_trader_status)
             # Don't subscribe to orderbook events - they're too noisy for the console
             # self._event_bus.subscribe(EventType.ORDERBOOK_SNAPSHOT, self._handle_orderbook_event)
@@ -251,6 +252,17 @@ class V3WebSocketManager:
         """Handle unified system activity events from event bus."""
         logger.debug(f"Handling system activity: {event.activity_type} - {event.message}")
         
+        # Extract current state from metadata if this is a state transition
+        current_state = None
+        if event.activity_type == "state_transition" and event.metadata:
+            # Get the to_state from metadata
+            current_state = event.metadata.get("to_state")
+            if current_state and hasattr(current_state, 'lower'):
+                current_state = current_state.lower()
+        elif self._state_machine:
+            # Fall back to state machine's current state for other activities
+            current_state = self._state_machine.current_state.value if hasattr(self._state_machine.current_state, 'value') else str(self._state_machine.current_state).lower()
+        
         # Format the activity message
         activity_message = {
             "type": "system_activity",
@@ -258,7 +270,8 @@ class V3WebSocketManager:
                 "timestamp": time.strftime("%H:%M:%S", time.localtime(event.timestamp)),
                 "activity_type": event.activity_type,
                 "message": event.message,
-                "metadata": event.metadata
+                "metadata": event.metadata,
+                "state": current_state  # Include current state in all system activities
             }
         }
         
@@ -269,32 +282,33 @@ class V3WebSocketManager:
         # Broadcast to currently connected clients
         await self.broadcast_message("system_activity", activity_message["data"])
     
-    async def _handle_state_transition(self, event: StateTransitionEvent) -> None:
-        """Handle state transition events from event bus (legacy, kept for compatibility)."""
-        logger.debug(f"Handling state transition event: {event.from_state} → {event.to_state}")
-        
-        # Use state names directly - they're already uppercase
-        to_display = event.to_state.upper()
-        
-        # Create the transition message with ALL metadata
-        transition_message = {
-            "type": "state_transition",
-            "data": {
-                "timestamp": time.strftime("%H:%M:%S", time.localtime(event.timestamp)),
-                "state": to_display,
-                "message": f"State: {event.from_state} → {event.to_state}",
-                "context": event.context,
-                "from_state": event.from_state,
-                "to_state": event.to_state,
-                "metadata": event.metadata  # Pass through ALL metadata from the event
-            }
-        }
-        
-        # Store in history buffer for late-connecting clients
-        self._state_transition_history.append(transition_message)
-        
-        # Broadcast to currently connected clients
-        await self.broadcast_message("state_transition", transition_message["data"])
+    # Commenting out the legacy state transition handler - now handled by _handle_system_activity
+    # async def _handle_state_transition(self, event: StateTransitionEvent) -> None:
+    #     """Handle state transition events from event bus (legacy, kept for compatibility)."""
+    #     logger.debug(f"Handling state transition event: {event.from_state} → {event.to_state}")
+    #     
+    #     # Use state names directly - they're already uppercase
+    #     to_display = event.to_state.upper()
+    #     
+    #     # Create the transition message with ALL metadata
+    #     transition_message = {
+    #         "type": "state_transition",
+    #         "data": {
+    #             "timestamp": time.strftime("%H:%M:%S", time.localtime(event.timestamp)),
+    #             "state": to_display,
+    #             "message": f"State: {event.from_state} → {event.to_state}",
+    #             "context": event.context,
+    #             "from_state": event.from_state,
+    #             "to_state": event.to_state,
+    #             "metadata": event.metadata  # Pass through ALL metadata from the event
+    #         }
+    #     }
+    #     
+    #     # Store in history buffer for late-connecting clients
+    #     self._state_transition_history.append(transition_message)
+    #     
+    #     # Broadcast to currently connected clients
+    #     await self.broadcast_message("state_transition", transition_message["data"])
     
     async def _handle_trader_status(self, event: TraderStatusEvent) -> None:
         """Handle trader status events from event bus."""
