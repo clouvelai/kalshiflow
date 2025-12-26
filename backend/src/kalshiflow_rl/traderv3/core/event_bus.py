@@ -1,15 +1,50 @@
 """
-Event Bus for TRADER V3.
+Event Bus for TRADER V3 - Central Event Distribution System.
 
-Provides a clean event-driven architecture for the V3 trader system.
-Ported from trading/event_bus.py with V3-specific enhancements.
+This module implements a robust publish-subscribe event bus that serves as
+the nervous system of the V3 trader, enabling loose coupling between components
+while maintaining high-performance event distribution.
 
-Features:
-- Non-blocking event emission (never blocks publisher)
-- Async callback execution with error isolation
-- State machine event support for V3 trader
-- Performance monitoring and circuit breaker
-- Clean dependency injection (no global singletons in V3)
+Purpose:
+    The EventBus enables components to communicate without direct dependencies,
+    following the observer pattern. It ensures events are processed asynchronously
+    without blocking the publisher, critical for real-time trading systems.
+
+Key Responsibilities:
+    1. **Event Distribution** - Routes events to interested subscribers
+    2. **Async Processing** - Non-blocking event queue with background processing
+    3. **Error Isolation** - Subscriber errors don't affect other subscribers
+    4. **Performance Monitoring** - Tracks event throughput and errors
+    5. **Type Safety** - Strongly-typed events with dataclasses
+    6. **Circuit Breaking** - Protects against cascading failures
+
+Event Types:
+    - ORDERBOOK_SNAPSHOT/DELTA: Market data updates from Kalshi
+    - STATE_TRANSITION: State machine state changes
+    - TRADER_STATUS: System health and metrics updates
+    - SYSTEM_ACTIVITY: Unified console messaging events
+    - CONNECTION_STATUS: WebSocket connection state changes
+
+Architecture Position:
+    The EventBus is a core V3 component used by:
+    - V3Coordinator: Publishes status and state events
+    - V3StateMachine: Publishes state transition events
+    - V3OrderbookIntegration: Publishes market data events
+    - V3WebSocketManager: Subscribes to events for client broadcast
+    - Future: Actor service will subscribe to market events
+
+Design Principles:
+    - **Non-blocking**: Publishers never wait for subscribers
+    - **Error Isolation**: One bad subscriber can't break others
+    - **Type Safety**: All events are strongly typed dataclasses
+    - **Observable**: Comprehensive metrics and health monitoring
+    - **Scalable**: Queue-based with configurable capacity
+
+Performance Characteristics:
+    - Queue capacity: 1000 events (configurable)
+    - Processing timeout: 5 seconds per batch
+    - Callback timeout: 5 seconds per subscriber group
+    - Circuit breaker: Triggers at 100 callback errors
 """
 
 import asyncio
@@ -23,7 +58,12 @@ logger = logging.getLogger("kalshiflow_rl.traderv3.event_bus")
 
 
 class EventType(Enum):
-    """Event types for TRADER V3."""
+    """
+    Event types for TRADER V3.
+    
+    Defines all event types that can flow through the event bus.
+    Each event type has specific data structures and subscribers.
+    """
     # Orderbook events (from existing system)
     ORDERBOOK_SNAPSHOT = "orderbook_snapshot"
     ORDERBOOK_DELTA = "orderbook_delta"
@@ -38,7 +78,20 @@ class EventType(Enum):
 
 @dataclass
 class MarketEvent:
-    """Event data for market updates."""
+    """
+    Event data for market updates.
+    
+    Represents orderbook snapshots and deltas from Kalshi WebSocket.
+    These events drive the core trading logic and market monitoring.
+    
+    Attributes:
+        event_type: Type of market event (SNAPSHOT or DELTA)
+        market_ticker: Kalshi market identifier
+        sequence_number: Orderbook sequence for consistency
+        timestamp_ms: Kalshi timestamp in milliseconds
+        received_at: Local timestamp when event was received
+        metadata: Additional data (orderbook levels, etc.)
+    """
     event_type: EventType
     market_ticker: str
     sequence_number: int
@@ -79,7 +132,24 @@ class TraderStatusEvent:
 class SystemActivityEvent:
     """
     Unified event for all system activity console messages.
-    Replaces multiple console messaging patterns with a single clean approach.
+    
+    This event type consolidates all console messaging into a single
+    pattern, providing clean, informative updates without emoji spam.
+    It's designed for both human operators and log analysis tools.
+    
+    Activity Types:
+        - "state_transition": State machine state changes
+        - "sync": Kalshi API synchronization events
+        - "health_check": Component health status updates
+        - "operation": Trade execution and order management
+        - "connection": WebSocket connection events
+    
+    Attributes:
+        event_type: Always SYSTEM_ACTIVITY
+        activity_type: Category of activity
+        message: Clean informative text (no emojis)
+        metadata: Rich contextual data for the activity
+        timestamp: When the activity occurred
     """
     event_type: EventType = EventType.SYSTEM_ACTIVITY
     activity_type: str = ""  # "state_transition", "sync", "health_check", "operation"
@@ -95,14 +165,46 @@ class SystemActivityEvent:
 
 class EventBus:
     """
-    Simple async event bus for TRADER V3.
+    Async event bus for TRADER V3 - the system's nervous system.
     
-    Features:
-    - Non-blocking event emission (never blocks publisher)
-    - Async callback execution with error isolation
-    - Subscription management with cleanup
-    - Performance monitoring and circuit breaker
-    - Support for both market and state machine events
+    Implements a high-performance publish-subscribe pattern with
+    async processing, error isolation, and comprehensive monitoring.
+    All events flow through a queue for non-blocking operation.
+    
+    Core Features:
+        - **Non-blocking emission**: Publishers never wait
+        - **Async processing**: Background task processes events
+        - **Error isolation**: Subscriber errors are contained
+        - **Performance monitoring**: Tracks throughput and errors
+        - **Circuit breaker**: Protects against failure cascades
+        - **Type-safe events**: Strongly typed event dataclasses
+    
+    Key Attributes:
+        _subscribers: Dict mapping event types to callback lists
+        _event_queue: Async queue for event processing (max 1000)
+        _processing_task: Background task processing events
+        _running: Whether the bus is operational
+        _events_emitted: Counter of events published
+        _events_processed: Counter of events delivered
+        _callback_errors: Counter of subscriber errors
+    
+    Thread Safety:
+        Designed for single event loop operation. All methods
+        should be called from the same asyncio event loop.
+    
+    Usage Pattern:
+        ```python
+        bus = EventBus()
+        await bus.start()
+        
+        # Subscribe to events
+        bus.subscribe(EventType.STATE_TRANSITION, my_callback)
+        
+        # Emit events (non-blocking)
+        await bus.emit_state_transition("idle", "ready", "System started")
+        
+        await bus.stop()
+        ```
     """
     
     def __init__(self):
@@ -430,7 +532,30 @@ class EventBus:
             return False
     
     async def _process_events(self) -> None:
-        """Main event processing loop (runs in background)."""
+        """
+        Main event processing loop (runs in background).
+        
+        This is the heart of the event bus - a background task that
+        continuously pulls events from the queue and distributes them
+        to subscribers. It provides error isolation and timeout protection.
+        
+        Processing Flow:
+            1. Wait for event from queue (1s timeout)
+            2. Identify subscribers for event type
+            3. Call all subscribers concurrently
+            4. Isolate any subscriber errors
+            5. Continue to next event
+        
+        Error Handling:
+            - Subscriber errors are logged but don't stop processing
+            - Queue timeouts just continue the loop
+            - CancelledError stops the loop gracefully
+        
+        Performance:
+            - Processes events as fast as subscribers can handle
+            - Concurrent subscriber notification for parallelism
+            - 5-second timeout on subscriber batch completion
+        """
         logger.info("TRADER V3 event processing loop started")
         
         while not self._shutdown_requested:
@@ -511,8 +636,21 @@ class EventBus:
         """
         Notify all subscribers of an event with error isolation.
         
+        Distributes an event to all registered subscribers for that
+        event type. Calls are made concurrently for performance, with
+        error isolation to prevent one bad subscriber from affecting others.
+        
+        Special Handling:
+            - MarketEvent: Extracts market_ticker and metadata parameters
+            - Other events: Passes full event object to callback
+        
         Args:
-            event: Event to send to subscribers
+            event: Event object to distribute to subscribers
+        
+        Implementation Notes:
+            - Creates async tasks for concurrent execution
+            - 5-second timeout on all subscriber callbacks
+            - Logs but doesn't fail on individual callback errors
         """
         subscribers = self._subscribers.get(event.event_type, [])
         
@@ -580,8 +718,17 @@ class EventBus:
         """
         Check if event bus is healthy.
         
+        Health is determined by:
+            1. Bus is running (_running = True)
+            2. Processing task is active and not done
+            3. Callback errors below threshold (< 100)
+        
         Returns:
-            True if running and processing events normally
+            True if all health checks pass, False otherwise
+        
+        Usage:
+            Used by V3Coordinator health monitoring to detect
+            event bus failures and trigger recovery if needed.
         """
         if not self._running:
             return False

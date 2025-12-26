@@ -1,10 +1,45 @@
 """
-V3 State Container - Central state management for TRADER V3.
+V3 State Container - Central State Management for TRADER V3.
 
-Organizes and provides clean access to all state types:
-- Trading state (positions, orders, balance)
-- Component health metrics
-- State machine reference
+This module provides a centralized container for all state in the V3 system,
+serving as the single source of truth for trading data, health metrics, and
+system status. It's NOT a state machine - just organized, versioned storage.
+
+Purpose:
+    The V3StateContainer consolidates all system state into one place, making
+    it easy to access current data, track changes, and broadcast updates. It
+    provides versioning to detect changes and clean APIs for state access.
+
+Key Responsibilities:
+    1. **Trading State Storage** - Positions, orders, balance from Kalshi
+    2. **Health Tracking** - Component health metrics and error counts
+    3. **State Machine Reference** - Current operational state
+    4. **Change Detection** - Version tracking for efficient updates
+    5. **State Aggregation** - Combines all state for broadcasting
+
+State Types Managed:
+    - Trading State: Balance, positions, orders from Kalshi API
+    - Component Health: Health status of each V3 component
+    - Machine State: Current state from the V3StateMachine
+    - Container Metadata: Timestamps, versions, uptime
+
+Architecture Position:
+    The StateContainer is used by:
+    - V3Coordinator: Updates all state types and reads for broadcasting
+    - V3TradingClientIntegration: Provides trading state updates
+    - V3WebSocketManager: Reads state for client broadcasts
+    - HTTP endpoints: Query container for /status and /health
+
+Design Principles:
+    - **Single Source of Truth**: All state in one place
+    - **Immutable Updates**: State is replaced, not mutated
+    - **Version Tracking**: Detect changes efficiently
+    - **Clean APIs**: Simple methods for state access
+    - **No Business Logic**: Just storage and retrieval
+
+Thread Safety:
+    Designed for single-threaded async operation. All access
+    should occur from the same asyncio event loop.
 """
 
 import time
@@ -21,7 +56,21 @@ logger = logging.getLogger("kalshiflow_rl.traderv3.core.state_container")
 
 @dataclass
 class ComponentHealth:
-    """Health status for a single component."""
+    """
+    Health status for a single V3 component.
+    
+    Tracks the health of individual components with error counting
+    and staleness detection. Used to monitor system health and
+    trigger recovery when components fail.
+    
+    Attributes:
+        name: Component identifier (e.g., "orderbook_integration")
+        healthy: Current health status
+        last_check: Timestamp of last health update
+        details: Component-specific health details
+        error_count: Number of errors since last healthy state
+        last_error: Most recent error message
+    """
     name: str
     healthy: bool
     last_check: float
@@ -46,13 +95,41 @@ class V3StateContainer:
     """
     Central container for all V3 state management.
     
-    This container:
-    - Stores trading state from Kalshi syncs
-    - Tracks component health metrics
-    - Provides state machine reference
-    - Manages state versioning for change detection
+    This is the single source of truth for all system state in TRADER V3.
+    It provides organized storage with versioning, change detection, and
+    clean APIs for state access. It does NOT implement any business logic -
+    just storage, retrieval, and aggregation.
     
-    NOT a state machine itself - just organized storage.
+    Key Features:
+        - **Versioned Trading State**: Tracks changes with version numbers
+        - **Health Monitoring**: Component health with staleness detection
+        - **State Machine Reference**: Current operational state
+        - **Change Detection**: Only broadcasts when state changes
+        - **State Aggregation**: Combines all state for easy access
+    
+    Attributes:
+        _trading_state: Current positions, orders, balance from Kalshi
+        _last_state_change: Delta from previous trading state
+        _trading_state_version: Increments on each state change
+        _component_health: Health status for each component
+        _machine_state: Current state from V3StateMachine
+        _machine_state_context: Human-readable state description
+        _machine_state_metadata: Additional state metadata
+    
+    Usage Pattern:
+        ```python
+        container = V3StateContainer()
+        
+        # Update trading state
+        state_changed = container.update_trading_state(new_state, changes)
+        
+        # Check component health
+        container.update_component_health("orderbook", True)
+        is_healthy = container.is_system_healthy()
+        
+        # Get state for broadcasting
+        full_state = container.get_full_state()
+        ```
     """
     
     def __init__(self):
@@ -83,12 +160,26 @@ class V3StateContainer:
         """
         Update trading state from Kalshi sync.
         
+        This is called after each Kalshi API sync to update the trading
+        state. It performs change detection to avoid unnecessary updates
+        and increments the version number when changes occur.
+        
         Args:
-            state: New trader state from Kalshi
-            changes: Optional changes from previous state
+            state: New trader state from Kalshi with positions, orders, balance
+            changes: Optional delta object showing what changed
             
         Returns:
-            True if state changed, False if identical
+            True if state actually changed (version incremented),
+            False if state is identical to current (no version change)
+        
+        Side Effects:
+            - Updates _trading_state if changed
+            - Increments _trading_state_version if changed
+            - Logs significant changes (balance, positions, orders)
+        
+        Note:
+            Ignores sync_timestamp changes as those occur on every sync
+            even when no actual data changes.
         """
         # Check if state actually changed
         if self._trading_state and self._states_are_equal(self._trading_state, state):
@@ -146,7 +237,25 @@ class V3StateContainer:
         """
         Get trading state summary for broadcasting.
         
-        Returns clean data suitable for WebSocket messages.
+        Provides a clean summary of trading state suitable for
+        WebSocket broadcast to frontend clients. Includes version
+        number for change detection on the client side.
+        
+        Returns:
+            Dict containing:
+                - has_state: Whether trading state exists
+                - version: State version number (for change detection)
+                - balance: Account balance in cents
+                - portfolio_value: Total portfolio value in cents
+                - position_count: Number of open positions
+                - order_count: Number of open orders
+                - positions: List of market tickers with positions
+                - open_orders: Count of open orders
+                - changes: Delta from last state (if available)
+        
+        Usage:
+            Called by V3Coordinator to prepare trading state
+            for WebSocket broadcast to frontend clients.
         """
         if not self._trading_state:
             return {
@@ -191,11 +300,25 @@ class V3StateContainer:
         """
         Update health status for a component.
         
+        Called by the V3Coordinator's health monitoring task to
+        record the health status of each component. Tracks error
+        counts and timestamps for staleness detection.
+        
         Args:
-            name: Component name
-            healthy: Whether component is healthy
-            details: Optional health details
-            error: Optional error message
+            name: Component identifier (e.g., "event_bus", "orderbook_integration")
+            healthy: Current health status of the component
+            details: Optional component-specific health details
+            error: Optional error message if unhealthy
+        
+        Side Effects:
+            - Creates ComponentHealth if first time seeing component
+            - Updates existing ComponentHealth if already tracked
+            - Increments error count if error provided
+            - Resets error count when component becomes healthy
+        
+        Note:
+            Components are considered stale if not updated within
+            2x the health check interval (60 seconds by default).
         """
         if name not in self._component_health:
             self._component_health[name] = ComponentHealth(
@@ -286,9 +409,22 @@ class V3StateContainer:
     
     def get_full_state(self) -> Dict[str, Any]:
         """
-        Get complete state snapshot.
+        Get complete state snapshot for debugging/inspection.
         
-        Returns everything - for debugging/inspection.
+        Provides a comprehensive view of all state in the container,
+        including trading data, health metrics, machine state, and
+        container metadata. Used by status endpoints and debugging.
+        
+        Returns:
+            Dict containing:
+                - trading: Complete trading state summary
+                - health: System and component health status
+                - machine: Current state machine information
+                - container: Metadata about the container itself
+        
+        Usage:
+            Called by HTTP /status endpoint to provide complete
+            system visibility for operators and monitoring tools.
         """
         return {
             "trading": self.get_trading_summary(),

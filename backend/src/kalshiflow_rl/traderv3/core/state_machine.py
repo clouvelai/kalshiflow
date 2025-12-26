@@ -1,9 +1,44 @@
 """
 TRADER V3 State Machine - Videogame Bot Inspired Design.
 
-A clean, predictable state machine that always knows what it's doing.
-Designed like a videogame bot: clear states, predictable transitions, 
-comprehensive status reporting, and bulletproof error recovery.
+This module implements a robust state machine for the V3 trader that follows
+videogame bot design principles: always knowing its state, predictable behavior,
+and automatic recovery from errors.
+
+Purpose:
+    The state machine provides predictable, observable state management for the
+    entire trading system. It ensures the system progresses through well-defined
+    states and can recover gracefully from failures.
+
+Key Design Principles:
+    1. **Always Known State** - The system always knows exactly what state it's in
+    2. **Predictable Transitions** - Only valid state transitions are allowed
+    3. **Observable Behavior** - All transitions emit events for monitoring
+    4. **Automatic Recovery** - ERROR state can transition back to operational
+    5. **Timeout Protection** - States have configurable timeouts to prevent hanging
+    6. **Comprehensive History** - Maintains transition history for debugging
+
+State Flow:
+    STARTUP → INITIALIZING → ORDERBOOK_CONNECT → [TRADING_CLIENT_CONNECT → KALSHI_DATA_SYNC] → READY
+    
+    From READY:
+        - Can transition to ERROR on component failure
+        - Can transition to SHUTDOWN for graceful stop
+    
+    From ERROR:
+        - Can recover to STARTUP for full restart
+        - Can transition to SHUTDOWN if unrecoverable
+
+Architecture Position:
+    The state machine is a core V3 component used by:
+    - V3Coordinator: Drives state transitions during startup and operation
+    - EventBus: Receives state transition events for broadcasting
+    - WebSocket clients: Monitor state changes in real-time
+
+Integration:
+    The state machine integrates with the EventBus to broadcast all state
+    transitions as both SystemActivityEvents (for console) and state transition
+    events (for WebSocket clients).
 """
 
 import asyncio
@@ -17,7 +52,22 @@ logger = logging.getLogger("kalshiflow_rl.traderv3.state_machine")
 
 
 class TraderState(Enum):
-    """Trader states - videogame bot inspired."""
+    """
+    Trader states - videogame bot inspired.
+    
+    Each state represents a distinct operational mode of the trader.
+    States are designed to be mutually exclusive and clearly defined.
+    
+    States:
+        STARTUP: Initial state, configuration loading
+        INITIALIZING: Starting core components (EventBus, WebSocket manager)
+        ORDERBOOK_CONNECT: Establishing orderbook WebSocket connection
+        TRADING_CLIENT_CONNECT: Connecting to trading API (optional)
+        KALSHI_DATA_SYNC: Synchronizing positions/orders with exchange
+        READY: Fully operational, monitoring markets and ready to trade
+        ERROR: Error state with recovery capabilities
+        SHUTDOWN: Terminal state for graceful shutdown
+    """
     STARTUP = "startup"
     INITIALIZING = "initializing"
     ORDERBOOK_CONNECT = "orderbook_connect"
@@ -30,7 +80,20 @@ class TraderState(Enum):
 
 @dataclass
 class StateTransition:
-    """State transition data."""
+    """
+    Records details of a state transition.
+    
+    Captures all relevant information about a state change for debugging
+    and monitoring purposes. Stored in transition history for analysis.
+    
+    Attributes:
+        from_state: The state we're transitioning from
+        to_state: The state we're transitioning to
+        context: Human-readable reason for the transition
+        timestamp: When the transition occurred (Unix timestamp)
+        duration_ms: How long we were in the from_state (milliseconds)
+        metadata: Optional additional data about the transition
+    """
     from_state: TraderState
     to_state: TraderState
     context: str
@@ -41,7 +104,20 @@ class StateTransition:
 
 @dataclass
 class StateMetrics:
-    """Metrics for current state."""
+    """
+    Real-time metrics for the current state.
+    
+    Provides comprehensive metrics about the state machine's current
+    status and history for monitoring and debugging.
+    
+    Attributes:
+        state: Current state of the machine
+        time_in_state: Seconds spent in current state
+        total_state_changes: Total number of state transitions
+        error_count: Number of times ERROR state was entered
+        last_error: Description of the most recent error
+        last_transition: Details of the most recent state change
+    """
     state: TraderState
     time_in_state: float
     total_state_changes: int
@@ -54,13 +130,35 @@ class TraderStateMachine:
     """
     Videogame bot-inspired state machine for TRADER V3.
     
-    Features:
-    - Always knows what state it's in
-    - Clear, predictable state transitions
-    - Comprehensive status reporting
-    - Error recovery with context
-    - State timeouts to prevent hanging
-    - Event emission for real-time monitoring
+    This class manages the operational state of the entire trading system,
+    ensuring predictable behavior and robust error recovery. It follows
+    videogame bot design patterns where the system always knows its state
+    and can recover from failures automatically.
+    
+    Core Features:
+        - **State Validation**: Only allows valid state transitions
+        - **Timeout Protection**: Prevents hanging in any state too long
+        - **Event Broadcasting**: Emits events for all state changes
+        - **Callback System**: Allows components to register for state changes
+        - **Error Recovery**: Automatic recovery from ERROR to operational states
+        - **Transition History**: Maintains last 50 transitions for debugging
+    
+    Attributes:
+        _current_state: The current operational state
+        _previous_state: The state before the last transition
+        _state_entered_at: Timestamp when current state was entered
+        _event_bus: Optional EventBus for broadcasting state changes
+        _total_transitions: Counter of all state changes
+        _error_count: Number of ERROR state entries
+        _transition_history: List of recent state transitions
+        _on_enter_callbacks: Callbacks to run when entering states
+        _on_exit_callbacks: Callbacks to run when exiting states
+        _valid_transitions: Map of allowed state transitions
+        _state_timeouts: Maximum time allowed in each state
+    
+    Thread Safety:
+        All methods are designed for async operation in a single event loop.
+        Not thread-safe for multi-threaded access.
     """
     
     def __init__(self, event_bus=None):
@@ -163,13 +261,35 @@ class TraderStateMachine:
         """
         Transition to a new state with validation.
         
+        This is the primary method for changing states. It validates the
+        transition, records it in history, emits events, and calls any
+        registered callbacks.
+        
+        Flow:
+            1. Validate transition is allowed from current state
+            2. Call exit callbacks for current state
+            3. Update state and record transition
+            4. Emit state change events via EventBus
+            5. Call enter callbacks for new state
+        
         Args:
-            new_state: Target state
-            context: Human-readable reason for transition
-            metadata: Optional additional data
+            new_state: Target state to transition to
+            context: Human-readable reason for the transition (for logging)
+            metadata: Optional additional data to attach to the transition
             
         Returns:
-            True if transition was successful, False otherwise
+            True if transition was successful, False if invalid or failed
+        
+        Side Effects:
+            - Updates _current_state and _previous_state
+            - Increments _total_transitions counter
+            - Adds to _transition_history
+            - Emits events via EventBus (if configured)
+            - Calls registered state callbacks
+        
+        Note:
+            If the transition fails, the state is reverted and False is returned.
+            Same-state transitions are ignored but return True.
         """
         if new_state == self._current_state:
             logger.debug(f"Ignoring transition to same state: {new_state.value}")
@@ -253,11 +373,24 @@ class TraderStateMachine:
     
     async def enter_error_state(self, error_context: str, error: Optional[Exception] = None) -> None:
         """
-        Transition to error state with error context.
+        Transition to ERROR state with comprehensive error information.
+        
+        Convenience method for entering the ERROR state with proper error
+        tracking and metadata. Increments error counter and records the
+        error for debugging.
         
         Args:
-            error_context: Description of what went wrong
+            error_context: Description of what operation failed
             error: Optional exception that caused the error
+        
+        Side Effects:
+            - Increments _error_count
+            - Updates _last_error with error details
+            - Transitions to ERROR state with metadata
+        
+        Usage:
+            Used by components when they encounter unrecoverable errors
+            that require the system to enter ERROR state for recovery.
         """
         error_msg = str(error) if error else "Unknown error"
         full_context = f"{error_context}: {error_msg}"
@@ -295,10 +428,18 @@ class TraderStateMachine:
     
     def check_state_timeout(self) -> bool:
         """
-        Check if current state has exceeded timeout.
+        Check if current state has exceeded its configured timeout.
+        
+        Each state has a maximum duration to prevent the system from
+        hanging indefinitely. This method checks if the current state
+        has exceeded its timeout threshold.
         
         Returns:
-            True if state has timed out
+            True if state has timed out, False otherwise
+        
+        Note:
+            READY state has infinite timeout (can stay ready forever).
+            ERROR state has 5-minute timeout before forcing shutdown.
         """
         timeout = self._state_timeouts.get(self._current_state, float('inf'))
         if timeout == float('inf'):
@@ -330,7 +471,30 @@ class TraderStateMachine:
         )
     
     def get_status_summary(self) -> Dict[str, Any]:
-        """Get comprehensive status summary for debugging."""
+        """
+        Get comprehensive status summary for debugging.
+        
+        Provides a complete snapshot of the state machine's current
+        condition, including state, metrics, timeouts, and recent history.
+        
+        Returns:
+            Dictionary containing:
+                - current_state: Current state name
+                - previous_state: Previous state name (if any)
+                - time_in_state: Seconds in current state
+                - total_transitions: Total state changes
+                - error_count: Number of ERROR entries
+                - last_error: Most recent error message
+                - is_terminal: Whether in terminal state
+                - is_operational: Whether in READY state
+                - state_timeout: Timeout for current state
+                - timeout_remaining: Seconds until timeout
+                - last_transition: Details of most recent transition
+        
+        Usage:
+            Used by monitoring endpoints and debugging tools to get
+            a complete picture of the state machine's status.
+        """
         metrics = self.get_metrics()
         
         return {
