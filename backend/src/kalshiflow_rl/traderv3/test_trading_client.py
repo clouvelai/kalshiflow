@@ -62,7 +62,7 @@ async def test_trading_client_integration():
         from kalshiflow_rl.traderv3.clients.trading_client_integration import V3TradingClientIntegration
         from kalshiflow_rl.traderv3.config.environment import load_config
         from kalshiflow_rl.data.orderbook_client import OrderbookClient
-        from kalshiflow_rl.trading.demo_client import KalshiDemoTradingClient
+        from kalshiflow_rl.traderv3.clients.demo_client import KalshiDemoTradingClient
         
         # Load configuration
         config = load_config()

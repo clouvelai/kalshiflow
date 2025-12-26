@@ -121,7 +121,7 @@ async def lifespan(app):
             logger.info(f"Creating trading client integration (mode={config.trading_mode})...")
             
             # Import and create the demo trading client
-            from src.kalshiflow_rl.trading.demo_client import KalshiDemoTradingClient
+            from src.kalshiflow_rl.traderv3.clients.demo_client import KalshiDemoTradingClient
             
             # Create trading client (paper mode for now)
             trading_client = KalshiDemoTradingClient(mode="paper")

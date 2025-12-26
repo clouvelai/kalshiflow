@@ -12,7 +12,7 @@ from typing import Dict, Any, List, Optional, Set, Tuple
 from dataclasses import dataclass, field
 from decimal import Decimal
 
-from ...trading.demo_client import KalshiDemoTradingClient
+from .demo_client import KalshiDemoTradingClient
 from ..core.event_bus import EventBus, EventType
 from ..sync.kalshi_data_sync import KalshiDataSync
 from ..state.trader_state import TraderState, StateChange
