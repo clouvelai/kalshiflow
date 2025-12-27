@@ -398,7 +398,8 @@ class EventBus:
         self,
         activity_type: str,
         message: str,
-        metadata: Optional[Dict[str, Any]] = None
+        metadata: Optional[Dict[str, Any]] = None,
+        severity: Optional[str] = None
     ) -> bool:
         """
         Emit a unified system activity event for console messaging.
@@ -407,12 +408,19 @@ class EventBus:
             activity_type: Type of activity ("state_transition", "sync", "health_check", etc.)
             message: Clean informative message text (no emojis)
             metadata: Optional contextual data for the activity
+            severity: Optional severity level ("error", "warning", "info", "success")
             
         Returns:
             True if event was queued, False if queue full
         """
         if not self._running:
             return False
+        
+        # Include severity in metadata if provided
+        if metadata is None:
+            metadata = {}
+        if severity:
+            metadata["severity"] = severity
         
         event = SystemActivityEvent(
             event_type=EventType.SYSTEM_ACTIVITY,

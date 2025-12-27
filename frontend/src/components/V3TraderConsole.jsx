@@ -423,8 +423,18 @@ const V3TraderConsole = () => {
                   }
                 }
                 
+                // Determine message type based on severity (if present) or activity type
+                let messageType = 'activity';
+                if (metadata?.severity) {
+                  // Use severity from backend if available
+                  messageType = metadata.severity; // 'info', 'warning', 'error'
+                } else if (activity_type === 'sync' && currentState === 'ERROR') {
+                  // Override for sync messages in ERROR state - they're not errors!
+                  messageType = 'info';
+                }
+                
                 // Add message to console
-                addMessage('activity', message, {
+                addMessage(messageType, message, {
                   activity_type,
                   timestamp,
                   metadata,

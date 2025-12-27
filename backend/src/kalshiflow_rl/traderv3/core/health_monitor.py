@@ -180,20 +180,23 @@ class V3HealthMonitor:
                     }
                 )
         
-        # If in READY state and something is unhealthy, transition to ERROR
-        # BUT: Check if we're in degraded mode (orderbook down but trading still works)
+        # If in READY state and something is unhealthy, check degraded mode FIRST
         if current_state == V3State.READY and not all_healthy:
             unhealthy = [k for k, v in components_health.items() if not v]
             
             # Check if we're in degraded mode (trading without orderbook)
             is_degraded = self._state_container.machine_state_metadata.get("degraded", False)
             
-            # In degraded mode, only orderbook_integration being unhealthy is acceptable
-            if is_degraded and unhealthy == ["orderbook_integration"]:
-                logger.debug("In degraded mode - orderbook unhealthy is expected")
-                return  # Don't transition to ERROR
+            # In degraded mode, orderbook being unhealthy is expected - not an error
+            if is_degraded:
+                # Only log periodically to reduce spam (every 12 checks = ~60 seconds)
+                self._health_check_count = getattr(self, '_health_check_count', 0) + 1
+                if self._health_check_count % 12 == 1:
+                    logger.info(f"Operating in degraded mode - unhealthy: {unhealthy}")
+                return  # Don't transition to ERROR - this is expected
             
-            logger.error(f"Components unhealthy: {unhealthy}")
+            # Not in degraded mode and something is unhealthy - this is an actual error
+            logger.error(f"Components unhealthy (not degraded): {unhealthy}")
             await self._state_machine.transition_to(
                 V3State.ERROR,
                 context="Component health check failed",
@@ -204,9 +207,27 @@ class V3HealthMonitor:
                 }
             )
         
-        # If in ERROR state and everything is healthy, attempt recovery
-        elif current_state == V3State.ERROR and all_healthy:
-            await self._attempt_recovery()
+        # If in ERROR state, check for recovery possibilities
+        elif current_state == V3State.ERROR:
+            if all_healthy:
+                # Everything healthy - full recovery
+                await self._attempt_recovery()
+            elif self._trading_client_integration and self._trading_client_integration.is_healthy():
+                # Trading is healthy even if orderbook isn't - stay in degraded mode
+                # Only emit status periodically to reduce spam (every 12 checks = ~60 seconds)
+                self._error_state_count = getattr(self, '_error_state_count', 0) + 1
+                if self._error_state_count % 12 == 1:
+                    logger.info("Trading healthy in ERROR state - degraded mode continues")
+                    await self._event_bus.emit_system_activity(
+                        activity_type="health",
+                        message="Operating in degraded mode - trading functional, orderbook unavailable",
+                        metadata={
+                            "trading_healthy": True,
+                            "orderbook_healthy": self._orderbook_integration.is_healthy() if self._orderbook_integration else False,
+                            "degraded_mode": True
+                        },
+                        severity="info"  # Not an error, just informational
+                    )
     
     async def _attempt_recovery(self) -> None:
         """Attempt recovery from ERROR state when all components are healthy."""

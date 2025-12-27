@@ -202,7 +202,7 @@ class V3Coordinator:
             await self._event_bus.emit_system_activity(
                 activity_type="connection",
                 message="⚠️ DEGRADED MODE: Running without orderbook connection",
-                metadata={"degraded": True, "reason": "WebSocket unavailable"}
+                metadata={"degraded": True, "reason": "WebSocket unavailable", "severity": "warning"}
             )
             
             # Still transition to ORDERBOOK_CONNECT state but with degraded status
@@ -316,7 +316,7 @@ class V3Coordinator:
             await self._event_bus.emit_system_activity(
                 activity_type="order_group",
                 message="⚠️ DEGRADED MODE: Order groups unavailable",
-                metadata={"degraded": True}
+                metadata={"degraded": True, "severity": "warning"}
             )
     
     async def _sync_trading_state(self) -> None:
@@ -460,7 +460,7 @@ class V3Coordinator:
                             await self._event_bus.emit_system_activity(
                                 activity_type="sync",
                                 message="Starting periodic sync with Kalshi",
-                                metadata={"sync_interval": sync_interval}
+                                metadata={"sync_interval": sync_interval, "severity": "info"}
                             )
                             await self._handle_trading_sync()
                             last_sync_time = time.time()
@@ -471,14 +471,29 @@ class V3Coordinator:
                             await self._event_bus.emit_system_activity(
                                 activity_type="sync",
                                 message="Starting periodic sync with Kalshi",
-                                metadata={"sync_interval": sync_interval}
+                                metadata={"sync_interval": sync_interval, "severity": "info"}
                             )
                             await self._handle_trading_sync()
                             last_sync_time = time.time()
                     
                 elif current_state == V3State.ERROR:
-                    # Error recovery is handled by _monitor_health()
-                    # Just sleep longer in error state
+                    # In ERROR state, still allow trading syncs if trading client is available
+                    # This supports degraded mode where orderbook is down but trading still works
+                    if self._trading_client_integration and \
+                       time.time() - last_sync_time > sync_interval:
+                        logger.info("Performing trading sync in ERROR state (degraded mode)")
+                        await self._event_bus.emit_system_activity(
+                            activity_type="sync",
+                            message="Trading sync in degraded mode",
+                            metadata={"state": "error", "sync_interval": sync_interval, "severity": "info"}
+                        )
+                        try:
+                            await self._handle_trading_sync()
+                            last_sync_time = time.time()
+                        except Exception as e:
+                            logger.error(f"Trading sync failed in ERROR state: {e}")
+                    
+                    # Sleep to prevent CPU spinning
                     await asyncio.sleep(1.0)
                     continue
                 
@@ -553,7 +568,8 @@ class V3Coordinator:
                         "order_count_change": changes.order_count_change,
                         "balance": state.balance,
                         "position_count": state.position_count,
-                        "order_count": state.order_count
+                        "order_count": state.order_count,
+                        "severity": "info"
                     }
                 )
             else:
@@ -566,7 +582,8 @@ class V3Coordinator:
                         "no_changes": True,
                         "balance": state.balance,
                         "position_count": state.position_count,
-                        "order_count": state.order_count
+                        "order_count": state.order_count,
+                        "severity": "info"
                     }
                 )
             
@@ -600,7 +617,7 @@ class V3Coordinator:
             await self._event_bus.emit_system_activity(
                 activity_type="sync",
                 message=f"Sync failed: {str(e)}",
-                metadata={"error": str(e), "sync_type": "periodic"}
+                metadata={"error": str(e), "sync_type": "periodic", "severity": "error"}
             )
             # Don't transition to ERROR for sync failures - just log and continue
     
