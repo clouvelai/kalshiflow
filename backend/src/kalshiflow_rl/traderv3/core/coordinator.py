@@ -14,9 +14,11 @@ if TYPE_CHECKING:
     from ..clients.trading_client_integration import V3TradingClientIntegration
 
 from .state_machine import TraderStateMachine as V3StateMachine, TraderState as V3State
-from .event_bus import EventBus, EventType, TraderStatusEvent
+from .event_bus import EventBus
 from .websocket_manager import V3WebSocketManager
 from .state_container import V3StateContainer
+from .health_monitor import V3HealthMonitor
+from .status_reporter import V3StatusReporter
 from ..clients.orderbook_integration import V3OrderbookIntegration
 from ..config.environment import V3Config
 
@@ -66,17 +68,30 @@ class V3Coordinator:
         # Initialize state container
         self._state_container = V3StateContainer()
         
+        # Initialize health monitor
+        self._health_monitor = V3HealthMonitor(
+            config=config,
+            state_machine=state_machine,
+            event_bus=event_bus,
+            websocket_manager=websocket_manager,
+            state_container=self._state_container,
+            orderbook_integration=orderbook_integration,
+            trading_client_integration=trading_client_integration
+        )
+        
+        # Initialize status reporter
+        self._status_reporter = V3StatusReporter(
+            config=config,
+            state_machine=state_machine,
+            event_bus=event_bus,
+            websocket_manager=websocket_manager,
+            state_container=self._state_container,
+            orderbook_integration=orderbook_integration,
+            trading_client_integration=trading_client_integration
+        )
+        
         self._started_at: Optional[float] = None
         self._running = False
-        
-        # Health monitoring task
-        self._health_task: Optional[asyncio.Task] = None
-        
-        # Status reporting task
-        self._status_task: Optional[asyncio.Task] = None
-        
-        # Trading state broadcast task
-        self._trading_state_task: Optional[asyncio.Task] = None
         
         # Main event loop task
         self._event_loop_task: Optional[asyncio.Task] = None
@@ -118,6 +133,7 @@ class V3Coordinator:
         logger.info("=" * 60)
         
         self._started_at = time.time()
+        self._status_reporter.set_started_at(self._started_at)
         
         # Start components (no connections yet)
         logger.info("1/3 Starting Event Bus...")
@@ -130,7 +146,7 @@ class V3Coordinator:
         logger.info("3/3 Starting State Machine...")
         await self._state_machine.start()
         
-        await self._emit_status_update("System initializing")
+        await self._status_reporter.emit_status_update("System initializing")
     
     async def _establish_connections(self) -> None:
         """Establish all external connections."""
@@ -194,7 +210,7 @@ class V3Coordinator:
                 }
             )
             
-            await self._emit_status_update("Running in degraded mode without orderbook")
+            await self._status_reporter.emit_status_update("Running in degraded mode without orderbook")
             return
         
         # Wait for first snapshot
@@ -235,7 +251,7 @@ class V3Coordinator:
             }
         )
         
-        await self._emit_status_update(f"Connected to {metrics['markets_connected']} markets")
+        await self._status_reporter.emit_status_update(f"Connected to {metrics['markets_connected']} markets")
     
     async def _connect_trading_client(self) -> None:
         """Connect to trading API."""
@@ -373,13 +389,13 @@ class V3Coordinator:
         
         # Emit trading state immediately when READY
         if self._trading_client_integration and self._state_container.trading_state:
-            await self._emit_trading_state()
+            await self._status_reporter.emit_trading_state()
         
         # Emit ready status
         status_msg = f"System ready with {len(self._config.market_tickers)} markets"
         if self._trading_client_integration:
             status_msg += f" (trading enabled in {self._trading_client_integration._client.mode} mode)"
-        await self._emit_status_update(status_msg)
+        await self._status_reporter.emit_status_update(status_msg)
     
     async def _run_event_loop(self) -> None:
         """
@@ -442,14 +458,11 @@ class V3Coordinator:
     
     def _start_monitoring_tasks(self) -> None:
         """Start background monitoring tasks."""
-        # Health monitoring - critical for error recovery
-        self._health_task = asyncio.create_task(self._monitor_health())
+        # Start health monitor service
+        asyncio.create_task(self._health_monitor.start())
         
-        # Status reporting - for UI updates
-        self._status_task = asyncio.create_task(self._report_status())
-        
-        # Trading state monitoring - now simplified to just track version changes
-        self._trading_state_task = asyncio.create_task(self._monitor_trading_state())
+        # Start status reporter service
+        asyncio.create_task(self._status_reporter.start())
     
     async def _handle_trading_sync(self) -> None:
         """
@@ -533,7 +546,7 @@ class V3Coordinator:
                 }
             
             if state_changed or True:  # Always broadcast on sync
-                await self._emit_trading_state()
+                await self._status_reporter.emit_trading_state()
                 
         except Exception as e:
             logger.error(f"Periodic trading sync failed: {e}")
@@ -564,27 +577,11 @@ class V3Coordinator:
             except asyncio.CancelledError:
                 pass
         
-        # Cancel monitoring tasks
-        if self._health_task:
-            self._health_task.cancel()
-            try:
-                await self._health_task
-            except asyncio.CancelledError:
-                pass
+        # Stop health monitor
+        await self._health_monitor.stop()
         
-        if self._status_task:
-            self._status_task.cancel()
-            try:
-                await self._status_task
-            except asyncio.CancelledError:
-                pass
-        
-        if self._trading_state_task:
-            self._trading_state_task.cancel()
-            try:
-                await self._trading_state_task
-            except asyncio.CancelledError:
-                pass
+        # Stop status reporter
+        await self._status_reporter.stop()
         
         # Stop components in reverse order
         try:
@@ -626,268 +623,6 @@ class V3Coordinator:
         logger.info(f"✅ TRADER V3 STOPPED (uptime: {uptime:.1f}s)")
         logger.info("=" * 60)
     
-    async def _monitor_health(self) -> None:
-        """Monitor component health."""
-        while self._running:
-            try:
-                await asyncio.sleep(self._config.health_check_interval)
-                
-                # Check component health
-                components_health = {
-                    "state_machine": self._state_machine.is_healthy(),
-                    "event_bus": self._event_bus.is_healthy(),
-                    "websocket_manager": self._websocket_manager.is_healthy(),
-                    "orderbook_integration": self._orderbook_integration.is_healthy()
-                }
-                
-                # Add trading client health if configured
-                if self._trading_client_integration:
-                    components_health["trading_client"] = self._trading_client_integration.is_healthy()
-                
-                # Update state container with health status
-                for name, healthy in components_health.items():
-                    self._state_container.update_component_health(name, healthy)
-                
-                all_healthy = all(components_health.values())
-                
-                # Emit health check activity (only occasionally to avoid spam)
-                if self._state_machine.current_state == V3State.READY:
-                    # Emit health activity every 5th check (150 seconds) or if unhealthy
-                    if not hasattr(self, '_health_check_count'):
-                        self._health_check_count = 0
-                    self._health_check_count += 1
-                    
-                    if not all_healthy or self._health_check_count % 5 == 0:
-                        await self._event_bus.emit_system_activity(
-                            activity_type="health_check",
-                            message=f"Health check: {'All components healthy' if all_healthy else 'Some components unhealthy'}",
-                            metadata={
-                                "components": components_health,
-                                "all_healthy": all_healthy
-                            }
-                        )
-                
-                # If in READY state and something is unhealthy, transition to ERROR
-                if self._state_machine.current_state == V3State.READY and not all_healthy:
-                    unhealthy = [k for k, v in components_health.items() if not v]
-                    logger.error(f"Components unhealthy: {unhealthy}")
-                    await self._state_machine.transition_to(
-                        V3State.ERROR,
-                        context="Component health check failed",
-                        metadata={
-                            "reason": "Component health check failed",
-                            "unhealthy_components": unhealthy,
-                            "session_cleanup_triggered": True  # Health failure will trigger session cleanup
-                        }
-                    )
-                
-                # If in ERROR state and everything is healthy, attempt recovery
-                elif self._state_machine.current_state == V3State.ERROR and all_healthy:
-                    logger.info("All components healthy, attempting recovery from ERROR state...")
-                    
-                    # Ensure session is ready for recovery
-                    session_ready = await self._orderbook_integration.ensure_session_for_recovery()
-                    if not session_ready:
-                        logger.warning("Session not ready for recovery, will retry next health check")
-                        continue
-                    
-                    # Check if orderbook integration has received snapshots to determine recovery state
-                    orderbook_metrics = self._orderbook_integration.get_metrics()
-                    has_data = orderbook_metrics["snapshots_received"] > 0
-                    
-                    if has_data:
-                        # Direct to READY if we already have data flowing
-                        logger.info("Data flow confirmed, recovering to READY state")
-                        await self._state_machine.transition_to(
-                            V3State.READY,
-                            context=f"Recovered from error - {orderbook_metrics['markets_connected']} markets operational",
-                            metadata={
-                                "recovery": True,
-                                "session_recovery": session_ready,
-                                "markets_connected": orderbook_metrics["markets_connected"],
-                                "snapshots_received": orderbook_metrics["snapshots_received"]
-                            }
-                        )
-                    else:
-                        # Go through connection process if no data yet
-                        logger.info("No data flow yet, recovering via ORDERBOOK_CONNECT")
-                        await self._state_machine.transition_to(
-                            V3State.ORDERBOOK_CONNECT,
-                            context="Recovering connection after components healthy",
-                            metadata={
-                                "recovery": True,
-                                "session_recovery": session_ready
-                            }
-                        )
-                
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.error(f"Error in health monitoring: {e}")
-    
-    async def _emit_trading_state(self) -> None:
-        """Emit trading state update event."""
-        try:
-            trading_summary = self._state_container.get_trading_summary()
-            
-            if not trading_summary.get("has_state"):
-                return  # No trading state to broadcast
-            
-            # Create a custom event for trading state
-            # Since EventBus doesn't have a TradingStateEvent yet, we'll use the websocket directly
-            await self._websocket_manager.broadcast_message("trading_state", {
-                "timestamp": time.time(),
-                "version": trading_summary["version"],
-                "balance": trading_summary["balance"],
-                "portfolio_value": trading_summary["portfolio_value"],
-                "position_count": trading_summary["position_count"],
-                "order_count": trading_summary["order_count"],
-                "positions": trading_summary["positions"],
-                "open_orders": trading_summary["open_orders"],
-                "sync_timestamp": trading_summary["sync_timestamp"],
-                "changes": trading_summary.get("changes"),
-                "order_group": trading_summary.get("order_group")  # Include order group data
-            })
-            
-            logger.debug(f"Broadcast trading state v{trading_summary['version']}")
-            
-        except Exception as e:
-            logger.error(f"Error emitting trading state: {e}")
-    
-    async def _emit_status_update(self, context: str = "") -> None:
-        """Emit status update event immediately."""
-        try:
-            # Gather metrics from orderbook integration (includes persistent metrics)
-            orderbook_metrics = self._orderbook_integration.get_metrics()
-            ws_stats = self._websocket_manager.get_stats()
-            
-            # Metrics removed - no persistence needed
-            
-            # Get detailed health information including connection status fields
-            health_details = self._orderbook_integration.get_health_details()
-            
-            # Get session information if available
-            session_info = {}
-            if hasattr(self._orderbook_integration, '_client') and self._orderbook_integration._client:
-                client_stats = self._orderbook_integration._client.get_stats()
-                session_info = {
-                    "session_id": client_stats.get("session_id"),
-                    "session_state": client_stats.get("session_state", "unknown"),
-                    "health_state": client_stats.get("health_state", "unknown")
-                }
-            
-            # Calculate uptime
-            uptime = time.time() - self._started_at if self._started_at else 0.0
-            
-            # Get Kalshi API ping health from orderbook integration
-            ping_health = health_details.get("ping_health", "unknown")
-            # Get last message age from orderbook integration
-            last_ping_age = health_details.get("last_ping_age_seconds")
-            
-            # Determine API connection status for the UI
-            api_connected = False
-            if self._trading_client_integration:
-                trading_metrics = self._trading_client_integration.get_metrics()
-                if trading_metrics.get("connected"):
-                    api_connected = True
-            elif orderbook_metrics["markets_connected"] > 0:
-                # If we have orderbook data but no trading client, we're still connected to Kalshi
-                api_connected = True
-            
-            # Publish status event with proper event_type
-            # Note: health field is now removed from top level (will be in metrics)
-            event = TraderStatusEvent(
-                event_type=EventType.TRADER_STATUS,
-                state=self._state_machine.current_state.value,
-                health="",  # Keep for backwards compatibility but empty
-                metrics={
-                    "uptime": uptime,
-                    "state": self._state_machine.current_state.value,
-                    "markets_connected": orderbook_metrics["markets_connected"],
-                    # Use local session metrics
-                    "snapshots_received": orderbook_metrics["snapshots_received"],
-                    "deltas_received": orderbook_metrics["deltas_received"],
-                    "ws_clients": ws_stats["active_connections"],
-                    "ws_messages_sent": ws_stats.get("total_messages_sent", 0),
-                    "context": context,
-                    # Add health status INSIDE metrics
-                    "health": "healthy" if self.is_healthy() else "unhealthy",
-                    # Add Kalshi API ping health
-                    "ping_health": ping_health,
-                    "last_ping_age": last_ping_age,
-                    # Add API connection status as boolean
-                    "api_connected": api_connected,
-                    # Add connection status fields
-                    "connection_established": health_details.get("connection_established"),
-                    "first_snapshot_received": health_details.get("first_snapshot_received"),
-                    # Add session information for debugging
-                    "session_id": session_info.get("session_id"),
-                    "session_state": session_info.get("session_state"),
-                    "health_state": session_info.get("health_state")
-                },
-                timestamp=time.time()
-            )
-            
-            await self._event_bus.publish(event)
-            
-            # Debug log to verify fields are present
-            logger.debug(
-                f"Broadcasting status with connection fields: "
-                f"connection_established={event.metrics.get('connection_established')}, "
-                f"first_snapshot_received={event.metrics.get('first_snapshot_received')}, "
-                f"ping_health={event.metrics.get('ping_health')}, "
-                f"last_ping_age={event.metrics.get('last_ping_age')}"
-            )
-            
-            # Log summary with session information
-            session_display = f"Session: {session_info.get('session_id', 'N/A')} ({session_info.get('session_state', 'unknown')})" if session_info.get('session_id') else "Session: None"
-            logger.info(
-                f"STATUS: {self._state_machine.current_state.value} | "
-                f"Markets: {orderbook_metrics['markets_connected']} | "
-                f"Snapshots: {orderbook_metrics['snapshots_received']} | "
-                f"Deltas: {orderbook_metrics['deltas_received']} | "
-                f"WS Clients: {ws_stats['active_connections']} | "
-                f"{session_display}"
-                f"{' | ' + context if context else ''}"
-            )
-            
-        except Exception as e:
-            logger.error(f"Error emitting status update: {e}")
-    
-    async def _report_status(self) -> None:
-        """Report system status periodically."""
-        while self._running:
-            try:
-                await asyncio.sleep(10.0)  # Report every 10 seconds
-                await self._emit_status_update("Periodic status update")
-                
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.error(f"Error in status reporting: {e}")
-    
-    async def _monitor_trading_state(self) -> None:
-        """Monitor trading state version for broadcasts."""
-        last_version = -1  # Start at -1 to ensure first check always broadcasts
-        
-        while self._running:
-            try:
-                await asyncio.sleep(1.0)  # Check every second
-                
-                # Just check for version changes
-                # Syncing now happens in main event loop via _handle_trading_sync
-                current_version = self._state_container.trading_state_version
-                
-                # Only broadcast if state changed
-                if current_version > last_version:
-                    await self._emit_trading_state()
-                    last_version = current_version
-                    
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.error(f"Error in trading state monitoring: {e}")
-    
     async def _update_metrics_regularly(self) -> None:
         """Update metrics and save periodically."""
         while self._running:
@@ -913,7 +648,9 @@ class V3Coordinator:
             "state_machine": self._state_machine.get_health_details(),
             "event_bus": self._event_bus.get_health_details(),
             "websocket_manager": self._websocket_manager.get_health_details(),
-            "orderbook_integration": self._orderbook_integration.get_health_details()
+            "orderbook_integration": self._orderbook_integration.get_health_details(),
+            "health_monitor": self._health_monitor.get_status(),
+            "status_reporter": self._status_reporter.get_status()
         }
         
         # Add trading client if configured
@@ -944,7 +681,8 @@ class V3Coordinator:
             self._state_machine.is_healthy(),
             self._event_bus.is_healthy(),
             self._websocket_manager.is_healthy(),
-            self._orderbook_integration.is_healthy()
+            self._orderbook_integration.is_healthy(),
+            self._health_monitor.is_healthy()
         ]
         
         # Add trading client health if configured
