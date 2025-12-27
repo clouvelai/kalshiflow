@@ -117,10 +117,14 @@ class V3Coordinator:
         
         self._started_at: Optional[float] = None
         self._running = False
-        
+
         # Main event loop task
         self._event_loop_task: Optional[asyncio.Task] = None
-        
+
+        # Monitoring tasks (tracked for proper cleanup)
+        self._health_monitor_task: Optional[asyncio.Task] = None
+        self._status_reporter_task: Optional[asyncio.Task] = None
+
         logger.info("V3 Coordinator initialized")
     
     async def start(self) -> None:
@@ -517,11 +521,11 @@ class V3Coordinator:
     
     def _start_monitoring_tasks(self) -> None:
         """Start background monitoring tasks."""
-        # Start health monitor service
-        asyncio.create_task(self._health_monitor.start())
-        
-        # Start status reporter service
-        asyncio.create_task(self._status_reporter.start())
+        # Start health monitor service (track for cleanup)
+        self._health_monitor_task = asyncio.create_task(self._health_monitor.start())
+
+        # Start status reporter service (track for cleanup)
+        self._status_reporter_task = asyncio.create_task(self._status_reporter.start())
     
     async def _handle_trading_sync(self) -> None:
         """
@@ -639,10 +643,22 @@ class V3Coordinator:
                 await self._event_loop_task
             except asyncio.CancelledError:
                 pass
-        
+
+        # Cancel monitoring tasks before stopping components
+        for task, name in [
+            (self._health_monitor_task, "health_monitor"),
+            (self._status_reporter_task, "status_reporter"),
+        ]:
+            if task and not task.done():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+
         # Stop health monitor
         await self._health_monitor.stop()
-        
+
         # Stop status reporter
         await self._status_reporter.stop()
         
@@ -685,24 +701,7 @@ class V3Coordinator:
         logger.info("=" * 60)
         logger.info(f"✅ TRADER V3 STOPPED (uptime: {uptime:.1f}s)")
         logger.info("=" * 60)
-    
-    
-    async def _update_metrics_regularly(self) -> None:
-        """Update metrics and save periodically."""
-        while self._running:
-            try:
-                await asyncio.sleep(1.0)  # Update every second for real-time last_ping_age
-                
-                # Emit status with updated last_ping_age
-                await self._status_reporter.emit_status_update("Metrics updated")
-                
-                # Metrics persistence removed
-                
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.error(f"Error in metrics update: {e}")
-    
+
     def get_status(self) -> Dict[str, Any]:
         """Get comprehensive system status."""
         # Calculate uptime directly

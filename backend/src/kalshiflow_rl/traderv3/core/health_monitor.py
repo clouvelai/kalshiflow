@@ -190,7 +190,7 @@ class V3HealthMonitor:
             # In degraded mode, orderbook being unhealthy is expected - not an error
             if is_degraded:
                 # Only log periodically to reduce spam (every 12 checks = ~60 seconds)
-                self._health_check_count = getattr(self, '_health_check_count', 0) + 1
+                self._health_check_count += 1
                 if self._health_check_count % 12 == 1:
                     logger.info(f"Operating in degraded mode - unhealthy: {unhealthy}")
                 return  # Don't transition to ERROR - this is expected

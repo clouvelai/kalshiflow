@@ -306,35 +306,7 @@ class V3WebSocketManager:
         
         # Broadcast to currently connected clients
         await self.broadcast_message("system_activity", activity_message["data"])
-    
-    # Commenting out the legacy state transition handler - now handled by _handle_system_activity
-    # async def _handle_state_transition(self, event: StateTransitionEvent) -> None:
-    #     """Handle state transition events from event bus (legacy, kept for compatibility)."""
-    #     logger.debug(f"Handling state transition event: {event.from_state} → {event.to_state}")
-    #     
-    #     # Use state names directly - they're already uppercase
-    #     to_display = event.to_state.upper()
-    #     
-    #     # Create the transition message with ALL metadata
-    #     transition_message = {
-    #         "type": "state_transition",
-    #         "data": {
-    #             "timestamp": time.strftime("%H:%M:%S", time.localtime(event.timestamp)),
-    #             "state": to_display,
-    #             "message": f"State: {event.from_state} → {event.to_state}",
-    #             "context": event.context,
-    #             "from_state": event.from_state,
-    #             "to_state": event.to_state,
-    #             "metadata": event.metadata  # Pass through ALL metadata from the event
-    #         }
-    #     }
-    #     
-    #     # Store in history buffer for late-connecting clients
-    #     self._state_transition_history.append(transition_message)
-    #     
-    #     # Broadcast to currently connected clients
-    #     await self.broadcast_message("state_transition", transition_message["data"])
-    
+
     async def _handle_trader_status(self, event: TraderStatusEvent) -> None:
         """Handle trader status events from event bus."""
         logger.debug(f"Handling trader status event: {event.state}")

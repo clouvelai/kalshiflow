@@ -72,7 +72,10 @@ class V3OrderbookIntegration:
         # Track subscription callbacks for proper cleanup
         self._snapshot_callback = None
         self._delta_callback = None
-        
+
+        # Track client task for proper cleanup
+        self._client_task: Optional[asyncio.Task] = None
+
         logger.info(f"V3 Orderbook Integration initialized for {len(market_tickers)} markets")
     
     
@@ -138,8 +141,9 @@ class V3OrderbookIntegration:
         logger.info("✅ Subscribed to V3 event bus for orderbook events")
         
         # Start the orderbook client (it will publish to V3 event bus directly)
-        asyncio.create_task(self._client.start())
-        
+        # Track the task for proper cleanup
+        self._client_task = asyncio.create_task(self._client.start())
+
         # Don't immediately mark markets as connected - wait for actual connection
         logger.info(f"Waiting for orderbook client connection...")
     
@@ -165,7 +169,15 @@ class V3OrderbookIntegration:
         # If we needed to unsubscribe without stopping event bus, we would do:
         # self._event_bus.unsubscribe(EventType.ORDERBOOK_SNAPSHOT, self._snapshot_callback)
         # self._event_bus.unsubscribe(EventType.ORDERBOOK_DELTA, self._delta_callback)
-        
+
+        # Cancel the client task before stopping the client
+        if self._client_task and not self._client_task.done():
+            self._client_task.cancel()
+            try:
+                await self._client_task
+            except asyncio.CancelledError:
+                pass
+
         # Stop the orderbook client
         await self._client.stop()
         
