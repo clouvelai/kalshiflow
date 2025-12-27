@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Activity, Wifi, WifiOff, Circle, ChevronRight, ChevronDown, Zap, Database, TrendingUp, AlertCircle, Copy, Check, Info, CheckCircle, XCircle, ArrowRight, DollarSign, Briefcase, ShoppingCart, FileText, TrendingDown, Clock, Shield } from 'lucide-react';
+import { Activity, Wifi, WifiOff, Circle, ChevronRight, ChevronDown, Zap, Database, TrendingUp, AlertCircle, Copy, Check, Info, CheckCircle, XCircle, ArrowRight, DollarSign, Briefcase, ShoppingCart, FileText, TrendingDown, Clock, Shield, Fish } from 'lucide-react';
 
 // TradingData Component - Displays real-time trading state
 const TradingData = ({ tradingState, lastUpdateTime }) => {
@@ -213,6 +213,136 @@ const TradingData = ({ tradingState, lastUpdateTime }) => {
   );
 };
 
+// WhaleQueuePanel Component - Displays detected whale bets
+const WhaleQueuePanel = ({ whaleQueue }) => {
+  const [currentTime, setCurrentTime] = useState(Date.now());
+
+  // Update current time every second for age display
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setCurrentTime(Date.now());
+    }, 1000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const formatCurrency = (dollars) => {
+    return new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency: 'USD',
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2
+    }).format(dollars);
+  };
+
+  const formatAge = (ageSeconds) => {
+    if (ageSeconds < 60) {
+      return `${Math.floor(ageSeconds)}s ago`;
+    } else if (ageSeconds < 3600) {
+      return `${Math.floor(ageSeconds / 60)}m ago`;
+    } else {
+      return `${Math.floor(ageSeconds / 3600)}h ago`;
+    }
+  };
+
+  const queue = whaleQueue?.queue || [];
+  const stats = whaleQueue?.stats || { trades_seen: 0, trades_discarded: 0, discard_rate_percent: 0 };
+
+  return (
+    <div className="bg-gray-900/50 backdrop-blur-sm rounded-xl border border-gray-800 p-4">
+      <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center space-x-2">
+          <Fish className="w-4 h-4 text-cyan-400" />
+          <h3 className="text-sm font-bold text-gray-300 uppercase tracking-wider">Whale Queue</h3>
+        </div>
+        <div className="flex items-center space-x-4 text-xs text-gray-400">
+          <span className="font-mono">
+            <span className="text-cyan-400">{queue.length}</span> tracked
+          </span>
+          <span className="text-gray-600">|</span>
+          <span className="font-mono">
+            <span className="text-gray-500">{stats.trades_discarded.toLocaleString()}</span> discarded
+          </span>
+          <span className="text-gray-600">|</span>
+          <span className="font-mono">
+            <span className="text-gray-500">{stats.discard_rate_percent.toFixed(1)}%</span> filtered
+          </span>
+        </div>
+      </div>
+
+      {/* Stats Grid */}
+      <div className="grid grid-cols-4 gap-4 mb-4">
+        <div className="bg-gray-800/30 rounded-lg p-3 border border-gray-700/50">
+          <div className="text-xs text-gray-500 uppercase mb-1">Trades Seen</div>
+          <div className="text-lg font-mono font-bold text-white">{stats.trades_seen.toLocaleString()}</div>
+        </div>
+        <div className="bg-gray-800/30 rounded-lg p-3 border border-gray-700/50">
+          <div className="text-xs text-gray-500 uppercase mb-1">Whales Found</div>
+          <div className="text-lg font-mono font-bold text-cyan-400">{queue.length}</div>
+        </div>
+        <div className="bg-gray-800/30 rounded-lg p-3 border border-gray-700/50">
+          <div className="text-xs text-gray-500 uppercase mb-1">Discarded</div>
+          <div className="text-lg font-mono font-bold text-gray-400">{stats.trades_discarded.toLocaleString()}</div>
+        </div>
+        <div className="bg-gray-800/30 rounded-lg p-3 border border-gray-700/50">
+          <div className="text-xs text-gray-500 uppercase mb-1">Filter Rate</div>
+          <div className="text-lg font-mono font-bold text-gray-400">{stats.discard_rate_percent.toFixed(1)}%</div>
+        </div>
+      </div>
+
+      {/* Whale Queue Table */}
+      {queue.length === 0 ? (
+        <div className="bg-gray-800/30 rounded-lg p-8 border border-gray-700/50 text-center">
+          <Fish className="w-8 h-8 text-gray-600 mx-auto mb-3" />
+          <div className="text-gray-500 text-sm">No whales detected yet</div>
+          <div className="text-gray-600 text-xs mt-1">Waiting for large trades (min $100)</div>
+        </div>
+      ) : (
+        <div className="bg-gray-800/30 rounded-lg border border-gray-700/50 overflow-hidden">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="bg-gray-900/50 border-b border-gray-700/50">
+                <th className="px-3 py-2 text-left text-xs text-gray-500 uppercase font-medium">Market</th>
+                <th className="px-3 py-2 text-center text-xs text-gray-500 uppercase font-medium">Side</th>
+                <th className="px-3 py-2 text-right text-xs text-gray-500 uppercase font-medium">Price</th>
+                <th className="px-3 py-2 text-right text-xs text-gray-500 uppercase font-medium">Count</th>
+                <th className="px-3 py-2 text-right text-xs text-gray-500 uppercase font-medium">Cost</th>
+                <th className="px-3 py-2 text-right text-xs text-gray-500 uppercase font-medium">Payout</th>
+                <th className="px-3 py-2 text-right text-xs text-gray-500 uppercase font-medium">Size</th>
+                <th className="px-3 py-2 text-right text-xs text-gray-500 uppercase font-medium">Age</th>
+              </tr>
+            </thead>
+            <tbody>
+              {queue.map((whale, index) => (
+                <tr
+                  key={`${whale.market_ticker}-${whale.price_cents}-${index}`}
+                  className="border-b border-gray-700/30 hover:bg-gray-800/50 transition-colors"
+                >
+                  <td className="px-3 py-2 font-mono text-gray-300 text-xs">{whale.market_ticker}</td>
+                  <td className="px-3 py-2 text-center">
+                    <span className={`px-2 py-0.5 rounded text-xs font-bold uppercase ${
+                      whale.side === 'yes'
+                        ? 'bg-green-900/30 text-green-400 border border-green-700/50'
+                        : 'bg-red-900/30 text-red-400 border border-red-700/50'
+                    }`}>
+                      {whale.side}
+                    </span>
+                  </td>
+                  <td className="px-3 py-2 text-right font-mono text-gray-300">{whale.price_cents}c</td>
+                  <td className="px-3 py-2 text-right font-mono text-gray-300">{whale.count.toLocaleString()}</td>
+                  <td className="px-3 py-2 text-right font-mono text-gray-400">{formatCurrency(whale.cost_dollars)}</td>
+                  <td className="px-3 py-2 text-right font-mono text-gray-400">{formatCurrency(whale.payout_dollars)}</td>
+                  <td className="px-3 py-2 text-right font-mono font-bold text-cyan-400">{formatCurrency(whale.whale_size_dollars)}</td>
+                  <td className="px-3 py-2 text-right font-mono text-gray-500 text-xs">{formatAge(whale.age_seconds)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+};
+
 const V3TraderConsole = () => {
   const [messages, setMessages] = useState([]);
   // Start with all messages expanded by default for visibility
@@ -221,6 +351,10 @@ const V3TraderConsole = () => {
   const [currentState, setCurrentState] = useState('UNKNOWN');
   const [tradingState, setTradingState] = useState(null);
   const [lastUpdateTime, setLastUpdateTime] = useState(null);
+  const [whaleQueue, setWhaleQueue] = useState({
+    queue: [],
+    stats: { trades_seen: 0, trades_discarded: 0, discard_rate_percent: 0 }
+  });
   const [metrics, setMetrics] = useState({
     markets_connected: 0,
     snapshots_received: 0,
@@ -563,16 +697,27 @@ const V3TraderConsole = () => {
               }
               break;
               
+            case 'whale_queue':
+              // Update whale queue state
+              if (data.data) {
+                setWhaleQueue({
+                  queue: data.data.queue || [],
+                  stats: data.data.stats || { trades_seen: 0, trades_discarded: 0, discard_rate_percent: 0 },
+                  version: data.data.version
+                });
+              }
+              break;
+
             case 'ping':
               // Respond to ping if needed
               if (ws.readyState === WebSocket.OPEN) {
                 ws.send(JSON.stringify({ type: 'pong', timestamp: Date.now() }));
               }
               break;
-              
+
             // system_metrics case removed - all metrics now come from trader_status
             // This case is no longer needed as trader_status is the single source of truth
-              
+
             default:
               // Ignore all other message types
               break;
@@ -780,7 +925,12 @@ const V3TraderConsole = () => {
         <div className="mb-6">
           <TradingData tradingState={tradingState} lastUpdateTime={lastUpdateTime} />
         </div>
-        
+
+        {/* Whale Queue Panel - Full width below Trading Data */}
+        <div className="mb-6">
+          <WhaleQueuePanel whaleQueue={whaleQueue} />
+        </div>
+
         <div className="grid grid-cols-12 gap-6">
           {/* Metrics Panel */}
           <div className="col-span-3">

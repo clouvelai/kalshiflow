@@ -9,9 +9,12 @@ from .trading_decision_service import (
     TradingStrategy,
     TradingDecision
 )
+from .whale_tracker import WhaleTracker, BigBet
 
 __all__ = [
     "TradingDecisionService",
-    "TradingStrategy", 
-    "TradingDecision"
+    "TradingStrategy",
+    "TradingDecision",
+    "WhaleTracker",
+    "BigBet",
 ]

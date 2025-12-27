@@ -12,6 +12,8 @@ from typing import Dict, Any, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ..clients.trading_client_integration import V3TradingClientIntegration
+    from ..clients.trades_integration import V3TradesIntegration
+    from ..services.whale_tracker import WhaleTracker
 
 from .state_machine import TraderStateMachine as V3StateMachine, TraderState as V3State
 from .event_bus import EventBus
@@ -47,11 +49,13 @@ class V3Coordinator:
         event_bus: EventBus,
         websocket_manager: V3WebSocketManager,
         orderbook_integration: V3OrderbookIntegration,
-        trading_client_integration: Optional['V3TradingClientIntegration'] = None
+        trading_client_integration: Optional['V3TradingClientIntegration'] = None,
+        trades_integration: Optional['V3TradesIntegration'] = None,
+        whale_tracker: Optional['WhaleTracker'] = None
     ):
         """
         Initialize coordinator.
-        
+
         Args:
             config: V3 configuration
             state_machine: State machine instance
@@ -59,6 +63,8 @@ class V3Coordinator:
             websocket_manager: WebSocket manager instance
             orderbook_integration: Orderbook integration instance
             trading_client_integration: Optional trading client integration
+            trades_integration: Optional trades integration for public trades stream
+            whale_tracker: Optional whale tracker for big bet detection
         """
         self._config = config
         self._state_machine = state_machine
@@ -66,6 +72,8 @@ class V3Coordinator:
         self._websocket_manager = websocket_manager
         self._orderbook_integration = orderbook_integration
         self._trading_client_integration = trading_client_integration
+        self._trades_integration = trades_integration
+        self._whale_tracker = whale_tracker
         
         # Initialize state container
         self._state_container = V3StateContainer()
@@ -180,12 +188,16 @@ class V3Coordinator:
         """Establish all external connections."""
         # Orderbook connection
         await self._connect_orderbook()
-        
+
+        # Trades connection (if configured - optional, for whale detection)
+        if self._trades_integration:
+            await self._connect_trades()
+
         # Trading client connection (if configured)
         if self._trading_client_integration:
             await self._connect_trading_client()
             await self._sync_trading_state()
-        
+
         # Transition to READY with actual metrics
         await self._transition_to_ready()
     
@@ -280,7 +292,58 @@ class V3Coordinator:
         )
         
         await self._status_reporter.emit_status_update(f"Connected to {metrics['markets_connected']} markets")
-    
+
+    async def _connect_trades(self) -> None:
+        """
+        Connect to trades WebSocket for whale detection.
+
+        This connection is OPTIONAL - the system continues without it
+        if connection fails. Whale detection is a non-critical feature.
+        """
+        if not self._trades_integration:
+            return
+
+        logger.info("Connecting to trades WebSocket for whale detection...")
+
+        # Start the trades integration (which starts the trades client)
+        await self._trades_integration.start()
+
+        # Wait for connection with timeout
+        logger.info("Waiting for trades WebSocket connection...")
+        connection_success = await self._trades_integration.wait_for_connection(timeout=30.0)
+
+        if not connection_success:
+            logger.warning(
+                "Trades WebSocket connection failed - continuing without whale detection. "
+                "This is non-critical, orderbook and trading features remain functional."
+            )
+            await self._event_bus.emit_system_activity(
+                activity_type="connection",
+                message="Whale detection unavailable (trades WS connection failed)",
+                metadata={"degraded": True, "feature": "whale_detection", "severity": "warning"}
+            )
+            return
+
+        # Start whale tracker after trades connection
+        if self._whale_tracker:
+            await self._whale_tracker.start()
+            logger.info("Whale tracker started - monitoring for big bets")
+            await self._event_bus.emit_system_activity(
+                activity_type="connection",
+                message="Whale detection enabled - monitoring public trades",
+                metadata={"feature": "whale_detection", "severity": "info"}
+            )
+        else:
+            logger.warning("Trades connected but no whale tracker configured")
+
+        # Wait briefly for first trade to confirm data flow
+        trade_flowing = await self._trades_integration.wait_for_first_trade(timeout=10.0)
+        if trade_flowing:
+            metrics = self._trades_integration.get_metrics()
+            logger.info(f"Trades data flowing: {metrics['trades_received']} trades received")
+        else:
+            logger.info("No trades received yet - this is normal during quiet market periods")
+
     async def _connect_trading_client(self) -> None:
         """Connect to trading API."""
         logger.info("Connecting to trading API...")
@@ -663,36 +726,56 @@ class V3Coordinator:
         
         # Stop components in reverse order
         try:
+            # Calculate total steps dynamically based on configured components
+            total_steps = 5  # Base steps: orderbook, state transition, state machine, websocket, event bus
+            if self._trading_client_integration:
+                total_steps += 1
+            if self._whale_tracker:
+                total_steps += 1
+            if self._trades_integration:
+                total_steps += 1
+
             step = 1
-            total_steps = 6 if self._trading_client_integration else 5
-            
+
+            # Stop whale tracker first (depends on trades integration)
+            if self._whale_tracker:
+                logger.info(f"{step}/{total_steps} Stopping Whale Tracker...")
+                await self._whale_tracker.stop()
+                step += 1
+
+            # Stop trades integration
+            if self._trades_integration:
+                logger.info(f"{step}/{total_steps} Stopping Trades Integration...")
+                await self._trades_integration.stop()
+                step += 1
+
             if self._trading_client_integration:
                 logger.info(f"{step}/{total_steps} Stopping Trading Client Integration...")
                 await self._trading_client_integration.stop()
                 step += 1
-            
+
             logger.info(f"{step}/{total_steps} Stopping Orderbook Integration...")
             await self._orderbook_integration.stop()
             step += 1
-            
+
             logger.info(f"{step}/{total_steps} Transitioning to SHUTDOWN state...")
             await self._state_machine.transition_to(
                 V3State.SHUTDOWN,
                 context="Graceful shutdown initiated"
             )
             step += 1
-            
+
             logger.info(f"{step}/{total_steps} Stopping State Machine...")
             await self._state_machine.stop()
             step += 1
-            
+
             logger.info(f"{step}/{total_steps} Stopping WebSocket Manager...")
             await self._websocket_manager.stop()
             step += 1
-            
+
             logger.info(f"{step}/{total_steps} Stopping Event Bus...")
             await self._event_bus.stop()
-            
+
         except Exception as e:
             logger.error(f"Error during shutdown: {e}")
         
@@ -726,7 +809,15 @@ class V3Coordinator:
         # Add trading client if configured
         if self._trading_client_integration:
             components["trading_client"] = self._trading_client_integration.get_health_details()
-        
+
+        # Add trades integration if configured
+        if self._trades_integration:
+            components["trades_integration"] = self._trades_integration.get_health_details()
+
+        # Add whale tracker if configured
+        if self._whale_tracker:
+            components["whale_tracker"] = self._whale_tracker.get_health_details()
+
         # Get metrics from various sources
         orderbook_metrics = self._orderbook_integration.get_metrics()
         ws_stats = self._websocket_manager.get_stats()

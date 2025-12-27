@@ -60,7 +60,7 @@ logger = logging.getLogger("kalshiflow_rl.traderv3.event_bus")
 class EventType(Enum):
     """
     Event types for TRADER V3.
-    
+
     Defines all event types that can flow through the event bus.
     Each event type has specific data structures and subscribers.
     """
@@ -68,12 +68,16 @@ class EventType(Enum):
     ORDERBOOK_SNAPSHOT = "orderbook_snapshot"
     ORDERBOOK_DELTA = "orderbook_delta"
     SETTLEMENT = "settlement"
-    
+
     # V3 specific events
     STATE_TRANSITION = "state_transition"
     TRADER_STATUS = "trader_status"
     CONNECTION_STATUS = "connection_status"
     SYSTEM_ACTIVITY = "system_activity"  # Unified console messaging
+
+    # Whale detection events
+    PUBLIC_TRADE_RECEIVED = "public_trade_received"
+    WHALE_QUEUE_UPDATED = "whale_queue_updated"
 
 
 @dataclass
@@ -161,6 +165,64 @@ class SystemActivityEvent:
         """Set defaults after initialization."""
         if self.timestamp == 0.0:
             self.timestamp = time.time()
+
+
+@dataclass
+class PublicTradeEvent:
+    """
+    Event data for public trades from Kalshi.
+
+    Used for whale detection and trade monitoring.
+
+    Attributes:
+        event_type: Always PUBLIC_TRADE_RECEIVED
+        market_ticker: Market ticker where trade occurred
+        timestamp_ms: Trade timestamp in milliseconds
+        side: Taker side ("yes" or "no")
+        price_cents: Trade price in cents (0-100)
+        count: Number of contracts traded
+        received_at: Local timestamp when event was received
+    """
+    event_type: EventType = EventType.PUBLIC_TRADE_RECEIVED
+    market_ticker: str = ""
+    timestamp_ms: int = 0
+    side: str = ""
+    price_cents: int = 0
+    count: int = 0
+    received_at: float = 0.0
+
+    def __post_init__(self):
+        """Set defaults after initialization."""
+        if self.received_at == 0.0:
+            self.received_at = time.time()
+
+
+@dataclass
+class WhaleQueueEvent:
+    """
+    Event data for whale queue updates.
+
+    Emitted when the whale detection queue changes.
+
+    Attributes:
+        event_type: Always WHALE_QUEUE_UPDATED
+        queue: List of whale bets in the queue
+        stats: Statistics about whale detection
+        timestamp: When the update occurred
+    """
+    event_type: EventType = EventType.WHALE_QUEUE_UPDATED
+    queue: Optional[List[Dict[str, Any]]] = None
+    stats: Optional[Dict[str, Any]] = None
+    timestamp: float = 0.0
+
+    def __post_init__(self):
+        """Set defaults after initialization."""
+        if self.timestamp == 0.0:
+            self.timestamp = time.time()
+        if self.queue is None:
+            self.queue = []
+        if self.stats is None:
+            self.stats = {}
 
 
 class EventBus:
@@ -503,19 +565,105 @@ class EventBus:
     async def subscribe_to_orderbook_delta(self, callback: Callable) -> None:
         """
         Subscribe to orderbook delta events.
-        
+
         Args:
             callback: Async function(market_ticker: str, metadata: Dict) to call on delta
         """
         # Ensure the event type exists in subscribers
         if EventType.ORDERBOOK_DELTA not in self._subscribers:
             self._subscribers[EventType.ORDERBOOK_DELTA] = []
-        
+
         # Store the callback directly without a wrapper
         # The _notify_subscribers method will handle the parameter extraction
         self._subscribers[EventType.ORDERBOOK_DELTA].append(callback)
         logger.debug(f"Added orderbook delta subscriber: {callback.__name__}")
-    
+
+    async def emit_public_trade(self, trade_data: Dict[str, Any]) -> bool:
+        """
+        Emit a public trade event (non-blocking).
+
+        Args:
+            trade_data: Trade data containing market_ticker, timestamp_ms,
+                       taker_side, yes_price/no_price, count
+
+        Returns:
+            True if event was queued, False if queue full
+        """
+        if not self._running:
+            return False
+
+        # Determine price in cents based on taker side
+        side = trade_data.get("taker_side", "unknown")
+        if side == "yes":
+            price_cents = trade_data.get("yes_price", 0)
+        else:
+            price_cents = trade_data.get("no_price", 0)
+
+        event = PublicTradeEvent(
+            event_type=EventType.PUBLIC_TRADE_RECEIVED,
+            market_ticker=trade_data.get("market_ticker", ""),
+            timestamp_ms=trade_data.get("timestamp_ms", 0),
+            side=side,
+            price_cents=price_cents,
+            count=trade_data.get("count", 0),
+            received_at=time.time(),
+        )
+
+        return await self._queue_event(event)
+
+    async def emit_whale_queue(
+        self,
+        queue: List[Dict[str, Any]],
+        stats: Dict[str, Any]
+    ) -> bool:
+        """
+        Emit a whale queue update event (non-blocking).
+
+        Args:
+            queue: List of whale bets in the queue
+            stats: Statistics about whale detection
+
+        Returns:
+            True if event was queued, False if queue full
+        """
+        if not self._running:
+            return False
+
+        event = WhaleQueueEvent(
+            event_type=EventType.WHALE_QUEUE_UPDATED,
+            queue=queue,
+            stats=stats,
+            timestamp=time.time(),
+        )
+
+        return await self._queue_event(event)
+
+    async def subscribe_to_public_trade(self, callback: Callable) -> None:
+        """
+        Subscribe to public trade events.
+
+        Args:
+            callback: Async function(trade_event: PublicTradeEvent) to call on trade
+        """
+        if EventType.PUBLIC_TRADE_RECEIVED not in self._subscribers:
+            self._subscribers[EventType.PUBLIC_TRADE_RECEIVED] = []
+
+        self._subscribers[EventType.PUBLIC_TRADE_RECEIVED].append(callback)
+        logger.debug(f"Added public trade subscriber: {callback.__name__}")
+
+    async def subscribe_to_whale_queue(self, callback: Callable) -> None:
+        """
+        Subscribe to whale queue update events.
+
+        Args:
+            callback: Async function(whale_event: WhaleQueueEvent) to call on update
+        """
+        if EventType.WHALE_QUEUE_UPDATED not in self._subscribers:
+            self._subscribers[EventType.WHALE_QUEUE_UPDATED] = []
+
+        self._subscribers[EventType.WHALE_QUEUE_UPDATED].append(callback)
+        logger.debug(f"Added whale queue subscriber: {callback.__name__}")
+
     async def _queue_event(self, event: Any) -> bool:
         """
         Queue an event for processing.

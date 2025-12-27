@@ -40,7 +40,13 @@ class V3Config:
     trading_max_orders: int = 10
     trading_max_position_size: int = 100
     trading_mode: str = "paper"  # paper or production
-    
+
+    # Whale Detection Configuration (optional, for Follow the Whale feature)
+    enable_whale_detection: bool = False
+    whale_queue_size: int = 10
+    whale_window_minutes: int = 5
+    whale_min_size_cents: int = 10000  # $100 minimum
+
     # State Machine Configuration
     sync_duration: float = 10.0  # seconds for Kalshi data sync
     health_check_interval: float = 5.0  # seconds
@@ -121,7 +127,13 @@ class V3Config:
             trading_mode = "paper"
         else:
             trading_mode = os.environ.get("V3_TRADING_MODE", "paper")
-        
+
+        # Whale detection configuration
+        enable_whale_detection = os.environ.get("V3_ENABLE_WHALE_DETECTION", "false").lower() == "true"
+        whale_queue_size = int(os.environ.get("WHALE_QUEUE_SIZE", "10"))
+        whale_window_minutes = int(os.environ.get("WHALE_WINDOW_MINUTES", "5"))
+        whale_min_size_cents = int(os.environ.get("WHALE_MIN_SIZE_CENTS", "10000"))
+
         sync_duration = float(os.environ.get("V3_SYNC_DURATION", os.environ.get("V3_CALIBRATION_DURATION", "10.0")))
         health_check_interval = float(os.environ.get("V3_HEALTH_CHECK_INTERVAL", "5.0"))
         error_recovery_delay = float(os.environ.get("V3_ERROR_RECOVERY_DELAY", "30.0"))
@@ -148,6 +160,10 @@ class V3Config:
             trading_max_orders=trading_max_orders,
             trading_max_position_size=trading_max_position_size,
             trading_mode=trading_mode,
+            enable_whale_detection=enable_whale_detection,
+            whale_queue_size=whale_queue_size,
+            whale_window_minutes=whale_window_minutes,
+            whale_min_size_cents=whale_min_size_cents,
             sync_duration=sync_duration,
             health_check_interval=health_check_interval,
             error_recovery_delay=error_recovery_delay,
@@ -158,7 +174,7 @@ class V3Config:
             port=port,
             log_level=log_level
         )
-        
+
         logger.info(f"Loaded V3 configuration:")
         logger.info(f"  - API URL: {api_url}")
         logger.info(f"  - WebSocket URL: {ws_url}")
@@ -172,7 +188,12 @@ class V3Config:
             logger.info(f"  - Max orders: {trading_max_orders}, Max position: {trading_max_position_size}")
         else:
             logger.info(f"  - Trading: DISABLED (orderbook only)")
-        
+        if enable_whale_detection:
+            logger.info(f"  - Whale detection: ENABLED")
+            logger.info(f"  - Whale queue: {whale_queue_size} bets, {whale_window_minutes}min window, min ${whale_min_size_cents/100:.2f}")
+        else:
+            logger.info(f"  - Whale detection: DISABLED")
+
         return config
     
     def is_demo_environment(self) -> bool:

@@ -28,10 +28,16 @@ from src.kalshiflow_rl.traderv3.core.websocket_manager import V3WebSocketManager
 from src.kalshiflow_rl.traderv3.core.coordinator import V3Coordinator
 from src.kalshiflow_rl.traderv3.clients.orderbook_integration import V3OrderbookIntegration
 from src.kalshiflow_rl.traderv3.clients.trading_client_integration import V3TradingClientIntegration
+from src.kalshiflow_rl.traderv3.clients.trades_client import TradesClient
+from src.kalshiflow_rl.traderv3.clients.trades_integration import V3TradesIntegration
+from src.kalshiflow_rl.traderv3.services.whale_tracker import WhaleTracker
 from src.kalshiflow_rl.traderv3.config.environment import load_config
 
 # Import existing orderbook client
 from src.kalshiflow_rl.data.orderbook_client import OrderbookClient
+
+# Import auth for TradesClient
+from kalshiflow.auth import KalshiAuth
 
 # Import database and write queue for orderbook data persistence
 from src.kalshiflow_rl.data.database import rl_db
@@ -140,18 +146,57 @@ async def lifespan(app):
             logger.info(f"Trading client integration created (max_orders={config.trading_max_orders}, max_position={config.trading_max_position_size})")
         else:
             logger.info("Trading client disabled - orderbook only mode")
-        
-        # 8. Create coordinator with discovered/configured markets
+
+        # 8. Create trades client and whale tracker (optional - for whale detection)
+        trades_integration = None
+        whale_tracker = None
+
+        if config.enable_whale_detection:
+            logger.info("Creating trades client for whale detection...")
+
+            # Create KalshiAuth for trades WebSocket
+            auth = KalshiAuth.from_env()
+
+            # Create TradesClient (connects to public trades stream)
+            trades_client = TradesClient(
+                ws_url=config.ws_url,
+                auth=auth,
+            )
+
+            # Create V3TradesIntegration wrapper
+            trades_integration = V3TradesIntegration(
+                trades_client=trades_client,
+                event_bus=event_bus,
+            )
+
+            # Create WhaleTracker service
+            whale_tracker = WhaleTracker(
+                event_bus=event_bus,
+                queue_size=config.whale_queue_size,
+                window_minutes=config.whale_window_minutes,
+                min_size_cents=config.whale_min_size_cents,
+            )
+
+            logger.info(
+                f"Whale detection configured: queue_size={config.whale_queue_size}, "
+                f"window={config.whale_window_minutes}min, min_size=${config.whale_min_size_cents/100:.2f}"
+            )
+        else:
+            logger.info("Whale detection disabled")
+
+        # 9. Create coordinator with discovered/configured markets
         # Update config with the actual markets being used
         config.market_tickers = market_tickers
-        
+
         coordinator = V3Coordinator(
             config=config,
             state_machine=state_machine,
             event_bus=event_bus,
             websocket_manager=websocket_manager,
             orderbook_integration=orderbook_integration,
-            trading_client_integration=trading_client_integration
+            trading_client_integration=trading_client_integration,
+            trades_integration=trades_integration,
+            whale_tracker=whale_tracker,
         )
         
         # Start the system

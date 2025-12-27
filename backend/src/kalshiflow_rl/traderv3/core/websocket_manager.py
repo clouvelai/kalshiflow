@@ -17,7 +17,7 @@ import weakref
 
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
-from .event_bus import EventBus, EventType, StateTransitionEvent, TraderStatusEvent, MarketEvent
+from .event_bus import EventBus, EventType, StateTransitionEvent, TraderStatusEvent, MarketEvent, WhaleQueueEvent
 
 logger = logging.getLogger("kalshiflow_rl.traderv3.websocket_manager")
 
@@ -93,6 +93,8 @@ class V3WebSocketManager:
             # Don't subscribe to STATE_TRANSITION anymore - it's handled by SYSTEM_ACTIVITY now
             # self._event_bus.subscribe(EventType.STATE_TRANSITION, self._handle_state_transition)
             self._event_bus.subscribe(EventType.TRADER_STATUS, self._handle_trader_status)
+            # Subscribe to whale queue updates for Follow the Whale feature
+            self._event_bus.subscribe(EventType.WHALE_QUEUE_UPDATED, self._handle_whale_queue_update)
             # Don't subscribe to orderbook events - they're too noisy for the console
             # self._event_bus.subscribe(EventType.ORDERBOOK_SNAPSHOT, self._handle_orderbook_event)
             # self._event_bus.subscribe(EventType.ORDERBOOK_DELTA, self._handle_orderbook_event)
@@ -320,7 +322,37 @@ class V3WebSocketManager:
             "health": event.health,
             "metrics": event.metrics
         })
-    
+
+    async def _handle_whale_queue_update(self, event: WhaleQueueEvent) -> None:
+        """
+        Handle whale queue update events from event bus.
+
+        Broadcasts whale queue state to all connected frontend clients,
+        enabling the Follow the Whale feature in the V3 console.
+
+        Args:
+            event: WhaleQueueEvent containing queue contents and stats
+        """
+        logger.debug(f"Handling whale queue update: {len(event.queue)} whales")
+
+        # Calculate discard rate for stats
+        discard_rate = 0.0
+        if event.stats and event.stats.get("trades_seen", 0) > 0:
+            discard_rate = (event.stats.get("trades_discarded", 0) / event.stats["trades_seen"]) * 100
+
+        # Format message for frontend
+        whale_data = {
+            "queue": event.queue,  # Already serialized by WhaleTracker
+            "stats": {
+                "trades_seen": event.stats.get("trades_seen", 0) if event.stats else 0,
+                "trades_discarded": event.stats.get("trades_discarded", 0) if event.stats else 0,
+                "discard_rate_percent": round(discard_rate, 1),
+            },
+            "timestamp": time.strftime("%H:%M:%S", time.localtime(event.timestamp)),
+        }
+
+        await self.broadcast_message("whale_queue", whale_data)
+
     async def _handle_orderbook_event(self, event: MarketEvent) -> None:
         """Handle orderbook events from event bus."""
         # Only broadcast summary updates, not every single event (would be too noisy)

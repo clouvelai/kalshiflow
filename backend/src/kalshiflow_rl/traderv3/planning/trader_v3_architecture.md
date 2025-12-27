@@ -7,7 +7,7 @@
 
 TRADER V3 is an event-driven paper trading system for Kalshi prediction markets. It uses WebSocket connections to receive real-time orderbook data, maintains state through a centralized container with version tracking, and coordinates trading decisions through a clean component architecture. The system currently operates in HOLD mode only - actual trading logic is unimplemented. All trading data is in CENTS (Kalshi's native unit).
 
-**Current Status**: MVP complete with orderbook integration, state management, and WebSocket broadcasting. Trading execution is stubbed (HOLD strategy only).
+**Current Status**: MVP complete with orderbook integration, state management, WebSocket broadcasting, and optional whale detection ("Follow the Whale"). Trading execution is stubbed (HOLD strategy only).
 
 ## 2. Architecture Diagram
 
@@ -19,65 +19,71 @@ TRADER V3 is an event-driven paper trading system for Kalshi prediction markets.
                                              |
                                     WebSocket (ws://localhost:8005/v3/ws)
                                              |
-+============================================================================================+
-|                                    V3 TRADER (Port 8005)                                   |
-+============================================================================================+
-|                                                                                            |
-|    +------------------+          +------------------+          +------------------+        |
-|    |  Starlette App   |--------->|   V3Coordinator  |<---------|    V3Config      |        |
-|    |     (app.py)     |          | (orchestration)  |          | (environment.py) |        |
-|    +------------------+          +--------+---------+          +------------------+        |
-|                                           |                                                |
-|              +----------------------------+----------------------------+                   |
-|              |                            |                            |                   |
-|              v                            v                            v                   |
-|    +------------------+          +------------------+          +------------------+        |
-|    | V3StateMachine   |          |    EventBus      |          | V3WebSocketMgr   |        |
-|    | (state_machine)  |<-------->| (pub/sub events) |<-------->| (client comms)   |        |
-|    +------------------+          +------------------+          +------------------+        |
-|              |                            ^                            ^                   |
-|              |                            |                            |                   |
-|              v                            |                            |                   |
-|    +------------------+          +--------+--------+                   |                   |
-|    | V3StateContainer |          |                 |                   |                   |
-|    | (centralized)    |<---------+ V3HealthMonitor +-------------------+                   |
-|    +------------------+          |                 |                                       |
-|              ^                   +-----------------+                                       |
-|              |                            ^                                                |
-|              |                            |                                                |
-|    +---------+---------+         +--------+--------+                                       |
-|    |                   |         |                 |                                       |
-|    v                   v         v                 |                                       |
-|  +-------------------+ +-------------------+  +----+---------------+                       |
-|  | V3OrderbookInteg  | |V3TradingClientInt|  | V3StatusReporter   |                       |
-|  | (market data)     | | (order mgmt)     |  | (status broadcast) |                       |
-|  +--------+----------+ +--------+---------+  +--------------------+                       |
-|           |                     |                                                          |
-|           |                     v                                                          |
-|           |            +-------------------+          +-------------------+                |
-|           |            | KalshiDataSync    |--------->| TraderState       |                |
-|           |            | (sync service)    |          | (state/trader_    |                |
-|           |            +-------------------+          |  state.py)        |                |
-|           |                     |                     +-------------------+                |
-|           |                     v                                                          |
-|           |            +-------------------+                                               |
-|           |            |TradingFlowOrch    |                                               |
-|           |            | (cycle mgmt)      |                                               |
-|           |            +-------------------+                                               |
-|           |                     |                                                          |
-|           v                     v                                                          |
-|  +-------------------+ +-------------------+                                               |
-|  | OrderbookClient   | |KalshiDemoTrading  |                                               |
-|  | (data/orderbook)  | | Client            |                                               |
-|  +--------+----------+ +--------+---------+                                                |
-|           |                     |                                                          |
-+===========|=====================|==========================================================+
-            |                     |
-            v                     v
-    +---------------+     +---------------+
-    | Kalshi WS API |     | Kalshi REST   |
-    | (orderbook)   |     | (demo-api)    |
-    +---------------+     +---------------+
++====================================================================================================+
+|                                    V3 TRADER (Port 8005)                                           |
++====================================================================================================+
+|                                                                                                    |
+|    +------------------+          +------------------+          +------------------+                |
+|    |  Starlette App   |--------->|   V3Coordinator  |<---------|    V3Config      |                |
+|    |     (app.py)     |          | (orchestration)  |          | (environment.py) |                |
+|    +------------------+          +--------+---------+          +------------------+                |
+|                                           |                                                        |
+|              +----------------------------+----------------------------+                           |
+|              |                            |                            |                           |
+|              v                            v                            v                           |
+|    +------------------+          +------------------+          +------------------+                |
+|    | V3StateMachine   |          |    EventBus      |          | V3WebSocketMgr   |                |
+|    | (state_machine)  |<-------->| (pub/sub events) |<-------->| (client comms)   |                |
+|    +------------------+          +------------------+          +------------------+                |
+|              |                            ^                            ^                           |
+|              |                            |                            |                           |
+|              v                            |                            |                           |
+|    +------------------+          +--------+--------+                   |                           |
+|    | V3StateContainer |          |                 |                   |                           |
+|    | (centralized)    |<---------+ V3HealthMonitor +-------------------+                           |
+|    +------------------+          |                 |                                               |
+|              ^                   +-----------------+                                               |
+|              |                            ^                                                        |
+|              |                            |                                                        |
+|    +---------+---------+---------+--------+--------+                                               |
+|    |                   |         |                 |                                               |
+|    v                   v         v                 v                                               |
+|  +-------------------+ +-------------------+  +----+---------------+  +-------------------+        |
+|  | V3OrderbookInteg  | |V3TradingClientInt|  | V3StatusReporter   |  | WhaleTracker      |        |
+|  | (market data)     | | (order mgmt)     |  | (status broadcast) |  | (big bet detect)  |        |
+|  +--------+----------+ +--------+---------+  +--------------------+  +--------+----------+        |
+|           |                     |                                             ^                   |
+|           |                     v                                             |                   |
+|           |            +-------------------+          +-------------------+   |                   |
+|           |            | KalshiDataSync    |--------->| TraderState       |   |                   |
+|           |            | (sync service)    |          | (state/trader_    |   |                   |
+|           |            +-------------------+          |  state.py)        |   |                   |
+|           |                     |                     +-------------------+   |                   |
+|           |                     v                                             |                   |
+|           |            +-------------------+                                  |                   |
+|           |            |TradingFlowOrch    |                                  |                   |
+|           |            | (cycle mgmt)      |                                  |                   |
+|           |            +-------------------+                                  |                   |
+|           |                     |                                             |                   |
+|           v                     v                                             |                   |
+|  +-------------------+ +-------------------+                 +----------------+--+                 |
+|  | OrderbookClient   | |KalshiDemoTrading  |                 | V3TradesIntegration|               |
+|  | (data/orderbook)  | | Client            |                 | (public trades)    |               |
+|  +--------+----------+ +--------+---------+                  +--------+-----------+               |
+|           |                     |                                     |                           |
+|           |                     |                                     v                           |
+|           |                     |                            +-------------------+                |
+|           |                     |                            | TradesClient      |                |
+|           |                     |                            | (trades WS)       |                |
+|           |                     |                            +--------+----------+                |
+|           |                     |                                     |                           |
++===========|=====================|=====================================|===========================+
+            |                     |                                     |
+            v                     v                                     v
+    +---------------+     +---------------+                    +----------------+
+    | Kalshi WS API |     | Kalshi REST   |                    | Kalshi WS API  |
+    | (orderbook)   |     | (demo-api)    |                    | (trade channel)|
+    +---------------+     +---------------+                    +----------------+
 ```
 
 ## 3. Component Index
@@ -238,6 +244,39 @@ TRADER V3 is an event-driven paper trading system for Kalshi prediction markets.
 - **Subscribes To**: None
 - **Dependencies**: None (uses httpx for REST calls)
 
+#### TradesClient
+- **File**: `clients/trades_client.py`
+- **Purpose**: WebSocket client for Kalshi public trades stream (all markets)
+- **Key Methods**:
+  - `start()` / `stop()` - Lifecycle management
+  - `wait_for_connection(timeout)` - Wait for WebSocket connection
+  - `is_healthy()` - Check connection and message activity health
+  - `get_stats()` - Get client statistics
+  - `get_health_details()` - Get detailed health information
+  - `from_env()` - Factory method to create from environment variables
+- **Features**:
+  - Subscribes to Kalshi `trade` channel for all public trades
+  - Automatic reconnection with exponential backoff
+  - Callback pattern for trade processing
+  - Health monitoring based on message activity
+- **Emits Events**: None (uses callback pattern)
+- **Subscribes To**: None
+- **Dependencies**: KalshiAuth, websockets
+
+#### V3TradesIntegration
+- **File**: `clients/trades_integration.py`
+- **Purpose**: Integration layer wrapping TradesClient for V3 EventBus
+- **Key Methods**:
+  - `start()` / `stop()` - Lifecycle management
+  - `wait_for_connection(timeout)` - Wait for trades WebSocket connection
+  - `wait_for_first_trade(timeout)` - Wait for data flow confirmation
+  - `get_metrics()` - Get integration metrics
+  - `is_healthy()` - Check if integration is healthy
+  - `get_health_details()` - Get detailed health information
+- **Emits Events**: `PUBLIC_TRADE_RECEIVED` (via EventBus.emit_public_trade)
+- **Subscribes To**: None (listens to TradesClient callbacks)
+- **Dependencies**: TradesClient, EventBus
+
 ### 3.3 Services (`traderv3/services/`)
 
 #### TradingDecisionService
@@ -251,6 +290,26 @@ TRADER V3 is an event-driven paper trading system for Kalshi prediction markets.
 - **Emits Events**: `SYSTEM_ACTIVITY` (trading_decision, trading_error types)
 - **Subscribes To**: None
 - **Dependencies**: V3TradingClientIntegration, V3StateContainer, EventBus
+
+#### WhaleTracker
+- **File**: `services/whale_tracker.py`
+- **Purpose**: Tracks biggest bets (whales) from public trades for "Follow the Whale" strategy
+- **Key Methods**:
+  - `start()` / `stop()` - Lifecycle management
+  - `is_healthy()` - Check if tracker is healthy (running + prune task active)
+  - `get_queue_state()` - Get current whale queue and statistics
+  - `get_health_details()` - Get detailed health information
+- **Key Classes**:
+  - `BigBet`: Dataclass representing a significant trade with whale_size calculation
+    - `whale_size`: max(cost, payout) where cost=count*price_cents, payout=count*100
+    - Captures both high-conviction (expensive) and high-leverage (cheap) bets
+- **Configuration** (environment variables):
+  - `WHALE_QUEUE_SIZE`: Maximum bets in queue (default: 10)
+  - `WHALE_WINDOW_MINUTES`: Sliding window duration (default: 5)
+  - `WHALE_MIN_SIZE_CENTS`: Minimum whale_size to track (default: 10000 = $100)
+- **Emits Events**: `WHALE_QUEUE_UPDATED` (via EventBus.emit_whale_queue)
+- **Subscribes To**: `PUBLIC_TRADE_RECEIVED`
+- **Dependencies**: EventBus
 
 ### 3.4 State (`traderv3/state/`)
 
@@ -393,6 +452,8 @@ VALID_TRANSITIONS = {
 | `STATE_TRANSITION` | V3StateMachine | (legacy, kept for compat) | `StateTransitionEvent{from_state, to_state, context, metadata}` |
 | `TRADER_STATUS` | V3StatusReporter | V3WebSocketManager | `TraderStatusEvent{state, metrics, health, timestamp}` |
 | `SYSTEM_ACTIVITY` | V3StateMachine, V3HealthMonitor, TradingFlowOrchestrator, TradingDecisionService | V3WebSocketManager | `SystemActivityEvent{activity_type, message, metadata}` |
+| `PUBLIC_TRADE_RECEIVED` | V3TradesIntegration | WhaleTracker | `PublicTradeEvent{market_ticker, timestamp_ms, side, price_cents, count}` |
+| `WHALE_QUEUE_UPDATED` | WhaleTracker | V3WebSocketManager | `WhaleQueueEvent{queue, stats, timestamp}` |
 | `SETTLEMENT` | (future) | (future) | Market settlement events |
 
 ### 5.1 SystemActivityEvent Types
@@ -522,6 +583,10 @@ VALID_TRANSITIONS = {
 | `V3_TRADING_MODE` | No | `paper` | Trading mode |
 | `V3_PORT` | No | `8005` | Server port |
 | `V3_LOG_LEVEL` | No | `INFO` | Logging level |
+| `V3_ENABLE_WHALE_DETECTION` | No | `false` | Enable whale detection feature |
+| `WHALE_QUEUE_SIZE` | No | `10` | Max whale bets to track in queue |
+| `WHALE_WINDOW_MINUTES` | No | `5` | Sliding window for whale tracking (minutes) |
+| `WHALE_MIN_SIZE_CENTS` | No | `10000` | Minimum whale_size threshold ($100 default) |
 
 ### 7.2 API Endpoints
 
@@ -540,7 +605,40 @@ VALID_TRANSITIONS = {
 | `system_activity` | Unified console messages |
 | `trader_status` | Periodic status/metrics update |
 | `trading_state` | Trading data (balance, positions, orders) |
+| `whale_queue` | Whale detection queue update (when enabled) |
 | `ping` | Keep-alive ping |
+
+#### whale_queue Message Format
+
+```json
+{
+  "type": "whale_queue",
+  "data": {
+    "queue": [
+      {
+        "market_ticker": "INXD-25JAN03",
+        "side": "yes",
+        "price_cents": 65,
+        "count": 200,
+        "cost_dollars": 130.00,
+        "payout_dollars": 200.00,
+        "whale_size_dollars": 200.00,
+        "age_seconds": 45.2,
+        "timestamp_ms": 1703700000000
+      }
+    ],
+    "stats": {
+      "trades_seen": 1500,
+      "trades_discarded": 1450,
+      "discard_rate_percent": 96.7,
+      "queue_size": 5,
+      "window_minutes": 5,
+      "min_size_dollars": 100.0
+    },
+    "timestamp": 1703700045.2
+  }
+}
+```
 
 ## 8. Degraded Mode
 
@@ -571,3 +669,4 @@ The system supports **degraded mode** when the orderbook WebSocket is unavailabl
 | 2024-12-27 | Initial architecture document created | Claude |
 | 2024-12-27 | Foundation cleanup: removed ~600 lines dead code, fixed async patterns | Claude |
 | 2024-12-27 | Final simplification: removed unused _coordinator ref, publish() wrapper (-57 lines) | Claude |
+| 2024-12-27 | Added "Follow the Whale" feature: TradesClient, V3TradesIntegration, WhaleTracker | Claude |
