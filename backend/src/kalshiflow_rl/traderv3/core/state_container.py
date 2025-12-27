@@ -479,8 +479,67 @@ class V3StateContainer:
         """Check if all components are healthy."""
         if not self._component_health:
             return True  # No components registered yet
-        
+
         return all(c.healthy for c in self._component_health.values())
+
+    # ======== Component Degradation Tracking ========
+
+    def set_component_degraded(self, component: str, is_degraded: bool, reason: str = None) -> None:
+        """
+        Track degraded status per component.
+
+        Non-critical components can be marked as degraded while the system
+        remains in READY state. This allows the system to continue operating
+        with reduced functionality.
+
+        Args:
+            component: Name of the component (e.g., "orderbook_integration")
+            is_degraded: True if component is degraded, False if recovered
+            reason: Human-readable reason for degradation (optional)
+
+        Side Effects:
+            - Updates _machine_state_metadata["degraded_components"]
+            - Increments _global_version for change detection
+        """
+        if "degraded_components" not in self._machine_state_metadata:
+            self._machine_state_metadata["degraded_components"] = {}
+
+        if is_degraded:
+            self._machine_state_metadata["degraded_components"][component] = reason or "unavailable"
+            logger.debug(f"Component marked degraded: {component} - {reason}")
+        else:
+            self._machine_state_metadata["degraded_components"].pop(component, None)
+            logger.debug(f"Component recovered: {component}")
+
+        self._global_version += 1
+        self._last_update = time.time()
+
+    def get_degraded_components(self) -> Dict[str, str]:
+        """
+        Get dict of component -> reason for all degraded components.
+
+        Returns:
+            Dictionary mapping component names to degradation reasons.
+            Empty dict if no components are degraded.
+
+        Example:
+            {"orderbook_integration": "connection lost", "whale_tracker": "unavailable"}
+        """
+        return self._machine_state_metadata.get("degraded_components", {}).copy()
+
+    def is_fully_operational(self) -> bool:
+        """
+        Check if no components are degraded.
+
+        Returns:
+            True if no components are degraded, False otherwise.
+
+        Note:
+            This is different from is_system_healthy() which checks component
+            health status. A system can be "healthy" (READY state) but not
+            "fully operational" (some non-critical components degraded).
+        """
+        return len(self.get_degraded_components()) == 0
     
     def get_health_summary(self) -> Dict[str, Any]:
         """Get health summary for broadcasting."""
@@ -497,11 +556,16 @@ class V3StateContainer:
                 "last_error": health.last_error
             }
         
+        degraded_components = self.get_degraded_components()
+
         return {
             "system_healthy": self.is_system_healthy(),
+            "fully_operational": self.is_fully_operational(),
             "components": components,
             "component_count": len(self._component_health),
-            "unhealthy_count": sum(1 for c in self._component_health.values() if not c.healthy)
+            "unhealthy_count": sum(1 for c in self._component_health.values() if not c.healthy),
+            "degraded_components": degraded_components,
+            "degraded_count": len(degraded_components)
         }
     
     # ======== State Machine Reference ========

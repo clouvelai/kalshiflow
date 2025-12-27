@@ -3,11 +3,15 @@ Health monitoring service for V3 trader.
 
 Extracted from coordinator to reduce complexity and improve separation of concerns.
 Monitors component health and triggers recovery when needed.
+
+Component Criticality Classification:
+    - CRITICAL_COMPONENTS: Must be healthy for READY state - failures trigger ERROR
+    - NON_CRITICAL_COMPONENTS: Can be unhealthy - system continues in degraded mode
 """
 
 import asyncio
 import logging
-from typing import Dict, Any, Optional, TYPE_CHECKING
+from typing import Dict, Any, Optional, TYPE_CHECKING, Set
 
 if TYPE_CHECKING:
     from .state_machine import TraderStateMachine as V3StateMachine, TraderState as V3State
@@ -19,6 +23,14 @@ if TYPE_CHECKING:
     from ..config.environment import V3Config
 
 logger = logging.getLogger("kalshiflow_rl.traderv3.core.health_monitor")
+
+# Components that MUST be healthy for READY state
+# Failures in these components trigger ERROR state transition
+CRITICAL_COMPONENTS: Set[str] = {"state_machine", "event_bus", "websocket_manager"}
+
+# Components that can be unhealthy (system continues with degraded component)
+# Failures in these components are logged but don't trigger ERROR state
+NON_CRITICAL_COMPONENTS: Set[str] = {"orderbook_integration", "trades_integration", "whale_tracker", "health_monitor"}
 
 
 class V3HealthMonitor:
@@ -160,75 +172,141 @@ class V3HealthMonitor:
         return components_health
     
     async def _handle_health_state(self, components_health: Dict[str, bool], all_healthy: bool) -> None:
-        """Handle health state transitions based on component health."""
+        """
+        Handle health state transitions based on component health.
+
+        Uses component criticality classification:
+        - CRITICAL components: Failures trigger ERROR state
+        - NON_CRITICAL components: Failures set degraded mode, stay in READY
+        """
         from .state_machine import TraderState as V3State
-        
+
         current_state = self._state_machine.current_state
-        
+
+        # Split health checks by criticality
+        critical_health = {k: v for k, v in components_health.items() if k in CRITICAL_COMPONENTS}
+        non_critical_health = {k: v for k, v in components_health.items() if k in NON_CRITICAL_COMPONENTS}
+
+        all_critical_healthy = all(critical_health.values()) if critical_health else True
+        all_non_critical_healthy = all(non_critical_health.values()) if non_critical_health else True
+
         # Emit health check activity (only occasionally to avoid spam)
         if current_state == V3State.READY:
             self._health_check_count += 1
-            
-            # Emit every 5th check or if unhealthy
+
+            # Emit every 5th check or if any component is unhealthy
             if not all_healthy or self._health_check_count % 5 == 0:
                 await self._event_bus.emit_system_activity(
                     activity_type="health_check",
-                    message=f"Health check: {'All components healthy' if all_healthy else 'Some components unhealthy'}",
+                    message=f"Health check: {'All components healthy' if all_healthy else 'Some components degraded'}",
                     metadata={
                         "components": components_health,
-                        "all_healthy": all_healthy
+                        "all_healthy": all_healthy,
+                        "critical_healthy": all_critical_healthy,
+                        "non_critical_healthy": all_non_critical_healthy
                     }
                 )
-        
-        # If in READY state and something is unhealthy, check degraded mode FIRST
-        if current_state == V3State.READY and not all_healthy:
-            unhealthy = [k for k, v in components_health.items() if not v]
-            
-            # Check if we're in degraded mode (trading without orderbook)
-            is_degraded = self._state_container.machine_state_metadata.get("degraded", False)
-            
-            # In degraded mode, orderbook being unhealthy is expected - not an error
-            if is_degraded:
-                # Only log periodically to reduce spam (every 12 checks = ~60 seconds)
-                self._health_check_count += 1
-                if self._health_check_count % 12 == 1:
-                    logger.info(f"Operating in degraded mode - unhealthy: {unhealthy}")
-                return  # Don't transition to ERROR - this is expected
-            
-            # Not in degraded mode and something is unhealthy - this is an actual error
-            logger.error(f"Components unhealthy (not degraded): {unhealthy}")
-            await self._state_machine.transition_to(
-                V3State.ERROR,
-                context="Component health check failed",
-                metadata={
-                    "reason": "Component health check failed",
-                    "unhealthy_components": unhealthy,
-                    "session_cleanup_triggered": True
-                }
-            )
-        
-        # If in ERROR state, check for recovery possibilities
+
+        # Handle READY state
+        if current_state == V3State.READY:
+            # Check for CRITICAL component failures - these trigger ERROR state
+            if not all_critical_healthy:
+                unhealthy_critical = [k for k, v in critical_health.items() if not v]
+                logger.error(f"CRITICAL components unhealthy: {unhealthy_critical}")
+                await self._state_machine.transition_to(
+                    V3State.ERROR,
+                    context="Critical component health check failed",
+                    metadata={
+                        "reason": "Critical component health check failed",
+                        "unhealthy_components": unhealthy_critical,
+                        "session_cleanup_triggered": True
+                    }
+                )
+                return
+
+            # Handle NON-CRITICAL component failures - set degraded mode, stay in READY
+            if not all_non_critical_healthy:
+                unhealthy_non_critical = [k for k, v in non_critical_health.items() if not v]
+
+                # Track which components are degraded
+                for component in unhealthy_non_critical:
+                    # Check if this is a new degradation
+                    current_degraded = self._state_container.get_degraded_components()
+                    if component not in current_degraded:
+                        # Newly degraded component
+                        reason = self._get_degradation_reason(component)
+                        self._state_container.set_component_degraded(component, True, reason)
+
+                        # Emit console message for degradation
+                        await self._event_bus.emit_system_activity(
+                            activity_type="degraded",
+                            message=f"{component.replace('_', ' ').title()} degraded - {reason}",
+                            metadata={
+                                "component": component,
+                                "reason": reason,
+                                "severity": "warning"
+                            }
+                        )
+                        logger.warning(f"Component degraded: {component} - {reason}")
+
+            # Check for component recovery (non-critical components becoming healthy again)
+            current_degraded = self._state_container.get_degraded_components()
+            for component in list(current_degraded.keys()):
+                if components_health.get(component, False):
+                    # Component has recovered
+                    self._state_container.set_component_degraded(component, False)
+
+                    # Emit console message for recovery
+                    await self._event_bus.emit_system_activity(
+                        activity_type="recovered",
+                        message=f"{component.replace('_', ' ').title()} recovered",
+                        metadata={
+                            "component": component,
+                            "severity": "info"
+                        }
+                    )
+                    logger.info(f"Component recovered: {component}")
+
+        # Handle ERROR state - check for recovery possibilities
         elif current_state == V3State.ERROR:
-            if all_healthy:
-                # Everything healthy - full recovery
+            if all_critical_healthy:
+                # All critical components healthy - can recover
                 await self._attempt_recovery()
-            elif self._trading_client_integration and self._trading_client_integration.is_healthy():
-                # Trading is healthy even if orderbook isn't - stay in degraded mode
-                # Only emit status periodically to reduce spam (every 12 checks = ~60 seconds)
+            else:
+                # Still have critical failures
                 self._error_state_count = getattr(self, '_error_state_count', 0) + 1
                 if self._error_state_count % 12 == 1:
-                    logger.info("Trading healthy in ERROR state - degraded mode continues")
-                    await self._event_bus.emit_system_activity(
-                        activity_type="health",
-                        message="Operating in degraded mode - trading functional, orderbook unavailable",
-                        metadata={
-                            "trading_healthy": True,
-                            "orderbook_healthy": self._orderbook_integration.is_healthy() if self._orderbook_integration else False,
-                            "degraded_mode": True
-                        },
-                        severity="info"  # Not an error, just informational
-                    )
-    
+                    unhealthy_critical = [k for k, v in critical_health.items() if not v]
+                    logger.info(f"Waiting for critical components to recover: {unhealthy_critical}")
+
+    def _get_degradation_reason(self, component: str) -> str:
+        """
+        Get a human-readable reason for component degradation.
+
+        Args:
+            component: Name of the degraded component
+
+        Returns:
+            Human-readable reason string
+        """
+        if component == "orderbook_integration":
+            # Try to get more specific reason from orderbook health details
+            if self._orderbook_integration:
+                health_details = self._orderbook_integration.get_health_details()
+                time_since_snapshot = health_details.get("time_since_snapshot")
+                if time_since_snapshot is not None and time_since_snapshot > 90:
+                    return f"no data for {time_since_snapshot:.0f}s"
+                ping_health = health_details.get("ping_health")
+                if ping_health == "unhealthy":
+                    return "connection lost"
+            return "connection lost"
+        elif component == "trades_integration":
+            return "trades stream unavailable"
+        elif component == "whale_tracker":
+            return "whale detection unavailable"
+        else:
+            return "unavailable"
+
     async def _attempt_recovery(self) -> None:
         """Attempt recovery from ERROR state when all components are healthy."""
         from .state_machine import TraderState as V3State

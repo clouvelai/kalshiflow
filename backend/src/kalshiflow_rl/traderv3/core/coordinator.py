@@ -19,7 +19,7 @@ from .state_machine import TraderStateMachine as V3StateMachine, TraderState as 
 from .event_bus import EventBus
 from .websocket_manager import V3WebSocketManager
 from .state_container import V3StateContainer
-from .health_monitor import V3HealthMonitor
+from .health_monitor import V3HealthMonitor, CRITICAL_COMPONENTS
 from .status_reporter import V3StatusReporter
 from .trading_flow_orchestrator import TradingFlowOrchestrator
 from ..clients.orderbook_integration import V3OrderbookIntegration
@@ -854,23 +854,37 @@ class V3Coordinator:
         return status
     
     def is_healthy(self) -> bool:
-        """Check if system is healthy."""
+        """
+        Check if system is healthy.
+
+        Only checks CRITICAL components for overall health status.
+        Non-critical components (orderbook, trades, whale tracker) can be
+        degraded without affecting overall system health.
+
+        Returns:
+            True if running and all critical components are healthy.
+        """
         if not self._running:
             return False
-        
-        health_checks = [
-            self._state_machine.is_healthy(),
-            self._event_bus.is_healthy(),
-            self._websocket_manager.is_healthy(),
-            self._orderbook_integration.is_healthy(),
-            self._health_monitor.is_healthy()
-        ]
-        
-        # Add trading client health if configured
-        if self._trading_client_integration:
-            health_checks.append(self._trading_client_integration.is_healthy())
-        
-        return all(health_checks)
+
+        # Map component names to their health check methods
+        component_health_map = {
+            "state_machine": self._state_machine.is_healthy,
+            "event_bus": self._event_bus.is_healthy,
+            "websocket_manager": self._websocket_manager.is_healthy,
+        }
+
+        # Only check CRITICAL components for overall health
+        for component_name in CRITICAL_COMPONENTS:
+            if component_name in component_health_map:
+                if not component_health_map[component_name]():
+                    return False
+
+        # Health monitor must also be healthy (it monitors the critical components)
+        if not self._health_monitor.is_healthy():
+            return False
+
+        return True
     
     def get_health(self) -> Dict[str, Any]:
         """Get health status."""
