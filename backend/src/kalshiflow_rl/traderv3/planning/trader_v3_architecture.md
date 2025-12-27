@@ -155,7 +155,7 @@ TRADER V3 is an event-driven paper trading system for Kalshi prediction markets.
   - `is_healthy()` - Check if monitor itself is healthy
 - **Emits Events**: `SYSTEM_ACTIVITY` (health_check type)
 - **Subscribes To**: None (polls components directly)
-- **Dependencies**: V3Config, V3StateMachine, EventBus, V3WebSocketManager, V3StateContainer, V3OrderbookIntegration, V3TradingClientIntegration
+- **Dependencies**: V3Config, V3StateMachine, EventBus, V3WebSocketManager, V3StateContainer, V3OrderbookIntegration, V3TradingClientIntegration (optional), V3TradesIntegration (optional), WhaleTracker (optional)
 
 #### V3StatusReporter
 - **File**: `core/status_reporter.py`

@@ -20,6 +20,8 @@ if TYPE_CHECKING:
     from .state_container import V3StateContainer
     from ..clients.orderbook_integration import V3OrderbookIntegration
     from ..clients.trading_client_integration import V3TradingClientIntegration
+    from ..clients.trades_integration import V3TradesIntegration
+    from ..services.whale_tracker import WhaleTracker
     from ..config.environment import V3Config
 
 logger = logging.getLogger("kalshiflow_rl.traderv3.core.health_monitor")
@@ -52,11 +54,13 @@ class V3HealthMonitor:
         websocket_manager: 'V3WebSocketManager',
         state_container: 'V3StateContainer',
         orderbook_integration: 'V3OrderbookIntegration',
-        trading_client_integration: Optional['V3TradingClientIntegration'] = None
+        trading_client_integration: Optional['V3TradingClientIntegration'] = None,
+        trades_integration: Optional['V3TradesIntegration'] = None,
+        whale_tracker: Optional['WhaleTracker'] = None
     ):
         """
         Initialize health monitor.
-        
+
         Args:
             config: V3 configuration
             state_machine: State machine instance
@@ -65,6 +69,8 @@ class V3HealthMonitor:
             state_container: State container instance
             orderbook_integration: Orderbook integration instance
             trading_client_integration: Optional trading client integration
+            trades_integration: Optional trades integration for public trades stream
+            whale_tracker: Optional whale tracker for big bet detection
         """
         self._config = config
         self._state_machine = state_machine
@@ -73,12 +79,14 @@ class V3HealthMonitor:
         self._state_container = state_container
         self._orderbook_integration = orderbook_integration
         self._trading_client_integration = trading_client_integration
-        
+        self._trades_integration = trades_integration
+        self._whale_tracker = whale_tracker
+
         # Health monitoring state
         self._monitoring_task: Optional[asyncio.Task] = None
         self._running = False
         self._health_check_count = 0
-        
+
         logger.info("Health monitor initialized")
     
     async def start(self) -> None:
@@ -168,7 +176,15 @@ class V3HealthMonitor:
         # Add trading client health if configured
         if self._trading_client_integration:
             components_health["trading_client"] = self._trading_client_integration.is_healthy()
-        
+
+        # Add trades integration health if configured
+        if self._trades_integration:
+            components_health["trades_integration"] = self._trades_integration.is_healthy()
+
+        # Add whale tracker health if configured
+        if self._whale_tracker:
+            components_health["whale_tracker"] = self._whale_tracker.is_healthy()
+
         return components_health
     
     async def _handle_health_state(self, components_health: Dict[str, bool], all_healthy: bool) -> None:

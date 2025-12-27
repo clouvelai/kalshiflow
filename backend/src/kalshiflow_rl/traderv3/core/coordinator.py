@@ -86,7 +86,9 @@ class V3Coordinator:
             websocket_manager=websocket_manager,
             state_container=self._state_container,
             orderbook_integration=orderbook_integration,
-            trading_client_integration=trading_client_integration
+            trading_client_integration=trading_client_integration,
+            trades_integration=trades_integration,
+            whale_tracker=whale_tracker
         )
         
         # Initialize status reporter
@@ -707,7 +709,7 @@ class V3Coordinator:
                 pass
 
         # Cancel monitoring tasks before stopping components
-        for task, name in [
+        for task, _name in [
             (self._health_monitor_task, "health_monitor"),
             (self._status_reporter_task, "status_reporter"),
         ]:
