@@ -120,6 +120,29 @@ The RL system uses two focused scripts for different purposes:
 - **Status**: http://localhost:8003/rl/status
 - **WebSocket**: ws://localhost:8003/rl/ws
 
+#### V3 Trader (Paper Trading)
+**Purpose**: Clean architecture trading system with WebSocket-driven state management
+```bash
+# Start V3 trader (default: paper trading, discovery mode, 10 markets)
+./scripts/run-v3.sh
+
+# Custom configurations: [environment] [mode] [market_limit]
+./scripts/run-v3.sh paper discovery 20      # More markets
+./scripts/run-v3.sh paper config 5          # Specific tickers from RL_MARKET_TICKERS
+```
+
+**Default Configuration:**
+- **Environment**: `paper` (demo account)
+- **Port**: 8005
+- **Mode**: Discovery (auto-discovers active markets)
+- **Markets**: 10 orderbook subscriptions
+
+**Access Points:**
+- **Console**: http://localhost:5173/v3-trader (requires frontend)
+- **Health**: http://localhost:8005/v3/health
+- **Status**: http://localhost:8005/v3/status
+- **WebSocket**: ws://localhost:8005/v3/ws
+
 ### Testing
 ```bash
 # Backend tests
