@@ -19,6 +19,7 @@ from .websocket_manager import V3WebSocketManager
 from .state_container import V3StateContainer
 from .health_monitor import V3HealthMonitor
 from .status_reporter import V3StatusReporter
+from .trading_flow_orchestrator import TradingFlowOrchestrator
 from ..clients.orderbook_integration import V3OrderbookIntegration
 from ..config.environment import V3Config
 from ..services.trading_decision_service import TradingDecisionService, TradingStrategy
@@ -93,6 +94,7 @@ class V3Coordinator:
         
         # Initialize trading decision service (if trading client available)
         self._trading_service = None
+        self._trading_orchestrator = None
         if trading_client_integration:
             # Default to HOLD strategy for safety
             self._trading_service = TradingDecisionService(
@@ -100,6 +102,17 @@ class V3Coordinator:
                 state_container=self._state_container,
                 event_bus=event_bus,
                 strategy=TradingStrategy.HOLD
+            )
+            
+            # Initialize trading flow orchestrator
+            self._trading_orchestrator = TradingFlowOrchestrator(
+                config=config,
+                trading_client=trading_client_integration,
+                orderbook_integration=orderbook_integration,
+                trading_service=self._trading_service,
+                state_container=self._state_container,
+                event_bus=event_bus,
+                state_machine=state_machine
             )
         
         self._started_at: Optional[float] = None
@@ -223,14 +236,14 @@ class V3Coordinator:
             )
             
             await self._status_reporter.emit_status_update("Running in degraded mode without orderbook")
-            return
-        
-        # Wait for first snapshot
-        logger.info("Waiting for initial orderbook snapshot...")
-        data_flowing = await self._orderbook_integration.wait_for_first_snapshot(timeout=10.0)
-        
-        if not data_flowing:
-            logger.warning("No orderbook data received - continuing anyway")
+            # Continue to ready state in degraded mode - don't return here
+        else:
+            # Wait for first snapshot
+            logger.info("Waiting for initial orderbook snapshot...")
+            data_flowing = await self._orderbook_integration.wait_for_first_snapshot(timeout=10.0)
+            
+            if not data_flowing:
+                logger.warning("No orderbook data received - continuing anyway")
         
         # Collect metrics and transition
         metrics = self._orderbook_integration.get_metrics()
@@ -317,7 +330,7 @@ class V3Coordinator:
         
         # Emit trading state if changed
         if state_changed:
-            await self._emit_trading_state()
+            await self._status_reporter.emit_trading_state()
         
         # Log the sync results
         if changes and (abs(changes.balance_change) > 0 or 
@@ -399,6 +412,13 @@ class V3Coordinator:
             metadata=ready_metadata
         )
         
+        # Update state container with degraded flag so health monitor can see it
+        self._state_container.update_machine_state(
+            V3State.READY,
+            context,
+            ready_metadata  # This includes degraded=True when appropriate
+        )
+        
         # Emit trading state immediately when READY
         if self._trading_client_integration and self._state_container.trading_state:
             await self._status_reporter.emit_trading_state()
@@ -418,7 +438,7 @@ class V3Coordinator:
         self._start_monitoring_tasks()
         
         last_sync_time = time.time()
-        sync_interval = 30.0  # Sync every 30 seconds
+        sync_interval = 30.0  # Sync every 30 seconds (for non-trading syncs)
         
         logger.info("Event loop started")
         
@@ -428,21 +448,33 @@ class V3Coordinator:
                 
                 # State-specific handlers
                 if current_state == V3State.READY:
-                    # Check if sync needed
-                    if self._trading_client_integration and \
-                       time.time() - last_sync_time > sync_interval:
-                        # Emit system activity for sync start
-                        await self._event_bus.emit_system_activity(
-                            activity_type="sync",
-                            message="Starting periodic sync with Kalshi",
-                            metadata={"sync_interval": sync_interval}
-                        )
-                        await self._handle_trading_sync()
-                        last_sync_time = time.time()
-                    
-                    # Check for trading opportunities (if configured)
-                    if self._trading_service:
-                        await self._handle_trading_opportunities()
+                    # Use orchestrator for trading flow if available
+                    if self._trading_orchestrator:
+                        # Orchestrator handles its own sync and trading cycles
+                        cycle_run = await self._trading_orchestrator.check_and_run_cycle()
+                        
+                        # If no cycle was run, check for periodic sync
+                        if not cycle_run and self._trading_client_integration and \
+                           time.time() - last_sync_time > sync_interval:
+                            # Emit system activity for sync start
+                            await self._event_bus.emit_system_activity(
+                                activity_type="sync",
+                                message="Starting periodic sync with Kalshi",
+                                metadata={"sync_interval": sync_interval}
+                            )
+                            await self._handle_trading_sync()
+                            last_sync_time = time.time()
+                    else:
+                        # No trading orchestrator - just do periodic syncs
+                        if self._trading_client_integration and \
+                           time.time() - last_sync_time > sync_interval:
+                            await self._event_bus.emit_system_activity(
+                                activity_type="sync",
+                                message="Starting periodic sync with Kalshi",
+                                metadata={"sync_interval": sync_interval}
+                            )
+                            await self._handle_trading_sync()
+                            last_sync_time = time.time()
                     
                 elif current_state == V3State.ERROR:
                     # Error recovery is handled by _monitor_health()
@@ -484,7 +516,9 @@ class V3Coordinator:
         if not self._trading_client_integration:
             return
         
-        if self._state_machine.current_state != V3State.READY:
+        # Allow trading sync in READY or ERROR state to support degraded mode
+        # This enables trading data display even when orderbook is down
+        if self._state_machine.current_state not in [V3State.READY, V3State.ERROR]:
             return
         
         logger.debug("Performing periodic trading state sync...")
@@ -635,57 +669,6 @@ class V3Coordinator:
         logger.info(f"✅ TRADER V3 STOPPED (uptime: {uptime:.1f}s)")
         logger.info("=" * 60)
     
-    async def _handle_trading_opportunities(self) -> None:
-        """
-        Handle trading opportunities when in READY state.
-        This is a placeholder for MVP trading logic.
-        """
-        # Only evaluate markets periodically to avoid overtrading
-        if not hasattr(self, '_last_trading_check'):
-            self._last_trading_check = 0
-        
-        current_time = time.time()
-        if current_time - self._last_trading_check < 30.0:  # Check every 30 seconds
-            return
-        
-        self._last_trading_check = current_time
-        
-        try:
-            # Get a sample market to evaluate (in real implementation, iterate through all)
-            markets = self._config.market_tickers[:1]  # Just first market for MVP
-            
-            for market in markets:
-                # Get orderbook for market
-                orderbook = self._orderbook_integration.get_orderbook(market)
-                
-                # Evaluate market
-                decision = await self._trading_service.evaluate_market(market, orderbook)
-                
-                # Execute decision if not hold
-                if decision and decision.action != "hold":
-                    # Transition to ACTING state
-                    await self._state_machine.transition_to(
-                        V3State.ACTING,
-                        context=f"Executing {decision.action} on {market}",
-                        metadata={
-                            "market": market,
-                            "action": decision.action,
-                            "strategy": decision.strategy.value
-                        }
-                    )
-                    
-                    # Execute the trade
-                    success = await self._trading_service.execute_decision(decision)
-                    
-                    # Transition back to READY
-                    await self._state_machine.transition_to(
-                        V3State.READY,
-                        context=f"Trade {'executed' if success else 'failed'}",
-                        metadata={"trade_success": success}
-                    )
-        
-        except Exception as e:
-            logger.error(f"Error handling trading opportunities: {e}")
     
     async def _update_metrics_regularly(self) -> None:
         """Update metrics and save periodically."""
@@ -694,7 +677,7 @@ class V3Coordinator:
                 await asyncio.sleep(1.0)  # Update every second for real-time last_ping_age
                 
                 # Emit status with updated last_ping_age
-                await self._emit_status_update()
+                await self._status_reporter.emit_status_update("Metrics updated")
                 
                 # Metrics persistence removed
                 
@@ -720,6 +703,10 @@ class V3Coordinator:
         # Add trading service if configured
         if self._trading_service:
             components["trading_service"] = self._trading_service.get_stats()
+        
+        # Add trading orchestrator if configured
+        if self._trading_orchestrator:
+            components["trading_orchestrator"] = self._trading_orchestrator.get_stats()
         
         # Add trading client if configured
         if self._trading_client_integration:

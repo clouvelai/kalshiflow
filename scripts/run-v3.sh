@@ -1,7 +1,8 @@
 #!/bin/bash
 
 # TRADER V3 Runner Script
-# Simple, clean launcher for V3 trader
+# Unified launcher for V3 trader with frontend management
+# This is the SINGLE source of truth for running V3
 
 set -e  # Exit on error
 
@@ -21,22 +22,39 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BACKEND_DIR="$SCRIPT_DIR/../backend"
 cd "$BACKEND_DIR"
 
+# Function to kill processes on a port
+kill_port() {
+    local port=$1
+    if lsof -Pi :$port -sTCP:LISTEN -t >/dev/null 2>&1; then
+        echo -e "${YELLOW}Cleaning up existing process on port $port...${NC}"
+        lsof -Pi :$port -sTCP:LISTEN -t | xargs kill -9 2>/dev/null || true
+        sleep 1
+    fi
+}
+
 # Parse arguments
 ENVIRONMENT="${1:-paper}"
 MODE="${2:-discovery}"  # Use discovery mode by default
 MARKET_LIMIT="${3:-10}"  # Limit to 10 markets
-PORT="${4:-8005}"
+
+# Port configuration - SINGLE SOURCE OF TRUTH
+BACKEND_PORT=8005  # V3 always uses 8005
+FRONTEND_PORT=5173  # Standard Vite port
 
 # Frontend configuration
 FRONTEND_DIR="$SCRIPT_DIR/../frontend"
-FRONTEND_PORT=5173  # Standard Vite port
+
+# Clean up any existing processes BEFORE showing config
+echo -e "${YELLOW}Preparing clean environment...${NC}"
+kill_port $BACKEND_PORT
 
 # Show configuration
+echo ""
 echo -e "${YELLOW}Configuration:${NC}"
 echo -e "  Environment: ${GREEN}$ENVIRONMENT${NC}"
 echo -e "  Market Mode: ${GREEN}$MODE${NC}"
 echo -e "  Market Limit: ${GREEN}$MARKET_LIMIT${NC}"
-echo -e "  Backend Port: ${GREEN}$PORT${NC}"
+echo -e "  Backend Port: ${GREEN}$BACKEND_PORT${NC}"
 echo -e "  Frontend Port: ${GREEN}$FRONTEND_PORT${NC}"
 echo ""
 
@@ -44,7 +62,8 @@ echo ""
 export ENVIRONMENT="$ENVIRONMENT"
 export RL_MODE="$MODE"  # Use same variable as RL trader
 export RL_ORDERBOOK_MARKET_LIMIT="$MARKET_LIMIT"  # Use same variable as RL trader
-export V3_PORT="$PORT"
+export V3_PORT="$BACKEND_PORT"
+export BACKEND_PORT="$BACKEND_PORT"  # For consistency
 
 # V3-specific configuration
 export V3_LOG_LEVEL="INFO"
@@ -107,6 +126,7 @@ check_frontend_running() {
 start_frontend() {
     if check_frontend_running; then
         echo -e "${GREEN}✓ Frontend already running on port $FRONTEND_PORT${NC}"
+        echo -e "${BLUE}Access the V3 Trader Console at: ${GREEN}http://localhost:$FRONTEND_PORT/v3-trader${NC}"
     else
         echo -e "${BLUE}Starting frontend on port $FRONTEND_PORT...${NC}"
         
@@ -116,22 +136,32 @@ start_frontend() {
             return 1
         fi
         
-        # Start frontend in background
+        # Check if npm dependencies are installed
+        if [ ! -d "$FRONTEND_DIR/node_modules" ]; then
+            echo -e "${YELLOW}Installing frontend dependencies...${NC}"
+            (cd "$FRONTEND_DIR" && npm install)
+        fi
+        
+        # Start frontend in background with proper backend port
         (
             cd "$FRONTEND_DIR"
             # Export VITE_BACKEND_PORT for frontend to know where backend is running
-            export VITE_BACKEND_PORT=$PORT
+            export VITE_BACKEND_PORT=$BACKEND_PORT
+            export VITE_V3_BACKEND_PORT=$BACKEND_PORT  # Explicit V3 port
             npm run dev > /dev/null 2>&1 &
         )
         
         # Wait for frontend to start
-        sleep 3
+        echo -e "${YELLOW}Waiting for frontend to start...${NC}"
+        sleep 4
         
         if check_frontend_running; then
             echo -e "${GREEN}✓ Frontend started successfully${NC}"
             echo -e "${BLUE}Access the V3 Trader Console at: ${GREEN}http://localhost:$FRONTEND_PORT/v3-trader${NC}"
         else
-            echo -e "${YELLOW}⚠ Frontend may not have started properly${NC}"
+            echo -e "${RED}❌ Frontend failed to start${NC}"
+            echo -e "${YELLOW}Try running 'cd frontend && npm run dev' manually to see errors${NC}"
+            return 1
         fi
     fi
     echo ""
@@ -160,10 +190,37 @@ echo ""
 
 # Start frontend first if not running
 start_frontend
+if [ $? -ne 0 ]; then
+    echo -e "${YELLOW}Continuing without frontend...${NC}"
+fi
+
+echo -e "${BLUE}Starting V3 backend on port $BACKEND_PORT...${NC}"
 
 # Run the V3 app directly and capture its PID
 uv run python -m kalshiflow_rl.traderv3.app &
 BACKEND_PID=$!
+
+# Wait a moment for backend to start
+sleep 3
+
+# Check if backend started successfully
+if kill -0 $BACKEND_PID 2>/dev/null; then
+    echo -e "${GREEN}✓ V3 backend started successfully${NC}"
+    echo ""
+    echo -e "${GREEN}============================================${NC}"
+    echo -e "${GREEN}     TRADER V3 RUNNING SUCCESSFULLY${NC}"
+    echo -e "${GREEN}============================================${NC}"
+    echo -e "${BLUE}Backend API: ${GREEN}http://localhost:$BACKEND_PORT${NC}"
+    echo -e "${BLUE}V3 Console: ${GREEN}http://localhost:$FRONTEND_PORT/v3-trader${NC}"
+    echo -e "${BLUE}Health Check: ${GREEN}http://localhost:$BACKEND_PORT/v3/health${NC}"
+    echo -e "${GREEN}============================================${NC}"
+    echo ""
+    echo -e "${YELLOW}Press Ctrl+C to stop${NC}"
+    echo ""
+else
+    echo -e "${RED}❌ Backend failed to start${NC}"
+    exit 1
+fi
 
 # Wait for the backend process
 wait $BACKEND_PID

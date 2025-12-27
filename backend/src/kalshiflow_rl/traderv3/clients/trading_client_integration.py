@@ -94,6 +94,7 @@ class V3TradingClientIntegration:
         
         # Order group tracking
         self._order_group_id: Optional[str] = None
+        self._order_groups_supported = False  # Will be set to True if order groups work
         
         # Health monitoring thresholds
         self._health_check_interval = 30.0  # Check health every 30 seconds
@@ -192,6 +193,7 @@ class V3TradingClientIntegration:
             try:
                 order_group_id = await self.create_order_group(contracts_limit=10000)
                 if order_group_id:
+                    self._order_groups_supported = True
                     logger.info(f"✅ Order group ready: {order_group_id[:8]}...")
                 else:
                     logger.warning("⚠️ Running without order group (no portfolio limits)")
@@ -638,6 +640,7 @@ class V3TradingClientIntegration:
         try:
             response = await self._client.create_order_group(contracts_limit)
             self.set_order_group_id(response["order_group_id"])
+            self._order_groups_supported = True
             
             logger.info(f"✅ Created order group: {self._order_group_id[:8]}... "
                        f"(contracts_limit: {contracts_limit})")

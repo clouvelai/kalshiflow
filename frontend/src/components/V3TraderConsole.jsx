@@ -247,19 +247,27 @@ const V3TraderConsole = () => {
   }, [messages]);
 
   const addMessage = useCallback((type, content, metadata = {}) => {
+    // Skip messages with UNKNOWN or undefined state
+    if (metadata.state === 'UNKNOWN' || metadata.state === 'unknown' || metadata.state === 'undefined') {
+      console.log('Skipping message with UNKNOWN state:', content, metadata);
+      return;
+    }
+    
     // Deduplicate rapid repeated messages
     const messageKey = `${type}-${content}-${metadata.state || ''}`;
     const now = Date.now();
     
     if (lastMessageRef.current) {
-      const { key: lastKey, time: lastTime } = lastMessageRef.current;
+      const { key: lastKey, time: lastTime, content: lastContent } = lastMessageRef.current;
       // If same message within 1 second, skip it
-      if (lastKey === messageKey && (now - lastTime) < 1000) {
+      // Also skip if same content with different states (e.g., UNKNOWN vs ready)
+      if ((lastKey === messageKey && (now - lastTime) < 1000) ||
+          (lastContent === content && (now - lastTime) < 1000)) {
         return;
       }
     }
     
-    lastMessageRef.current = { key: messageKey, time: now };
+    lastMessageRef.current = { key: messageKey, time: now, content: content };
     
     const timestamp = new Date().toLocaleTimeString('en-US', { 
       hour12: false, 
@@ -378,8 +386,8 @@ const V3TraderConsole = () => {
     }
 
     try {
-      // Use VITE_BACKEND_PORT from environment or default to 8005
-      const backendPort = import.meta.env.VITE_BACKEND_PORT || '8005';
+      // Use VITE_BACKEND_PORT from environment or default to 8003
+      const backendPort = import.meta.env.VITE_BACKEND_PORT || '8003';
       const ws = new WebSocket(`ws://localhost:${backendPort}/v3/ws`);
       
       ws.onopen = () => {

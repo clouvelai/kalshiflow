@@ -65,6 +65,7 @@ class TraderState(Enum):
         TRADING_CLIENT_CONNECT: Connecting to trading API (optional)
         KALSHI_DATA_SYNC: Synchronizing positions/orders with exchange
         READY: Fully operational, monitoring markets and ready to trade
+        ACTING: Executing trading actions (temporary state during trades)
         ERROR: Error state with recovery capabilities
         SHUTDOWN: Terminal state for graceful shutdown
     """
@@ -74,6 +75,7 @@ class TraderState(Enum):
     TRADING_CLIENT_CONNECT = "trading_client_connect"  # Connect to trading API
     KALSHI_DATA_SYNC = "kalshi_data_sync"  # Sync positions and orders with Kalshi
     READY = "ready"
+    ACTING = "acting"  # Executing trades
     ERROR = "error"
     SHUTDOWN = "shutdown"
 
@@ -212,7 +214,13 @@ class TraderStateMachine:
                 TraderState.SHUTDOWN
             },
             TraderState.READY: {
+                TraderState.ACTING,  # Can transition to acting when executing trades
                 TraderState.ORDERBOOK_CONNECT,  # For reconnection
+                TraderState.ERROR,
+                TraderState.SHUTDOWN
+            },
+            TraderState.ACTING: {
+                TraderState.READY,  # Return to ready after trade execution
                 TraderState.ERROR,
                 TraderState.SHUTDOWN
             },
@@ -231,6 +239,7 @@ class TraderStateMachine:
             TraderState.TRADING_CLIENT_CONNECT: 60.0,  # 1m to connect trading API
             TraderState.KALSHI_DATA_SYNC: 60.0,  # 1m to sync with Kalshi
             TraderState.READY: float('inf'),  # Can stay ready indefinitely
+            TraderState.ACTING: 60.0,  # 1m max for trade execution
             TraderState.ERROR: 300.0,  # 5m before forcing shutdown
             TraderState.SHUTDOWN: 30.0  # 30s to shutdown
         }

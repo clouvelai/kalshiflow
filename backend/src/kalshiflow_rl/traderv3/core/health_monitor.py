@@ -123,9 +123,35 @@ class V3HealthMonitor:
         components_health = {
             "state_machine": self._state_machine.is_healthy(),
             "event_bus": self._event_bus.is_healthy(),
-            "websocket_manager": self._websocket_manager.is_healthy(),
-            "orderbook_integration": self._orderbook_integration.is_healthy()
+            "websocket_manager": self._websocket_manager.is_healthy()
         }
+        
+        # Enhanced orderbook health check - check actual connection state
+        orderbook_healthy = False
+        if self._orderbook_integration:
+            # Get detailed health info to check connection state
+            health_details = self._orderbook_integration.get_health_details()
+            
+            # Check if we have recent data (within last 90 seconds)
+            time_since_snapshot = health_details.get("time_since_snapshot")
+            ping_health = health_details.get("ping_health", "unknown")
+            
+            if time_since_snapshot is not None:
+                # If we haven't received data in 90s, mark as unhealthy
+                if time_since_snapshot > 90:
+                    logger.debug(f"Orderbook unhealthy: No snapshot in {time_since_snapshot:.1f}s")
+                    orderbook_healthy = False
+                else:
+                    orderbook_healthy = True
+            elif ping_health == "unhealthy":
+                # No recent ping/pong messages
+                logger.debug(f"Orderbook unhealthy: Ping health is {ping_health}")
+                orderbook_healthy = False
+            else:
+                # Fallback to basic health check
+                orderbook_healthy = self._orderbook_integration.is_healthy()
+        
+        components_health["orderbook_integration"] = orderbook_healthy
         
         # Add trading client health if configured
         if self._trading_client_integration:
@@ -155,8 +181,18 @@ class V3HealthMonitor:
                 )
         
         # If in READY state and something is unhealthy, transition to ERROR
+        # BUT: Check if we're in degraded mode (orderbook down but trading still works)
         if current_state == V3State.READY and not all_healthy:
             unhealthy = [k for k, v in components_health.items() if not v]
+            
+            # Check if we're in degraded mode (trading without orderbook)
+            is_degraded = self._state_container.machine_state_metadata.get("degraded", False)
+            
+            # In degraded mode, only orderbook_integration being unhealthy is acceptable
+            if is_degraded and unhealthy == ["orderbook_integration"]:
+                logger.debug("In degraded mode - orderbook unhealthy is expected")
+                return  # Don't transition to ERROR
+            
             logger.error(f"Components unhealthy: {unhealthy}")
             await self._state_machine.transition_to(
                 V3State.ERROR,

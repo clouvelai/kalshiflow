@@ -253,15 +253,31 @@ class V3WebSocketManager:
         logger.debug(f"Handling system activity: {event.activity_type} - {event.message}")
         
         # Extract current state from metadata if this is a state transition
-        current_state = None
+        current_state = "ready"  # Default fallback state
         if event.activity_type == "state_transition" and event.metadata:
             # Get the to_state from metadata
             current_state = event.metadata.get("to_state")
             if current_state and hasattr(current_state, 'lower'):
                 current_state = current_state.lower()
+            elif current_state:
+                current_state = str(current_state).lower()
         elif self._state_machine:
             # Fall back to state machine's current state for other activities
-            current_state = self._state_machine.current_state.value if hasattr(self._state_machine.current_state, 'value') else str(self._state_machine.current_state).lower()
+            try:
+                if hasattr(self._state_machine, 'current_state'):
+                    if hasattr(self._state_machine.current_state, 'value'):
+                        current_state = self._state_machine.current_state.value.lower()
+                    else:
+                        current_state = str(self._state_machine.current_state).lower()
+                else:
+                    current_state = "ready"
+            except Exception as e:
+                logger.debug(f"Could not get state from state_machine: {e}, using 'ready' as fallback")
+                current_state = "ready"
+        
+        # Ensure state is never None or undefined
+        if not current_state or current_state == "none" or current_state == "unknown":
+            current_state = "ready"
         
         # Format the activity message
         activity_data = {
