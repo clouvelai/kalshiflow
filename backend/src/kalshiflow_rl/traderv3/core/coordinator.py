@@ -21,6 +21,7 @@ from .health_monitor import V3HealthMonitor
 from .status_reporter import V3StatusReporter
 from ..clients.orderbook_integration import V3OrderbookIntegration
 from ..config.environment import V3Config
+from ..services.trading_decision_service import TradingDecisionService, TradingStrategy
 
 logger = logging.getLogger("kalshiflow_rl.traderv3.core.coordinator")
 
@@ -89,6 +90,17 @@ class V3Coordinator:
             orderbook_integration=orderbook_integration,
             trading_client_integration=trading_client_integration
         )
+        
+        # Initialize trading decision service (if trading client available)
+        self._trading_service = None
+        if trading_client_integration:
+            # Default to HOLD strategy for safety
+            self._trading_service = TradingDecisionService(
+                trading_client=trading_client_integration,
+                state_container=self._state_container,
+                event_bus=event_bus,
+                strategy=TradingStrategy.HOLD
+            )
         
         self._started_at: Optional[float] = None
         self._running = False
@@ -428,9 +440,9 @@ class V3Coordinator:
                         await self._handle_trading_sync()
                         last_sync_time = time.time()
                     
-                    # Future: This is where ACTING state logic would go
-                    # if self._has_pending_actions():
-                    #     await self._handle_acting_state()
+                    # Check for trading opportunities (if configured)
+                    if self._trading_service:
+                        await self._handle_trading_opportunities()
                     
                 elif current_state == V3State.ERROR:
                     # Error recovery is handled by _monitor_health()
@@ -623,6 +635,58 @@ class V3Coordinator:
         logger.info(f"✅ TRADER V3 STOPPED (uptime: {uptime:.1f}s)")
         logger.info("=" * 60)
     
+    async def _handle_trading_opportunities(self) -> None:
+        """
+        Handle trading opportunities when in READY state.
+        This is a placeholder for MVP trading logic.
+        """
+        # Only evaluate markets periodically to avoid overtrading
+        if not hasattr(self, '_last_trading_check'):
+            self._last_trading_check = 0
+        
+        current_time = time.time()
+        if current_time - self._last_trading_check < 30.0:  # Check every 30 seconds
+            return
+        
+        self._last_trading_check = current_time
+        
+        try:
+            # Get a sample market to evaluate (in real implementation, iterate through all)
+            markets = self._config.market_tickers[:1]  # Just first market for MVP
+            
+            for market in markets:
+                # Get orderbook for market
+                orderbook = self._orderbook_integration.get_orderbook(market)
+                
+                # Evaluate market
+                decision = await self._trading_service.evaluate_market(market, orderbook)
+                
+                # Execute decision if not hold
+                if decision and decision.action != "hold":
+                    # Transition to ACTING state
+                    await self._state_machine.transition_to(
+                        V3State.ACTING,
+                        context=f"Executing {decision.action} on {market}",
+                        metadata={
+                            "market": market,
+                            "action": decision.action,
+                            "strategy": decision.strategy.value
+                        }
+                    )
+                    
+                    # Execute the trade
+                    success = await self._trading_service.execute_decision(decision)
+                    
+                    # Transition back to READY
+                    await self._state_machine.transition_to(
+                        V3State.READY,
+                        context=f"Trade {'executed' if success else 'failed'}",
+                        metadata={"trade_success": success}
+                    )
+        
+        except Exception as e:
+            logger.error(f"Error handling trading opportunities: {e}")
+    
     async def _update_metrics_regularly(self) -> None:
         """Update metrics and save periodically."""
         while self._running:
@@ -653,6 +717,10 @@ class V3Coordinator:
             "status_reporter": self._status_reporter.get_status()
         }
         
+        # Add trading service if configured
+        if self._trading_service:
+            components["trading_service"] = self._trading_service.get_stats()
+        
         # Add trading client if configured
         if self._trading_client_integration:
             components["trading_client"] = self._trading_client_integration.get_health_details()
@@ -666,9 +734,11 @@ class V3Coordinator:
             "components": components
         }
         
-        # Add trading mode if trading client is configured
+        # Add trading mode and strategy if configured
         if self._trading_client_integration:
             status["trading_mode"] = self._trading_client_integration._client.mode
+            if self._trading_service:
+                status["trading_strategy"] = self._trading_service.get_stats()["strategy"]
         
         return status
     
@@ -704,3 +774,17 @@ class V3Coordinator:
     def state_container(self) -> V3StateContainer:
         """Get state container for external access."""
         return self._state_container
+    
+    @property
+    def trading_service(self) -> Optional[TradingDecisionService]:
+        """Get trading service for external access."""
+        return self._trading_service
+    
+    def set_trading_strategy(self, strategy: TradingStrategy) -> None:
+        """Set the trading strategy."""
+        if not self._trading_service:
+            logger.warning("No trading service configured")
+            return
+        
+        self._trading_service.set_strategy(strategy)
+        logger.info(f"Trading strategy set to: {strategy.value}")
