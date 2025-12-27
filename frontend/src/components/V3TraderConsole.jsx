@@ -386,8 +386,8 @@ const V3TraderConsole = () => {
     }
 
     try {
-      // Use VITE_BACKEND_PORT from environment or default to 8003
-      const backendPort = import.meta.env.VITE_BACKEND_PORT || '8003';
+      // V3 trader always runs on port 8005
+      const backendPort = import.meta.env.VITE_V3_BACKEND_PORT || import.meta.env.VITE_BACKEND_PORT || '8005';
       const ws = new WebSocket(`ws://localhost:${backendPort}/v3/ws`);
       
       ws.onopen = () => {
