@@ -593,53 +593,6 @@ class EventBus:
         
         logger.info("TRADER V3 event processing loop stopped")
     
-    async def publish(self, event: Any) -> bool:
-        """
-        Publish an event to the event bus.
-        
-        This is a convenience wrapper that routes to the appropriate emit method
-        based on event type.
-        
-        Args:
-            event: Event to publish (TraderStatusEvent, StateTransitionEvent, SystemActivityEvent, or MarketEvent)
-            
-        Returns:
-            True if event was published successfully
-        """
-        if isinstance(event, SystemActivityEvent):
-            return await self.emit_system_activity(
-                activity_type=event.activity_type,
-                message=event.message,
-                metadata=event.metadata
-            )
-        elif isinstance(event, TraderStatusEvent):
-            return await self.emit_trader_status(
-                state=event.state,
-                metrics=event.metrics,
-                health=event.health
-            )
-        elif isinstance(event, StateTransitionEvent):
-            return await self.emit_state_transition(
-                from_state=event.from_state,
-                to_state=event.to_state,
-                context=event.context,
-                metadata=event.metadata
-            )
-        elif isinstance(event, MarketEvent):
-            if event.event_type == EventType.ORDERBOOK_SNAPSHOT:
-                return await self.emit_orderbook_snapshot(
-                    market_ticker=event.market_ticker,
-                    snapshot=event.metadata.get('snapshot', {})
-                )
-            elif event.event_type == EventType.ORDERBOOK_DELTA:
-                return await self.emit_orderbook_delta(
-                    market_ticker=event.market_ticker,
-                    delta=event.metadata.get('delta', {})
-                )
-        
-        logger.warning(f"Unknown event type for publish: {type(event)}")
-        return False
-    
     async def _notify_subscribers(self, event: Any) -> None:
         """
         Notify all subscribers of an event with error isolation.

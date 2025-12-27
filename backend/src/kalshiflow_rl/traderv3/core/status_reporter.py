@@ -193,7 +193,11 @@ class V3StatusReporter:
                 timestamp=time.time()
             )
             
-            await self._event_bus.publish(event)
+            await self._event_bus.emit_trader_status(
+                state=event.state,
+                metrics=event.metrics,
+                health=event.health
+            )
             
             # Log summary
             session_display = f"Session: {session_info.get('session_id', 'N/A')} ({session_info.get('session_state', 'unknown')})" if session_info.get('session_id') else "Session: None"

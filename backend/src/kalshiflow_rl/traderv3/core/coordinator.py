@@ -169,7 +169,6 @@ class V3Coordinator:
         await self._event_bus.start()
         
         logger.info("2/3 Starting WebSocket Manager...")
-        self._websocket_manager.set_coordinator(self)
         await self._websocket_manager.start()
         
         logger.info("3/3 Starting State Machine...")

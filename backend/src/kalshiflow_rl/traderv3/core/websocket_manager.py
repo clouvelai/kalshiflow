@@ -71,10 +71,7 @@ class V3WebSocketManager:
         # Periodic tasks
         self._ping_task: Optional[asyncio.Task] = None
         self._ping_interval = 30.0  # seconds
-        
-        # Coordinator reference (set later)
-        self._coordinator = None
-        
+
         # State transition history buffer (last 20 transitions)
         # This ensures late-connecting clients can see the startup sequence
         self._state_transition_history: deque = deque(maxlen=20)
@@ -490,13 +487,3 @@ class V3WebSocketManager:
             "uptime_seconds": stats["uptime_seconds"],
             "event_bus_connected": self._event_bus is not None
         }
-    
-    def set_coordinator(self, coordinator) -> None:
-        """
-        Set reference to the coordinator for metrics broadcasting.
-        
-        Args:
-            coordinator: V3Coordinator instance
-        """
-        self._coordinator = coordinator
-        logger.info("Coordinator reference configured for WebSocket broadcasting")

@@ -172,10 +172,10 @@ TRADER V3 is an event-driven paper trading system for Kalshi prediction markets.
   - `broadcast_message(message_type, data)` - Send to all clients
   - `broadcast_console_message(level, message, context)` - Console-style message
   - `get_stats()` - Get connection statistics
-  - `set_coordinator(coordinator)` - Set coordinator reference
+  - `get_health_details()` - Get detailed health information
 - **Emits Events**: None
 - **Subscribes To**: `SYSTEM_ACTIVITY`, `TRADER_STATUS`
-- **Dependencies**: EventBus, Starlette WebSocket
+- **Dependencies**: EventBus, V3StateMachine (optional), Starlette WebSocket
 
 #### TradingFlowOrchestrator
 - **File**: `core/trading_flow_orchestrator.py`
@@ -570,3 +570,4 @@ The system supports **degraded mode** when the orderbook WebSocket is unavailabl
 |------|--------|--------|
 | 2024-12-27 | Initial architecture document created | Claude |
 | 2024-12-27 | Foundation cleanup: removed ~600 lines dead code, fixed async patterns | Claude |
+| 2024-12-27 | Final simplification: removed unused _coordinator ref, publish() wrapper (-57 lines) | Claude |
