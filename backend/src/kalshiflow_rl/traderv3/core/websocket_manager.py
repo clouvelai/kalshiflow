@@ -264,15 +264,24 @@ class V3WebSocketManager:
             current_state = self._state_machine.current_state.value if hasattr(self._state_machine.current_state, 'value') else str(self._state_machine.current_state).lower()
         
         # Format the activity message
+        activity_data = {
+            "timestamp": time.strftime("%H:%M:%S", time.localtime(event.timestamp)),
+            "activity_type": event.activity_type,
+            "message": event.message,
+            "metadata": event.metadata,
+            "state": current_state  # Include current state in all system activities
+        }
+        
+        # For state transitions, extract from_state and to_state from metadata
+        if event.activity_type == "state_transition" and event.metadata:
+            if "from_state" in event.metadata:
+                activity_data["from_state"] = event.metadata["from_state"]
+            if "to_state" in event.metadata:
+                activity_data["to_state"] = event.metadata["to_state"]
+        
         activity_message = {
             "type": "system_activity",
-            "data": {
-                "timestamp": time.strftime("%H:%M:%S", time.localtime(event.timestamp)),
-                "activity_type": event.activity_type,
-                "message": event.message,
-                "metadata": event.metadata,
-                "state": current_state  # Include current state in all system activities
-            }
+            "data": activity_data
         }
         
         # Store state transitions in history for late-connecting clients

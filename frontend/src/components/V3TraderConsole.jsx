@@ -378,7 +378,9 @@ const V3TraderConsole = () => {
     }
 
     try {
-      const ws = new WebSocket('ws://localhost:8005/v3/ws');
+      // Use VITE_BACKEND_PORT from environment or default to 8005
+      const backendPort = import.meta.env.VITE_BACKEND_PORT || '8005';
+      const ws = new WebSocket(`ws://localhost:${backendPort}/v3/ws`);
       
       ws.onopen = () => {
         setWsStatus('connected');
@@ -525,9 +527,10 @@ const V3TraderConsole = () => {
                   // Use ping health from Kalshi API connection
                   ping_health: data.data.metrics.ping_health || 'unknown',
                   last_ping_age: data.data.metrics.last_ping_age || null,
-                  // Preserve API connection info
-                  api_connected: prev.api_connected,
-                  api_url: prev.api_url
+                  // API connection info from backend
+                  api_connected: data.data.metrics.api_connected || prev.api_connected,
+                  api_url: data.data.metrics.api_url || prev.api_url,
+                  ws_url: data.data.metrics.ws_url || prev.ws_url
                 }));
               }
               if (data.data.state) {
@@ -839,11 +842,21 @@ const V3TraderConsole = () => {
                   </div>
                 </div>
                 {metrics.api_url && (
-                  <div className="mt-2">
-                    <span className="text-xs text-gray-500">Endpoint:</span>
-                    <div className="text-xs text-gray-300 font-mono mt-1 truncate" title={metrics.api_url}>
-                      {metrics.api_url.replace('https://', '').replace('/trade-api/v2', '')}
+                  <div className="mt-2 space-y-2">
+                    <div>
+                      <span className="text-xs text-gray-500">API:</span>
+                      <div className="text-xs text-gray-300 font-mono mt-1 truncate" title={metrics.api_url}>
+                        {metrics.api_url.replace('https://', '').replace('/trade-api/v2', '')}
+                      </div>
                     </div>
+                    {metrics.ws_url && (
+                      <div>
+                        <span className="text-xs text-gray-500">WebSocket:</span>
+                        <div className="text-xs text-gray-300 font-mono mt-1 truncate" title={metrics.ws_url}>
+                          {metrics.ws_url.replace('wss://', '').replace('/trade-api/ws/v2', '')}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>

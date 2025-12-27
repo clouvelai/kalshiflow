@@ -27,12 +27,17 @@ MODE="${2:-discovery}"  # Use discovery mode by default
 MARKET_LIMIT="${3:-10}"  # Limit to 10 markets
 PORT="${4:-8005}"
 
+# Frontend configuration
+FRONTEND_DIR="$SCRIPT_DIR/../frontend"
+FRONTEND_PORT=5173  # Standard Vite port
+
 # Show configuration
 echo -e "${YELLOW}Configuration:${NC}"
 echo -e "  Environment: ${GREEN}$ENVIRONMENT${NC}"
 echo -e "  Market Mode: ${GREEN}$MODE${NC}"
 echo -e "  Market Limit: ${GREEN}$MARKET_LIMIT${NC}"
-echo -e "  Port: ${GREEN}$PORT${NC}"
+echo -e "  Backend Port: ${GREEN}$PORT${NC}"
+echo -e "  Frontend Port: ${GREEN}$FRONTEND_PORT${NC}"
 echo ""
 
 # Set environment variables
@@ -89,12 +94,76 @@ else
     echo -e "${YELLOW}💰 Using PRODUCTION environment${NC}"
 fi
 
+# Function to check if frontend is running
+check_frontend_running() {
+    if lsof -Pi :$FRONTEND_PORT -sTCP:LISTEN -t >/dev/null 2>&1; then
+        return 0  # Frontend is running
+    else
+        return 1  # Frontend is not running
+    fi
+}
+
+# Function to start frontend
+start_frontend() {
+    if check_frontend_running; then
+        echo -e "${GREEN}✓ Frontend already running on port $FRONTEND_PORT${NC}"
+    else
+        echo -e "${BLUE}Starting frontend on port $FRONTEND_PORT...${NC}"
+        
+        # Check if frontend directory exists
+        if [ ! -d "$FRONTEND_DIR" ]; then
+            echo -e "${RED}❌ Frontend directory not found: $FRONTEND_DIR${NC}"
+            return 1
+        fi
+        
+        # Start frontend in background
+        (
+            cd "$FRONTEND_DIR"
+            # Export VITE_BACKEND_PORT for frontend to know where backend is running
+            export VITE_BACKEND_PORT=$PORT
+            npm run dev > /dev/null 2>&1 &
+        )
+        
+        # Wait for frontend to start
+        sleep 3
+        
+        if check_frontend_running; then
+            echo -e "${GREEN}✓ Frontend started successfully${NC}"
+            echo -e "${BLUE}Access the V3 Trader Console at: ${GREEN}http://localhost:$FRONTEND_PORT/v3-trader${NC}"
+        else
+            echo -e "${YELLOW}⚠ Frontend may not have started properly${NC}"
+        fi
+    fi
+    echo ""
+}
+
+# Function to cleanup on exit
+cleanup() {
+    echo ""
+    echo -e "${YELLOW}Shutting down...${NC}"
+    
+    # Kill the backend Python process if it's running
+    if [ ! -z "$BACKEND_PID" ]; then
+        kill $BACKEND_PID 2>/dev/null || true
+    fi
+    
+    echo -e "${GREEN}✅ TRADER V3 stopped${NC}"
+    echo -e "${YELLOW}Note: Frontend may still be running on port $FRONTEND_PORT${NC}"
+}
+
+# Setup trap for cleanup
+trap cleanup EXIT INT TERM
+
 echo ""
 echo -e "${BLUE}Starting TRADER V3...${NC}"
 echo ""
 
-# Run the V3 app directly
-uv run python -m kalshiflow_rl.traderv3.app
+# Start frontend first if not running
+start_frontend
 
-echo ""
-echo -e "${GREEN}✅ TRADER V3 stopped${NC}"
+# Run the V3 app directly and capture its PID
+uv run python -m kalshiflow_rl.traderv3.app &
+BACKEND_PID=$!
+
+# Wait for the backend process
+wait $BACKEND_PID

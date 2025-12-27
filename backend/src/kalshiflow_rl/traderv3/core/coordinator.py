@@ -725,13 +725,31 @@ class V3Coordinator:
         if self._trading_client_integration:
             components["trading_client"] = self._trading_client_integration.get_health_details()
         
+        # Get metrics from various sources
+        orderbook_metrics = self._orderbook_integration.get_metrics()
+        ws_stats = self._websocket_manager.get_stats()
+        
+        # Build metrics similar to status_reporter
+        metrics = {
+            "uptime": uptime,
+            "state": self._state_machine.current_state.value,
+            "markets_connected": orderbook_metrics["markets_connected"],
+            "snapshots_received": orderbook_metrics["snapshots_received"],
+            "deltas_received": orderbook_metrics["deltas_received"],
+            "ws_clients": ws_stats["active_connections"],
+            "ws_messages_sent": ws_stats.get("total_messages_sent", 0),
+            "api_url": self._config.api_url,
+            "ws_url": self._config.ws_url
+        }
+        
         status = {
             "running": self._running,
             "uptime": uptime,
             "state": self._state_machine.current_state.value,
             "environment": self._config.get_environment_name(),
             "markets": self._config.market_tickers,
-            "components": components
+            "components": components,
+            "metrics": metrics
         }
         
         # Add trading mode and strategy if configured

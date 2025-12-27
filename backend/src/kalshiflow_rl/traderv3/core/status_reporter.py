@@ -182,6 +182,8 @@ class V3StatusReporter:
                     "ping_health": ping_health,
                     "last_ping_age": last_ping_age,
                     "api_connected": api_connected,
+                    "api_url": self._config.api_url,
+                    "ws_url": self._config.ws_url,
                     "connection_established": health_details.get("connection_established"),
                     "first_snapshot_received": health_details.get("first_snapshot_received"),
                     "session_id": session_info.get("session_id"),
