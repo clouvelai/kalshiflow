@@ -81,6 +81,19 @@ class V3OrderbookIntegration:
         if not self._running:
             return
         
+        # Check if this is a reconnection (snapshot for a market we already had)
+        # If all markets are already connected and we get another snapshot, it's a reconnection
+        if len(self._metrics.markets_connected) >= len(self._market_tickers) and market_ticker in self._metrics.markets_connected:
+            # This is a reconnection - reset metrics
+            logger.info(f"Reconnection detected for {market_ticker} - resetting metrics")
+            self._metrics.snapshots_received = 0
+            self._metrics.deltas_received = 0
+            self._metrics.markets_connected.clear()
+            self._connection_established = False
+            self._first_snapshot_received = False
+            self._connection_established_time = None
+            self._first_snapshot_time = None
+        
         # Update local metrics
         self._metrics.snapshots_received += 1
         self._metrics.last_snapshot_time = time.time()
@@ -129,6 +142,16 @@ class V3OrderbookIntegration:
         
         # Don't immediately mark markets as connected - wait for actual connection
         logger.info(f"Waiting for orderbook client connection...")
+    
+    def get_orderbook(self, market_ticker: str) -> Optional[Any]:
+        """
+        Get latest orderbook for a market.
+        
+        For now, returns None as we don't store orderbook data locally.
+        In the future, this could cache recent orderbook snapshots.
+        """
+        # TODO: Implement orderbook caching if needed for trading decisions
+        return None
     
     async def stop(self) -> None:
         """Stop orderbook integration."""
