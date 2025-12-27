@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Activity, Wifi, WifiOff, Circle, ChevronRight, ChevronDown, Zap, Database, TrendingUp, AlertCircle, Copy, Check, Info, CheckCircle, XCircle, ArrowRight, DollarSign, Briefcase, ShoppingCart, FileText, TrendingDown, Clock } from 'lucide-react';
+import { Activity, Wifi, WifiOff, Circle, ChevronRight, ChevronDown, Zap, Database, TrendingUp, AlertCircle, Copy, Check, Info, CheckCircle, XCircle, ArrowRight, DollarSign, Briefcase, ShoppingCart, FileText, TrendingDown, Clock, Shield } from 'lucide-react';
 
 // TradingData Component - Displays real-time trading state
 const TradingData = ({ tradingState, lastUpdateTime }) => {
@@ -130,6 +130,85 @@ const TradingData = ({ tradingState, lastUpdateTime }) => {
           )}
         </div>
       </div>
+
+      {/* Order Group Status */}
+      {tradingState.order_group && tradingState.order_group.id && (
+        <div className="mt-4 bg-gray-800/30 rounded-lg p-4 border border-gray-700/50">
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center space-x-2">
+              <Shield className="w-4 h-4 text-indigo-400" />
+              <span className="text-xs text-gray-500 uppercase">Order Group</span>
+            </div>
+            <div className="flex items-center space-x-2">
+              <span className="text-xs font-mono text-gray-400">
+                {tradingState.order_group.id || 'N/A'}
+              </span>
+              <span className={`px-2 py-0.5 text-xs font-medium rounded-full ${
+                tradingState.order_group.status === 'active' 
+                  ? 'bg-green-900/50 text-green-400 border border-green-700/50'
+                  : tradingState.order_group.status === 'inactive'
+                  ? 'bg-gray-900/50 text-gray-400 border border-gray-700/50'
+                  : 'bg-yellow-900/50 text-yellow-400 border border-yellow-700/50'
+              }`}>
+                {tradingState.order_group.status || 'unknown'}
+              </span>
+            </div>
+          </div>
+
+          {/* Position & Order Limits (using raw API values) */}
+          <div className="space-y-3">
+            {/* Position Usage */}
+            <div className="space-y-1">
+              <div className="flex justify-between items-center text-xs">
+                <span className="text-gray-500">Position</span>
+                <span className="text-gray-400 font-mono">
+                  {tradingState.order_group.current_absolute_position || 0} / {tradingState.order_group.max_absolute_position || 0}
+                </span>
+              </div>
+              <div className="relative">
+                <div className="h-2 bg-gray-900/50 rounded-full overflow-hidden">
+                  <div 
+                    className="h-full transition-all duration-300 rounded-full"
+                    style={{
+                      width: `${Math.min(100, ((tradingState.order_group.current_absolute_position || 0) / (tradingState.order_group.max_absolute_position || 1)) * 100)}%`,
+                      background: `linear-gradient(90deg, 
+                        ${((tradingState.order_group.current_absolute_position || 0) / (tradingState.order_group.max_absolute_position || 1)) > 0.8 ? '#ef4444' : 
+                          ((tradingState.order_group.current_absolute_position || 0) / (tradingState.order_group.max_absolute_position || 1)) > 0.5 ? '#f59e0b' : '#10b981'} 0%, 
+                        ${((tradingState.order_group.current_absolute_position || 0) / (tradingState.order_group.max_absolute_position || 1)) > 0.8 ? '#dc2626' : 
+                          ((tradingState.order_group.current_absolute_position || 0) / (tradingState.order_group.max_absolute_position || 1)) > 0.5 ? '#d97706' : '#059669'} 100%)`
+                    }}
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* Order Usage */}
+            <div className="space-y-1">
+              <div className="flex justify-between items-center text-xs">
+                <span className="text-gray-500">Orders</span>
+                <span className="text-gray-400 font-mono">
+                  {tradingState.order_group.current_open_orders || 0} / {tradingState.order_group.max_open_orders || 0}
+                </span>
+              </div>
+              <div className="relative">
+                <div className="h-2 bg-gray-900/50 rounded-full overflow-hidden">
+                  <div 
+                    className="h-full transition-all duration-300 rounded-full"
+                    style={{
+                      width: `${Math.min(100, ((tradingState.order_group.current_open_orders || 0) / (tradingState.order_group.max_open_orders || 1)) * 100)}%`,
+                      background: `linear-gradient(90deg, 
+                        ${((tradingState.order_group.current_open_orders || 0) / (tradingState.order_group.max_open_orders || 1)) > 0.8 ? '#ef4444' : 
+                          ((tradingState.order_group.current_open_orders || 0) / (tradingState.order_group.max_open_orders || 1)) > 0.5 ? '#f59e0b' : '#10b981'} 0%, 
+                        ${((tradingState.order_group.current_open_orders || 0) / (tradingState.order_group.max_open_orders || 1)) > 0.8 ? '#dc2626' : 
+                          ((tradingState.order_group.current_open_orders || 0) / (tradingState.order_group.max_open_orders || 1)) > 0.5 ? '#d97706' : '#059669'} 100%)`
+                    }}
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
@@ -360,7 +439,8 @@ const V3TraderConsole = () => {
                   positions: data.data.positions,
                   open_orders: data.data.open_orders,
                   sync_timestamp: data.data.sync_timestamp,
-                  changes: data.data.changes
+                  changes: data.data.changes,
+                  order_group: data.data.order_group  // Include order group data
                 });
               }
               break;

@@ -1,0 +1,851 @@
+{
+  "timestamp": "2025-12-26T20:44:24.750853",
+  "description": "test sessions",
+  "total_sessions": 76,
+  "succeeded": 76,
+  "failed": 0,
+  "snapshots_deleted": 156,
+  "deltas_deleted": 0,
+  "results": [
+    {
+      "session_id": 1003,
+      "markets": [
+        "KXMVESPORTSMULTIGAMEEXTENDED-S20257BC8F0B7081-CD50814CD93",
+        "KXMVESPORTSMULTIGAMEEXTENDED-S2025777AB738A77-80182AC2604",
+        "KXMVESPORTSMULTIGAMEEXTENDED-S20251A8F2F06203-5B9701CA6EA",
+        "KXQUICKSETTLE-25DEC22H1330-3",
+        "KXQUICKSETTLE-25DEC22H1330-2"
+      ],
+      "duration": "0:00:40.977642",
+      "snapshots_deleted": 5,
+      "deltas_deleted": 0,
+      "status": "deleted"
+    },
+    {
+      "session_id": 1023,
+      "markets": [
+        "KXMVESPORTSMULTIGAMEEXTENDED-S2025B514DBA6450-A9AC65F816A",
+        "KXMVESPORTSMULTIGAMEEXTENDED-S2025D1FB05D9142-FCCFD88C92C",
+        "KXMVESPORTSMULTIGAMEEXTENDED-S20252EB88FC5655-AF41109B22D"
+      ],
+      "duration": "0:00:21.439312",
+      "snapshots_deleted": 3,
+      "deltas_deleted": 0,
+      "status": "deleted"
+    },
+    {
+      "session_id": 1295,
+      "markets": [
+        "KXNCAAMENTION-25DEC26FIUUTSA-WIND",
+        "KXNCAAMENTION-25DEC26FIUUTSA-WILD"
+      ],
+      "duration": "0:00:48.843888",
+      "snapshots_deleted": 2,
+      "deltas_deleted": 0,
+      "status": "deleted"
+    },
+    {
+      "session_id": 1296,
+      "markets": [
+        "KXNCAAMENTION-25DEC26FIUUTSA-WIND",
+        "KXNCAAMENTION-25DEC26FIUUTSA-WILD"
+      ],
+      "duration": "0:00:58.605429",
+      "snapshots_deleted": 2,
+      "deltas_deleted": 0,
+      "status": "deleted"
+    },
+    {
+      "session_id": 1298,
+      "markets": [
+        "KXNCAAMENTION-25DEC26FIUUTSA-WIND",
+        "KXNCAAMENTION-25DEC26FIUUTSA-WILD"
+      ],
+      "duration": "0:00:09.950828",
+      "snapshots_deleted": 2,
+      "deltas_deleted": 0,
+      "status": "deleted"
+    },
+    {
+      "session_id": 1299,
+      "markets": [
+        "KXNCAAMENTION-25DEC26FIUUTSA-WIND",
+        "KXNCAAMENTION-25DEC26FIUUTSA-WILD"
+      ],
+      "duration": "0:01:26.095892",
+      "snapshots_deleted": 2,
+      "deltas_deleted": 0,
+      "status": "deleted"
+    },
+    {
+      "session_id": 1302,
+      "markets": [
+        "KXNCAAMENTION-25DEC26FIUUTSA-WIND",
+        "KXNCAAMENTION-25DEC26FIUUTSA-WILD"
+      ],
+      "duration": "0:01:20.433076",
+      "snapshots_deleted": 2,
+      "deltas_deleted": 0,
+      "status": "deleted"
+    },
+    {
+      "session_id": 1305,
+      "markets": [
+        "KXNCAAMENTION-25DEC26FIUUTSA-WIND",
+        "KXNCAAMENTION-25DEC26FIUUTSA-WILD"
+      ],
+      "duration": "0:01:17.095794",
+      "snapshots_deleted": 2,
+      "deltas_deleted": 0,
+      "status": "deleted"
+    },
+    {
+      "session_id": 1306,
+      "markets": [
+        "KXNCAAMENTION-25DEC26FIUUTSA-WIND",
+        "KXNCAAMENTION-25DEC26FIUUTSA-WILD"
+      ],
+      "duration": "0:00:05.836315",
+      "snapshots_deleted": 2,
+      "deltas_deleted": 0,
+      "status": "deleted"
+    },
+    {
+      "session_id": 1309,
+      "markets": [
+        "KXNCAAMENTION-25DEC26FIUUTSA-WIND",
+        "KXNCAAMENTION-25DEC26FIUUTSA-WILD"
+      ],
+      "duration": "0:00:33.185420",
+      "snapshots_deleted": 2,
+      "deltas_deleted": 0,
+      "status": "deleted"
+    },
+    {
+      "session_id": 1311,
+      "markets": [
+        "KXNCAAMENTION-25DEC26FIUUTSA-WIND",
+        "KXNCAAMENTION-25DEC26FIUUTSA-WILD"
+      ],
+      "duration": "0:00:33.971966",
+      "snapshots_deleted": 2,
+      "deltas_deleted": 0,
+      "status": "deleted"
+    },
+    {
+      "session_id": 1313,
+      "markets": [
+        "KXNCAAMENTION-25DEC26FIUUTSA-WIND",
+        "KXNCAAMENTION-25DEC26FIUUTSA-WILD"
+      ],
+      "duration": "0:00:26.918561",
+      "snapshots_deleted": 2,
+      "deltas_deleted": 0,
+      "status": "deleted"
+    },
+    {
+      "session_id": 1314,
+      "markets": [
+        "KXNCAAMENTION-25DEC26FIUUTSA-WIND",
+        "KXNCAAMENTION-25DEC26FIUUTSA-WILD"
+      ],
+      "duration": "0:00:57.306702",
+      "snapshots_deleted": 2,
+      "deltas_deleted": 0,
+      "status": "deleted"
+    },
+    {
+      "session_id": 1317,
+      "markets": [
+        "KXNCAAMENTION-25DEC26FIUUTSA-WIND",
+        "KXNCAAMENTION-25DEC26FIUUTSA-WILD"
+      ],
+      "duration": "0:00:49.108711",
+      "snapshots_deleted": 2,
+      "deltas_deleted": 0,
+      "status": "deleted"
+    },
+    {
+      "session_id": 1319,
+      "markets": [
+        "KXNCAAMENTION-25DEC26FIUUTSA-WIND",
+        "KXNCAAMENTION-25DEC26FIUUTSA-WILD"
+      ],
+      "duration": "0:01:28.622556",
+      "snapshots_deleted": 2,
+      "deltas_deleted": 0,
+      "status": "deleted"
+    },
+    {
+      "session_id": 1322,
+      "markets": [
+        "KXNCAAMENTION-25DEC26FIUUTSA-WIND",
+        "KXNCAAMENTION-25DEC26FIUUTSA-WILD"
+      ],
+      "duration": "0:00:10.254563",
+      "snapshots_deleted": 2,
+      "deltas_deleted": 0,
+      "status": "deleted"
+    },
+    {
+      "session_id": 1323,
+      "markets": [
+        "KXNCAAMENTION-25DEC26FIUUTSA-WIND",
+        "KXNCAAMENTION-25DEC26FIUUTSA-WILD"
+      ],
+      "duration": "0:01:32.330569",
+      "snapshots_deleted": 2,
+      "deltas_deleted": 0,
+      "status": "deleted"
+    },
+    {
+      "session_id": 1326,
+      "markets": [
+        "KXNCAAMENTION-25DEC26FIUUTSA-WIND",
+        "KXNCAAMENTION-25DEC26FIUUTSA-WILD"
+      ],
+      "duration": "0:01:43.079279",
+      "snapshots_deleted": 2,
+      "deltas_deleted": 0,
+      "status": "deleted"
+    },
+    {
+      "session_id": 1327,
+      "markets": [
+        "KXNCAAMENTION-25DEC26FIUUTSA-WIND",
+        "KXNCAAMENTION-25DEC26FIUUTSA-WILD"
+      ],
+      "duration": "0:01:22.505891",
+      "snapshots_deleted": 2,
+      "deltas_deleted": 0,
+      "status": "deleted"
+    },
+    {
+      "session_id": 1330,
+      "markets": [
+        "KXNCAAMENTION-25DEC26FIUUTSA-WIND",
+        "KXNCAAMENTION-25DEC26FIUUTSA-WILD"
+      ],
+      "duration": "0:00:19.781451",
+      "snapshots_deleted": 2,
+      "deltas_deleted": 0,
+      "status": "deleted"
+    },
+    {
+      "session_id": 1331,
+      "markets": [
+        "KXNCAAMENTION-25DEC26FIUUTSA-WIND",
+        "KXNCAAMENTION-25DEC26FIUUTSA-WILD"
+      ],
+      "duration": "0:01:28.997939",
+      "snapshots_deleted": 2,
+      "deltas_deleted": 0,
+      "status": "deleted"
+    },
+    {
+      "session_id": 1333,
+      "markets": [
+        "KXNCAAMENTION-25DEC26FIUUTSA-WIND",
+        "KXNCAAMENTION-25DEC26FIUUTSA-WILD"
+      ],
+      "duration": "0:00:02.475894",
+      "snapshots_deleted": 2,
+      "deltas_deleted": 0,
+      "status": "deleted"
+    },
+    {
+      "session_id": 1336,
+      "markets": [
+        "KXNCAAMENTION-25DEC26FIUUTSA-WIND",
+        "KXNCAAMENTION-25DEC26FIUUTSA-WILD"
+      ],
+      "duration": "0:00:59.973743",
+      "snapshots_deleted": 2,
+      "deltas_deleted": 0,
+      "status": "deleted"
+    },
+    {
+      "session_id": 1337,
+      "markets": [
+        "KXNCAAMENTION-25DEC26FIUUTSA-WIND",
+        "KXNCAAMENTION-25DEC26FIUUTSA-WILD"
+      ],
+      "duration": "0:00:13.508782",
+      "snapshots_deleted": 2,
+      "deltas_deleted": 0,
+      "status": "deleted"
+    },
+    {
+      "session_id": 1339,
+      "markets": [
+        "KXNCAAMENTION-25DEC26FIUUTSA-WIND",
+        "KXNCAAMENTION-25DEC26FIUUTSA-WILD"
+      ],
+      "duration": "0:00:08.134332",
+      "snapshots_deleted": 2,
+      "deltas_deleted": 0,
+      "status": "deleted"
+    },
+    {
+      "session_id": 1341,
+      "markets": [
+        "KXNCAAMENTION-25DEC26FIUUTSA-WIND",
+        "KXNCAAMENTION-25DEC26FIUUTSA-WILD"
+      ],
+      "duration": "0:01:24.913950",
+      "snapshots_deleted": 2,
+      "deltas_deleted": 0,
+      "status": "deleted"
+    },
+    {
+      "session_id": 1342,
+      "markets": [
+        "KXNCAAMENTION-25DEC26FIUUTSA-WIND",
+        "KXNCAAMENTION-25DEC26FIUUTSA-WILD"
+      ],
+      "duration": "0:01:28.757214",
+      "snapshots_deleted": 2,
+      "deltas_deleted": 0,
+      "status": "deleted"
+    },
+    {
+      "session_id": 1345,
+      "markets": [
+        "KXNCAAMENTION-25DEC26FIUUTSA-WIND",
+        "KXNCAAMENTION-25DEC26FIUUTSA-WILD"
+      ],
+      "duration": "0:01:25.946742",
+      "snapshots_deleted": 2,
+      "deltas_deleted": 0,
+      "status": "deleted"
+    },
+    {
+      "session_id": 1346,
+      "markets": [
+        "KXNCAAMENTION-25DEC26FIUUTSA-WIND",
+        "KXNCAAMENTION-25DEC26FIUUTSA-WILD"
+      ],
+      "duration": "0:01:29.583475",
+      "snapshots_deleted": 2,
+      "deltas_deleted": 0,
+      "status": "deleted"
+    },
+    {
+      "session_id": 1348,
+      "markets": [
+        "KXNCAAMENTION-25DEC26FIUUTSA-WIND",
+        "KXNCAAMENTION-25DEC26FIUUTSA-WILD"
+      ],
+      "duration": "0:00:38.647706",
+      "snapshots_deleted": 2,
+      "deltas_deleted": 0,
+      "status": "deleted"
+    },
+    {
+      "session_id": 1352,
+      "markets": [
+        "KXNCAAMENTION-25DEC26FIUUTSA-WIND",
+        "KXNCAAMENTION-25DEC26FIUUTSA-WILD"
+      ],
+      "duration": "0:00:46.031072",
+      "snapshots_deleted": 2,
+      "deltas_deleted": 0,
+      "status": "deleted"
+    },
+    {
+      "session_id": 1354,
+      "markets": [
+        "KXNCAAMENTION-25DEC26FIUUTSA-WIND",
+        "KXNCAAMENTION-25DEC26FIUUTSA-WILD"
+      ],
+      "duration": "0:01:13.025488",
+      "snapshots_deleted": 2,
+      "deltas_deleted": 0,
+      "status": "deleted"
+    },
+    {
+      "session_id": 1356,
+      "markets": [
+        "KXNCAAMENTION-25DEC26FIUUTSA-WIND",
+        "KXNCAAMENTION-25DEC26FIUUTSA-WILD"
+      ],
+      "duration": "0:01:19.809688",
+      "snapshots_deleted": 2,
+      "deltas_deleted": 0,
+      "status": "deleted"
+    },
+    {
+      "session_id": 1359,
+      "markets": [
+        "KXNCAAMENTION-25DEC26FIUUTSA-WIND",
+        "KXNCAAMENTION-25DEC26FIUUTSA-WILD"
+      ],
+      "duration": "0:00:56.954711",
+      "snapshots_deleted": 2,
+      "deltas_deleted": 0,
+      "status": "deleted"
+    },
+    {
+      "session_id": 1361,
+      "markets": [
+        "KXNCAAMENTION-25DEC26FIUUTSA-WIND",
+        "KXNCAAMENTION-25DEC26FIUUTSA-WILD"
+      ],
+      "duration": "0:00:08.403482",
+      "snapshots_deleted": 2,
+      "deltas_deleted": 0,
+      "status": "deleted"
+    },
+    {
+      "session_id": 1363,
+      "markets": [
+        "KXNCAAMENTION-25DEC26FIUUTSA-WIND",
+        "KXNCAAMENTION-25DEC26FIUUTSA-WILD"
+      ],
+      "duration": "0:01:12.933789",
+      "snapshots_deleted": 2,
+      "deltas_deleted": 0,
+      "status": "deleted"
+    },
+    {
+      "session_id": 1366,
+      "markets": [
+        "KXNCAAMENTION-25DEC26FIUUTSA-WIND",
+        "KXNCAAMENTION-25DEC26FIUUTSA-WILD"
+      ],
+      "duration": "0:01:09.833048",
+      "snapshots_deleted": 2,
+      "deltas_deleted": 0,
+      "status": "deleted"
+    },
+    {
+      "session_id": 1368,
+      "markets": [
+        "KXNCAAMENTION-25DEC26FIUUTSA-WIND",
+        "KXNCAAMENTION-25DEC26FIUUTSA-WILD"
+      ],
+      "duration": "0:01:04.207549",
+      "snapshots_deleted": 2,
+      "deltas_deleted": 0,
+      "status": "deleted"
+    },
+    {
+      "session_id": 1369,
+      "markets": [
+        "KXNCAAMENTION-25DEC26FIUUTSA-WIND",
+        "KXNCAAMENTION-25DEC26FIUUTSA-WILD"
+      ],
+      "duration": "0:00:06.278533",
+      "snapshots_deleted": 2,
+      "deltas_deleted": 0,
+      "status": "deleted"
+    },
+    {
+      "session_id": 1370,
+      "markets": [
+        "KXNCAAMENTION-25DEC26FIUUTSA-WIND",
+        "KXNCAAMENTION-25DEC26FIUUTSA-WILD"
+      ],
+      "duration": "0:01:06.209635",
+      "snapshots_deleted": 2,
+      "deltas_deleted": 0,
+      "status": "deleted"
+    },
+    {
+      "session_id": 1373,
+      "markets": [
+        "KXNCAAMENTION-25DEC26FIUUTSA-WIND",
+        "KXNCAAMENTION-25DEC26FIUUTSA-WILD"
+      ],
+      "duration": "0:01:05.725942",
+      "snapshots_deleted": 2,
+      "deltas_deleted": 0,
+      "status": "deleted"
+    },
+    {
+      "session_id": 1374,
+      "markets": [
+        "KXNCAAMENTION-25DEC26FIUUTSA-WIND",
+        "KXNCAAMENTION-25DEC26FIUUTSA-WILD"
+      ],
+      "duration": "0:01:18.191209",
+      "snapshots_deleted": 2,
+      "deltas_deleted": 0,
+      "status": "deleted"
+    },
+    {
+      "session_id": 1377,
+      "markets": [
+        "KXNCAAMENTION-25DEC26FIUUTSA-WIND",
+        "KXNCAAMENTION-25DEC26FIUUTSA-WILD"
+      ],
+      "duration": "0:01:07.134558",
+      "snapshots_deleted": 2,
+      "deltas_deleted": 0,
+      "status": "deleted"
+    },
+    {
+      "session_id": 1379,
+      "markets": [
+        "KXNCAAMENTION-25DEC26FIUUTSA-WIND",
+        "KXNCAAMENTION-25DEC26FIUUTSA-WILD"
+      ],
+      "duration": "0:01:16.361320",
+      "snapshots_deleted": 2,
+      "deltas_deleted": 0,
+      "status": "deleted"
+    },
+    {
+      "session_id": 1381,
+      "markets": [
+        "KXNCAAMENTION-25DEC26FIUUTSA-WIND",
+        "KXNCAAMENTION-25DEC26FIUUTSA-WILD"
+      ],
+      "duration": "0:01:00.785970",
+      "snapshots_deleted": 2,
+      "deltas_deleted": 0,
+      "status": "deleted"
+    },
+    {
+      "session_id": 1382,
+      "markets": [
+        "KXNCAAMENTION-25DEC26FIUUTSA-WIND",
+        "KXNCAAMENTION-25DEC26FIUUTSA-WILD"
+      ],
+      "duration": "0:00:54.306657",
+      "snapshots_deleted": 2,
+      "deltas_deleted": 0,
+      "status": "deleted"
+    },
+    {
+      "session_id": 1384,
+      "markets": [
+        "KXNCAAMENTION-25DEC26FIUUTSA-WIND",
+        "KXNCAAMENTION-25DEC26FIUUTSA-WILD"
+      ],
+      "duration": "0:00:33.958455",
+      "snapshots_deleted": 2,
+      "deltas_deleted": 0,
+      "status": "deleted"
+    },
+    {
+      "session_id": 1386,
+      "markets": [
+        "KXNCAAMENTION-25DEC26FIUUTSA-WIND",
+        "KXNCAAMENTION-25DEC26FIUUTSA-WILD"
+      ],
+      "duration": "0:00:34.922189",
+      "snapshots_deleted": 2,
+      "deltas_deleted": 0,
+      "status": "deleted"
+    },
+    {
+      "session_id": 1388,
+      "markets": [
+        "KXNCAAMENTION-25DEC26FIUUTSA-WIND",
+        "KXNCAAMENTION-25DEC26FIUUTSA-WILD"
+      ],
+      "duration": "0:00:53.061951",
+      "snapshots_deleted": 2,
+      "deltas_deleted": 0,
+      "status": "deleted"
+    },
+    {
+      "session_id": 1390,
+      "markets": [
+        "KXNCAAMENTION-25DEC26FIUUTSA-WIND",
+        "KXNCAAMENTION-25DEC26FIUUTSA-WILD"
+      ],
+      "duration": "0:00:49.624447",
+      "snapshots_deleted": 2,
+      "deltas_deleted": 0,
+      "status": "deleted"
+    },
+    {
+      "session_id": 1391,
+      "markets": [
+        "KXNCAAMENTION-25DEC26FIUUTSA-WIND",
+        "KXNCAAMENTION-25DEC26FIUUTSA-WILD"
+      ],
+      "duration": "0:00:55.660305",
+      "snapshots_deleted": 2,
+      "deltas_deleted": 0,
+      "status": "deleted"
+    },
+    {
+      "session_id": 1393,
+      "markets": [
+        "KXNCAAMENTION-25DEC26FIUUTSA-WIND",
+        "KXNCAAMENTION-25DEC26FIUUTSA-WILD"
+      ],
+      "duration": "0:00:53.524348",
+      "snapshots_deleted": 2,
+      "deltas_deleted": 0,
+      "status": "deleted"
+    },
+    {
+      "session_id": 1395,
+      "markets": [
+        "KXNCAAMENTION-25DEC26FIUUTSA-WIND",
+        "KXNCAAMENTION-25DEC26FIUUTSA-WILD"
+      ],
+      "duration": "0:00:21.402894",
+      "snapshots_deleted": 2,
+      "deltas_deleted": 0,
+      "status": "deleted"
+    },
+    {
+      "session_id": 1397,
+      "markets": [
+        "KXNCAAMENTION-25DEC26FIUUTSA-WIND",
+        "KXNCAAMENTION-25DEC26FIUUTSA-WILD"
+      ],
+      "duration": "0:01:16.776539",
+      "snapshots_deleted": 2,
+      "deltas_deleted": 0,
+      "status": "deleted"
+    },
+    {
+      "session_id": 1400,
+      "markets": [
+        "KXNCAAMENTION-25DEC26FIUUTSA-WIND",
+        "KXNCAAMENTION-25DEC26FIUUTSA-WILD"
+      ],
+      "duration": "0:01:14.096462",
+      "snapshots_deleted": 2,
+      "deltas_deleted": 0,
+      "status": "deleted"
+    },
+    {
+      "session_id": 1402,
+      "markets": [
+        "KXNCAAMENTION-25DEC26FIUUTSA-WIND",
+        "KXNCAAMENTION-25DEC26FIUUTSA-WILD"
+      ],
+      "duration": "0:01:11.020748",
+      "snapshots_deleted": 2,
+      "deltas_deleted": 0,
+      "status": "deleted"
+    },
+    {
+      "session_id": 1403,
+      "markets": [
+        "KXNCAAMENTION-25DEC26FIUUTSA-WIND",
+        "KXNCAAMENTION-25DEC26FIUUTSA-WILD"
+      ],
+      "duration": "0:00:08.248620",
+      "snapshots_deleted": 2,
+      "deltas_deleted": 0,
+      "status": "deleted"
+    },
+    {
+      "session_id": 1404,
+      "markets": [
+        "KXNCAAMENTION-25DEC26FIUUTSA-WIND",
+        "KXNCAAMENTION-25DEC26FIUUTSA-WILD"
+      ],
+      "duration": "0:01:21.467890",
+      "snapshots_deleted": 2,
+      "deltas_deleted": 0,
+      "status": "deleted"
+    },
+    {
+      "session_id": 1407,
+      "markets": [
+        "KXNCAAMENTION-25DEC26FIUUTSA-WIND",
+        "KXNCAAMENTION-25DEC26FIUUTSA-WILD"
+      ],
+      "duration": "0:01:30.062452",
+      "snapshots_deleted": 2,
+      "deltas_deleted": 0,
+      "status": "deleted"
+    },
+    {
+      "session_id": 1409,
+      "markets": [
+        "KXNCAAMENTION-25DEC26FIUUTSA-WIND",
+        "KXNCAAMENTION-25DEC26FIUUTSA-WILD"
+      ],
+      "duration": "0:01:00.405783",
+      "snapshots_deleted": 2,
+      "deltas_deleted": 0,
+      "status": "deleted"
+    },
+    {
+      "session_id": 1410,
+      "markets": [
+        "KXNCAAMENTION-25DEC26FIUUTSA-WIND",
+        "KXNCAAMENTION-25DEC26FIUUTSA-WILD"
+      ],
+      "duration": "0:00:16.181305",
+      "snapshots_deleted": 2,
+      "deltas_deleted": 0,
+      "status": "deleted"
+    },
+    {
+      "session_id": 1412,
+      "markets": [
+        "KXNCAAMENTION-25DEC26FIUUTSA-WIND",
+        "KXNCAAMENTION-25DEC26FIUUTSA-WILD"
+      ],
+      "duration": "0:01:13.791681",
+      "snapshots_deleted": 2,
+      "deltas_deleted": 0,
+      "status": "deleted"
+    },
+    {
+      "session_id": 1415,
+      "markets": [
+        "KXNCAAMENTION-25DEC26FIUUTSA-WIND",
+        "KXNCAAMENTION-25DEC26FIUUTSA-WILD"
+      ],
+      "duration": "0:00:16.160664",
+      "snapshots_deleted": 2,
+      "deltas_deleted": 0,
+      "status": "deleted"
+    },
+    {
+      "session_id": 1416,
+      "markets": [
+        "KXNCAAMENTION-25DEC26FIUUTSA-WIND",
+        "KXNCAAMENTION-25DEC26FIUUTSA-WILD"
+      ],
+      "duration": "0:01:23.163392",
+      "snapshots_deleted": 2,
+      "deltas_deleted": 0,
+      "status": "deleted"
+    },
+    {
+      "session_id": 1418,
+      "markets": [
+        "KXNCAAMENTION-25DEC26FIUUTSA-WIND",
+        "KXNCAAMENTION-25DEC26FIUUTSA-WILD"
+      ],
+      "duration": "0:00:59.449056",
+      "snapshots_deleted": 2,
+      "deltas_deleted": 0,
+      "status": "deleted"
+    },
+    {
+      "session_id": 1420,
+      "markets": [
+        "KXNCAAMENTION-25DEC26FIUUTSA-WIND",
+        "KXNCAAMENTION-25DEC26FIUUTSA-WILD"
+      ],
+      "duration": "0:00:35.246026",
+      "snapshots_deleted": 2,
+      "deltas_deleted": 0,
+      "status": "deleted"
+    },
+    {
+      "session_id": 1422,
+      "markets": [
+        "KXNCAAMENTION-25DEC26FIUUTSA-WIND",
+        "KXNCAAMENTION-25DEC26FIUUTSA-WILD"
+      ],
+      "duration": "0:00:04.058157",
+      "snapshots_deleted": 2,
+      "deltas_deleted": 0,
+      "status": "deleted"
+    },
+    {
+      "session_id": 1425,
+      "markets": [
+        "KXNCAAMENTION-25DEC26FIUUTSA-WIND",
+        "KXNCAAMENTION-25DEC26FIUUTSA-WILD"
+      ],
+      "duration": "0:00:50.635375",
+      "snapshots_deleted": 2,
+      "deltas_deleted": 0,
+      "status": "deleted"
+    },
+    {
+      "session_id": 1427,
+      "markets": [
+        "KXNCAAMENTION-25DEC26FIUUTSA-WIND",
+        "KXNCAAMENTION-25DEC26FIUUTSA-WILD"
+      ],
+      "duration": "0:01:19.103626",
+      "snapshots_deleted": 2,
+      "deltas_deleted": 0,
+      "status": "deleted"
+    },
+    {
+      "session_id": 1429,
+      "markets": [
+        "KXNCAAMENTION-25DEC26FIUUTSA-WIND",
+        "KXNCAAMENTION-25DEC26FIUUTSA-WILD"
+      ],
+      "duration": "0:00:55.563363",
+      "snapshots_deleted": 2,
+      "deltas_deleted": 0,
+      "status": "deleted"
+    },
+    {
+      "session_id": 1430,
+      "markets": [
+        "KXNCAAMENTION-25DEC26FIUUTSA-WIND",
+        "KXNCAAMENTION-25DEC26FIUUTSA-WILD"
+      ],
+      "duration": "0:00:00.579706",
+      "snapshots_deleted": 2,
+      "deltas_deleted": 0,
+      "status": "deleted"
+    },
+    {
+      "session_id": 1432,
+      "markets": [
+        "KXNCAAMENTION-25DEC26FIUUTSA-WIND",
+        "KXNCAAMENTION-25DEC26FIUUTSA-WILD"
+      ],
+      "duration": "0:01:20.350495",
+      "snapshots_deleted": 2,
+      "deltas_deleted": 0,
+      "status": "deleted"
+    },
+    {
+      "session_id": 1434,
+      "markets": [
+        "KXNCAAMENTION-25DEC26FIUUTSA-WIND",
+        "KXNCAAMENTION-25DEC26FIUUTSA-WILD"
+      ],
+      "duration": "0:01:05.388372",
+      "snapshots_deleted": 2,
+      "deltas_deleted": 0,
+      "status": "deleted"
+    },
+    {
+      "session_id": 1436,
+      "markets": [
+        "KXNCAAMENTION-25DEC26FIUUTSA-WIND",
+        "KXNCAAMENTION-25DEC26FIUUTSA-WILD"
+      ],
+      "duration": "0:01:15.602171",
+      "snapshots_deleted": 2,
+      "deltas_deleted": 0,
+      "status": "deleted"
+    },
+    {
+      "session_id": 1438,
+      "markets": [
+        "KXNCAAMENTION-25DEC26FIUUTSA-WIND",
+        "KXNCAAMENTION-25DEC26FIUUTSA-WILD"
+      ],
+      "duration": "0:01:04.092688",
+      "snapshots_deleted": 2,
+      "deltas_deleted": 0,
+      "status": "deleted"
+    },
+    {
+      "session_id": 1440,
+      "markets": [
+        "KXNCAAMENTION-25DEC26FIUUTSA-WIND",
+        "KXNCAAMENTION-25DEC26FIUUTSA-WILD"
+      ],
+      "duration": "0:00:31.825776",
+      "snapshots_deleted": 2,
+      "deltas_deleted": 0,
+      "status": "deleted"
+    }
+  ]
+}

@@ -8,7 +8,7 @@ import logging
 import time
 from typing import Optional, Tuple
 
-from ..state.trader_state import TraderState, StateChange
+from ..state.trader_state import TraderState, StateChange, OrderGroupState
 
 logger = logging.getLogger("kalshiflow_rl.traderv3.sync.kalshi_data_sync")
 
@@ -34,6 +34,7 @@ class KalshiDataSync:
         self._client = trading_client
         self._current_state: Optional[TraderState] = None
         self._sync_count = 0
+        self._order_group_id: Optional[str] = None  # Track order group ID
     
     async def sync_with_kalshi(self) -> Tuple[TraderState, Optional[StateChange]]:
         """
@@ -76,6 +77,34 @@ class KalshiDataSync:
             except Exception as e:
                 logger.warning(f"Could not fetch settlements: {e}")
             
+            # 5. Get order group status (if we have an ID)
+            order_group_state = None
+            if self._order_group_id:
+                try:
+                    logger.debug(f"Fetching order group {self._order_group_id[:8]}...")
+                    group_response = await self._client.get_order_group(self._order_group_id)
+                    
+                    # Build OrderGroupState from response (use raw API values)
+                    order_group_state = OrderGroupState(
+                        order_group_id=self._order_group_id,
+                        created_at=time.time(),  # We don't track creation time from API
+                        max_absolute_position=group_response.get("max_absolute_position", 0),  # Raw API value
+                        max_open_orders=group_response.get("max_open_orders", 0),  # Raw API value
+                        status=group_response.get("status", "unknown"),
+                        current_absolute_position=group_response.get("current_absolute_position", 0),
+                        current_open_orders=group_response.get("current_open_orders", 0)
+                    )
+                    
+                    logger.debug(f"Order group synced: {order_group_state.to_metadata()}")
+                    
+                except Exception as e:
+                    logger.warning(f"Could not fetch order group status: {e}")
+                    # Keep existing order group in state if fetch fails
+                    if previous_state and previous_state.order_group:
+                        order_group_state = previous_state.order_group
+                        order_group_state.last_error = str(e)
+                        order_group_state.error_count += 1
+            
             # Build new state from raw Kalshi data
             new_state = TraderState.from_kalshi_data(
                 balance_data=balance_response,
@@ -83,6 +112,9 @@ class KalshiDataSync:
                 orders_data=orders_response,
                 settlements_data=settlements
             )
+            
+            # Add order group to state
+            new_state.order_group = order_group_state
             
             # Calculate changes if we have a previous state
             changes = None
@@ -153,3 +185,22 @@ class KalshiDataSync:
         except Exception as e:
             logger.error(f"Failed to refresh state: {e}")
             return None
+    
+    def set_order_group_id(self, order_group_id: Optional[str]) -> None:
+        """
+        Set the order group ID to track in syncs.
+        
+        Args:
+            order_group_id: UUID of order group or None to clear
+        """
+        if order_group_id:
+            logger.info(f"Tracking order group: {order_group_id[:8]}...")
+            self._order_group_id = order_group_id
+        else:
+            logger.info("Cleared order group tracking")
+            self._order_group_id = None
+    
+    @property
+    def order_group_id(self) -> Optional[str]:
+        """Get current order group ID being tracked."""
+        return self._order_group_id

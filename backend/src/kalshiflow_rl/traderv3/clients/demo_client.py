@@ -25,7 +25,7 @@ from kalshiflow.auth import KalshiAuth
 from ...config import config as rl_config
 config = rl_config
 
-logger = logging.getLogger("kalshiflow_rl.trading.demo_client")
+logger = logging.getLogger("kalshiflow_rl.traderv3.clients.demo_client")
 
 
 class KalshiDemoTradingClientError(Exception):
@@ -513,7 +513,8 @@ class KalshiDemoTradingClient:
         side: str,
         count: int,
         price: Optional[int] = None,
-        type: str = "limit"
+        type: str = "limit",
+        order_group_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Create order on demo account.
@@ -525,6 +526,7 @@ class KalshiDemoTradingClient:
             count: Number of contracts
             price: Limit price in cents (1-99), None for market orders
             type: Order type ("limit" or "market")
+            order_group_id: Optional order group ID for portfolio limits
             
         Returns:
             Order creation response
@@ -541,6 +543,10 @@ class KalshiDemoTradingClient:
                 "type": type
             }
             
+            # Add order group if provided
+            if order_group_id:
+                order_data["order_group_id"] = order_group_id
+            
             # Kalshi API requires specific price field names based on contract side
             if price is not None:
                 if side.lower() == "yes":
@@ -550,7 +556,10 @@ class KalshiDemoTradingClient:
                 else:
                     raise KalshiDemoOrderError(f"Invalid contract side: {side}. Must be 'yes' or 'no'")
             
-            logger.info(f"Creating demo order: {action} {count} {side} contracts of {ticker} @ {price}¢")
+            if order_group_id:
+                logger.info(f"Creating demo order: {action} {count} {side} contracts of {ticker} @ {price}¢ (group: {order_group_id[:8]}...)")
+            else:
+                logger.info(f"Creating demo order: {action} {count} {side} contracts of {ticker} @ {price}¢ (no portfolio limits)")
             
             response = await self._make_request("POST", "/portfolio/orders", order_data)
             
@@ -758,6 +767,168 @@ class KalshiDemoTradingClient:
             raise KalshiDemoTradingClientError(f"Invalid settlements response structure: {e}")
         except Exception as e:
             raise KalshiDemoTradingClientError(f"Failed to get settlements: {e}")
+    
+    # ===================
+    # Order Group Methods
+    # ===================
+    
+    async def create_order_group(self, contracts_limit: int = 10000) -> Dict[str, Any]:
+        """
+        Create an order group for portfolio limit management.
+        
+        API only accepts contracts_limit parameter per docs.
+        
+        Args:
+            contracts_limit: Maximum number of contracts (default 10000)
+            
+        Returns:
+            Order group response with order_group_id
+            
+        Raises:
+            KalshiDemoTradingClientError: If creation fails
+        """
+        try:
+            data = {
+                "contracts_limit": contracts_limit
+            }
+            
+            response = await self._make_request("POST", "/portfolio/order_groups/create", data)
+            
+            if not response.get("order_group_id"):
+                raise ValueError(f"No order_group_id in response: {response}")
+            
+            logger.info(f"Created order group: {response['order_group_id'][:8]}... "
+                       f"(contracts_limit: {contracts_limit})")
+            
+            return response
+            
+        except Exception as e:
+            logger.error(f"Failed to create order group: {e}")
+            raise KalshiDemoTradingClientError(f"Failed to create order group: {e}")
+    
+    async def get_order_group(self, order_group_id: str) -> Dict[str, Any]:
+        """
+        Get order group status and usage.
+        
+        Args:
+            order_group_id: UUID of the order group
+            
+        Returns:
+            Order group details including current usage
+            
+        Raises:
+            KalshiDemoTradingClientError: If fetch fails
+        """
+        try:
+            response = await self._make_request("GET", f"/portfolio/order_groups/{order_group_id}")
+            
+            logger.debug(f"Order group {order_group_id[:8]}... status: "
+                        f"position={response.get('current_absolute_position', 0)}/{response.get('max_absolute_position', 0)}, "
+                        f"orders={response.get('current_open_orders', 0)}/{response.get('max_open_orders', 0)}")
+            
+            return response
+            
+        except Exception as e:
+            logger.error(f"Failed to get order group {order_group_id[:8]}...: {e}")
+            raise KalshiDemoTradingClientError(f"Failed to get order group: {e}")
+    
+    async def update_order_group(self, order_group_id: str, contracts_limit: int) -> Dict[str, Any]:
+        """
+        Update order group limits.
+        
+        Args:
+            order_group_id: UUID of the order group
+            contracts_limit: New maximum number of contracts
+            
+        Returns:
+            Updated order group details
+            
+        Raises:
+            KalshiDemoTradingClientError: If update fails
+        """
+        try:
+            data = {
+                "contracts_limit": contracts_limit
+            }
+            
+            response = await self._make_request("PATCH", f"/portfolio/order_groups/{order_group_id}", data)
+            
+            logger.info(f"Updated order group {order_group_id[:8]}... to: "
+                       f"contracts_limit={contracts_limit}")
+            
+            return response
+            
+        except Exception as e:
+            logger.error(f"Failed to update order group {order_group_id[:8]}...: {e}")
+            raise KalshiDemoTradingClientError(f"Failed to update order group: {e}")
+    
+    async def reset_order_group(self, order_group_id: str) -> Dict[str, Any]:
+        """
+        Reset an order group (clears positions and cancels orders).
+        
+        According to API docs, use POST /portfolio/order_groups/{id}/reset.
+        
+        Args:
+            order_group_id: UUID of the order group
+            
+        Returns:
+            Reset confirmation
+            
+        Raises:
+            KalshiDemoTradingClientError: If reset fails
+        """
+        try:
+            response = await self._make_request("POST", f"/portfolio/order_groups/{order_group_id}/reset")
+            
+            logger.info(f"Reset order group {order_group_id[:8]}...")
+            
+            return response
+            
+        except Exception as e:
+            logger.error(f"Failed to reset order group {order_group_id[:8]}...: {e}")
+            raise KalshiDemoTradingClientError(f"Failed to reset order group: {e}")
+    
+    # Backward compatibility alias
+    async def close_order_group(self, order_group_id: str) -> Dict[str, Any]:
+        """Alias for reset_order_group for backward compatibility."""
+        return await self.reset_order_group(order_group_id)
+    
+    async def list_order_groups(self, status: Optional[str] = None) -> Dict[str, Any]:
+        """
+        List all order groups for the account.
+        
+        Args:
+            status: Optional filter by status (active, closed)
+            
+        Returns:
+            List of order groups
+            
+        Raises:
+            KalshiDemoTradingClientError: If listing fails
+        """
+        try:
+            params = {}
+            if status:
+                params["status"] = status
+            
+            # Build query string if params exist
+            query_string = "&".join([f"{k}={v}" for k, v in params.items()]) if params else ""
+            path = f"/portfolio/order_groups{'?' + query_string if query_string else ''}"
+            
+            response = await self._make_request("GET", path)
+            
+            # Demo API returns {} when no groups, normalize to expected format
+            if response == {}:
+                response = {"order_groups": []}
+            
+            groups_count = len(response.get("order_groups", []))
+            logger.debug(f"Retrieved {groups_count} order groups" + (f" with status={status}" if status else ""))
+            
+            return response
+            
+        except Exception as e:
+            logger.error(f"Failed to list order groups: {e}")
+            raise KalshiDemoTradingClientError(f"Failed to list order groups: {e}")
     
     async def connect_websocket(self) -> None:
         """

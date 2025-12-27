@@ -157,7 +157,45 @@ class V3Coordinator:
         connection_success = await self._orderbook_integration.wait_for_connection(timeout=30.0)
         
         if not connection_success:
-            raise RuntimeError("Failed to connect to orderbook WebSocket")
+            logger.warning("⚠️ DEGRADED MODE: Orderbook WebSocket unavailable - continuing without live market data")
+            await self._event_bus.emit_system_activity(
+                activity_type="connection",
+                message="⚠️ DEGRADED MODE: Running without orderbook connection",
+                metadata={"degraded": True, "reason": "WebSocket unavailable"}
+            )
+            
+            # Still transition to ORDERBOOK_CONNECT state but with degraded status
+            await self._state_machine.transition_to(
+                V3State.ORDERBOOK_CONNECT,
+                context="Degraded mode - no orderbook connection",
+                metadata={
+                    "ws_url": self._config.ws_url,
+                    "markets": self._config.market_tickers[:2] + (["...and {} more".format(len(self._config.market_tickers) - 2)] if len(self._config.market_tickers) > 2 else []),
+                    "market_count": len(self._config.market_tickers),
+                    "environment": self._config.get_environment_name(),
+                    "markets_connected": 0,
+                    "snapshots_received": 0,
+                    "deltas_received": 0,
+                    "connection_established": False,
+                    "first_snapshot_received": False,
+                    "degraded": True
+                }
+            )
+            
+            # Update state container with degraded status
+            self._state_container.update_machine_state(
+                V3State.ORDERBOOK_CONNECT,
+                "Degraded mode - no orderbook connection",
+                {
+                    "markets_connected": 0,
+                    "snapshots_received": 0,
+                    "ws_url": self._config.ws_url,
+                    "degraded": True
+                }
+            )
+            
+            await self._emit_status_update("Running in degraded mode without orderbook")
+            return
         
         # Wait for first snapshot
         logger.info("Waiting for initial orderbook snapshot...")
@@ -218,6 +256,27 @@ class V3Coordinator:
         
         if not connected:
             raise RuntimeError("Failed to connect to trading API")
+        
+        # Setup order group for portfolio limits (simplified)
+        logger.info("Setting up order group for portfolio limits...")
+        order_group_id = await self._trading_client_integration.create_or_get_order_group(
+            contracts_limit=10000  # 10K contracts limit
+        )
+        
+        if order_group_id:
+            logger.info(f"✅ Order group ready: {order_group_id[:8]}...")
+            await self._event_bus.emit_system_activity(
+                activity_type="order_group",
+                message=f"Order group ready: {order_group_id[:8]}... (10K contract limit)",
+                metadata={"order_group_id": order_group_id, "contracts_limit": 10000}
+            )
+        else:
+            logger.warning("⚠️ Order groups not available - continuing without portfolio limits")
+            await self._event_bus.emit_system_activity(
+                activity_type="order_group",
+                message="⚠️ DEGRADED MODE: Order groups unavailable",
+                metadata={"degraded": True}
+            )
     
     async def _sync_trading_state(self) -> None:
         """Perform initial trading state sync."""
@@ -288,8 +347,17 @@ class V3Coordinator:
                 "orders": trading_state.order_count
             }
         
-        # Determine context
-        if orderbook_metrics["snapshots_received"] > 0:
+        # Check for degraded mode
+        degraded = not health_details["connection_established"] and orderbook_metrics["markets_connected"] == 0
+        
+        # Determine context based on connection status
+        if degraded:
+            if self._trading_client_integration:
+                context = f"DEGRADED MODE: Trading enabled without orderbook (paper mode)"
+            else:
+                context = f"DEGRADED MODE: No orderbook connection available"
+            ready_metadata["degraded"] = True
+        elif orderbook_metrics["snapshots_received"] > 0:
             if self._trading_client_integration:
                 context = f"System fully operational with {orderbook_metrics['markets_connected']} markets and trading enabled"
             else:
@@ -444,6 +512,26 @@ class V3Coordinator:
                 )
             
             # Broadcast state (even if unchanged, to update sync timestamp)
+            # Include order group status in metadata if available
+            sync_metadata = {
+                "sync_type": "periodic",
+                "balance": state.balance,
+                "position_count": state.position_count,
+                "order_count": state.order_count
+            }
+            
+            # Add order group info if available
+            if self._trading_client_integration and self._trading_client_integration.has_order_group:
+                sync_metadata["order_group"] = {
+                    "id": self._trading_client_integration.order_group_id[:8] if self._trading_client_integration.order_group_id else "none",
+                    "supported": self._trading_client_integration.order_groups_supported
+                }
+            elif self._trading_client_integration and not self._trading_client_integration.order_groups_supported:
+                sync_metadata["order_group"] = {
+                    "supported": False,
+                    "message": "Order groups unavailable (Demo API limitation)"
+                }
+            
             if state_changed or True:  # Always broadcast on sync
                 await self._emit_trading_state()
                 
@@ -657,7 +745,8 @@ class V3Coordinator:
                 "positions": trading_summary["positions"],
                 "open_orders": trading_summary["open_orders"],
                 "sync_timestamp": trading_summary["sync_timestamp"],
-                "changes": trading_summary.get("changes")
+                "changes": trading_summary.get("changes"),
+                "order_group": trading_summary.get("order_group")  # Include order group data
             })
             
             logger.debug(f"Broadcast trading state v{trading_summary['version']}")

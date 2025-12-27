@@ -12,6 +12,40 @@ from typing import Dict, List, Any, Optional
 
 
 @dataclass
+class OrderGroupState:
+    """
+    Order group state representation.
+    Tracks an order group session for portfolio limits.
+    """
+    order_group_id: str  # UUID of the order group
+    created_at: float  # Timestamp when created
+    max_absolute_position: int  # Max position in cents
+    max_open_orders: int  # Max number of open orders
+    status: str = "active"  # active, closed, failed
+    
+    # Usage tracking
+    current_absolute_position: int = 0  # Current usage in cents
+    current_open_orders: int = 0  # Current open order count
+    
+    # Error tracking
+    last_error: Optional[str] = None
+    error_count: int = 0
+    
+    def is_active(self) -> bool:
+        """Check if order group is active and usable."""
+        return self.status == "active" and self.order_group_id
+    
+    def to_metadata(self) -> dict:
+        """Format for state machine metadata."""
+        return {
+            "order_group_id": self.order_group_id[:8] if self.order_group_id else "none",
+            "status": self.status,
+            "position_usage": f"{self.current_absolute_position}/{self.max_absolute_position}",
+            "order_usage": f"{self.current_open_orders}/{self.max_open_orders}"
+        }
+
+
+@dataclass
 class TraderState:
     """
     Complete trader state representation.
@@ -31,6 +65,9 @@ class TraderState:
     
     # Settlements (from /portfolio/settlements)
     settlements: List[Dict[str, Any]] = field(default_factory=list)  # Recent settlements
+    
+    # Order group state (optional)
+    order_group: Optional[OrderGroupState] = None  # Order group session if active
     
     # Metadata
     sync_timestamp: float = 0.0

@@ -44,7 +44,8 @@ Thread Safety:
 
 import time
 import logging
-from typing import Dict, Any, Optional
+import asyncio
+from typing import Dict, Any, Optional, Callable, Awaitable, TypeVar
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -52,6 +53,8 @@ from ..state.trader_state import TraderState, StateChange
 from .state_machine import TraderState as V3State  # State machine states
 
 logger = logging.getLogger("kalshiflow_rl.traderv3.core.state_container")
+
+T = TypeVar('T')
 
 
 @dataclass
@@ -152,7 +155,11 @@ class V3StateContainer:
         self._created_at = time.time()
         self._last_update = time.time()
         
-        logger.info("V3StateContainer initialized")
+        # Versioning and locking for atomic updates
+        self._global_version = 0  # Increments on ANY state change
+        self._lock = asyncio.Lock()  # For atomic operations
+        
+        logger.info("V3StateContainer initialized with versioning protocol")
     
     # ======== Trading State Management ========
     
@@ -276,6 +283,19 @@ class V3StateContainer:
             "positions": list(state.positions.keys()),  # Just tickers
             "open_orders": len(state.orders)  # Count of orders
         }
+        
+        # Add order group info if available (pass raw data)
+        if state.order_group:
+            summary["order_group"] = {
+                "id": state.order_group.order_group_id[:8] if state.order_group.order_group_id else "none",
+                "status": state.order_group.status,
+                "max_absolute_position": state.order_group.max_absolute_position,  # Raw value from API
+                "max_open_orders": state.order_group.max_open_orders,  # Raw value from API
+                "current_absolute_position": state.order_group.current_absolute_position,  # Raw value
+                "current_open_orders": state.order_group.current_open_orders  # Raw value
+            }
+        else:
+            summary["order_group"] = None
         
         # Add changes if available
         if self._last_state_change:
@@ -442,6 +462,193 @@ class V3StateContainer:
             }
         }
     
+    # ======== Atomic Update Protocol (Step 0: Safety First) ========
+    
+    async def atomic_update(
+        self,
+        update_func: Callable[['V3StateContainer'], Awaitable[T]]
+    ) -> tuple[T, int]:
+        """
+        Perform atomic state update with version increment.
+        
+        This is the primary mechanism for preventing race conditions
+        during the refactoring. All state modifications should go
+        through this method to ensure atomicity and proper versioning.
+        
+        The update function receives the container (self) and can
+        modify any state. The global version is automatically
+        incremented after a successful update.
+        
+        Args:
+            update_func: Async function that performs the state update.
+                        Receives the container as argument.
+        
+        Returns:
+            Tuple of (result from update_func, new global version)
+        
+        Usage:
+            ```python
+            async def update_trading(container):
+                container._trading_state = new_state
+                container._trading_state_version += 1
+                return True
+            
+            changed, version = await container.atomic_update(update_trading)
+            ```
+        
+        Thread Safety:
+            This method uses an async lock to ensure only one update
+            happens at a time, preventing race conditions.
+        """
+        async with self._lock:
+            try:
+                # Execute the update function
+                result = await update_func(self)
+                
+                # Increment global version on successful update
+                self._global_version += 1
+                self._last_update = time.time()
+                
+                logger.debug(f"Atomic update completed, global version: {self._global_version}")
+                return result, self._global_version
+                
+            except Exception as e:
+                logger.error(f"Atomic update failed: {e}")
+                raise
+    
+    def atomic_update_sync(
+        self,
+        update_func: Callable[['V3StateContainer'], T]
+    ) -> tuple[T, int]:
+        """
+        Perform atomic state update (synchronous version).
+        
+        This is a synchronous wrapper for atomic updates that don't
+        require async operations. It creates a temporary async wrapper
+        around the sync function.
+        
+        Args:
+            update_func: Sync function that performs the state update
+        
+        Returns:
+            Tuple of (result from update_func, new global version)
+        
+        Usage:
+            ```python
+            def update_health(container):
+                container._component_health[name].healthy = True
+                return True
+            
+            # This won't work in async context - use atomic_update instead
+            changed, version = container.atomic_update_sync(update_health)
+            ```
+        
+        Note:
+            This method is provided for backward compatibility but
+            atomic_update (async) is preferred.
+        """
+        async def async_wrapper(container):
+            return update_func(container)
+        
+        # Create event loop if needed (for sync contexts)
+        try:
+            loop = asyncio.get_running_loop()
+            # We're in an async context, can't use sync version
+            raise RuntimeError(
+                "Cannot use atomic_update_sync from async context. "
+                "Use atomic_update instead."
+            )
+        except RuntimeError:
+            # No running loop, we can create one
+            return asyncio.run(self.atomic_update(async_wrapper))
+    
+    @property
+    def global_version(self) -> int:
+        """
+        Get current global version number.
+        
+        This version increments on ANY state change in the container,
+        providing a simple way to detect if anything has changed.
+        
+        Returns:
+            Current global version number
+        
+        Usage:
+            Used by coordinator to detect if state has changed
+            and needs to be broadcast to clients.
+        """
+        return self._global_version
+    
+    async def compare_and_swap(
+        self,
+        expected_version: int,
+        update_func: Callable[['V3StateContainer'], Awaitable[T]]
+    ) -> tuple[bool, T, int]:
+        """
+        Perform atomic compare-and-swap update.
+        
+        Only executes the update if the current version matches
+        the expected version, preventing lost updates in concurrent
+        scenarios.
+        
+        Args:
+            expected_version: Expected current version
+            update_func: Update function to execute if version matches
+        
+        Returns:
+            Tuple of (success, result, new_version)
+            - success: True if update executed, False if version mismatch
+            - result: Result from update_func (None if not executed)
+            - new_version: Current version after operation
+        
+        Usage:
+            ```python
+            current_version = container.global_version
+            # ... prepare update ...
+            success, result, new_version = await container.compare_and_swap(
+                current_version, update_func
+            )
+            if not success:
+                # Version changed, retry with new state
+                pass
+            ```
+        """
+        async with self._lock:
+            if self._global_version != expected_version:
+                logger.debug(
+                    f"Compare-and-swap version mismatch: "
+                    f"expected {expected_version}, got {self._global_version}"
+                )
+                return False, None, self._global_version
+            
+            try:
+                result = await update_func(self)
+                self._global_version += 1
+                self._last_update = time.time()
+                
+                logger.debug(f"Compare-and-swap succeeded, new version: {self._global_version}")
+                return True, result, self._global_version
+                
+            except Exception as e:
+                logger.error(f"Compare-and-swap update failed: {e}")
+                raise
+    
+    def has_changed_since(self, version: int) -> bool:
+        """
+        Check if state has changed since a given version.
+        
+        Args:
+            version: Version to compare against
+        
+        Returns:
+            True if current version is newer than given version
+        
+        Usage:
+            Used by WebSocket manager to avoid broadcasting
+            unchanged state to clients.
+        """
+        return self._global_version > version
+    
     def reset(self) -> None:
         """Reset all state (for testing or recovery)."""
         logger.warning("Resetting V3StateContainer - all state will be cleared")
@@ -457,5 +664,6 @@ class V3StateContainer:
         self._machine_state_metadata = {}
         
         self._last_update = time.time()
+        self._global_version = 0  # Reset global version
         
         logger.info("V3StateContainer reset complete")

@@ -201,11 +201,11 @@ class OrderbookClient:
         
         async with websockets.connect(
             self.ws_url,
-            additional_headers=headers,
-            ping_interval=config.WEBSOCKET_PING_INTERVAL,
-            ping_timeout=config.WEBSOCKET_PING_TIMEOUT,
-            max_size=1024*1024,  # 1MB max message size
-            compression=None  # Disable compression for lower latency
+            additional_headers=headers
+            # Removed optional parameters to use defaults:
+            # - ping_interval/timeout: Let server control ping settings
+            # - max_size: Use default (1MB)
+            # - compression: Use default
         ) as websocket:
             self._websocket = websocket
             self._connection_start_time = time.time()

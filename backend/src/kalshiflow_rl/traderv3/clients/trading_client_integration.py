@@ -92,6 +92,9 @@ class V3TradingClientIntegration:
         self._sync_complete = False  # Renamed from calibration_complete
         self._last_health_check: Optional[float] = None
         
+        # Order group tracking
+        self._order_group_id: Optional[str] = None
+        
         # Health monitoring thresholds
         self._health_check_interval = 30.0  # Check health every 30 seconds
         self._max_api_errors = 5  # Maximum consecutive API errors before unhealthy
@@ -129,6 +132,13 @@ class V3TradingClientIntegration:
         
         logger.info("Stopping V3 trading client integration...")
         self._running = False
+        
+        # Reset order group if active  
+        if self._order_group_id:
+            try:
+                await self.reset_order_group()
+            except Exception as e:
+                logger.warning(f"Could not reset order group on stop: {e}")
         
         # Disconnect from trading API
         if self._connected:
@@ -178,8 +188,16 @@ class V3TradingClientIntegration:
                 f"balance=${self._metrics.balance}, portfolio=${self._metrics.portfolio_value})"
             )
             
-            # Note: Custom events would require extending EventBus with a generic emit method
-            # For now, we'll rely on logging and metrics for tracking
+            # Create order group for portfolio limits
+            try:
+                order_group_id = await self.create_order_group(contracts_limit=10000)
+                if order_group_id:
+                    logger.info(f"✅ Order group ready: {order_group_id[:8]}...")
+                else:
+                    logger.warning("⚠️ Running without order group (no portfolio limits)")
+            except Exception as e:
+                logger.warning(f"⚠️ Could not create order group: {e}")
+                # Continue without order group - it's not critical
             
             return True
             
@@ -228,7 +246,8 @@ class V3TradingClientIntegration:
         side: str,
         count: int,
         price: Optional[int] = None,
-        order_type: str = "limit"
+        order_type: str = "limit",
+        order_group_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Place an order through the trading client.
@@ -240,6 +259,7 @@ class V3TradingClientIntegration:
             count: Number of contracts
             price: Limit price in cents (1-99)
             order_type: "limit" or "market"
+            order_group_id: Optional order group ID for portfolio limits
             
         Returns:
             Order response from API
@@ -258,6 +278,9 @@ class V3TradingClientIntegration:
             raise ValueError(f"Position size would exceed limit ({self._max_position_size})")
         
         try:
+            # Use order group if provided or default to instance group
+            group_id = order_group_id or self._order_group_id
+            
             # Place order through client
             response = await self._client.create_order(
                 ticker=ticker,
@@ -265,7 +288,8 @@ class V3TradingClientIntegration:
                 side=side,
                 count=count,
                 price=price,
-                type=order_type
+                type=order_type,
+                order_group_id=group_id
             )
             
             # Update metrics
@@ -283,7 +307,10 @@ class V3TradingClientIntegration:
             # Note: Order events would require extending EventBus with a generic emit method
             # For now, we track via logging and metrics
             
-            logger.info(f"✅ Order placed: {action} {count} {side} {ticker} @ {price}¢")
+            if group_id:
+                logger.info(f"✅ Order placed: {action} {count} {side} {ticker} @ {price}¢ (group: {group_id[:8]}...)")
+            else:
+                logger.info(f"✅ Order placed: {action} {count} {side} {ticker} @ {price}¢ (no portfolio limits)")
             return response
             
         except Exception as e:
@@ -525,3 +552,145 @@ class V3TradingClientIntegration:
                 filtered[order_id] = order
         
         return filtered
+    
+    # ========================
+    # Order Group Management
+    # ========================
+    
+    async def create_order_group(self, contracts_limit: int = 10000) -> str:
+        """
+        Create an order group session for portfolio limits.
+        
+        Args:
+            contracts_limit: Maximum number of contracts (default 10000)
+            
+        Returns:
+            Order group ID
+            
+        Raises:
+            Exception if creation fails
+        """
+        if self._order_group_id:
+            logger.warning(f"Order group already exists: {self._order_group_id[:8]}...")
+            return self._order_group_id
+        
+        try:
+            # Create order group via client
+            response = await self._client.create_order_group(
+                contracts_limit=contracts_limit
+            )
+            
+            self._order_group_id = response["order_group_id"]
+            
+            # Pass to sync service
+            self._kalshi_data_sync.set_order_group_id(self._order_group_id)
+            
+            logger.info(f"✅ Created order group: {self._order_group_id[:8]}... "
+                       f"(contracts_limit: {contracts_limit})")
+            
+            # Broadcast system activity event
+            from ..core.event_bus import SystemActivityEvent
+            await self._event_bus.publish(SystemActivityEvent(
+                activity_type="operation",
+                message=f"Order group created: {self._order_group_id[:8]}... (limit: {contracts_limit} contracts)",
+                metadata={
+                    "order_group_id": self._order_group_id,
+                    "contracts_limit": contracts_limit,
+                    "component": "TradingClient"
+                }
+            ))
+            
+            return self._order_group_id
+            
+        except Exception as e:
+            logger.error(f"Failed to create order group: {e}")
+            raise
+    
+    def set_order_group_id(self, order_group_id: str) -> None:
+        """
+        Set the order group ID for this integration.
+        
+        Args:
+            order_group_id: The order group UUID
+        """
+        self._order_group_id = order_group_id
+        self._kalshi_data_sync.set_order_group_id(order_group_id)
+        logger.info(f"Order group ID set: {order_group_id[:8]}...")
+    
+    def get_order_group_id(self) -> Optional[str]:
+        """Get current order group ID."""
+        return self._order_group_id
+    
+    async def create_or_get_order_group(self, contracts_limit: int = 10000) -> Optional[str]:
+        """
+        Create a new order group or return existing one.
+        
+        Args:
+            contracts_limit: Maximum number of contracts (default 10000)
+            
+        Returns:
+            Order group ID or None if creation failed
+        """
+        if self._order_group_id:
+            logger.debug(f"Using existing order group: {self._order_group_id[:8]}...")
+            return self._order_group_id
+        
+        try:
+            response = await self._client.create_order_group(contracts_limit)
+            self.set_order_group_id(response["order_group_id"])
+            
+            logger.info(f"✅ Created order group: {self._order_group_id[:8]}... "
+                       f"(contracts_limit: {contracts_limit})")
+            
+            return self._order_group_id
+            
+        except Exception as e:
+            logger.warning(f"Could not create order group: {e}")
+            return None
+    
+    async def reset_order_group(self) -> bool:
+        """
+        Reset the current order group session.
+        
+        Returns:
+            True if closed successfully, False otherwise
+        """
+        if not self._order_group_id:
+            logger.debug("No order group to close")
+            return True
+        
+        try:
+            # Reset via client (using new API endpoint)
+            await self._client.reset_order_group(self._order_group_id)
+            
+            logger.info(f"✅ Reset order group: {self._order_group_id[:8]}...")
+            
+            # Clear tracking
+            self._order_group_id = None
+            self._kalshi_data_sync.set_order_group_id(None)
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to reset order group: {e}")
+            return False
+    
+    # Backward compatibility alias
+    async def close_order_group(self) -> bool:
+        """Alias for reset_order_group for backward compatibility."""
+        return await self.reset_order_group()
+    
+    @property
+    def order_group_id(self) -> Optional[str]:
+        """Get current order group ID."""
+        return self._order_group_id
+    
+    @property
+    def has_order_group(self) -> bool:
+        """Check if order group is active."""
+        return self._order_group_id is not None
+    
+    @property
+    def order_groups_supported(self) -> bool:
+        """Check if order groups are supported by API."""
+        return self._order_groups_supported
