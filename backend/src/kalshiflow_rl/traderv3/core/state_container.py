@@ -237,7 +237,23 @@ class V3StateContainer:
         self._last_state_change = changes
         self._trading_state_version += 1
         self._last_update = time.time()
-        
+
+        # On first sync, populate settlements from REST API data
+        # This shows recent historical settlements before any new ones arrive via WebSocket
+        if len(self._settled_positions) == 0 and state.settlements:
+            for s in state.settlements[:50]:  # Last 50
+                settlement = {
+                    "ticker": s.get("ticker", ""),
+                    "position": s.get("yes_count", 0) or s.get("no_count", 0),
+                    "side": "yes" if s.get("yes_count", 0) > 0 else "no",
+                    "total_traded": 0,  # Not available in settlements API
+                    "realized_pnl": s.get("revenue", 0),  # Revenue = payout in cents
+                    "closed_at": s.get("settled_time") or time.time(),
+                }
+                self._settled_positions.append(settlement)
+            self._total_settlements_count = len(self._settled_positions)
+            logger.info(f"Pre-populated {len(self._settled_positions)} historical settlements from REST API")
+
         # Log significant changes
         if changes:
             if changes.balance_change != 0:

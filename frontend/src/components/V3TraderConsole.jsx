@@ -473,6 +473,8 @@ const WhaleQueuePanel = ({ whaleQueue, processingWhaleId }) => {
 
 // FollowedTradesPanel Component - Shows trades we've followed (persists beyond whale queue window)
 const FollowedTradesPanel = ({ followedWhales }) => {
+  const [isExpanded, setIsExpanded] = useState(true);
+
   // Don't render if no followed trades
   if (!followedWhales || followedWhales.length === 0) {
     return null;
@@ -490,17 +492,24 @@ const FollowedTradesPanel = ({ followedWhales }) => {
 
   return (
     <div className="bg-gray-900/50 backdrop-blur-sm rounded-xl border border-green-800/50 p-4 mt-4">
-      <div className="flex items-center justify-between mb-4">
+      <div
+        className="flex items-center justify-between cursor-pointer"
+        onClick={() => setIsExpanded(!isExpanded)}
+      >
         <div className="flex items-center space-x-2">
+          {isExpanded ? (
+            <ChevronDown className="w-4 h-4 text-gray-400" />
+          ) : (
+            <ChevronRight className="w-4 h-4 text-gray-400" />
+          )}
           <CheckCircle className="w-4 h-4 text-green-400" />
           <h3 className="text-sm font-bold text-green-400 uppercase tracking-wider">Followed Trades</h3>
+          <span className="text-xs text-gray-500">({followedWhales.length})</span>
         </div>
-        <span className="text-xs text-gray-400 font-mono">
-          {followedWhales.length} trade{followedWhales.length !== 1 ? 's' : ''}
-        </span>
       </div>
 
-      <div className="bg-gray-800/30 rounded-lg border border-gray-700/50 overflow-hidden">
+      {isExpanded && (
+      <div className="bg-gray-800/30 rounded-lg border border-gray-700/50 overflow-hidden mt-4">
         <table className="w-full text-sm">
           <thead>
             <tr className="bg-gray-900/50 border-b border-gray-700/50">
@@ -542,6 +551,7 @@ const FollowedTradesPanel = ({ followedWhales }) => {
           </tbody>
         </table>
       </div>
+      )}
     </div>
   );
 };
@@ -1936,6 +1946,15 @@ const V3TraderConsole = () => {
           <TradingData tradingState={tradingState} lastUpdateTime={lastUpdateTime} />
         </div>
 
+        {/* Whale Queue Panel - Above positions for visibility */}
+        <div className="mb-6">
+          <WhaleQueuePanel whaleQueue={whaleQueue} processingWhaleId={processingWhaleId} />
+          <DecisionAuditPanel
+            decisionHistory={whaleQueue.decision_history}
+            decisionStats={whaleQueue.decision_stats}
+          />
+        </div>
+
         {/* Position List Panel - Detailed per-position P&L */}
         <PositionListPanel
           positions={tradingState?.positions_details}
@@ -1943,19 +1962,14 @@ const V3TraderConsole = () => {
           sessionUpdates={tradingState?.session_updates}
         />
 
+        {/* Followed Trades - Below positions */}
+        <div className="mb-6">
+          <FollowedTradesPanel followedWhales={whaleQueue.followed_whales} />
+        </div>
+
         {/* Settlements Panel - Recently closed positions */}
         <div className="mb-6">
           <SettlementsPanel settlements={settlements} />
-        </div>
-
-        {/* Whale Queue Panel - Full width below Trading Data */}
-        <div className="mb-6">
-          <WhaleQueuePanel whaleQueue={whaleQueue} processingWhaleId={processingWhaleId} />
-          <FollowedTradesPanel followedWhales={whaleQueue.followed_whales} />
-          <DecisionAuditPanel
-            decisionHistory={whaleQueue.decision_history}
-            decisionStats={whaleQueue.decision_stats}
-          />
         </div>
 
         <div className="grid grid-cols-12 gap-6">
