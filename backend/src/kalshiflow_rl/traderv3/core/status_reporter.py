@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     from .state_container import V3StateContainer
     from ..clients.orderbook_integration import V3OrderbookIntegration
     from ..clients.trading_client_integration import V3TradingClientIntegration
+    from ..clients.position_listener import PositionListener
     from ..config.environment import V3Config
 
 logger = logging.getLogger("kalshiflow_rl.traderv3.core.status_reporter")
@@ -65,12 +66,15 @@ class V3StatusReporter:
         self._orderbook_integration = orderbook_integration
         self._trading_client_integration = trading_client_integration
         self._started_at = started_at
-        
+
+        # Position listener (set after initialization via setter)
+        self._position_listener: Optional['PositionListener'] = None
+
         # Reporting state
         self._status_task: Optional[asyncio.Task] = None
         self._trading_state_task: Optional[asyncio.Task] = None
         self._running = False
-        
+
         logger.info("Status reporter initialized")
     
     async def start(self) -> None:
@@ -114,7 +118,12 @@ class V3StatusReporter:
     def set_started_at(self, started_at: float) -> None:
         """Update the system start timestamp."""
         self._started_at = started_at
-    
+
+    def set_position_listener(self, position_listener: 'PositionListener') -> None:
+        """Set the position listener for health reporting."""
+        self._position_listener = position_listener
+        logger.debug("Position listener set on status reporter")
+
     async def emit_status_update(self, context: str = "") -> None:
         """Emit status update event immediately."""
         try:
@@ -235,6 +244,18 @@ class V3StatusReporter:
             if not trading_summary.get("has_state"):
                 return  # No trading state to broadcast
 
+            # Build position listener health info
+            position_listener_health = None
+            if self._position_listener:
+                metrics = self._position_listener.get_metrics()
+                position_listener_health = {
+                    "connected": self._position_listener.is_healthy(),
+                    "positions_received": metrics.get("positions_received", 0),
+                    "positions_processed": metrics.get("positions_processed", 0),
+                    "last_update": metrics.get("last_position_time"),
+                    "connection_count": metrics.get("connection_count", 0),
+                }
+
             # Broadcast trading state via websocket
             await self._websocket_manager.broadcast_message("trading_state", {
                 "timestamp": time.time(),
@@ -251,7 +272,9 @@ class V3StatusReporter:
                 "order_group": trading_summary.get("order_group"),
                 # P&L and position details for frontend display
                 "pnl": trading_summary.get("pnl"),
-                "positions_details": trading_summary.get("positions_details", [])
+                "positions_details": trading_summary.get("positions_details", []),
+                # Position listener health (real-time position updates)
+                "position_listener": position_listener_health,
             })
 
             logger.debug(f"Broadcast trading state v{trading_summary['version']}")

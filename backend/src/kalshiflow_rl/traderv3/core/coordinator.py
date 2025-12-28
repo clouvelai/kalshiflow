@@ -547,6 +547,9 @@ class V3Coordinator:
             # Start the listener
             await self._position_listener.start()
 
+            # Set on status reporter for health broadcasting
+            self._status_reporter.set_position_listener(self._position_listener)
+
             logger.info("✅ Real-time position listener active")
 
             await self._event_bus.emit_system_activity(

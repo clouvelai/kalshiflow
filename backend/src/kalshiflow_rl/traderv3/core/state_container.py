@@ -168,6 +168,10 @@ class V3StateContainer:
         # Session P&L state - tracks P&L from session start
         self._session_pnl_state: Optional[SessionPnLState] = None
 
+        # Session-updated tickers - tracks which positions were updated this session
+        # via real-time WebSocket (not from initial sync)
+        self._session_updated_tickers: set = set()
+
         # Whale queue state - data from whale tracker
         self._whale_state: Optional[WhaleQueueState] = None
         self._whale_state_version = 0  # Increment on each whale queue update
@@ -299,6 +303,9 @@ class V3StateContainer:
                 f"Position updated: {ticker} = {position_count} contracts, "
                 f"cost={position_data.get('total_traded', 0)}¢"
             )
+
+        # Track that this ticker was updated this session via WebSocket
+        self._session_updated_tickers.add(ticker)
 
         # Recalculate aggregates
         self._trading_state.position_count = len(self._trading_state.positions)
@@ -464,6 +471,12 @@ class V3StateContainer:
         # Add detailed position data with per-position P&L
         summary["positions_details"] = self._format_position_details()
 
+        # Add session-updated positions info
+        summary["session_updates"] = {
+            "updated_tickers": list(self._session_updated_tickers),
+            "count": len(self._session_updated_tickers),
+        }
+
         return summary
 
     # ======== Session P&L Management ========
@@ -532,7 +545,8 @@ class V3StateContainer:
                 "market_exposure": market_exposure,  # Current value (cents)
                 "realized_pnl": pos.get("realized_pnl", 0),
                 "unrealized_pnl": unrealized_pnl,
-                "fees_paid": pos.get("fees_paid", 0)
+                "fees_paid": pos.get("fees_paid", 0),
+                "session_updated": ticker in self._session_updated_tickers,  # Was this updated this session?
             })
 
         return details
@@ -1055,6 +1069,7 @@ class V3StateContainer:
         self._trading_state_version = 0
 
         self._session_pnl_state = None
+        self._session_updated_tickers = set()
 
         self._whale_state = None
         self._whale_state_version = 0

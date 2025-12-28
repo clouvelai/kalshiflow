@@ -846,7 +846,7 @@ const SessionSummaryPanel = ({ tradingState }) => {
 };
 
 // PositionListPanel Component - Detailed position breakdown with per-position P&L
-const PositionListPanel = ({ positions }) => {
+const PositionListPanel = ({ positions, positionListener, sessionUpdates }) => {
   const [isExpanded, setIsExpanded] = useState(true);
   const [changedTickers, setChangedTickers] = useState(new Set());
   const prevPositionsRef = useRef({});
@@ -923,6 +923,32 @@ const PositionListPanel = ({ positions }) => {
           <Briefcase className="w-4 h-4 text-purple-400" />
           <h3 className="text-sm font-bold text-gray-300 uppercase tracking-wider">Open Positions</h3>
           <span className="text-xs text-gray-500">({positions.length})</span>
+          {/* Position listener status indicator */}
+          {positionListener && (
+            <div className="flex items-center gap-1.5 ml-3 px-2 py-0.5 bg-gray-800/50 rounded-full">
+              <span className={`w-1.5 h-1.5 rounded-full ${
+                positionListener.connected
+                  ? 'bg-emerald-400 animate-pulse'
+                  : 'bg-yellow-400'
+              }`} />
+              <span className="text-xs text-gray-500">
+                {positionListener.connected ? 'Live' : 'Polling'}
+              </span>
+              {positionListener.positions_received > 0 && (
+                <span className="text-xs text-gray-600">
+                  ({positionListener.positions_received} updates)
+                </span>
+              )}
+            </div>
+          )}
+          {/* Session updates count */}
+          {sessionUpdates && sessionUpdates.count > 0 && (
+            <div className="flex items-center gap-1.5 ml-2 px-2 py-0.5 bg-emerald-900/30 rounded-full border border-emerald-800/30">
+              <span className="text-xs text-emerald-400 font-medium">
+                {sessionUpdates.count} updated this session
+              </span>
+            </div>
+          )}
         </div>
         {isExpanded ? (
           <ChevronDown className="w-4 h-4 text-gray-500" />
@@ -963,9 +989,11 @@ const PositionListPanel = ({ positions }) => {
                   >
                     <td className="px-3 py-2 font-mono text-gray-300 text-xs">
                       <div className="flex items-center">
-                        {isRecentlyChanged && (
+                        {isRecentlyChanged ? (
                           <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 mr-2 animate-pulse" />
-                        )}
+                        ) : pos.session_updated ? (
+                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-600/50 mr-2" title="Updated this session" />
+                        ) : null}
                         {pos.ticker}
                       </div>
                     </td>
@@ -1644,7 +1672,11 @@ const V3TraderConsole = () => {
         </div>
 
         {/* Position List Panel - Detailed per-position P&L */}
-        <PositionListPanel positions={tradingState?.positions_details} />
+        <PositionListPanel
+          positions={tradingState?.positions_details}
+          positionListener={tradingState?.position_listener}
+          sessionUpdates={tradingState?.session_updates}
+        />
 
         {/* Whale Queue Panel - Full width below Trading Data */}
         <div className="mb-6">
