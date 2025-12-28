@@ -267,14 +267,65 @@ class V3StateContainer:
         """Get trading state version (increments on change)."""
         return self._trading_state_version
     
-    def get_trading_summary(self) -> Dict[str, Any]:
+    def _format_order_list(self, order_group_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """
+        Format orders for frontend display.
+
+        Filters orders by order_group_id if provided, and returns a
+        simplified list suitable for frontend rendering.
+
+        Args:
+            order_group_id: Optional order group ID to filter by.
+                           If None, returns all orders.
+
+        Returns:
+            List of formatted order dicts with keys:
+                - order_id: First 8 chars of order ID
+                - ticker: Market ticker
+                - side: "yes" or "no"
+                - action: "buy" or "sell"
+                - price: Price in cents
+                - count: Number of contracts
+                - status: Order status
+                - created_time: ISO timestamp or raw value
+        """
+        if not self._trading_state or not self._trading_state.orders:
+            return []
+
+        formatted_orders = []
+        for order_id, order in self._trading_state.orders.items():
+            # Filter by order_group_id if specified
+            if order_group_id:
+                if order.get("order_group_id") != order_group_id:
+                    continue
+
+            # Determine the price - Kalshi uses yes_price or no_price
+            price = order.get("yes_price") or order.get("no_price") or 0
+
+            formatted_orders.append({
+                "order_id": order_id[:8] if order_id else "unknown",
+                "ticker": order.get("ticker", ""),
+                "side": order.get("side", ""),
+                "action": order.get("action", ""),
+                "price": price,
+                "count": order.get("remaining_count", order.get("count", 0)),
+                "status": order.get("status", ""),
+                "created_time": order.get("created_time", "")
+            })
+
+        return formatted_orders
+
+    def get_trading_summary(self, order_group_id: Optional[str] = None) -> Dict[str, Any]:
         """
         Get trading state summary for broadcasting.
-        
+
         Provides a clean summary of trading state suitable for
         WebSocket broadcast to frontend clients. Includes version
         number for change detection on the client side.
-        
+
+        Args:
+            order_group_id: Optional order group ID to filter orders by.
+
         Returns:
             Dict containing:
                 - has_state: Whether trading state exists
@@ -285,8 +336,9 @@ class V3StateContainer:
                 - order_count: Number of open orders
                 - positions: List of market tickers with positions
                 - open_orders: Count of open orders
+                - order_list: Formatted list of orders for display
                 - changes: Delta from last state (if available)
-        
+
         Usage:
             Called by V3Coordinator to prepare trading state
             for WebSocket broadcast to frontend clients.
@@ -296,9 +348,9 @@ class V3StateContainer:
                 "has_state": False,
                 "version": 0
             }
-        
+
         state = self._trading_state
-        
+
         summary = {
             "has_state": True,
             "version": self._trading_state_version,
@@ -308,22 +360,21 @@ class V3StateContainer:
             "order_count": state.order_count,
             "sync_timestamp": state.sync_timestamp,
             "positions": list(state.positions.keys()),  # Just tickers
-            "open_orders": len(state.orders)  # Count of orders
+            "open_orders": len(state.orders),  # Count of orders
+            "order_list": self._format_order_list(order_group_id)  # Formatted order list
         }
-        
-        # Add order group info if available (pass raw data)
+
+        # Add order group info if available
         if state.order_group:
             summary["order_group"] = {
                 "id": state.order_group.order_group_id[:8] if state.order_group.order_group_id else "none",
-                "status": state.order_group.status,
-                "max_absolute_position": state.order_group.max_absolute_position,  # Raw value from API
-                "max_open_orders": state.order_group.max_open_orders,  # Raw value from API
-                "current_absolute_position": state.order_group.current_absolute_position,  # Raw value
-                "current_open_orders": state.order_group.current_open_orders  # Raw value
+                "status": "active",
+                "order_count": len(state.order_group.order_ids),
+                "order_ids": [oid[:8] for oid in state.order_group.order_ids[:5]],
             }
         else:
             summary["order_group"] = None
-        
+
         # Add changes if available
         if self._last_state_change:
             summary["changes"] = {
@@ -332,7 +383,7 @@ class V3StateContainer:
                 "positions": self._last_state_change.position_count_change,
                 "orders": self._last_state_change.order_count_change
             }
-        
+
         return summary
 
     # ======== Whale Queue State Management ========

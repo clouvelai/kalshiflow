@@ -83,27 +83,24 @@ class KalshiDataSync:
                 try:
                     logger.debug(f"Fetching order group {self._order_group_id[:8]}...")
                     group_response = await self._client.get_order_group(self._order_group_id)
-                    
-                    # Build OrderGroupState from response (use raw API values)
+
+                    # Build OrderGroupState from response
+                    # Note: Kalshi API returns {is_auto_cancel_enabled, orders[]}
                     order_group_state = OrderGroupState(
                         order_group_id=self._order_group_id,
-                        created_at=time.time(),  # We don't track creation time from API
-                        max_absolute_position=group_response.get("max_absolute_position", 0),  # Raw API value
-                        max_open_orders=group_response.get("max_open_orders", 0),  # Raw API value
-                        status=group_response.get("status", "unknown"),
-                        current_absolute_position=group_response.get("current_absolute_position", 0),
-                        current_open_orders=group_response.get("current_open_orders", 0)
+                        created_at=time.time(),
+                        status="active",
+                        order_ids=group_response.get("orders", []),
+                        is_auto_cancel_enabled=group_response.get("is_auto_cancel_enabled", False)
                     )
-                    
+
                     logger.debug(f"Order group synced: {order_group_state.to_metadata()}")
-                    
+
                 except Exception as e:
                     logger.warning(f"Could not fetch order group status: {e}")
                     # Keep existing order group in state if fetch fails
                     if previous_state and previous_state.order_group:
                         order_group_state = previous_state.order_group
-                        order_group_state.last_error = str(e)
-                        order_group_state.error_count += 1
             
             # Build new state from raw Kalshi data
             new_state = TraderState.from_kalshi_data(

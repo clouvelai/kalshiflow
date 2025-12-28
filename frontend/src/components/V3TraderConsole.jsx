@@ -131,82 +131,54 @@ const TradingData = ({ tradingState, lastUpdateTime }) => {
         </div>
       </div>
 
-      {/* Order Group Status */}
+      {/* Order Group Status - Clean minimal display */}
       {tradingState.order_group && tradingState.order_group.id && (
-        <div className="mt-4 bg-gray-800/30 rounded-lg p-4 border border-gray-700/50">
-          <div className="flex items-center justify-between mb-3">
-            <div className="flex items-center space-x-2">
+        <div className="mt-4 bg-gray-800/30 rounded-lg p-3 border border-gray-700/50">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center space-x-3">
               <Shield className="w-4 h-4 text-indigo-400" />
-              <span className="text-xs text-gray-500 uppercase">Order Group</span>
-            </div>
-            <div className="flex items-center space-x-2">
-              <span className="text-xs font-mono text-gray-400">
-                {tradingState.order_group.id || 'N/A'}
+              <span className="text-xs text-gray-500 uppercase font-medium">Order Group</span>
+              <span className="text-sm font-mono text-gray-300">
+                {tradingState.order_group.id}
               </span>
-              <span className={`px-2 py-0.5 text-xs font-medium rounded-full ${
-                tradingState.order_group.status === 'active' 
+            </div>
+            <div className="flex items-center space-x-3">
+              <span className={`px-2 py-0.5 text-xs font-bold rounded-full ${
+                tradingState.order_group.status === 'active'
                   ? 'bg-green-900/50 text-green-400 border border-green-700/50'
                   : tradingState.order_group.status === 'inactive'
                   ? 'bg-gray-900/50 text-gray-400 border border-gray-700/50'
                   : 'bg-yellow-900/50 text-yellow-400 border border-yellow-700/50'
               }`}>
-                {tradingState.order_group.status || 'unknown'}
+                {(tradingState.order_group.status || 'unknown').toUpperCase()}
+              </span>
+              <span className="text-sm text-gray-400">
+                <span className="font-mono font-bold text-white">{tradingState.order_group.order_count || 0}</span>
+                <span className="text-gray-500 ml-1">{(tradingState.order_group.order_count || 0) === 1 ? 'order' : 'orders'}</span>
               </span>
             </div>
           </div>
 
-          {/* Position & Order Limits (using raw API values) */}
-          <div className="space-y-3">
-            {/* Position Usage */}
-            <div className="space-y-1">
-              <div className="flex justify-between items-center text-xs">
-                <span className="text-gray-500">Position</span>
-                <span className="text-gray-400 font-mono">
-                  {tradingState.order_group.current_absolute_position || 0} / {tradingState.order_group.max_absolute_position || 0}
-                </span>
-              </div>
-              <div className="relative">
-                <div className="h-2 bg-gray-900/50 rounded-full overflow-hidden">
-                  <div 
-                    className="h-full transition-all duration-300 rounded-full"
-                    style={{
-                      width: `${Math.min(100, ((tradingState.order_group.current_absolute_position || 0) / (tradingState.order_group.max_absolute_position || 1)) * 100)}%`,
-                      background: `linear-gradient(90deg, 
-                        ${((tradingState.order_group.current_absolute_position || 0) / (tradingState.order_group.max_absolute_position || 1)) > 0.8 ? '#ef4444' : 
-                          ((tradingState.order_group.current_absolute_position || 0) / (tradingState.order_group.max_absolute_position || 1)) > 0.5 ? '#f59e0b' : '#10b981'} 0%, 
-                        ${((tradingState.order_group.current_absolute_position || 0) / (tradingState.order_group.max_absolute_position || 1)) > 0.8 ? '#dc2626' : 
-                          ((tradingState.order_group.current_absolute_position || 0) / (tradingState.order_group.max_absolute_position || 1)) > 0.5 ? '#d97706' : '#059669'} 100%)`
-                    }}
-                  />
-                </div>
+          {/* Show order IDs if available and there are orders */}
+          {tradingState.order_group.order_ids && tradingState.order_group.order_ids.length > 0 && (
+            <div className="mt-2 pt-2 border-t border-gray-700/30">
+              <div className="flex items-center flex-wrap gap-1.5">
+                {tradingState.order_group.order_ids.slice(0, 8).map((orderId, index) => (
+                  <span
+                    key={orderId}
+                    className="text-xs font-mono text-gray-500 bg-gray-800/50 px-2 py-0.5 rounded"
+                  >
+                    {orderId.substring(0, 8)}
+                  </span>
+                ))}
+                {tradingState.order_group.order_ids.length > 8 && (
+                  <span className="text-xs text-gray-600">
+                    +{tradingState.order_group.order_ids.length - 8} more
+                  </span>
+                )}
               </div>
             </div>
-
-            {/* Order Usage */}
-            <div className="space-y-1">
-              <div className="flex justify-between items-center text-xs">
-                <span className="text-gray-500">Orders</span>
-                <span className="text-gray-400 font-mono">
-                  {tradingState.order_group.current_open_orders || 0} / {tradingState.order_group.max_open_orders || 0}
-                </span>
-              </div>
-              <div className="relative">
-                <div className="h-2 bg-gray-900/50 rounded-full overflow-hidden">
-                  <div 
-                    className="h-full transition-all duration-300 rounded-full"
-                    style={{
-                      width: `${Math.min(100, ((tradingState.order_group.current_open_orders || 0) / (tradingState.order_group.max_open_orders || 1)) * 100)}%`,
-                      background: `linear-gradient(90deg, 
-                        ${((tradingState.order_group.current_open_orders || 0) / (tradingState.order_group.max_open_orders || 1)) > 0.8 ? '#ef4444' : 
-                          ((tradingState.order_group.current_open_orders || 0) / (tradingState.order_group.max_open_orders || 1)) > 0.5 ? '#f59e0b' : '#10b981'} 0%, 
-                        ${((tradingState.order_group.current_open_orders || 0) / (tradingState.order_group.max_open_orders || 1)) > 0.8 ? '#dc2626' : 
-                          ((tradingState.order_group.current_open_orders || 0) / (tradingState.order_group.max_open_orders || 1)) > 0.5 ? '#d97706' : '#059669'} 100%)`
-                    }}
-                  />
-                </div>
-              </div>
-            </div>
-          </div>
+          )}
         </div>
       )}
     </div>
@@ -222,6 +194,7 @@ const WhaleQueuePanel = ({ whaleQueue }) => {
     console.log('[WhaleQueuePanel] Whale queue data received:', whaleQueue);
     console.log('[WhaleQueuePanel] Queue length:', whaleQueue?.queue?.length || 0);
     console.log('[WhaleQueuePanel] Stats:', whaleQueue?.stats);
+    console.log('[WhaleQueuePanel] Followed whale IDs:', whaleQueue?.followed_whale_ids);
   }, [whaleQueue]);
 
   // Update current time every second for age display
@@ -253,6 +226,9 @@ const WhaleQueuePanel = ({ whaleQueue }) => {
 
   const queue = whaleQueue?.queue || [];
   const stats = whaleQueue?.stats || { trades_seen: 0, trades_discarded: 0, discard_rate_percent: 0 };
+  // P2: Track followed whale IDs to show indicator
+  const followedWhaleIds = new Set(whaleQueue?.followed_whale_ids || []);
+  const followedCount = followedWhaleIds.size;
 
   return (
     <div className="bg-gray-900/50 backdrop-blur-sm rounded-xl border border-gray-800 p-4">
@@ -267,6 +243,10 @@ const WhaleQueuePanel = ({ whaleQueue }) => {
           </span>
           <span className="text-gray-600">|</span>
           <span className="font-mono">
+            <span className="text-green-400">{followedCount}</span> followed
+          </span>
+          <span className="text-gray-600">|</span>
+          <span className="font-mono">
             <span className="text-gray-500">{stats.trades_discarded.toLocaleString()}</span> discarded
           </span>
           <span className="text-gray-600">|</span>
@@ -277,7 +257,7 @@ const WhaleQueuePanel = ({ whaleQueue }) => {
       </div>
 
       {/* Stats Grid */}
-      <div className="grid grid-cols-4 gap-4 mb-4">
+      <div className="grid grid-cols-5 gap-4 mb-4">
         <div className="bg-gray-800/30 rounded-lg p-3 border border-gray-700/50">
           <div className="text-xs text-gray-500 uppercase mb-1">Trades Seen</div>
           <div className="text-lg font-mono font-bold text-white">{stats.trades_seen.toLocaleString()}</div>
@@ -285,6 +265,10 @@ const WhaleQueuePanel = ({ whaleQueue }) => {
         <div className="bg-gray-800/30 rounded-lg p-3 border border-gray-700/50">
           <div className="text-xs text-gray-500 uppercase mb-1">Whales Found</div>
           <div className="text-lg font-mono font-bold text-cyan-400">{queue.length}</div>
+        </div>
+        <div className="bg-gray-800/30 rounded-lg p-3 border border-green-700/30">
+          <div className="text-xs text-gray-500 uppercase mb-1">Followed</div>
+          <div className="text-lg font-mono font-bold text-green-400">{followedCount}</div>
         </div>
         <div className="bg-gray-800/30 rounded-lg p-3 border border-gray-700/50">
           <div className="text-xs text-gray-500 uppercase mb-1">Discarded</div>
@@ -308,6 +292,7 @@ const WhaleQueuePanel = ({ whaleQueue }) => {
           <table className="w-full text-sm">
             <thead>
               <tr className="bg-gray-900/50 border-b border-gray-700/50">
+                <th className="px-3 py-2 text-center text-xs text-gray-500 uppercase font-medium">Status</th>
                 <th className="px-3 py-2 text-left text-xs text-gray-500 uppercase font-medium">Market</th>
                 <th className="px-3 py-2 text-center text-xs text-gray-500 uppercase font-medium">Side</th>
                 <th className="px-3 py-2 text-right text-xs text-gray-500 uppercase font-medium">Price</th>
@@ -319,33 +304,122 @@ const WhaleQueuePanel = ({ whaleQueue }) => {
               </tr>
             </thead>
             <tbody>
-              {queue.map((whale, index) => (
-                <tr
-                  key={`${whale.market_ticker}-${whale.price_cents}-${index}`}
-                  className="border-b border-gray-700/30 hover:bg-gray-800/50 transition-colors"
-                >
-                  <td className="px-3 py-2 font-mono text-gray-300 text-xs">{whale.market_ticker}</td>
-                  <td className="px-3 py-2 text-center">
-                    <span className={`px-2 py-0.5 rounded text-xs font-bold uppercase ${
-                      whale.side === 'yes'
-                        ? 'bg-green-900/30 text-green-400 border border-green-700/50'
-                        : 'bg-red-900/30 text-red-400 border border-red-700/50'
-                    }`}>
-                      {whale.side}
-                    </span>
-                  </td>
-                  <td className="px-3 py-2 text-right font-mono text-gray-300">{whale.price_cents}c</td>
-                  <td className="px-3 py-2 text-right font-mono text-gray-300">{whale.count.toLocaleString()}</td>
-                  <td className="px-3 py-2 text-right font-mono text-gray-400">{formatCurrency(whale.cost_dollars)}</td>
-                  <td className="px-3 py-2 text-right font-mono text-gray-400">{formatCurrency(whale.payout_dollars)}</td>
-                  <td className="px-3 py-2 text-right font-mono font-bold text-cyan-400">{formatCurrency(whale.whale_size_dollars)}</td>
-                  <td className="px-3 py-2 text-right font-mono text-gray-500 text-xs">{formatAge(whale.age_seconds)}</td>
-                </tr>
-              ))}
+              {queue.map((whale, index) => {
+                const isFollowed = followedWhaleIds.has(whale.whale_id);
+                return (
+                  <tr
+                    key={`${whale.market_ticker}-${whale.price_cents}-${index}`}
+                    className={`border-b border-gray-700/30 hover:bg-gray-800/50 transition-colors ${
+                      isFollowed ? 'bg-green-900/10' : ''
+                    }`}
+                  >
+                    <td className="px-3 py-2 text-center">
+                      {isFollowed ? (
+                        <span className="inline-flex items-center space-x-1 px-2 py-0.5 rounded text-xs font-bold bg-green-900/30 text-green-400 border border-green-700/50">
+                          <CheckCircle className="w-3 h-3" />
+                          <span>FOLLOWED</span>
+                        </span>
+                      ) : (
+                        <span className="text-xs text-gray-500">QUEUED</span>
+                      )}
+                    </td>
+                    <td className="px-3 py-2 font-mono text-gray-300 text-xs">{whale.market_ticker}</td>
+                    <td className="px-3 py-2 text-center">
+                      <span className={`px-2 py-0.5 rounded text-xs font-bold uppercase ${
+                        whale.side === 'yes'
+                          ? 'bg-green-900/30 text-green-400 border border-green-700/50'
+                          : 'bg-red-900/30 text-red-400 border border-red-700/50'
+                      }`}>
+                        {whale.side}
+                      </span>
+                    </td>
+                    <td className="px-3 py-2 text-right font-mono text-gray-300">{whale.price_cents}c</td>
+                    <td className="px-3 py-2 text-right font-mono text-gray-300">{whale.count.toLocaleString()}</td>
+                    <td className="px-3 py-2 text-right font-mono text-gray-400">{formatCurrency(whale.cost_dollars)}</td>
+                    <td className="px-3 py-2 text-right font-mono text-gray-400">{formatCurrency(whale.payout_dollars)}</td>
+                    <td className="px-3 py-2 text-right font-mono font-bold text-cyan-400">{formatCurrency(whale.whale_size_dollars)}</td>
+                    <td className="px-3 py-2 text-right font-mono text-gray-500 text-xs">{formatAge(whale.age_seconds)}</td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
       )}
+    </div>
+  );
+};
+
+// FollowedTradesPanel Component - Shows trades we've followed (persists beyond whale queue window)
+const FollowedTradesPanel = ({ followedWhales }) => {
+  // Don't render if no followed trades
+  if (!followedWhales || followedWhales.length === 0) {
+    return null;
+  }
+
+  const formatAge = (ageSeconds) => {
+    if (ageSeconds < 60) {
+      return `${Math.floor(ageSeconds)}s ago`;
+    } else if (ageSeconds < 3600) {
+      return `${Math.floor(ageSeconds / 60)}m ago`;
+    } else {
+      return `${Math.floor(ageSeconds / 3600)}h ago`;
+    }
+  };
+
+  return (
+    <div className="bg-gray-900/50 backdrop-blur-sm rounded-xl border border-green-800/50 p-4 mt-4">
+      <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center space-x-2">
+          <CheckCircle className="w-4 h-4 text-green-400" />
+          <h3 className="text-sm font-bold text-green-400 uppercase tracking-wider">Followed Trades</h3>
+        </div>
+        <span className="text-xs text-gray-400 font-mono">
+          {followedWhales.length} trade{followedWhales.length !== 1 ? 's' : ''}
+        </span>
+      </div>
+
+      <div className="bg-gray-800/30 rounded-lg border border-gray-700/50 overflow-hidden">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="bg-gray-900/50 border-b border-gray-700/50">
+              <th className="px-3 py-2 text-left text-xs text-gray-500 uppercase font-medium">Market</th>
+              <th className="px-3 py-2 text-center text-xs text-gray-500 uppercase font-medium">Side</th>
+              <th className="px-3 py-2 text-right text-xs text-gray-500 uppercase font-medium">Price</th>
+              <th className="px-3 py-2 text-right text-xs text-gray-500 uppercase font-medium">Count</th>
+              <th className="px-3 py-2 text-right text-xs text-gray-500 uppercase font-medium">Cost</th>
+              <th className="px-3 py-2 text-right text-xs text-gray-500 uppercase font-medium">Payout</th>
+              <th className="px-3 py-2 text-right text-xs text-gray-500 uppercase font-medium">Size</th>
+              <th className="px-3 py-2 text-right text-xs text-gray-500 uppercase font-medium">Age</th>
+            </tr>
+          </thead>
+          <tbody>
+            {followedWhales.map((trade, index) => (
+              <tr
+                key={trade.whale_id || index}
+                className="border-b border-gray-700/30 hover:bg-gray-800/50 transition-colors bg-green-900/5"
+              >
+                <td className="px-3 py-2 font-mono text-gray-300 text-xs">{trade.market_ticker}</td>
+                <td className="px-3 py-2 text-center">
+                  <span className={`px-2 py-0.5 rounded text-xs font-bold uppercase ${
+                    trade.side === 'yes'
+                      ? 'bg-green-900/30 text-green-400 border border-green-700/50'
+                      : 'bg-red-900/30 text-red-400 border border-red-700/50'
+                  }`}>
+                    {trade.side}
+                  </span>
+                </td>
+                <td className="px-3 py-2 text-right font-mono text-gray-300">{trade.price_cents}c</td>
+                <td className="px-3 py-2 text-right font-mono text-gray-300">{trade.our_count}</td>
+                <td className="px-3 py-2 text-right font-mono text-gray-400">${trade.cost_dollars?.toFixed(2)}</td>
+                <td className="px-3 py-2 text-right font-mono text-gray-400">${trade.payout_dollars?.toFixed(2)}</td>
+                <td className="px-3 py-2 text-right font-mono font-bold text-green-400">${trade.size_dollars?.toFixed(2)}</td>
+                <td className="px-3 py-2 text-right font-mono text-gray-500 text-xs">{formatAge(trade.age_seconds)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 };
@@ -360,7 +434,9 @@ const V3TraderConsole = () => {
   const [lastUpdateTime, setLastUpdateTime] = useState(null);
   const [whaleQueue, setWhaleQueue] = useState({
     queue: [],
-    stats: { trades_seen: 0, trades_discarded: 0, discard_rate_percent: 0 }
+    stats: { trades_seen: 0, trades_discarded: 0, discard_rate_percent: 0 },
+    followed_whale_ids: [],
+    followed_whales: []
   });
   const [metrics, setMetrics] = useState({
     markets_connected: 0,
@@ -374,8 +450,11 @@ const V3TraderConsole = () => {
     api_url: null
   });
   const [copied, setCopied] = useState(false);
+  // P4: Smart scroll anchoring - only auto-scroll if user is near bottom
+  const [autoScroll, setAutoScroll] = useState(true);
   const wsRef = useRef(null);
   const messagesEndRef = useRef(null);
+  const messagesContainerRef = useRef(null);
   const reconnectTimeoutRef = useRef(null);
   const lastMessageRef = useRef(null);
 
@@ -383,9 +462,21 @@ const V3TraderConsole = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   };
 
+  // P4: Handle scroll events to detect if user is near bottom
+  const handleScroll = useCallback(() => {
+    if (!messagesContainerRef.current) return;
+    const { scrollTop, scrollHeight, clientHeight } = messagesContainerRef.current;
+    // User is "near bottom" if within 100px of the bottom
+    const isNearBottom = scrollHeight - scrollTop - clientHeight < 100;
+    setAutoScroll(isNearBottom);
+  }, []);
+
+  // P4: Only auto-scroll if user is near bottom
   useEffect(() => {
-    scrollToBottom();
-  }, [messages]);
+    if (autoScroll) {
+      scrollToBottom();
+    }
+  }, [messages, autoScroll]);
 
   const addMessage = useCallback((type, content, metadata = {}) => {
     // Skip messages with UNKNOWN or undefined state
@@ -709,10 +800,16 @@ const V3TraderConsole = () => {
               console.log('[V3TraderConsole] Received whale_queue message:', data.data);
               if (data.data) {
                 console.log('[V3TraderConsole] Setting whale queue - queue length:', data.data.queue?.length || 0);
+                console.log('[V3TraderConsole] Followed whale IDs:', data.data.followed_whale_ids);
+                console.log('[V3TraderConsole] Followed whales:', data.data.followed_whales);
                 setWhaleQueue({
                   queue: data.data.queue || [],
                   stats: data.data.stats || { trades_seen: 0, trades_discarded: 0, discard_rate_percent: 0 },
-                  version: data.data.version
+                  version: data.data.version,
+                  // Include followed whale IDs for status indicator
+                  followed_whale_ids: data.data.followed_whale_ids || [],
+                  // Full followed whales data for Followed Trades section
+                  followed_whales: data.data.followed_whales || []
                 });
               }
               break;
@@ -938,6 +1035,7 @@ const V3TraderConsole = () => {
         {/* Whale Queue Panel - Full width below Trading Data */}
         <div className="mb-6">
           <WhaleQueuePanel whaleQueue={whaleQueue} />
+          <FollowedTradesPanel followedWhales={whaleQueue.followed_whales} />
         </div>
 
         <div className="grid grid-cols-12 gap-6">
@@ -1097,7 +1195,11 @@ const V3TraderConsole = () => {
               </div>
               
               {/* Messages */}
-              <div className="h-[600px] overflow-y-auto p-4 font-mono text-sm bg-black/20">
+              <div
+                ref={messagesContainerRef}
+                onScroll={handleScroll}
+                className="h-[600px] overflow-y-auto p-4 font-mono text-sm bg-black/20"
+              >
                 {messages.length === 0 ? (
                   <div className="flex flex-col items-center justify-center h-full text-gray-600">
                     <Activity className="w-8 h-8 mb-3 animate-pulse" />

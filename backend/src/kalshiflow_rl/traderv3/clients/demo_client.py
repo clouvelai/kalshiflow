@@ -897,28 +897,38 @@ class KalshiDemoTradingClient:
     async def reset_order_group(self, order_group_id: str) -> Dict[str, Any]:
         """
         Reset an order group (clears positions and cancels orders).
-        
-        According to API docs, use POST /portfolio/order_groups/{id}/reset.
-        
+
+        According to Kalshi API docs, use PUT /portfolio/order_groups/{id}/reset.
+
         Args:
             order_group_id: UUID of the order group
-            
+
         Returns:
             Reset confirmation
-            
+
         Raises:
             KalshiDemoTradingClientError: If reset fails
         """
         try:
-            response = await self._make_request("POST", f"/portfolio/order_groups/{order_group_id}/reset")
-            
+            response = await self._make_request("PUT", f"/portfolio/order_groups/{order_group_id}/reset")
+
             logger.info(f"Reset order group {order_group_id[:8]}...")
-            
+
             return response
-            
+
         except Exception as e:
             logger.error(f"Failed to reset order group {order_group_id[:8]}...: {e}")
             raise KalshiDemoTradingClientError(f"Failed to reset order group: {e}")
+
+    async def delete_order_group(self, order_group_id: str) -> Dict[str, Any]:
+        """Delete an order group (Kalshi API: DELETE /portfolio/order_groups/{id})."""
+        try:
+            response = await self._make_request("DELETE", f"/portfolio/order_groups/{order_group_id}")
+            logger.info(f"Deleted order group {order_group_id[:8]}...")
+            return response
+        except Exception as e:
+            logger.error(f"Failed to delete order group {order_group_id[:8]}...: {e}")
+            raise KalshiDemoTradingClientError(f"Failed to delete order group: {e}")
     
     # Backward compatibility alias
     async def close_order_group(self, order_group_id: str) -> Dict[str, Any]:
@@ -928,34 +938,31 @@ class KalshiDemoTradingClient:
     async def list_order_groups(self, status: Optional[str] = None) -> Dict[str, Any]:
         """
         List all order groups for the account.
-        
-        Args:
-            status: Optional filter by status (active, closed)
-            
+
+        Note: The Kalshi API does not support status filtering. The status
+        parameter is accepted for API compatibility but ignored.
+
         Returns:
-            List of order groups
-            
+            List of order groups with id and is_auto_cancel_enabled
+
         Raises:
             KalshiDemoTradingClientError: If listing fails
         """
         try:
-            params = {}
+            # Note: Kalshi API has no query parameters for this endpoint
+            # We fetch all groups and caller can filter if needed
             if status:
-                params["status"] = status
-            
-            # Build query string if params exist
-            query_string = "&".join([f"{k}={v}" for k, v in params.items()]) if params else ""
-            path = f"/portfolio/order_groups{'?' + query_string if query_string else ''}"
-            
-            response = await self._make_request("GET", path)
-            
+                logger.debug(f"Note: status={status} filter requested but API does not support filtering")
+
+            response = await self._make_request("GET", "/portfolio/order_groups")
+
             # Demo API returns {} when no groups, normalize to expected format
             if response == {}:
                 response = {"order_groups": []}
-            
+
             groups_count = len(response.get("order_groups", []))
-            logger.debug(f"Retrieved {groups_count} order groups" + (f" with status={status}" if status else ""))
-            
+            logger.debug(f"Retrieved {groups_count} order groups")
+
             return response
             
         except Exception as e:

@@ -775,16 +775,79 @@ class V3TradingClientIntegration:
         """Alias for reset_order_group for backward compatibility."""
         return await self.reset_order_group()
     
+    async def list_order_groups(self, status: Optional[str] = None) -> List[Dict[str, Any]]:
+        """
+        List all order groups for the account.
+
+        Args:
+            status: Optional filter by status (active, closed)
+
+        Returns:
+            List of order group dicts
+
+        Raises:
+            RuntimeError: If not connected
+        """
+        if not self._connected:
+            raise RuntimeError("Cannot list order groups - trading client not connected")
+
+        try:
+            response = await self._client.list_order_groups(status=status)
+            return response.get("order_groups", [])
+        except Exception as e:
+            logger.error(f"Failed to list order groups: {e}")
+            raise
+
+    async def reset_order_group_by_id(self, order_group_id: str) -> bool:
+        """
+        Reset a specific order group by ID.
+
+        Args:
+            order_group_id: UUID of the order group to reset
+
+        Returns:
+            True if reset successfully, False otherwise
+        """
+        if not self._connected:
+            raise RuntimeError("Cannot reset order group - trading client not connected")
+
+        try:
+            await self._client.reset_order_group(order_group_id)
+            logger.info(f"Reset order group: {order_group_id[:8]}...")
+
+            # If this was our current order group, clear the tracking
+            if self._order_group_id == order_group_id:
+                self._order_group_id = None
+                self._kalshi_data_sync.set_order_group_id(None)
+
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to reset order group {order_group_id[:8]}...: {e}")
+            return False
+
+    async def delete_order_group_by_id(self, order_group_id: str) -> bool:
+        """Delete a specific order group by ID."""
+        if not self._connected:
+            raise RuntimeError("Cannot delete order group - trading client not connected")
+        try:
+            await self._client.delete_order_group(order_group_id)
+            logger.info(f"Deleted order group: {order_group_id[:8]}...")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to delete order group {order_group_id[:8]}...: {e}")
+            return False
+
     @property
     def order_group_id(self) -> Optional[str]:
         """Get current order group ID."""
         return self._order_group_id
-    
+
     @property
     def has_order_group(self) -> bool:
         """Check if order group is active."""
         return self._order_group_id is not None
-    
+
     @property
     def order_groups_supported(self) -> bool:
         """Check if order groups are supported by API."""

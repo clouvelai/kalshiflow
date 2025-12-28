@@ -16,32 +16,27 @@ class OrderGroupState:
     """
     Order group state representation.
     Tracks an order group session for portfolio limits.
+
+    Note: The Kalshi API only returns {is_auto_cancel_enabled, orders[]} for order groups.
+    Other fields are tracked locally or derived.
     """
     order_group_id: str  # UUID of the order group
-    created_at: float  # Timestamp when created
-    max_absolute_position: int  # Max position in cents
-    max_open_orders: int  # Max number of open orders
-    status: str = "active"  # active, closed, failed
-    
-    # Usage tracking
-    current_absolute_position: int = 0  # Current usage in cents
-    current_open_orders: int = 0  # Current open order count
-    
-    # Error tracking
-    last_error: Optional[str] = None
-    error_count: int = 0
-    
+    created_at: float  # Timestamp when created (local tracking)
+    status: str = "active"  # active, closed, failed (local tracking)
+    order_ids: List[str] = field(default_factory=list)  # Order IDs from API
+    is_auto_cancel_enabled: bool = False  # From API
+
     def is_active(self) -> bool:
         """Check if order group is active and usable."""
         return self.status == "active" and self.order_group_id
-    
+
     def to_metadata(self) -> dict:
         """Format for state machine metadata."""
         return {
             "order_group_id": self.order_group_id[:8] if self.order_group_id else "none",
             "status": self.status,
-            "position_usage": f"{self.current_absolute_position}/{self.max_absolute_position}",
-            "order_usage": f"{self.current_open_orders}/{self.max_open_orders}"
+            "order_count": len(self.order_ids),
+            "is_auto_cancel_enabled": self.is_auto_cancel_enabled
         }
 
 

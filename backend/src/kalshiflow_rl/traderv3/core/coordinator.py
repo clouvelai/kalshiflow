@@ -117,6 +117,9 @@ class V3Coordinator:
                 whale_tracker=whale_tracker
             )
 
+            # Set trading service on websocket manager for followed whale IDs
+            self._websocket_manager.set_trading_service(self._trading_service)
+
             # Initialize trading flow orchestrator
             self._trading_orchestrator = TradingFlowOrchestrator(
                 config=config,
@@ -404,48 +407,80 @@ class V3Coordinator:
     
     async def _cleanup_orphaned_orders(self) -> None:
         """
-        Cleanup orphaned orders (orders without order_group_id) on startup.
+        Cleanup previous order groups on startup.
 
-        This is called during startup to remove legacy orders that were placed
-        before order group management was implemented. Orders with an
-        order_group_id are preserved.
+        This is called during startup to reset any existing order groups
+        from previous sessions, ensuring a clean slate for the new session.
+        The current session's order group (created in _connect_trading_client)
+        is preserved.
         """
         if not self._trading_client_integration:
             return
 
-        logger.info("Cleaning up orphaned orders...")
+        logger.info("Cleaning up previous order groups...")
 
         try:
-            result = await self._trading_client_integration.cancel_orphaned_orders()
+            # Get the current order group ID (created earlier in _connect_trading_client)
+            current_order_group_id = self._trading_client_integration.get_order_group_id()
 
-            cancelled_count = len(result.get("cancelled", []))
-            preserved_count = len(result.get("skipped", []))
-            error_count = len(result.get("errors", []))
+            # List all order groups (API doesn't support status filter)
+            order_groups = await self._trading_client_integration.list_order_groups()
 
-            if cancelled_count > 0 or error_count > 0:
+            if not order_groups:
+                logger.info("No previous order groups to clean up")
+                return
+
+            deleted_count = 0
+            skip_count = 0
+            error_count = 0
+
+            for group in order_groups:
+                # API returns "id" field, not "order_group_id"
+                group_id = group.get("id", "")
+                if not group_id:
+                    continue
+
+                # Skip the current session's order group
+                if group_id == current_order_group_id:
+                    logger.debug(f"Skipping current order group: {group_id[:8]}...")
+                    skip_count += 1
+                    continue
+
+                # Delete old order groups
+                try:
+                    success = await self._trading_client_integration.delete_order_group_by_id(group_id)
+                    if success:
+                        deleted_count += 1
+                        logger.info(f"Deleted previous order group: {group_id[:8]}...")
+                    else:
+                        error_count += 1
+                except Exception as e:
+                    logger.warning(f"Failed to delete order group {group_id[:8]}...: {e}")
+                    error_count += 1
+
+            if deleted_count > 0 or error_count > 0:
                 # Emit system activity for cleanup results
                 await self._event_bus.emit_system_activity(
                     activity_type="cleanup",
-                    message=f"Startup cleanup: {cancelled_count} orphaned orders cancelled, {preserved_count} preserved",
+                    message=f"Startup cleanup: {deleted_count} order groups deleted, {skip_count} preserved",
                     metadata={
-                        "cancelled_count": cancelled_count,
-                        "preserved_count": preserved_count,
+                        "deleted_count": deleted_count,
+                        "skip_count": skip_count,
                         "error_count": error_count,
-                        "total_orphaned": result.get("total_orphaned", 0),
-                        "total_preserved": result.get("total_preserved", 0),
+                        "total_groups": len(order_groups),
                         "severity": "info" if error_count == 0 else "warning"
                     }
                 )
                 logger.info(
-                    f"✅ Startup cleanup complete: {cancelled_count} orphaned orders cancelled, "
-                    f"{preserved_count} orders preserved"
+                    f"Startup cleanup complete: {deleted_count} order groups deleted, "
+                    f"{skip_count} preserved, {error_count} errors"
                 )
             else:
-                logger.info("No orphaned orders found during startup cleanup")
+                logger.info("No previous order groups needed cleanup")
 
         except Exception as e:
             # Don't fail startup on cleanup errors - just log and continue
-            logger.warning(f"Orphaned order cleanup failed (non-critical): {e}")
+            logger.warning(f"Order group cleanup failed (non-critical): {e}")
             await self._event_bus.emit_system_activity(
                 activity_type="cleanup",
                 message=f"Startup cleanup failed: {str(e)}",

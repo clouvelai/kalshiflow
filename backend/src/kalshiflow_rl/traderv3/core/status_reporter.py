@@ -225,11 +225,16 @@ class V3StatusReporter:
     async def emit_trading_state(self) -> None:
         """Emit trading state update event."""
         try:
-            trading_summary = self._state_container.get_trading_summary()
-            
+            # Get order_group_id for filtering orders
+            order_group_id = None
+            if self._trading_client_integration:
+                order_group_id = self._trading_client_integration.get_order_group_id()
+
+            trading_summary = self._state_container.get_trading_summary(order_group_id)
+
             if not trading_summary.get("has_state"):
                 return  # No trading state to broadcast
-            
+
             # Broadcast trading state via websocket
             await self._websocket_manager.broadcast_message("trading_state", {
                 "timestamp": time.time(),
@@ -240,13 +245,14 @@ class V3StatusReporter:
                 "order_count": trading_summary["order_count"],
                 "positions": trading_summary["positions"],
                 "open_orders": trading_summary["open_orders"],
+                "order_list": trading_summary.get("order_list", []),  # Formatted order list
                 "sync_timestamp": trading_summary["sync_timestamp"],
                 "changes": trading_summary.get("changes"),
                 "order_group": trading_summary.get("order_group")
             })
-            
+
             logger.debug(f"Broadcast trading state v{trading_summary['version']}")
-            
+
         except Exception as e:
             logger.error(f"Error emitting trading state: {e}")
     

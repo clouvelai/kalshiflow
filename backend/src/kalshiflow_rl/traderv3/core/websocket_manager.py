@@ -23,6 +23,7 @@ from .event_bus import EventBus, EventType, StateTransitionEvent, TraderStatusEv
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from ..services.whale_tracker import WhaleTracker
+    from ..services.trading_decision_service import TradingDecisionService
 
 logger = logging.getLogger("kalshiflow_rl.traderv3.websocket_manager")
 
@@ -65,6 +66,7 @@ class V3WebSocketManager:
         self._event_bus = event_bus
         self._state_machine = state_machine
         self._whale_tracker = whale_tracker
+        self._trading_service: Optional['TradingDecisionService'] = None
         self._clients: Dict[str, WebSocketClient] = {}
         self._client_counter = 0
         self._started_at: Optional[float] = None
@@ -97,6 +99,19 @@ class V3WebSocketManager:
         """
         self._whale_tracker = whale_tracker
         logger.info("WhaleTracker set on WebSocket manager")
+
+    def set_trading_service(self, trading_service: 'TradingDecisionService') -> None:
+        """
+        Set the trading decision service for getting followed whale IDs.
+
+        This allows trading_service to be set after initialization since it's
+        created later in the startup sequence.
+
+        Args:
+            trading_service: TradingDecisionService instance
+        """
+        self._trading_service = trading_service
+        logger.info("TradingDecisionService set on WebSocket manager")
 
     async def start(self) -> None:
         """Start the WebSocket manager."""
@@ -381,6 +396,16 @@ class V3WebSocketManager:
         if event.stats and event.stats.get("trades_seen", 0) > 0:
             discard_rate = (event.stats.get("trades_discarded", 0) / event.stats["trades_seen"]) * 100
 
+        # Get followed whale IDs and full data from trading service if available
+        followed_whale_ids: List[str] = []
+        followed_whales: List[Dict] = []
+        if self._trading_service:
+            try:
+                followed_whale_ids = list(self._trading_service.get_followed_whale_ids())
+                followed_whales = self._trading_service.get_followed_whales()
+            except Exception as e:
+                logger.debug(f"Could not get followed whale data: {e}")
+
         # Format message for frontend
         whale_data = {
             "queue": event.queue,  # Already serialized by WhaleTracker
@@ -389,6 +414,8 @@ class V3WebSocketManager:
                 "trades_discarded": event.stats.get("trades_discarded", 0) if event.stats else 0,
                 "discard_rate_percent": round(discard_rate, 1),
             },
+            "followed_whale_ids": followed_whale_ids,  # IDs of whales we have followed
+            "followed_whales": followed_whales,  # Full data for followed trades section
             "timestamp": time.strftime("%H:%M:%S", time.localtime(event.timestamp)),
         }
 

@@ -73,12 +73,26 @@ export V3_WS_RECONNECT_INTERVAL="5.0"
 
 # Trading client configuration (enabled for paper environment)
 if [ "$ENVIRONMENT" = "paper" ]; then
+    # Trading client settings
     export V3_ENABLE_TRADING_CLIENT="true"
     export V3_TRADING_MAX_ORDERS="10"
     export V3_TRADING_MAX_POSITION_SIZE="100"
+
+    # Whale follower strategy (default for paper mode)
+    export V3_TRADING_STRATEGY="whale_follower"
+    export V3_ENABLE_WHALE_DETECTION="true"
+
+    # Whale detection thresholds
+    export WHALE_QUEUE_SIZE="10"
+    export WHALE_WINDOW_MINUTES="5"
+    export WHALE_MIN_SIZE_CENTS="1000"  # $10 minimum (for testing)
+
     echo -e "${GREEN}✓ Trading client enabled (paper mode)${NC}"
+    echo -e "${GREEN}✓ Whale follower strategy active${NC}"
+    echo -e "${GREEN}✓ Whale detection enabled (min \$10)${NC}"
 else
     export V3_ENABLE_TRADING_CLIENT="false"
+    export V3_TRADING_STRATEGY="hold"
     echo -e "${YELLOW}⚠ Trading client disabled (production safety)${NC}"
 fi
 

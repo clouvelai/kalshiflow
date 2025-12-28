@@ -67,7 +67,28 @@ class FollowedWhale:
     market_ticker: str
     side: str
     our_count: int
+    price_cents: int  # Price we bought at
     whale_size_cents: int
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize for WebSocket transport to frontend."""
+        # Calculate cost and payout like whale queue does
+        cost_cents = self.our_count * self.price_cents
+        payout_cents = self.our_count * 100  # $1.00 per contract if wins
+        return {
+            "whale_id": self.whale_id,
+            "order_id": self.our_order_id[:8] if self.our_order_id else "unknown",
+            "market_ticker": self.market_ticker,
+            "side": self.side,
+            "our_count": self.our_count,
+            "price_cents": self.price_cents,
+            "cost_dollars": cost_cents / 100,
+            "payout_dollars": payout_cents / 100,
+            "size_dollars": cost_cents / 100,  # Same as cost for our trades
+            "whale_size_cents": self.whale_size_cents,
+            "placed_at": self.placed_at,
+            "age_seconds": int(time.time() - self.placed_at)
+        }
 
 
 @dataclass
@@ -488,6 +509,9 @@ class TradingDecisionService:
             True if order placed successfully, False otherwise
         """
         try:
+            # Get order group ID for portfolio limits
+            order_group_id = self._trading_client.get_order_group_id()
+
             # Place the order
             response = await self._trading_client.place_order(
                 ticker=decision.market,
@@ -495,7 +519,8 @@ class TradingDecisionService:
                 side=decision.side,
                 count=decision.quantity,
                 price=decision.price,
-                order_type="limit"
+                order_type="limit",
+                order_group_id=order_group_id
             )
 
             order_id = response.get("order", {}).get("order_id", "unknown")
@@ -525,6 +550,7 @@ class TradingDecisionService:
                     market_ticker=market_ticker,
                     side=decision.side,
                     our_count=decision.quantity,
+                    price_cents=decision.price or 0,
                     whale_size_cents=whale_size_cents
                 )
 
@@ -575,6 +601,9 @@ class TradingDecisionService:
             True if order placed successfully, False otherwise
         """
         try:
+            # Get order group ID for portfolio limits
+            order_group_id = self._trading_client.get_order_group_id()
+
             # Place the order
             response = await self._trading_client.place_order(
                 ticker=decision.market,
@@ -582,7 +611,8 @@ class TradingDecisionService:
                 side=decision.side,
                 count=decision.quantity,
                 price=decision.price,
-                order_type="limit"
+                order_type="limit",
+                order_group_id=order_group_id
             )
 
             order_id = response.get("order", {}).get("order_id", "unknown")
@@ -637,3 +667,24 @@ class TradingDecisionService:
     def is_healthy(self) -> bool:
         """Check if service is healthy."""
         return True  # Simple health check for now
+
+    def get_followed_whale_ids(self) -> set:
+        """
+        Get set of whale IDs that have been followed.
+
+        Returns:
+            Set of whale IDs (format: "{market_ticker}:{timestamp_ms}")
+            that have been followed by this trading session.
+        """
+        return set(self._followed_whales.keys())
+
+    def get_followed_whales(self) -> List[Dict[str, Any]]:
+        """
+        Get all followed whales with full details for frontend display.
+
+        Returns:
+            List of dicts with whale details including:
+            - whale_id, order_id, market_ticker, side
+            - our_count, whale_size_cents, placed_at, age_seconds
+        """
+        return [fw.to_dict() for fw in self._followed_whales.values()]
