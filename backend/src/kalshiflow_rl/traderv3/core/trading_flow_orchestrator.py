@@ -324,14 +324,19 @@ class TradingFlowOrchestrator:
         """
         Phase 3: Make trading decisions based on evaluated markets.
 
-        For WHALE_FOLLOWER strategy, this evaluates the whale queue instead
-        of individual markets.
+        Note: WHALE_FOLLOWER strategy is now handled by WhaleExecutionService
+        which processes whales immediately via event-driven architecture.
+        This method only handles standard market-by-market strategies.
         """
         logger.debug(f"Cycle {cycle.cycle_id}: Starting DECIDE phase")
 
-        # Check if using whale follower strategy
+        # WHALE_FOLLOWER is now event-driven via WhaleExecutionService
+        # No cycle-based processing needed - whales are followed immediately
         if self._trading_service._strategy == TradingStrategy.WHALE_FOLLOWER:
-            await self._decide_phase_whale_follower(cycle)
+            logger.debug(
+                f"Cycle {cycle.cycle_id}: WHALE_FOLLOWER uses event-driven execution, "
+                "skipping cycle-based decision phase"
+            )
             return
 
         # Standard market-by-market decision making
@@ -353,47 +358,6 @@ class TradingFlowOrchestrator:
 
             except Exception as e:
                 logger.error(f"Cycle {cycle.cycle_id}: Error deciding on {market}: {e}")
-
-    async def _decide_phase_whale_follower(self, cycle: TradingCycle) -> None:
-        """
-        Whale Follower decision phase.
-
-        Gets the whale queue from whale_tracker and evaluates it
-        through the trading service.
-        """
-        if not self._whale_tracker:
-            logger.warning(
-                f"Cycle {cycle.cycle_id}: WHALE_FOLLOWER strategy but no whale tracker"
-            )
-            return
-
-        try:
-            # Get whale queue from tracker
-            queue_state = self._whale_tracker.get_queue_state()
-            whale_queue = queue_state.get("queue", [])
-
-            if not whale_queue:
-                logger.debug(f"Cycle {cycle.cycle_id}: No whales in queue to follow")
-                return
-
-            logger.debug(
-                f"Cycle {cycle.cycle_id}: Evaluating {len(whale_queue)} whales"
-            )
-
-            # Evaluate whale queue through trading service
-            decision = await self._trading_service.evaluate_whale_queue(whale_queue)
-
-            if decision and decision.action != "hold":
-                cycle.decisions_made.append(decision)
-                logger.info(
-                    f"Cycle {cycle.cycle_id}: Whale follow decision: "
-                    f"{decision.action} {decision.quantity} {decision.side} on {decision.market}"
-                )
-            else:
-                logger.debug(f"Cycle {cycle.cycle_id}: No valid whale to follow")
-
-        except Exception as e:
-            logger.error(f"Cycle {cycle.cycle_id}: Error in whale follower decide: {e}")
     
     async def _execute_phase(self, cycle: TradingCycle) -> None:
         """

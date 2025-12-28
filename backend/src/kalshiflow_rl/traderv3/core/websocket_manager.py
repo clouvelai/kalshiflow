@@ -386,6 +386,12 @@ class V3WebSocketManager:
         Broadcasts whale queue state to all connected frontend clients,
         enabling the Follow the Whale feature in the V3 console.
 
+        Includes:
+        - Current whale queue
+        - Followed whales and IDs
+        - Decision history (why whales were followed/skipped)
+        - Decision statistics
+
         Args:
             event: WhaleQueueEvent containing queue contents and stats
         """
@@ -396,15 +402,20 @@ class V3WebSocketManager:
         if event.stats and event.stats.get("trades_seen", 0) > 0:
             discard_rate = (event.stats.get("trades_discarded", 0) / event.stats["trades_seen"]) * 100
 
-        # Get followed whale IDs and full data from trading service if available
+        # Get followed whale IDs, full data, decision history, and stats from trading service
         followed_whale_ids: List[str] = []
         followed_whales: List[Dict] = []
+        decision_history: List[Dict] = []
+        decision_stats: Dict[str, Any] = {}
+
         if self._trading_service:
             try:
                 followed_whale_ids = list(self._trading_service.get_followed_whale_ids())
                 followed_whales = self._trading_service.get_followed_whales()
+                decision_history = self._trading_service.get_decision_history(limit=20)
+                decision_stats = self._trading_service.get_decision_stats()
             except Exception as e:
-                logger.debug(f"Could not get followed whale data: {e}")
+                logger.debug(f"Could not get trading service data: {e}")
 
         # Format message for frontend
         whale_data = {
@@ -416,6 +427,8 @@ class V3WebSocketManager:
             },
             "followed_whale_ids": followed_whale_ids,  # IDs of whales we have followed
             "followed_whales": followed_whales,  # Full data for followed trades section
+            "decision_history": decision_history,  # Recent decisions with reasons
+            "decision_stats": decision_stats,  # Aggregate stats (detected/followed/skipped)
             "timestamp": time.strftime("%H:%M:%S", time.localtime(event.timestamp)),
         }
 

@@ -23,6 +23,7 @@ import time
 from typing import Dict, Any, Optional, List, TYPE_CHECKING
 from enum import Enum
 from dataclasses import dataclass, field
+from collections import deque
 
 if TYPE_CHECKING:
     from ..clients.trading_client_integration import V3TradingClientIntegration
@@ -92,6 +93,47 @@ class FollowedWhale:
 
 
 @dataclass
+class WhaleDecision:
+    """
+    Tracks a decision made about a whale trade.
+
+    Used for auditing and visibility into why whales were followed/skipped.
+
+    Attributes:
+        whale_id: Unique identifier (market_ticker:timestamp_ms)
+        timestamp: When the decision was made (time.time())
+        action: Decision action ("followed", "skipped_age", "skipped_position", "skipped_orders", "already_followed", "rate_limited")
+        reason: Human-readable explanation
+        order_id: Order ID if whale was followed (None otherwise)
+        market_ticker: Market ticker
+        side: "yes" or "no"
+        whale_size_dollars: Size of the whale trade in dollars
+    """
+    whale_id: str
+    timestamp: float
+    action: str
+    reason: str
+    order_id: Optional[str] = None
+    market_ticker: str = ""
+    side: str = ""
+    whale_size_dollars: float = 0.0
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize for WebSocket transport to frontend."""
+        return {
+            "whale_id": self.whale_id,
+            "timestamp": self.timestamp,
+            "action": self.action,
+            "reason": self.reason,
+            "order_id": self.order_id[:8] if self.order_id else None,
+            "market_ticker": self.market_ticker,
+            "side": self.side,
+            "whale_size_dollars": self.whale_size_dollars,
+            "age_seconds": int(time.time() - self.timestamp)
+        }
+
+
+@dataclass
 class TradingDecision:
     """Represents a trading decision."""
     action: str  # "buy", "sell", "hold"
@@ -147,6 +189,19 @@ class TradingDecisionService:
 
         # Whale following state (in-memory, cleared on restart)
         self._followed_whales: Dict[str, FollowedWhale] = {}
+
+        # Decision history for audit trail (last 100 decisions)
+        self._decision_history: deque[WhaleDecision] = deque(maxlen=100)
+        self._decision_stats = {
+            "whales_detected": 0,
+            "whales_followed": 0,
+            "whales_skipped": 0,
+            "skipped_age": 0,
+            "skipped_position": 0,
+            "skipped_orders": 0,
+            "already_followed": 0,
+            "rate_limited": 0
+        }
 
         # RL model (loaded lazily if needed)
         self._rl_model = None
@@ -343,6 +398,50 @@ class TradingDecisionService:
             strategy=self._strategy
         )
 
+    def _record_whale_decision(
+        self,
+        whale_id: str,
+        action: str,
+        reason: str,
+        order_id: Optional[str] = None,
+        market_ticker: str = "",
+        side: str = "",
+        whale_size_dollars: float = 0.0
+    ) -> None:
+        """
+        Record a whale decision in the audit history.
+
+        Args:
+            whale_id: Unique identifier for the whale
+            action: Decision action (followed, skipped_*, etc.)
+            reason: Human-readable explanation
+            order_id: Order ID if whale was followed
+            market_ticker: Market ticker
+            side: Side of the trade
+            whale_size_dollars: Size of the whale trade
+        """
+        decision = WhaleDecision(
+            whale_id=whale_id,
+            timestamp=time.time(),
+            action=action,
+            reason=reason,
+            order_id=order_id,
+            market_ticker=market_ticker,
+            side=side,
+            whale_size_dollars=whale_size_dollars
+        )
+        self._decision_history.append(decision)
+
+        # Update stats
+        self._decision_stats["whales_detected"] += 1
+        if action == "followed":
+            self._decision_stats["whales_followed"] += 1
+        else:
+            self._decision_stats["whales_skipped"] += 1
+            # Track specific skip reasons
+            if action in self._decision_stats:
+                self._decision_stats[action] += 1
+
     async def evaluate_whale_queue(
         self,
         whale_queue: List[Dict[str, Any]]
@@ -353,6 +452,8 @@ class TradingDecisionService:
         This is the main entry point for WHALE_FOLLOWER strategy.
         Iterates through whales in priority order and returns a decision
         for the first valid whale to follow.
+
+        Records all decisions (follow and skip) in the audit history.
 
         Args:
             whale_queue: List of whale dicts from WhaleTracker.get_queue_state()
@@ -380,37 +481,74 @@ class TradingDecisionService:
             market_ticker = whale.get("market_ticker", "")
             timestamp_ms = whale.get("timestamp_ms", 0)
             whale_id = f"{market_ticker}:{timestamp_ms}"
+            side = whale.get("side", "yes")
+            whale_size_dollars = whale.get("whale_size_dollars", 0)
 
             # Skip if already followed
             if whale_id in self._followed_whales:
                 logger.debug(f"Skipping whale {whale_id[:20]}... - already followed")
+                self._record_whale_decision(
+                    whale_id=whale_id,
+                    action="already_followed",
+                    reason="Already followed this whale",
+                    market_ticker=market_ticker,
+                    side=side,
+                    whale_size_dollars=whale_size_dollars
+                )
                 continue
 
             # Skip if too old
             age_seconds = (now_ms - timestamp_ms) / 1000.0
             if age_seconds > WHALE_MAX_AGE_SECONDS:
                 logger.debug(f"Skipping whale {whale_id[:20]}... - too old ({age_seconds:.1f}s)")
+                self._record_whale_decision(
+                    whale_id=whale_id,
+                    action="skipped_age",
+                    reason=f"Too old ({age_seconds:.0f}s > {WHALE_MAX_AGE_SECONDS}s limit)",
+                    market_ticker=market_ticker,
+                    side=side,
+                    whale_size_dollars=whale_size_dollars
+                )
                 continue
 
             # Skip if we have position in this market
             if market_ticker in positions:
                 logger.debug(f"Skipping whale {whale_id[:20]}... - already have position")
+                self._record_whale_decision(
+                    whale_id=whale_id,
+                    action="skipped_position",
+                    reason=f"Already have position in {market_ticker}",
+                    market_ticker=market_ticker,
+                    side=side,
+                    whale_size_dollars=whale_size_dollars
+                )
                 continue
 
             # Skip if we have open orders in this market
             if market_ticker in markets_with_orders:
                 logger.debug(f"Skipping whale {whale_id[:20]}... - have open orders")
+                self._record_whale_decision(
+                    whale_id=whale_id,
+                    action="skipped_orders",
+                    reason=f"Have open orders in {market_ticker}",
+                    market_ticker=market_ticker,
+                    side=side,
+                    whale_size_dollars=whale_size_dollars
+                )
                 continue
 
             # Found a valid whale to follow
-            side = whale.get("side", "yes")
             price_cents = whale.get("price_cents", 50)
-            whale_size_cents = int(whale.get("whale_size_dollars", 0) * 100)
+            whale_size_cents = int(whale_size_dollars * 100)
 
             logger.info(
                 f"Following whale: {market_ticker} {side.upper()} @ {price_cents}c "
                 f"(whale size: ${whale_size_cents/100:.2f}, age: {age_seconds:.1f}s)"
             )
+
+            # Note: Decision is recorded in _execute_buy when order_id is available
+            # We return the TradingDecision here, and the order execution will record
+            # the "followed" decision with the actual order_id
 
             return TradingDecision(
                 action="buy",
@@ -554,6 +692,17 @@ class TradingDecisionService:
                     whale_size_cents=whale_size_cents
                 )
 
+                # Record the successful follow decision in audit history
+                self._record_whale_decision(
+                    whale_id=whale_id,
+                    action="followed",
+                    reason=f"Followed ${whale_size_cents/100:.2f} whale at {decision.price}c",
+                    order_id=order_id,
+                    market_ticker=market_ticker,
+                    side=decision.side,
+                    whale_size_dollars=whale_size_cents / 100
+                )
+
                 logger.info(
                     f"Tracked whale follow: {whale_id[:30]}... "
                     f"(total followed: {len(self._followed_whales)})"
@@ -688,3 +837,37 @@ class TradingDecisionService:
             - our_count, whale_size_cents, placed_at, age_seconds
         """
         return [fw.to_dict() for fw in self._followed_whales.values()]
+
+    def get_decision_history(self, limit: int = 20) -> List[Dict[str, Any]]:
+        """
+        Get recent whale decision history for audit display.
+
+        Args:
+            limit: Maximum number of decisions to return (default 20)
+
+        Returns:
+            List of decision dicts, most recent first, including:
+            - whale_id, timestamp, action, reason
+            - order_id (if followed), market_ticker, side, whale_size_dollars
+        """
+        # Return most recent decisions first, limited to requested count
+        decisions = list(self._decision_history)
+        decisions.reverse()  # Most recent first
+        return [d.to_dict() for d in decisions[:limit]]
+
+    def get_decision_stats(self) -> Dict[str, Any]:
+        """
+        Get whale decision statistics.
+
+        Returns:
+            Dict containing:
+            - whales_detected: Total whales evaluated
+            - whales_followed: Whales we followed
+            - whales_skipped: Whales we skipped (all reasons)
+            - skipped_age: Skipped due to age limit
+            - skipped_position: Skipped due to existing position
+            - skipped_orders: Skipped due to open orders
+            - already_followed: Skipped because already followed
+            - rate_limited: Skipped due to rate limiting
+        """
+        return self._decision_stats.copy()

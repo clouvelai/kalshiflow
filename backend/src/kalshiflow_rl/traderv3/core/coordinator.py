@@ -25,6 +25,7 @@ from .trading_flow_orchestrator import TradingFlowOrchestrator
 from ..clients.orderbook_integration import V3OrderbookIntegration
 from ..config.environment import V3Config
 from ..services.trading_decision_service import TradingDecisionService, TradingStrategy
+from ..services.whale_execution_service import WhaleExecutionService
 
 logger = logging.getLogger("kalshiflow_rl.traderv3.core.coordinator")
 
@@ -138,7 +139,17 @@ class V3Coordinator:
                     logger.info("WHALE_FOLLOWER strategy enabled with whale tracker")
                 else:
                     logger.warning("WHALE_FOLLOWER strategy enabled but whale tracker not available")
-        
+
+        # Initialize whale execution service (if trading client and whale tracker available)
+        self._whale_execution_service: Optional[WhaleExecutionService] = None
+        if trading_client_integration and whale_tracker and self._trading_service:
+            self._whale_execution_service = WhaleExecutionService(
+                event_bus=event_bus,
+                trading_service=self._trading_service,
+                state_container=self._state_container,
+            )
+            logger.info("WhaleExecutionService initialized for event-driven whale following")
+
         self._started_at: Optional[float] = None
         self._running = False
 
@@ -353,6 +364,16 @@ class V3Coordinator:
                 message="Whale detection enabled - monitoring public trades",
                 metadata={"feature": "whale_detection", "severity": "info"}
             )
+
+            # Start whale execution service for event-driven following
+            if self._whale_execution_service:
+                await self._whale_execution_service.start()
+                logger.info("Whale execution service started - event-driven following enabled")
+                await self._event_bus.emit_system_activity(
+                    activity_type="connection",
+                    message="Whale execution service started - following whales immediately",
+                    metadata={"feature": "whale_execution", "severity": "info"}
+                )
         else:
             logger.warning("Trades connected but no whale tracker configured")
 
@@ -832,6 +853,8 @@ class V3Coordinator:
             total_steps = 5  # Base steps: orderbook, state transition, state machine, websocket, event bus
             if self._trading_client_integration:
                 total_steps += 1
+            if self._whale_execution_service:
+                total_steps += 1
             if self._whale_tracker:
                 total_steps += 1
             if self._trades_integration:
@@ -839,7 +862,13 @@ class V3Coordinator:
 
             step = 1
 
-            # Stop whale tracker first (depends on trades integration)
+            # Stop whale execution service first (depends on whale tracker)
+            if self._whale_execution_service:
+                logger.info(f"{step}/{total_steps} Stopping Whale Execution Service...")
+                await self._whale_execution_service.stop()
+                step += 1
+
+            # Stop whale tracker (depends on trades integration)
             if self._whale_tracker:
                 logger.info(f"{step}/{total_steps} Stopping Whale Tracker...")
                 await self._whale_tracker.stop()
@@ -919,6 +948,10 @@ class V3Coordinator:
         # Add whale tracker if configured
         if self._whale_tracker:
             components["whale_tracker"] = self._whale_tracker.get_health_details()
+
+        # Add whale execution service if configured
+        if self._whale_execution_service:
+            components["whale_execution_service"] = self._whale_execution_service.get_stats()
 
         # Get metrics from various sources
         orderbook_metrics = self._orderbook_integration.get_metrics()
