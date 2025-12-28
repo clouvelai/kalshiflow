@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Activity, Wifi, WifiOff, Circle, ChevronRight, ChevronDown, Zap, Database, TrendingUp, AlertCircle, Copy, Check, Info, CheckCircle, XCircle, ArrowRight, DollarSign, Briefcase, ShoppingCart, FileText, TrendingDown, Clock, Shield, Fish } from 'lucide-react';
+import { Activity, Wifi, WifiOff, Circle, ChevronRight, ChevronDown, Zap, Database, TrendingUp, AlertCircle, Copy, Check, Info, CheckCircle, XCircle, ArrowRight, DollarSign, Briefcase, ShoppingCart, FileText, TrendingDown, Clock, Shield, Fish, X } from 'lucide-react';
 
 // TradingData Component - Displays real-time trading state
 const TradingData = ({ tradingState, lastUpdateTime }) => {
@@ -1126,6 +1126,154 @@ const PositionListPanel = ({ positions, positionListener, sessionUpdates }) => {
   );
 };
 
+// SettlementToast - Shows notification when a position closes
+const SettlementToast = ({ settlement, onDismiss }) => {
+  if (!settlement) return null;
+
+  const isProfit = (settlement.realized_pnl || 0) >= 0;
+  const formatCurrency = (cents) => {
+    const dollars = Math.abs(cents) / 100;
+    const prefix = cents >= 0 ? '+' : '-';
+    return `${prefix}$${dollars.toFixed(2)}`;
+  };
+
+  return (
+    <div className={`fixed bottom-4 right-4 p-4 rounded-lg shadow-lg z-50 border backdrop-blur-sm
+      ${isProfit ? 'bg-green-900/90 border-green-700' : 'bg-red-900/90 border-red-700'}
+      animate-pulse`}
+    >
+      <div className="flex items-center space-x-3">
+        <CheckCircle className={`w-5 h-5 ${isProfit ? 'text-green-400' : 'text-red-400'}`} />
+        <div>
+          <div className="text-sm font-medium text-white">
+            Position Closed: {settlement.ticker}
+          </div>
+          <div className={`text-lg font-mono font-bold ${isProfit ? 'text-green-400' : 'text-red-400'}`}>
+            {formatCurrency(settlement.realized_pnl || 0)}
+          </div>
+        </div>
+        <button
+          onClick={onDismiss}
+          className="text-gray-400 hover:text-white ml-2"
+        >
+          <X className="w-4 h-4" />
+        </button>
+      </div>
+    </div>
+  );
+};
+
+// SettlementsPanel - Shows history of closed positions
+const SettlementsPanel = ({ settlements }) => {
+  const [isExpanded, setIsExpanded] = useState(true);
+
+  if (!settlements || settlements.length === 0) {
+    return null;
+  }
+
+  const totalRealizedPnl = settlements.reduce(
+    (sum, s) => sum + (s.realized_pnl || 0), 0
+  );
+
+  const formatCurrency = (cents) => {
+    const dollars = Math.abs(cents) / 100;
+    const prefix = cents >= 0 ? '+' : '-';
+    return `${prefix}$${dollars.toFixed(2)}`;
+  };
+
+  const formatTime = (timestamp) => {
+    if (!timestamp) return 'N/A';
+    const date = new Date(timestamp * 1000);
+    return date.toLocaleTimeString('en-US', {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit'
+    });
+  };
+
+  return (
+    <div className="bg-gray-900/50 backdrop-blur-sm rounded-xl border border-gray-800 p-4">
+      <div
+        className="flex items-center justify-between cursor-pointer"
+        onClick={() => setIsExpanded(!isExpanded)}
+      >
+        <div className="flex items-center space-x-2">
+          {isExpanded ? (
+            <ChevronDown className="w-4 h-4 text-gray-400" />
+          ) : (
+            <ChevronRight className="w-4 h-4 text-gray-400" />
+          )}
+          <CheckCircle className="w-4 h-4 text-emerald-400" />
+          <h3 className="text-sm font-bold text-gray-300 uppercase tracking-wider">
+            Recent Settlements
+          </h3>
+          <span className="text-xs text-gray-500">({settlements.length})</span>
+        </div>
+        <div className={`px-2 py-0.5 rounded text-xs font-bold font-mono ${
+          totalRealizedPnl >= 0
+            ? 'bg-green-900/30 text-green-400'
+            : 'bg-red-900/30 text-red-400'
+        }`}>
+          {formatCurrency(totalRealizedPnl)}
+        </div>
+      </div>
+
+      {isExpanded && (
+        <div className="mt-4 overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-xs text-gray-500 uppercase border-b border-gray-800">
+                <th className="text-left py-2 px-2">Ticker</th>
+                <th className="text-center py-2 px-2">Side</th>
+                <th className="text-right py-2 px-2">Qty</th>
+                <th className="text-right py-2 px-2">Entry</th>
+                <th className="text-right py-2 px-2">Realized P&L</th>
+                <th className="text-right py-2 px-2">Closed</th>
+              </tr>
+            </thead>
+            <tbody>
+              {settlements.slice(0, 20).map((s, idx) => {
+                const isProfit = (s.realized_pnl || 0) >= 0;
+                return (
+                  <tr
+                    key={`${s.ticker}-${s.closed_at}-${idx}`}
+                    className="border-b border-gray-800/50 hover:bg-gray-800/30"
+                  >
+                    <td className="py-2 px-2 font-mono text-gray-300">{s.ticker}</td>
+                    <td className="py-2 px-2 text-center">
+                      <span className={`px-1.5 py-0.5 rounded text-xs font-bold ${
+                        s.side === 'yes'
+                          ? 'bg-green-900/30 text-green-400'
+                          : 'bg-red-900/30 text-red-400'
+                      }`}>
+                        {s.side?.toUpperCase()}
+                      </span>
+                    </td>
+                    <td className="py-2 px-2 text-right font-mono text-gray-400">
+                      {Math.abs(s.position || 0)}
+                    </td>
+                    <td className="py-2 px-2 text-right font-mono text-gray-400">
+                      ${((s.total_traded || 0) / 100).toFixed(2)}
+                    </td>
+                    <td className={`py-2 px-2 text-right font-mono font-bold ${
+                      isProfit ? 'text-green-400' : 'text-red-400'
+                    }`}>
+                      {formatCurrency(s.realized_pnl || 0)}
+                    </td>
+                    <td className="py-2 px-2 text-right text-xs text-gray-500">
+                      {formatTime(s.closed_at)}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+};
+
 const V3TraderConsole = () => {
   const [messages, setMessages] = useState([]);
   // Start with all messages expanded by default for visibility
@@ -1144,6 +1292,9 @@ const V3TraderConsole = () => {
   });
   // Track which whale is currently being processed for animation
   const [processingWhaleId, setProcessingWhaleId] = useState(null);
+  // Settlements state for closed positions
+  const [settlements, setSettlements] = useState([]);
+  const [newSettlement, setNewSettlement] = useState(null);
   const [metrics, setMetrics] = useState({
     markets_connected: 0,
     snapshots_received: 0,
@@ -1403,6 +1554,20 @@ const V3TraderConsole = () => {
                   pnl: data.data.pnl,
                   positions_details: data.data.positions_details || []
                 });
+
+                // Handle settlements - show toast for new ones
+                if (data.data.settlements) {
+                  const newSettlements = data.data.settlements;
+                  setSettlements(prevSettlements => {
+                    // If we have new settlements (more than before), show toast
+                    if (newSettlements.length > prevSettlements.length && newSettlements[0]) {
+                      setNewSettlement(newSettlements[0]);
+                      // Auto-dismiss after 5 seconds
+                      setTimeout(() => setNewSettlement(null), 5000);
+                    }
+                    return newSettlements;
+                  });
+                }
               }
               break;
               
@@ -1717,6 +1882,12 @@ const V3TraderConsole = () => {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-950 via-gray-900 to-gray-950">
+      {/* Settlement Toast - Fixed position notification */}
+      <SettlementToast
+        settlement={newSettlement}
+        onDismiss={() => setNewSettlement(null)}
+      />
+
       {/* Header */}
       <div className="border-b border-gray-800 bg-black/30 backdrop-blur-sm sticky top-0 z-10">
         <div className="max-w-7xl mx-auto px-6 py-4">
@@ -1771,6 +1942,11 @@ const V3TraderConsole = () => {
           positionListener={tradingState?.position_listener}
           sessionUpdates={tradingState?.session_updates}
         />
+
+        {/* Settlements Panel - Recently closed positions */}
+        <div className="mb-6">
+          <SettlementsPanel settlements={settlements} />
+        </div>
 
         {/* Whale Queue Panel - Full width below Trading Data */}
         <div className="mb-6">

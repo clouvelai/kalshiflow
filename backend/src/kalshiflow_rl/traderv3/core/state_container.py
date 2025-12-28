@@ -45,6 +45,7 @@ Thread Safety:
 import time
 import logging
 import asyncio
+from collections import deque
 from typing import Dict, Any, Optional, Callable, Awaitable, TypeVar, List
 from dataclasses import dataclass, field
 from enum import Enum
@@ -172,6 +173,11 @@ class V3StateContainer:
         # via real-time WebSocket (not from initial sync)
         self._session_updated_tickers: set = set()
 
+        # Settled positions history - stores last 50 closed positions for UI display
+        # Positions are captured here before being removed from active positions
+        self._settled_positions: deque = deque(maxlen=50)
+        self._total_settlements_count = 0
+
         # Whale queue state - data from whale tracker
         self._whale_state: Optional[WhaleQueueState] = None
         self._whale_state_version = 0  # Increment on each whale queue update
@@ -294,11 +300,29 @@ class V3StateContainer:
 
         position_count = position_data.get("position", 0)
 
-        # If position is 0, remove from positions dict
+        # If position is 0, capture settlement data then remove from positions dict
         if position_count == 0:
             if ticker in self._trading_state.positions:
+                # Capture position data before deletion for settlement history
+                closing_position = self._trading_state.positions[ticker]
+                settlement = {
+                    "ticker": ticker,
+                    "position": closing_position.get("position", 0),
+                    "side": "yes" if closing_position.get("position", 0) > 0 else "no",
+                    "total_traded": closing_position.get("total_traded", 0),
+                    "market_exposure": closing_position.get("market_exposure", 0),
+                    "realized_pnl": position_data.get("realized_pnl", 0),
+                    "fees_paid": position_data.get("fees_paid", 0),
+                    "closed_at": time.time(),
+                }
+                self._settled_positions.appendleft(settlement)
+                self._total_settlements_count += 1
+
                 del self._trading_state.positions[ticker]
-                logger.info(f"Position closed: {ticker}")
+                logger.info(
+                    f"Position closed: {ticker}, "
+                    f"realized_pnl={settlement['realized_pnl']}¢"
+                )
         else:
             # Update or add position - MERGE to preserve fields not in WebSocket update
             # This is critical: WebSocket updates don't include total_traded (cost basis),
@@ -487,6 +511,10 @@ class V3StateContainer:
             "updated_tickers": list(self._session_updated_tickers),
             "count": len(self._session_updated_tickers),
         }
+
+        # Add settlements history for UI display
+        summary["settlements"] = list(self._settled_positions)
+        summary["settlements_count"] = self._total_settlements_count
 
         return summary
 
