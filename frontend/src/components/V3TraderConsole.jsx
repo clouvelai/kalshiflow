@@ -299,7 +299,7 @@ const WhaleQueuePanel = ({ whaleQueue }) => {
                 <th className="px-3 py-2 text-right text-xs text-gray-500 uppercase font-medium">Count</th>
                 <th className="px-3 py-2 text-right text-xs text-gray-500 uppercase font-medium">Cost</th>
                 <th className="px-3 py-2 text-right text-xs text-gray-500 uppercase font-medium">Payout</th>
-                <th className="px-3 py-2 text-right text-xs text-gray-500 uppercase font-medium">Size</th>
+                <th className="px-3 py-2 text-right text-xs text-gray-500 uppercase font-medium">Profit</th>
                 <th className="px-3 py-2 text-right text-xs text-gray-500 uppercase font-medium">Age</th>
               </tr>
             </thead>
@@ -337,7 +337,8 @@ const WhaleQueuePanel = ({ whaleQueue }) => {
                     <td className="px-3 py-2 text-right font-mono text-gray-300">{whale.count.toLocaleString()}</td>
                     <td className="px-3 py-2 text-right font-mono text-gray-400">{formatCurrency(whale.cost_dollars)}</td>
                     <td className="px-3 py-2 text-right font-mono text-gray-400">{formatCurrency(whale.payout_dollars)}</td>
-                    <td className="px-3 py-2 text-right font-mono font-bold text-cyan-400">{formatCurrency(whale.whale_size_dollars)}</td>
+                    {/* TODO: Subtract fees in a later milestone */}
+                    <td className="px-3 py-2 text-right font-mono font-bold text-cyan-400">{formatCurrency(whale.payout_dollars - whale.cost_dollars)}</td>
                     <td className="px-3 py-2 text-right font-mono text-gray-500 text-xs">{formatAge(whale.age_seconds)}</td>
                   </tr>
                 );
@@ -413,7 +414,8 @@ const FollowedTradesPanel = ({ followedWhales }) => {
                 <td className="px-3 py-2 text-right font-mono text-gray-300">{trade.our_count}</td>
                 <td className="px-3 py-2 text-right font-mono text-gray-400">${trade.cost_dollars?.toFixed(2)}</td>
                 <td className="px-3 py-2 text-right font-mono text-gray-400">${trade.payout_dollars?.toFixed(2)}</td>
-                <td className="px-3 py-2 text-right font-mono font-bold text-green-400">${trade.size_dollars?.toFixed(2)}</td>
+                {/* TODO: Subtract fees in a later milestone */}
+                <td className="px-3 py-2 text-right font-mono font-bold text-green-400">${((trade.payout_dollars || 0) - (trade.cost_dollars || 0)).toFixed(2)}</td>
                 <td className="px-3 py-2 text-right font-mono text-gray-500 text-xs">{formatAge(trade.age_seconds)}</td>
               </tr>
             ))}
