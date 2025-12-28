@@ -77,12 +77,17 @@ TRADER V3 is an event-driven paper trading system for Kalshi prediction markets.
 |           |                     |                            | (trades WS)       |                |
 |           |                     |                            +--------+----------+                |
 |           |                     |                                     |                           |
+|           |                     |                            +--------+----------+                |
+|           |                     |                            | PositionListener  |                |
+|           |                     |                            | (positions WS)    |                |
+|           |                     |                            +--------+----------+                |
+|           |                     |                                     |                           |
 +===========|=====================|=====================================|===========================+
             |                     |                                     |
             v                     v                                     v
     +---------------+     +---------------+                    +----------------+
     | Kalshi WS API |     | Kalshi REST   |                    | Kalshi WS API  |
-    | (orderbook)   |     | (demo-api)    |                    | (trade channel)|
+    | (orderbook)   |     | (demo-api)    |                    | (user channel) |
     +---------------+     +---------------+                    +----------------+
 ```
 
@@ -204,7 +209,6 @@ TRADER V3 is an event-driven paper trading system for Kalshi prediction markets.
   - `start()` / `stop()` - Lifecycle management
   - `wait_for_connection(timeout)` - Wait for WebSocket connection
   - `wait_for_first_snapshot(timeout)` - Wait for initial data
-  - `get_orderbook(market_ticker)` - Get cached orderbook (not implemented)
   - `get_metrics()` - Get orderbook metrics
   - `get_health_details()` - Get detailed health info
   - `ensure_session_for_recovery()` - Prepare for ERROR recovery
@@ -278,17 +282,37 @@ TRADER V3 is an event-driven paper trading system for Kalshi prediction markets.
 - **Subscribes To**: None (listens to TradesClient callbacks)
 - **Dependencies**: TradesClient, EventBus
 
+#### PositionListener
+- **File**: `clients/position_listener.py`
+- **Purpose**: WebSocket listener for real-time position updates from Kalshi
+- **Key Methods**:
+  - `start()` / `stop()` - Lifecycle management
+  - `is_healthy()` - Check if listener is running and WebSocket connected
+  - `get_metrics()` - Get listener statistics (positions received/processed)
+  - `get_status()` - Get full status for monitoring
+  - `get_health_details()` - Get detailed health information
+- **Features**:
+  - Subscribes to Kalshi `market_positions` WebSocket channel
+  - Automatic reconnection with configurable delay
+  - Heartbeat monitoring for connection health
+  - Centi-cents to cents conversion (Kalshi API uses centi-cents)
+- **Emits Events**: `MARKET_POSITION` (via EventBus.emit_market_position_update)
+- **Subscribes To**: None (listens to Kalshi WebSocket)
+- **Dependencies**: EventBus, KalshiAuth
+
 ### 3.3 Services (`traderv3/services/`)
 
 #### TradingDecisionService
 - **File**: `services/trading_decision_service.py`
-- **Purpose**: Implements trading strategy logic (HOLD, PAPER_TEST, RL_MODEL, CUSTOM)
+- **Purpose**: Implements trading strategy logic and order execution. Strategies: HOLD, PAPER_TEST, RL_MODEL, CUSTOM. Note: WHALE_FOLLOWER strategy detection/timing is handled by WhaleExecutionService; this service executes the actual orders.
 - **Key Methods**:
   - `evaluate_market(market, orderbook)` - Generate trading decision
-  - `execute_decision(decision)` - Execute a trading decision
+  - `execute_decision(decision)` - Execute a trading decision (used by WhaleExecutionService)
   - `set_strategy(strategy)` - Change trading strategy
   - `get_stats()` - Get service statistics
-- **Emits Events**: `SYSTEM_ACTIVITY` (trading_decision, trading_error types)
+  - `get_followed_whale_ids()` - Get IDs of successfully followed whales
+  - `get_followed_whales()` - Get full data for followed whales
+- **Emits Events**: `SYSTEM_ACTIVITY` (trading_decision, trading_error, whale_follow types)
 - **Subscribes To**: None
 - **Dependencies**: V3TradingClientIntegration, V3StateContainer, EventBus
 
@@ -485,6 +509,7 @@ VALID_TRANSITIONS = {
 | `SYSTEM_ACTIVITY` | V3StateMachine, V3HealthMonitor, TradingFlowOrchestrator, TradingDecisionService, WhaleExecutionService | V3WebSocketManager | `SystemActivityEvent{activity_type, message, metadata}` |
 | `PUBLIC_TRADE_RECEIVED` | V3TradesIntegration | WhaleTracker | `PublicTradeEvent{market_ticker, timestamp_ms, side, price_cents, count}` |
 | `WHALE_QUEUE_UPDATED` | WhaleTracker | V3WebSocketManager, WhaleExecutionService | `WhaleQueueEvent{queue, stats, timestamp}` |
+| `MARKET_POSITION` | PositionListener | V3StateContainer | `MarketPositionEvent{ticker, position_data, timestamp}` |
 | `SETTLEMENT` | (future) | (future) | Market settlement events |
 
 ### 5.1 SystemActivityEvent Types
@@ -654,6 +679,7 @@ VALID_TRANSITIONS = {
 | `V3_TRADING_MODE` | No | `paper` | Trading mode |
 | `V3_PORT` | No | `8005` | Server port |
 | `V3_LOG_LEVEL` | No | `INFO` | Logging level |
+| `V3_TRADING_STRATEGY` | No | `hold` | Trading strategy (hold, whale_follower, paper_test, rl_model) |
 | `V3_ENABLE_WHALE_DETECTION` | No | `false` | Enable whale detection feature |
 | `WHALE_QUEUE_SIZE` | No | `10` | Max whale bets to track in queue |
 | `WHALE_WINDOW_MINUTES` | No | `5` | Sliding window for whale tracking (minutes) |
@@ -780,3 +806,5 @@ The system supports **degraded mode** when the orderbook WebSocket is unavailabl
 | 2024-12-28 | Added WhaleExecutionService: event-driven whale execution with rate limiting, deduplication | Claude |
 | 2024-12-28 | Added whale_processing WebSocket message type, whale execution flow trace, environment vars | Claude |
 | 2024-12-28 | Removed dead code: evaluate_whale_queue() in TradingDecisionService (~120 lines) | Claude |
+| 2024-12-28 | Architecture review: Added PositionListener docs, MARKET_POSITION event, V3_TRADING_STRATEGY env var | Claude |
+| 2024-12-28 | Dead code cleanup: Removed empty _handle_orderbook_event(), stub get_orderbook(), commented code | Claude |

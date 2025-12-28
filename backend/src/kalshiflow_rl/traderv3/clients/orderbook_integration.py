@@ -146,17 +146,7 @@ class V3OrderbookIntegration:
 
         # Don't immediately mark markets as connected - wait for actual connection
         logger.info(f"Waiting for orderbook client connection...")
-    
-    def get_orderbook(self, market_ticker: str) -> Optional[Any]:
-        """
-        Get latest orderbook for a market.
-        
-        For now, returns None as we don't store orderbook data locally.
-        In the future, this could cache recent orderbook snapshots.
-        """
-        # TODO: Implement orderbook caching if needed for trading decisions
-        return None
-    
+
     async def stop(self) -> None:
         """Stop orderbook integration."""
         if not self._running:

@@ -17,7 +17,7 @@ import weakref
 
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
-from .event_bus import EventBus, EventType, StateTransitionEvent, TraderStatusEvent, MarketEvent, WhaleQueueEvent
+from .event_bus import EventBus, EventType, StateTransitionEvent, TraderStatusEvent, WhaleQueueEvent
 
 # Import for type hints only to avoid circular imports
 from typing import TYPE_CHECKING
@@ -141,14 +141,8 @@ class V3WebSocketManager:
         # Subscribe to event bus if provided
         if self._event_bus:
             self._event_bus.subscribe(EventType.SYSTEM_ACTIVITY, self._handle_system_activity)
-            # Don't subscribe to STATE_TRANSITION anymore - it's handled by SYSTEM_ACTIVITY now
-            # self._event_bus.subscribe(EventType.STATE_TRANSITION, self._handle_state_transition)
             self._event_bus.subscribe(EventType.TRADER_STATUS, self._handle_trader_status)
-            # Subscribe to whale queue updates for Follow the Whale feature
             self._event_bus.subscribe(EventType.WHALE_QUEUE_UPDATED, self._handle_whale_queue_update)
-            # Don't subscribe to orderbook events - they're too noisy for the console
-            # self._event_bus.subscribe(EventType.ORDERBOOK_SNAPSHOT, self._handle_orderbook_event)
-            # self._event_bus.subscribe(EventType.ORDERBOOK_DELTA, self._handle_orderbook_event)
             logger.info("Subscribed to event bus for real-time updates")
         
         # Start periodic tasks
@@ -498,12 +492,6 @@ class V3WebSocketManager:
             "timestamp": time.strftime("%H:%M:%S", time.localtime(event.timestamp)),
         })
 
-    async def _handle_orderbook_event(self, event: MarketEvent) -> None:
-        """Handle orderbook events from event bus."""
-        # Only broadcast summary updates, not every single event (would be too noisy)
-        # This will be used for periodic metrics updates
-        pass
-    
     async def _handle_client_message(self, client_id: str, message: str) -> None:
         """
         Handle message from WebSocket client.
