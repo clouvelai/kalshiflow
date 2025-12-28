@@ -848,6 +848,44 @@ const SessionSummaryPanel = ({ tradingState }) => {
 // PositionListPanel Component - Detailed position breakdown with per-position P&L
 const PositionListPanel = ({ positions }) => {
   const [isExpanded, setIsExpanded] = useState(true);
+  const [changedTickers, setChangedTickers] = useState(new Set());
+  const prevPositionsRef = useRef({});
+
+  // Detect position changes and trigger subtle highlight animation
+  useEffect(() => {
+    if (!positions || positions.length === 0) return;
+
+    const changed = new Set();
+    positions.forEach(pos => {
+      const prev = prevPositionsRef.current[pos.ticker];
+      if (prev) {
+        // Detect changes in key fields
+        if (prev.position !== pos.position ||
+            prev.total_traded !== pos.total_traded ||
+            prev.unrealized_pnl !== pos.unrealized_pnl) {
+          changed.add(pos.ticker);
+        }
+      } else {
+        // New position - highlight it
+        changed.add(pos.ticker);
+      }
+    });
+
+    // Update ref for next comparison (always, so we track all positions)
+    const newRef = {};
+    positions.forEach(pos => {
+      newRef[pos.ticker] = { ...pos };
+    });
+    prevPositionsRef.current = newRef;
+
+    // Trigger highlight animation if anything changed
+    if (changed.size > 0) {
+      setChangedTickers(changed);
+      // Clear highlight after 2 seconds (subtle, not rushed)
+      const timeout = setTimeout(() => setChangedTickers(new Set()), 2000);
+      return () => clearTimeout(timeout);
+    }
+  }, [positions]);
 
   const formatCurrency = (cents) => {
     const dollars = cents / 100;
@@ -912,12 +950,25 @@ const PositionListPanel = ({ positions }) => {
                   ? ((pos.unrealized_pnl / pos.total_traded) * 100).toFixed(1)
                   : 0;
 
+                const isRecentlyChanged = changedTickers.has(pos.ticker);
+
                 return (
                   <tr
                     key={pos.ticker || index}
-                    className="border-b border-gray-700/30 hover:bg-gray-800/50 transition-colors"
+                    className={`border-b border-gray-700/30 hover:bg-gray-800/50 transition-all duration-500
+                      ${isRecentlyChanged
+                        ? 'border-l-2 border-l-emerald-400/70 bg-emerald-900/10'
+                        : 'border-l-2 border-l-transparent'
+                      }`}
                   >
-                    <td className="px-3 py-2 font-mono text-gray-300 text-xs">{pos.ticker}</td>
+                    <td className="px-3 py-2 font-mono text-gray-300 text-xs">
+                      <div className="flex items-center">
+                        {isRecentlyChanged && (
+                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 mr-2 animate-pulse" />
+                        )}
+                        {pos.ticker}
+                      </div>
+                    </td>
                     <td className="px-3 py-2 text-center">
                       <span className={`px-2 py-0.5 rounded text-xs font-bold uppercase ${
                         pos.side === 'yes'
