@@ -983,8 +983,8 @@ const V3TraderConsole = () => {
     api_url: null
   });
   const [copied, setCopied] = useState(false);
-  // P4: Smart scroll anchoring - only auto-scroll if user is near bottom
-  const [autoScroll, setAutoScroll] = useState(true);
+  // P4: Disabled auto-scroll - was causing page to jump on every update
+  const [autoScroll, setAutoScroll] = useState(false);
   const wsRef = useRef(null);
   const messagesEndRef = useRef(null);
   const messagesContainerRef = useRef(null);
