@@ -4,29 +4,70 @@ Trading Decision Service for V3 trader.
 Handles trading logic and decision-making for the V3 trading system.
 This service is designed to be the single point for all trading decisions,
 supporting both hardcoded strategies and RL model integration.
+
+Key Responsibilities:
+    1. Evaluate market conditions and generate trading decisions
+    2. Execute trades through the trading client
+    3. Support multiple strategies (HOLD, WHALE_FOLLOWER, RL, custom)
+    4. Track decision history and whale follow state
+
+Design Principles:
+    - Single point for all trading decisions
+    - Strategy pattern for easy extension
+    - Event-driven updates via EventBus
 """
 
 import asyncio
 import logging
+import time
 from typing import Dict, Any, Optional, List, TYPE_CHECKING
 from enum import Enum
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 if TYPE_CHECKING:
     from ..clients.trading_client_integration import V3TradingClientIntegration
     from ..core.state_container import V3StateContainer
     from ..core.event_bus import EventBus
+    from ..services.whale_tracker import WhaleTracker
     from kalshiflow_rl.data.models import OrderbookSnapshot
 
 logger = logging.getLogger("kalshiflow_rl.traderv3.services.trading_decision")
+
+# Constants for whale following
+WHALE_FOLLOW_CONTRACTS = 5  # Fixed 5 contracts per follow
+WHALE_MAX_AGE_SECONDS = 120  # Skip whales older than 2 minutes
 
 
 class TradingStrategy(Enum):
     """Available trading strategies."""
     HOLD = "hold"  # Never trade (safe default)
+    WHALE_FOLLOWER = "whale_follower"  # Follow the Whale strategy
     PAPER_TEST = "paper_test"  # Simple test trades for paper mode
     RL_MODEL = "rl_model"  # Use trained RL model
     CUSTOM = "custom"  # Custom strategy implementation
+
+
+@dataclass
+class FollowedWhale:
+    """
+    Tracks a whale trade that we have followed.
+
+    Attributes:
+        whale_id: Unique identifier (market_ticker:timestamp_ms)
+        our_order_id: Order ID from Kalshi response
+        placed_at: When we placed the follow order (time.time())
+        market_ticker: Market ticker
+        side: "yes" or "no"
+        our_count: Number of contracts we bought
+        whale_size_cents: Original whale size in cents
+    """
+    whale_id: str
+    our_order_id: str
+    placed_at: float
+    market_ticker: str
+    side: str
+    our_count: int
+    whale_size_cents: int
 
 
 @dataclass
@@ -45,46 +86,54 @@ class TradingDecision:
 class TradingDecisionService:
     """
     Service for making trading decisions in the V3 trader.
-    
+
     Responsibilities:
     - Evaluate market conditions
     - Generate trading decisions
     - Execute trades through trading client
     - Track decision history
-    - Support multiple strategies (HOLD, RL, custom)
+    - Support multiple strategies (HOLD, WHALE_FOLLOWER, RL, custom)
     """
-    
+
     def __init__(
         self,
         trading_client: Optional['V3TradingClientIntegration'],
         state_container: 'V3StateContainer',
         event_bus: 'EventBus',
-        strategy: TradingStrategy = TradingStrategy.HOLD
+        strategy: TradingStrategy = TradingStrategy.HOLD,
+        whale_tracker: Optional['WhaleTracker'] = None
     ):
         """
         Initialize trading decision service.
-        
+
         Args:
             trading_client: Trading client integration for order execution
             state_container: State container for accessing system state
             event_bus: Event bus for emitting trading events
             strategy: Trading strategy to use
+            whale_tracker: Optional whale tracker for WHALE_FOLLOWER strategy
         """
         self._trading_client = trading_client
         self._state_container = state_container
         self._event_bus = event_bus
         self._strategy = strategy
-        
+        self._whale_tracker = whale_tracker
+
         # Decision tracking
         self._decision_count = 0
         self._trade_count = 0
         self._last_decision: Optional[TradingDecision] = None
-        
+
+        # Whale following state (in-memory, cleared on restart)
+        self._followed_whales: Dict[str, FollowedWhale] = {}
+
         # RL model (loaded lazily if needed)
         self._rl_model = None
         self._rl_model_loaded = False
-        
+
         logger.info(f"Trading Decision Service initialized with strategy: {strategy.value}")
+        if whale_tracker and strategy == TradingStrategy.WHALE_FOLLOWER:
+            logger.info("Whale Follower strategy enabled - will follow big bets")
     
     async def evaluate_market(
         self, 
@@ -106,11 +155,12 @@ class TradingDecisionService:
         # Get current positions and orders
         trading_state = self._state_container.trading_state
         positions = trading_state.positions if trading_state else {}
-        open_orders = trading_state.open_orders if trading_state else []
-        
+        orders = trading_state.orders if trading_state else {}
+
         # Check if we already have exposure in this market
         has_position = market in positions
-        has_orders = any(o.ticker == market for o in open_orders)
+        # orders is Dict[order_id, order_data] where order_data has 'ticker' key
+        has_orders = any(o.get("ticker") == market for o in orders.values())
         
         if has_orders:
             logger.debug(f"Skipping {market} - has open orders")
@@ -129,7 +179,19 @@ class TradingDecisionService:
                 reason="HOLD strategy - no trading",
                 strategy=self._strategy
             )
-        
+
+        elif self._strategy == TradingStrategy.WHALE_FOLLOWER:
+            # Whale follower is handled differently in TradingFlowOrchestrator
+            # via evaluate_whale_queue() - this is a fallback for market-based calls
+            decision = TradingDecision(
+                action="hold",
+                market=market,
+                side="",
+                quantity=0,
+                reason="WHALE_FOLLOWER uses evaluate_whale_queue()",
+                strategy=self._strategy
+            )
+
         elif self._strategy == TradingStrategy.PAPER_TEST:
             # Simple test strategy for paper mode
             decision = await self._paper_test_strategy(
@@ -259,7 +321,104 @@ class TradingDecisionService:
             reason="Custom strategy not implemented",
             strategy=self._strategy
         )
-    
+
+    async def evaluate_whale_queue(
+        self,
+        whale_queue: List[Dict[str, Any]]
+    ) -> Optional[TradingDecision]:
+        """
+        Evaluate the whale queue and generate a trading decision.
+
+        This is the main entry point for WHALE_FOLLOWER strategy.
+        Iterates through whales in priority order and returns a decision
+        for the first valid whale to follow.
+
+        Args:
+            whale_queue: List of whale dicts from WhaleTracker.get_queue_state()
+
+        Returns:
+            TradingDecision to follow a whale, or None if no valid whale found
+        """
+        if not whale_queue:
+            logger.debug("No whales in queue")
+            return None
+
+        # Get current positions to check for existing exposure
+        trading_state = self._state_container.trading_state
+        positions = trading_state.positions if trading_state else {}
+        orders = trading_state.orders if trading_state else {}
+
+        # Build set of markets with open orders for fast lookup
+        # orders is Dict[order_id, order_data] where order_data has 'ticker' key
+        markets_with_orders = {o.get("ticker") for o in orders.values() if o.get("ticker")}
+
+        now_ms = int(time.time() * 1000)
+
+        for whale in whale_queue:
+            # Build whale ID
+            market_ticker = whale.get("market_ticker", "")
+            timestamp_ms = whale.get("timestamp_ms", 0)
+            whale_id = f"{market_ticker}:{timestamp_ms}"
+
+            # Skip if already followed
+            if whale_id in self._followed_whales:
+                logger.debug(f"Skipping whale {whale_id[:20]}... - already followed")
+                continue
+
+            # Skip if too old
+            age_seconds = (now_ms - timestamp_ms) / 1000.0
+            if age_seconds > WHALE_MAX_AGE_SECONDS:
+                logger.debug(f"Skipping whale {whale_id[:20]}... - too old ({age_seconds:.1f}s)")
+                continue
+
+            # Skip if we have position in this market
+            if market_ticker in positions:
+                logger.debug(f"Skipping whale {whale_id[:20]}... - already have position")
+                continue
+
+            # Skip if we have open orders in this market
+            if market_ticker in markets_with_orders:
+                logger.debug(f"Skipping whale {whale_id[:20]}... - have open orders")
+                continue
+
+            # Found a valid whale to follow
+            side = whale.get("side", "yes")
+            price_cents = whale.get("price_cents", 50)
+            whale_size_cents = int(whale.get("whale_size_dollars", 0) * 100)
+
+            logger.info(
+                f"Following whale: {market_ticker} {side.upper()} @ {price_cents}c "
+                f"(whale size: ${whale_size_cents/100:.2f}, age: {age_seconds:.1f}s)"
+            )
+
+            return TradingDecision(
+                action="buy",
+                market=market_ticker,
+                side=side,
+                quantity=WHALE_FOLLOW_CONTRACTS,
+                price=price_cents,  # Same price as whale
+                reason=f"whale:{whale_id}",
+                confidence=0.7,
+                strategy=TradingStrategy.WHALE_FOLLOWER
+            )
+
+        logger.debug("No valid whales to follow")
+        return None
+
+    def _extract_whale_id_from_reason(self, reason: str) -> Optional[str]:
+        """
+        Extract whale ID from decision reason.
+
+        Args:
+            reason: Decision reason string (format: "whale:{market}:{timestamp}")
+
+        Returns:
+            Whale ID or None if not a whale follow
+        """
+        if reason.startswith("whale:"):
+            return reason[6:]  # Strip "whale:" prefix
+        return None
+
     async def execute_decision(self, decision: TradingDecision) -> bool:
         """
         Execute a trading decision.
@@ -317,16 +476,138 @@ class TradingDecisionService:
             return False
     
     async def _execute_buy(self, decision: TradingDecision) -> bool:
-        """Execute a buy order."""
-        # TODO: Implement actual order placement through trading client
-        logger.info(f"Would execute BUY: {decision}")
-        return True  # Placeholder
-    
+        """
+        Execute a buy order through the trading client.
+
+        For whale following, also tracks the follow in _followed_whales.
+
+        Args:
+            decision: Trading decision with buy details
+
+        Returns:
+            True if order placed successfully, False otherwise
+        """
+        try:
+            # Place the order
+            response = await self._trading_client.place_order(
+                ticker=decision.market,
+                action="buy",
+                side=decision.side,
+                count=decision.quantity,
+                price=decision.price,
+                order_type="limit"
+            )
+
+            order_id = response.get("order", {}).get("order_id", "unknown")
+
+            logger.info(
+                f"BUY order placed: {decision.quantity} {decision.side} {decision.market} "
+                f"@ {decision.price}c (order_id: {order_id[:8]}...)"
+            )
+
+            # Track whale follow if this is a whale following decision
+            whale_id = self._extract_whale_id_from_reason(decision.reason)
+            if whale_id:
+                whale_size_cents = 0
+                # Extract whale size from reason if available (format: whale:market:timestamp)
+                parts = whale_id.split(":")
+                if len(parts) >= 2:
+                    market_ticker = parts[0]
+                    timestamp_ms = int(parts[1]) if parts[1].isdigit() else 0
+                else:
+                    market_ticker = decision.market
+                    timestamp_ms = 0
+
+                self._followed_whales[whale_id] = FollowedWhale(
+                    whale_id=whale_id,
+                    our_order_id=order_id,
+                    placed_at=time.time(),
+                    market_ticker=market_ticker,
+                    side=decision.side,
+                    our_count=decision.quantity,
+                    whale_size_cents=whale_size_cents
+                )
+
+                logger.info(
+                    f"Tracked whale follow: {whale_id[:30]}... "
+                    f"(total followed: {len(self._followed_whales)})"
+                )
+
+                # Emit whale follow event
+                await self._event_bus.emit_system_activity(
+                    activity_type="whale_follow",
+                    message=f"Following whale on {market_ticker} {decision.side.upper()}",
+                    metadata={
+                        "whale_id": whale_id,
+                        "order_id": order_id,
+                        "market": market_ticker,
+                        "side": decision.side,
+                        "quantity": decision.quantity,
+                        "price": decision.price
+                    }
+                )
+
+            return True
+
+        except Exception as e:
+            logger.error(f"BUY order failed: {e}")
+            await self._event_bus.emit_system_activity(
+                activity_type="trading_error",
+                message=f"BUY order failed: {str(e)}",
+                metadata={
+                    "market": decision.market,
+                    "side": decision.side,
+                    "quantity": decision.quantity,
+                    "price": decision.price,
+                    "error": str(e)
+                }
+            )
+            return False
+
     async def _execute_sell(self, decision: TradingDecision) -> bool:
-        """Execute a sell order."""
-        # TODO: Implement actual order placement through trading client
-        logger.info(f"Would execute SELL: {decision}")
-        return True  # Placeholder
+        """
+        Execute a sell order through the trading client.
+
+        Args:
+            decision: Trading decision with sell details
+
+        Returns:
+            True if order placed successfully, False otherwise
+        """
+        try:
+            # Place the order
+            response = await self._trading_client.place_order(
+                ticker=decision.market,
+                action="sell",
+                side=decision.side,
+                count=decision.quantity,
+                price=decision.price,
+                order_type="limit"
+            )
+
+            order_id = response.get("order", {}).get("order_id", "unknown")
+
+            logger.info(
+                f"SELL order placed: {decision.quantity} {decision.side} {decision.market} "
+                f"@ {decision.price}c (order_id: {order_id[:8]}...)"
+            )
+
+            return True
+
+        except Exception as e:
+            logger.error(f"SELL order failed: {e}")
+            await self._event_bus.emit_system_activity(
+                activity_type="trading_error",
+                message=f"SELL order failed: {str(e)}",
+                metadata={
+                    "market": decision.market,
+                    "side": decision.side,
+                    "quantity": decision.quantity,
+                    "price": decision.price,
+                    "error": str(e)
+                }
+            )
+            return False
     
     def set_strategy(self, strategy: TradingStrategy) -> None:
         """Change the trading strategy."""
@@ -335,13 +616,23 @@ class TradingDecisionService:
     
     def get_stats(self) -> Dict[str, Any]:
         """Get service statistics."""
-        return {
+        stats = {
             "strategy": self._strategy.value,
             "decision_count": self._decision_count,
             "trade_count": self._trade_count,
             "last_decision": self._last_decision.__dict__ if self._last_decision else None,
-            "rl_model_loaded": self._rl_model_loaded
+            "rl_model_loaded": self._rl_model_loaded,
+            "whales_followed": len(self._followed_whales)
         }
+
+        # Add whale tracker availability info
+        if self._strategy == TradingStrategy.WHALE_FOLLOWER:
+            stats["whale_tracker_available"] = self._whale_tracker is not None
+            if self._whale_tracker:
+                queue_state = self._whale_tracker.get_queue_state()
+                stats["whale_queue_size"] = queue_state["stats"]["queue_size"]
+
+        return stats
     
     def is_healthy(self) -> bool:
         """Check if service is healthy."""

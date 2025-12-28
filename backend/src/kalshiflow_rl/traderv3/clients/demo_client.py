@@ -468,38 +468,55 @@ class KalshiDemoTradingClient:
         if not isinstance(response["orders"], list):
             raise ValueError(f"Orders field must be a list, got {type(response['orders'])}")
     
-    async def get_orders(self, ticker: Optional[str] = None) -> Dict[str, Any]:
+    async def get_orders(self, ticker: Optional[str] = None, status: str = "resting") -> Dict[str, Any]:
         """
-        Get open orders on demo account.
-        
+        Get orders on demo account.
+
         Args:
             ticker: Optional market ticker to filter orders
-            
+            status: Order status filter - "resting" (open), "canceled", or "executed"
+                    Default is "resting" to only get open orders
+
         Returns:
-            Dictionary of orders
-            
+            Dictionary of orders (filtered by status)
+
         Raises:
             KalshiDemoTradingClientError: If request fails
             ValueError: If response structure is invalid
         """
         try:
+            # Build path - only use ticker filter in API call
+            # Status filter is applied locally because demo API has signature issues with it
             path = "/portfolio/orders"
             if ticker:
                 path += f"?ticker={ticker}"
-            
+
             response = await self._make_request("GET", path)
-            
+
             # Validate response structure
             self._validate_orders_response(response)
-            
-            # Update orders tracking
-            for order in response["orders"]:
+
+            # Filter by status locally (API returns all orders, we want only specified status)
+            all_orders = response.get("orders", [])
+            if status:
+                filtered_orders = [
+                    order for order in all_orders
+                    if order.get("status") == status
+                ]
+            else:
+                filtered_orders = all_orders
+
+            # Clear and rebuild orders tracking from filtered orders (API is source of truth)
+            self.orders.clear()
+            for order in filtered_orders:
                 order_id = order.get("order_id", "")
                 if order_id:
                     self.orders[order_id] = order
-            
-            logger.debug(f"Demo account has {len(self.orders)} orders")
-            return response
+
+            logger.debug(f"Demo account has {len(self.orders)} {status} orders (filtered from {len(all_orders)} total)")
+
+            # Return response with filtered orders for consistency
+            return {"orders": filtered_orders}
             
         except ValueError as e:
             raise KalshiDemoTradingClientError(f"Invalid orders response structure: {e}")

@@ -106,14 +106,17 @@ class V3Coordinator:
         self._trading_service = None
         self._trading_orchestrator = None
         if trading_client_integration:
-            # Default to HOLD strategy for safety
+            # Get trading strategy from config (default: HOLD for safety)
+            strategy = config.trading_strategy if hasattr(config, 'trading_strategy') else TradingStrategy.HOLD
+
             self._trading_service = TradingDecisionService(
                 trading_client=trading_client_integration,
                 state_container=self._state_container,
                 event_bus=event_bus,
-                strategy=TradingStrategy.HOLD
+                strategy=strategy,
+                whale_tracker=whale_tracker
             )
-            
+
             # Initialize trading flow orchestrator
             self._trading_orchestrator = TradingFlowOrchestrator(
                 config=config,
@@ -122,8 +125,16 @@ class V3Coordinator:
                 trading_service=self._trading_service,
                 state_container=self._state_container,
                 event_bus=event_bus,
-                state_machine=state_machine
+                state_machine=state_machine,
+                whale_tracker=whale_tracker
             )
+
+            # Log strategy configuration
+            if strategy == TradingStrategy.WHALE_FOLLOWER:
+                if whale_tracker:
+                    logger.info("WHALE_FOLLOWER strategy enabled with whale tracker")
+                else:
+                    logger.warning("WHALE_FOLLOWER strategy enabled but whale tracker not available")
         
         self._started_at: Optional[float] = None
         self._running = False

@@ -6,9 +6,15 @@ Loads from environment variables with sensible defaults.
 """
 
 import os
-from typing import List, Optional
-from dataclasses import dataclass
+from typing import List, Optional, TYPE_CHECKING
+from dataclasses import dataclass, field
+from enum import Enum
 import logging
+
+# Import TradingStrategy for type annotation
+# Use string annotation to avoid circular import
+if TYPE_CHECKING:
+    from ..services.trading_decision_service import TradingStrategy as TradingStrategyType
 
 logger = logging.getLogger("kalshiflow_rl.traderv3.config.environment")
 
@@ -40,6 +46,7 @@ class V3Config:
     trading_max_orders: int = 10
     trading_max_position_size: int = 100
     trading_mode: str = "paper"  # paper or production
+    trading_strategy_str: str = "hold"  # Strategy string: "hold", "whale_follower", "paper_test", "rl_model"
 
     # Whale Detection Configuration (optional, for Follow the Whale feature)
     enable_whale_detection: bool = False
@@ -131,6 +138,10 @@ class V3Config:
         else:
             trading_mode = os.environ.get("V3_TRADING_MODE", "paper")
 
+        # Trading strategy configuration
+        # Options: "hold", "whale_follower", "paper_test", "rl_model"
+        trading_strategy_str = os.environ.get("V3_TRADING_STRATEGY", "hold").lower()
+
         # Whale detection configuration
         enable_whale_detection = os.environ.get("V3_ENABLE_WHALE_DETECTION", "false").lower() == "true"
         whale_queue_size = int(os.environ.get("WHALE_QUEUE_SIZE", "10"))
@@ -167,6 +178,7 @@ class V3Config:
             trading_max_orders=trading_max_orders,
             trading_max_position_size=trading_max_position_size,
             trading_mode=trading_mode,
+            trading_strategy_str=trading_strategy_str,
             enable_whale_detection=enable_whale_detection,
             whale_queue_size=whale_queue_size,
             whale_window_minutes=whale_window_minutes,
@@ -193,6 +205,7 @@ class V3Config:
         logger.info(f"  - Log level: {log_level}")
         if enable_trading_client:
             logger.info(f"  - Trading enabled: {trading_mode} mode")
+            logger.info(f"  - Trading strategy: {trading_strategy_str.upper()}")
             logger.info(f"  - Max orders: {trading_max_orders}, Max position: {trading_max_position_size}")
             logger.info(f"  - Cleanup on startup: {cleanup_on_startup}")
         else:
@@ -215,7 +228,31 @@ class V3Config:
             return "DEMO (Paper Trading)"
         else:
             return "PRODUCTION"
-    
+
+    @property
+    def trading_strategy(self):
+        """
+        Get the trading strategy as an enum.
+
+        Converts the string trading_strategy_str to TradingStrategy enum.
+        Import is done here to avoid circular imports.
+
+        Returns:
+            TradingStrategy enum value
+        """
+        # Import here to avoid circular import
+        from ..services.trading_decision_service import TradingStrategy
+
+        strategy_map = {
+            "hold": TradingStrategy.HOLD,
+            "whale_follower": TradingStrategy.WHALE_FOLLOWER,
+            "paper_test": TradingStrategy.PAPER_TEST,
+            "rl_model": TradingStrategy.RL_MODEL,
+            "custom": TradingStrategy.CUSTOM,
+        }
+
+        return strategy_map.get(self.trading_strategy_str, TradingStrategy.HOLD)
+
     def validate(self) -> bool:
         """
         Validate configuration.
