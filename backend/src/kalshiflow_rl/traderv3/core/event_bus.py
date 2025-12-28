@@ -79,6 +79,9 @@ class EventType(Enum):
     PUBLIC_TRADE_RECEIVED = "public_trade_received"
     WHALE_QUEUE_UPDATED = "whale_queue_updated"
 
+    # Real-time position updates (from WebSocket)
+    MARKET_POSITION_UPDATE = "market_position_update"
+
 
 @dataclass
 class MarketEvent:
@@ -223,6 +226,33 @@ class WhaleQueueEvent:
             self.queue = []
         if self.stats is None:
             self.stats = {}
+
+
+@dataclass
+class MarketPositionEvent:
+    """
+    Event data for real-time position updates from Kalshi WebSocket.
+
+    Emitted when the market_positions WebSocket channel sends an update.
+    All monetary values are in cents (converted from Kalshi centi-cents).
+
+    Attributes:
+        event_type: Always MARKET_POSITION_UPDATE
+        market_ticker: Market ticker for this position
+        position_data: Position details (position, total_traded, realized_pnl, etc.)
+        timestamp: When the update was received
+    """
+    event_type: EventType = EventType.MARKET_POSITION_UPDATE
+    market_ticker: str = ""
+    position_data: Optional[Dict[str, Any]] = None
+    timestamp: float = 0.0
+
+    def __post_init__(self):
+        """Set defaults after initialization."""
+        if self.timestamp == 0.0:
+            self.timestamp = time.time()
+        if self.position_data is None:
+            self.position_data = {}
 
 
 class EventBus:
@@ -663,6 +693,49 @@ class EventBus:
 
         self._subscribers[EventType.WHALE_QUEUE_UPDATED].append(callback)
         logger.debug(f"Added whale queue subscriber: {callback.__name__}")
+
+    async def emit_market_position_update(
+        self,
+        ticker: str,
+        position_data: Dict[str, Any]
+    ) -> bool:
+        """
+        Emit a market position update event (non-blocking).
+
+        Called by PositionListener when receiving real-time position updates
+        from Kalshi WebSocket market_positions channel.
+
+        Args:
+            ticker: Market ticker for this position
+            position_data: Position details (position, total_traded, realized_pnl, etc.)
+
+        Returns:
+            True if event was queued, False if queue full
+        """
+        if not self._running:
+            return False
+
+        event = MarketPositionEvent(
+            event_type=EventType.MARKET_POSITION_UPDATE,
+            market_ticker=ticker,
+            position_data=position_data,
+            timestamp=time.time(),
+        )
+
+        return await self._queue_event(event)
+
+    async def subscribe_to_market_position(self, callback: Callable) -> None:
+        """
+        Subscribe to market position update events.
+
+        Args:
+            callback: Async function(event: MarketPositionEvent) to call on update
+        """
+        if EventType.MARKET_POSITION_UPDATE not in self._subscribers:
+            self._subscribers[EventType.MARKET_POSITION_UPDATE] = []
+
+        self._subscribers[EventType.MARKET_POSITION_UPDATE].append(callback)
+        logger.debug(f"Added market position subscriber: {callback.__name__}")
 
     async def _queue_event(self, event: Any) -> bool:
         """

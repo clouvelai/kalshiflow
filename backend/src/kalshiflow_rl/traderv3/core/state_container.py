@@ -242,7 +242,7 @@ class V3StateContainer:
     def _states_are_equal(self, state1: TraderState, state2: TraderState) -> bool:
         """
         Compare two trading states for equality.
-        
+
         Only compares the important fields, not timestamps.
         Note: Intentionally ignores sync_timestamp as that updates every sync.
         """
@@ -254,7 +254,74 @@ class V3StateContainer:
             state1.positions == state2.positions and
             state1.orders == state2.orders
         )
-    
+
+    def update_single_position(self, ticker: str, position_data: Dict[str, Any]) -> bool:
+        """
+        Update a single position from real-time WebSocket push.
+
+        This is called when receiving market_position updates from the
+        PositionListener WebSocket subscription. It updates the position
+        in-place without requiring a full API sync.
+
+        Args:
+            ticker: Market ticker to update
+            position_data: Position data dict with keys:
+                - position: Contract count (+ long, - short)
+                - total_traded: Entry cost in cents
+                - realized_pnl: Realized P&L in cents
+                - fees_paid: Fees in cents
+                - volume: Total volume traded
+
+        Returns:
+            True if state was updated, False if no trading state exists
+
+        Side Effects:
+            - Updates the specific position in _trading_state.positions
+            - Recalculates position_count
+            - Recalculates portfolio_value from position costs
+            - Increments _trading_state_version
+        """
+        if not self._trading_state:
+            logger.warning(f"Cannot update position {ticker}: no trading state")
+            return False
+
+        position_count = position_data.get("position", 0)
+
+        # If position is 0, remove from positions dict
+        if position_count == 0:
+            if ticker in self._trading_state.positions:
+                del self._trading_state.positions[ticker]
+                logger.info(f"Position closed: {ticker}")
+        else:
+            # Update or add position
+            self._trading_state.positions[ticker] = position_data
+            logger.info(
+                f"Position updated: {ticker} = {position_count} contracts, "
+                f"cost={position_data.get('total_traded', 0)}¢"
+            )
+
+        # Recalculate aggregates
+        self._trading_state.position_count = len(self._trading_state.positions)
+
+        # Recalculate portfolio_value from position costs
+        # portfolio_value = sum of all position total_traded values
+        new_portfolio_value = sum(
+            pos.get("total_traded", 0)
+            for pos in self._trading_state.positions.values()
+        )
+        self._trading_state.portfolio_value = new_portfolio_value
+
+        # Update version and timestamp
+        self._trading_state_version += 1
+        self._last_update = time.time()
+
+        logger.debug(
+            f"Position update complete: {len(self._trading_state.positions)} positions, "
+            f"portfolio_value={new_portfolio_value}¢, version={self._trading_state_version}"
+        )
+
+        return True
+
     @property
     def trading_state(self) -> Optional[TraderState]:
         """Get current trading state."""

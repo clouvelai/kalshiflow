@@ -13,6 +13,7 @@ from typing import Dict, Any, Optional, TYPE_CHECKING
 if TYPE_CHECKING:
     from ..clients.trading_client_integration import V3TradingClientIntegration
     from ..clients.trades_integration import V3TradesIntegration
+    from ..clients.position_listener import PositionListener
     from ..services.whale_tracker import WhaleTracker
 
 from .state_machine import TraderStateMachine as V3StateMachine, TraderState as V3State
@@ -153,6 +154,9 @@ class V3Coordinator:
             self._websocket_manager.set_whale_execution_service(self._whale_execution_service)
             logger.info("WhaleExecutionService initialized for event-driven whale following")
 
+        # Position listener for real-time position updates (initialized later if trading client available)
+        self._position_listener: Optional['PositionListener'] = None
+
         self._started_at: Optional[float] = None
         self._running = False
 
@@ -231,6 +235,9 @@ class V3Coordinator:
             # Cleanup orphaned orders on startup if configured
             if self._config.cleanup_on_startup:
                 await self._cleanup_orphaned_orders()
+
+            # Connect real-time position listener (non-blocking, falls back to polling on failure)
+            await self._connect_position_listener()
 
         # Transition to READY with actual metrics
         await self._transition_to_ready()
@@ -510,6 +517,76 @@ class V3Coordinator:
                 message=f"Startup cleanup failed: {str(e)}",
                 metadata={"error": str(e), "severity": "warning"}
             )
+
+    async def _connect_position_listener(self) -> None:
+        """
+        Connect to real-time position updates via WebSocket.
+
+        Initializes the PositionListener which subscribes to the
+        market_positions WebSocket channel for instant position updates.
+        """
+        if not self._trading_client_integration:
+            return
+
+        try:
+            # Import here to avoid circular imports
+            from ..clients.position_listener import PositionListener
+
+            logger.info("Starting real-time position listener...")
+
+            # Create position listener
+            self._position_listener = PositionListener(
+                event_bus=self._event_bus,
+                ws_url=self._config.ws_url,
+                reconnect_delay_seconds=5.0,
+            )
+
+            # Subscribe to position update events
+            await self._event_bus.subscribe_to_market_position(self._handle_position_update)
+
+            # Start the listener
+            await self._position_listener.start()
+
+            logger.info("✅ Real-time position listener active")
+
+            await self._event_bus.emit_system_activity(
+                activity_type="connection",
+                message="Real-time position updates enabled",
+                metadata={"channel": "market_positions", "severity": "info"}
+            )
+
+        except Exception as e:
+            # Don't fail startup if position listener fails - fall back to polling
+            logger.warning(f"Position listener failed (falling back to polling): {e}")
+            self._position_listener = None
+            await self._event_bus.emit_system_activity(
+                activity_type="connection",
+                message=f"Real-time positions unavailable: {e}",
+                metadata={"fallback": "polling", "severity": "warning"}
+            )
+
+    async def _handle_position_update(self, event) -> None:
+        """
+        Handle real-time position update from WebSocket.
+
+        Updates the state container and broadcasts to frontend.
+
+        Args:
+            event: MarketPositionEvent from event bus
+        """
+        try:
+            ticker = event.market_ticker
+            position_data = event.position_data
+
+            # Update state container
+            if self._state_container.update_single_position(ticker, position_data):
+                # Broadcast updated state to frontend
+                await self._status_reporter.emit_trading_state()
+
+                logger.debug(f"Position update broadcast: {ticker}")
+
+        except Exception as e:
+            logger.error(f"Error handling position update: {e}")
 
     async def _sync_trading_state(self) -> None:
         """Perform initial trading state sync."""
@@ -860,6 +937,8 @@ class V3Coordinator:
             total_steps = 5  # Base steps: orderbook, state transition, state machine, websocket, event bus
             if self._trading_client_integration:
                 total_steps += 1
+            if self._position_listener:
+                total_steps += 1
             if self._whale_execution_service:
                 total_steps += 1
             if self._whale_tracker:
@@ -885,6 +964,12 @@ class V3Coordinator:
             if self._trades_integration:
                 logger.info(f"{step}/{total_steps} Stopping Trades Integration...")
                 await self._trades_integration.stop()
+                step += 1
+
+            # Stop position listener (before trading client)
+            if self._position_listener:
+                logger.info(f"{step}/{total_steps} Stopping Position Listener...")
+                await self._position_listener.stop()
                 step += 1
 
             if self._trading_client_integration:
