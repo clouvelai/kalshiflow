@@ -74,7 +74,7 @@ class WhaleDecision:
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for WebSocket transport."""
-        return {
+        result = {
             "whale_id": self.whale_id,
             "timestamp": self.timestamp,
             "action": self.action,
@@ -82,6 +82,12 @@ class WhaleDecision:
             "order_id": self.order_id[:8] if self.order_id else None,
             "age_seconds": int(time.time() - self.timestamp),
         }
+        # Include whale data fields needed by Decision Audit panel
+        if self.whale_data:
+            result["market_ticker"] = self.whale_data.get("market_ticker", "")
+            result["side"] = self.whale_data.get("side", "")
+            result["whale_size_dollars"] = self.whale_data.get("whale_size_dollars", 0)
+        return result
 
 
 class WhaleExecutionService:
@@ -135,6 +141,10 @@ class WhaleExecutionService:
         self._whales_skipped = 0
         self._rate_limited_count = 0
         self._last_execution_time: Optional[float] = None
+
+        # Deduplication: track whale IDs that have been evaluated (followed OR skipped)
+        # This prevents re-evaluating the same whale on every WHALE_QUEUE_UPDATED event
+        self._evaluated_whale_ids: set[str] = set()
 
         # State
         self._running = False
@@ -197,6 +207,10 @@ class WhaleExecutionService:
         """
         Process the whale queue and execute valid whales.
 
+        DEDUPLICATION: Each whale is only evaluated ONCE. After evaluation
+        (whether followed, skipped, or failed), the whale_id is added to
+        _evaluated_whale_ids and will be ignored on subsequent queue updates.
+
         Args:
             whale_queue: List of whale dicts from WhaleTracker
         """
@@ -216,10 +230,8 @@ class WhaleExecutionService:
             o.get("ticker") for o in orders.values() if o.get("ticker")
         }
 
-        # Get already-followed whale IDs from trading service
-        followed_whale_ids = self._trading_service.get_followed_whale_ids()
-
         now_ms = int(time.time() * 1000)
+        new_whales_evaluated = 0
 
         for whale in whale_queue:
             # Build whale ID
@@ -227,16 +239,18 @@ class WhaleExecutionService:
             timestamp_ms = whale.get("timestamp_ms", 0)
             whale_id = f"{market_ticker}:{timestamp_ms}"
 
-            self._whales_processed += 1
-
-            # Check if already followed
-            if whale_id in followed_whale_ids:
-                # Don't record decision for already-followed whales (they're expected)
+            # CRITICAL: Skip whales we've already evaluated (followed OR skipped)
+            # This prevents re-evaluating the same whale on every WHALE_QUEUE_UPDATED event
+            if whale_id in self._evaluated_whale_ids:
                 continue
 
-            # Check if too old
+            self._whales_processed += 1
+            new_whales_evaluated += 1
+
+            # Check if too old - mark as evaluated even if skipped
             age_seconds = (now_ms - timestamp_ms) / 1000.0
             if age_seconds > WHALE_MAX_AGE_SECONDS:
+                self._evaluated_whale_ids.add(whale_id)
                 self._record_decision(
                     whale_id=whale_id,
                     action="skipped_age",
@@ -246,8 +260,9 @@ class WhaleExecutionService:
                 self._whales_skipped += 1
                 continue
 
-            # Check if we have position in this market
+            # Check if we have position in this market - mark as evaluated
             if market_ticker in positions:
+                self._evaluated_whale_ids.add(whale_id)
                 self._record_decision(
                     whale_id=whale_id,
                     action="skipped_position",
@@ -257,8 +272,9 @@ class WhaleExecutionService:
                 self._whales_skipped += 1
                 continue
 
-            # Check if we have open orders in this market
+            # Check if we have open orders in this market - mark as evaluated
             if market_ticker in markets_with_orders:
+                self._evaluated_whale_ids.add(whale_id)
                 self._record_decision(
                     whale_id=whale_id,
                     action="skipped_orders",
@@ -268,7 +284,7 @@ class WhaleExecutionService:
                 self._whales_skipped += 1
                 continue
 
-            # Check rate limit
+            # Check rate limit - do NOT mark as evaluated (we want to retry later)
             if not self._consume_token():
                 self._record_decision(
                     whale_id=whale_id,
@@ -279,9 +295,11 @@ class WhaleExecutionService:
                 self._rate_limited_count += 1
                 self._whales_skipped += 1
                 # Stop processing more whales until tokens refill
+                # Don't add to evaluated - we want to retry when tokens refill
                 break
 
-            # Execute the whale follow
+            # Execute the whale follow - mark as evaluated regardless of outcome
+            self._evaluated_whale_ids.add(whale_id)
             success, order_id = await self._execute_whale_follow(whale, whale_id)
 
             if success:
@@ -302,6 +320,13 @@ class WhaleExecutionService:
                     whale_data=whale,
                 )
                 self._whales_skipped += 1
+
+        # Log if we processed new whales
+        if new_whales_evaluated > 0:
+            logger.debug(
+                f"Evaluated {new_whales_evaluated} new whales "
+                f"(total tracked: {len(self._evaluated_whale_ids)})"
+            )
 
     async def _execute_whale_follow(
         self,
@@ -430,6 +455,32 @@ class WhaleExecutionService:
         """Get execution service statistics."""
         uptime = time.time() - self._started_at if self._started_at else 0
 
+        # Calculate categorized skip counts from decision history
+        skipped_age = 0
+        skipped_position = 0
+        skipped_orders = 0
+        already_followed = 0
+        rate_limited = 0
+        followed = 0
+        failed = 0
+
+        for decision in self._decision_history:
+            action = decision.action
+            if action == "skipped_age":
+                skipped_age += 1
+            elif action == "skipped_position":
+                skipped_position += 1
+            elif action == "skipped_orders":
+                skipped_orders += 1
+            elif action == "already_followed":
+                already_followed += 1
+            elif action == "rate_limited":
+                rate_limited += 1
+            elif action == "followed":
+                followed += 1
+            elif action == "failed":
+                failed += 1
+
         return {
             "running": self._running,
             "uptime_seconds": uptime,
@@ -442,6 +493,15 @@ class WhaleExecutionService:
             "token_refill_seconds": self._token_refill_seconds,
             "last_execution_time": self._last_execution_time,
             "decision_history_size": len(self._decision_history),
+            "unique_whales_evaluated": len(self._evaluated_whale_ids),
+            # Categorized skip reasons for Decision Audit panel
+            "skipped_age": skipped_age,
+            "skipped_position": skipped_position,
+            "skipped_orders": skipped_orders,
+            "already_followed": already_followed,
+            "rate_limited": rate_limited,
+            "followed": followed,
+            "failed": failed,
         }
 
     def get_health_details(self) -> Dict[str, Any]:
@@ -455,6 +515,7 @@ class WhaleExecutionService:
             "rate_limited_count": stats["rate_limited_count"],
             "tokens_remaining": stats["tokens_remaining"],
             "uptime_seconds": stats["uptime_seconds"],
+            "unique_whales_evaluated": stats["unique_whales_evaluated"],
         }
 
     def is_healthy(self) -> bool:

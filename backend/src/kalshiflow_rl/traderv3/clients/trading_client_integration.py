@@ -282,7 +282,7 @@ class V3TradingClientIntegration:
         try:
             # Use order group if provided or default to instance group
             group_id = order_group_id or self._order_group_id
-            
+
             # Place order through client
             response = await self._client.create_order(
                 ticker=ticker,
@@ -293,28 +293,28 @@ class V3TradingClientIntegration:
                 type=order_type,
                 order_group_id=group_id
             )
-            
+
             # Update metrics
             self._metrics.orders_placed += 1
             self._metrics.last_order_time = time.time()
             self._metrics.api_calls += 1
-            
+
             # Update open orders tracking
             if "order" in response:
                 order = response["order"]
                 order_id = order.get("order_id")
                 if order_id:
                     self._metrics.open_orders[order_id] = order
-            
+
             # Note: Order events would require extending EventBus with a generic emit method
             # For now, we track via logging and metrics
-            
+
             if group_id:
                 logger.info(f"✅ Order placed: {action} {count} {side} {ticker} @ {price}¢ (group: {group_id[:8]}...)")
             else:
                 logger.info(f"✅ Order placed: {action} {count} {side} {ticker} @ {price}¢ (no portfolio limits)")
             return response
-            
+
         except Exception as e:
             logger.error(f"❌ Order placement failed: {e}")
             self._metrics.api_errors += 1

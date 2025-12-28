@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from ..services.whale_tracker import WhaleTracker
     from ..services.trading_decision_service import TradingDecisionService
+    from ..services.whale_execution_service import WhaleExecutionService
 
 logger = logging.getLogger("kalshiflow_rl.traderv3.websocket_manager")
 
@@ -67,6 +68,7 @@ class V3WebSocketManager:
         self._state_machine = state_machine
         self._whale_tracker = whale_tracker
         self._trading_service: Optional['TradingDecisionService'] = None
+        self._whale_execution_service: Optional['WhaleExecutionService'] = None
         self._clients: Dict[str, WebSocketClient] = {}
         self._client_counter = 0
         self._started_at: Optional[float] = None
@@ -112,6 +114,20 @@ class V3WebSocketManager:
         """
         self._trading_service = trading_service
         logger.info("TradingDecisionService set on WebSocket manager")
+
+    def set_whale_execution_service(self, whale_execution_service: 'WhaleExecutionService') -> None:
+        """
+        Set the whale execution service for getting decision history.
+
+        The WhaleExecutionService is the event-driven service that actually
+        processes whales and records all decisions (followed, skipped, rate_limited).
+        Its decision history is the authoritative source for the Decision Audit panel.
+
+        Args:
+            whale_execution_service: WhaleExecutionService instance
+        """
+        self._whale_execution_service = whale_execution_service
+        logger.info("WhaleExecutionService set on WebSocket manager")
 
     async def start(self) -> None:
         """Start the WebSocket manager."""
@@ -402,20 +418,41 @@ class V3WebSocketManager:
         if event.stats and event.stats.get("trades_seen", 0) > 0:
             discard_rate = (event.stats.get("trades_discarded", 0) / event.stats["trades_seen"]) * 100
 
-        # Get followed whale IDs, full data, decision history, and stats from trading service
+        # Get followed whale IDs and full data from trading service
+        # Get decision history from whale execution service (authoritative source)
         followed_whale_ids: List[str] = []
         followed_whales: List[Dict] = []
         decision_history: List[Dict] = []
         decision_stats: Dict[str, Any] = {}
 
+        # Get followed whales from TradingDecisionService (tracks successful follows)
         if self._trading_service:
             try:
                 followed_whale_ids = list(self._trading_service.get_followed_whale_ids())
                 followed_whales = self._trading_service.get_followed_whales()
-                decision_history = self._trading_service.get_decision_history(limit=20)
-                decision_stats = self._trading_service.get_decision_stats()
             except Exception as e:
                 logger.debug(f"Could not get trading service data: {e}")
+
+        # Get decision history from WhaleExecutionService (authoritative source for all decisions)
+        # This includes followed, skipped, rate_limited - everything the Decision Audit needs
+        if self._whale_execution_service:
+            try:
+                decision_history = self._whale_execution_service.get_decision_history()
+                stats = self._whale_execution_service.get_stats()
+                decision_stats = {
+                    "whales_detected": stats.get("whales_processed", 0),
+                    "whales_followed": stats.get("whales_followed", 0),
+                    "whales_skipped": stats.get("whales_skipped", 0),
+                    "rate_limited": stats.get("rate_limited_count", 0),
+                    # Categorized skip reasons for Decision Audit panel breakdown
+                    "skipped_age": stats.get("skipped_age", 0),
+                    "skipped_position": stats.get("skipped_position", 0),
+                    "skipped_orders": stats.get("skipped_orders", 0),
+                    "already_followed": stats.get("already_followed", 0),
+                    "failed": stats.get("failed", 0),
+                }
+            except Exception as e:
+                logger.debug(f"Could not get whale execution service data: {e}")
 
         # Format message for frontend
         whale_data = {

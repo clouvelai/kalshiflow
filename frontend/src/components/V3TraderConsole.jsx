@@ -991,6 +991,8 @@ const V3TraderConsole = () => {
                 console.log('[V3TraderConsole] Setting whale queue - queue length:', data.data.queue?.length || 0);
                 console.log('[V3TraderConsole] Followed whale IDs:', data.data.followed_whale_ids);
                 console.log('[V3TraderConsole] Followed whales:', data.data.followed_whales);
+                console.log('[V3TraderConsole] Decision history:', data.data.decision_history);
+                console.log('[V3TraderConsole] Decision stats:', data.data.decision_stats);
                 setWhaleQueue({
                   queue: data.data.queue || [],
                   stats: data.data.stats || { trades_seen: 0, trades_discarded: 0, discard_rate_percent: 0 },
@@ -998,7 +1000,10 @@ const V3TraderConsole = () => {
                   // Include followed whale IDs for status indicator
                   followed_whale_ids: data.data.followed_whale_ids || [],
                   // Full followed whales data for Followed Trades section
-                  followed_whales: data.data.followed_whales || []
+                  followed_whales: data.data.followed_whales || [],
+                  // Decision audit trail
+                  decision_history: data.data.decision_history || [],
+                  decision_stats: data.data.decision_stats || {}
                 });
               }
               break;
@@ -1225,6 +1230,10 @@ const V3TraderConsole = () => {
         <div className="mb-6">
           <WhaleQueuePanel whaleQueue={whaleQueue} />
           <FollowedTradesPanel followedWhales={whaleQueue.followed_whales} />
+          <DecisionAuditPanel
+            decisionHistory={whaleQueue.decision_history}
+            decisionStats={whaleQueue.decision_stats}
+          />
         </div>
 
         <div className="grid grid-cols-12 gap-6">

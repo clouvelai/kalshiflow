@@ -148,6 +148,8 @@ class V3Coordinator:
                 trading_service=self._trading_service,
                 state_container=self._state_container,
             )
+            # Connect whale execution service to WebSocket manager for decision history
+            self._websocket_manager.set_whale_execution_service(self._whale_execution_service)
             logger.info("WhaleExecutionService initialized for event-driven whale following")
 
         self._started_at: Optional[float] = None
