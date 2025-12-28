@@ -811,7 +811,7 @@ const SessionSummaryPanel = ({ tradingState }) => {
           </div>
         </div>
 
-        {/* Session P&L */}
+        {/* Session P&L (Total = Realized + Unrealized) */}
         <div className={`bg-gray-800/30 rounded-lg p-4 border ${
           pnl && pnl.session_pnl >= 0 ? 'border-green-700/30' : 'border-red-700/30'
         }`}>
@@ -821,7 +821,7 @@ const SessionSummaryPanel = ({ tradingState }) => {
             ) : (
               <TrendingDown className="w-4 h-4 text-red-400" />
             )}
-            <span className="text-xs text-gray-500 uppercase">Session P&L</span>
+            <span className="text-xs text-gray-500 uppercase" title="Total P&L = Realized + Unrealized">Session P&L</span>
           </div>
           {pnl ? (
             <>
@@ -900,10 +900,10 @@ const PositionListPanel = ({ positions }) => {
               <tr className="bg-gray-900/50 border-b border-gray-700/50">
                 <th className="px-3 py-2 text-left text-xs text-gray-500 uppercase font-medium">Market</th>
                 <th className="px-3 py-2 text-center text-xs text-gray-500 uppercase font-medium">Side</th>
-                <th className="px-3 py-2 text-right text-xs text-gray-500 uppercase font-medium">Contracts</th>
-                <th className="px-3 py-2 text-right text-xs text-gray-500 uppercase font-medium">Entry Cost</th>
-                <th className="px-3 py-2 text-right text-xs text-gray-500 uppercase font-medium">Current Value</th>
-                <th className="px-3 py-2 text-right text-xs text-gray-500 uppercase font-medium">Unrealized P&L</th>
+                <th className="px-3 py-2 text-right text-xs text-gray-500 uppercase font-medium">Qty</th>
+                <th className="px-3 py-2 text-right text-xs text-gray-500 uppercase font-medium">Cost</th>
+                <th className="px-3 py-2 text-right text-xs text-gray-500 uppercase font-medium">Value</th>
+                <th className="px-3 py-2 text-right text-xs text-gray-500 uppercase font-medium">P&L</th>
               </tr>
             </thead>
             <tbody>
