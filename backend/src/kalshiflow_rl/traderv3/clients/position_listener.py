@@ -18,15 +18,19 @@ Position Message Format (from Kalshi):
     "msg": {
         "user_id": "user123",
         "market_ticker": "FED-23DEC-T3.00",
-        "position": 100,           // contracts (+ long, - short)
-        "position_cost": 500000,   // centi-cents (÷100 = cents)
+        "position": 100,           // contracts (+ YES, - NO)
+        "position_cost": 500000,   // CURRENT VALUE in centi-cents (= REST's market_exposure)
         "realized_pnl": 100000,    // centi-cents
         "fees_paid": 10000,        // centi-cents
         "volume": 15
     }
 }
 
-Note: All monetary values from Kalshi are in centi-cents (1/10,000 of a dollar).
+IMPORTANT: position_cost is the CURRENT MARKET VALUE of the position (equivalent to
+REST API's market_exposure), NOT the entry cost (total_traded). The total_traded field
+(cost basis) only comes from REST API sync and is preserved via merge in state_container.
+
+Note: All monetary values from Kalshi WebSocket are in centi-cents (1/10,000 of a dollar).
 We convert to cents before emitting events.
 """
 
@@ -412,29 +416,42 @@ class PositionListener:
         realized_pnl_centicents = position_data.get("realized_pnl", 0)
         fees_paid_centicents = position_data.get("fees_paid", 0)
 
+        # Debug: Log raw values BEFORE conversion for troubleshooting
+        logger.debug(f"RAW from Kalshi: position_cost={position_cost_centicents}, ticker={market_ticker}")
+
         position_cost_cents = position_cost_centicents // 100
         realized_pnl_cents = realized_pnl_centicents // 100
         fees_paid_cents = fees_paid_centicents // 100
+
+        # Sanity check: cost per contract should be $0.01-$1.00 (1-100 cents)
+        if position != 0:
+            cost_per_contract = position_cost_cents / abs(position)
+            if cost_per_contract > 100:  # More than $1/contract is suspicious
+                logger.warning(f"Suspicious cost/contract: {cost_per_contract}c for {market_ticker}")
 
         volume = position_data.get("volume", 0)
 
         logger.info(
             f"📊 Position update: market={market_ticker}, "
-            f"position={position}, cost={position_cost_cents}¢, "
+            f"position={position}, value={position_cost_cents}¢, "
             f"realized_pnl={realized_pnl_cents}¢"
         )
 
         # Emit via event bus
         try:
             # Create position data dict matching TraderState.positions format
+            # NOTE: WebSocket position_cost represents CURRENT VALUE (same as REST's
+            # market_exposure), NOT the entry cost (total_traded). We set market_exposure
+            # here and let state_container merge preserve total_traded from REST sync.
             formatted_position = {
                 "ticker": market_ticker,
                 "position": position,
-                "total_traded": position_cost_cents,  # Map to existing field name
-                "market_exposure": position_cost_cents,  # Use cost as exposure for now
+                "market_exposure": position_cost_cents,  # Current value from WebSocket
+                # total_traded NOT set - preserved from REST sync via merge
                 "realized_pnl": realized_pnl_cents,
                 "fees_paid": fees_paid_cents,
                 "volume": volume,
+                "last_updated": time.time(),
             }
 
             await self._event_bus.emit_market_position_update(

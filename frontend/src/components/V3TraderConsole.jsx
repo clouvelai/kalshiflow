@@ -850,10 +850,21 @@ const PositionListPanel = ({ positions, positionListener, sessionUpdates }) => {
   const [isExpanded, setIsExpanded] = useState(true);
   const [changedTickers, setChangedTickers] = useState(new Set());
   const prevPositionsRef = useRef({});
+  const isFirstRender = useRef(true);
 
   // Detect position changes and trigger subtle highlight animation
   useEffect(() => {
     if (!positions || positions.length === 0) return;
+
+    // Skip highlighting on first render (initial load)
+    if (isFirstRender.current) {
+      isFirstRender.current = false;
+      // Initialize prevPositionsRef without triggering highlights
+      const newRef = {};
+      positions.forEach(pos => { newRef[pos.ticker] = { ...pos }; });
+      prevPositionsRef.current = newRef;
+      return;  // Don't set changedTickers on first render
+    }
 
     const changed = new Set();
     positions.forEach(pos => {
@@ -913,6 +924,12 @@ const PositionListPanel = ({ positions, positionListener, sessionUpdates }) => {
     return null;
   }
 
+  // Calculate YES/NO summary totals
+  const yesPositions = positions.filter(p => p.side === 'yes');
+  const noPositions = positions.filter(p => p.side === 'no');
+  const yesTotalQty = yesPositions.reduce((sum, p) => sum + Math.abs(p.position || 0), 0);
+  const noTotalQty = noPositions.reduce((sum, p) => sum + Math.abs(p.position || 0), 0);
+
   return (
     <div className="bg-gray-900/50 backdrop-blur-sm rounded-xl border border-gray-800 p-4 mb-4">
       <div
@@ -962,16 +979,40 @@ const PositionListPanel = ({ positions, positionListener, sessionUpdates }) => {
           <table className="w-full text-sm">
             <thead>
               <tr className="bg-gray-900/50 border-b border-gray-700/50">
-                <th className="px-3 py-2 text-left text-xs text-gray-500 uppercase font-medium">Market</th>
+                <th className="px-3 py-2 text-left text-xs text-gray-500 uppercase font-medium">Ticker</th>
                 <th className="px-3 py-2 text-center text-xs text-gray-500 uppercase font-medium">Side</th>
                 <th className="px-3 py-2 text-right text-xs text-gray-500 uppercase font-medium">Qty</th>
-                <th className="px-3 py-2 text-right text-xs text-gray-500 uppercase font-medium">Cost</th>
-                <th className="px-3 py-2 text-right text-xs text-gray-500 uppercase font-medium">Value</th>
+                <th className="px-3 py-2 text-right text-xs text-gray-500 uppercase font-medium" title="Cost per contract">Cost/C</th>
+                <th className="px-3 py-2 text-right text-xs text-gray-500 uppercase font-medium" title="Value per contract">Value/C</th>
+                <th className="px-3 py-2 text-right text-xs text-gray-500 uppercase font-medium" title="Unrealized P&L per contract">Unreal/C</th>
                 <th className="px-3 py-2 text-right text-xs text-gray-500 uppercase font-medium">P&L</th>
+                <th className="px-3 py-2 text-right text-xs text-gray-500 uppercase font-medium">Updated</th>
+              </tr>
+              <tr className="bg-emerald-900/20 text-emerald-400 text-sm font-medium border-b border-emerald-800/30">
+                <td className="py-1.5 px-3" colSpan="2">YES ({yesPositions.length})</td>
+                <td className="py-1.5 px-3 text-right font-mono">{yesTotalQty}</td>
+                <td className="py-1.5 px-3 text-right font-mono text-gray-500">-</td>
+                <td className="py-1.5 px-3 text-right font-mono text-gray-500">-</td>
+                <td className="py-1.5 px-3 text-right font-mono text-gray-500">-</td>
+                <td className="py-1.5 px-3 text-right font-mono">{formatPnLCurrency(yesPositions.reduce((sum, p) => sum + (p.unrealized_pnl || 0), 0))}</td>
+                <td className="py-1.5 px-3"></td>
+              </tr>
+              <tr className="bg-red-900/20 text-red-400 text-sm font-medium border-b border-gray-700/50">
+                <td className="py-1.5 px-3" colSpan="2">NO ({noPositions.length})</td>
+                <td className="py-1.5 px-3 text-right font-mono">{noTotalQty}</td>
+                <td className="py-1.5 px-3 text-right font-mono text-gray-500">-</td>
+                <td className="py-1.5 px-3 text-right font-mono text-gray-500">-</td>
+                <td className="py-1.5 px-3 text-right font-mono text-gray-500">-</td>
+                <td className="py-1.5 px-3 text-right font-mono">{formatPnLCurrency(noPositions.reduce((sum, p) => sum + (p.unrealized_pnl || 0), 0))}</td>
+                <td className="py-1.5 px-3"></td>
               </tr>
             </thead>
             <tbody>
               {positions.map((pos, index) => {
+                const qty = Math.abs(pos.position);
+                const costPerContract = qty > 0 ? Math.round((pos.total_traded || 0) / qty) : 0;
+                const valuePerContract = qty > 0 ? Math.round((pos.market_exposure || 0) / qty) : 0;
+                const unrealizedPerContract = qty > 0 ? Math.round((pos.unrealized_pnl || 0) / qty) : 0;
                 const pnlPercent = pos.total_traded > 0
                   ? ((pos.unrealized_pnl / pos.total_traded) * 100).toFixed(1)
                   : 0;
@@ -1007,19 +1048,35 @@ const PositionListPanel = ({ positions, positionListener, sessionUpdates }) => {
                       </span>
                     </td>
                     <td className="px-3 py-2 text-right font-mono text-gray-300">
-                      {Math.abs(pos.position)}
+                      {qty}
                     </td>
                     <td className="px-3 py-2 text-right font-mono text-gray-400">
-                      {formatCurrency(pos.total_traded)}
+                      {costPerContract}c
                     </td>
                     <td className="px-3 py-2 text-right font-mono text-gray-300">
-                      {formatCurrency(pos.market_exposure)}
+                      {valuePerContract}c
+                    </td>
+                    <td className={`px-3 py-2 text-right font-mono ${
+                      unrealizedPerContract >= 0 ? 'text-green-400' : 'text-red-400'
+                    }`}>
+                      {unrealizedPerContract >= 0 ? '+' : ''}{unrealizedPerContract}c
                     </td>
                     <td className={`px-3 py-2 text-right font-mono font-bold ${
                       pos.unrealized_pnl >= 0 ? 'text-green-400' : 'text-red-400'
                     }`}>
                       {formatPnLCurrency(pos.unrealized_pnl)}
                       <span className="text-xs ml-1 opacity-70">({pnlPercent}%)</span>
+                    </td>
+                    <td className="px-3 py-2 text-right font-mono text-gray-500 text-xs">
+                      {pos.last_updated
+                        ? new Date(pos.last_updated * 1000).toLocaleTimeString('en-US', {
+                            hour12: false,
+                            hour: '2-digit',
+                            minute: '2-digit',
+                            second: '2-digit'
+                          })
+                        : 'Sync'
+                      }
                     </td>
                   </tr>
                 );

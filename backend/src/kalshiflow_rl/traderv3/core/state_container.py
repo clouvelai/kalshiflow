@@ -269,12 +269,15 @@ class V3StateContainer:
 
         Args:
             ticker: Market ticker to update
-            position_data: Position data dict with keys:
+            position_data: Position data dict from WebSocket with keys:
                 - position: Contract count (+ long, - short)
-                - total_traded: Entry cost in cents
+                - market_exposure: Current market value in cents
                 - realized_pnl: Realized P&L in cents
                 - fees_paid: Fees in cents
                 - volume: Total volume traded
+                - last_updated: Timestamp of WebSocket update
+            Note: total_traded (cost basis) is NOT in WebSocket updates -
+            it's preserved from REST sync via merge.
 
         Returns:
             True if state was updated, False if no trading state exists
@@ -297,11 +300,15 @@ class V3StateContainer:
                 del self._trading_state.positions[ticker]
                 logger.info(f"Position closed: {ticker}")
         else:
-            # Update or add position
-            self._trading_state.positions[ticker] = position_data
+            # Update or add position - MERGE to preserve fields not in WebSocket update
+            # This is critical: WebSocket updates don't include total_traded (cost basis),
+            # which comes from REST sync. Merging ensures we preserve total_traded.
+            existing = self._trading_state.positions.get(ticker, {})
+            merged = {**existing, **position_data}
+            self._trading_state.positions[ticker] = merged
             logger.info(
                 f"Position updated: {ticker} = {position_count} contracts, "
-                f"cost={position_data.get('total_traded', 0)}¢"
+                f"value={position_data.get('market_exposure', 0)}¢"
             )
 
         # Track that this ticker was updated this session via WebSocket
@@ -310,10 +317,11 @@ class V3StateContainer:
         # Recalculate aggregates
         self._trading_state.position_count = len(self._trading_state.positions)
 
-        # Recalculate portfolio_value from position costs
-        # portfolio_value = sum of all position total_traded values
+        # Recalculate portfolio_value as sum of current market values
+        # Note: REST sync from Kalshi provides authoritative portfolio_value;
+        # this is a local estimate between syncs based on WebSocket updates.
         new_portfolio_value = sum(
-            pos.get("total_traded", 0)
+            pos.get("market_exposure", 0)
             for pos in self._trading_state.positions.values()
         )
         self._trading_state.portfolio_value = new_portfolio_value
@@ -547,6 +555,7 @@ class V3StateContainer:
                 "unrealized_pnl": unrealized_pnl,
                 "fees_paid": pos.get("fees_paid", 0),
                 "session_updated": ticker in self._session_updated_tickers,  # Was this updated this session?
+                "last_updated": pos.get("last_updated"),  # WebSocket update timestamp
             })
 
         return details

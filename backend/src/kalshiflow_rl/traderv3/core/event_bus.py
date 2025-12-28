@@ -239,7 +239,7 @@ class MarketPositionEvent:
     Attributes:
         event_type: Always MARKET_POSITION_UPDATE
         market_ticker: Market ticker for this position
-        position_data: Position details (position, total_traded, realized_pnl, etc.)
+        position_data: Position details (position, market_exposure, realized_pnl, etc.)
         timestamp: When the update was received
     """
     event_type: EventType = EventType.MARKET_POSITION_UPDATE
@@ -707,7 +707,7 @@ class EventBus:
 
         Args:
             ticker: Market ticker for this position
-            position_data: Position details (position, total_traded, realized_pnl, etc.)
+            position_data: Position details (position, market_exposure, realized_pnl, etc.)
 
         Returns:
             True if event was queued, False if queue full
