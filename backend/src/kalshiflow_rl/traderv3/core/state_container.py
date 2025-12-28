@@ -49,7 +49,7 @@ from typing import Dict, Any, Optional, Callable, Awaitable, TypeVar, List
 from dataclasses import dataclass, field
 from enum import Enum
 
-from ..state.trader_state import TraderState, StateChange
+from ..state.trader_state import TraderState, StateChange, SessionPnLState
 from .state_machine import TraderState as V3State  # State machine states
 from ..services.whale_tracker import BigBet
 
@@ -164,6 +164,9 @@ class V3StateContainer:
         self._trading_state: Optional[TraderState] = None
         self._last_state_change: Optional[StateChange] = None
         self._trading_state_version = 0  # Increment on each update for change detection
+
+        # Session P&L state - tracks P&L from session start
+        self._session_pnl_state: Optional[SessionPnLState] = None
 
         # Whale queue state - data from whale tracker
         self._whale_state: Optional[WhaleQueueState] = None
@@ -384,7 +387,102 @@ class V3StateContainer:
                 "orders": self._last_state_change.order_count_change
             }
 
+        # Add session P&L if initialized
+        if self._session_pnl_state and self._trading_state:
+            summary["pnl"] = self._session_pnl_state.compute_pnl(
+                self._trading_state.balance,
+                self._trading_state.portfolio_value
+            )
+
+        # Add detailed position data with per-position P&L
+        summary["positions_details"] = self._format_position_details()
+
         return summary
+
+    # ======== Session P&L Management ========
+
+    def initialize_session_pnl(self, balance: int, portfolio_value: int) -> None:
+        """
+        Initialize session P&L tracking on first sync.
+
+        Called by the coordinator after the first successful Kalshi sync
+        to capture the starting state for session P&L calculation.
+
+        Args:
+            balance: Starting balance in cents
+            portfolio_value: Starting portfolio value in cents
+
+        Note:
+            This is a one-time initialization per session. Subsequent calls
+            are ignored to preserve the original session start state.
+        """
+        if self._session_pnl_state is None:
+            self._session_pnl_state = SessionPnLState(
+                session_start_time=time.time(),
+                starting_balance=balance,
+                starting_portfolio_value=portfolio_value
+            )
+            logger.info(
+                f"Session P&L initialized: starting equity "
+                f"{balance + portfolio_value} cents "
+                f"(balance={balance}, portfolio={portfolio_value})"
+            )
+
+    def _format_position_details(self) -> List[Dict[str, Any]]:
+        """
+        Format positions with P&L for frontend display.
+
+        Extracts full position data from TraderState and calculates
+        unrealized P&L per position for the frontend to display.
+
+        Returns:
+            List of position dicts with P&L metrics. Each position contains:
+                - ticker: Market ticker
+                - position: Contract count (positive=YES, negative=NO)
+                - side: "yes" or "no"
+                - total_traded: Entry cost in cents
+                - market_exposure: Current value in cents
+                - realized_pnl: Realized P&L in cents
+                - unrealized_pnl: Unrealized P&L in cents
+                - fees_paid: Fees paid in cents
+        """
+        if not self._trading_state:
+            return []
+
+        details = []
+        for ticker, pos in self._trading_state.positions.items():
+            position_count = pos.get("position", 0)
+            total_traded = pos.get("total_traded", 0)
+            market_exposure = pos.get("market_exposure", 0)
+            # Unrealized P&L = current value - cost basis
+            unrealized_pnl = market_exposure - total_traded
+
+            details.append({
+                "ticker": ticker,
+                "position": position_count,
+                "side": "yes" if position_count > 0 else "no",
+                "total_traded": total_traded,        # Entry cost (cents)
+                "market_exposure": market_exposure,  # Current value (cents)
+                "realized_pnl": pos.get("realized_pnl", 0),
+                "unrealized_pnl": unrealized_pnl,
+                "fees_paid": pos.get("fees_paid", 0)
+            })
+
+        return details
+
+    def _compute_invested_amount(self) -> int:
+        """
+        Sum of all position market exposures (total invested in positions).
+
+        Returns:
+            Total invested amount in cents
+        """
+        if not self._trading_state:
+            return 0
+        return sum(
+            pos.get("market_exposure", 0)
+            for pos in self._trading_state.positions.values()
+        )
 
     # ======== Whale Queue State Management ========
 
@@ -888,6 +986,8 @@ class V3StateContainer:
         self._trading_state = None
         self._last_state_change = None
         self._trading_state_version = 0
+
+        self._session_pnl_state = None
 
         self._whale_state = None
         self._whale_state_version = 0

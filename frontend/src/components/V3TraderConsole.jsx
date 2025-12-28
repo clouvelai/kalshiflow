@@ -731,6 +731,228 @@ const DecisionAuditPanel = ({ decisionHistory, decisionStats }) => {
   );
 };
 
+// SessionSummaryPanel Component - Clear P&L display with cash flow visibility
+const SessionSummaryPanel = ({ tradingState }) => {
+  if (!tradingState || !tradingState.has_state) {
+    return null;
+  }
+
+  const formatCurrency = (cents) => {
+    const dollars = cents / 100;
+    return new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency: 'USD',
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2
+    }).format(dollars);
+  };
+
+  const formatPnLCurrency = (cents) => {
+    const dollars = cents / 100;
+    const prefix = cents >= 0 ? '+' : '';
+    return prefix + new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency: 'USD',
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2
+    }).format(dollars);
+  };
+
+  const balance = tradingState.balance || 0;
+  const portfolioValue = tradingState.portfolio_value || 0;
+  const totalValue = balance + portfolioValue;
+  const pnl = tradingState.pnl || null;
+
+  return (
+    <div className="bg-gray-900/50 backdrop-blur-sm rounded-xl border border-gray-800 p-4 mb-4">
+      <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center space-x-2">
+          <TrendingUp className="w-4 h-4 text-cyan-400" />
+          <h3 className="text-sm font-bold text-gray-300 uppercase tracking-wider">Session Summary</h3>
+        </div>
+        {pnl && pnl.session_start_time && (
+          <span className="text-xs text-gray-500 font-mono">
+            Session started {new Date(pnl.session_start_time * 1000).toLocaleTimeString('en-US', { hour12: false })}
+          </span>
+        )}
+      </div>
+
+      <div className="grid grid-cols-4 gap-4">
+        {/* Cash Available */}
+        <div className="bg-gray-800/30 rounded-lg p-4 border border-gray-700/50">
+          <div className="flex items-center space-x-2 mb-2">
+            <DollarSign className="w-4 h-4 text-green-400" />
+            <span className="text-xs text-gray-500 uppercase">Cash Available</span>
+          </div>
+          <div className="text-2xl font-mono font-bold text-green-400">
+            {formatCurrency(balance)}
+          </div>
+        </div>
+
+        {/* In Positions */}
+        <div className="bg-gray-800/30 rounded-lg p-4 border border-gray-700/50">
+          <div className="flex items-center space-x-2 mb-2">
+            <Briefcase className="w-4 h-4 text-blue-400" />
+            <span className="text-xs text-gray-500 uppercase">In Positions</span>
+          </div>
+          <div className="text-2xl font-mono font-bold text-blue-400">
+            {formatCurrency(portfolioValue)}
+          </div>
+        </div>
+
+        {/* Total Value */}
+        <div className="bg-gray-800/30 rounded-lg p-4 border border-gray-700/50">
+          <div className="flex items-center space-x-2 mb-2">
+            <Database className="w-4 h-4 text-white" />
+            <span className="text-xs text-gray-500 uppercase">Total Value</span>
+          </div>
+          <div className="text-2xl font-mono font-bold text-white">
+            {formatCurrency(totalValue)}
+          </div>
+        </div>
+
+        {/* Session P&L */}
+        <div className={`bg-gray-800/30 rounded-lg p-4 border ${
+          pnl && pnl.session_pnl >= 0 ? 'border-green-700/30' : 'border-red-700/30'
+        }`}>
+          <div className="flex items-center space-x-2 mb-2">
+            {pnl && pnl.session_pnl >= 0 ? (
+              <TrendingUp className="w-4 h-4 text-green-400" />
+            ) : (
+              <TrendingDown className="w-4 h-4 text-red-400" />
+            )}
+            <span className="text-xs text-gray-500 uppercase">Session P&L</span>
+          </div>
+          {pnl ? (
+            <>
+              <div className={`text-2xl font-mono font-bold ${
+                pnl.session_pnl >= 0 ? 'text-green-400' : 'text-red-400'
+              }`}>
+                {formatPnLCurrency(pnl.session_pnl)}
+              </div>
+              <div className={`text-xs font-mono ${
+                pnl.session_pnl_percent >= 0 ? 'text-green-400' : 'text-red-400'
+              }`}>
+                {pnl.session_pnl_percent >= 0 ? '+' : ''}{pnl.session_pnl_percent}%
+              </div>
+            </>
+          ) : (
+            <div className="text-2xl font-mono font-bold text-gray-500">--</div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// PositionListPanel Component - Detailed position breakdown with per-position P&L
+const PositionListPanel = ({ positions }) => {
+  const [isExpanded, setIsExpanded] = useState(true);
+
+  const formatCurrency = (cents) => {
+    const dollars = cents / 100;
+    return new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency: 'USD',
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2
+    }).format(dollars);
+  };
+
+  const formatPnLCurrency = (cents) => {
+    const dollars = cents / 100;
+    const prefix = cents >= 0 ? '+' : '';
+    return prefix + new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency: 'USD',
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2
+    }).format(dollars);
+  };
+
+  // Don't render if no positions
+  if (!positions || positions.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="bg-gray-900/50 backdrop-blur-sm rounded-xl border border-gray-800 p-4 mb-4">
+      <div
+        className="flex items-center justify-between cursor-pointer"
+        onClick={() => setIsExpanded(!isExpanded)}
+      >
+        <div className="flex items-center space-x-2">
+          <Briefcase className="w-4 h-4 text-purple-400" />
+          <h3 className="text-sm font-bold text-gray-300 uppercase tracking-wider">Open Positions</h3>
+          <span className="text-xs text-gray-500">({positions.length})</span>
+        </div>
+        {isExpanded ? (
+          <ChevronDown className="w-4 h-4 text-gray-500" />
+        ) : (
+          <ChevronRight className="w-4 h-4 text-gray-500" />
+        )}
+      </div>
+
+      {isExpanded && (
+        <div className="mt-4 bg-gray-800/30 rounded-lg border border-gray-700/50 overflow-hidden">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="bg-gray-900/50 border-b border-gray-700/50">
+                <th className="px-3 py-2 text-left text-xs text-gray-500 uppercase font-medium">Market</th>
+                <th className="px-3 py-2 text-center text-xs text-gray-500 uppercase font-medium">Side</th>
+                <th className="px-3 py-2 text-right text-xs text-gray-500 uppercase font-medium">Contracts</th>
+                <th className="px-3 py-2 text-right text-xs text-gray-500 uppercase font-medium">Entry Cost</th>
+                <th className="px-3 py-2 text-right text-xs text-gray-500 uppercase font-medium">Current Value</th>
+                <th className="px-3 py-2 text-right text-xs text-gray-500 uppercase font-medium">Unrealized P&L</th>
+              </tr>
+            </thead>
+            <tbody>
+              {positions.map((pos, index) => {
+                const pnlPercent = pos.total_traded > 0
+                  ? ((pos.unrealized_pnl / pos.total_traded) * 100).toFixed(1)
+                  : 0;
+
+                return (
+                  <tr
+                    key={pos.ticker || index}
+                    className="border-b border-gray-700/30 hover:bg-gray-800/50 transition-colors"
+                  >
+                    <td className="px-3 py-2 font-mono text-gray-300 text-xs">{pos.ticker}</td>
+                    <td className="px-3 py-2 text-center">
+                      <span className={`px-2 py-0.5 rounded text-xs font-bold uppercase ${
+                        pos.side === 'yes'
+                          ? 'bg-green-900/30 text-green-400 border border-green-700/50'
+                          : 'bg-red-900/30 text-red-400 border border-red-700/50'
+                      }`}>
+                        {pos.side}
+                      </span>
+                    </td>
+                    <td className="px-3 py-2 text-right font-mono text-gray-300">
+                      {Math.abs(pos.position)}
+                    </td>
+                    <td className="px-3 py-2 text-right font-mono text-gray-400">
+                      {formatCurrency(pos.total_traded)}
+                    </td>
+                    <td className="px-3 py-2 text-right font-mono text-gray-300">
+                      {formatCurrency(pos.market_exposure)}
+                    </td>
+                    <td className={`px-3 py-2 text-right font-mono font-bold ${
+                      pos.unrealized_pnl >= 0 ? 'text-green-400' : 'text-red-400'
+                    }`}>
+                      {formatPnLCurrency(pos.unrealized_pnl)}
+                      <span className="text-xs ml-1 opacity-70">({pnlPercent}%)</span>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+};
+
 const V3TraderConsole = () => {
   const [messages, setMessages] = useState([]);
   // Start with all messages expanded by default for visibility
@@ -991,7 +1213,7 @@ const V3TraderConsole = () => {
               if (data.data) {
                 // Update the last update time whenever we receive a trading_state message
                 setLastUpdateTime(Math.floor(Date.now() / 1000));
-                
+
                 setTradingState({
                   has_state: true,
                   version: data.data.version,
@@ -1003,7 +1225,10 @@ const V3TraderConsole = () => {
                   open_orders: data.data.open_orders,
                   sync_timestamp: data.data.sync_timestamp,
                   changes: data.data.changes,
-                  order_group: data.data.order_group  // Include order group data
+                  order_group: data.data.order_group,  // Include order group data
+                  // Session P&L and position details
+                  pnl: data.data.pnl,
+                  positions_details: data.data.positions_details || []
                 });
               }
               break;
@@ -1359,10 +1584,16 @@ const V3TraderConsole = () => {
       </div>
 
       <div className="max-w-7xl mx-auto px-6 py-6">
-        {/* Trading Data Panel - Full width above everything */}
-        <div className="mb-6">
+        {/* Session Summary Panel - Clear P&L at the top */}
+        <SessionSummaryPanel tradingState={tradingState} />
+
+        {/* Trading Data Panel - Balance, Portfolio, Positions, Orders */}
+        <div className="mb-4">
           <TradingData tradingState={tradingState} lastUpdateTime={lastUpdateTime} />
         </div>
+
+        {/* Position List Panel - Detailed per-position P&L */}
+        <PositionListPanel positions={tradingState?.positions_details} />
 
         {/* Whale Queue Panel - Full width below Trading Data */}
         <div className="mb-6">

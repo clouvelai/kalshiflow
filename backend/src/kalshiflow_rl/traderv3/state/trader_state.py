@@ -129,7 +129,7 @@ class StateChange:
     def format_metadata(self) -> dict:
         """
         Format changes for state machine metadata.
-        
+
         Returns:
             Dict with formatted change strings
         """
@@ -138,4 +138,48 @@ class StateChange:
             "portfolio_change": f"{self.portfolio_value_change:+d}" if self.portfolio_value_change != 0 else "0",
             "positions_change": f"{self.position_count_change:+d}" if self.position_count_change != 0 else "0",
             "orders_change": f"{self.order_count_change:+d}" if self.order_count_change != 0 else "0"
+        }
+
+
+@dataclass
+class SessionPnLState:
+    """
+    Session-level P&L tracking.
+
+    Captures starting balance and portfolio value at session start to compute
+    session P&L. Resets when the trader restarts.
+
+    ALL VALUES IN CENTS - consistent with TraderState.
+    """
+    session_start_time: float  # Timestamp when session began
+    starting_balance: int  # Balance at session start (cents)
+    starting_portfolio_value: int  # Portfolio value at session start (cents)
+
+    @property
+    def starting_equity(self) -> int:
+        """Total equity at session start (balance + portfolio_value)."""
+        return self.starting_balance + self.starting_portfolio_value
+
+    def compute_pnl(self, current_balance: int, current_portfolio_value: int) -> Dict[str, Any]:
+        """
+        Compute session P&L from current state.
+
+        Args:
+            current_balance: Current balance in cents
+            current_portfolio_value: Current portfolio value in cents
+
+        Returns:
+            Dict with session P&L metrics (all values in cents except percent)
+        """
+        current_equity = current_balance + current_portfolio_value
+        session_pnl = current_equity - self.starting_equity
+        pnl_percent = (session_pnl / self.starting_equity * 100) if self.starting_equity > 0 else 0.0
+
+        return {
+            "session_start_time": self.session_start_time,
+            "starting_equity": self.starting_equity,
+            "current_equity": current_equity,
+            "session_pnl": session_pnl,
+            "session_pnl_percent": round(pnl_percent, 2),
+            "invested_amount": current_portfolio_value  # Amount currently in positions
         }

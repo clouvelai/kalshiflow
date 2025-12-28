@@ -516,10 +516,14 @@ class V3Coordinator:
         logger.info("🔄 Syncing with Kalshi...")
 
         state, changes = await self._trading_client_integration.sync_with_kalshi()
-        
+
         # Store in container
         state_changed = self._state_container.update_trading_state(state, changes)
-        
+
+        # Initialize session P&L tracking on first sync
+        # This captures starting balance/portfolio for session P&L calculation
+        self._state_container.initialize_session_pnl(state.balance, state.portfolio_value)
+
         # Emit trading state if changed
         if state_changed:
             await self._status_reporter.emit_trading_state()

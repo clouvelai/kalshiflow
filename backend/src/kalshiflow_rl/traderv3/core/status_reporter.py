@@ -248,7 +248,10 @@ class V3StatusReporter:
                 "order_list": trading_summary.get("order_list", []),  # Formatted order list
                 "sync_timestamp": trading_summary["sync_timestamp"],
                 "changes": trading_summary.get("changes"),
-                "order_group": trading_summary.get("order_group")
+                "order_group": trading_summary.get("order_group"),
+                # P&L and position details for frontend display
+                "pnl": trading_summary.get("pnl"),
+                "positions_details": trading_summary.get("positions_details", [])
             })
 
             logger.debug(f"Broadcast trading state v{trading_summary['version']}")
