@@ -19,6 +19,11 @@ from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from .event_bus import EventBus, EventType, StateTransitionEvent, TraderStatusEvent, MarketEvent, WhaleQueueEvent
 
+# Import for type hints only to avoid circular imports
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from ..services.whale_tracker import WhaleTracker
+
 logger = logging.getLogger("kalshiflow_rl.traderv3.websocket_manager")
 
 
@@ -48,26 +53,28 @@ class V3WebSocketManager:
     - Event bus integration for seamless updates
     """
     
-    def __init__(self, event_bus: Optional[EventBus] = None, state_machine=None):
+    def __init__(self, event_bus: Optional[EventBus] = None, state_machine=None, whale_tracker: Optional['WhaleTracker'] = None):
         """
         Initialize WebSocket manager.
-        
+
         Args:
             event_bus: EventBus instance for subscribing to events
             state_machine: State machine instance for getting current state
+            whale_tracker: Optional WhaleTracker instance for sending whale queue snapshots
         """
         self._event_bus = event_bus
         self._state_machine = state_machine
+        self._whale_tracker = whale_tracker
         self._clients: Dict[str, WebSocketClient] = {}
         self._client_counter = 0
         self._started_at: Optional[float] = None
         self._running = False
-        
+
         # Message statistics
         self._messages_sent = 0
         self._connection_count = 0
         self._active_connections = 0
-        
+
         # Periodic tasks
         self._ping_task: Optional[asyncio.Task] = None
         self._ping_interval = 30.0  # seconds
@@ -75,9 +82,22 @@ class V3WebSocketManager:
         # State transition history buffer (last 20 transitions)
         # This ensures late-connecting clients can see the startup sequence
         self._state_transition_history: deque = deque(maxlen=20)
-        
+
         logger.info("TRADER V3 WebSocket Manager initialized")
-    
+
+    def set_whale_tracker(self, whale_tracker: 'WhaleTracker') -> None:
+        """
+        Set the whale tracker instance for sending snapshots to new clients.
+
+        This allows whale_tracker to be set after initialization since it's
+        created later in the startup sequence.
+
+        Args:
+            whale_tracker: WhaleTracker instance
+        """
+        self._whale_tracker = whale_tracker
+        logger.info("WhaleTracker set on WebSocket manager")
+
     async def start(self) -> None:
         """Start the WebSocket manager."""
         if self._running:
@@ -191,7 +211,28 @@ class V3WebSocketManager:
                 if client_id in self._clients:
                     await self._send_to_client(client_id, history_batch)
                     await asyncio.sleep(0.1)  # Brief pause after history replay
-            
+
+            # Send whale queue snapshot if whale tracker is available
+            if self._whale_tracker and client_id in self._clients:
+                try:
+                    queue_state = self._whale_tracker.get_queue_state()
+                    whale_snapshot = {
+                        "type": "whale_queue",
+                        "data": {
+                            "queue": queue_state.get("queue", []),
+                            "stats": queue_state.get("stats", {
+                                "trades_seen": 0,
+                                "trades_discarded": 0,
+                                "discard_rate_percent": 0
+                            }),
+                            "timestamp": time.strftime("%H:%M:%S")
+                        }
+                    }
+                    await self._send_to_client(client_id, whale_snapshot)
+                    logger.debug(f"Sent whale queue snapshot to client {client_id}: {len(queue_state.get('queue', []))} whales")
+                except Exception as e:
+                    logger.warning(f"Could not send whale queue snapshot to client {client_id}: {e}")
+
             # Now handle incoming messages
             # (Current state is already included in the historical transitions replay)
             async for message in websocket.iter_text():

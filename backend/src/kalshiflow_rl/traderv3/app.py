@@ -177,6 +177,9 @@ async def lifespan(app):
                 min_size_cents=config.whale_min_size_cents,
             )
 
+            # Set whale tracker on websocket manager for snapshot on connect
+            websocket_manager.set_whale_tracker(whale_tracker)
+
             logger.info(
                 f"Whale detection configured: queue_size={config.whale_queue_size}, "
                 f"window={config.whale_window_minutes}min, min_size=${config.whale_min_size_cents/100:.2f}"
@@ -259,8 +262,89 @@ async def status_endpoint(request):
             {"error": "System not initialized"},
             status_code=503
         )
-    
+
     return JSONResponse(coordinator.get_status())
+
+
+async def cleanup_endpoint(request):
+    """
+    Cleanup endpoint - cancels open orders.
+
+    POST /v3/cleanup
+    POST /v3/cleanup?orphaned_only=true  (default, cancel only orphaned orders)
+    POST /v3/cleanup?orphaned_only=false (cancel ALL orders)
+
+    Query Parameters:
+        orphaned_only: If true (default), only cancel orders without order_group_id.
+                       If false, cancel all open orders regardless of order_group_id.
+
+    Returns:
+        JSON with count of cancelled/preserved orders
+    """
+    if not coordinator:
+        return JSONResponse(
+            {"error": "System not initialized"},
+            status_code=503
+        )
+
+    # Check if trading client integration is available
+    if not coordinator._trading_client_integration:
+        return JSONResponse(
+            {"error": "Trading client not configured"},
+            status_code=400
+        )
+
+    # Check query parameter for cleanup mode (default: orphaned_only=true)
+    orphaned_only = request.query_params.get("orphaned_only", "true").lower() == "true"
+
+    try:
+        if orphaned_only:
+            # Cancel only orphaned orders (smart cleanup)
+            result = await coordinator._trading_client_integration.cancel_orphaned_orders()
+
+            cancelled_count = len(result.get("cancelled", []))
+            preserved_count = len(result.get("skipped", []))
+            error_count = len(result.get("errors", []))
+
+            logger.info(
+                f"Orphaned cleanup complete: {cancelled_count} cancelled, "
+                f"{preserved_count} preserved, {error_count} errors"
+            )
+
+            return JSONResponse({
+                "success": True,
+                "mode": "orphaned_only",
+                "cancelled_count": cancelled_count,
+                "preserved_count": preserved_count,
+                "error_count": error_count,
+                "cancelled": result.get("cancelled", []),
+                "preserved": result.get("skipped", []),
+                "errors": result.get("errors", [])
+            })
+        else:
+            # Cancel all open orders (legacy behavior)
+            result = await coordinator._trading_client_integration.cancel_all_orders()
+
+            cancelled_count = len(result.get("cancelled", []))
+            error_count = len(result.get("errors", []))
+
+            logger.info(f"Full cleanup complete: {cancelled_count} orders cancelled, {error_count} errors")
+
+            return JSONResponse({
+                "success": True,
+                "mode": "all",
+                "cancelled_count": cancelled_count,
+                "error_count": error_count,
+                "cancelled": result.get("cancelled", []),
+                "errors": result.get("errors", [])
+            })
+
+    except Exception as e:
+        logger.error(f"Cleanup failed: {e}")
+        return JSONResponse(
+            {"error": str(e), "success": False},
+            status_code=500
+        )
 
 
 async def websocket_endpoint(websocket: WebSocket):
@@ -279,6 +363,7 @@ app = Starlette(
     routes=[
         Route("/v3/health", health_endpoint),
         Route("/v3/status", status_endpoint),
+        Route("/v3/cleanup", cleanup_endpoint, methods=["POST"]),
         WebSocketRoute("/v3/ws", websocket_endpoint)
     ]
 )

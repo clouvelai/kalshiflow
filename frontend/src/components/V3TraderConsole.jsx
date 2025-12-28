@@ -217,6 +217,13 @@ const TradingData = ({ tradingState, lastUpdateTime }) => {
 const WhaleQueuePanel = ({ whaleQueue }) => {
   const [currentTime, setCurrentTime] = useState(Date.now());
 
+  // Debug logging for whale queue data
+  useEffect(() => {
+    console.log('[WhaleQueuePanel] Whale queue data received:', whaleQueue);
+    console.log('[WhaleQueuePanel] Queue length:', whaleQueue?.queue?.length || 0);
+    console.log('[WhaleQueuePanel] Stats:', whaleQueue?.stats);
+  }, [whaleQueue]);
+
   // Update current time every second for age display
   useEffect(() => {
     const interval = setInterval(() => {
@@ -699,7 +706,9 @@ const V3TraderConsole = () => {
               
             case 'whale_queue':
               // Update whale queue state
+              console.log('[V3TraderConsole] Received whale_queue message:', data.data);
               if (data.data) {
+                console.log('[V3TraderConsole] Setting whale queue - queue length:', data.data.queue?.length || 0);
                 setWhaleQueue({
                   queue: data.data.queue || [],
                   stats: data.data.stats || { trades_seen: 0, trades_discarded: 0, discard_rate_percent: 0 },

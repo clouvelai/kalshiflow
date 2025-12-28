@@ -792,4 +792,264 @@ async def cleanup_demo_environment():
 
 ---
 
+## Part 11: Integrated Order Maintenance (Proposal)
+
+### 11.1 Current Limitation
+
+The `/v3/cleanup` endpoint is **manual-only** and bulk-deletes all orders. This works for environment reset but doesn't support:
+- Selective order cancellation during live trading
+- Stale order detection and pruning
+- Console visibility of maintenance actions
+- Lifecycle management tied to whale signals
+
+### 11.2 Proposed: OrderMaintenanceService
+
+A new service integrated into the trading loop that performs intelligent order housekeeping.
+
+```
+Trading Cycle (every 10 seconds):
+    1. SYNC      → Fetch current state from Kalshi
+    2. EVALUATE  → Analyze orderbook snapshots
+    3. MAINTAIN  → [NEW] Order maintenance check  ← Added
+    4. DECIDE    → Trading decisions (whale following)
+    5. EXECUTE   → Place new orders
+```
+
+### 11.3 Maintenance Rules
+
+#### Rule 1: Stale Whale Follow Orders
+Cancel orders placed for whale signals that have expired:
+
+```python
+class OrderMaintenanceService:
+    """Integrated order maintenance for the trading loop."""
+
+    STALE_ORDER_THRESHOLD_SECONDS = 120  # 2 minutes
+
+    async def check_stale_whale_follows(
+        self,
+        open_orders: Dict[str, Any],
+        followed_whales: Dict[str, FollowedWhale]
+    ) -> List[str]:
+        """
+        Find whale-follow orders that should be cancelled.
+
+        Returns:
+            List of order_ids to cancel
+        """
+        orders_to_cancel = []
+        now = time.time()
+
+        for whale_id, followed in followed_whales.items():
+            order_id = followed.our_order_id
+
+            # Skip if order already executed/cancelled
+            if order_id not in open_orders:
+                continue
+
+            order = open_orders[order_id]
+
+            # Skip if order has partial fills (let it ride)
+            if order.get("fill_count", 0) > 0:
+                continue
+
+            # Cancel if unfilled and stale
+            age = now - followed.placed_at
+            if age > self.STALE_ORDER_THRESHOLD_SECONDS:
+                orders_to_cancel.append(order_id)
+
+        return orders_to_cancel
+```
+
+#### Rule 2: Orphaned Orders
+Orders not associated with any tracked whale follow (e.g., from previous sessions):
+
+```python
+async def check_orphaned_orders(
+    self,
+    open_orders: Dict[str, Any],
+    followed_whales: Dict[str, FollowedWhale]
+) -> List[str]:
+    """
+    Find orders we didn't place this session.
+
+    These may be from crashed sessions or manual testing.
+    """
+    tracked_order_ids = {fw.our_order_id for fw in followed_whales.values()}
+
+    orphaned = []
+    for order_id in open_orders:
+        if order_id not in tracked_order_ids:
+            orphaned.append(order_id)
+
+    return orphaned
+```
+
+#### Rule 3: Market-Closed Orders
+Cancel orders for markets that have closed:
+
+```python
+async def check_closed_market_orders(
+    self,
+    open_orders: Dict[str, Any],
+    active_markets: Set[str]  # Markets we're currently watching
+) -> List[str]:
+    """
+    Find orders for markets no longer active.
+    """
+    orders_to_cancel = []
+
+    for order_id, order in open_orders.items():
+        ticker = order.get("ticker")
+        if ticker and ticker not in active_markets:
+            orders_to_cancel.append(order_id)
+
+    return orders_to_cancel
+```
+
+### 11.4 Console Visibility
+
+All maintenance actions emit `SYSTEM_ACTIVITY` events:
+
+```python
+async def perform_maintenance(self) -> MaintenanceResult:
+    """Run all maintenance checks and execute cancellations."""
+
+    result = MaintenanceResult()
+
+    # Check each rule
+    stale = await self.check_stale_whale_follows(...)
+    orphaned = await self.check_orphaned_orders(...)
+    closed = await self.check_closed_market_orders(...)
+
+    orders_to_cancel = stale + orphaned + closed
+
+    if orders_to_cancel:
+        # Cancel with reason tracking
+        for order_id in orders_to_cancel:
+            try:
+                await self._trading_client.cancel_order(order_id)
+                result.cancelled.append(order_id)
+            except Exception as e:
+                result.errors.append({"order_id": order_id, "error": str(e)})
+
+        # Emit to console
+        await self._event_bus.emit_system_activity(
+            activity_type="order_maintenance",
+            message=f"Pruned {len(result.cancelled)} stale orders",
+            metadata={
+                "stale_count": len(stale),
+                "orphaned_count": len(orphaned),
+                "closed_market_count": len(closed),
+                "cancelled": result.cancelled
+            }
+        )
+
+    return result
+```
+
+### 11.5 Trading Loop Integration
+
+In `TradingFlowOrchestrator.run_trading_cycle()`:
+
+```python
+async def run_trading_cycle(self) -> None:
+    """Execute one trading cycle."""
+
+    # 1. SYNC
+    state, changes = await self._sync_state()
+
+    # 2. EVALUATE
+    evaluation = await self._evaluate_markets()
+
+    # 3. MAINTAIN [NEW]
+    if self._order_maintenance:
+        maintenance_result = await self._order_maintenance.perform_maintenance()
+        if maintenance_result.cancelled:
+            self._metrics.orders_pruned += len(maintenance_result.cancelled)
+
+    # 4. DECIDE
+    decisions = await self._make_decisions()
+
+    # 5. EXECUTE
+    await self._execute_decisions(decisions)
+```
+
+### 11.6 Configuration
+
+```bash
+# Order maintenance configuration
+ORDER_MAINTENANCE_ENABLED=true
+ORDER_STALE_THRESHOLD_SECONDS=120      # Cancel unfilled orders after 2 min
+ORDER_PRUNE_ORPHANED=true              # Cancel orders from previous sessions
+ORDER_PRUNE_CLOSED_MARKETS=true        # Cancel orders for closed markets
+ORDER_MAINTENANCE_INTERVAL=1           # Run every N trading cycles
+```
+
+### 11.7 Manual Override
+
+The `/v3/cleanup` endpoint remains for bulk reset, but now also emits events:
+
+```python
+@router.post("/v3/cleanup")
+async def cleanup_all_orders():
+    """Manual cleanup - cancel all open orders."""
+    result = await trading_client.cancel_all_orders()
+
+    # Emit to console
+    await event_bus.emit_system_activity(
+        activity_type="manual_cleanup",
+        message=f"Manual cleanup: {len(result['cancelled'])} cancelled",
+        metadata=result
+    )
+
+    return result
+```
+
+### 11.8 Implementation Priority
+
+| Component | Priority | Complexity |
+|-----------|----------|------------|
+| EventBus emission for cleanup | P1 (Phase 1) | Low |
+| Stale whale follow pruning | P2 (Phase 3) | Medium |
+| Orphaned order detection | P2 (Phase 3) | Medium |
+| Closed market pruning | P3 (Future) | Medium |
+| Frontend maintenance panel | P3 (Future) | High |
+
+### 11.9 Data Flow
+
+```
+                    ┌───────────────────────────────────┐
+                    │       TradingFlowOrchestrator     │
+                    │                                   │
+                    │   1. sync_state()                 │
+                    │   2. evaluate_markets()           │
+                    │   3. perform_maintenance() ◄──────┼───── NEW
+                    │   4. make_decisions()             │
+                    │   5. execute_decisions()          │
+                    └──────────────┬────────────────────┘
+                                   │
+                                   v
+                    ┌───────────────────────────────────┐
+                    │      OrderMaintenanceService      │
+                    │                                   │
+                    │  - check_stale_whale_follows()   │
+                    │  - check_orphaned_orders()       │
+                    │  - check_closed_market_orders()  │
+                    │  - perform_maintenance()         │
+                    │                                   │
+                    │  Emits: SYSTEM_ACTIVITY events   │
+                    └──────────────┬────────────────────┘
+                                   │
+                                   v
+                    ┌───────────────────────────────────┐
+                    │           EventBus                │
+                    │                                   │
+                    │  "order_maintenance" ────────────►│ WebSocket
+                    │                                   │ Clients
+                    └───────────────────────────────────┘
+```
+
+---
+
 *Document ready for Flore's review.*

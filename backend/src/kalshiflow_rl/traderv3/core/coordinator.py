@@ -200,6 +200,10 @@ class V3Coordinator:
             await self._connect_trading_client()
             await self._sync_trading_state()
 
+            # Cleanup orphaned orders on startup if configured
+            if self._config.cleanup_on_startup:
+                await self._cleanup_orphaned_orders()
+
         # Transition to READY with actual metrics
         await self._transition_to_ready()
     
@@ -387,10 +391,60 @@ class V3Coordinator:
                 metadata={"degraded": True, "severity": "warning"}
             )
     
+    async def _cleanup_orphaned_orders(self) -> None:
+        """
+        Cleanup orphaned orders (orders without order_group_id) on startup.
+
+        This is called during startup to remove legacy orders that were placed
+        before order group management was implemented. Orders with an
+        order_group_id are preserved.
+        """
+        if not self._trading_client_integration:
+            return
+
+        logger.info("Cleaning up orphaned orders...")
+
+        try:
+            result = await self._trading_client_integration.cancel_orphaned_orders()
+
+            cancelled_count = len(result.get("cancelled", []))
+            preserved_count = len(result.get("skipped", []))
+            error_count = len(result.get("errors", []))
+
+            if cancelled_count > 0 or error_count > 0:
+                # Emit system activity for cleanup results
+                await self._event_bus.emit_system_activity(
+                    activity_type="cleanup",
+                    message=f"Startup cleanup: {cancelled_count} orphaned orders cancelled, {preserved_count} preserved",
+                    metadata={
+                        "cancelled_count": cancelled_count,
+                        "preserved_count": preserved_count,
+                        "error_count": error_count,
+                        "total_orphaned": result.get("total_orphaned", 0),
+                        "total_preserved": result.get("total_preserved", 0),
+                        "severity": "info" if error_count == 0 else "warning"
+                    }
+                )
+                logger.info(
+                    f"✅ Startup cleanup complete: {cancelled_count} orphaned orders cancelled, "
+                    f"{preserved_count} orders preserved"
+                )
+            else:
+                logger.info("No orphaned orders found during startup cleanup")
+
+        except Exception as e:
+            # Don't fail startup on cleanup errors - just log and continue
+            logger.warning(f"Orphaned order cleanup failed (non-critical): {e}")
+            await self._event_bus.emit_system_activity(
+                activity_type="cleanup",
+                message=f"Startup cleanup failed: {str(e)}",
+                metadata={"error": str(e), "severity": "warning"}
+            )
+
     async def _sync_trading_state(self) -> None:
         """Perform initial trading state sync."""
         logger.info("🔄 Syncing with Kalshi...")
-        
+
         state, changes = await self._trading_client_integration.sync_with_kalshi()
         
         # Store in container

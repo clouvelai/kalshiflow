@@ -47,6 +47,9 @@ class V3Config:
     whale_window_minutes: int = 5
     whale_min_size_cents: int = 10000  # $100 minimum
 
+    # Cleanup Configuration
+    cleanup_on_startup: bool = True  # Cancel orphaned orders on startup (orders without order_group_id)
+
     # State Machine Configuration
     sync_duration: float = 10.0  # seconds for Kalshi data sync
     health_check_interval: float = 5.0  # seconds
@@ -134,6 +137,10 @@ class V3Config:
         whale_window_minutes = int(os.environ.get("WHALE_WINDOW_MINUTES", "5"))
         whale_min_size_cents = int(os.environ.get("WHALE_MIN_SIZE_CENTS", "10000"))
 
+        # Cleanup configuration - default True for paper trading, False for production
+        cleanup_default = "true" if environment == "paper" or "demo-api" in ws_url.lower() else "false"
+        cleanup_on_startup = os.environ.get("V3_CLEANUP_ON_STARTUP", cleanup_default).lower() == "true"
+
         sync_duration = float(os.environ.get("V3_SYNC_DURATION", os.environ.get("V3_CALIBRATION_DURATION", "10.0")))
         health_check_interval = float(os.environ.get("V3_HEALTH_CHECK_INTERVAL", "5.0"))
         error_recovery_delay = float(os.environ.get("V3_ERROR_RECOVERY_DELAY", "30.0"))
@@ -164,6 +171,7 @@ class V3Config:
             whale_queue_size=whale_queue_size,
             whale_window_minutes=whale_window_minutes,
             whale_min_size_cents=whale_min_size_cents,
+            cleanup_on_startup=cleanup_on_startup,
             sync_duration=sync_duration,
             health_check_interval=health_check_interval,
             error_recovery_delay=error_recovery_delay,
@@ -186,6 +194,7 @@ class V3Config:
         if enable_trading_client:
             logger.info(f"  - Trading enabled: {trading_mode} mode")
             logger.info(f"  - Max orders: {trading_max_orders}, Max position: {trading_max_position_size}")
+            logger.info(f"  - Cleanup on startup: {cleanup_on_startup}")
         else:
             logger.info(f"  - Trading: DISABLED (orderbook only)")
         if enable_whale_detection:

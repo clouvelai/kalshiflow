@@ -360,39 +360,131 @@ class V3TradingClientIntegration:
     async def cancel_all_orders(self) -> Dict[str, Any]:
         """
         Cancel all open orders.
-        
+
         Returns:
             Dictionary with cancellation results
         """
         if not self._connected:
             raise RuntimeError("Cannot cancel orders - trading client not connected")
-        
+
         if not self._metrics.open_orders:
             return {"cancelled": [], "errors": [], "total": 0}
-        
+
         order_ids = list(self._metrics.open_orders.keys())
         logger.info(f"Cancelling {len(order_ids)} open orders...")
-        
+
         try:
             response = await self._client.batch_cancel_orders(order_ids)
-            
+
             # Update metrics
             cancelled_count = len(response.get("cancelled", []))
             self._metrics.orders_cancelled += cancelled_count
             self._metrics.api_calls += 1
-            
+
             # Remove cancelled orders from tracking
             for order_id in response.get("cancelled", []):
                 if order_id in self._metrics.open_orders:
                     del self._metrics.open_orders[order_id]
-            
+
             # Note: Batch events would require extending EventBus with a generic emit method
-            
+
             logger.info(f"✅ Batch cancel complete: {cancelled_count} cancelled")
             return response
-            
+
         except Exception as e:
             logger.error(f"❌ Batch cancel failed: {e}")
+            self._metrics.api_errors += 1
+            self._consecutive_api_errors += 1
+            raise
+
+    async def cancel_orphaned_orders(self) -> Dict[str, Any]:
+        """
+        Cancel only orphaned orders (orders without an order_group_id).
+
+        This method is designed for startup cleanup to remove legacy orders
+        that were placed before order group management was implemented,
+        while preserving orders that belong to the current session's order group.
+
+        Returns:
+            Dictionary with:
+                - cancelled: List of cancelled order IDs
+                - skipped: List of preserved order IDs (have order_group_id)
+                - errors: List of errors during cancellation
+                - total_orphaned: Count of orphaned orders found
+                - total_preserved: Count of orders with order_group_id
+        """
+        if not self._connected:
+            raise RuntimeError("Cannot cancel orders - trading client not connected")
+
+        result = {
+            "cancelled": [],
+            "skipped": [],
+            "errors": [],
+            "total_orphaned": 0,
+            "total_preserved": 0
+        }
+
+        if not self._metrics.open_orders:
+            logger.info("No open orders to clean up")
+            return result
+
+        # Categorize orders by orphan status
+        orphaned_order_ids = []
+        preserved_order_ids = []
+
+        for order_id, order in self._metrics.open_orders.items():
+            # Check if order has an order_group_id
+            order_group_id = order.get("order_group_id")
+
+            if not order_group_id:
+                # Orphaned order - no order_group_id
+                orphaned_order_ids.append(order_id)
+            else:
+                # Order belongs to an order group - preserve it
+                preserved_order_ids.append(order_id)
+
+        result["total_orphaned"] = len(orphaned_order_ids)
+        result["total_preserved"] = len(preserved_order_ids)
+
+        if not orphaned_order_ids:
+            logger.info(f"No orphaned orders to clean up ({len(preserved_order_ids)} orders preserved with order groups)")
+            result["skipped"] = preserved_order_ids
+            return result
+
+        logger.info(
+            f"Cleaning up {len(orphaned_order_ids)} orphaned orders "
+            f"(preserving {len(preserved_order_ids)} with order groups)..."
+        )
+
+        # Cancel orphaned orders in batch
+        try:
+            response = await self._client.batch_cancel_orders(orphaned_order_ids)
+
+            # Update metrics
+            cancelled_count = len(response.get("cancelled", []))
+            self._metrics.orders_cancelled += cancelled_count
+            self._metrics.api_calls += 1
+
+            # Remove cancelled orders from tracking
+            for order_id in response.get("cancelled", []):
+                if order_id in self._metrics.open_orders:
+                    del self._metrics.open_orders[order_id]
+
+            result["cancelled"] = response.get("cancelled", [])
+            result["errors"] = response.get("errors", [])
+            result["skipped"] = preserved_order_ids
+
+            logger.info(
+                f"✅ Orphaned order cleanup complete: "
+                f"{len(result['cancelled'])} cancelled, "
+                f"{len(result['skipped'])} preserved, "
+                f"{len(result['errors'])} errors"
+            )
+
+            return result
+
+        except Exception as e:
+            logger.error(f"❌ Orphaned order cleanup failed: {e}")
             self._metrics.api_errors += 1
             self._consecutive_api_errors += 1
             raise
@@ -591,16 +683,16 @@ class V3TradingClientIntegration:
                        f"(contracts_limit: {contracts_limit})")
             
             # Broadcast system activity event
-            from ..core.event_bus import SystemActivityEvent
-            await self._event_bus.publish(SystemActivityEvent(
-                activity_type="operation",
-                message=f"Order group created: {self._order_group_id[:8]}... (limit: {contracts_limit} contracts)",
-                metadata={
-                    "order_group_id": self._order_group_id,
-                    "contracts_limit": contracts_limit,
-                    "component": "TradingClient"
-                }
-            ))
+            if self._event_bus:
+                await self._event_bus.emit_system_activity(
+                    activity_type="operation",
+                    message=f"Order group created: {self._order_group_id[:8]}... (limit: {contracts_limit} contracts)",
+                    metadata={
+                        "order_group_id": self._order_group_id,
+                        "contracts_limit": contracts_limit,
+                        "component": "TradingClient"
+                    }
+                )
             
             return self._order_group_id
             

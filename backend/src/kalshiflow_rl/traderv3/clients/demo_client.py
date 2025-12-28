@@ -660,26 +660,41 @@ class KalshiDemoTradingClient:
             except Exception as batch_error:
                 # If batch endpoint fails, fall back to individual cancellations
                 logger.warning(f"Batch cancel endpoint failed: {batch_error}. Falling back to individual cancellations")
-                
+
                 cancelled = []
+                already_gone = []
                 errors = []
-                
+
                 for order_id in order_ids:
                     try:
                         await self.cancel_order(order_id)
                         cancelled.append(order_id)
                     except Exception as e:
-                        errors.append({"order_id": order_id, "error": str(e)})
-                
-                logger.info(f"Individual cancel fallback complete: {len(cancelled)} cancelled, {len(errors)} errors")
+                        error_str = str(e).lower()
+                        # 404 means order is already gone - count as success
+                        if "404" in error_str or "not found" in error_str:
+                            already_gone.append(order_id)
+                            # Remove from local tracking if present
+                            if order_id in self.orders:
+                                del self.orders[order_id]
+                        else:
+                            errors.append({"order_id": order_id, "error": str(e)})
+
+                # Combine cancelled and already_gone as successful outcomes
+                all_cleared = cancelled + already_gone
+                logger.info(
+                    f"Individual cancel fallback complete: {len(cancelled)} cancelled, "
+                    f"{len(already_gone)} already gone, {len(errors)} errors"
+                )
                 
                 return {
-                    "cancelled": cancelled,
+                    "cancelled": all_cleared,  # Include both cancelled and already_gone
                     "errors": errors,
                     "total": len(order_ids),
-                    "success_count": len(cancelled),
+                    "success_count": len(all_cleared),
                     "error_count": len(errors),
-                    "fallback_used": True
+                    "fallback_used": True,
+                    "already_gone": len(already_gone)
                 }
                 
         except Exception as e:

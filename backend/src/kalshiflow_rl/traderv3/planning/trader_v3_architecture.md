@@ -222,9 +222,10 @@ TRADER V3 is an event-driven paper trading system for Kalshi prediction markets.
   - `place_order(ticker, action, side, count, price)` - Place order
   - `cancel_order(order_id)` - Cancel single order
   - `cancel_all_orders()` - Cancel all open orders
+  - `cancel_orphaned_orders()` - Cancel orders without order_group_id
   - `create_or_get_order_group(contracts_limit)` - Setup portfolio limits
   - `reset_order_group()` - Reset order group session
-- **Emits Events**: `SYSTEM_ACTIVITY` (operation type for order group)
+- **Emits Events**: `SYSTEM_ACTIVITY` (operation, cleanup types)
 - **Subscribes To**: None
 - **Dependencies**: KalshiDemoTradingClient, EventBus, KalshiDataSync
 
@@ -467,6 +468,7 @@ VALID_TRANSITIONS = {
 | `trading_decision` | TradingDecisionService | Trade execution |
 | `trading_error` | TradingDecisionService | Trade execution failures |
 | `operation` | V3TradingClientIntegration | Order group operations |
+| `cleanup` | V3TradingClientIntegration | Orphaned order cleanup |
 | `connection` | V3Coordinator | WebSocket connection events |
 
 ## 6. Data Flow Traces
@@ -505,6 +507,8 @@ VALID_TRANSITIONS = {
          * sync_with_kalshi()
          * state_container.update_trading_state()
          * state_machine -> KALSHI_DATA_SYNC
+       - [if trading + cleanup_on_startup] _cleanup_orphaned_orders():
+         * cancel_orphaned_orders() for orders without order_group_id
        - _transition_to_ready():
          * state_machine -> READY
     c. _run_event_loop() starts as background task
@@ -587,6 +591,7 @@ VALID_TRANSITIONS = {
 | `WHALE_QUEUE_SIZE` | No | `10` | Max whale bets to track in queue |
 | `WHALE_WINDOW_MINUTES` | No | `5` | Sliding window for whale tracking (minutes) |
 | `WHALE_MIN_SIZE_CENTS` | No | `10000` | Minimum whale_size threshold ($100 default) |
+| `V3_CLEANUP_ON_STARTUP` | No | `true` | Cancel orphaned orders on startup |
 
 ### 7.2 API Endpoints
 
@@ -594,6 +599,7 @@ VALID_TRANSITIONS = {
 |----------|--------|-------------|
 | `/v3/health` | GET | Quick health check |
 | `/v3/status` | GET | Detailed system status |
+| `/v3/cleanup` | POST | Cancel orphaned orders (`?orphaned_only=true/false`) |
 | `/v3/ws` | WebSocket | Real-time updates |
 
 ### 7.3 WebSocket Message Types (to frontend)
@@ -670,3 +676,4 @@ The system supports **degraded mode** when the orderbook WebSocket is unavailabl
 | 2024-12-27 | Foundation cleanup: removed ~600 lines dead code, fixed async patterns | Claude |
 | 2024-12-27 | Final simplification: removed unused _coordinator ref, publish() wrapper (-57 lines) | Claude |
 | 2024-12-27 | Added "Follow the Whale" feature: TradesClient, V3TradesIntegration, WhaleTracker | Claude |
+| 2024-12-27 | Phase 1 complete: /v3/cleanup endpoint, whale queue snapshot, orphaned order cleanup on startup | Claude |
