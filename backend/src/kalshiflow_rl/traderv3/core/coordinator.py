@@ -147,6 +147,7 @@ class V3Coordinator:
                 event_bus=event_bus,
                 trading_service=self._trading_service,
                 state_container=self._state_container,
+                whale_tracker=whale_tracker,
             )
             # Connect whale execution service to WebSocket manager for decision history
             self._websocket_manager.set_whale_execution_service(self._whale_execution_service)

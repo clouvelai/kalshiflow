@@ -322,6 +322,11 @@ class V3WebSocketManager:
     async def _handle_system_activity(self, event) -> None:
         """Handle unified system activity events from event bus."""
         logger.debug(f"Handling system activity: {event.activity_type} - {event.message}")
+
+        # Handle whale_processing events specially for frontend animation
+        if event.activity_type == "whale_processing":
+            await self._handle_whale_processing(event)
+            return
         
         # Extract current state from metadata if this is a state transition
         current_state = "ready"  # Default fallback state
@@ -470,6 +475,28 @@ class V3WebSocketManager:
         }
 
         await self.broadcast_message("whale_queue", whale_data)
+
+    async def _handle_whale_processing(self, event) -> None:
+        """
+        Handle whale processing events for frontend animation.
+
+        Broadcasts processing state to all clients so they can show
+        a subtle glow/pulse animation on the whale row being processed.
+
+        Args:
+            event: SystemActivityEvent with activity_type="whale_processing"
+        """
+        metadata = event.metadata or {}
+        whale_id = metadata.get("whale_id", "")
+        status = metadata.get("status", "")  # "processing" or "complete"
+        action = metadata.get("action", "")  # "followed", "skipped_*", etc.
+
+        await self.broadcast_message("whale_processing", {
+            "whale_id": whale_id,
+            "status": status,
+            "action": action,
+            "timestamp": time.strftime("%H:%M:%S", time.localtime(event.timestamp)),
+        })
 
     async def _handle_orderbook_event(self, event: MarketEvent) -> None:
         """Handle orderbook events from event bus."""

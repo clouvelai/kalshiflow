@@ -186,7 +186,7 @@ const TradingData = ({ tradingState, lastUpdateTime }) => {
 };
 
 // WhaleQueuePanel Component - Displays detected whale bets
-const WhaleQueuePanel = ({ whaleQueue }) => {
+const WhaleQueuePanel = ({ whaleQueue, processingWhaleId }) => {
   const [currentTime, setCurrentTime] = useState(Date.now());
 
   // Debug logging for whale queue data
@@ -285,7 +285,7 @@ const WhaleQueuePanel = ({ whaleQueue }) => {
         <div className="bg-gray-800/30 rounded-lg p-8 border border-gray-700/50 text-center">
           <Fish className="w-8 h-8 text-gray-600 mx-auto mb-3" />
           <div className="text-gray-500 text-sm">No whales detected yet</div>
-          <div className="text-gray-600 text-xs mt-1">Waiting for large trades (min $100)</div>
+          <div className="text-gray-600 text-xs mt-1">Waiting for large trades (min ${stats.min_size_dollars || 10})</div>
         </div>
       ) : (
         <div className="bg-gray-800/30 rounded-lg border border-gray-700/50 overflow-hidden">
@@ -306,11 +306,16 @@ const WhaleQueuePanel = ({ whaleQueue }) => {
             <tbody>
               {queue.map((whale, index) => {
                 const isFollowed = followedWhaleIds.has(whale.whale_id);
+                const isProcessing = processingWhaleId === whale.whale_id;
                 return (
                   <tr
                     key={`${whale.market_ticker}-${whale.price_cents}-${index}`}
-                    className={`border-b border-gray-700/30 hover:bg-gray-800/50 transition-colors ${
-                      isFollowed ? 'bg-green-900/10' : ''
+                    className={`border-b border-gray-700/30 hover:bg-gray-800/50 transition-all duration-300 ease-in-out ${
+                      isProcessing
+                        ? 'bg-blue-500/20 ring-1 ring-blue-400/50 ring-inset'
+                        : isFollowed
+                        ? 'bg-green-900/10'
+                        : ''
                     }`}
                   >
                     <td className="px-3 py-2 text-center">
@@ -627,6 +632,8 @@ const V3TraderConsole = () => {
     decision_history: [],
     decision_stats: {}
   });
+  // Track which whale is currently being processed for animation
+  const [processingWhaleId, setProcessingWhaleId] = useState(null);
   const [metrics, setMetrics] = useState({
     markets_connected: 0,
     snapshots_received: 0,
@@ -1008,6 +1015,22 @@ const V3TraderConsole = () => {
               }
               break;
 
+            case 'whale_processing':
+              // Handle whale processing animation events
+              if (data.data) {
+                const { whale_id, status } = data.data;
+                if (status === 'processing') {
+                  // Show animation on this whale row
+                  setProcessingWhaleId(whale_id);
+                } else if (status === 'complete') {
+                  // Clear animation after a brief delay so user sees the result
+                  setTimeout(() => {
+                    setProcessingWhaleId(prev => prev === whale_id ? null : prev);
+                  }, 300);
+                }
+              }
+              break;
+
             case 'ping':
               // Respond to ping if needed
               if (ws.readyState === WebSocket.OPEN) {
@@ -1228,7 +1251,7 @@ const V3TraderConsole = () => {
 
         {/* Whale Queue Panel - Full width below Trading Data */}
         <div className="mb-6">
-          <WhaleQueuePanel whaleQueue={whaleQueue} />
+          <WhaleQueuePanel whaleQueue={whaleQueue} processingWhaleId={processingWhaleId} />
           <FollowedTradesPanel followedWhales={whaleQueue.followed_whales} />
           <DecisionAuditPanel
             decisionHistory={whaleQueue.decision_history}

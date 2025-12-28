@@ -28,6 +28,7 @@ Design Principles:
 
 import asyncio
 import logging
+import os
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -37,14 +38,15 @@ from ..core.event_bus import EventBus, EventType, WhaleQueueEvent
 
 if TYPE_CHECKING:
     from ..services.trading_decision_service import TradingDecisionService, TradingDecision
+    from ..services.whale_tracker import WhaleTracker
     from ..core.state_container import V3StateContainer
 
 logger = logging.getLogger("kalshiflow_rl.traderv3.services.whale_execution")
 
 
-# Configuration constants
-DEFAULT_MAX_TRADES_PER_MINUTE = 3
-DEFAULT_TOKEN_REFILL_SECONDS = 20  # 1 token every 20 seconds = 3/minute
+# Configuration constants (can be overridden by environment variables)
+DEFAULT_MAX_TRADES_PER_MINUTE = int(os.getenv("WHALE_MAX_TRADES_PER_MINUTE", "3"))
+DEFAULT_TOKEN_REFILL_SECONDS = float(os.getenv("WHALE_TOKEN_REFILL_SECONDS", "20"))
 WHALE_MAX_AGE_SECONDS = 120  # Skip whales older than 2 minutes
 DECISION_HISTORY_SIZE = 100
 
@@ -109,6 +111,7 @@ class WhaleExecutionService:
         event_bus: EventBus,
         trading_service: 'TradingDecisionService',
         state_container: 'V3StateContainer',
+        whale_tracker: Optional['WhaleTracker'] = None,
         max_trades_per_minute: int = DEFAULT_MAX_TRADES_PER_MINUTE,
         token_refill_seconds: float = DEFAULT_TOKEN_REFILL_SECONDS,
     ):
@@ -119,12 +122,14 @@ class WhaleExecutionService:
             event_bus: V3 EventBus for event subscription
             trading_service: Service for executing trades
             state_container: Container for trading state (positions, orders)
+            whale_tracker: Optional tracker for removing processed whales from queue
             max_trades_per_minute: Maximum trades per minute (token bucket capacity)
             token_refill_seconds: Seconds between token refills
         """
         self._event_bus = event_bus
         self._trading_service = trading_service
         self._state_container = state_container
+        self._whale_tracker = whale_tracker
 
         # Token bucket configuration
         self._max_tokens = max_trades_per_minute
@@ -247,6 +252,13 @@ class WhaleExecutionService:
             self._whales_processed += 1
             new_whales_evaluated += 1
 
+            # Emit processing start event for frontend animation
+            await self._event_bus.emit_system_activity(
+                activity_type="whale_processing",
+                message=f"Processing whale {market_ticker}",
+                metadata={"whale_id": whale_id, "status": "processing"}
+            )
+
             # Check if too old - mark as evaluated even if skipped
             age_seconds = (now_ms - timestamp_ms) / 1000.0
             if age_seconds > WHALE_MAX_AGE_SECONDS:
@@ -258,6 +270,8 @@ class WhaleExecutionService:
                     whale_data=whale,
                 )
                 self._whales_skipped += 1
+                await self._emit_processing_complete(whale_id, "skipped_age")
+                await self._remove_from_queue(whale_id)
                 continue
 
             # Check if we have position in this market - mark as evaluated
@@ -270,6 +284,8 @@ class WhaleExecutionService:
                     whale_data=whale,
                 )
                 self._whales_skipped += 1
+                await self._emit_processing_complete(whale_id, "skipped_position")
+                await self._remove_from_queue(whale_id)
                 continue
 
             # Check if we have open orders in this market - mark as evaluated
@@ -282,9 +298,12 @@ class WhaleExecutionService:
                     whale_data=whale,
                 )
                 self._whales_skipped += 1
+                await self._emit_processing_complete(whale_id, "skipped_orders")
+                await self._remove_from_queue(whale_id)
                 continue
 
             # Check rate limit - do NOT mark as evaluated (we want to retry later)
+            # Also do NOT remove from queue - we want to retry when tokens refill
             if not self._consume_token():
                 self._record_decision(
                     whale_id=whale_id,
@@ -294,8 +313,10 @@ class WhaleExecutionService:
                 )
                 self._rate_limited_count += 1
                 self._whales_skipped += 1
+                # Clear processing animation but don't remove from queue
+                await self._emit_processing_complete(whale_id, "rate_limited")
                 # Stop processing more whales until tokens refill
-                # Don't add to evaluated - we want to retry when tokens refill
+                # Don't add to evaluated AND don't remove - we want to retry when tokens refill
                 break
 
             # Execute the whale follow - mark as evaluated regardless of outcome
@@ -312,6 +333,8 @@ class WhaleExecutionService:
                 )
                 self._whales_followed += 1
                 self._last_execution_time = time.time()
+                await self._emit_processing_complete(whale_id, "followed")
+                await self._remove_from_queue(whale_id)
             else:
                 self._record_decision(
                     whale_id=whale_id,
@@ -320,6 +343,8 @@ class WhaleExecutionService:
                     whale_data=whale,
                 )
                 self._whales_skipped += 1
+                await self._emit_processing_complete(whale_id, "failed")
+                await self._remove_from_queue(whale_id)
 
         # Log if we processed new whales
         if new_whales_evaluated > 0:
@@ -385,6 +410,35 @@ class WhaleExecutionService:
         except Exception as e:
             logger.error(f"Error executing whale follow: {e}")
             return False, None
+
+    async def _emit_processing_complete(self, whale_id: str, action: str) -> None:
+        """
+        Emit processing complete event for frontend animation.
+
+        Args:
+            whale_id: Unique whale identifier
+            action: Decision action (followed, skipped_*, rate_limited, failed)
+        """
+        await self._event_bus.emit_system_activity(
+            activity_type="whale_processing",
+            message=f"Processed whale: {action}",
+            metadata={"whale_id": whale_id, "status": "complete", "action": action}
+        )
+
+    async def _remove_from_queue(self, whale_id: str) -> None:
+        """
+        Remove whale from tracker queue after terminal decision.
+
+        Called after: followed, failed, skipped_age, skipped_position, skipped_orders.
+        NOT called after: rate_limited (we want to retry when tokens refill).
+
+        Args:
+            whale_id: Unique whale identifier (market_ticker:timestamp_ms)
+        """
+        if self._whale_tracker:
+            removed = await self._whale_tracker.remove_whale(whale_id)
+            if removed:
+                logger.debug(f"Removed whale from queue: {whale_id}")
 
     def _refill_tokens(self) -> None:
         """Refill tokens based on elapsed time."""

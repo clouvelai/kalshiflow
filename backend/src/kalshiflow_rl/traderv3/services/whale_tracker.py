@@ -99,6 +99,7 @@ class BigBet:
     def to_dict(self, now_ms: Optional[int] = None) -> Dict[str, Any]:
         """Convert to dictionary for WebSocket broadcast."""
         return {
+            "whale_id": f"{self.market_ticker}:{self.timestamp_ms}",
             "market_ticker": self.market_ticker,
             "side": self.side,
             "price_cents": self.price_cents,
@@ -388,3 +389,48 @@ class WhaleTracker:
             "prune_task_running": self._prune_task is not None and not self._prune_task.done(),
             "last_update_time": self._last_update_time,
         }
+
+    async def remove_whale(self, whale_id: str) -> bool:
+        """
+        Remove a whale from the queue by ID.
+
+        Used by WhaleExecutionService to remove whales after terminal decisions
+        (followed, skipped due to position/orders/age, failed).
+        Rate-limited whales are NOT removed so they can be retried.
+
+        Args:
+            whale_id: Format "market_ticker:timestamp_ms"
+
+        Returns:
+            True if removed, False if not found
+        """
+        try:
+            # Parse whale_id
+            parts = whale_id.rsplit(":", 1)
+            if len(parts) != 2:
+                logger.warning(f"Invalid whale_id format: {whale_id}")
+                return False
+
+            market_ticker = parts[0]
+            timestamp_ms = int(parts[1])
+
+            # Find and remove matching whale
+            original_len = len(self._queue)
+            self._queue = [
+                bet for bet in self._queue
+                if not (bet.market_ticker == market_ticker and bet.timestamp_ms == timestamp_ms)
+            ]
+
+            if len(self._queue) < original_len:
+                # Re-heapify after removal
+                heapq.heapify(self._queue)
+                logger.debug(f"Removed whale from queue: {whale_id}")
+                # Emit queue update so frontend sees the change
+                await self._emit_queue_update()
+                return True
+
+            return False
+
+        except (ValueError, IndexError) as e:
+            logger.warning(f"Error parsing whale_id {whale_id}: {e}")
+            return False

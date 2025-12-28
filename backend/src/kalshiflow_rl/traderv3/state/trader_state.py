@@ -87,11 +87,13 @@ class TraderState:
         Returns:
             TraderState instance with raw Kalshi data
         """
-        # Extract positions by ticker
+        # Extract positions by ticker - only include ACTIVE positions (position != 0)
+        # Kalshi API returns all markets ever traded, including closed positions (position=0)
         positions_by_ticker = {}
         for pos in positions_data.get("market_positions", []):
             ticker = pos.get("ticker")
-            if ticker:
+            # Only include positions with actual holdings (non-zero position count)
+            if ticker and pos.get("position", 0) != 0:
                 positions_by_ticker[ticker] = pos
         
         # Extract orders by order_id

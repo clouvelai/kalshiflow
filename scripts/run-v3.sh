@@ -87,6 +87,10 @@ if [ "$ENVIRONMENT" = "paper" ]; then
     export WHALE_WINDOW_MINUTES="5"
     export WHALE_MIN_SIZE_CENTS="1000"  # $10 minimum (for testing)
 
+    # Rate limiting for whale following
+    export WHALE_MAX_TRADES_PER_MINUTE="10"
+    export WHALE_TOKEN_REFILL_SECONDS="6"  # 60/10 = 6 seconds per token
+
     echo -e "${GREEN}✓ Trading client enabled (paper mode)${NC}"
     echo -e "${GREEN}✓ Whale follower strategy active${NC}"
     echo -e "${GREEN}✓ Whale detection enabled (min \$10)${NC}"
