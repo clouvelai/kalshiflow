@@ -469,15 +469,18 @@ class V3StateContainer:
                 "orders": self._last_state_change.order_count_change
             }
 
-        # Add session P&L if initialized
+        # Add detailed position data with per-position P&L
+        # (computed first so we can pass to compute_pnl for aggregation)
+        positions_details = self._format_position_details()
+        summary["positions_details"] = positions_details
+
+        # Add session P&L if initialized (includes realized/unrealized breakdown)
         if self._session_pnl_state and self._trading_state:
             summary["pnl"] = self._session_pnl_state.compute_pnl(
                 self._trading_state.balance,
-                self._trading_state.portfolio_value
+                self._trading_state.portfolio_value,
+                positions_details
             )
-
-        # Add detailed position data with per-position P&L
-        summary["positions_details"] = self._format_position_details()
 
         # Add session-updated positions info
         summary["session_updates"] = {

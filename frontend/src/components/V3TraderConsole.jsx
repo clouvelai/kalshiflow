@@ -811,7 +811,7 @@ const SessionSummaryPanel = ({ tradingState }) => {
           </div>
         </div>
 
-        {/* Session P&L (Total = Realized + Unrealized) */}
+        {/* Session P&L (Equity Change) */}
         <div className={`bg-gray-800/30 rounded-lg p-4 border ${
           pnl && pnl.session_pnl >= 0 ? 'border-green-700/30' : 'border-red-700/30'
         }`}>
@@ -821,7 +821,7 @@ const SessionSummaryPanel = ({ tradingState }) => {
             ) : (
               <TrendingDown className="w-4 h-4 text-red-400" />
             )}
-            <span className="text-xs text-gray-500 uppercase" title="Total P&L = Realized + Unrealized">Session P&L</span>
+            <span className="text-xs text-gray-500 uppercase" title="Equity change since session started">Session P&L</span>
           </div>
           {pnl ? (
             <>
@@ -841,6 +841,43 @@ const SessionSummaryPanel = ({ tradingState }) => {
           )}
         </div>
       </div>
+
+      {/* P&L Breakdown */}
+      {pnl && (
+        <div className="mt-4 pt-4 border-t border-gray-700/30">
+          <div className="grid grid-cols-2 gap-4">
+            {/* Realized P&L */}
+            <div className={`bg-gray-800/30 rounded-lg p-3 border ${
+              (pnl.realized_pnl || 0) >= 0 ? 'border-emerald-700/30' : 'border-orange-700/30'
+            }`}>
+              <div className="flex items-center space-x-2 mb-1">
+                <CheckCircle className="w-3 h-3 text-emerald-400" />
+                <span className="text-xs text-gray-500 uppercase" title="P&L from closed/settled positions">Realized P&L</span>
+              </div>
+              <div className={`text-lg font-mono font-bold ${
+                (pnl.realized_pnl || 0) >= 0 ? 'text-emerald-400' : 'text-orange-400'
+              }`}>
+                {formatPnLCurrency(pnl.realized_pnl || 0)}
+              </div>
+            </div>
+
+            {/* Unrealized P&L */}
+            <div className={`bg-gray-800/30 rounded-lg p-3 border ${
+              (pnl.unrealized_pnl || 0) >= 0 ? 'border-blue-700/30' : 'border-pink-700/30'
+            }`}>
+              <div className="flex items-center space-x-2 mb-1">
+                <Activity className="w-3 h-3 text-blue-400" />
+                <span className="text-xs text-gray-500 uppercase" title="Paper P&L on open positions">Unrealized P&L</span>
+              </div>
+              <div className={`text-lg font-mono font-bold ${
+                (pnl.unrealized_pnl || 0) >= 0 ? 'text-blue-400' : 'text-pink-400'
+              }`}>
+                {formatPnLCurrency(pnl.unrealized_pnl || 0)}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

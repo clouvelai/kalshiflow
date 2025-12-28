@@ -160,13 +160,19 @@ class SessionPnLState:
         """Total equity at session start (balance + portfolio_value)."""
         return self.starting_balance + self.starting_portfolio_value
 
-    def compute_pnl(self, current_balance: int, current_portfolio_value: int) -> Dict[str, Any]:
+    def compute_pnl(
+        self,
+        current_balance: int,
+        current_portfolio_value: int,
+        positions_details: Optional[List[Dict[str, Any]]] = None
+    ) -> Dict[str, Any]:
         """
         Compute session P&L from current state.
 
         Args:
             current_balance: Current balance in cents
             current_portfolio_value: Current portfolio value in cents
+            positions_details: List of position dicts with realized_pnl and unrealized_pnl
 
         Returns:
             Dict with session P&L metrics (all values in cents except percent)
@@ -175,11 +181,17 @@ class SessionPnLState:
         session_pnl = current_equity - self.starting_equity
         pnl_percent = (session_pnl / self.starting_equity * 100) if self.starting_equity > 0 else 0.0
 
+        # Aggregate realized and unrealized P&L from positions
+        total_realized = sum(p.get("realized_pnl", 0) for p in (positions_details or []))
+        total_unrealized = sum(p.get("unrealized_pnl", 0) for p in (positions_details or []))
+
         return {
             "session_start_time": self.session_start_time,
             "starting_equity": self.starting_equity,
             "current_equity": current_equity,
             "session_pnl": session_pnl,
             "session_pnl_percent": round(pnl_percent, 2),
-            "invested_amount": current_portfolio_value  # Amount currently in positions
+            "invested_amount": current_portfolio_value,  # Amount currently in positions
+            "realized_pnl": total_realized,
+            "unrealized_pnl": total_unrealized,
         }
