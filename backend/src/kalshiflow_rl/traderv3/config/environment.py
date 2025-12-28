@@ -46,7 +46,16 @@ class V3Config:
     trading_max_orders: int = 10
     trading_max_position_size: int = 100
     trading_mode: str = "paper"  # paper or production
-    trading_strategy_str: str = "hold"  # Strategy string: "hold", "whale_follower", "paper_test", "rl_model"
+    trading_strategy_str: str = "hold"  # Strategy string: "hold", "whale_follower", "paper_test", "rl_model", "yes_80_90"
+
+    # YES 80-90c Strategy Configuration (for YES_80_90 strategy)
+    yes8090_min_price: int = 80  # Minimum YES ask price in cents
+    yes8090_max_price: int = 90  # Maximum YES ask price in cents
+    yes8090_min_liquidity: int = 10  # Minimum contracts at best ask
+    yes8090_max_spread: int = 5  # Maximum bid-ask spread in cents
+    yes8090_contracts: int = 100  # Contracts per trade (Tier B)
+    yes8090_tier_a_contracts: int = 150  # Contracts for Tier A signals (83-87c)
+    yes8090_max_concurrent: int = 100  # Maximum concurrent positions
 
     # Whale Detection Configuration (optional, for Follow the Whale feature)
     enable_whale_detection: bool = False
@@ -152,6 +161,15 @@ class V3Config:
         cleanup_default = "true" if environment == "paper" or "demo-api" in ws_url.lower() else "false"
         cleanup_on_startup = os.environ.get("V3_CLEANUP_ON_STARTUP", cleanup_default).lower() == "true"
 
+        # YES 80-90c strategy configuration
+        yes8090_min_price = int(os.environ.get("YES8090_MIN_PRICE", "80"))
+        yes8090_max_price = int(os.environ.get("YES8090_MAX_PRICE", "90"))
+        yes8090_min_liquidity = int(os.environ.get("YES8090_MIN_LIQUIDITY", "10"))
+        yes8090_max_spread = int(os.environ.get("YES8090_MAX_SPREAD", "5"))
+        yes8090_contracts = int(os.environ.get("YES8090_CONTRACTS", "100"))
+        yes8090_tier_a_contracts = int(os.environ.get("YES8090_TIER_A_CONTRACTS", "150"))
+        yes8090_max_concurrent = int(os.environ.get("YES8090_MAX_CONCURRENT", "100"))
+
         sync_duration = float(os.environ.get("V3_SYNC_DURATION", os.environ.get("V3_CALIBRATION_DURATION", "10.0")))
         health_check_interval = float(os.environ.get("V3_HEALTH_CHECK_INTERVAL", "5.0"))
         error_recovery_delay = float(os.environ.get("V3_ERROR_RECOVERY_DELAY", "30.0"))
@@ -179,6 +197,13 @@ class V3Config:
             trading_max_position_size=trading_max_position_size,
             trading_mode=trading_mode,
             trading_strategy_str=trading_strategy_str,
+            yes8090_min_price=yes8090_min_price,
+            yes8090_max_price=yes8090_max_price,
+            yes8090_min_liquidity=yes8090_min_liquidity,
+            yes8090_max_spread=yes8090_max_spread,
+            yes8090_contracts=yes8090_contracts,
+            yes8090_tier_a_contracts=yes8090_tier_a_contracts,
+            yes8090_max_concurrent=yes8090_max_concurrent,
             enable_whale_detection=enable_whale_detection,
             whale_queue_size=whale_queue_size,
             whale_window_minutes=whale_window_minutes,
@@ -216,6 +241,15 @@ class V3Config:
         else:
             logger.info(f"  - Whale detection: DISABLED")
 
+        # Log YES 80-90 config if strategy is enabled
+        if trading_strategy_str == "yes_80_90":
+            logger.info(f"  - YES 80-90c Strategy: ENABLED")
+            logger.info(f"    - Price range: {yes8090_min_price}-{yes8090_max_price}c")
+            logger.info(f"    - Liquidity min: {yes8090_min_liquidity} contracts")
+            logger.info(f"    - Max spread: {yes8090_max_spread}c")
+            logger.info(f"    - Contracts: {yes8090_contracts} (Tier A: {yes8090_tier_a_contracts})")
+            logger.info(f"    - Max concurrent: {yes8090_max_concurrent} positions")
+
         return config
     
     def is_demo_environment(self) -> bool:
@@ -248,6 +282,7 @@ class V3Config:
             "whale_follower": TradingStrategy.WHALE_FOLLOWER,
             "paper_test": TradingStrategy.PAPER_TEST,
             "rl_model": TradingStrategy.RL_MODEL,
+            "yes_80_90": TradingStrategy.YES_80_90,
             "custom": TradingStrategy.CUSTOM,
         }
 

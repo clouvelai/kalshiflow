@@ -27,6 +27,7 @@ from ..clients.orderbook_integration import V3OrderbookIntegration
 from ..config.environment import V3Config
 from ..services.trading_decision_service import TradingDecisionService, TradingStrategy
 from ..services.whale_execution_service import WhaleExecutionService
+from ..services.yes_80_90_service import Yes8090Service
 
 logger = logging.getLogger("kalshiflow_rl.traderv3.core.coordinator")
 
@@ -153,6 +154,24 @@ class V3Coordinator:
             # Connect whale execution service to WebSocket manager for decision history
             self._websocket_manager.set_whale_execution_service(self._whale_execution_service)
             logger.info("WhaleExecutionService initialized for event-driven whale following")
+
+        # Initialize YES 80-90c service (if trading client available and strategy is YES_80_90)
+        self._yes_80_90_service: Optional[Yes8090Service] = None
+        if trading_client_integration and self._trading_service:
+            if strategy == TradingStrategy.YES_80_90:
+                self._yes_80_90_service = Yes8090Service(
+                    event_bus=event_bus,
+                    trading_service=self._trading_service,
+                    state_container=self._state_container,
+                    min_price_cents=config.yes8090_min_price,
+                    max_price_cents=config.yes8090_max_price,
+                    min_liquidity=config.yes8090_min_liquidity,
+                    max_spread_cents=config.yes8090_max_spread,
+                    contracts_per_trade=config.yes8090_contracts,
+                    tier_a_contracts=config.yes8090_tier_a_contracts,
+                    max_concurrent=config.yes8090_max_concurrent,
+                )
+                logger.info("Yes8090Service initialized for YES at 80-90c trading strategy")
 
         # Position listener for real-time position updates (initialized later if trading client available)
         self._position_listener: Optional['PositionListener'] = None
@@ -699,6 +718,20 @@ class V3Coordinator:
         if self._trading_client_integration and self._state_container.trading_state:
             await self._status_reporter.emit_trading_state()
         
+        # Start YES 80-90c service if configured
+        if self._yes_80_90_service:
+            await self._yes_80_90_service.start()
+            logger.info("Yes8090Service started - monitoring for YES at 80-90c signals")
+            await self._event_bus.emit_system_activity(
+                activity_type="strategy_active",
+                message="YES 80-90c strategy active - scanning orderbooks",
+                metadata={
+                    "strategy": "YES_80_90",
+                    "config": self._yes_80_90_service.get_stats().get("config", {}),
+                    "severity": "info"
+                }
+            )
+
         # Emit ready status
         status_msg = f"System ready with {len(self._config.market_tickers)} markets"
         if self._trading_client_integration:
@@ -944,6 +977,8 @@ class V3Coordinator:
                 total_steps += 1
             if self._whale_execution_service:
                 total_steps += 1
+            if self._yes_80_90_service:
+                total_steps += 1
             if self._whale_tracker:
                 total_steps += 1
             if self._trades_integration:
@@ -951,7 +986,13 @@ class V3Coordinator:
 
             step = 1
 
-            # Stop whale execution service first (depends on whale tracker)
+            # Stop YES 80-90c service first (trading strategy)
+            if self._yes_80_90_service:
+                logger.info(f"{step}/{total_steps} Stopping YES 80-90c Service...")
+                await self._yes_80_90_service.stop()
+                step += 1
+
+            # Stop whale execution service (depends on whale tracker)
             if self._whale_execution_service:
                 logger.info(f"{step}/{total_steps} Stopping Whale Execution Service...")
                 await self._whale_execution_service.stop()

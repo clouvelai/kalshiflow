@@ -45,6 +45,7 @@ class TradingStrategy(Enum):
     WHALE_FOLLOWER = "whale_follower"  # Follow the Whale strategy
     PAPER_TEST = "paper_test"  # Simple test trades for paper mode
     RL_MODEL = "rl_model"  # Use trained RL model
+    YES_80_90 = "yes_80_90"  # Buy YES at 80-90c (validated +5.1% edge)
     CUSTOM = "custom"  # Custom strategy implementation
 
 
