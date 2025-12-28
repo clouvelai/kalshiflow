@@ -1,13 +1,13 @@
 # TRADER V3 Architecture Documentation
 
 > Machine-readable architecture reference for coding agents.
-> Last updated: 2024-12-27
+> Last updated: 2024-12-28
 
 ## 1. System Overview
 
-TRADER V3 is an event-driven paper trading system for Kalshi prediction markets. It uses WebSocket connections to receive real-time orderbook data, maintains state through a centralized container with version tracking, and coordinates trading decisions through a clean component architecture. The system currently operates in HOLD mode only - actual trading logic is unimplemented. All trading data is in CENTS (Kalshi's native unit).
+TRADER V3 is an event-driven paper trading system for Kalshi prediction markets. It uses WebSocket connections to receive real-time orderbook data, maintains state through a centralized container with version tracking, and coordinates trading decisions through a clean component architecture. All trading data is in CENTS (Kalshi's native unit).
 
-**Current Status**: MVP complete with orderbook integration, state management, WebSocket broadcasting, and optional whale detection ("Follow the Whale"). Trading execution is stubbed (HOLD strategy only).
+**Current Status**: MVP complete with orderbook integration, state management, WebSocket broadcasting, and event-driven whale following ("Follow the Whale"). The WHALE_FOLLOWER strategy executes trades in real-time based on detected whale activity.
 
 ## 2. Architecture Diagram
 
@@ -300,6 +300,7 @@ TRADER V3 is an event-driven paper trading system for Kalshi prediction markets.
   - `is_healthy()` - Check if tracker is healthy (running + prune task active)
   - `get_queue_state()` - Get current whale queue and statistics
   - `get_health_details()` - Get detailed health information
+  - `remove_whale(whale_id)` - Remove whale from queue after processing
 - **Key Classes**:
   - `BigBet`: Dataclass representing a significant trade with whale_size calculation
     - `whale_size`: max(cost, payout) where cost=count*price_cents, payout=count*100
@@ -311,6 +312,35 @@ TRADER V3 is an event-driven paper trading system for Kalshi prediction markets.
 - **Emits Events**: `WHALE_QUEUE_UPDATED` (via EventBus.emit_whale_queue)
 - **Subscribes To**: `PUBLIC_TRADE_RECEIVED`
 - **Dependencies**: EventBus
+
+#### WhaleExecutionService
+- **File**: `services/whale_execution_service.py`
+- **Purpose**: Event-driven whale execution with rate limiting, deduplication, and decision tracking
+- **Key Methods**:
+  - `start()` / `stop()` - Lifecycle management
+  - `is_healthy()` - Check if service is healthy
+  - `get_decision_history(limit)` - Get recent whale decisions (most recent first)
+  - `get_stats()` - Get comprehensive statistics with skip reason breakdown
+  - `get_health_details()` - Get detailed health information
+- **Key Classes**:
+  - `WhaleDecision`: Tracks decision about a whale (followed, skipped_age, skipped_position, etc.)
+    - `whale_id`: Unique identifier (market_ticker:timestamp_ms)
+    - `action`: Decision action (followed, skipped_age, skipped_position, skipped_orders, rate_limited, failed)
+    - `reason`: Human-readable explanation
+    - `order_id`: Kalshi order ID if whale was followed
+- **Key Features**:
+  - **Token Bucket Rate Limiting**: Prevents trading too fast (configurable trades/minute)
+  - **Deduplication**: Each whale evaluated only once across all queue updates
+  - **Immediate Execution**: Processes whales on event receipt, no 30s cycle delay
+  - **Decision Audit**: Records all decisions for frontend visibility
+  - **Position Check**: Skips whales in markets where user already has a position (new markets only strategy)
+- **Configuration** (environment variables):
+  - `WHALE_MAX_TRADES_PER_MINUTE`: Rate limit capacity (default: 3)
+  - `WHALE_TOKEN_REFILL_SECONDS`: Token refill interval (default: 20s = ~3/minute)
+  - `WHALE_MAX_AGE_SECONDS`: Maximum whale age to follow (default: 120s)
+- **Emits Events**: `SYSTEM_ACTIVITY` (whale_processing type)
+- **Subscribes To**: `WHALE_QUEUE_UPDATED`
+- **Dependencies**: EventBus, TradingDecisionService, V3StateContainer, WhaleTracker
 
 ### 3.4 State (`traderv3/state/`)
 
@@ -452,9 +482,9 @@ VALID_TRANSITIONS = {
 | `ORDERBOOK_DELTA` | OrderbookClient | V3OrderbookIntegration | `MarketEvent{market_ticker, sequence_number, timestamp_ms, metadata}` |
 | `STATE_TRANSITION` | V3StateMachine | (legacy, kept for compat) | `StateTransitionEvent{from_state, to_state, context, metadata}` |
 | `TRADER_STATUS` | V3StatusReporter | V3WebSocketManager | `TraderStatusEvent{state, metrics, health, timestamp}` |
-| `SYSTEM_ACTIVITY` | V3StateMachine, V3HealthMonitor, TradingFlowOrchestrator, TradingDecisionService | V3WebSocketManager | `SystemActivityEvent{activity_type, message, metadata}` |
+| `SYSTEM_ACTIVITY` | V3StateMachine, V3HealthMonitor, TradingFlowOrchestrator, TradingDecisionService, WhaleExecutionService | V3WebSocketManager | `SystemActivityEvent{activity_type, message, metadata}` |
 | `PUBLIC_TRADE_RECEIVED` | V3TradesIntegration | WhaleTracker | `PublicTradeEvent{market_ticker, timestamp_ms, side, price_cents, count}` |
-| `WHALE_QUEUE_UPDATED` | WhaleTracker | V3WebSocketManager | `WhaleQueueEvent{queue, stats, timestamp}` |
+| `WHALE_QUEUE_UPDATED` | WhaleTracker | V3WebSocketManager, WhaleExecutionService | `WhaleQueueEvent{queue, stats, timestamp}` |
 | `SETTLEMENT` | (future) | (future) | Market settlement events |
 
 ### 5.1 SystemActivityEvent Types
@@ -470,6 +500,8 @@ VALID_TRANSITIONS = {
 | `operation` | V3TradingClientIntegration | Order group operations |
 | `cleanup` | V3TradingClientIntegration | Orphaned order cleanup |
 | `connection` | V3Coordinator | WebSocket connection events |
+| `whale_processing` | WhaleExecutionService | Whale queue processing status (for frontend animation) |
+| `whale_follow` | TradingDecisionService | Successful whale follow execution |
 
 ## 6. Data Flow Traces
 
@@ -569,6 +601,41 @@ VALID_TRANSITIONS = {
 6. Application exits
 ```
 
+### 6.4 Whale Execution Flow (Event-Driven)
+
+```
+1. TradesClient receives public trade from Kalshi WebSocket
+2. V3TradesIntegration processes trade:
+   - Emits PUBLIC_TRADE_RECEIVED event via EventBus
+3. WhaleTracker receives PUBLIC_TRADE_RECEIVED:
+   - Calculates whale_size = max(cost, payout)
+   - If whale_size >= WHALE_MIN_SIZE_CENTS:
+     * Creates BigBet, adds to priority queue
+     * Emits WHALE_QUEUE_UPDATED event
+4. WhaleExecutionService receives WHALE_QUEUE_UPDATED:
+   a. Refill rate limit tokens
+   b. For each whale in queue (sorted by whale_size desc):
+      i.   Deduplication check: Skip if whale_id in _evaluated_whale_ids
+      ii.  Age check: Skip if age > WHALE_MAX_AGE_SECONDS (record skipped_age)
+      iii. Position check: Skip if market_ticker in positions (record skipped_position)
+      iv.  Orders check: Skip if market_ticker has open orders (record skipped_orders)
+      v.   Rate limit check: Skip if no tokens available (do NOT record - retry later)
+      vi.  Execute: Call TradingDecisionService.execute_decision()
+           - TradingDecisionService._execute_buy() places order
+           - On success: Record "followed", remove from queue
+           - On failure: Record "failed", remove from queue
+   c. Emit whale_processing system activity for frontend animation
+5. Frontend receives whale_processing message and animates UI
+```
+
+**Key Design Decisions:**
+- **Immediate Execution**: Whales processed on event receipt, not 30s cycle
+- **Deduplication**: Each whale evaluated ONCE across all queue updates
+- **Rate Limiting**: Token bucket prevents trading too fast
+- **New Markets Only**: Skips whales in markets where user has ANY position
+- **Removal on Terminal Decision**: Followed/skipped/failed whales removed from queue
+- **Retry on Rate Limit**: Rate-limited whales stay in queue for retry
+
 ## 7. Configuration
 
 ### 7.1 Environment Variables
@@ -591,6 +658,9 @@ VALID_TRANSITIONS = {
 | `WHALE_QUEUE_SIZE` | No | `10` | Max whale bets to track in queue |
 | `WHALE_WINDOW_MINUTES` | No | `5` | Sliding window for whale tracking (minutes) |
 | `WHALE_MIN_SIZE_CENTS` | No | `10000` | Minimum whale_size threshold ($100 default) |
+| `WHALE_MAX_TRADES_PER_MINUTE` | No | `3` | Token bucket capacity for whale following rate limit |
+| `WHALE_TOKEN_REFILL_SECONDS` | No | `20` | Token refill interval (20s = ~3 trades/minute) |
+| `WHALE_MAX_AGE_SECONDS` | No | `120` | Maximum whale age to follow (2 minutes) |
 | `V3_CLEANUP_ON_STARTUP` | No | `true` | Cancel orphaned orders on startup |
 
 ### 7.2 API Endpoints
@@ -612,7 +682,37 @@ VALID_TRANSITIONS = {
 | `trader_status` | Periodic status/metrics update |
 | `trading_state` | Trading data (balance, positions, orders) |
 | `whale_queue` | Whale detection queue update (when enabled) |
+| `whale_processing` | Whale processing status for frontend animation |
 | `ping` | Keep-alive ping |
+
+#### whale_processing Message Format
+
+```json
+{
+  "type": "whale_processing",
+  "data": {
+    "whale_id": "KXBTCMINY-25-2-DEC31-70000:1703700000000",
+    "status": "processing",
+    "action": null,
+    "timestamp": 1703700001.5
+  }
+}
+```
+
+After processing:
+```json
+{
+  "type": "whale_processing",
+  "data": {
+    "whale_id": "KXBTCMINY-25-2-DEC31-70000:1703700000000",
+    "status": "complete",
+    "action": "followed",
+    "timestamp": 1703700002.3
+  }
+}
+```
+
+Possible `action` values: `followed`, `skipped_age`, `skipped_position`, `skipped_orders`, `rate_limited`, `failed`
 
 #### whale_queue Message Format
 
@@ -677,3 +777,6 @@ The system supports **degraded mode** when the orderbook WebSocket is unavailabl
 | 2024-12-27 | Final simplification: removed unused _coordinator ref, publish() wrapper (-57 lines) | Claude |
 | 2024-12-27 | Added "Follow the Whale" feature: TradesClient, V3TradesIntegration, WhaleTracker | Claude |
 | 2024-12-27 | Phase 1 complete: /v3/cleanup endpoint, whale queue snapshot, orphaned order cleanup on startup | Claude |
+| 2024-12-28 | Added WhaleExecutionService: event-driven whale execution with rate limiting, deduplication | Claude |
+| 2024-12-28 | Added whale_processing WebSocket message type, whale execution flow trace, environment vars | Claude |
+| 2024-12-28 | Removed dead code: evaluate_whale_queue() in TradingDecisionService (~120 lines) | Claude |

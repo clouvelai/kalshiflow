@@ -185,17 +185,95 @@ const TradingData = ({ tradingState, lastUpdateTime }) => {
   );
 };
 
-// WhaleQueuePanel Component - Displays detected whale bets
+// WhaleQueuePanel Component - Displays detected whale bets with smooth animations
 const WhaleQueuePanel = ({ whaleQueue, processingWhaleId }) => {
   const [currentTime, setCurrentTime] = useState(Date.now());
+  // Local state for smooth display - keeps whales visible for minimum time
+  const [displayQueue, setDisplayQueue] = useState([]);
+  // Track which whales are fading out
+  const [fadingWhales, setFadingWhales] = useState(new Set());
+  // Track when each whale was first seen (for minimum display time)
+  const whaleFirstSeenRef = useRef(new Map());
+  // Track which whales have pending removal timeouts to avoid duplicates
+  const pendingRemovalRef = useRef(new Set());
+  // Minimum display time in ms (3 seconds)
+  const MIN_DISPLAY_TIME = 3000;
+  // Fade out duration in ms
+  const FADE_OUT_DURATION = 500;
 
-  // Debug logging for whale queue data
+  // Debug logging for whale queue data (reduced frequency)
   useEffect(() => {
-    console.log('[WhaleQueuePanel] Whale queue data received:', whaleQueue);
-    console.log('[WhaleQueuePanel] Queue length:', whaleQueue?.queue?.length || 0);
-    console.log('[WhaleQueuePanel] Stats:', whaleQueue?.stats);
-    console.log('[WhaleQueuePanel] Followed whale IDs:', whaleQueue?.followed_whale_ids);
-  }, [whaleQueue]);
+    if (whaleQueue?.queue?.length > 0) {
+      console.log('[WhaleQueuePanel] Queue update:', whaleQueue?.queue?.length, 'whales');
+    }
+  }, [whaleQueue?.queue?.length]);
+
+  // Merge incoming queue with display queue, ensuring minimum display time
+  useEffect(() => {
+    const incomingQueue = whaleQueue?.queue || [];
+    const incomingIds = new Set(incomingQueue.map(w => w.whale_id));
+    const now = Date.now();
+
+    // Add new whales and update existing ones
+    incomingQueue.forEach(whale => {
+      if (!whaleFirstSeenRef.current.has(whale.whale_id)) {
+        whaleFirstSeenRef.current.set(whale.whale_id, now);
+      }
+    });
+
+    // Merge: keep whales that are still in incoming OR haven't met minimum display time
+    setDisplayQueue(prevQueue => {
+      const mergedMap = new Map();
+
+      // First, add all incoming whales (with latest data)
+      incomingQueue.forEach(whale => {
+        mergedMap.set(whale.whale_id, { ...whale, isRemoving: false });
+        // If whale reappears in queue, cancel any pending removal
+        pendingRemovalRef.current.delete(whale.whale_id);
+      });
+
+      // Then, keep any whales from prev that haven't met minimum display time
+      prevQueue.forEach(whale => {
+        if (!incomingIds.has(whale.whale_id)) {
+          const firstSeen = whaleFirstSeenRef.current.get(whale.whale_id);
+          const timeVisible = now - (firstSeen || now);
+
+          // Only process if not already scheduled for removal and not already fading
+          if (timeVisible < MIN_DISPLAY_TIME &&
+              !fadingWhales.has(whale.whale_id) &&
+              !pendingRemovalRef.current.has(whale.whale_id)) {
+            // Keep in display queue but mark as processing/removing
+            mergedMap.set(whale.whale_id, { ...whale, isRemoving: true });
+
+            // Mark as pending removal to prevent duplicate timeouts
+            pendingRemovalRef.current.add(whale.whale_id);
+
+            // Schedule fade out after remaining time
+            const remainingTime = Math.max(0, MIN_DISPLAY_TIME - timeVisible);
+            setTimeout(() => {
+              setFadingWhales(prev => new Set([...prev, whale.whale_id]));
+              // Remove from display after fade animation
+              setTimeout(() => {
+                setDisplayQueue(q => q.filter(w => w.whale_id !== whale.whale_id));
+                setFadingWhales(prev => {
+                  const next = new Set(prev);
+                  next.delete(whale.whale_id);
+                  return next;
+                });
+                whaleFirstSeenRef.current.delete(whale.whale_id);
+                pendingRemovalRef.current.delete(whale.whale_id);
+              }, FADE_OUT_DURATION);
+            }, remainingTime);
+          } else if (fadingWhales.has(whale.whale_id) || pendingRemovalRef.current.has(whale.whale_id)) {
+            // Keep whale visible while it's fading or pending removal
+            mergedMap.set(whale.whale_id, { ...whale, isRemoving: true });
+          }
+        }
+      });
+
+      return Array.from(mergedMap.values());
+    });
+  }, [whaleQueue?.queue, fadingWhales]);
 
   // Update current time every second for age display
   useEffect(() => {
@@ -224,7 +302,7 @@ const WhaleQueuePanel = ({ whaleQueue, processingWhaleId }) => {
     }
   };
 
-  const queue = whaleQueue?.queue || [];
+  const queue = displayQueue;
   const stats = whaleQueue?.stats || { trades_seen: 0, trades_discarded: 0, discard_rate_percent: 0 };
   // P2: Track followed whale IDs to show indicator
   const followedWhaleIds = new Set(whaleQueue?.followed_whale_ids || []);
@@ -307,26 +385,63 @@ const WhaleQueuePanel = ({ whaleQueue, processingWhaleId }) => {
               {queue.map((whale, index) => {
                 const isFollowed = followedWhaleIds.has(whale.whale_id);
                 const isProcessing = processingWhaleId === whale.whale_id;
+                const isFading = fadingWhales.has(whale.whale_id);
+                const isRemoving = whale.isRemoving;
+
+                // Determine status for display
+                let statusDisplay;
+                if (isFollowed) {
+                  statusDisplay = (
+                    <span className="inline-flex items-center space-x-1 px-2 py-0.5 rounded text-xs font-bold bg-green-900/30 text-green-400 border border-green-700/50 animate-pulse">
+                      <CheckCircle className="w-3 h-3" />
+                      <span>FOLLOWED</span>
+                    </span>
+                  );
+                } else if (isProcessing) {
+                  statusDisplay = (
+                    <span className="inline-flex items-center space-x-1 px-2 py-0.5 rounded text-xs font-bold bg-blue-900/30 text-blue-400 border border-blue-700/50">
+                      <Activity className="w-3 h-3 animate-spin" />
+                      <span>PROCESSING</span>
+                    </span>
+                  );
+                } else if (isRemoving) {
+                  statusDisplay = (
+                    <span className="inline-flex items-center space-x-1 px-2 py-0.5 rounded text-xs font-bold bg-yellow-900/30 text-yellow-400 border border-yellow-700/50">
+                      <Clock className="w-3 h-3" />
+                      <span>PROCESSED</span>
+                    </span>
+                  );
+                } else {
+                  statusDisplay = (
+                    <span className="inline-flex items-center space-x-1 px-2 py-0.5 rounded text-xs font-bold bg-cyan-900/30 text-cyan-400 border border-cyan-700/50">
+                      <Fish className="w-3 h-3" />
+                      <span>QUEUED</span>
+                    </span>
+                  );
+                }
+
                 return (
                   <tr
-                    key={`${whale.market_ticker}-${whale.price_cents}-${index}`}
-                    className={`border-b border-gray-700/30 hover:bg-gray-800/50 transition-all duration-300 ease-in-out ${
+                    key={whale.whale_id || `${whale.market_ticker}-${whale.price_cents}-${index}`}
+                    className={`border-b border-gray-700/30 transition-all duration-500 ease-in-out ${
+                      isFading
+                        ? 'opacity-0 transform translate-x-4'
+                        : 'opacity-100 transform translate-x-0'
+                    } ${
                       isProcessing
-                        ? 'bg-blue-500/20 ring-1 ring-blue-400/50 ring-inset'
+                        ? 'bg-blue-500/20 ring-1 ring-blue-400/50 ring-inset animate-pulse'
                         : isFollowed
-                        ? 'bg-green-900/10'
-                        : ''
+                        ? 'bg-green-900/20 ring-1 ring-green-700/30 ring-inset'
+                        : isRemoving
+                        ? 'bg-yellow-900/10'
+                        : 'hover:bg-gray-800/50'
                     }`}
+                    style={{
+                      animation: !isFading && !isRemoving ? 'slideInFromLeft 0.3s ease-out' : undefined
+                    }}
                   >
                     <td className="px-3 py-2 text-center">
-                      {isFollowed ? (
-                        <span className="inline-flex items-center space-x-1 px-2 py-0.5 rounded text-xs font-bold bg-green-900/30 text-green-400 border border-green-700/50">
-                          <CheckCircle className="w-3 h-3" />
-                          <span>FOLLOWED</span>
-                        </span>
-                      ) : (
-                        <span className="text-xs text-gray-500">QUEUED</span>
-                      )}
+                      {statusDisplay}
                     </td>
                     <td className="px-3 py-2 font-mono text-gray-300 text-xs">{whale.market_ticker}</td>
                     <td className="px-3 py-2 text-center">
