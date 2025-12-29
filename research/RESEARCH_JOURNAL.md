@@ -35,15 +35,17 @@ This document is the bridge between research and implementation - the trader-spe
 3. **[RESOLVED-Session004]** Can we detect informed traders before price moves? -> NO, the market is efficient
 4. **[RESOLVED]** Is there edge in fading whale consensus (contrarian)? -> No, it's just price
 5. **[RESOLVED]** Do new markets show initial mispricing? -> No actionable edge
-6. **[RESOLVED-Session003]** Is there edge at 70-80c range? -> YES! NO at 70-80c has +51.3% edge
-7. **[OPEN]** Can execution timing (slippage) be optimized?
+6. **[RESOLVED-Session006]** Is there edge at 70-80c range? -> MARGINAL +1.8%, not robust
+7. **[RESOLVED-Session006]** Can execution timing (slippage) be optimized? -> Not tested, market is efficient anyway
 8. **[RESOLVED-Session004]** Does edge change as market approaches expiry? -> NO, edge is consistent throughout
-9. **[OPEN]** Are there cross-market correlations to exploit?
-10. **[OPEN]** Can category-specific strategies (KXBTCD, KXNCAAMBGAME) scale?
-11. **[RESOLVED-Session004]** Is there edge at 50-60c and 60-70c ranges? -> YES! S005/S006 validated
+9. **[RESOLVED-Session006]** Are there cross-market correlations to exploit? -> Not found in this data
+10. **[RESOLVED-Session006]** Can category-specific strategies (KXBTCD, KXNCAAMBGAME) scale? -> NO, MIRAGE - different market subsets
+11. **[RESOLVED-Session006]** Is there edge at 50-60c and 60-70c ranges? -> MARGINAL +1.4-1.7%, not robust
 12. **[RESOLVED-Session004]** Do insider trading patterns exist? -> NO, market is efficient
-13. **[OPEN]** Can we combine multiple NO strategies for diversification?
-14. **[OPEN]** What is optimal position sizing across strategies?
+13. **[RESOLVED-Session006]** Can we combine multiple NO strategies for diversification? -> No real edge exists
+14. **[RESOLVED-Session006]** What is optimal position sizing across strategies? -> N/A, no robust strategies found
+15. **[RESOLVED-Session005]** Were previous edge calculations correct? -> NO! Fixed in Session 005
+16. **[RESOLVED-Session006]** Is the market efficient? -> YES, no simple retail strategy has robust edge
 
 ---
 
@@ -62,15 +64,24 @@ This document is the bridge between research and implementation - the trader-spe
 | Do early trades have edge? | NO - same as base strategy | Early NO = general NO at high prices | 2025-12-29 |
 | Does price momentum/reversion work? | NO - negative profit | +1-2% edge but loses money | 2025-12-29 |
 | Does trade sequencing predict outcomes? | NO - fails concentration | Sequential patterns not reliable | 2025-12-29 |
-| Does NO at 70-80c have edge? | **YES - +51.3%** | 1,437 mkts, $1M profit, 23.7% conc | 2025-12-29 |
-| Does NO at 60-70c have edge? | **YES - +30.5%** | 1,321 mkts, passes validation (S005) | 2025-12-29 |
-| Does NO at 50-60c have edge? | **YES - +10.0%** | 1,362 mkts, $405k profit (S006) | 2025-12-29 |
-| Does NO at 80-90c have edge? | **YES - +69.2%** | 1,676 mkts, corrected calculation | 2025-12-29 |
-| Does NO at 90-100c have edge? | **YES - +90.3%** | 2,476 mkts, highest edge! | 2025-12-29 |
+| Does NO at 70-80c have edge? | **INVALIDATED** | Session 005: Correct edge = +1.8% | 2025-12-29 |
+| Does NO at 60-70c have edge? | **INVALIDATED** | Session 005: Correct edge = +1.7% | 2025-12-29 |
+| Does NO at 50-60c have edge? | **INVALIDATED** | Session 005: Correct edge = +1.4% | 2025-12-29 |
+| Does NO at 80-90c have edge? | **INVALIDATED** | Session 005: Correct edge = -0.2% | 2025-12-29 |
+| Does NO at 90-100c have edge? | **INVALIDATED** | Session 005: Correct edge = -1.4% | 2025-12-29 |
 | Are there insider trading patterns? | **NO - market efficient** | Edge same regardless of timing | 2025-12-29 |
 | Do pre-move whale trades predict? | **NO** | No unique edge over price | 2025-12-29 |
 | Does late whale activity have edge? | **NO** | Same edge as earlier trades | 2025-12-29 |
 | Does mega-whale conviction help? | **MARGINAL +3-5%** | Not worth complexity | 2025-12-29 |
+| Is there ANY simple edge? (Session 006) | **MARGINAL** | NO at 50-80c: +2.4% edge, p=0.008 | 2025-12-29 |
+| Is Kalshi market efficient? (Session 006) | **YES** | All strategies near breakeven | 2025-12-29 |
+| Do whale NO trades have edge? (Session 006) | **MARGINAL** | Whale NO 50-70c: +8.3%, N=316 | 2025-12-29 |
+| Do category strategies work? (Session 006) | **MIRAGE** | Different market subsets, not real | 2025-12-29 |
+| Does CLV exist in Kalshi? (Session 008) | **NO** | Early vs late: no consistent pattern | 2025-12-29 |
+| Do recurring markets have bias? (Session 008) | **NO** | KXBTCD, KXETH show no systematic edge | 2025-12-29 |
+| Is leverage ratio a signal? (Session 008) | **YES - VALIDATED** | +3.5% edge, 53,938 markets, Bonferroni sig | 2025-12-29 |
+| Is order flow ROC a signal? (Session 008) | **NO - PRICE PROXY** | -14% vs baseline when price-controlled | 2025-12-29 |
+| Is multi-outcome mispricing exploitable? (Session 008) | **NO** | Multi-leg markets by design | 2025-12-29 |
 
 ---
 
@@ -80,8 +91,8 @@ This document is the bridge between research and implementation - the trader-spe
 
 | ID | Hypothesis | Status | Edge | Markets | Notes |
 |----|------------|--------|------|---------|-------|
-| H001 | YES at 80-90c beats market | Validated | +5.1% | 2,110 | Favorite-longshot bias |
-| H002 | NO at 80-90c beats market | Validated | +69.2% | 1,676 | Corrected edge calculation |
+| H001 | YES at 80-90c beats market | INVALIDATED | -6.2% | 1,382 | Session 005: Calculation error |
+| H002 | NO at 80-90c beats market | INVALIDATED | -0.2% | 1,676 | Session 005: Breakeven formula was inverted |
 | H003 | Follow whales at 30-70c | Rejected | - | - | Concentration >30% |
 | H004 | Follow 100% whale consensus | Rejected | -22% | - | Actually contrarian signal |
 | H005 | Time-of-day patterns | Rejected | weak | 612 | Hour 07 NO has +15.7% but loses money |
@@ -98,9 +109,9 @@ This document is the bridge between research and implementation - the trader-spe
 | H016 | Consecutive trade direction | Rejected | - | - | Not predictive |
 | H017 | Day of week patterns | Rejected | - | - | No reliable edge |
 | H018 | Price movement patterns | Rejected | - | - | Just price proxies |
-| H019 | NO at 70-80c range | **Validated** | +51.3% | 1,437 | S004 in VALIDATED_STRATEGIES |
+| H019 | NO at 70-80c range | **INVALIDATED** | +1.8% | 1,437 | Session 005: Correct edge is +1.8% not +51.3% |
 | H020 | Dollar volume per market | Rejected | - | - | No unique edge |
-| H021 | NO at 60-70c range | **Validated** | +30.5% | 1,321 | S005 in VALIDATED_STRATEGIES |
+| H021 | NO at 60-70c range | **INVALIDATED** | +1.7% | 1,321 | Session 005: Correct edge is +1.7% not +30.5% |
 | H022 | Category-specific (KXBTCD, KXNCAAMBGAME) | Promising | varies | 60-120 | Need more data |
 | H023 | Pre-move whale activity (insider) | Rejected | same | - | No unique edge over price (Session 004) |
 | H024 | Late whale activity | Rejected | same | - | No timing advantage (Session 004) |
@@ -108,12 +119,376 @@ This document is the bridge between research and implementation - the trader-spe
 | H026 | Contrarian whale bets | Rejected | - | - | No predictive power (Session 004) |
 | H027 | Volume concentration | Rejected | - | - | Does not predict outcomes (Session 004) |
 | H028 | Last trade direction | Rejected | - | - | Same as price signal (Session 004) |
-| H029 | NO at 50-60c range | **Validated** | +10.0% | 1,362 | S006 in VALIDATED_STRATEGIES |
-| H030 | NO at 90-100c range | **Validated** | +90.3% | 2,476 | S003 corrected edge (Session 004) |
+| H029 | NO at 50-60c range | **INVALIDATED** | +1.4% | 1,362 | Session 005: Correct edge is +1.4% not +10% |
+| H030 | NO at 90-100c range | **INVALIDATED** | -1.4% | 2,476 | Session 005: Correct edge is -1.4% not +90.3% |
+| H031 | Time-of-day patterns | Rejected | weak | various | Session 006: No robust time patterns |
+| H032 | Day-of-week patterns | Rejected | - | - | Session 006: No weekly patterns |
+| H033 | Trade clustering/streaks | Rejected | - | - | Session 006: No streak patterns |
+| H034 | Trade size asymmetry | Marginal | varies | various | Session 006: Micro NO 50-70c +3.6%, whale NO 50-70c +8.3% |
+| H035 | First/last trade signals | Rejected | - | - | Session 006: No first/last edge |
+| H036 | Price distance from 50c | Rejected | - | - | Session 006: Negative edge at all distances |
+| H037 | Category-specific inefficiency | **MIRAGE** | - | - | Session 006: Different subsets, not real |
+| H038 | Volume anomalies | Rejected | - | - | Session 006: No volume patterns |
+| H039 | Leverage patterns | Marginal | +1.1% | 3,872 | Session 006: Low leverage NO barely positive |
+| H040 | Contrarian signals | Rejected | negative | - | Session 006: Contrarian loses money |
+| H041 | Small/illiquid markets | Rejected | negative | - | Session 006: Small markets have negative edge |
+| H042 | Round number effects | Rejected | - | - | Session 006: No round number patterns |
+| H043 | Trade count patterns | Rejected | - | - | Session 006: Trade count doesn't predict |
+| H044 | Dollar amount patterns | Marginal | +4.2% | 549 | Session 006: Big NO trades (>$1k) show edge |
+| H045 | NO at 50-80c combined | Marginal | +2.4% | 2,210 | Session 006: Best finding, p=0.008, but not Bonferroni robust |
+| H046 | Closing Line Value (early vs late trades) | **Rejected** | varies | 11,443 | Session 008: No consistent CLV pattern |
+| H047 | Resolution time proximity edge decay | **Queued** | - | - | Session 007: Theory strongly supports |
+| H048 | Category efficiency gradient | **Queued** | - | - | Session 007: Needs careful methodology |
+| H049 | Recurring market pattern memory | **Rejected** | varies | 586 | Session 008: No systematic bias in KXBTCD etc |
+| H050 | Volume anomaly before resolution | **Queued** | - | - | Session 007: Insider signal theory |
+| H051 | Trade size distribution skew | **Queued** | - | - | Session 007: Novel angle |
+| H052 | Order flow imbalance rate-of-change | **Rejected** | -14% | 1,776 | Session 008: PRICE PROXY - no additional value |
+| H053 | Market maker withdrawal pattern | **Queued** | - | - | Session 007: Hard to detect from trade data |
+| H054 | Consecutive same-side trade runs | **Queued** | - | - | Session 007: Information accumulation |
+| H055 | Price oscillation before settlement | **Queued** | - | - | Session 007: Information cascade theory |
+| H056 | Contrarian at extreme prices only | **Queued** | - | - | Session 007: Last chance for contrarian |
+| H057 | First trade direction persistence | **Queued** | - | - | Session 007: Early information theory |
+| H058 | Round number magnet effect | **Queued** | - | - | Session 007: Price anchoring |
+| H059 | Gambler's fallacy after streaks | **Queued** | - | - | Session 007: Cross-market behavioral pattern |
+| H060 | Weekend vs weekday retail effect | **Queued** | - | - | Session 007: Retail concentration |
+| H061 | Large market inefficiency (inverse) | **Queued** | - | - | Session 007: Contradicts efficient market theory |
+| H062 | Multi-outcome market mispricing | **Rejected** | N/A | 69 | Session 008: Not arbitrage - multi-leg design |
+| H063 | Event category correlation | **Queued** | - | - | Session 007: Cross-market signals |
+| H064 | Trade timing intraday pattern | **Queued** | - | - | Session 007: Time-based edge |
+| H065 | Leverage ratio as fear signal | **VALIDATED** | +3.5% | 53,938 | Session 008: REAL SIGNAL - not price proxy |
 
 ---
 
 ## Session Log
+
+### Session 008 - 2025-12-29
+**Objective**: URGENT - Test Priority 1 Hypotheses (3 days until 2026)
+**Continuing from**: Session 007 (hypothesis generation)
+**Analyst**: Quant Agent (Opus 4.5)
+**Duration**: ~1 hour
+**Session Status**: COMPLETED - ONE VALIDATED STRATEGY FOUND
+
+**Mission**: Rapidly test the 5 Priority 1 hypotheses from Session 007 before 2026.
+
+**Hypotheses Tested**:
+
+#### H046: Closing Line Value (Early vs Late Trades)
+**STATUS: REJECTED**
+- Tested early trades (first 20%) vs late trades (last 20%) across price ranges
+- Early beats late in only 5/8 comparisons
+- Largest difference: 4.1% (YES 80-90c)
+- No consistent CLV pattern like sports betting
+- **Kalshi does NOT behave like sports betting markets**
+
+#### H049: Recurring Market Patterns
+**STATUS: REJECTED**
+- Tested KXBTCD (586 markets), KXETHD (209), KXBTC (386), KXETH (179)
+- No systematic bias found in recurring market types
+- Crypto daily markets show no exploitable pattern
+- Sample sizes adequate but no edge detected
+
+#### H065: Leverage Ratio as Fear Signal
+**STATUS: VALIDATED - REAL SIGNAL**
+- **Strategy**: Fade high-leverage YES trades (leverage > 2)
+- **Mechanism**: When retail bets YES with high potential return (longshot), bet NO
+- **Markets**: 53,938
+- **Win Rate**: 91.6%
+- **Breakeven**: 88.1%
+- **Edge**: +3.5%
+- **P-value**: 2.34e-154 (Bonferroni significant)
+- **Concentration**: 0.0% (passes easily)
+- **Temporal Stability**: Day-by-day: +1.4%, +4.8%, +3.1%, +7.0% (all positive)
+- **Critical Test**: +6.8% improvement over baseline at same prices
+- **THIS IS A REAL SIGNAL, NOT A PRICE PROXY**
+
+#### H052: Order Flow Imbalance Rate-of-Change
+**STATUS: REJECTED - PRICE PROXY**
+- Initial testing showed +10% edge for "follow flow shift to NO"
+- **Critical verification revealed it's a PRICE PROXY**
+- When controlling for price level, edge improvement is -14%
+- The "flow shift" signal just correlates with price changes
+- No additional information beyond price itself
+
+#### H062: Multi-outcome Market Mispricing
+**STATUS: NOT ACTIONABLE**
+- Found 69 events with >10% "mispricing"
+- Example: "KX60MINMENTION-25DEC08" has 16 outcomes, total prob = 899%
+- These are multi-leg/multi-outcome markets BY DESIGN
+- Not traditional arbitrage - prices don't need to sum to 100%
+- Cannot be exploited systematically
+
+**Key Finding - The Leverage Strategy**:
+
+The leverage ratio signal is the FIRST validated strategy that:
+1. Is NOT just a price proxy
+2. Passes all validation criteria
+3. Has Bonferroni-corrected significance
+4. Shows temporal stability across all days
+5. Has behavioral explanation (retail longshot betting)
+
+**Implementation Specification**:
+```
+Signal: When any trade has leverage_ratio > 2 and taker_side == 'yes'
+Action: Bet NO at prevailing NO price
+Expected Edge: +3.5%
+Expected Annual Markets: ~900k (extrapolated from 54k in 22 days)
+```
+
+**Files Created**:
+- `research/analysis/session008_priority_hypotheses.py` - Initial hypothesis tests
+- `research/analysis/session008_deep_validation.py` - Rigorous validation
+- `research/analysis/session008_critical_verification.py` - Price proxy check
+- `research/analysis/session008_final_validation.py` - Final validation
+- `research/reports/session008_results_*.json` - Results output
+
+**Next Steps**:
+1. Update VALIDATED_STRATEGIES.md with new leverage strategy
+2. Consider combining with existing marginal strategies
+3. Test remaining Priority 2 hypotheses if time permits
+
+---
+
+### Session 007 - 2025-12-29
+**Objective**: Creative Hypothesis Generation via Web Research
+**Continuing from**: Session 006 (market is efficient conclusion)
+**Analyst**: Creative Prediction Market Researcher (Opus 4.5)
+**Duration**: ~1.5 hours
+**Session Status**: COMPLETED - HYPOTHESIS GENERATION PHASE
+
+**Mission**: Take a fundamentally different approach. Instead of running more of the same analysis, research what ACTUALLY works on prediction markets from successful traders, then brainstorm unconventional hypotheses.
+
+**Approach**: Web research across Kalshi, Polymarket, PredictIt, academic papers, trading forums, and sports betting literature.
+
+**Web Research Key Findings**:
+
+1. **Market Making is the Consistent Winner**
+   - Polymarket trader: $10k -> $200-800/day capturing spread
+   - Requires orderbook data (we don't have this)
+   - Liquidity rewards programs amplify returns
+
+2. **Domain Expertise Dominates**
+   - Top 5 Polymarket PnL traders all in US politics
+   - French trader: $85M from single poll insight
+   - Information edge > algorithmic edge
+
+3. **Arbitrage is Real but Fast**
+   - $40M extracted from Polymarket in one year
+   - Cross-platform opportunities exist (Kalshi vs Polymarket)
+   - Within-platform mispricing (YES + NO != 100%)
+
+4. **Closing Line Value (CLV) from Sports Betting**
+   - Sharp bettors beat the closing line consistently
+   - Early lines are "soft" - mispricings exist at market open
+   - Line sharpens as event approaches
+   - **THIS IS TESTABLE WITH OUR DATA**
+
+5. **Favorite-Longshot Bias**
+   - Well-documented in academic literature
+   - Less prevalent in prediction markets than traditional betting
+   - Our Session 006 found marginal edge only
+
+**New Hypotheses Generated (H046-H065)**:
+
+**PRIORITY 1 - Test Immediately:**
+| ID | Hypothesis | Rationale |
+|----|------------|-----------|
+| H046 | Closing Line Value (early vs late trades) | Strong sports betting evidence |
+| H049 | Recurring market patterns (daily crypto/weather) | Behavioral habit theory |
+| H065 | Leverage ratio as fear signal | Data column already exists |
+| H052 | Order flow imbalance rate-of-change | HFT research supports |
+| H062 | Multi-outcome market mispricing | Research shows it's common |
+
+**PRIORITY 2 - Test if P1 Fails:**
+| ID | Hypothesis | Rationale |
+|----|------------|-----------|
+| H055 | Price oscillation before settlement | Information cascade theory |
+| H047 | Resolution time proximity | Theory strongly supports |
+| H061 | Large market inefficiency | Contradicts efficient market theory |
+| H059 | Gambler's fallacy after streaks | Behavioral economics |
+| H048 | Category efficiency gradient | Needs careful methodology |
+
+**Key Meta-Insight**:
+
+The market IS efficient for simple strategies (Session 006 proved this). To find edge, we need:
+- **Conditional patterns**: X has edge ONLY WHEN Y is true
+- **Temporal patterns**: Edge exists at time T but not time T+1
+- **Structural patterns**: Edge exists in market TYPE X but not TYPE Y
+- **Behavioral patterns**: Edge exists when RETAIL is dominant
+
+**Files Created**:
+- `research/strategies/SESSION007_CREATIVE_HYPOTHESES.md` - Full hypothesis list with sources
+
+**Next Steps**:
+1. Test H046 (Closing Line Value) with proper CLV methodology
+2. Identify recurring market series (KXBTCD daily, etc.)
+3. Test leverage ratio as signal (H065)
+4. Build order flow imbalance rate-of-change analysis
+
+**Sources Researched** (see full list in SESSION007_CREATIVE_HYPOTHESES.md):
+- Polymarket trading strategies and PnL leaderboard analysis
+- QuantPedia systematic edges research
+- Academic papers on arbitrage in prediction markets
+- Sports betting CLV methodology
+- Order flow imbalance HFT literature
+
+---
+
+### Session 006 - 2025-12-29
+**Objective**: Creative Pattern Hunting - Find strategies quant firms won't touch
+**Continuing from**: Session 005 (calculation errors fixed)
+**Analyst**: Quant Agent (Opus 4.5)
+**Duration**: ~2 hours
+**Session Status**: COMPLETED - MARKET IS EFFICIENT
+
+**Mission**: With previous strategies invalidated due to calculation errors, find new edge by thinking creatively about patterns quant firms might ignore.
+
+**Hypotheses Tested (H031-H045)**:
+
+1. **Time-of-day patterns** -> REJECTED: No robust hourly patterns
+2. **Day-of-week patterns** -> REJECTED: No weekly patterns
+3. **Trade size asymmetry** -> MARGINAL: Whale NO 50-70c shows +8.3% (N=316)
+4. **Trade clustering/streaks** -> REJECTED: No momentum/reversal patterns
+5. **First/last trade signals** -> REJECTED: No opening/closing edge
+6. **Price distance from 50c** -> REJECTED: Negative edge at all distances
+7. **Category-specific strategies** -> **MIRAGE**: Appeared to work but was analyzing different market subsets
+8. **Volume anomalies** -> REJECTED: No volume-based patterns
+9. **Leverage patterns** -> MARGINAL: Low leverage NO barely positive
+10. **Contrarian signals** -> REJECTED: Betting against crowd loses money
+11. **Small/illiquid markets** -> REJECTED: Small markets have negative edge
+12. **Round number effects** -> REJECTED: No round number clustering
+13. **Dollar amount patterns** -> MARGINAL: Big NO trades >$1k show +4.2%
+14. **Combined NO 50-80c** -> MARGINAL: +2.4% edge, p=0.008
+
+**Key Findings**:
+
+1. **MARKET IS EFFICIENT**
+   - All YES trades have negative edge at all price levels
+   - Retail traders systematically overpay (losing to spread)
+   - No simple price-based strategy survives rigorous validation
+
+2. **BEST FINDING: NO at 50-80c**
+   - Edge: +2.44%
+   - Markets: 2,210
+   - P-value: 0.008
+   - Win rate: 67.0% vs breakeven 64.6%
+   - **BUT**: Does NOT survive Bonferroni correction (p < 0.00025 required)
+
+3. **SECOND BEST: Whale NO at 50-70c**
+   - Edge: +8.34%
+   - Markets: 316
+   - P-value: 0.001
+   - Total profit: $583,527
+   - **BUT**: Small sample, may not persist
+
+4. **CATEGORY STRATEGIES ARE A MIRAGE**
+   - KXNCAAMBGAME showed high edge for BOTH YES and NO
+   - This is impossible - investigation revealed different market subsets
+   - Not a tradeable strategy
+
+**Why The Market Is Efficient**:
+- Bid-ask spread extraction by market makers
+- Transaction costs eliminate small edges
+- Rapid information incorporation
+- No persistent inefficiencies for retail takers
+
+**What Would Actually Have Edge** (but not testable in this data):
+1. Market making (provide liquidity, capture spread)
+2. Information advantage (domain expertise, alternative data)
+3. Speed (latency arbitrage, requires infrastructure)
+4. Cross-market arbitrage (complex, capital-intensive)
+
+**Files Created**:
+- `research/analysis/session006_creative_hunting.py` - Initial hypothesis sweep
+- `research/analysis/session006_deep_dive.py` - Promising pattern investigation
+- `research/analysis/session006_anomaly_investigation.py` - NO 50-80c analysis
+- `research/analysis/session006_final_search.py` - Exhaustive search
+- `research/analysis/session006_verify_findings.py` - Verification and conclusion
+- `research/reports/session006_*.json` - Analysis outputs
+
+**Recommendations**:
+1. **Do NOT implement simple price-based trading strategies**
+2. The market is efficient for retail algorithmic trading
+3. If you want to trade Kalshi:
+   - Focus on information edge (domain expertise)
+   - Consider market making (requires capital/infrastructure)
+   - Accept that simple strategies don't work
+
+**VERDICT**: After exhaustive testing of 200+ strategy combinations across 45 hypotheses, NO simple retail trading strategy has statistically robust edge in this dataset.
+
+---
+
+### Session 005 - 2025-12-29
+**Objective**: URGENT VERIFICATION - Validate claimed edges of +69% and +90%
+**Continuing from**: Session 004 (claimed these large edges)
+**Analyst**: Quant Agent (Opus 4.5)
+**Duration**: ~1 hour
+**Session Status**: COMPLETED - CRITICAL ERROR DISCOVERED
+
+**Mission**: Verify the extraordinarily high edge claims from Session 004.
+
+**CRITICAL FINDING: ALL PREVIOUS EDGE CALCULATIONS WERE WRONG**
+
+The previous analysis had an INVERTED BREAKEVEN FORMULA for NO trades:
+
+```python
+# WRONG (what Session 004 used):
+if side == 'no':
+    breakeven_rate = (100 - avg_price) / 100.0  # WRONG!
+
+# CORRECT:
+breakeven_rate = avg_price / 100.0  # Same formula for YES and NO
+```
+
+**Why this matters:**
+- For NO trades, `trade_price` = NO price (what you pay for NO)
+- If NO costs 85c, breakeven is 85% (you need to win 85% to break even)
+- The WRONG formula calculated: (100-85)/100 = 15%
+- This gave the illusion of massive edge when there was none
+
+**VERIFIED EDGE TABLE (CORRECT CALCULATIONS):**
+
+| Strategy | Claimed Edge | CORRECT Edge | Error |
+|----------|--------------|--------------|-------|
+| NO at 50-60c | +10.0% | +1.4% | ~9x overstatement |
+| NO at 60-70c | +30.5% | +1.7% | ~18x overstatement |
+| NO at 70-80c | +51.3% | +1.8% | ~28x overstatement |
+| NO at 80-90c | +69.2% | -0.2% | COMPLETELY WRONG |
+| NO at 90-100c | +90.3% | -1.4% | COMPLETELY WRONG |
+| YES at 80-90c | +5.1% | -6.2% | Sign flipped! |
+
+**Key Insights:**
+1. The market is EFFICIENT - all strategies near breakeven
+2. NO trades at high NO prices (80-90c) actually have slight NEGATIVE edge
+3. YES trades at high YES prices also have NEGATIVE edge
+4. The small positive edges (+1-2%) are not statistically significant
+5. There is NO free money in simple price-based strategies
+
+**Data Verification:**
+- Total trades: 1,619,902
+- Unique markets: 65,141
+- Date range: 2025-12-05 to 2025-12-27
+- Data integrity: Verified (is_winner matches market_result correctly)
+
+**Impact:**
+- ALL previously "validated" strategies (S001-S006) are INVALIDATED
+- VALIDATED_STRATEGIES.md needs complete revision
+- No production trading should use these strategies
+- Research must restart with correct methodology
+
+**Files Created:**
+- `research/analysis/session005_verification.py` - Initial verification
+- `research/analysis/session005_methodology_comparison.py` - Traced the error
+- `research/analysis/session005_deep_investigation.py` - Deep dive on data
+- `research/analysis/session005_final_clarification.py` - Error explanation
+- `research/analysis/session005_complete_verification.py` - Final verification
+
+**Recommendations:**
+1. HALT any trading based on previous strategies
+2. Revise VALIDATED_STRATEGIES.md to mark all strategies as INVALID
+3. Restart research with correct breakeven formula
+4. Focus on finding REAL edge through other means (not simple price-based)
+
+---
 
 ### Session 004 - 2025-12-29
 **Objective**: Detect insider trading patterns and validate new strategies
@@ -389,10 +764,22 @@ This document is the bridge between research and implementation - the trader-spe
 
 *Patterns or anomalies noticed but not yet fully investigated*
 
-1. **Category-specific higher edge**: NCAAF totals, NFL spreads, crypto show higher edge than base (need more data)
-2. **Time to expiry patterns**: Edge might change as market approaches settlement (not yet tested)
-3. **Cross-market correlations**: Related markets might provide signals (not yet tested)
-4. **Execution optimization**: Slippage and timing improvements could increase realized edge
+1. ~~**Category-specific higher edge**: NCAAF totals, NFL spreads, crypto show higher edge than base~~ -> INVESTIGATED Session 006: MIRAGE (different market subsets)
+2. ~~**Time to expiry patterns**: Edge might change as market approaches settlement~~ -> No robust patterns found
+3. ~~**Cross-market correlations**: Related markets might provide signals~~ -> Not found in this data
+4. **Execution optimization**: Slippage and timing improvements -> N/A since no base strategy has edge
+
+**NEW (Session 006 - Marginal, not robust)**:
+- **NO at 50-80c**: +2.4% edge, p=0.008, but doesn't survive Bonferroni
+- **Whale NO at 50-70c**: +8.3% edge, N=316, promising but small sample
+- These could be monitored for persistence but are NOT recommended for systematic trading
+
+**VALIDATED (Session 008)**:
+- **Fade High-Leverage YES (H065)**: +3.5% edge, 53,938 markets, Bonferroni significant
+  - Signal: When retail bets YES with leverage > 2, bet NO
+  - NOT a price proxy - adds +6.8% over baseline
+  - Temporally stable: all 4 days positive
+  - Ready for implementation
 
 ---
 
@@ -408,5 +795,15 @@ This document is the bridge between research and implementation - the trader-spe
 6. **Price momentum/reversion**: Positive edge but NEGATIVE profit
 7. **Trade sequencing patterns**: Fails concentration test
 8. **Round number effects**: No actionable edge found
+9. **ALL simple price-based YES strategies**: All have NEGATIVE edge (Session 006)
+10. **Category-specific strategies**: MIRAGE - different market subsets (Session 006)
+11. **Contrarian strategies**: Betting against crowd LOSES money (Session 006)
+12. **Small/illiquid markets**: Have NEGATIVE edge, not inefficient (Session 006)
+13. **Trade size filtering (retail/whale)**: Same direction, no additional edge (Session 006)
+14. **Trade clustering/streaks**: No momentum or reversal patterns (Session 006)
+15. **Closing Line Value (CLV)**: Kalshi does NOT behave like sports betting (Session 008)
+16. **Recurring market patterns**: KXBTCD, KXETH show no systematic bias (Session 008)
+17. **Order flow rate-of-change**: PRICE PROXY - no additional value over price (Session 008)
+18. **Multi-outcome mispricing**: Not arbitrage - multi-leg markets by design (Session 008)
 
 ---
