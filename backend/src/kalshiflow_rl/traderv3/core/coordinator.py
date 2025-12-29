@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from ..clients.trades_integration import V3TradesIntegration
     from ..clients.position_listener import PositionListener
     from ..clients.market_ticker_listener import MarketTickerListener
+    from ..clients.fill_listener import FillListener
     from ..services.whale_tracker import WhaleTracker
     from ..services.market_price_syncer import MarketPriceSyncer
     from ..services.trading_state_syncer import TradingStateSyncer
@@ -201,6 +202,9 @@ class V3Coordinator:
         # Trading state syncer for periodic balance/positions/orders/settlements sync
         self._trading_state_syncer: Optional['TradingStateSyncer'] = None
 
+        # Fill listener for real-time order fill notifications
+        self._fill_listener: Optional['FillListener'] = None
+
         self._started_at: Optional[float] = None
         self._running = False
 
@@ -291,6 +295,9 @@ class V3Coordinator:
 
             # Start trading state syncer for periodic Kalshi sync
             await self._start_trading_state_syncer()
+
+            # Connect fill listener for real-time order fill notifications
+            await self._connect_fill_listener()
 
         # Transition to READY with actual metrics
         await self._transition_to_ready()
@@ -824,6 +831,9 @@ class V3Coordinator:
             # Start the syncer (performs initial sync immediately)
             await self._trading_state_syncer.start()
 
+            # Register with health monitor for health tracking
+            self._health_monitor.set_trading_state_syncer(self._trading_state_syncer)
+
             logger.info("Trading state syncer active")
 
             await self._event_bus.emit_system_activity(
@@ -836,6 +846,114 @@ class V3Coordinator:
             # Don't fail startup if trading state syncer fails - it's non-critical
             logger.warning(f"Trading state syncer failed: {e}")
             self._trading_state_syncer = None
+
+    async def _connect_fill_listener(self) -> None:
+        """
+        Connect fill listener for real-time order fill notifications.
+
+        This provides instant feedback when our orders get filled,
+        rather than waiting for the next REST API sync.
+        """
+        if not self._trading_client_integration:
+            logger.debug("Skipping fill listener (no trading client)")
+            return
+
+        try:
+            # Import here to avoid circular imports
+            from ..clients.fill_listener import FillListener
+
+            logger.info("Starting fill listener for order notifications...")
+
+            # Create fill listener
+            self._fill_listener = FillListener(
+                event_bus=self._event_bus,
+                ws_url=self._config.ws_url,
+                reconnect_delay_seconds=5.0,
+            )
+
+            # Subscribe to fill events for console UX
+            await self._event_bus.subscribe_to_order_fill(self._handle_order_fill)
+
+            # Start the listener
+            await self._fill_listener.start()
+
+            # Register with health monitor for health tracking
+            self._health_monitor.set_fill_listener(self._fill_listener)
+
+            logger.info("Fill listener active - instant order fill notifications enabled")
+
+            await self._event_bus.emit_system_activity(
+                activity_type="connection",
+                message="Order fill notifications enabled",
+                metadata={"channel": "fill", "severity": "info"}
+            )
+
+        except Exception as e:
+            # Don't fail startup if fill listener fails - REST API sync still works
+            logger.warning(f"Fill listener failed (falling back to REST sync): {e}")
+            self._fill_listener = None
+            await self._event_bus.emit_system_activity(
+                activity_type="connection",
+                message=f"Real-time fill notifications unavailable: {e}",
+                metadata={"fallback": "rest_sync", "severity": "warning"}
+            )
+
+    async def _handle_order_fill(self, event) -> None:
+        """
+        Handle real-time order fill notification.
+
+        Emits a satisfying console message when an order fills.
+        This is the key UX moment for the fill listener.
+
+        Args:
+            event: OrderFillEvent from event bus
+        """
+        try:
+            # Extract fill details
+            ticker = event.market_ticker
+            action = event.action.upper()  # BUY or SELL
+            side = event.side.upper()  # YES or NO
+            count = event.count
+            price_cents = event.price_cents
+            total_cents = price_cents * count
+
+            # Format dollar amount nicely
+            total_dollars = total_cents / 100
+
+            # Build satisfying console message
+            message = f"Order filled: {action} {count} {side} {ticker} @ {price_cents}c (${total_dollars:.2f})"
+
+            # Emit as system activity with success severity for nice UX
+            await self._event_bus.emit_system_activity(
+                activity_type="order_fill",
+                message=message,
+                metadata={
+                    "trade_id": event.trade_id,
+                    "order_id": event.order_id,
+                    "ticker": ticker,
+                    "action": event.action,
+                    "side": event.side,
+                    "price_cents": price_cents,
+                    "count": count,
+                    "total_cents": total_cents,
+                    "is_taker": event.is_taker,
+                    "post_position": event.post_position,
+                    "severity": "success"
+                }
+            )
+
+            # Log at info level for visibility
+            logger.info(f"ORDER FILL: {message}")
+
+            # Remove filled order from state and broadcast update immediately
+            # This provides instant UI feedback without waiting for REST sync
+            if event.order_id:
+                removed = self._state_container.remove_order(event.order_id)
+                if removed:
+                    await self._broadcast_trading_state()
+
+        except Exception as e:
+            logger.error(f"Error handling order fill event: {e}")
 
     async def _sync_trading_state(self) -> None:
         """Perform initial trading state sync."""
@@ -1075,6 +1193,8 @@ class V3Coordinator:
                 total_steps += 1
             if self._market_price_syncer:
                 total_steps += 1
+            if self._fill_listener:
+                total_steps += 1
             if self._whale_execution_service:
                 total_steps += 1
             if self._yes_80_90_service:
@@ -1126,6 +1246,12 @@ class V3Coordinator:
             if self._market_price_syncer:
                 logger.info(f"{step}/{total_steps} Stopping Market Price Syncer...")
                 await self._market_price_syncer.stop()
+                step += 1
+
+            # Stop fill listener
+            if self._fill_listener:
+                logger.info(f"{step}/{total_steps} Stopping Fill Listener...")
+                await self._fill_listener.stop()
                 step += 1
 
             # Stop trading state syncer
@@ -1218,6 +1344,14 @@ class V3Coordinator:
         # Add market price syncer if configured
         if self._market_price_syncer:
             components["market_price_syncer"] = self._market_price_syncer.get_health_details()
+
+        # Add fill listener if configured
+        if self._fill_listener:
+            components["fill_listener"] = self._fill_listener.get_health_details()
+
+        # Add trading state syncer if configured
+        if self._trading_state_syncer:
+            components["trading_state_syncer"] = self._trading_state_syncer.get_health_details()
 
         # Get metrics from various sources
         orderbook_metrics = self._orderbook_integration.get_metrics()

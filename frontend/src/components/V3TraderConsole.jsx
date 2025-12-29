@@ -11,7 +11,7 @@ import {
 } from './v3-trader/panels';
 
 // UI components
-import { SettlementToast } from './v3-trader/ui';
+import { SettlementToast, OrderFillToast } from './v3-trader/ui';
 
 // Layout components
 import { V3Header, V3MetricsPanel, V3ConsoleOutput } from './v3-trader/layout';
@@ -49,6 +49,8 @@ const V3TraderConsole = () => {
     settlements,
     newSettlement,
     dismissSettlement,
+    newOrderFill,
+    dismissOrderFill,
     metrics
   } = useV3WebSocket({ onMessage: addMessage });
 
@@ -58,6 +60,12 @@ const V3TraderConsole = () => {
       <SettlementToast
         settlement={newSettlement}
         onDismiss={dismissSettlement}
+      />
+
+      {/* Order Fill Toast - Shows when orders fill */}
+      <OrderFillToast
+        fill={newOrderFill}
+        onDismiss={dismissOrderFill}
       />
 
       {/* Header */}

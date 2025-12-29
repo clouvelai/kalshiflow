@@ -470,6 +470,31 @@ class V3StateContainer:
 
             return True
 
+    def remove_order(self, order_id: str) -> bool:
+        """
+        Remove a filled order from state immediately.
+
+        Called by FillListener when an order fills to provide instant
+        UI feedback without waiting for REST sync.
+
+        Args:
+            order_id: The order ID to remove
+
+        Returns:
+            True if order was found and removed, False otherwise
+        """
+        if not self._trading_state or not order_id:
+            return False
+
+        if order_id in self._trading_state.orders:
+            del self._trading_state.orders[order_id]
+            self._trading_state.order_count = len(self._trading_state.orders)
+            self._trading_state_version += 1
+            logger.debug(f"Order {order_id[:8]} removed from state, {self._trading_state.order_count} orders remaining")
+            return True
+
+        return False
+
     @property
     def trading_state(self) -> Optional[TraderState]:
         """Get current trading state."""

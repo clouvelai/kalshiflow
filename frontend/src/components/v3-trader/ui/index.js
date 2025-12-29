@@ -3,5 +3,6 @@
  */
 
 export { default as SettlementToast } from './SettlementToast';
+export { default as OrderFillToast } from './OrderFillToast';
 export { default as ConsoleMessage } from './ConsoleMessage';
 export { StateBadge, StatusBadge, TransitionBadge } from './StateBadge';

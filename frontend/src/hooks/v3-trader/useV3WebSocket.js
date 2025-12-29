@@ -40,6 +40,7 @@ export const useV3WebSocket = ({ onMessage }) => {
   const [processingWhaleId, setProcessingWhaleId] = useState(null);
   const [settlements, setSettlements] = useState([]);
   const [newSettlement, setNewSettlement] = useState(null);
+  const [newOrderFill, setNewOrderFill] = useState(null);
   const [metrics, setMetrics] = useState(INITIAL_METRICS);
 
   const wsRef = useRef(null);
@@ -122,6 +123,20 @@ export const useV3WebSocket = ({ onMessage }) => {
                 api_connected: true
               }));
             }
+          }
+
+          // Handle order fill toast notification
+          if (activity_type === 'order_fill' && metadata) {
+            setNewOrderFill({
+              ticker: metadata.ticker,
+              action: metadata.action,
+              side: metadata.side,
+              count: metadata.count,
+              price_cents: metadata.price_cents,
+              total_cents: metadata.total_cents
+            });
+            // Auto-dismiss after 5 seconds
+            setTimeout(() => setNewOrderFill(null), 5000);
           }
 
           let messageType = 'activity';
@@ -305,6 +320,11 @@ export const useV3WebSocket = ({ onMessage }) => {
     setNewSettlement(null);
   }, []);
 
+  // Clear new order fill notification
+  const dismissOrderFill = useCallback(() => {
+    setNewOrderFill(null);
+  }, []);
+
   return {
     wsStatus,
     currentState,
@@ -315,6 +335,8 @@ export const useV3WebSocket = ({ onMessage }) => {
     settlements,
     newSettlement,
     dismissSettlement,
+    newOrderFill,
+    dismissOrderFill,
     metrics
   };
 };

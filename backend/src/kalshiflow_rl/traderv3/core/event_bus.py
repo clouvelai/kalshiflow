@@ -85,6 +85,9 @@ class EventType(Enum):
     # Real-time market price updates (from ticker WebSocket)
     MARKET_TICKER_UPDATE = "market_ticker_update"
 
+    # Real-time order fill notifications (from fill WebSocket)
+    ORDER_FILL = "order_fill"
+
 
 @dataclass
 class MarketEvent:
@@ -276,6 +279,49 @@ class MarketTickerEvent:
             self.timestamp = time.time()
         if self.price_data is None:
             self.price_data = {}
+
+
+@dataclass
+class OrderFillEvent:
+    """
+    Event data for real-time order fill notifications from Kalshi fill WebSocket.
+
+    Emitted when the fill WebSocket channel sends a notification that one of
+    our orders has been filled (partially or fully).
+
+    All price values are in cents (1-99 for prediction markets).
+
+    Attributes:
+        event_type: Always ORDER_FILL
+        trade_id: Unique identifier for this fill
+        order_id: Associated order UUID
+        market_ticker: Market ticker where fill occurred
+        is_taker: Whether we were the taker (True) or maker (False)
+        side: "yes" or "no"
+        action: "buy" or "sell"
+        price_cents: Fill price in cents (1-99)
+        count: Number of contracts filled
+        post_position: Our position after the fill
+        fill_timestamp: Unix timestamp when fill occurred (seconds)
+        timestamp: When the event was received locally
+    """
+    event_type: EventType = EventType.ORDER_FILL
+    trade_id: str = ""
+    order_id: str = ""
+    market_ticker: str = ""
+    is_taker: bool = False
+    side: str = ""
+    action: str = ""
+    price_cents: int = 0
+    count: int = 0
+    post_position: int = 0
+    fill_timestamp: int = 0
+    timestamp: float = 0.0
+
+    def __post_init__(self):
+        """Set defaults after initialization."""
+        if self.timestamp == 0.0:
+            self.timestamp = time.time()
 
 
 class EventBus:
@@ -799,6 +845,73 @@ class EventBus:
 
         self._subscribers[EventType.MARKET_POSITION_UPDATE].append(callback)
         logger.debug(f"Added market position subscriber: {callback.__name__}")
+
+    async def emit_order_fill(
+        self,
+        trade_id: str,
+        order_id: str,
+        market_ticker: str,
+        is_taker: bool,
+        side: str,
+        action: str,
+        price_cents: int,
+        count: int,
+        post_position: int,
+        fill_timestamp: int,
+    ) -> bool:
+        """
+        Emit an order fill event (non-blocking).
+
+        Called by FillListener when receiving real-time fill notifications
+        from Kalshi WebSocket fill channel.
+
+        Args:
+            trade_id: Unique identifier for this fill
+            order_id: Associated order UUID
+            market_ticker: Market ticker where fill occurred
+            is_taker: Whether we were the taker (True) or maker (False)
+            side: "yes" or "no"
+            action: "buy" or "sell"
+            price_cents: Fill price in cents (1-99)
+            count: Number of contracts filled
+            post_position: Our position after the fill
+            fill_timestamp: Unix timestamp when fill occurred (seconds)
+
+        Returns:
+            True if event was queued, False if queue full
+        """
+        if not self._running:
+            return False
+
+        event = OrderFillEvent(
+            event_type=EventType.ORDER_FILL,
+            trade_id=trade_id,
+            order_id=order_id,
+            market_ticker=market_ticker,
+            is_taker=is_taker,
+            side=side,
+            action=action,
+            price_cents=price_cents,
+            count=count,
+            post_position=post_position,
+            fill_timestamp=fill_timestamp,
+            timestamp=time.time(),
+        )
+
+        return await self._queue_event(event)
+
+    async def subscribe_to_order_fill(self, callback: Callable) -> None:
+        """
+        Subscribe to order fill events.
+
+        Args:
+            callback: Async function(event: OrderFillEvent) to call on fill
+        """
+        if EventType.ORDER_FILL not in self._subscribers:
+            self._subscribers[EventType.ORDER_FILL] = []
+
+        self._subscribers[EventType.ORDER_FILL].append(callback)
+        logger.debug(f"Added order fill subscriber: {callback.__name__}")
 
     async def _queue_event(self, event: Any) -> bool:
         """

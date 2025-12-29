@@ -23,9 +23,11 @@ if TYPE_CHECKING:
     from ..clients.trades_integration import V3TradesIntegration
     from ..clients.market_ticker_listener import MarketTickerListener
     from ..clients.position_listener import PositionListener
+    from ..clients.fill_listener import FillListener
     from ..services.whale_tracker import WhaleTracker
     from ..services.whale_execution_service import WhaleExecutionService
     from ..services.market_price_syncer import MarketPriceSyncer
+    from ..services.trading_state_syncer import TradingStateSyncer
     from ..services.yes_80_90_service import Yes8090Service
     from ..config.environment import V3Config
 
@@ -45,8 +47,10 @@ NON_CRITICAL_COMPONENTS: Set[str] = {
     # WebSocket listeners for real-time data
     "market_ticker_listener",
     "position_listener",
+    "fill_listener",
     # Services
     "market_price_syncer",
+    "trading_state_syncer",
     "whale_execution_service",
     "yes_80_90_service",
 }
@@ -112,7 +116,9 @@ class V3HealthMonitor:
         # New components
         self._market_ticker_listener = market_ticker_listener
         self._position_listener = position_listener
+        self._fill_listener: Optional['FillListener'] = None  # Set via setter during startup
         self._market_price_syncer = market_price_syncer
+        self._trading_state_syncer = None  # Set via setter during startup
         self._whale_execution_service = whale_execution_service
         self._yes_80_90_service = yes_80_90_service
 
@@ -132,9 +138,17 @@ class V3HealthMonitor:
         """Set position listener reference (created during startup)."""
         self._position_listener = listener
 
+    def set_fill_listener(self, listener: Optional['FillListener']) -> None:
+        """Set fill listener reference (created during startup)."""
+        self._fill_listener = listener
+
     def set_market_price_syncer(self, syncer: Optional['MarketPriceSyncer']) -> None:
         """Set market price syncer reference (created during startup)."""
         self._market_price_syncer = syncer
+
+    def set_trading_state_syncer(self, syncer: Optional['TradingStateSyncer']) -> None:
+        """Set trading state syncer reference (created during startup)."""
+        self._trading_state_syncer = syncer
 
     def set_whale_execution_service(self, service: Optional['WhaleExecutionService']) -> None:
         """Set whale execution service reference."""
@@ -248,9 +262,17 @@ class V3HealthMonitor:
         if self._position_listener:
             components_health["position_listener"] = self._position_listener.is_healthy()
 
+        # Add fill listener health if configured
+        if self._fill_listener:
+            components_health["fill_listener"] = self._fill_listener.is_healthy()
+
         # Add market price syncer health if configured
         if self._market_price_syncer:
             components_health["market_price_syncer"] = self._market_price_syncer.is_healthy()
+
+        # Add trading state syncer health if configured
+        if self._trading_state_syncer:
+            components_health["trading_state_syncer"] = self._trading_state_syncer.is_healthy()
 
         # Add whale execution service health if configured
         if self._whale_execution_service:
@@ -399,6 +421,8 @@ class V3HealthMonitor:
             return "real-time prices unavailable"
         elif component == "position_listener":
             return "real-time positions unavailable"
+        elif component == "fill_listener":
+            return "real-time fill notifications unavailable"
         elif component == "market_price_syncer":
             return "price sync unavailable"
         elif component == "whale_execution_service":
