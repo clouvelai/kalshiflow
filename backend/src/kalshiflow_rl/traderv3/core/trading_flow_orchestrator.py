@@ -265,7 +265,7 @@ class TradingFlowOrchestrator:
             
             # Update state container
             state_changed = self._state_container.update_trading_state(state, changes)
-            
+
             # Mark sync performed
             cycle.sync_performed = True
             

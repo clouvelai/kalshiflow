@@ -75,7 +75,7 @@ export V3_WS_RECONNECT_INTERVAL="5.0"
 if [ "$ENVIRONMENT" = "paper" ]; then
     # Trading client settings
     export V3_ENABLE_TRADING_CLIENT="true"
-    export V3_TRADING_MAX_ORDERS="10"
+    export V3_TRADING_MAX_ORDERS="100"
     export V3_TRADING_MAX_POSITION_SIZE="100"
 
     # Whale follower strategy (default for paper mode)
