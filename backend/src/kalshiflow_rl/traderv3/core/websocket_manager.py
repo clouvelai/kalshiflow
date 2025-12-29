@@ -338,6 +338,8 @@ class V3WebSocketManager:
                                 "position_listener": None,
                                 "market_ticker_listener": None,
                                 "market_price_syncer": market_price_syncer_health,
+                                # Order group - must match status_reporter.py
+                                "order_group": trading_summary.get("order_group"),
                             }
                         }
                         await self._send_to_client(client_id, trading_state_msg)
