@@ -119,6 +119,39 @@ class WhaleQueueState:
     last_update: float = 0.0
 
 
+@dataclass
+class MarketPriceData:
+    """
+    Market price snapshot for a single ticker.
+
+    Stores real-time market price data from the ticker WebSocket channel
+    and REST API. This is separate from position data and does not affect
+    position values.
+
+    Attributes:
+        ticker: Market ticker identifier
+        last_price: Last traded price in cents (1-99)
+        yes_bid: Best yes bid in cents
+        yes_ask: Best yes ask in cents
+        no_bid: Best no bid in cents
+        no_ask: Best no ask in cents
+        volume: Total volume traded
+        open_interest: Active contracts
+        close_time: Market close time as ISO timestamp (from REST API only)
+        timestamp: Unix timestamp of update (seconds)
+    """
+    ticker: str
+    last_price: int = 0
+    yes_bid: int = 0
+    yes_ask: int = 0
+    no_bid: int = 0
+    no_ask: int = 0
+    volume: int = 0
+    open_interest: int = 0
+    close_time: Optional[str] = None  # ISO timestamp from REST API
+    timestamp: float = 0.0
+
+
 class V3StateContainer:
     """
     Central container for all V3 state management.
@@ -182,6 +215,11 @@ class V3StateContainer:
         # Whale queue state - data from whale tracker
         self._whale_state: Optional[WhaleQueueState] = None
         self._whale_state_version = 0  # Increment on each whale queue update
+
+        # Market prices state - real-time prices from ticker WebSocket
+        # Separate from position data to avoid overwriting position values
+        self._market_prices: Dict[str, MarketPriceData] = {}
+        self._market_prices_version = 0  # Increment on each market price update
 
         # Component health tracking
         self._component_health: Dict[str, ComponentHealth] = {}
@@ -395,14 +433,9 @@ class V3StateContainer:
         # Recalculate aggregates
         self._trading_state.position_count = len(self._trading_state.positions)
 
-        # Recalculate portfolio_value as sum of current market values
-        # Note: REST sync from Kalshi provides authoritative portfolio_value;
-        # this is a local estimate between syncs based on WebSocket updates.
-        new_portfolio_value = sum(
-            pos.get("market_exposure", 0)
-            for pos in self._trading_state.positions.values()
-        )
-        self._trading_state.portfolio_value = new_portfolio_value
+        # NOTE: Do NOT recalculate portfolio_value here.
+        # Kalshi REST API sync provides authoritative balance/portfolio_value.
+        # WebSocket position updates should only update position-specific fields.
 
         # Update version and timestamp
         self._trading_state_version += 1
@@ -410,7 +443,7 @@ class V3StateContainer:
 
         logger.debug(
             f"Position update complete: {len(self._trading_state.positions)} positions, "
-            f"portfolio_value={new_portfolio_value}¢, version={self._trading_state_version}"
+            f"version={self._trading_state_version}"
         )
 
         return True
@@ -570,6 +603,9 @@ class V3StateContainer:
         summary["settlements"] = list(self._settled_positions)
         summary["settlements_count"] = self._total_settlements_count
 
+        # Add market prices for positions (from ticker WebSocket, separate from position data)
+        summary["market_prices"] = self.get_market_prices_summary()
+
         return summary
 
     # ======== Session P&L Management ========
@@ -603,13 +639,13 @@ class V3StateContainer:
 
     def _format_position_details(self) -> List[Dict[str, Any]]:
         """
-        Format positions with P&L for frontend display.
+        Format positions with P&L and market data for frontend display.
 
-        Extracts full position data from TraderState and calculates
-        unrealized P&L per position for the frontend to display.
+        Extracts full position data from TraderState, calculates unrealized P&L,
+        and merges real-time market price data for each position.
 
         Returns:
-            List of position dicts with P&L metrics. Each position contains:
+            List of position dicts with P&L metrics and market data. Each contains:
                 - ticker: Market ticker
                 - position: Contract count (positive=YES, negative=NO)
                 - side: "yes" or "no"
@@ -618,6 +654,14 @@ class V3StateContainer:
                 - realized_pnl: Realized P&L in cents
                 - unrealized_pnl: Unrealized P&L in cents
                 - fees_paid: Fees paid in cents
+                - session_updated: Was this updated this session?
+                - last_updated: WebSocket update timestamp
+                - market_last: Last traded price (from market data)
+                - market_bid: Bid price appropriate for position side
+                - market_ask: Ask price appropriate for position side
+                - market_spread: yes_ask - yes_bid
+                - market_close_time: Market close time (ISO timestamp from REST)
+                - market_updated: Timestamp of market data update
         """
         if not self._trading_state:
             return []
@@ -630,7 +674,8 @@ class V3StateContainer:
             # Unrealized P&L = current value - cost basis
             unrealized_pnl = market_exposure - total_traded
 
-            details.append({
+            # Build position dict
+            position_data = {
                 "ticker": ticker,
                 "position": position_count,
                 "side": "yes" if position_count > 0 else "no",
@@ -639,9 +684,36 @@ class V3StateContainer:
                 "realized_pnl": pos.get("realized_pnl", 0),
                 "unrealized_pnl": unrealized_pnl,
                 "fees_paid": pos.get("fees_paid", 0),
-                "session_updated": ticker in self._session_updated_tickers,  # Was this updated this session?
-                "last_updated": pos.get("last_updated"),  # WebSocket update timestamp
-            })
+                "session_updated": ticker in self._session_updated_tickers,
+                "last_updated": pos.get("last_updated"),
+            }
+
+            # Merge market data from _market_prices
+            market_data = self._market_prices.get(ticker)
+            if market_data:
+                # Select bid/ask based on position side
+                # YES positions see yes_bid/yes_ask, NO positions see no_bid/no_ask
+                if position_count > 0:  # YES position
+                    position_data["market_bid"] = market_data.yes_bid
+                    position_data["market_ask"] = market_data.yes_ask
+                else:  # NO position
+                    position_data["market_bid"] = market_data.no_bid
+                    position_data["market_ask"] = market_data.no_ask
+
+                position_data["market_last"] = market_data.last_price
+                position_data["market_spread"] = market_data.yes_ask - market_data.yes_bid
+                position_data["market_close_time"] = market_data.close_time
+                position_data["market_updated"] = market_data.timestamp
+            else:
+                # No market data available - set to None
+                position_data["market_bid"] = None
+                position_data["market_ask"] = None
+                position_data["market_last"] = None
+                position_data["market_spread"] = None
+                position_data["market_close_time"] = None
+                position_data["market_updated"] = None
+
+            details.append(position_data)
 
         return details
 
@@ -745,6 +817,94 @@ class V3StateContainer:
                 "window_minutes": state.window_minutes,
                 "last_update": state.last_update,
             }
+        }
+
+    # ======== Market Prices State Management ========
+
+    def update_market_price(self, ticker: str, price_data: Dict[str, Any]) -> bool:
+        """
+        Update market price for a ticker from WebSocket ticker channel.
+
+        This stores real-time market prices SEPARATELY from position data.
+        It does NOT modify position values (total_traded, market_exposure).
+
+        Args:
+            ticker: Market ticker to update
+            price_data: Price data dict from WebSocket with keys:
+                - last_price: Last traded price in cents
+                - yes_bid: Best yes bid in cents
+                - yes_ask: Best yes ask in cents
+                - no_bid: Best no bid in cents
+                - no_ask: Best no ask in cents
+                - volume: Total volume traded
+                - open_interest: Active contracts
+                - timestamp: Unix timestamp
+
+        Returns:
+            True if price was updated
+        """
+        self._market_prices[ticker] = MarketPriceData(
+            ticker=ticker,
+            last_price=price_data.get("last_price", 0),
+            yes_bid=price_data.get("yes_bid", 0),
+            yes_ask=price_data.get("yes_ask", 0),
+            no_bid=price_data.get("no_bid", 0),
+            no_ask=price_data.get("no_ask", 0),
+            volume=price_data.get("volume", 0),
+            open_interest=price_data.get("open_interest", 0),
+            timestamp=price_data.get("timestamp", time.time()),
+        )
+        self._market_prices_version += 1
+        self._last_update = time.time()
+
+        logger.debug(
+            f"Market price updated: {ticker} = {price_data.get('last_price', 0)}c "
+            f"bid/ask={price_data.get('yes_bid', 0)}/{price_data.get('yes_ask', 0)}c"
+        )
+
+        return True
+
+    def get_market_price(self, ticker: str) -> Optional[MarketPriceData]:
+        """Get market price data for a specific ticker."""
+        return self._market_prices.get(ticker)
+
+    def get_all_market_prices(self) -> Dict[str, MarketPriceData]:
+        """Get all market prices."""
+        return self._market_prices.copy()
+
+    def clear_market_price(self, ticker: str) -> None:
+        """Remove market price for a ticker (when position is closed)."""
+        if ticker in self._market_prices:
+            del self._market_prices[ticker]
+            self._market_prices_version += 1
+            logger.debug(f"Market price cleared for {ticker}")
+
+    @property
+    def market_prices_version(self) -> int:
+        """Get market prices version (increments on change)."""
+        return self._market_prices_version
+
+    def get_market_prices_summary(self) -> Dict[str, Any]:
+        """
+        Get market prices summary for broadcasting.
+
+        Returns dictionary with prices for each ticker suitable
+        for frontend display.
+        """
+        prices = {}
+        for ticker, data in self._market_prices.items():
+            prices[ticker] = {
+                "last_price": data.last_price,
+                "yes_bid": data.yes_bid,
+                "yes_ask": data.yes_ask,
+                "spread": data.yes_ask - data.yes_bid if data.yes_ask and data.yes_bid else 0,
+                "timestamp": data.timestamp,
+            }
+
+        return {
+            "prices": prices,
+            "version": self._market_prices_version,
+            "ticker_count": len(prices),
         }
 
     # ======== Component Health Management ========
