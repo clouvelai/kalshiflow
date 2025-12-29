@@ -23,7 +23,7 @@ import time
 from typing import Dict, Any, Optional, List, TYPE_CHECKING
 from enum import Enum
 from dataclasses import dataclass, field
-from collections import deque
+from collections import deque, OrderedDict
 
 if TYPE_CHECKING:
     from ..clients.trading_client_integration import V3TradingClientIntegration
@@ -189,7 +189,10 @@ class TradingDecisionService:
         self._last_decision: Optional[TradingDecision] = None
 
         # Whale following state (in-memory, cleared on restart)
-        self._followed_whales: Dict[str, FollowedWhale] = {}
+        # Bounded with LRU eviction to prevent unbounded memory growth
+        self._followed_whales: OrderedDict[str, FollowedWhale] = OrderedDict()
+        self._followed_whales_max_size = 1000  # Max entries before LRU eviction
+        self._followed_whales_max_age_seconds = 3600  # 1 hour TTL
 
         # Decision history for audit trail (last 100 decisions)
         self._decision_history: deque[WhaleDecision] = deque(maxlen=100)
@@ -211,7 +214,30 @@ class TradingDecisionService:
         logger.info(f"Trading Decision Service initialized with strategy: {strategy.value}")
         if whale_tracker and strategy == TradingStrategy.WHALE_FOLLOWER:
             logger.info("Whale Follower strategy enabled - will follow big bets")
-    
+
+    def _prune_followed_whales(self) -> None:
+        """
+        Remove old entries to prevent unbounded memory growth.
+
+        Called before adding new whales to maintain bounds:
+        - Removes entries older than 1 hour (TTL)
+        - Enforces max size of 1000 with LRU eviction (oldest first)
+        """
+        now = time.time()
+        cutoff_time = now - self._followed_whales_max_age_seconds
+
+        # Remove entries older than TTL
+        to_remove = [
+            whale_id for whale_id, fw in self._followed_whales.items()
+            if fw.placed_at < cutoff_time
+        ]
+        for whale_id in to_remove:
+            del self._followed_whales[whale_id]
+
+        # LRU eviction if over max size (remove oldest entries)
+        while len(self._followed_whales) > self._followed_whales_max_size:
+            self._followed_whales.popitem(last=False)  # Remove oldest (first inserted)
+
     async def evaluate_market(
         self, 
         market: str, 
@@ -568,6 +594,9 @@ class TradingDecisionService:
                     market_ticker = decision.market
                     timestamp_ms = 0
 
+                # Prune old entries before adding new to maintain bounds
+                self._prune_followed_whales()
+
                 self._followed_whales[whale_id] = FollowedWhale(
                     whale_id=whale_id,
                     our_order_id=order_id,
@@ -578,6 +607,8 @@ class TradingDecisionService:
                     price_cents=decision.price or 0,
                     whale_size_cents=whale_size_cents
                 )
+                # Move to end for LRU ordering (most recently accessed)
+                self._followed_whales.move_to_end(whale_id)
 
                 # Record the successful follow decision in audit history
                 self._record_whale_decision(
