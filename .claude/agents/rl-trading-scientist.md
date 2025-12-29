@@ -315,24 +315,81 @@ When RL work resumes:
 
 Maintain these documents in priority order:
 
-1. **research/RESEARCH_JOURNAL.md** ⭐ PRIMARY
+1. **research/RESEARCH_JOURNAL.md** - PRIMARY
    - Your persistent memory across sessions
    - Hypothesis tracker, session logs, active questions
    - READ THIS FIRST, UPDATE THIS ALWAYS
 
-2. **research/strategies/MVP_STRATEGY_IDEAS.md**
+2. **backend/src/kalshiflow_rl/traderv3/planning/VALIDATED_STRATEGIES.md** - IMPLEMENTATION BRIDGE
+   - Single source of truth for what strategies should be implemented
+   - Maintained BY the quant agent, consumed BY the trader-specialist agent
+   - Contains implementation specifications for each validated strategy
+   - UPDATE THIS when you validate or reject strategies
+   - See "Strategy Validation Workflow" section below
+
+3. **research/strategies/MVP_STRATEGY_IDEAS.md**
    - Detailed analysis writeups for major research efforts
    - Deep dives on specific hypotheses
 
-3. **research/strategies/validated/*.md**
+4. **research/strategies/validated/*.md**
    - Proven strategies with full documentation
    - Signal definition, rules, expected performance
 
-4. **research/strategies/rejected/*.md**
+5. **research/strategies/rejected/*.md**
    - Failed strategies WITH LEARNINGS
    - Why they failed, what we learned, what to try next
 
 *Note: The `kalshiflow_rl/rl-assessment/` docs are for old RL model-based approaches. Focus on fundamental trade pattern analysis first.*
+
+---
+
+## Strategy Validation Workflow
+
+When you validate a new strategy or reject one, follow this workflow:
+
+### When VALIDATING a Strategy:
+
+1. **Update RESEARCH_JOURNAL.md**:
+   - Add to "Resolved Questions" table
+   - Update "Hypothesis Tracker" with status = Validated
+   - Document findings in session log
+
+2. **Update VALIDATED_STRATEGIES.md**:
+   - Add new strategy entry with full specification:
+     - Strategy ID (S###)
+     - Statistical validation metrics (markets, win rate, edge, profit)
+     - Entry/exit conditions
+     - Implementation specification (code snippets)
+     - Risk management parameters
+     - Expected performance table
+   - Update the Strategy Index table
+   - Add to appropriate priority tier
+
+3. **Notify for Implementation**:
+   - Mark priority level (P0 = immediate, P1 = next, P2 = backlog)
+   - Ensure implementation spec is complete enough for trader-specialist
+
+### When REJECTING a Strategy:
+
+1. **Update RESEARCH_JOURNAL.md**:
+   - Add to "Dead Ends" section
+   - Update "Hypothesis Tracker" with status = Rejected
+   - Document WHY it failed
+
+2. **Update VALIDATED_STRATEGIES.md**:
+   - Add to "Rejected Strategies" table
+   - Include reason for rejection
+   - Document any learnings
+
+### Strategy Document Ownership
+
+| Document | Owner | Consumers |
+|----------|-------|-----------|
+| RESEARCH_JOURNAL.md | Quant Agent | Quant Agent (self) |
+| VALIDATED_STRATEGIES.md | Quant Agent | kalshi-flow-trader-specialist |
+| Trading implementation code | Trader Specialist | V3 Trader runtime |
+
+This ensures clear handoff: Quant validates -> Documents in VALIDATED_STRATEGIES.md -> Trader implements.
 
 ---
 

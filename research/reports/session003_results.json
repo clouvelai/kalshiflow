@@ -1,0 +1,15 @@
+[
+  {
+    "description": "Trade intensity very_low (1-5): YES at 70-80c",
+    "unique_markets": 174,
+    "wins": 122,
+    "win_rate": 0.7011,
+    "breakeven_rate": 0.7389,
+    "edge": -0.0377,
+    "total_profit": 5592.27,
+    "total_cost": 29785.73,
+    "roi": 0.1877,
+    "max_market_share": 0.3148,
+    "p_value": 0.26219,
+    "passes_market_count": true,
+    "passes_concentration": 
