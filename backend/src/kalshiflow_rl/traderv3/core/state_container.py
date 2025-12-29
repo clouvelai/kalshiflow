@@ -216,6 +216,13 @@ class V3StateContainer:
         self._settled_positions: deque = deque(maxlen=50)
         self._total_settlements_count = 0
 
+        # Session cash flow tracking (resets each trader startup)
+        # Tracks only activity during THIS session, not existing positions
+        self._session_cash_invested: int = 0      # Cents spent on orders this session
+        self._session_cash_received: int = 0      # Cents received from settlements this session
+        self._session_orders_count: int = 0       # Orders placed this session
+        self._session_settlements_count: int = 0  # Positions settled this session
+
         # Whale queue state - data from whale tracker
         self._whale_state: Optional[WhaleQueueState] = None
         self._whale_state_version = 0  # Increment on each whale queue update
@@ -402,23 +409,33 @@ class V3StateContainer:
                 if ticker in self._trading_state.positions:
                     # Capture position data before deletion for settlement history
                     closing_position = self._trading_state.positions[ticker]
+                    total_traded = closing_position.get("total_traded", 0)
+                    realized_pnl = position_data.get("realized_pnl", 0)
+
                     settlement = {
                         "ticker": ticker,
                         "position": closing_position.get("position", 0),
                         "side": "yes" if closing_position.get("position", 0) > 0 else "no",
-                        "total_traded": closing_position.get("total_traded", 0),
+                        "total_traded": total_traded,
                         "market_exposure": closing_position.get("market_exposure", 0),
-                        "realized_pnl": position_data.get("realized_pnl", 0),
+                        "realized_pnl": realized_pnl,
                         "fees_paid": position_data.get("fees_paid", 0),
                         "closed_at": time.time(),
                     }
                     self._settled_positions.appendleft(settlement)
                     self._total_settlements_count += 1
 
+                    # Track session cash flow: cash received = cost basis + realized P&L
+                    # This represents the actual payout from the settlement
+                    cash_received = total_traded + realized_pnl
+                    self._session_cash_received += max(0, cash_received)  # Can't receive negative cash
+                    self._session_settlements_count += 1
+
                     del self._trading_state.positions[ticker]
                     logger.info(
                         f"Position closed: {ticker}, "
-                        f"realized_pnl={settlement['realized_pnl']}¢"
+                        f"realized_pnl={realized_pnl}¢, cash_received={cash_received}¢ | "
+                        f"Session totals: received={self._session_cash_received}¢, settlements={self._session_settlements_count}"
                     )
             else:
                 # Update or add position - MERGE to preserve fields not in WebSocket update
@@ -592,11 +609,17 @@ class V3StateContainer:
 
         # Add session P&L if initialized (includes realized/unrealized breakdown)
         if self._session_pnl_state and self._trading_state:
-            summary["pnl"] = self._session_pnl_state.compute_pnl(
+            pnl = self._session_pnl_state.compute_pnl(
                 self._trading_state.balance,
                 self._trading_state.portfolio_value,
                 positions_details
             )
+            # Add session cash flow metrics
+            pnl["session_cash_invested"] = self._session_cash_invested
+            pnl["session_cash_received"] = self._session_cash_received
+            pnl["session_orders_count"] = self._session_orders_count
+            pnl["session_settlements_count"] = self._session_settlements_count
+            summary["pnl"] = pnl
 
         # Add session-updated positions info
         summary["session_updates"] = {
@@ -641,6 +664,32 @@ class V3StateContainer:
                 f"{balance + portfolio_value} cents "
                 f"(balance={balance}, portfolio={portfolio_value})"
             )
+
+    def record_order_fill(self, cost_cents: int, contracts: int = 1) -> None:
+        """
+        Record cash spent on an order fill during this session.
+
+        Called by TradingDecisionService after a successful order execution
+        to track session cash flow metrics.
+
+        Args:
+            cost_cents: Total cost of the order in cents (price × contracts)
+            contracts: Number of contracts filled (for logging)
+
+        Side Effects:
+            - Increments _session_cash_invested by cost_cents
+            - Increments _session_orders_count by 1
+            - Increments _trading_state_version for change detection
+        """
+        self._session_cash_invested += cost_cents
+        self._session_orders_count += 1
+        self._trading_state_version += 1
+        self._last_update = time.time()
+
+        logger.info(
+            f"Order fill recorded: {contracts} contracts @ {cost_cents}¢ | "
+            f"Session totals: invested={self._session_cash_invested}¢, orders={self._session_orders_count}"
+        )
 
     def _format_position_details(self) -> List[Dict[str, Any]]:
         """

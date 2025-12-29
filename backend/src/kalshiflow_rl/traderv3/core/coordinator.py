@@ -158,6 +158,8 @@ class V3Coordinator:
             )
             # Connect whale execution service to WebSocket manager for decision history
             self._websocket_manager.set_whale_execution_service(self._whale_execution_service)
+            # Register with health monitor for health tracking
+            self._health_monitor.set_whale_execution_service(self._whale_execution_service)
             logger.info("WhaleExecutionService initialized for event-driven whale following")
 
         # Initialize YES 80-90c service (if trading client available and strategy is YES_80_90)
@@ -176,6 +178,8 @@ class V3Coordinator:
                     tier_a_contracts=config.yes8090_tier_a_contracts,
                     max_concurrent=config.yes8090_max_concurrent,
                 )
+                # Register with health monitor for health tracking
+                self._health_monitor.set_yes_80_90_service(self._yes_80_90_service)
                 logger.info("Yes8090Service initialized for YES at 80-90c trading strategy")
 
         # Position listener for real-time position updates (initialized later if trading client available)
@@ -586,6 +590,9 @@ class V3Coordinator:
             # Set on status reporter for health broadcasting
             self._status_reporter.set_position_listener(self._position_listener)
 
+            # Register with health monitor for health tracking
+            self._health_monitor.set_position_listener(self._position_listener)
+
             logger.info("✅ Real-time position listener active")
 
             await self._event_bus.emit_system_activity(
@@ -670,6 +677,9 @@ class V3Coordinator:
             # Set on status reporter for health broadcasting
             self._status_reporter.set_market_ticker_listener(self._market_ticker_listener)
 
+            # Register with health monitor for health tracking
+            self._health_monitor.set_market_ticker_listener(self._market_ticker_listener)
+
             logger.info("Market ticker listener active")
 
             await self._event_bus.emit_system_activity(
@@ -752,6 +762,9 @@ class V3Coordinator:
 
             # Set on status reporter for health broadcasting
             self._status_reporter.set_market_price_syncer(self._market_price_syncer)
+
+            # Register with health monitor for health tracking
+            self._health_monitor.set_market_price_syncer(self._market_price_syncer)
 
             # Set on websocket manager for initial state sends to new clients
             self._websocket_manager.set_market_price_syncer(self._market_price_syncer)

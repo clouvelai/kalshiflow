@@ -12,6 +12,15 @@ const isRecentWsUpdate = (lastWsUpdateTime, thresholdSeconds = 3) => {
 };
 
 /**
+ * Check if a market has closed (close time is in the past)
+ */
+const isMarketClosed = (closeTime) => {
+  if (!closeTime) return false;
+  const closeDate = new Date(closeTime);
+  return closeDate.getTime() < Date.now();
+};
+
+/**
  * LiveIndicator - Shows when data is being updated in real-time via WebSocket
  */
 const LiveIndicator = memo(({ isLive, lastUpdateTime }) => {
@@ -90,50 +99,64 @@ const PositionRow = memo(({ pos, index, isRecentlyChanged }) => {
   const hasLiveData = isRecentWsUpdate(pos.last_ws_update_time, 5);
   const isWsSource = pos.price_source === 'ws_ticker';
 
+  // Check if market has closed (pending settlement)
+  const marketClosed = isMarketClosed(pos.market_close_time);
+
   return (
     <tr
-      className={`border-b border-gray-700/30 hover:bg-gray-800/50 transition-all duration-500
-        ${isRecentlyChanged
-          ? 'border-l-2 border-l-emerald-400/70 bg-emerald-900/10'
-          : hasLiveData
-            ? 'border-l-2 border-l-emerald-500/40 bg-emerald-900/5'
-            : 'border-l-2 border-l-transparent'
+      className={`border-b border-gray-700/30 transition-all duration-500
+        ${marketClosed
+          ? 'opacity-50 bg-gray-900/30'
+          : isRecentlyChanged
+            ? 'border-l-2 border-l-emerald-400/70 bg-emerald-900/10 hover:bg-gray-800/50'
+            : hasLiveData
+              ? 'border-l-2 border-l-emerald-500/40 bg-emerald-900/5 hover:bg-gray-800/50'
+              : 'border-l-2 border-l-transparent hover:bg-gray-800/50'
         }`}
     >
-      <td className="px-3 py-2 font-mono text-gray-300 text-xs">
+      <td className="px-3 py-2 font-mono text-xs">
         <div className="flex items-center gap-1.5">
-          {/* Live indicator for WebSocket updates */}
-          <LiveIndicator isLive={hasLiveData} lastUpdateTime={pos.last_ws_update_time} />
-          {pos.ticker}
+          {/* Live indicator for WebSocket updates (hide for closed markets) */}
+          {!marketClosed && <LiveIndicator isLive={hasLiveData} lastUpdateTime={pos.last_ws_update_time} />}
+          {marketClosed && <span className="w-2 h-2 rounded-full bg-yellow-500/50" title="Pending settlement" />}
+          <span className={marketClosed ? 'text-gray-500' : 'text-gray-300'}>{pos.ticker}</span>
         </div>
       </td>
       <td className="px-3 py-2 text-center">
         <span className={`px-2 py-0.5 rounded text-xs font-bold uppercase ${
-          pos.side === 'yes'
-            ? 'bg-green-900/30 text-green-400 border border-green-700/50'
-            : 'bg-red-900/30 text-red-400 border border-red-700/50'
+          marketClosed
+            ? 'bg-gray-800/50 text-gray-500 border border-gray-700/50'
+            : pos.side === 'yes'
+              ? 'bg-green-900/30 text-green-400 border border-green-700/50'
+              : 'bg-red-900/30 text-red-400 border border-red-700/50'
         }`}>
           {pos.side}
         </span>
       </td>
-      <td className="px-3 py-2 text-right font-mono text-gray-300">{qty}</td>
-      <td className="px-3 py-2 text-right font-mono text-gray-400">{costPerContract}c</td>
-      <td className={`px-3 py-2 text-right font-mono ${hasLiveData ? 'text-emerald-300' : 'text-gray-300'}`}>
+      <td className={`px-3 py-2 text-right font-mono ${marketClosed ? 'text-gray-500' : 'text-gray-300'}`}>{qty}</td>
+      <td className={`px-3 py-2 text-right font-mono ${marketClosed ? 'text-gray-600' : 'text-gray-400'}`}>{costPerContract}c</td>
+      <td className={`px-3 py-2 text-right font-mono ${marketClosed ? 'text-gray-500' : hasLiveData ? 'text-emerald-300' : 'text-gray-300'}`}>
         {valuePerContract}c
-        {hasLiveData && <span className="ml-1 text-emerald-500 text-[10px]">LIVE</span>}
+        {!marketClosed && hasLiveData && <span className="ml-1 text-emerald-500 text-[10px]">LIVE</span>}
       </td>
-      <td className={`px-3 py-2 text-right font-mono ${getPnLColor(valuePerContract - costPerContract)}`}>
+      <td className={`px-3 py-2 text-right font-mono ${marketClosed ? 'text-gray-600' : getPnLColor(valuePerContract - costPerContract)}`}>
         {valuePerContract - costPerContract >= 0 ? '+' : ''}{valuePerContract - costPerContract}c
       </td>
-      <td className={`px-3 py-2 text-right font-mono font-bold ${getPnLColor(unrealizedPnL)}`}>
+      <td className={`px-3 py-2 text-right font-mono font-bold ${marketClosed ? 'text-gray-500' : getPnLColor(unrealizedPnL)}`}>
         {formatPnLCurrency(unrealizedPnL)}
         <span className="text-xs ml-1 opacity-70">({pnlPercent}%)</span>
       </td>
       <td className="px-3 py-2 text-center font-mono text-xs">
         {pos.market_close_time ? (
-          <span className="text-gray-400" title={new Date(pos.market_close_time).toLocaleString()}>
-            {formatRelativeTime(pos.market_close_time)}
-          </span>
+          marketClosed ? (
+            <span className="px-2 py-0.5 rounded bg-yellow-900/30 text-yellow-500 border border-yellow-700/30 text-[10px] font-medium">
+              SETTLING
+            </span>
+          ) : (
+            <span className="text-gray-400" title={new Date(pos.market_close_time).toLocaleString()}>
+              {formatRelativeTime(pos.market_close_time)}
+            </span>
+          )
         ) : (
           <span className="text-gray-600">-</span>
         )}
@@ -307,7 +330,26 @@ const PositionListPanel = ({ positions, positionListener, sessionUpdates }) => {
     return null;
   }
 
-  // Separate YES/NO positions for summary cards
+  // Sort positions: open markets by close time (soonest first), then settling at bottom
+  const sortedPositions = [...positions].sort((a, b) => {
+    const now = Date.now();
+    const aTime = a.market_close_time ? new Date(a.market_close_time).getTime() : Infinity;
+    const bTime = b.market_close_time ? new Date(b.market_close_time).getTime() : Infinity;
+    const aClosed = aTime < now;
+    const bClosed = bTime < now;
+
+    // Settling positions go to bottom
+    if (aClosed && !bClosed) return 1;
+    if (!aClosed && bClosed) return -1;
+
+    // Within same group, sort by close time (soonest first for open, most recent for settling)
+    return aTime - bTime;
+  });
+
+  // Count settling positions for header display
+  const settlingCount = positions.filter(p => isMarketClosed(p.market_close_time)).length;
+
+  // Separate YES/NO positions for summary cards (use unsorted for consistent aggregation)
   const yesPositions = positions.filter(p => p.side === 'yes');
   const noPositions = positions.filter(p => p.side === 'no');
 
@@ -325,7 +367,9 @@ const PositionListPanel = ({ positions, positionListener, sessionUpdates }) => {
         <div className="flex items-center space-x-2">
           <Briefcase className="w-4 h-4 text-purple-400" />
           <h3 className="text-sm font-bold text-gray-300 uppercase tracking-wider">Open Positions</h3>
-          <span className="text-xs text-gray-500">({positions.length})</span>
+          <span className="text-xs text-gray-500">
+            ({positions.length - settlingCount}{settlingCount > 0 && <span className="text-yellow-500/70"> + {settlingCount} settling</span>})
+          </span>
           {/* Position listener status indicator */}
           {positionListener && (
             <div className="flex items-center gap-1.5 ml-3 px-2 py-0.5 bg-gray-800/50 rounded-full">
@@ -400,7 +444,7 @@ const PositionListPanel = ({ positions, positionListener, sessionUpdates }) => {
                 </tr>
               </thead>
               <tbody>
-                {positions.map((pos, index) => (
+                {sortedPositions.map((pos, index) => (
                   <PositionRow
                     key={pos.ticker || index}
                     pos={pos}

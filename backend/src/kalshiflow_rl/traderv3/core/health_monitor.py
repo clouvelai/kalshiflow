@@ -21,7 +21,12 @@ if TYPE_CHECKING:
     from ..clients.orderbook_integration import V3OrderbookIntegration
     from ..clients.trading_client_integration import V3TradingClientIntegration
     from ..clients.trades_integration import V3TradesIntegration
+    from ..clients.market_ticker_listener import MarketTickerListener
+    from ..clients.position_listener import PositionListener
     from ..services.whale_tracker import WhaleTracker
+    from ..services.whale_execution_service import WhaleExecutionService
+    from ..services.market_price_syncer import MarketPriceSyncer
+    from ..services.yes_80_90_service import Yes8090Service
     from ..config.environment import V3Config
 
 logger = logging.getLogger("kalshiflow_rl.traderv3.core.health_monitor")
@@ -32,7 +37,19 @@ CRITICAL_COMPONENTS: Set[str] = {"state_machine", "event_bus", "websocket_manage
 
 # Components that can be unhealthy (system continues with degraded component)
 # Failures in these components are logged but don't trigger ERROR state
-NON_CRITICAL_COMPONENTS: Set[str] = {"orderbook_integration", "trades_integration", "whale_tracker", "health_monitor"}
+NON_CRITICAL_COMPONENTS: Set[str] = {
+    "orderbook_integration",
+    "trades_integration",
+    "whale_tracker",
+    "health_monitor",
+    # WebSocket listeners for real-time data
+    "market_ticker_listener",
+    "position_listener",
+    # Services
+    "market_price_syncer",
+    "whale_execution_service",
+    "yes_80_90_service",
+}
 
 
 class V3HealthMonitor:
@@ -56,7 +73,13 @@ class V3HealthMonitor:
         orderbook_integration: 'V3OrderbookIntegration',
         trading_client_integration: Optional['V3TradingClientIntegration'] = None,
         trades_integration: Optional['V3TradesIntegration'] = None,
-        whale_tracker: Optional['WhaleTracker'] = None
+        whale_tracker: Optional['WhaleTracker'] = None,
+        # New components for health monitoring
+        market_ticker_listener: Optional['MarketTickerListener'] = None,
+        position_listener: Optional['PositionListener'] = None,
+        market_price_syncer: Optional['MarketPriceSyncer'] = None,
+        whale_execution_service: Optional['WhaleExecutionService'] = None,
+        yes_80_90_service: Optional['Yes8090Service'] = None
     ):
         """
         Initialize health monitor.
@@ -71,6 +94,11 @@ class V3HealthMonitor:
             trading_client_integration: Optional trading client integration
             trades_integration: Optional trades integration for public trades stream
             whale_tracker: Optional whale tracker for big bet detection
+            market_ticker_listener: Optional real-time market price listener
+            position_listener: Optional real-time position listener
+            market_price_syncer: Optional REST market price syncer
+            whale_execution_service: Optional whale execution service
+            yes_80_90_service: Optional YES 80-90c strategy service
         """
         self._config = config
         self._state_machine = state_machine
@@ -81,6 +109,12 @@ class V3HealthMonitor:
         self._trading_client_integration = trading_client_integration
         self._trades_integration = trades_integration
         self._whale_tracker = whale_tracker
+        # New components
+        self._market_ticker_listener = market_ticker_listener
+        self._position_listener = position_listener
+        self._market_price_syncer = market_price_syncer
+        self._whale_execution_service = whale_execution_service
+        self._yes_80_90_service = yes_80_90_service
 
         # Health monitoring state
         self._monitoring_task: Optional[asyncio.Task] = None
@@ -88,7 +122,28 @@ class V3HealthMonitor:
         self._health_check_count = 0
 
         logger.info("Health monitor initialized")
-    
+
+    # Setter methods for components created after health monitor initialization
+    def set_market_ticker_listener(self, listener: Optional['MarketTickerListener']) -> None:
+        """Set market ticker listener reference (created during startup)."""
+        self._market_ticker_listener = listener
+
+    def set_position_listener(self, listener: Optional['PositionListener']) -> None:
+        """Set position listener reference (created during startup)."""
+        self._position_listener = listener
+
+    def set_market_price_syncer(self, syncer: Optional['MarketPriceSyncer']) -> None:
+        """Set market price syncer reference (created during startup)."""
+        self._market_price_syncer = syncer
+
+    def set_whale_execution_service(self, service: Optional['WhaleExecutionService']) -> None:
+        """Set whale execution service reference."""
+        self._whale_execution_service = service
+
+    def set_yes_80_90_service(self, service: Optional['Yes8090Service']) -> None:
+        """Set YES 80-90c service reference."""
+        self._yes_80_90_service = service
+
     async def start(self) -> None:
         """Start health monitoring."""
         if self._running:
@@ -184,6 +239,26 @@ class V3HealthMonitor:
         # Add whale tracker health if configured
         if self._whale_tracker:
             components_health["whale_tracker"] = self._whale_tracker.is_healthy()
+
+        # Add market ticker listener health if configured
+        if self._market_ticker_listener:
+            components_health["market_ticker_listener"] = self._market_ticker_listener.is_healthy()
+
+        # Add position listener health if configured
+        if self._position_listener:
+            components_health["position_listener"] = self._position_listener.is_healthy()
+
+        # Add market price syncer health if configured
+        if self._market_price_syncer:
+            components_health["market_price_syncer"] = self._market_price_syncer.is_healthy()
+
+        # Add whale execution service health if configured
+        if self._whale_execution_service:
+            components_health["whale_execution_service"] = self._whale_execution_service.is_healthy()
+
+        # Add YES 80-90c service health if configured
+        if self._yes_80_90_service:
+            components_health["yes_80_90_service"] = self._yes_80_90_service.is_healthy()
 
         return components_health
     
@@ -320,6 +395,16 @@ class V3HealthMonitor:
             return "trades stream unavailable"
         elif component == "whale_tracker":
             return "whale detection unavailable"
+        elif component == "market_ticker_listener":
+            return "real-time prices unavailable"
+        elif component == "position_listener":
+            return "real-time positions unavailable"
+        elif component == "market_price_syncer":
+            return "price sync unavailable"
+        elif component == "whale_execution_service":
+            return "whale execution unavailable"
+        elif component == "yes_80_90_service":
+            return "YES 80-90c strategy unavailable"
         else:
             return "unavailable"
 

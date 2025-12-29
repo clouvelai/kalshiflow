@@ -546,9 +546,13 @@ class TradingDecisionService:
 
             order_id = response.get("order", {}).get("order_id", "unknown")
 
+            # Calculate order cost and record cash flow
+            order_cost_cents = decision.quantity * (decision.price or 0)
+            self._state_container.record_order_fill(order_cost_cents, decision.quantity)
+
             logger.info(
                 f"BUY order placed: {decision.quantity} {decision.side} {decision.market} "
-                f"@ {decision.price}c (order_id: {order_id[:8]}...)"
+                f"@ {decision.price}c = {order_cost_cents}¢ (order_id: {order_id[:8]}...)"
             )
 
             # Track whale follow if this is a whale following decision

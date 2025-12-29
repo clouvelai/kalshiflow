@@ -10,7 +10,10 @@ import {
   Shield,
   ShoppingCart,
   FileText,
-  Clock
+  Clock,
+  ArrowUpCircle,
+  ArrowDownCircle,
+  Hash
 } from 'lucide-react';
 
 /**
@@ -179,40 +182,58 @@ const TradingSessionPanel = ({ tradingState, lastUpdateTime }) => {
         </div>
       </div>
 
-      {/* P&L Breakdown - Row 2 */}
+      {/* Session Cash Flow - Row 2 */}
       {pnl && (
-        <div className="grid grid-cols-2 gap-4 mb-4">
-          {/* Realized P&L */}
-          <div className={`bg-gray-800/30 rounded-lg p-3 border ${
-            (pnl.realized_pnl || 0) >= 0 ? 'border-emerald-700/30' : 'border-orange-700/30'
-          }`}>
+        <div className="grid grid-cols-4 gap-4 mb-4">
+          {/* Cash Invested */}
+          <div className="bg-gray-800/30 rounded-lg p-3 border border-amber-700/30">
             <div className="flex items-center space-x-2 mb-1">
-              <CheckCircle className="w-3 h-3 text-emerald-400" />
-              <span className="text-xs text-gray-500 uppercase" title="P&L from closed/settled positions">
-                Realized P&L
+              <ArrowUpCircle className="w-3 h-3 text-amber-400" />
+              <span className="text-xs text-gray-500 uppercase" title="Cash spent on orders this session">
+                Cash Invested
               </span>
             </div>
-            <div className={`text-lg font-mono font-bold ${
-              (pnl.realized_pnl || 0) >= 0 ? 'text-emerald-400' : 'text-orange-400'
-            }`}>
-              {formatPnLCurrency(pnl.realized_pnl ?? 0)}
+            <div className="text-lg font-mono font-bold text-amber-400">
+              {formatCurrency(pnl.session_cash_invested ?? 0)}
             </div>
           </div>
 
-          {/* Unrealized P&L */}
-          <div className={`bg-gray-800/30 rounded-lg p-3 border ${
-            (pnl.unrealized_pnl || 0) >= 0 ? 'border-blue-700/30' : 'border-pink-700/30'
-          }`}>
+          {/* Cash Received */}
+          <div className="bg-gray-800/30 rounded-lg p-3 border border-cyan-700/30">
             <div className="flex items-center space-x-2 mb-1">
-              <Activity className="w-3 h-3 text-blue-400" />
-              <span className="text-xs text-gray-500 uppercase" title="Paper P&L on open positions">
-                Unrealized P&L
+              <ArrowDownCircle className="w-3 h-3 text-cyan-400" />
+              <span className="text-xs text-gray-500 uppercase" title="Cash received from settlements this session">
+                Cash Received
               </span>
             </div>
-            <div className={`text-lg font-mono font-bold ${
-              (pnl.unrealized_pnl || 0) >= 0 ? 'text-blue-400' : 'text-pink-400'
-            }`}>
-              {formatPnLCurrency(pnl.unrealized_pnl ?? 0)}
+            <div className="text-lg font-mono font-bold text-cyan-400">
+              {formatCurrency(pnl.session_cash_received ?? 0)}
+            </div>
+          </div>
+
+          {/* Orders Placed */}
+          <div className="bg-gray-800/30 rounded-lg p-3 border border-purple-700/30">
+            <div className="flex items-center space-x-2 mb-1">
+              <Hash className="w-3 h-3 text-purple-400" />
+              <span className="text-xs text-gray-500 uppercase" title="Orders placed this session">
+                Orders Placed
+              </span>
+            </div>
+            <div className="text-lg font-mono font-bold text-purple-400">
+              {pnl.session_orders_count ?? 0}
+            </div>
+          </div>
+
+          {/* Settled Positions */}
+          <div className="bg-gray-800/30 rounded-lg p-3 border border-orange-700/30">
+            <div className="flex items-center space-x-2 mb-1">
+              <CheckCircle className="w-3 h-3 text-orange-400" />
+              <span className="text-xs text-gray-500 uppercase" title="Positions settled this session">
+                Settled
+              </span>
+            </div>
+            <div className="text-lg font-mono font-bold text-orange-400">
+              {pnl.session_settlements_count ?? 0}
             </div>
           </div>
         </div>
