@@ -852,3 +852,40 @@ class V3TradingClientIntegration:
     def order_groups_supported(self) -> bool:
         """Check if order groups are supported by API."""
         return self._order_groups_supported
+
+    # ========================
+    # Market Data Methods
+    # ========================
+
+    async def get_markets(self, tickers: List[str]) -> List[Dict[str, Any]]:
+        """
+        Fetch market data for specific tickers.
+
+        GET /trade-api/v2/markets?tickers=TICKER1,TICKER2,...
+
+        Args:
+            tickers: List of market tickers to fetch
+
+        Returns:
+            List of market data dicts with bid/ask prices, close_time, etc.
+
+        Raises:
+            RuntimeError: If not connected
+        """
+        if not self._connected:
+            raise RuntimeError("Cannot get markets - trading client not connected")
+
+        if not tickers:
+            return []
+
+        try:
+            response = await self._client.get_markets(tickers=tickers)
+            self._metrics.api_calls += 1
+            self._consecutive_api_errors = 0  # Reset on success
+            return response.get("markets", [])
+
+        except Exception as e:
+            logger.error(f"Failed to get markets: {e}")
+            self._metrics.api_errors += 1
+            self._consecutive_api_errors += 1
+            raise

@@ -62,6 +62,25 @@ This is the living journal of all research sessions. The quant agent MUST update
 
 ## Session Log
 
+### Session 002 - 2025-12-29
+**Objective**: Deep pattern hunting - explore untested hypotheses and find new trading edges
+**Continuing from**: Session 001 findings (whale consensus is anti-predictive)
+**Analyst**: Quant Agent (Opus 4.5)
+
+**Hypotheses to Test**:
+1. H007: Fade whale consensus (contrarian) - if following loses, fading should win
+2. H005: Time-of-day patterns - morning vs evening, hour-of-day effects
+3. H006: Category-specific efficiency - some categories less efficient?
+4. H008: New market mispricing - early trades have edge?
+5. H009 (NEW): Price velocity/momentum - rapid price moves create reversals?
+6. H010 (NEW): Trade sequencing patterns - order of trades predicts outcome?
+7. H011 (NEW): Volume-weighted signals - high-volume periods have different edge?
+8. H012 (NEW): Round number effects - prices cluster at 25/50/75c?
+
+**Session Status**: IN PROGRESS
+
+---
+
 ### Session 001 - 2024-12-28
 **Objective**: Analyze whale-following strategies from public trade feed
 **Duration**: ~2 hours

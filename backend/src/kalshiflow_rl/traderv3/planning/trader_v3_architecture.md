@@ -1,7 +1,7 @@
 # TRADER V3 Architecture Documentation
 
 > Machine-readable architecture reference for coding agents.
-> Last updated: 2024-12-28
+> Last updated: 2024-12-28 (comprehensive backend documentation update)
 
 ## 1. System Overview
 
@@ -140,16 +140,27 @@ TRADER V3 is an event-driven paper trading system for Kalshi prediction markets.
 - **File**: `core/state_container.py`
 - **Purpose**: Centralized state storage with versioning, change detection, and atomic updates
 - **Key Methods**:
-  - `update_trading_state(state, changes)` - Update trading data (returns bool if changed)
+  - `update_trading_state(state, changes)` - Update trading data from Kalshi sync (returns bool if changed)
+  - `update_single_position(ticker, position_data)` - Update single position from real-time WebSocket push
   - `update_component_health(name, healthy, details)` - Update component health
   - `update_machine_state(state, context, metadata)` - Update state machine reference
+  - `update_whale_queue(state)` - Update whale queue state from tracker
   - `get_full_state()` - Get complete state snapshot
-  - `get_trading_summary()` - Get trading state for WebSocket broadcast
+  - `get_trading_summary(order_group_id)` - Get trading state for WebSocket broadcast (includes settlements, P&L)
+  - `get_whale_summary()` - Get whale queue summary for WebSocket broadcast
+  - `initialize_session_pnl(balance, portfolio_value)` - Initialize session P&L tracking on first sync
+  - `set_component_degraded(component, is_degraded, reason)` - Track degraded components
   - `atomic_update(update_func)` - Thread-safe atomic state update
   - `compare_and_swap(expected_version, update_func)` - CAS operation
+- **Key State Types**:
+  - `_trading_state`: TraderState with positions, orders, balance, settlements
+  - `_session_pnl_state`: SessionPnLState for P&L tracking from session start
+  - `_whale_state`: WhaleQueueState for whale detection queue
+  - `_settled_positions`: Deque of last 50 settlements (synced from REST API)
+  - `_session_updated_tickers`: Set of tickers updated via WebSocket this session
 - **Emits Events**: None
-- **Subscribes To**: None
-- **Dependencies**: TraderState, StateChange
+- **Subscribes To**: `MARKET_POSITION_UPDATE` (via coordinator subscription)
+- **Dependencies**: TraderState, StateChange, SessionPnLState, WhaleQueueState
 
 #### V3HealthMonitor
 - **File**: `core/health_monitor.py`
@@ -168,11 +179,18 @@ TRADER V3 is an event-driven paper trading system for Kalshi prediction markets.
 - **Key Methods**:
   - `start()` / `stop()` - Start/stop reporting loops
   - `emit_status_update(context)` - Emit immediate status update
-  - `emit_trading_state()` - Broadcast trading state via WebSocket
+  - `emit_trading_state()` - Broadcast trading state via WebSocket (includes P&L, settlements, position listener health)
   - `set_started_at(timestamp)` - Set system start time for uptime calc
+  - `set_position_listener(position_listener)` - Set position listener for health reporting
+- **Broadcast Data** (via `emit_trading_state()`):
+  - `balance`, `portfolio_value`, `position_count`, `order_count`
+  - `positions_details`: Per-position P&L with unrealized_pnl, realized_pnl, fees_paid
+  - `pnl`: Session P&L breakdown (realized, unrealized, total)
+  - `settlements`: Last 50 settlements with net_pnl calculation
+  - `position_listener`: Health status of real-time position WebSocket
 - **Emits Events**: `TRADER_STATUS` (via EventBus)
 - **Subscribes To**: None (polls state directly)
-- **Dependencies**: V3Config, V3StateMachine, EventBus, V3WebSocketManager, V3StateContainer, V3OrderbookIntegration, V3TradingClientIntegration
+- **Dependencies**: V3Config, V3StateMachine, EventBus, V3WebSocketManager, V3StateContainer, V3OrderbookIntegration, V3TradingClientIntegration, PositionListener (optional)
 
 #### V3WebSocketManager
 - **File**: `core/websocket_manager.py`
@@ -238,16 +256,27 @@ TRADER V3 is an event-driven paper trading system for Kalshi prediction markets.
 - **Purpose**: Direct API client for Kalshi demo (paper) trading environment
 - **Key Methods**:
   - `connect()` / `disconnect()` - API connection
-  - `get_account_info()` - Get balance and portfolio value
+  - `get_account_info()` - Get balance and portfolio value (cents)
   - `get_positions()` - Get all positions
-  - `get_orders()` - Get open orders
-  - `create_order()` - Place new order
-  - `cancel_order()` - Cancel order
-  - `create_order_group()` - Create portfolio limit group
-  - `get_order_group()` - Get order group status
+  - `get_orders(ticker, status)` - Get orders (default: resting/open only)
+  - `get_settlements()` - Get all settlements (fee_cost is string in dollars, others in cents)
+  - `create_order(ticker, action, side, count, price, type, order_group_id)` - Place new order
+  - `cancel_order(order_id)` - Cancel single order
+  - `batch_cancel_orders(order_ids)` - Cancel multiple orders with fallback
+  - `get_fills(ticker)` - Get trade fills
+  - `get_markets(limit)` - Get available markets
+  - `create_order_group(contracts_limit)` - Create portfolio limit group
+  - `get_order_group(order_group_id)` - Get order group status
+  - `update_order_group(order_group_id, contracts_limit)` - Update order group limits
+  - `reset_order_group(order_group_id)` - Reset order group (clears positions/orders)
+  - `delete_order_group(order_group_id)` - Delete order group
+  - `list_order_groups(status)` - List all order groups
+- **Safety Validations**:
+  - Validates URLs point to demo-api.kalshi.co (not production)
+  - Raises KalshiDemoAuthError if production URLs detected
 - **Emits Events**: None
 - **Subscribes To**: None
-- **Dependencies**: None (uses httpx for REST calls)
+- **Dependencies**: aiohttp, websockets, KalshiAuth
 
 #### TradesClient
 - **File**: `clients/trades_client.py`
@@ -287,16 +316,24 @@ TRADER V3 is an event-driven paper trading system for Kalshi prediction markets.
 - **Purpose**: WebSocket listener for real-time position updates from Kalshi
 - **Key Methods**:
   - `start()` / `stop()` - Lifecycle management
-  - `is_healthy()` - Check if listener is running and WebSocket connected
-  - `get_metrics()` - Get listener statistics (positions received/processed)
+  - `is_healthy()` - Check if listener is running and WebSocket connected (handles .closed attribute safely)
+  - `get_metrics()` - Get listener statistics (positions received/processed, connection count)
   - `get_status()` - Get full status for monitoring
-  - `get_health_details()` - Get detailed health information
+  - `get_health_details()` - Get detailed health information for initialization tracker
 - **Features**:
   - Subscribes to Kalshi `market_positions` WebSocket channel
   - Automatic reconnection with configurable delay
   - Heartbeat monitoring for connection health
   - Centi-cents to cents conversion (Kalshi API uses centi-cents)
-- **Emits Events**: `MARKET_POSITION` (via EventBus.emit_market_position_update)
+  - WebSocket closed state detection with fallback (handles different WS library attributes)
+- **Position Data Fields** (from WebSocket, after conversion):
+  - `position`: Contract count (+ long, - short)
+  - `market_exposure`: Current market value in cents (was position_cost in centi-cents)
+  - `realized_pnl`: Realized P&L in cents
+  - `fees_paid`: Fees in cents
+  - `volume`: Total contracts traded
+  - Note: `total_traded` (cost basis) NOT included - preserved from REST sync via merge
+- **Emits Events**: `MARKET_POSITION_UPDATE` (via EventBus.emit_market_position_update)
 - **Subscribes To**: None (listens to Kalshi WebSocket)
 - **Dependencies**: EventBus, KalshiAuth
 
@@ -304,7 +341,14 @@ TRADER V3 is an event-driven paper trading system for Kalshi prediction markets.
 
 #### TradingDecisionService
 - **File**: `services/trading_decision_service.py`
-- **Purpose**: Implements trading strategy logic and order execution. Strategies: HOLD, PAPER_TEST, RL_MODEL, CUSTOM. Note: WHALE_FOLLOWER strategy detection/timing is handled by WhaleExecutionService; this service executes the actual orders.
+- **Purpose**: Implements trading strategy logic and order execution. Strategies: HOLD, WHALE_FOLLOWER, PAPER_TEST, RL_MODEL, YES_80_90, CUSTOM. Note: WHALE_FOLLOWER strategy detection/timing is handled by WhaleExecutionService; this service executes the actual orders.
+- **Available Strategies** (TradingStrategy enum):
+  - `HOLD`: Never trade (safe default)
+  - `WHALE_FOLLOWER`: Follow big bets detected by WhaleTracker
+  - `PAPER_TEST`: Simple test trades for paper mode
+  - `RL_MODEL`: Use trained RL model (not yet integrated)
+  - `YES_80_90`: Buy YES at 80-90c (validated +5.1% edge strategy)
+  - `CUSTOM`: Custom strategy implementation
 - **Key Methods**:
   - `evaluate_market(market, orderbook)` - Generate trading decision
   - `execute_decision(decision)` - Execute a trading decision (used by WhaleExecutionService)
@@ -312,9 +356,18 @@ TRADER V3 is an event-driven paper trading system for Kalshi prediction markets.
   - `get_stats()` - Get service statistics
   - `get_followed_whale_ids()` - Get IDs of successfully followed whales
   - `get_followed_whales()` - Get full data for followed whales
+  - `get_decision_history(limit)` - Get recent whale decision history for audit display
+  - `get_decision_stats()` - Get whale decision statistics
+- **Key Classes**:
+  - `FollowedWhale`: Tracks whale trades we have followed (whale_id, order_id, market, side, count, price)
+  - `WhaleDecision`: Tracks decisions about whale trades (followed, skipped_age, skipped_position, etc.)
+  - `TradingDecision`: Represents a trading decision (action, market, side, quantity, price)
+- **Constants**:
+  - `WHALE_FOLLOW_CONTRACTS = 5`: Fixed contracts per whale follow
+  - `WHALE_MAX_AGE_SECONDS = 120`: Skip whales older than 2 minutes
 - **Emits Events**: `SYSTEM_ACTIVITY` (trading_decision, trading_error, whale_follow types)
 - **Subscribes To**: None
-- **Dependencies**: V3TradingClientIntegration, V3StateContainer, EventBus
+- **Dependencies**: V3TradingClientIntegration, V3StateContainer, EventBus, WhaleTracker (optional)
 
 #### WhaleTracker
 - **File**: `services/whale_tracker.py`
@@ -399,9 +452,16 @@ TRADER V3 is an event-driven paper trading system for Kalshi prediction markets.
   - `refresh_state()` - Refresh without tracking changes
   - `set_order_group_id(id)` - Set order group to track
   - `has_state()` - Check if synced state exists
+  - `order_group_id` (property) - Get current order group ID being tracked
+- **Sync Data Fetched**:
+  1. Balance: `get_account_info()` - balance and portfolio_value in cents
+  2. Positions: `get_positions()` - market_positions array
+  3. Orders: `get_orders()` - orders array (open/resting only)
+  4. Settlements: `get_settlements()` - historical settlements (optional, may fail)
+  5. Order Group: `get_order_group(id)` - if order_group_id is set
 - **Emits Events**: None
 - **Subscribes To**: None
-- **Dependencies**: KalshiDemoTradingClient, TraderState, StateChange
+- **Dependencies**: KalshiDemoTradingClient, TraderState, StateChange, OrderGroupState
 
 ### 3.6 Configuration (`traderv3/config/`)
 
@@ -509,8 +569,8 @@ VALID_TRANSITIONS = {
 | `SYSTEM_ACTIVITY` | V3StateMachine, V3HealthMonitor, TradingFlowOrchestrator, TradingDecisionService, WhaleExecutionService | V3WebSocketManager | `SystemActivityEvent{activity_type, message, metadata}` |
 | `PUBLIC_TRADE_RECEIVED` | V3TradesIntegration | WhaleTracker | `PublicTradeEvent{market_ticker, timestamp_ms, side, price_cents, count}` |
 | `WHALE_QUEUE_UPDATED` | WhaleTracker | V3WebSocketManager, WhaleExecutionService | `WhaleQueueEvent{queue, stats, timestamp}` |
-| `MARKET_POSITION` | PositionListener | V3StateContainer | `MarketPositionEvent{ticker, position_data, timestamp}` |
-| `SETTLEMENT` | (future) | (future) | Market settlement events |
+| `MARKET_POSITION_UPDATE` | PositionListener | V3StateContainer (via coordinator subscription) | `MarketPositionEvent{market_ticker, position_data, timestamp}` |
+| `SETTLEMENT` | (via REST sync) | - | Settlements synced from Kalshi REST API, stored in StateContainer |
 
 ### 5.1 SystemActivityEvent Types
 
@@ -527,6 +587,29 @@ VALID_TRANSITIONS = {
 | `connection` | V3Coordinator | WebSocket connection events |
 | `whale_processing` | WhaleExecutionService | Whale queue processing status (for frontend animation) |
 | `whale_follow` | TradingDecisionService | Successful whale follow execution |
+
+### 5.2 MarketPositionEvent Payload
+
+Position data received from Kalshi WebSocket `market_positions` channel, converted from centi-cents to cents:
+
+```json
+{
+  "event_type": "MARKET_POSITION_UPDATE",
+  "market_ticker": "INXD-25JAN03",
+  "position_data": {
+    "ticker": "INXD-25JAN03",
+    "position": 100,           // contracts (+ YES, - NO)
+    "market_exposure": 6500,   // current value in cents (from position_cost)
+    "realized_pnl": 0,         // realized P&L in cents
+    "fees_paid": 20,           // fees in cents
+    "volume": 100,             // total contracts traded
+    "last_updated": 1703700000.0
+  },
+  "timestamp": 1703700000.5
+}
+```
+
+**Note**: `total_traded` (cost basis) is NOT included in WebSocket updates. It's preserved from REST sync via merge in StateContainer.update_single_position().
 
 ## 6. Data Flow Traces
 
@@ -661,6 +744,76 @@ VALID_TRANSITIONS = {
 - **Removal on Terminal Decision**: Followed/skipped/failed whales removed from queue
 - **Retry on Rate Limit**: Rate-limited whales stay in queue for retry
 
+### 6.5 Settlements Data Flow
+
+```
+1. KalshiDataSync.sync_with_kalshi() called (every 30s or on startup)
+2. Fetches settlements from Kalshi REST API:
+   - GET /portfolio/settlements
+   - Response: {settlements: [{ticker, yes_count, no_count, yes_total_cost,
+                              no_total_cost, revenue, fee_cost, market_result,
+                              settled_time}, ...]}
+   - Note: fee_cost is STRING in DOLLARS (e.g., "0.34"), others in CENTS
+3. TraderState.from_kalshi_data() stores raw settlements array
+4. StateContainer.update_trading_state() receives TraderState:
+   a. Clears existing _settled_positions deque
+   b. For each settlement (last 50):
+      i.   Determine side: is_yes_position = yes_count > 0
+      ii.  Get count and total_cost for the relevant side
+      iii. Parse settled_time ISO string to epoch seconds
+      iv.  Convert fee_cost string (dollars) to cents: int(float(fee) * 100)
+      v.   Calculate net_pnl = revenue - total_cost - fees_cents
+      vi.  Create settlement dict with: ticker, position, side, market_result,
+           total_cost, revenue, fees, net_pnl, closed_at
+      vii. Append to _settled_positions deque
+   c. Update _total_settlements_count
+5. StatusReporter.emit_trading_state() broadcasts via WebSocket:
+   - Includes: settlements: list(_settled_positions)
+   - Includes: settlements_count: total count
+6. Frontend receives trading_state message with settlements array
+```
+
+**Key Design Decisions:**
+- **REST API is Source of Truth**: Settlements synced from REST, not WebSocket events
+- **Fee Parsing Fix**: fee_cost is string in dollars, converted to cents
+- **Net P&L Calculation**: revenue - cost - fees (not just revenue)
+- **Deque Storage**: Last 50 settlements stored for UI display
+- **ISO Timestamp Parsing**: settled_time parsed from ISO 8601 to epoch seconds
+
+### 6.6 Real-Time Position Updates Flow
+
+```
+1. PositionListener connected to Kalshi WebSocket
+2. Subscribed to "market_positions" channel
+3. Kalshi sends position update message:
+   {type: "market_position", msg: {market_ticker, position, position_cost,
+                                   realized_pnl, fees_paid, volume}}
+   Note: All monetary values in CENTI-CENTS (1/10000 of dollar)
+4. PositionListener._handle_position_message():
+   a. Increment positions_received counter
+   b. Convert centi-cents to cents (divide by 100)
+   c. Create formatted_position dict with:
+      - market_exposure (NOT total_traded - this is current value)
+      - position, realized_pnl, fees_paid, volume, last_updated
+5. Emit MARKET_POSITION_UPDATE via EventBus
+6. Coordinator's event handler receives event:
+   a. Calls StateContainer.update_single_position(ticker, position_data)
+7. StateContainer.update_single_position():
+   a. If position == 0: Capture settlement, remove from positions dict
+   b. Else: MERGE with existing position (preserves total_traded from REST)
+   c. Track ticker in _session_updated_tickers
+   d. Recalculate position_count and portfolio_value
+   e. Increment trading_state_version
+8. StatusReporter detects version change, broadcasts trading_state
+9. Frontend receives updated positions with session_updated flag
+```
+
+**Key Design Decisions:**
+- **Merge, Not Replace**: WebSocket updates merged with existing position to preserve total_traded
+- **Session Tracking**: _session_updated_tickers tracks which positions updated via WebSocket
+- **Position Closure**: When position == 0, capture settlement data before deletion
+- **Immediate Updates**: No cycle delay - position updates broadcast within 1 second
+
 ## 7. Configuration
 
 ### 7.1 Environment Variables
@@ -706,10 +859,65 @@ VALID_TRANSITIONS = {
 | `history_replay` | Historical state transitions for late joiners |
 | `system_activity` | Unified console messages |
 | `trader_status` | Periodic status/metrics update |
-| `trading_state` | Trading data (balance, positions, orders) |
+| `trading_state` | Trading data (balance, positions, orders, P&L, settlements) - **sent immediately on connect** |
 | `whale_queue` | Whale detection queue update (when enabled) |
 | `whale_processing` | Whale processing status for frontend animation |
 | `ping` | Keep-alive ping |
+
+#### trading_state Message Format
+
+Sent immediately when a client connects via `handle_websocket()` (before waiting for periodic broadcasts) and on every trading sync cycle via `emit_trading_state()`. The immediate send on connect uses `get_trading_summary()` from StateContainer to provide clients with current state without delay.
+
+```json
+{
+  "type": "trading_state",
+  "data": {
+    "timestamp": 1703700000.0,
+    "version": 42,
+    "balance": 100000,                    // cents
+    "portfolio_value": 25000,             // cents
+    "position_count": 3,
+    "order_count": 2,
+    "positions": ["INXD-25JAN03", "KXBTC-25JAN03"],  // ticker list
+    "open_orders": 2,
+    "order_list": [                       // formatted for display
+      {"order_id": "abc12345", "ticker": "INXD-25JAN03", "side": "yes",
+       "action": "buy", "price": 65, "count": 5, "status": "resting"}
+    ],
+    "sync_timestamp": 1703699970.5,
+    "changes": {                          // optional, from last sync
+      "balance": 0, "portfolio_value": 100, "positions": 0, "orders": 0
+    },
+    "order_group": {                      // optional
+      "id": "group123", "status": "active", "order_count": 2, "order_ids": ["abc1", "def2"]
+    },
+    "pnl": {                              // session P&L breakdown
+      "session_pnl": 1500,                // total session P&L (cents)
+      "realized_pnl": 500,                // closed positions (cents)
+      "unrealized_pnl": 1000,             // open positions (cents)
+      "starting_equity": 123500,          // session start equity (cents)
+      "current_equity": 125000,           // current equity (cents)
+      "session_duration_minutes": 45.5
+    },
+    "positions_details": [                // per-position P&L
+      {"ticker": "INXD-25JAN03", "position": 10, "side": "yes",
+       "total_traded": 6000, "market_exposure": 6500,
+       "realized_pnl": 0, "unrealized_pnl": 500, "fees_paid": 20,
+       "session_updated": true, "last_updated": 1703700000.0}
+    ],
+    "position_listener": {                // real-time updates health
+      "connected": true, "positions_received": 15, "positions_processed": 15,
+      "last_update": 1703700000.0, "connection_count": 1
+    },
+    "settlements": [                      // last 50 settlements
+      {"ticker": "INXD-25DEC31", "position": 5, "side": "yes",
+       "market_result": "yes", "total_cost": 3000, "revenue": 500,
+       "fees": 10, "net_pnl": -2510, "closed_at": 1703600000.0}
+    ],
+    "settlements_count": 12               // total settlements
+  }
+}
+```
 
 #### whale_processing Message Format
 
@@ -772,6 +980,52 @@ Possible `action` values: `followed`, `skipped_age`, `skipped_position`, `skippe
 }
 ```
 
+### 7.4 Frontend Panels (V3TraderConsole.jsx)
+
+The frontend receives `trading_state` messages and displays data in specialized panels:
+
+#### PositionListPanel
+Displays open positions with per-contract P&L calculations.
+
+**Columns:**
+| Column | Source Field | Description |
+|--------|--------------|-------------|
+| Ticker | `positions_details[].ticker` | Market ticker |
+| Side | `positions_details[].side` | "YES" or "NO" badge |
+| Qty | `positions_details[].position` | Contract count (absolute) |
+| Cost/C | `total_traded / position` | Cost per contract in cents |
+| Value/C | `market_exposure / position` | Current value per contract |
+| Unreal/C | `unrealized_pnl / position` | Unrealized P&L per contract |
+| P&L | `positions_details[].unrealized_pnl` | Total unrealized P&L |
+| Updated | `positions_details[].last_updated` | Last update timestamp |
+
+**Features:**
+- Real-time update indicators (green dot for recently changed)
+- YES/NO section headers with aggregate totals
+- Position listener status badge (Live/Polling)
+- Session updates count
+
+#### SettlementsPanel
+Displays closed positions with final P&L economics.
+
+**Columns:**
+| Column | Source Field | Description |
+|--------|--------------|-------------|
+| Ticker | `settlements[].ticker` | Market ticker |
+| Side | `settlements[].side` | "YES" or "NO" badge |
+| Qty | `settlements[].position` | Contract count (absolute) |
+| Cost | `settlements[].total_cost` | Total cost in cents |
+| Payout | `settlements[].revenue` | Revenue received in cents |
+| Fees | `settlements[].fees` | Fees paid in cents |
+| Net P&L | `settlements[].net_pnl` | Net P&L (revenue - cost - fees) |
+| Closed | `settlements[].closed_at` | Close timestamp |
+
+**Features:**
+- Collapsible with expand/collapse toggle
+- Total Net P&L header showing aggregate across all settlements
+- Green/red styling for profit/loss
+- Toast notifications for new settlements
+
 ## 8. Degraded Mode
 
 The system supports **degraded mode** when the orderbook WebSocket is unavailable but trading API is functional:
@@ -808,3 +1062,9 @@ The system supports **degraded mode** when the orderbook WebSocket is unavailabl
 | 2024-12-28 | Removed dead code: evaluate_whale_queue() in TradingDecisionService (~120 lines) | Claude |
 | 2024-12-28 | Architecture review: Added PositionListener docs, MARKET_POSITION event, V3_TRADING_STRATEGY env var | Claude |
 | 2024-12-28 | Dead code cleanup: Removed empty _handle_orderbook_event(), stub get_orderbook(), commented code | Claude |
+| 2024-12-28 | Settlements panel fixes: fee_cost parsing (string dollars to cents), net P&L calculation (revenue-cost-fees) | Claude |
+| 2024-12-28 | PositionListener fix: Handle .closed attribute safely with fallback for different WS library versions | Claude |
+| 2024-12-28 | Immediate trading state on client connect: trading_state broadcast within 1 second via version monitoring | Claude |
+| 2024-12-28 | Comprehensive docs update: StateContainer (settlements, P&L, whale queue), StatusReporter (broadcast data), KalshiDataSync (sync data), demo_client (all methods), trading_state message format, settlements/position data flows | Claude |
+| 2024-12-28 | Added YES_80_90 strategy to TradingStrategy enum (validated +5.1% edge) | Claude |
+| 2024-12-28 | Added Section 7.4: Frontend Panels documentation (PositionListPanel, SettlementsPanel columns and features) | Claude |

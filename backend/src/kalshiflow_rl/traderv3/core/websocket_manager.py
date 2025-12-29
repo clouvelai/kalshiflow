@@ -71,6 +71,7 @@ class V3WebSocketManager:
         self._state_container: Optional['StateContainer'] = None
         self._trading_service: Optional['TradingDecisionService'] = None
         self._whale_execution_service: Optional['WhaleExecutionService'] = None
+        self._market_price_syncer = None  # Set via set_market_price_syncer()
         self._clients: Dict[str, WebSocketClient] = {}
         self._client_counter = 0
         self._started_at: Optional[float] = None
@@ -143,6 +144,16 @@ class V3WebSocketManager:
         """
         self._state_container = state_container
         logger.info("StateContainer set on WebSocket manager")
+
+    def set_market_price_syncer(self, market_price_syncer) -> None:
+        """
+        Set the market price syncer for including health in initial trading state.
+
+        Args:
+            market_price_syncer: MarketPriceSyncer instance
+        """
+        self._market_price_syncer = market_price_syncer
+        logger.debug("MarketPriceSyncer set on WebSocket manager")
 
     async def start(self) -> None:
         """Start the WebSocket manager."""
@@ -274,10 +285,23 @@ class V3WebSocketManager:
                     logger.warning(f"Could not send whale queue snapshot to client {client_id}: {e}")
 
             # Send trading state snapshot immediately (don't wait for periodic broadcast)
+            # Includes market_price_syncer health if available for immediate visibility.
             if self._state_container and client_id in self._clients:
                 try:
                     trading_summary = self._state_container.get_trading_summary()
                     if trading_summary.get("has_state"):
+                        # Build market price syncer health if available
+                        market_price_syncer_health = None
+                        if self._market_price_syncer:
+                            syncer_health = self._market_price_syncer.get_health_details()
+                            market_price_syncer_health = {
+                                "healthy": syncer_health.get("healthy", False),
+                                "sync_count": syncer_health.get("sync_count", 0),
+                                "tickers_synced": syncer_health.get("tickers_synced", 0),
+                                "last_sync_age_seconds": syncer_health.get("last_sync_age_seconds"),
+                                "sync_errors": syncer_health.get("sync_errors", 0),
+                            }
+
                         trading_state_msg = {
                             "type": "trading_state",
                             "data": {
@@ -295,6 +319,12 @@ class V3WebSocketManager:
                                 "positions_details": trading_summary.get("positions_details", []),
                                 "settlements": trading_summary.get("settlements", []),
                                 "settlements_count": trading_summary.get("settlements_count", 0),
+                                # Include market prices (merged into positions_details)
+                                "market_prices": trading_summary.get("market_prices"),
+                                # Health fields - syncer included if available
+                                "position_listener": None,
+                                "market_ticker_listener": None,
+                                "market_price_syncer": market_price_syncer_health,
                             }
                         }
                         await self._send_to_client(client_id, trading_state_msg)

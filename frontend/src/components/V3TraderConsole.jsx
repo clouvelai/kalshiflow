@@ -1,189 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Activity, Wifi, WifiOff, Circle, ChevronRight, ChevronDown, Zap, Database, TrendingUp, AlertCircle, Copy, Check, Info, CheckCircle, XCircle, ArrowRight, DollarSign, Briefcase, ShoppingCart, FileText, TrendingDown, Clock, Shield, Fish, X } from 'lucide-react';
-
-// TradingData Component - Displays real-time trading state
-const TradingData = ({ tradingState, lastUpdateTime }) => {
-  if (!tradingState || !tradingState.has_state) {
-    return (
-      <div className="bg-gray-900/50 backdrop-blur-sm rounded-xl border border-gray-800 p-4">
-        <div className="flex items-center justify-between">
-          <h3 className="text-sm font-bold text-gray-300 uppercase tracking-wider">Trading Data</h3>
-          <span className="text-xs text-gray-500 font-mono">No data available</span>
-        </div>
-      </div>
-    );
-  }
-
-  const formatCurrency = (cents) => {
-    const dollars = cents / 100;
-    return new Intl.NumberFormat('en-US', {
-      style: 'currency',
-      currency: 'USD',
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2
-    }).format(dollars);
-  };
-
-  const formatTime = (timestamp) => {
-    if (!timestamp) return 'N/A';
-    const date = new Date(timestamp * 1000);
-    return date.toLocaleTimeString('en-US', { 
-      hour12: false, 
-      hour: '2-digit', 
-      minute: '2-digit', 
-      second: '2-digit' 
-    });
-  };
-
-  const getChangeIndicator = (value, isPositive = true) => {
-    if (value === 0 || value === null || value === undefined) return null;
-    const color = (isPositive && value > 0) || (!isPositive && value < 0) ? 'text-green-400' : 'text-red-400';
-    const icon = value > 0 ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />;
-    return (
-      <span className={`flex items-center space-x-1 ${color} text-xs font-medium`}>
-        {icon}
-        <span>{value > 0 ? '+' : ''}{isPositive ? formatCurrency(value) : value}</span>
-      </span>
-    );
-  };
-
-  const changes = tradingState.changes || {};
-
-  return (
-    <div className="bg-gray-900/50 backdrop-blur-sm rounded-xl border border-gray-800 p-4">
-      <div className="flex items-center justify-between mb-4">
-        <h3 className="text-sm font-bold text-gray-300 uppercase tracking-wider">Trading Data</h3>
-        <div className="flex items-center space-x-4">
-          <div className="flex items-center space-x-2">
-            <Clock className="w-3.5 h-3.5 text-blue-400" />
-            <span className="text-xs text-gray-400 font-mono">
-              <span className="text-gray-500">Sync:</span> {formatTime(tradingState.sync_timestamp)}
-            </span>
-          </div>
-          <div className="flex items-center space-x-2">
-            <Activity className="w-3.5 h-3.5 text-green-400" />
-            <span className="text-xs text-gray-400 font-mono">
-              <span className="text-gray-500">Update:</span> {formatTime(lastUpdateTime)}
-            </span>
-          </div>
-        </div>
-      </div>
-      
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        {/* Balance */}
-        <div className="bg-gray-800/30 rounded-lg p-3 border border-gray-700/50">
-          <div className="flex items-center space-x-2 mb-1">
-            <DollarSign className="w-4 h-4 text-green-400" />
-            <span className="text-xs text-gray-500 uppercase">Balance</span>
-          </div>
-          <div className="text-lg font-mono font-bold text-white">
-            {formatCurrency(tradingState.balance)}
-          </div>
-          {changes.balance_change && getChangeIndicator(changes.balance_change)}
-        </div>
-
-        {/* Portfolio Value */}
-        <div className="bg-gray-800/30 rounded-lg p-3 border border-gray-700/50">
-          <div className="flex items-center space-x-2 mb-1">
-            <Briefcase className="w-4 h-4 text-blue-400" />
-            <span className="text-xs text-gray-500 uppercase">Portfolio</span>
-          </div>
-          <div className="text-lg font-mono font-bold text-white">
-            {formatCurrency(tradingState.portfolio_value)}
-          </div>
-          {changes.portfolio_change && getChangeIndicator(changes.portfolio_change)}
-        </div>
-
-        {/* Positions */}
-        <div className="bg-gray-800/30 rounded-lg p-3 border border-gray-700/50">
-          <div className="flex items-center space-x-2 mb-1">
-            <ShoppingCart className="w-4 h-4 text-purple-400" />
-            <span className="text-xs text-gray-500 uppercase">Positions</span>
-          </div>
-          <div className="text-lg font-mono font-bold text-white">
-            {tradingState.position_count || 0}
-          </div>
-          {changes.position_count_change !== undefined && changes.position_count_change !== 0 && (
-            <span className={`text-xs font-medium ${
-              changes.position_count_change > 0 ? 'text-green-400' : 'text-red-400'
-            }`}>
-              {changes.position_count_change > 0 ? '+' : ''}{changes.position_count_change}
-            </span>
-          )}
-        </div>
-
-        {/* Orders */}
-        <div className="bg-gray-800/30 rounded-lg p-3 border border-gray-700/50">
-          <div className="flex items-center space-x-2 mb-1">
-            <FileText className="w-4 h-4 text-yellow-400" />
-            <span className="text-xs text-gray-500 uppercase">Orders</span>
-          </div>
-          <div className="text-lg font-mono font-bold text-white">
-            {tradingState.order_count || 0}
-          </div>
-          {changes.order_count_change !== undefined && changes.order_count_change !== 0 && (
-            <span className={`text-xs font-medium ${
-              changes.order_count_change > 0 ? 'text-yellow-400' : 'text-gray-400'
-            }`}>
-              {changes.order_count_change > 0 ? '+' : ''}{changes.order_count_change}
-            </span>
-          )}
-        </div>
-      </div>
-
-      {/* Order Group Status - Clean minimal display */}
-      {tradingState.order_group && tradingState.order_group.id && (
-        <div className="mt-4 bg-gray-800/30 rounded-lg p-3 border border-gray-700/50">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center space-x-3">
-              <Shield className="w-4 h-4 text-indigo-400" />
-              <span className="text-xs text-gray-500 uppercase font-medium">Order Group</span>
-              <span className="text-sm font-mono text-gray-300">
-                {tradingState.order_group.id}
-              </span>
-            </div>
-            <div className="flex items-center space-x-3">
-              <span className={`px-2 py-0.5 text-xs font-bold rounded-full ${
-                tradingState.order_group.status === 'active'
-                  ? 'bg-green-900/50 text-green-400 border border-green-700/50'
-                  : tradingState.order_group.status === 'inactive'
-                  ? 'bg-gray-900/50 text-gray-400 border border-gray-700/50'
-                  : 'bg-yellow-900/50 text-yellow-400 border border-yellow-700/50'
-              }`}>
-                {(tradingState.order_group.status || 'unknown').toUpperCase()}
-              </span>
-              <span className="text-sm text-gray-400">
-                <span className="font-mono font-bold text-white">{tradingState.order_group.order_count || 0}</span>
-                <span className="text-gray-500 ml-1">{(tradingState.order_group.order_count || 0) === 1 ? 'order' : 'orders'}</span>
-              </span>
-            </div>
-          </div>
-
-          {/* Show order IDs if available and there are orders */}
-          {tradingState.order_group.order_ids && tradingState.order_group.order_ids.length > 0 && (
-            <div className="mt-2 pt-2 border-t border-gray-700/30">
-              <div className="flex items-center flex-wrap gap-1.5">
-                {tradingState.order_group.order_ids.slice(0, 8).map((orderId, index) => (
-                  <span
-                    key={orderId}
-                    className="text-xs font-mono text-gray-500 bg-gray-800/50 px-2 py-0.5 rounded"
-                  >
-                    {orderId.substring(0, 8)}
-                  </span>
-                ))}
-                {tradingState.order_group.order_ids.length > 8 && (
-                  <span className="text-xs text-gray-600">
-                    +{tradingState.order_group.order_ids.length - 8} more
-                  </span>
-                )}
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-};
+import TradingSessionPanel from './TradingSessionPanel';
 
 // WhaleQueuePanel Component - Displays detected whale bets with smooth animations
 const WhaleQueuePanel = ({ whaleQueue, processingWhaleId }) => {
@@ -760,158 +577,8 @@ const DecisionAuditPanel = ({ decisionHistory, decisionStats }) => {
   );
 };
 
-// SessionSummaryPanel Component - Clear P&L display with cash flow visibility
-const SessionSummaryPanel = ({ tradingState }) => {
-  if (!tradingState || !tradingState.has_state) {
-    return null;
-  }
-
-  const formatCurrency = (cents) => {
-    const dollars = cents / 100;
-    return new Intl.NumberFormat('en-US', {
-      style: 'currency',
-      currency: 'USD',
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2
-    }).format(dollars);
-  };
-
-  const formatPnLCurrency = (cents) => {
-    const dollars = cents / 100;
-    const prefix = cents >= 0 ? '+' : '';
-    return prefix + new Intl.NumberFormat('en-US', {
-      style: 'currency',
-      currency: 'USD',
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2
-    }).format(dollars);
-  };
-
-  const balance = tradingState.balance || 0;
-  const portfolioValue = tradingState.portfolio_value || 0;
-  const totalValue = balance + portfolioValue;
-  const pnl = tradingState.pnl || null;
-
-  return (
-    <div className="bg-gray-900/50 backdrop-blur-sm rounded-xl border border-gray-800 p-4 mb-4">
-      <div className="flex items-center justify-between mb-4">
-        <div className="flex items-center space-x-2">
-          <TrendingUp className="w-4 h-4 text-cyan-400" />
-          <h3 className="text-sm font-bold text-gray-300 uppercase tracking-wider">Session Summary</h3>
-        </div>
-        {pnl && pnl.session_start_time && (
-          <span className="text-xs text-gray-500 font-mono">
-            Session started {new Date(pnl.session_start_time * 1000).toLocaleTimeString('en-US', { hour12: false })}
-          </span>
-        )}
-      </div>
-
-      <div className="grid grid-cols-4 gap-4">
-        {/* Cash Available */}
-        <div className="bg-gray-800/30 rounded-lg p-4 border border-gray-700/50">
-          <div className="flex items-center space-x-2 mb-2">
-            <DollarSign className="w-4 h-4 text-green-400" />
-            <span className="text-xs text-gray-500 uppercase">Cash Available</span>
-          </div>
-          <div className="text-2xl font-mono font-bold text-green-400">
-            {formatCurrency(balance)}
-          </div>
-        </div>
-
-        {/* In Positions */}
-        <div className="bg-gray-800/30 rounded-lg p-4 border border-gray-700/50">
-          <div className="flex items-center space-x-2 mb-2">
-            <Briefcase className="w-4 h-4 text-blue-400" />
-            <span className="text-xs text-gray-500 uppercase">In Positions</span>
-          </div>
-          <div className="text-2xl font-mono font-bold text-blue-400">
-            {formatCurrency(portfolioValue)}
-          </div>
-        </div>
-
-        {/* Total Value */}
-        <div className="bg-gray-800/30 rounded-lg p-4 border border-gray-700/50">
-          <div className="flex items-center space-x-2 mb-2">
-            <Database className="w-4 h-4 text-white" />
-            <span className="text-xs text-gray-500 uppercase">Total Value</span>
-          </div>
-          <div className="text-2xl font-mono font-bold text-white">
-            {formatCurrency(totalValue)}
-          </div>
-        </div>
-
-        {/* Session P&L (Equity Change) */}
-        <div className={`bg-gray-800/30 rounded-lg p-4 border ${
-          pnl && pnl.session_pnl >= 0 ? 'border-green-700/30' : 'border-red-700/30'
-        }`}>
-          <div className="flex items-center space-x-2 mb-2">
-            {pnl && pnl.session_pnl >= 0 ? (
-              <TrendingUp className="w-4 h-4 text-green-400" />
-            ) : (
-              <TrendingDown className="w-4 h-4 text-red-400" />
-            )}
-            <span className="text-xs text-gray-500 uppercase" title="Equity change since session started">Session P&L</span>
-          </div>
-          {pnl ? (
-            <>
-              <div className={`text-2xl font-mono font-bold ${
-                pnl.session_pnl >= 0 ? 'text-green-400' : 'text-red-400'
-              }`}>
-                {formatPnLCurrency(pnl.session_pnl)}
-              </div>
-              <div className={`text-xs font-mono ${
-                pnl.session_pnl_percent >= 0 ? 'text-green-400' : 'text-red-400'
-              }`}>
-                {pnl.session_pnl_percent >= 0 ? '+' : ''}{pnl.session_pnl_percent}%
-              </div>
-            </>
-          ) : (
-            <div className="text-2xl font-mono font-bold text-gray-500">--</div>
-          )}
-        </div>
-      </div>
-
-      {/* P&L Breakdown */}
-      {pnl && (
-        <div className="mt-4 pt-4 border-t border-gray-700/30">
-          <div className="grid grid-cols-2 gap-4">
-            {/* Realized P&L */}
-            <div className={`bg-gray-800/30 rounded-lg p-3 border ${
-              (pnl.realized_pnl || 0) >= 0 ? 'border-emerald-700/30' : 'border-orange-700/30'
-            }`}>
-              <div className="flex items-center space-x-2 mb-1">
-                <CheckCircle className="w-3 h-3 text-emerald-400" />
-                <span className="text-xs text-gray-500 uppercase" title="P&L from closed/settled positions">Realized P&L</span>
-              </div>
-              <div className={`text-lg font-mono font-bold ${
-                (pnl.realized_pnl || 0) >= 0 ? 'text-emerald-400' : 'text-orange-400'
-              }`}>
-                {formatPnLCurrency(pnl.realized_pnl || 0)}
-              </div>
-            </div>
-
-            {/* Unrealized P&L */}
-            <div className={`bg-gray-800/30 rounded-lg p-3 border ${
-              (pnl.unrealized_pnl || 0) >= 0 ? 'border-blue-700/30' : 'border-pink-700/30'
-            }`}>
-              <div className="flex items-center space-x-2 mb-1">
-                <Activity className="w-3 h-3 text-blue-400" />
-                <span className="text-xs text-gray-500 uppercase" title="Paper P&L on open positions">Unrealized P&L</span>
-              </div>
-              <div className={`text-lg font-mono font-bold ${
-                (pnl.unrealized_pnl || 0) >= 0 ? 'text-blue-400' : 'text-pink-400'
-              }`}>
-                {formatPnLCurrency(pnl.unrealized_pnl || 0)}
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-};
-
 // PositionListPanel Component - Detailed position breakdown with per-position P&L
+// Market data is now merged directly into each position object (market_bid, market_ask, etc.)
 const PositionListPanel = ({ positions, positionListener, sessionUpdates }) => {
   const [isExpanded, setIsExpanded] = useState(true);
   const [changedTickers, setChangedTickers] = useState(new Set());
@@ -936,10 +603,12 @@ const PositionListPanel = ({ positions, positionListener, sessionUpdates }) => {
     positions.forEach(pos => {
       const prev = prevPositionsRef.current[pos.ticker];
       if (prev) {
-        // Detect changes in key fields
+        // Detect changes in key fields (position data OR market prices)
         if (prev.position !== pos.position ||
             prev.total_traded !== pos.total_traded ||
-            prev.unrealized_pnl !== pos.unrealized_pnl) {
+            prev.unrealized_pnl !== pos.unrealized_pnl ||
+            prev.market_bid !== pos.market_bid ||
+            prev.market_last !== pos.market_last) {
           changed.add(pos.ticker);
         }
       } else {
@@ -985,16 +654,62 @@ const PositionListPanel = ({ positions, positionListener, sessionUpdates }) => {
     }).format(dollars);
   };
 
+  // Format close time as relative (e.g., "2h 30m", "45m", "Closed")
+  const formatRelativeTime = (isoString) => {
+    if (!isoString) return '-';
+    const closeTime = new Date(isoString);
+    const now = new Date();
+    const diffMs = closeTime - now;
+
+    if (diffMs <= 0) return 'Closed';
+
+    const diffMins = Math.floor(diffMs / 60000);
+    const diffHours = Math.floor(diffMins / 60);
+    const diffDays = Math.floor(diffHours / 24);
+
+    if (diffDays > 0) {
+      const remainingHours = diffHours % 24;
+      return remainingHours > 0 ? `${diffDays}d ${remainingHours}h` : `${diffDays}d`;
+    }
+    if (diffHours > 0) {
+      const remainingMins = diffMins % 60;
+      return remainingMins > 0 ? `${diffHours}h ${remainingMins}m` : `${diffHours}h`;
+    }
+    return `${diffMins}m`;
+  };
+
   // Don't render if no positions
   if (!positions || positions.length === 0) {
     return null;
   }
+
+  // Calculate real P&L from market prices with fallback hierarchy
+  const calcRealPnL = (pos) => {
+    const qty = Math.abs(pos.position || 0);
+    if (qty === 0) return 0;
+    const costPerContract = Math.round((pos.total_traded || 0) / qty);
+    const kalshiValue = Math.round((pos.market_exposure || 0) / qty);
+    // Fallback: market_bid -> market_last -> kalshi cached
+    // NOTE: last_price is always YES price, so for NO positions use 100 - last_price
+    let valuePerContract;
+    if (pos.market_bid > 0) {
+      valuePerContract = pos.market_bid;
+    } else if (pos.market_last > 0) {
+      // last_price is YES price - convert for NO positions
+      valuePerContract = pos.side === 'no' ? (100 - pos.market_last) : pos.market_last;
+    } else {
+      valuePerContract = kalshiValue;
+    }
+    return (valuePerContract - costPerContract) * qty;  // P&L in cents
+  };
 
   // Calculate YES/NO summary totals
   const yesPositions = positions.filter(p => p.side === 'yes');
   const noPositions = positions.filter(p => p.side === 'no');
   const yesTotalQty = yesPositions.reduce((sum, p) => sum + Math.abs(p.position || 0), 0);
   const noTotalQty = noPositions.reduce((sum, p) => sum + Math.abs(p.position || 0), 0);
+  const yesTotalPnL = yesPositions.reduce((sum, p) => sum + calcRealPnL(p), 0);
+  const noTotalPnL = noPositions.reduce((sum, p) => sum + calcRealPnL(p), 0);
 
   return (
     <div className="bg-gray-900/50 backdrop-blur-sm rounded-xl border border-gray-800 p-4 mb-4">
@@ -1048,11 +763,11 @@ const PositionListPanel = ({ positions, positionListener, sessionUpdates }) => {
                 <th className="px-3 py-2 text-left text-xs text-gray-500 uppercase font-medium">Ticker</th>
                 <th className="px-3 py-2 text-center text-xs text-gray-500 uppercase font-medium">Side</th>
                 <th className="px-3 py-2 text-right text-xs text-gray-500 uppercase font-medium">Qty</th>
-                <th className="px-3 py-2 text-right text-xs text-gray-500 uppercase font-medium" title="Cost per contract">Cost/C</th>
-                <th className="px-3 py-2 text-right text-xs text-gray-500 uppercase font-medium" title="Value per contract">Value/C</th>
-                <th className="px-3 py-2 text-right text-xs text-gray-500 uppercase font-medium" title="Unrealized P&L per contract">Unreal/C</th>
+                <th className="px-3 py-2 text-right text-xs text-gray-500 uppercase font-medium" title="Entry cost per contract">Cost/C</th>
+                <th className="px-3 py-2 text-right text-xs text-gray-500 uppercase font-medium" title="Current market bid (what you'd get if you sold)">Value/C</th>
+                <th className="px-3 py-2 text-right text-xs text-gray-500 uppercase font-medium" title="Unrealized P&L per contract (value - cost)">Unreal/C</th>
                 <th className="px-3 py-2 text-right text-xs text-gray-500 uppercase font-medium">P&L</th>
-                <th className="px-3 py-2 text-right text-xs text-gray-500 uppercase font-medium">Updated</th>
+                <th className="px-3 py-2 text-center text-xs text-gray-500 uppercase font-medium" title="When market closes">Closes</th>
               </tr>
               <tr className="bg-emerald-900/50 text-emerald-400 text-sm font-medium border-b border-emerald-800/30">
                 <td className="py-1.5 px-3" colSpan="2">YES ({yesPositions.length})</td>
@@ -1060,8 +775,8 @@ const PositionListPanel = ({ positions, positionListener, sessionUpdates }) => {
                 <td className="py-1.5 px-3 text-right font-mono text-gray-500">-</td>
                 <td className="py-1.5 px-3 text-right font-mono text-gray-500">-</td>
                 <td className="py-1.5 px-3 text-right font-mono text-gray-500">-</td>
-                <td className="py-1.5 px-3 text-right font-mono">{formatPnLCurrency(yesPositions.reduce((sum, p) => sum + (p.unrealized_pnl || 0), 0))}</td>
-                <td className="py-1.5 px-3"></td>
+                <td className={`py-1.5 px-3 text-right font-mono ${yesTotalPnL >= 0 ? 'text-green-400' : 'text-red-400'}`}>{formatPnLCurrency(yesTotalPnL)}</td>
+                <td className="py-1.5 px-3 text-center text-gray-500">-</td>
               </tr>
               <tr className="bg-red-900/50 text-red-400 text-sm font-medium border-b border-gray-700/50">
                 <td className="py-1.5 px-3" colSpan="2">NO ({noPositions.length})</td>
@@ -1069,18 +784,36 @@ const PositionListPanel = ({ positions, positionListener, sessionUpdates }) => {
                 <td className="py-1.5 px-3 text-right font-mono text-gray-500">-</td>
                 <td className="py-1.5 px-3 text-right font-mono text-gray-500">-</td>
                 <td className="py-1.5 px-3 text-right font-mono text-gray-500">-</td>
-                <td className="py-1.5 px-3 text-right font-mono">{formatPnLCurrency(noPositions.reduce((sum, p) => sum + (p.unrealized_pnl || 0), 0))}</td>
-                <td className="py-1.5 px-3"></td>
+                <td className={`py-1.5 px-3 text-right font-mono ${noTotalPnL >= 0 ? 'text-green-400' : 'text-red-400'}`}>{formatPnLCurrency(noTotalPnL)}</td>
+                <td className="py-1.5 px-3 text-center text-gray-500">-</td>
               </tr>
             </thead>
             <tbody>
               {positions.map((pos, index) => {
                 const qty = Math.abs(pos.position);
                 const costPerContract = qty > 0 ? Math.round((pos.total_traded || 0) / qty) : 0;
-                const valuePerContract = qty > 0 ? Math.round((pos.market_exposure || 0) / qty) : 0;
-                const unrealizedPerContract = qty > 0 ? Math.round((pos.unrealized_pnl || 0) / qty) : 0;
-                const pnlPercent = pos.total_traded > 0
-                  ? ((pos.unrealized_pnl / pos.total_traded) * 100).toFixed(1)
+
+                // Value fallback hierarchy:
+                // 1. market_bid (what you'd get selling - best)
+                // 2. market_last (last traded price - if no bid)
+                // 3. kalshiValuePerContract (Kalshi's cached value - last resort)
+                // NOTE: last_price is always YES price, so for NO positions use 100 - last_price
+                const kalshiValuePerContract = qty > 0 ? Math.round((pos.market_exposure || 0) / qty) : 0;
+                let valuePerContract;
+                if (pos.market_bid > 0) {
+                  valuePerContract = pos.market_bid;
+                } else if (pos.market_last > 0) {
+                  // last_price is YES price - convert for NO positions
+                  valuePerContract = pos.side === 'no' ? (100 - pos.market_last) : pos.market_last;
+                } else {
+                  valuePerContract = kalshiValuePerContract;
+                }
+
+                // Calculate P&L from real market price
+                const unrealizedPerContract = valuePerContract - costPerContract;
+                const unrealizedTotal = unrealizedPerContract * qty;  // in cents
+                const pnlPercent = costPerContract > 0
+                  ? ((unrealizedPerContract / costPerContract) * 100).toFixed(1)
                   : 0;
 
                 const isRecentlyChanged = changedTickers.has(pos.ticker);
@@ -1128,21 +861,19 @@ const PositionListPanel = ({ positions, positionListener, sessionUpdates }) => {
                       {unrealizedPerContract >= 0 ? '+' : ''}{unrealizedPerContract}c
                     </td>
                     <td className={`px-3 py-2 text-right font-mono font-bold ${
-                      pos.unrealized_pnl >= 0 ? 'text-green-400' : 'text-red-400'
+                      unrealizedTotal >= 0 ? 'text-green-400' : 'text-red-400'
                     }`}>
-                      {formatPnLCurrency(pos.unrealized_pnl)}
+                      {formatPnLCurrency(unrealizedTotal)}
                       <span className="text-xs ml-1 opacity-70">({pnlPercent}%)</span>
                     </td>
-                    <td className="px-3 py-2 text-right font-mono text-gray-500 text-xs">
-                      {pos.last_updated
-                        ? new Date(pos.last_updated * 1000).toLocaleTimeString('en-US', {
-                            hour12: false,
-                            hour: '2-digit',
-                            minute: '2-digit',
-                            second: '2-digit'
-                          })
-                        : 'Sync'
-                      }
+                    <td className="px-3 py-2 text-center font-mono text-xs">
+                      {pos.market_close_time ? (
+                        <span className="text-gray-400" title={new Date(pos.market_close_time).toLocaleString()}>
+                          {formatRelativeTime(pos.market_close_time)}
+                        </span>
+                      ) : (
+                        <span className="text-gray-600">-</span>
+                      )}
                     </td>
                   </tr>
                 );
@@ -1995,13 +1726,8 @@ const V3TraderConsole = () => {
       </div>
 
       <div className="max-w-7xl mx-auto px-6 py-6">
-        {/* Session Summary Panel - Clear P&L at the top */}
-        <SessionSummaryPanel tradingState={tradingState} />
-
-        {/* Trading Data Panel - Balance, Portfolio, Positions, Orders */}
-        <div className="mb-4">
-          <TradingData tradingState={tradingState} lastUpdateTime={lastUpdateTime} />
-        </div>
+        {/* Trading Session Panel - Unified session display with animations */}
+        <TradingSessionPanel tradingState={tradingState} lastUpdateTime={lastUpdateTime} />
 
         {/* Whale Queue Panel - Above positions for visibility */}
         <div className="mb-6">

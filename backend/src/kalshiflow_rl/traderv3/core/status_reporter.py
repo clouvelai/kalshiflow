@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from ..clients.orderbook_integration import V3OrderbookIntegration
     from ..clients.trading_client_integration import V3TradingClientIntegration
     from ..clients.position_listener import PositionListener
+    from ..clients.market_ticker_listener import MarketTickerListener
     from ..config.environment import V3Config
 
 logger = logging.getLogger("kalshiflow_rl.traderv3.core.status_reporter")
@@ -69,6 +70,12 @@ class V3StatusReporter:
 
         # Position listener (set after initialization via setter)
         self._position_listener: Optional['PositionListener'] = None
+
+        # Market ticker listener (set after initialization via setter)
+        self._market_ticker_listener: Optional['MarketTickerListener'] = None
+
+        # Market price syncer (set after initialization via setter)
+        self._market_price_syncer = None
 
         # Reporting state
         self._status_task: Optional[asyncio.Task] = None
@@ -123,6 +130,16 @@ class V3StatusReporter:
         """Set the position listener for health reporting."""
         self._position_listener = position_listener
         logger.debug("Position listener set on status reporter")
+
+    def set_market_ticker_listener(self, market_ticker_listener: 'MarketTickerListener') -> None:
+        """Set the market ticker listener for health reporting."""
+        self._market_ticker_listener = market_ticker_listener
+        logger.debug("Market ticker listener set on status reporter")
+
+    def set_market_price_syncer(self, market_price_syncer) -> None:
+        """Set the market price syncer for health reporting."""
+        self._market_price_syncer = market_price_syncer
+        logger.debug("Market price syncer set on status reporter")
 
     async def emit_status_update(self, context: str = "") -> None:
         """Emit status update event immediately."""
@@ -256,6 +273,32 @@ class V3StatusReporter:
                     "connection_count": metrics.get("connection_count", 0),
                 }
 
+            # Build market ticker listener health info
+            market_ticker_listener_health = None
+            if self._market_ticker_listener:
+                metrics = self._market_ticker_listener.get_metrics()
+                market_ticker_listener_health = {
+                    "connected": self._market_ticker_listener.is_healthy(),
+                    "subscribed_tickers": metrics.get("subscribed_tickers", 0),
+                    "updates_received": metrics.get("updates_received", 0),
+                    "updates_processed": metrics.get("updates_processed", 0),
+                    "updates_throttled": metrics.get("updates_throttled", 0),
+                    "last_update": metrics.get("last_update_time"),
+                    "connection_count": metrics.get("connection_count", 0),
+                }
+
+            # Build market price syncer health info
+            market_price_syncer_health = None
+            if self._market_price_syncer:
+                health = self._market_price_syncer.get_health_details()
+                market_price_syncer_health = {
+                    "healthy": health.get("healthy", False),
+                    "sync_count": health.get("sync_count", 0),
+                    "tickers_synced": health.get("tickers_synced", 0),
+                    "last_sync_age_seconds": health.get("last_sync_age_seconds"),
+                    "sync_errors": health.get("sync_errors", 0),
+                }
+
             # Broadcast trading state via websocket
             await self._websocket_manager.broadcast_message("trading_state", {
                 "timestamp": time.time(),
@@ -275,9 +318,16 @@ class V3StatusReporter:
                 "positions_details": trading_summary.get("positions_details", []),
                 # Position listener health (real-time position updates)
                 "position_listener": position_listener_health,
+                # Market ticker listener health (real-time prices)
+                "market_ticker_listener": market_ticker_listener_health,
+                # Market price syncer health (REST API price refresh)
+                "market_price_syncer": market_price_syncer_health,
                 # Settlements history for UI display
                 "settlements": trading_summary.get("settlements", []),
                 "settlements_count": trading_summary.get("settlements_count", 0),
+                # Market prices from ticker WebSocket (real-time bid/ask prices)
+                # Note: Market data is also merged into positions_details for convenience
+                "market_prices": trading_summary.get("market_prices"),
             })
 
             logger.debug(f"Broadcast trading state v{trading_summary['version']}")

@@ -14,7 +14,9 @@ if TYPE_CHECKING:
     from ..clients.trading_client_integration import V3TradingClientIntegration
     from ..clients.trades_integration import V3TradesIntegration
     from ..clients.position_listener import PositionListener
+    from ..clients.market_ticker_listener import MarketTickerListener
     from ..services.whale_tracker import WhaleTracker
+    from ..services.market_price_syncer import MarketPriceSyncer
 
 from .state_machine import TraderStateMachine as V3StateMachine, TraderState as V3State
 from .event_bus import EventBus
@@ -179,6 +181,12 @@ class V3Coordinator:
         # Position listener for real-time position updates (initialized later if trading client available)
         self._position_listener: Optional['PositionListener'] = None
 
+        # Market ticker listener for real-time price updates (initialized later if trading client available)
+        self._market_ticker_listener: Optional['MarketTickerListener'] = None
+
+        # Market price syncer for REST API price fetching (initialized later if trading client available)
+        self._market_price_syncer: Optional['MarketPriceSyncer'] = None
+
         self._started_at: Optional[float] = None
         self._running = False
 
@@ -260,6 +268,12 @@ class V3Coordinator:
 
             # Connect real-time position listener (non-blocking, falls back to polling on failure)
             await self._connect_position_listener()
+
+            # Connect market ticker listener for real-time prices (non-blocking, optional)
+            await self._connect_market_ticker_listener()
+
+            # Start market price syncer for REST API price fetching
+            await self._start_market_price_syncer()
 
         # Transition to READY with actual metrics
         await self._transition_to_ready()
@@ -608,10 +622,157 @@ class V3Coordinator:
                 # Broadcast updated state to frontend
                 await self._status_reporter.emit_trading_state()
 
+                # Update market ticker subscriptions if positions changed
+                await self._update_market_ticker_subscriptions()
+
                 logger.debug(f"Position update broadcast: {ticker}")
 
         except Exception as e:
             logger.error(f"Error handling position update: {e}")
+
+    async def _connect_market_ticker_listener(self) -> None:
+        """
+        Connect market ticker listener for real-time price updates.
+
+        This is a non-critical component - failure falls back to no real-time prices.
+        Only starts if trading client is available and has positions.
+        """
+        if not self._trading_client_integration:
+            logger.debug("Skipping market ticker listener (no trading client)")
+            return
+
+        try:
+            # Import here to avoid circular imports
+            from ..clients.market_ticker_listener import MarketTickerListener
+
+            logger.info("Starting market ticker listener...")
+
+            # Create market ticker listener with 500ms throttle
+            self._market_ticker_listener = MarketTickerListener(
+                event_bus=self._event_bus,
+                ws_url=self._config.ws_url,
+                throttle_ms=500,
+            )
+
+            # Subscribe to ticker update events
+            await self._event_bus.subscribe_to_market_ticker(self._handle_market_ticker_update)
+
+            # Start the listener
+            await self._market_ticker_listener.start()
+
+            # Get current position tickers and subscribe
+            if self._state_container.trading_state:
+                tickers = list(self._state_container.trading_state.positions.keys())
+                if tickers:
+                    await self._market_ticker_listener.update_subscriptions(tickers)
+                    logger.info(f"Subscribed to {len(tickers)} position tickers for price updates")
+
+            # Set on status reporter for health broadcasting
+            self._status_reporter.set_market_ticker_listener(self._market_ticker_listener)
+
+            logger.info("Market ticker listener active")
+
+            await self._event_bus.emit_system_activity(
+                activity_type="connection",
+                message="Real-time market prices enabled",
+                metadata={"channel": "ticker", "severity": "info"}
+            )
+
+        except Exception as e:
+            # Don't fail startup if market ticker listener fails - prices are optional
+            logger.warning(f"Market ticker listener failed (prices unavailable): {e}")
+            self._market_ticker_listener = None
+            self._state_container.set_component_degraded("market_ticker", True, str(e))
+
+    async def _handle_market_ticker_update(self, event) -> None:
+        """
+        Handle real-time market ticker update from WebSocket.
+
+        Updates the state container with new market prices.
+
+        Args:
+            event: MarketTickerEvent from event bus
+        """
+        try:
+            ticker = event.market_ticker
+            price_data = event.price_data
+
+            # Update state container (separate from position data)
+            if self._state_container.update_market_price(ticker, price_data):
+                # Broadcast updated state to frontend
+                # Note: We piggyback on trading state broadcast since market prices
+                # are included in get_trading_summary()
+                await self._status_reporter.emit_trading_state()
+
+        except Exception as e:
+            logger.error(f"Error handling market ticker update: {e}")
+
+    async def _update_market_ticker_subscriptions(self) -> None:
+        """
+        Update market ticker subscriptions based on current positions.
+
+        Called when positions change to add/remove ticker subscriptions.
+        """
+        if not self._market_ticker_listener:
+            return
+
+        if not self._state_container.trading_state:
+            return
+
+        tickers = list(self._state_container.trading_state.positions.keys())
+        await self._market_ticker_listener.update_subscriptions(tickers)
+
+    async def _start_market_price_syncer(self) -> None:
+        """
+        Start the market price syncer for REST API price fetching.
+
+        This provides immediate market prices on startup and periodic refresh.
+        Works alongside WebSocket ticker updates.
+        """
+        if not self._trading_client_integration:
+            logger.debug("Skipping market price syncer (no trading client)")
+            return
+
+        try:
+            # Import here to avoid circular imports
+            from ..services.market_price_syncer import MarketPriceSyncer
+
+            logger.info("Starting market price syncer...")
+
+            # Create market price syncer with 30s refresh interval
+            self._market_price_syncer = MarketPriceSyncer(
+                trading_client=self._trading_client_integration,
+                state_container=self._state_container,
+                event_bus=self._event_bus,
+                sync_interval=30.0,
+            )
+
+            # Start the syncer (performs initial sync immediately)
+            await self._market_price_syncer.start()
+
+            # Set on status reporter for health broadcasting
+            self._status_reporter.set_market_price_syncer(self._market_price_syncer)
+
+            # Set on websocket manager for initial state sends to new clients
+            self._websocket_manager.set_market_price_syncer(self._market_price_syncer)
+
+            # Bump trading state version and emit immediately
+            # This ensures any connected clients get the syncer health info
+            self._state_container._trading_state_version += 1
+            await self._status_reporter.emit_trading_state()
+
+            logger.info("Market price syncer active")
+
+            await self._event_bus.emit_system_activity(
+                activity_type="connection",
+                message="Market price syncer enabled - REST API refresh every 30s",
+                metadata={"feature": "market_price_syncer", "severity": "info"}
+            )
+
+        except Exception as e:
+            # Don't fail startup if market price syncer fails - it's non-critical
+            logger.warning(f"Market price syncer failed: {e}")
+            self._market_price_syncer = None
 
     async def _sync_trading_state(self) -> None:
         """Perform initial trading state sync."""
@@ -922,6 +1083,10 @@ class V3Coordinator:
             
             if state_changed or True:  # Always broadcast on sync
                 await self._status_reporter.emit_trading_state()
+
+                # Update market ticker subscriptions if positions may have changed
+                # This ensures new positions get real-time price updates
+                await self._update_market_ticker_subscriptions()
                 
         except Exception as e:
             logger.error(f"Periodic trading sync failed: {e}")
@@ -978,6 +1143,10 @@ class V3Coordinator:
                 total_steps += 1
             if self._position_listener:
                 total_steps += 1
+            if self._market_ticker_listener:
+                total_steps += 1
+            if self._market_price_syncer:
+                total_steps += 1
             if self._whale_execution_service:
                 total_steps += 1
             if self._yes_80_90_service:
@@ -1017,6 +1186,18 @@ class V3Coordinator:
             if self._position_listener:
                 logger.info(f"{step}/{total_steps} Stopping Position Listener...")
                 await self._position_listener.stop()
+                step += 1
+
+            # Stop market ticker listener
+            if self._market_ticker_listener:
+                logger.info(f"{step}/{total_steps} Stopping Market Ticker Listener...")
+                await self._market_ticker_listener.stop()
+                step += 1
+
+            # Stop market price syncer
+            if self._market_price_syncer:
+                logger.info(f"{step}/{total_steps} Stopping Market Price Syncer...")
+                await self._market_price_syncer.stop()
                 step += 1
 
             if self._trading_client_integration:
@@ -1091,6 +1272,18 @@ class V3Coordinator:
         # Add whale execution service if configured
         if self._whale_execution_service:
             components["whale_execution_service"] = self._whale_execution_service.get_stats()
+
+        # Add position listener if configured
+        if self._position_listener:
+            components["position_listener"] = self._position_listener.get_metrics()
+
+        # Add market ticker listener if configured
+        if self._market_ticker_listener:
+            components["market_ticker_listener"] = self._market_ticker_listener.get_metrics()
+
+        # Add market price syncer if configured
+        if self._market_price_syncer:
+            components["market_price_syncer"] = self._market_price_syncer.get_health_details()
 
         # Get metrics from various sources
         orderbook_metrics = self._orderbook_integration.get_metrics()

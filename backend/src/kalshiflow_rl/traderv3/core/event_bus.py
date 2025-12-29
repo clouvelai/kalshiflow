@@ -82,6 +82,9 @@ class EventType(Enum):
     # Real-time position updates (from WebSocket)
     MARKET_POSITION_UPDATE = "market_position_update"
 
+    # Real-time market price updates (from ticker WebSocket)
+    MARKET_TICKER_UPDATE = "market_ticker_update"
+
 
 @dataclass
 class MarketEvent:
@@ -247,12 +250,32 @@ class MarketPositionEvent:
     position_data: Optional[Dict[str, Any]] = None
     timestamp: float = 0.0
 
+
+@dataclass
+class MarketTickerEvent:
+    """
+    Event data for real-time market price updates from Kalshi ticker WebSocket.
+
+    Emitted when the ticker WebSocket channel sends a price update.
+    All price values are in cents (1-99 for prediction markets).
+
+    Attributes:
+        event_type: Always MARKET_TICKER_UPDATE
+        market_ticker: Market ticker for this price update
+        price_data: Price details (last_price, yes_bid, yes_ask, etc.)
+        timestamp: When the update was received
+    """
+    event_type: EventType = EventType.MARKET_TICKER_UPDATE
+    market_ticker: str = ""
+    price_data: Optional[Dict[str, Any]] = None
+    timestamp: float = 0.0
+
     def __post_init__(self):
         """Set defaults after initialization."""
         if self.timestamp == 0.0:
             self.timestamp = time.time()
-        if self.position_data is None:
-            self.position_data = {}
+        if self.price_data is None:
+            self.price_data = {}
 
 
 class EventBus:
@@ -723,6 +746,46 @@ class EventBus:
         )
 
         return await self._queue_event(event)
+
+    async def emit_market_ticker_update(
+        self,
+        ticker: str,
+        price_data: Dict[str, Any]
+    ) -> bool:
+        """
+        Emit a market ticker update event (non-blocking).
+
+        Called by MarketTickerListener when receiving real-time price updates
+        from Kalshi WebSocket ticker channel.
+
+        Args:
+            ticker: Market ticker for this price update
+            price_data: Price details (last_price, yes_bid, yes_ask, volume, etc.)
+
+        Returns:
+            True if event was queued, False if queue full
+        """
+        if not self._running:
+            return False
+
+        event = MarketTickerEvent(
+            event_type=EventType.MARKET_TICKER_UPDATE,
+            market_ticker=ticker,
+            price_data=price_data,
+            timestamp=time.time(),
+        )
+
+        return await self._queue_event(event)
+
+    async def subscribe_to_market_ticker(self, callback: Callable) -> None:
+        """
+        Subscribe to market ticker update events.
+
+        Args:
+            callback: Async callback function(MarketTickerEvent)
+        """
+        # subscribe() is synchronous, no await needed
+        self.subscribe(EventType.MARKET_TICKER_UPDATE, callback)
 
     async def subscribe_to_market_position(self, callback: Callable) -> None:
         """
