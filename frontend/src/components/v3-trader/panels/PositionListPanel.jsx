@@ -1,6 +1,52 @@
 import React, { useState, useEffect, useRef, memo } from 'react';
-import { ChevronRight, ChevronDown, Briefcase, TrendingUp, TrendingDown } from 'lucide-react';
+import { ChevronRight, ChevronDown, Briefcase, TrendingUp, TrendingDown, Radio, Wifi, WifiOff } from 'lucide-react';
 import { formatPnLCurrency, formatCentsAsCurrency, formatRelativeTime, getSideClasses, getPnLColor } from '../../../utils/v3-trader';
+
+/**
+ * Check if a WebSocket update is recent (within threshold seconds)
+ */
+const isRecentWsUpdate = (lastWsUpdateTime, thresholdSeconds = 3) => {
+  if (!lastWsUpdateTime) return false;
+  const now = Date.now() / 1000; // Convert to seconds
+  return (now - lastWsUpdateTime) < thresholdSeconds;
+};
+
+/**
+ * LiveIndicator - Shows when data is being updated in real-time via WebSocket
+ */
+const LiveIndicator = memo(({ isLive, lastUpdateTime }) => {
+  const [pulseKey, setPulseKey] = useState(0);
+
+  // Trigger pulse animation when lastUpdateTime changes
+  useEffect(() => {
+    if (lastUpdateTime) {
+      setPulseKey(prev => prev + 1);
+    }
+  }, [lastUpdateTime]);
+
+  if (!isLive) {
+    return (
+      <span className="inline-flex items-center gap-1 text-gray-500" title="No recent WebSocket updates">
+        <WifiOff className="w-3 h-3" />
+      </span>
+    );
+  }
+
+  return (
+    <span
+      key={pulseKey}
+      className="inline-flex items-center gap-1 text-emerald-400"
+      title="Live WebSocket data"
+    >
+      <span className="relative flex h-2 w-2">
+        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+        <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+      </span>
+    </span>
+  );
+});
+
+LiveIndicator.displayName = 'LiveIndicator';
 
 /**
  * Calculate position metrics for a single position
@@ -40,21 +86,24 @@ const PositionRow = memo(({ pos, index, isRecentlyChanged }) => {
     ? (((valuePerContract - costPerContract) / costPerContract) * 100).toFixed(1)
     : 0;
 
+  // Check if this position has recent WebSocket price updates
+  const hasLiveData = isRecentWsUpdate(pos.last_ws_update_time, 5);
+  const isWsSource = pos.price_source === 'ws_ticker';
+
   return (
     <tr
       className={`border-b border-gray-700/30 hover:bg-gray-800/50 transition-all duration-500
         ${isRecentlyChanged
           ? 'border-l-2 border-l-emerald-400/70 bg-emerald-900/10'
-          : 'border-l-2 border-l-transparent'
+          : hasLiveData
+            ? 'border-l-2 border-l-emerald-500/40 bg-emerald-900/5'
+            : 'border-l-2 border-l-transparent'
         }`}
     >
       <td className="px-3 py-2 font-mono text-gray-300 text-xs">
-        <div className="flex items-center">
-          {isRecentlyChanged ? (
-            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 mr-2 animate-pulse" />
-          ) : pos.session_updated ? (
-            <span className="w-1.5 h-1.5 rounded-full bg-emerald-600/50 mr-2" title="Updated this session" />
-          ) : null}
+        <div className="flex items-center gap-1.5">
+          {/* Live indicator for WebSocket updates */}
+          <LiveIndicator isLive={hasLiveData} lastUpdateTime={pos.last_ws_update_time} />
           {pos.ticker}
         </div>
       </td>
@@ -69,7 +118,10 @@ const PositionRow = memo(({ pos, index, isRecentlyChanged }) => {
       </td>
       <td className="px-3 py-2 text-right font-mono text-gray-300">{qty}</td>
       <td className="px-3 py-2 text-right font-mono text-gray-400">{costPerContract}c</td>
-      <td className="px-3 py-2 text-right font-mono text-gray-300">{valuePerContract}c</td>
+      <td className={`px-3 py-2 text-right font-mono ${hasLiveData ? 'text-emerald-300' : 'text-gray-300'}`}>
+        {valuePerContract}c
+        {hasLiveData && <span className="ml-1 text-emerald-500 text-[10px]">LIVE</span>}
+      </td>
       <td className={`px-3 py-2 text-right font-mono ${getPnLColor(valuePerContract - costPerContract)}`}>
         {valuePerContract - costPerContract >= 0 ? '+' : ''}{valuePerContract - costPerContract}c
       </td>
@@ -259,6 +311,10 @@ const PositionListPanel = ({ positions, positionListener, sessionUpdates }) => {
   const yesPositions = positions.filter(p => p.side === 'yes');
   const noPositions = positions.filter(p => p.side === 'no');
 
+  // Count positions with live WebSocket data
+  const liveDataCount = positions.filter(p => isRecentWsUpdate(p.last_ws_update_time, 5)).length;
+  const hasAnyLiveData = liveDataCount > 0;
+
   return (
     <div className="bg-gray-900/50 backdrop-blur-sm rounded-xl border border-gray-800 p-4 mb-4">
       {/* Header with expand/collapse */}
@@ -288,10 +344,23 @@ const PositionListPanel = ({ positions, positionListener, sessionUpdates }) => {
               )}
             </div>
           )}
-          {/* Session updates count */}
-          {sessionUpdates && sessionUpdates.count > 0 && (
+          {/* Live ticker data indicator - shows when WebSocket price updates are flowing */}
+          {hasAnyLiveData && (
             <div className="flex items-center gap-1.5 ml-2 px-2 py-0.5 bg-emerald-900/30 rounded-full border border-emerald-800/30">
+              <span className="relative flex h-2 w-2">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+              </span>
               <span className="text-xs text-emerald-400 font-medium">
+                {liveDataCount}/{positions.length} LIVE
+              </span>
+            </div>
+          )}
+          {/* Session updates count (fallback when no live data) */}
+          {!hasAnyLiveData && sessionUpdates && sessionUpdates.count > 0 && (
+            <div className="flex items-center gap-1.5 ml-2 px-2 py-0.5 bg-gray-800/50 rounded-full border border-gray-700/30">
+              <WifiOff className="w-3 h-3 text-gray-500" />
+              <span className="text-xs text-gray-500">
                 {sessionUpdates.count} updated this session
               </span>
             </div>

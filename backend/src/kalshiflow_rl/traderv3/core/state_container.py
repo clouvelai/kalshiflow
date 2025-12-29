@@ -139,6 +139,8 @@ class MarketPriceData:
         open_interest: Active contracts
         close_time: Market close time as ISO timestamp (from REST API only)
         timestamp: Unix timestamp of update (seconds)
+        price_source: Source of latest price update ("ws_ticker" or "rest_sync")
+        last_ws_update_time: Unix timestamp of last WebSocket update (seconds)
     """
     ticker: str
     last_price: int = 0
@@ -150,6 +152,8 @@ class MarketPriceData:
     open_interest: int = 0
     close_time: Optional[str] = None  # ISO timestamp from REST API
     timestamp: float = 0.0
+    price_source: str = "rest_sync"  # "ws_ticker" or "rest_sync"
+    last_ws_update_time: Optional[float] = None  # Unix timestamp of last WS update
 
 
 class V3StateContainer:
@@ -705,6 +709,9 @@ class V3StateContainer:
                 position_data["market_spread"] = market_data.yes_ask - market_data.yes_bid
                 position_data["market_close_time"] = market_data.close_time
                 position_data["market_updated"] = market_data.timestamp
+                # New fields for WebSocket update tracking
+                position_data["price_source"] = market_data.price_source
+                position_data["last_ws_update_time"] = market_data.last_ws_update_time
             else:
                 # No market data available - set to None
                 position_data["market_bid"] = None
@@ -713,6 +720,8 @@ class V3StateContainer:
                 position_data["market_spread"] = None
                 position_data["market_close_time"] = None
                 position_data["market_updated"] = None
+                position_data["price_source"] = None
+                position_data["last_ws_update_time"] = None
 
             details.append(position_data)
 
@@ -840,10 +849,25 @@ class V3StateContainer:
                 - volume: Total volume traded
                 - open_interest: Active contracts
                 - timestamp: Unix timestamp
+                - close_time: Optional market close time (from REST API)
 
         Returns:
             True if price was updated
         """
+        now = time.time()
+
+        # Preserve existing close_time if not provided in update
+        # (close_time comes from REST API only, not WebSocket ticker)
+        existing_close_time = None
+        existing_last_ws_update = None
+        if ticker in self._market_prices:
+            existing_close_time = self._market_prices[ticker].close_time
+            existing_last_ws_update = self._market_prices[ticker].last_ws_update_time
+
+        # Determine price source - if timestamp is provided and recent, it's from WebSocket
+        price_source = price_data.get("price_source", "ws_ticker")
+        last_ws_update_time = now if price_source == "ws_ticker" else existing_last_ws_update
+
         self._market_prices[ticker] = MarketPriceData(
             ticker=ticker,
             last_price=price_data.get("last_price", 0),
@@ -853,14 +877,18 @@ class V3StateContainer:
             no_ask=price_data.get("no_ask", 0),
             volume=price_data.get("volume", 0),
             open_interest=price_data.get("open_interest", 0),
-            timestamp=price_data.get("timestamp", time.time()),
+            close_time=price_data.get("close_time", existing_close_time),
+            timestamp=price_data.get("timestamp", now),
+            price_source=price_source,
+            last_ws_update_time=last_ws_update_time,
         )
         self._market_prices_version += 1
-        self._last_update = time.time()
+        self._last_update = now
 
         logger.debug(
             f"Market price updated: {ticker} = {price_data.get('last_price', 0)}c "
-            f"bid/ask={price_data.get('yes_bid', 0)}/{price_data.get('yes_ask', 0)}c"
+            f"bid/ask={price_data.get('yes_bid', 0)}/{price_data.get('yes_ask', 0)}c "
+            f"(source={price_source})"
         )
 
         return True
@@ -900,6 +928,8 @@ class V3StateContainer:
                 "yes_ask": data.yes_ask,
                 "spread": data.yes_ask - data.yes_bid if data.yes_ask and data.yes_bid else 0,
                 "timestamp": data.timestamp,
+                "price_source": data.price_source,
+                "last_ws_update_time": data.last_ws_update_time,
             }
 
         return {
