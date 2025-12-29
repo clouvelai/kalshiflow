@@ -86,6 +86,11 @@ class V3WebSocketManager:
         self._ping_task: Optional[asyncio.Task] = None
         self._ping_interval = 30.0  # seconds
 
+        # Message coalescing - batch rapid updates within a window
+        self._pending_messages: Dict[str, Dict[str, Any]] = {}  # type -> latest message data
+        self._coalesce_task: Optional[asyncio.Task] = None
+        self._coalesce_interval = 0.1  # 100ms batching window
+
         # State transition history buffer (last 20 transitions)
         # This ensures late-connecting clients can see the startup sequence
         self._state_transition_history: deque = deque(maxlen=20)
@@ -191,7 +196,15 @@ class V3WebSocketManager:
                 await self._ping_task
             except asyncio.CancelledError:
                 pass
-        
+
+        # Cancel coalesce task if running
+        if self._coalesce_task and not self._coalesce_task.done():
+            self._coalesce_task.cancel()
+            try:
+                await self._coalesce_task
+            except asyncio.CancelledError:
+                pass
+
         # Disconnect all clients
         disconnect_tasks = []
         for client in list(self._clients.values()):
@@ -346,26 +359,64 @@ class V3WebSocketManager:
     
     async def broadcast_message(self, message_type: str, data: Dict[str, Any]) -> None:
         """
-        Broadcast message to all connected clients.
-        
+        Queue message for coalesced broadcast.
+
+        Critical message types are sent immediately.
+        Frequent updates (trading_state, trader_status, whale_queue) are
+        coalesced within a 100ms window to batch rapid updates.
+
+        Args:
+            message_type: Type of message
+            data: Message data
+        """
+        # Critical types need immediate delivery - no coalescing
+        critical_types = ("state_transition", "whale_processing", "connection", "system_activity", "history_replay")
+        if message_type in critical_types:
+            await self._broadcast_immediate(message_type, data)
+            return
+
+        # Coalesce frequent updates (trading_state, trader_status, whale_queue)
+        # Later messages of the same type replace earlier ones within the window
+        self._pending_messages[message_type] = data
+
+        # Start coalesce task if not already running
+        if not self._coalesce_task or self._coalesce_task.done():
+            self._coalesce_task = asyncio.create_task(self._flush_pending())
+
+    async def _flush_pending(self) -> None:
+        """Flush pending messages after coalesce interval."""
+        await asyncio.sleep(self._coalesce_interval)
+
+        # Atomically grab and clear pending messages
+        messages = self._pending_messages.copy()
+        self._pending_messages.clear()
+
+        # Broadcast each coalesced message
+        for msg_type, data in messages.items():
+            await self._broadcast_immediate(msg_type, data)
+
+    async def _broadcast_immediate(self, message_type: str, data: Dict[str, Any]) -> None:
+        """
+        Broadcast message immediately to all connected clients.
+
         Args:
             message_type: Type of message
             data: Message data
         """
         if not self._clients:
             return
-        
+
         message = {
             "type": message_type,
             "data": data,
             "timestamp": time.time()
         }
-        
+
         # Send to all connected clients
         send_tasks = []
         for client_id in list(self._clients.keys()):
             send_tasks.append(self._send_to_client(client_id, message))
-        
+
         if send_tasks:
             await asyncio.gather(*send_tasks, return_exceptions=True)
     

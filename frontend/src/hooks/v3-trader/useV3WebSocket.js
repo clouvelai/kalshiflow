@@ -46,6 +46,8 @@ export const useV3WebSocket = ({ onMessage }) => {
   const wsRef = useRef(null);
   const reconnectTimeoutRef = useRef(null);
   const currentStateRef = useRef(currentState);
+  const lastPingRef = useRef(Date.now());
+  const heartbeatIntervalRef = useRef(null);
 
   // Keep currentStateRef in sync
   useEffect(() => {
@@ -53,6 +55,12 @@ export const useV3WebSocket = ({ onMessage }) => {
   }, [currentState]);
 
   const connectWebSocket = useCallback(() => {
+    // Clear any pending reconnect timeout first to prevent timeout accumulation
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current);
+      reconnectTimeoutRef.current = null;
+    }
+
     if (wsRef.current?.readyState === WebSocket.OPEN ||
         wsRef.current?.readyState === WebSocket.CONNECTING) {
       return;
@@ -159,25 +167,38 @@ export const useV3WebSocket = ({ onMessage }) => {
         if (data.data) {
           setLastUpdateTime(Math.floor(Date.now() / 1000));
 
-          setTradingState({
-            has_state: true,
-            version: data.data.version,
-            balance: data.data.balance,
-            portfolio_value: data.data.portfolio_value,
-            position_count: data.data.position_count,
-            order_count: data.data.order_count,
-            positions: data.data.positions,
-            open_orders: data.data.open_orders,
-            sync_timestamp: data.data.sync_timestamp,
-            changes: data.data.changes,
-            order_group: data.data.order_group,
-            pnl: data.data.pnl,
-            positions_details: data.data.positions_details || []
+          // Use functional setState with version comparison to skip redundant updates
+          setTradingState(prev => {
+            // Skip update if version hasn't changed (avoids unnecessary re-renders)
+            if (prev?.version === data.data.version) {
+              return prev;
+            }
+            return {
+              has_state: true,
+              version: data.data.version,
+              balance: data.data.balance,
+              portfolio_value: data.data.portfolio_value,
+              position_count: data.data.position_count,
+              order_count: data.data.order_count,
+              positions: data.data.positions,
+              open_orders: data.data.open_orders,
+              sync_timestamp: data.data.sync_timestamp,
+              changes: data.data.changes,
+              order_group: data.data.order_group,
+              pnl: data.data.pnl,
+              positions_details: data.data.positions_details || []
+            };
           });
 
+          // Handle settlements with reference stability
           if (data.data.settlements !== undefined) {
             const newSettlements = data.data.settlements || [];
             setSettlements(prevSettlements => {
+              // Only update if actually changed (length or first item ticker)
+              if (prevSettlements.length === newSettlements.length &&
+                  prevSettlements[0]?.ticker === newSettlements[0]?.ticker) {
+                return prevSettlements;
+              }
               if (newSettlements.length > prevSettlements.length && newSettlements[0]) {
                 setNewSettlement(newSettlements[0]);
                 setTimeout(() => setNewSettlement(null), 5000);
@@ -291,6 +312,8 @@ export const useV3WebSocket = ({ onMessage }) => {
         break;
 
       case 'ping':
+        // Track last ping time for heartbeat monitoring
+        lastPingRef.current = Date.now();
         if (ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({ type: 'pong', timestamp: Date.now() }));
         }
@@ -314,6 +337,27 @@ export const useV3WebSocket = ({ onMessage }) => {
       }
     };
   }, [connectWebSocket]);
+
+  // Heartbeat monitoring - detect zombie connections
+  // If we haven't received a ping from server in 60s, force reconnect
+  useEffect(() => {
+    const checkHeartbeat = () => {
+      const timeSinceLastPing = Date.now() - lastPingRef.current;
+      // Server sends pings every 30s, so 60s timeout gives buffer
+      if (timeSinceLastPing > 60000 && wsStatus === 'connected') {
+        console.warn('[useV3WebSocket] No ping in 60s, forcing reconnect');
+        wsRef.current?.close();
+      }
+    };
+
+    heartbeatIntervalRef.current = setInterval(checkHeartbeat, 15000);
+
+    return () => {
+      if (heartbeatIntervalRef.current) {
+        clearInterval(heartbeatIntervalRef.current);
+      }
+    };
+  }, [wsStatus]);
 
   // Clear new settlement after timeout
   const dismissSettlement = useCallback(() => {
