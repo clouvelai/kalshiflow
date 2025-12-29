@@ -1,0 +1,24 @@
+{
+  "session": "006_deep_dive",
+  "timestamp": "2025-12-29T12:42:38.710696",
+  "conclusion": "Market appears efficient. No exploitable edge found.",
+  "findings": {
+    "big_no_trades": {
+      "edge": 0.0421,
+      "p_value": 0.007,
+      "survives_correction": false
+    },
+    "yes_at_hour_16": {
+      "edge": 0.0152,
+      "p_value": 0.0005,
+      "survives_correction": false
+    },
+    "no_near_25c": {
+      "edge": 0.0355,
+      "p_value": 0.003,
+      "survives_correction": false
+    }
+  },
+  "overall_yes_edge": -0.030924083213937498,
+  "overall_no_edge": -0.06491874736472303
+}
