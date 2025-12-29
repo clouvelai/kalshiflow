@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     from ..clients.market_ticker_listener import MarketTickerListener
     from ..services.whale_tracker import WhaleTracker
     from ..services.market_price_syncer import MarketPriceSyncer
+    from ..services.trading_state_syncer import TradingStateSyncer
 
 from .state_machine import TraderStateMachine as V3StateMachine, TraderState as V3State
 from .event_bus import EventBus
@@ -128,17 +129,23 @@ class V3Coordinator:
             # Set state container for immediate trading state on client connect
             self._websocket_manager.set_state_container(self._state_container)
 
-            # Initialize trading flow orchestrator
-            self._trading_orchestrator = TradingFlowOrchestrator(
-                config=config,
-                trading_client=trading_client_integration,
-                orderbook_integration=orderbook_integration,
-                trading_service=self._trading_service,
-                state_container=self._state_container,
-                event_bus=event_bus,
-                state_machine=state_machine,
-                whale_tracker=whale_tracker
-            )
+            # Initialize trading flow orchestrator only for cycle-based strategies
+            # Event-driven strategies (WHALE_FOLLOWER, YES_80_90) use dedicated services instead
+            event_driven_strategies = {TradingStrategy.WHALE_FOLLOWER, TradingStrategy.YES_80_90, TradingStrategy.HOLD}
+            if strategy not in event_driven_strategies:
+                self._trading_orchestrator = TradingFlowOrchestrator(
+                    config=config,
+                    trading_client=trading_client_integration,
+                    orderbook_integration=orderbook_integration,
+                    trading_service=self._trading_service,
+                    state_container=self._state_container,
+                    event_bus=event_bus,
+                    state_machine=state_machine,
+                    whale_tracker=whale_tracker
+                )
+                logger.info(f"Trading flow orchestrator enabled for {strategy.value} strategy")
+            else:
+                logger.info(f"Skipping orchestrator for event-driven {strategy.value} strategy")
 
             # Log strategy configuration
             if strategy == TradingStrategy.WHALE_FOLLOWER:
@@ -190,6 +197,9 @@ class V3Coordinator:
 
         # Market price syncer for REST API price fetching (initialized later if trading client available)
         self._market_price_syncer: Optional['MarketPriceSyncer'] = None
+
+        # Trading state syncer for periodic balance/positions/orders/settlements sync
+        self._trading_state_syncer: Optional['TradingStateSyncer'] = None
 
         self._started_at: Optional[float] = None
         self._running = False
@@ -278,6 +288,9 @@ class V3Coordinator:
 
             # Start market price syncer for REST API price fetching
             await self._start_market_price_syncer()
+
+            # Start trading state syncer for periodic Kalshi sync
+            await self._start_trading_state_syncer()
 
         # Transition to READY with actual metrics
         await self._transition_to_ready()
@@ -787,6 +800,43 @@ class V3Coordinator:
             logger.warning(f"Market price syncer failed: {e}")
             self._market_price_syncer = None
 
+    async def _start_trading_state_syncer(self) -> None:
+        """Start trading state syncer for periodic balance/positions/orders/settlements sync."""
+        if not self._trading_client_integration:
+            logger.debug("Skipping trading state syncer (no trading client)")
+            return
+
+        try:
+            # Import here to avoid circular imports
+            from ..services.trading_state_syncer import TradingStateSyncer
+
+            logger.info("Starting trading state syncer...")
+
+            # Create trading state syncer with 20s refresh interval
+            self._trading_state_syncer = TradingStateSyncer(
+                trading_client=self._trading_client_integration,
+                state_container=self._state_container,
+                event_bus=self._event_bus,
+                status_reporter=self._status_reporter,
+                sync_interval=20.0,
+            )
+
+            # Start the syncer (performs initial sync immediately)
+            await self._trading_state_syncer.start()
+
+            logger.info("Trading state syncer active")
+
+            await self._event_bus.emit_system_activity(
+                activity_type="connection",
+                message="Trading state syncer enabled - Kalshi sync every 20s",
+                metadata={"feature": "trading_state_syncer", "severity": "info"}
+            )
+
+        except Exception as e:
+            # Don't fail startup if trading state syncer fails - it's non-critical
+            logger.warning(f"Trading state syncer failed: {e}")
+            self._trading_state_syncer = None
+
     async def _sync_trading_state(self) -> None:
         """Perform initial trading state sync."""
         logger.info("🔄 Syncing with Kalshi...")
@@ -919,77 +969,44 @@ class V3Coordinator:
         """
         Main event loop - handles all periodic operations.
         This is the heart of the V3 trader after startup.
+
+        Note: Periodic trading state sync is now handled by TradingStateSyncer
+        which runs in its own asyncio task for reliability.
         """
         # Start monitoring tasks
         self._start_monitoring_tasks()
-        
-        last_sync_time = time.time()
-        sync_interval = 30.0  # Sync every 30 seconds (for non-trading syncs)
-        
+
         logger.info("Event loop started")
-        
+
         while self._running:
             try:
                 current_state = self._state_machine.current_state
-                
+
                 # State-specific handlers
                 if current_state == V3State.READY:
                     # Use orchestrator for trading flow if available
                     if self._trading_orchestrator:
                         # Orchestrator handles its own sync and trading cycles
                         cycle_run = await self._trading_orchestrator.check_and_run_cycle()
-                        
-                        # If no cycle was run, check for periodic sync
-                        if not cycle_run and self._trading_client_integration and \
-                           time.time() - last_sync_time > sync_interval:
-                            # Emit system activity for sync start
-                            await self._event_bus.emit_system_activity(
-                                activity_type="sync",
-                                message="Starting periodic sync with Kalshi",
-                                metadata={"sync_interval": sync_interval, "severity": "info"}
-                            )
-                            await self._handle_trading_sync()
-                            last_sync_time = time.time()
-                    else:
-                        # No trading orchestrator - just do periodic syncs
-                        if self._trading_client_integration and \
-                           time.time() - last_sync_time > sync_interval:
-                            await self._event_bus.emit_system_activity(
-                                activity_type="sync",
-                                message="Starting periodic sync with Kalshi",
-                                metadata={"sync_interval": sync_interval, "severity": "info"}
-                            )
-                            await self._handle_trading_sync()
-                            last_sync_time = time.time()
-                    
+
+                        # Broadcast state after orchestrator cycle (it syncs internally)
+                        if cycle_run:
+                            await self._status_reporter.emit_trading_state()
+                    # Note: No else branch needed - TradingStateSyncer handles periodic sync
+
                 elif current_state == V3State.ERROR:
-                    # In ERROR state, still allow trading syncs if trading client is available
-                    # This supports degraded mode where orderbook is down but trading still works
-                    if self._trading_client_integration and \
-                       time.time() - last_sync_time > sync_interval:
-                        logger.info("Performing trading sync in ERROR state (degraded mode)")
-                        await self._event_bus.emit_system_activity(
-                            activity_type="sync",
-                            message="Trading sync in degraded mode",
-                            metadata={"state": "error", "sync_interval": sync_interval, "severity": "info"}
-                        )
-                        try:
-                            await self._handle_trading_sync()
-                            last_sync_time = time.time()
-                        except Exception as e:
-                            logger.error(f"Trading sync failed in ERROR state: {e}")
-                    
-                    # Sleep to prevent CPU spinning
+                    # In ERROR state, just sleep to prevent CPU spinning
+                    # TradingStateSyncer continues running in its own task
                     await asyncio.sleep(1.0)
                     continue
-                
+
                 elif current_state == V3State.SHUTDOWN:
                     # Exit loop on shutdown
                     break
-                
+
                 # Small sleep to prevent CPU spinning
                 await asyncio.sleep(0.1)
-                
+
             except asyncio.CancelledError:
                 logger.info("Event loop cancelled")
                 break
@@ -998,7 +1015,7 @@ class V3Coordinator:
                 await self._state_machine.enter_error_state(
                     "Event loop error", e
                 )
-        
+
         logger.info("Event loop stopped")
     
     def _start_monitoring_tasks(self) -> None:
@@ -1008,109 +1025,7 @@ class V3Coordinator:
 
         # Start status reporter service (track for cleanup)
         self._status_reporter_task = asyncio.create_task(self._status_reporter.start())
-    
-    async def _handle_trading_sync(self) -> None:
-        """
-        Handle periodic trading state synchronization.
-        Extracted from _monitor_trading_state() lines 671-702.
-        """
-        if not self._trading_client_integration:
-            return
-        
-        # Allow trading sync in READY or ERROR state to support degraded mode
-        # This enables trading data display even when orderbook is down
-        if self._state_machine.current_state not in [V3State.READY, V3State.ERROR]:
-            return
-        
-        logger.debug("Performing periodic trading state sync...")
-        try:
-            # Use the sync service to get fresh data
-            state, changes = await self._trading_client_integration.sync_with_kalshi()
-            
-            # Always update sync timestamp
-            state.sync_timestamp = time.time()
-            
-            # Update state container
-            state_changed = self._state_container.update_trading_state(state, changes)
-            
-            # Log and emit system activity for sync results
-            if changes and (abs(changes.balance_change) > 0 or 
-                          changes.position_count_change != 0 or 
-                          changes.order_count_change != 0):
-                logger.info(
-                    f"Trading state updated - "
-                    f"Balance: ${state.balance/100:.2f} ({changes.balance_change:+d} cents), "
-                    f"Positions: {state.position_count} ({changes.position_count_change:+d}), "
-                    f"Orders: {state.order_count} ({changes.order_count_change:+d})"
-                )
-                # Emit activity with changes
-                await self._event_bus.emit_system_activity(
-                    activity_type="sync",
-                    message=f"Sync complete: Balance {changes.balance_change:+d} cents, Positions {changes.position_count_change:+d}, Orders {changes.order_count_change:+d}",
-                    metadata={
-                        "sync_type": "periodic",
-                        "balance_change": changes.balance_change,
-                        "position_count_change": changes.position_count_change,
-                        "order_count_change": changes.order_count_change,
-                        "balance": state.balance,
-                        "position_count": state.position_count,
-                        "order_count": state.order_count,
-                        "severity": "info"
-                    }
-                )
-            else:
-                # Emit activity for no-change sync
-                await self._event_bus.emit_system_activity(
-                    activity_type="sync",
-                    message="Sync complete: No changes",
-                    metadata={
-                        "sync_type": "periodic",
-                        "no_changes": True,
-                        "balance": state.balance,
-                        "position_count": state.position_count,
-                        "order_count": state.order_count,
-                        "severity": "info"
-                    }
-                )
-            
-            # Broadcast state (even if unchanged, to update sync timestamp)
-            # Include order group status in metadata if available
-            sync_metadata = {
-                "sync_type": "periodic",
-                "balance": state.balance,
-                "position_count": state.position_count,
-                "order_count": state.order_count
-            }
-            
-            # Add order group info if available
-            if self._trading_client_integration and self._trading_client_integration.has_order_group:
-                sync_metadata["order_group"] = {
-                    "id": self._trading_client_integration.order_group_id[:8] if self._trading_client_integration.order_group_id else "none",
-                    "supported": self._trading_client_integration.order_groups_supported
-                }
-            elif self._trading_client_integration and not self._trading_client_integration.order_groups_supported:
-                sync_metadata["order_group"] = {
-                    "supported": False,
-                    "message": "Order groups unavailable (Demo API limitation)"
-                }
-            
-            if state_changed or True:  # Always broadcast on sync
-                await self._status_reporter.emit_trading_state()
 
-                # Update market ticker subscriptions if positions may have changed
-                # This ensures new positions get real-time price updates
-                await self._update_market_ticker_subscriptions()
-                
-        except Exception as e:
-            logger.error(f"Periodic trading sync failed: {e}")
-            # Emit error activity
-            await self._event_bus.emit_system_activity(
-                activity_type="sync",
-                message=f"Sync failed: {str(e)}",
-                metadata={"error": str(e), "sync_type": "periodic", "severity": "error"}
-            )
-            # Don't transition to ERROR for sync failures - just log and continue
-    
     async def stop(self) -> None:
         """Stop the V3 trader system."""
         if not self._running:
@@ -1211,6 +1126,12 @@ class V3Coordinator:
             if self._market_price_syncer:
                 logger.info(f"{step}/{total_steps} Stopping Market Price Syncer...")
                 await self._market_price_syncer.stop()
+                step += 1
+
+            # Stop trading state syncer
+            if self._trading_state_syncer:
+                logger.info(f"{step}/{total_steps} Stopping Trading State Syncer...")
+                await self._trading_state_syncer.stop()
                 step += 1
 
             if self._trading_client_integration:

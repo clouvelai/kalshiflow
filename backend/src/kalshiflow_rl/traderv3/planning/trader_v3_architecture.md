@@ -1,7 +1,7 @@
 # TRADER V3 Architecture Documentation
 
 > Machine-readable architecture reference for coding agents.
-> Last updated: 2024-12-28 (comprehensive backend documentation update)
+> Last updated: 2024-12-29 (added TradingStateSyncer service)
 
 ## 1. System Overview
 
@@ -66,10 +66,10 @@ TRADER V3 is an event-driven paper trading system for Kalshi prediction markets.
 |           |            +-------------------+          +-------------------+                                        |
 |           |                     |                                                                                  |
 |           v                     v                                                                                  |
-|  +-------------------+ +-------------------+     +--------------------+     +--------------------+                 |
-|  | OrderbookClient   | |KalshiDemoTrading  |     |V3TradesIntegration |     |MarketPriceSyncer   |                 |
-|  | (data/orderbook)  | | Client            |     | (public trades)    |     | (REST price sync)  |                 |
-|  +--------+----------+ +--------+---------+      +--------+-----------+     +--------------------+                 |
+|  +-------------------+ +-------------------+     +--------------------+  +-------------------+ +------------------+|
+|  | OrderbookClient   | |KalshiDemoTrading  |     |V3TradesIntegration |  |MarketPriceSyncer  | |TradingStateSyncer||
+|  | (data/orderbook)  | | Client            |     | (public trades)    |  | (REST price sync) | | (trading sync)   ||
+|  +--------+----------+ +--------+---------+      +--------+-----------+  +-------------------+ +------------------+|
 |           |                     |                         |                                                        |
 |           |                     |                         v                                                        |
 |           |                     |                +-------------------+      +--------------------+                 |
@@ -106,7 +106,7 @@ TRADER V3 is an event-driven paper trading system for Kalshi prediction markets.
   - `is_healthy()` - Boolean health status
 - **Emits Events**: None directly (delegates to StatusReporter)
 - **Subscribes To**: None directly
-- **Dependencies**: V3StateMachine, EventBus, V3WebSocketManager, V3OrderbookIntegration, V3TradingClientIntegration (optional), V3StateContainer, V3HealthMonitor, V3StatusReporter, TradingFlowOrchestrator, MarketTickerListener (optional), MarketPriceSyncer (optional), Yes8090Service (optional)
+- **Dependencies**: V3StateMachine, EventBus, V3WebSocketManager, V3OrderbookIntegration, V3TradingClientIntegration (optional), V3StateContainer, V3HealthMonitor, V3StatusReporter, TradingFlowOrchestrator, MarketTickerListener (optional), MarketPriceSyncer (optional), TradingStateSyncer (optional), Yes8090Service (optional)
 
 #### V3StateMachine
 - **File**: `core/state_machine.py`
@@ -494,6 +494,28 @@ TRADER V3 is an event-driven paper trading system for Kalshi prediction markets.
 - **Dependencies**: V3TradingClientIntegration, V3StateContainer, EventBus
 - **Architecture Note**: Works alongside MarketTickerListener WebSocket for redundancy
 
+#### TradingStateSyncer
+- **File**: `services/trading_state_syncer.py`
+- **Purpose**: Dedicated service for periodic trading state sync (balance, positions, orders, settlements) from Kalshi REST API
+- **Key Methods**:
+  - `start()` / `stop()` - Lifecycle management (initial sync on start)
+  - `is_healthy()` - Check if running and last sync not stale
+  - `get_health_details()` - Get detailed health information
+- **Key Properties**:
+  - `sync_count` - Number of syncs completed
+  - `last_sync_time` - Timestamp of last successful sync
+- **Behavior**:
+  - Performs initial sync immediately on `start()`
+  - Runs periodic sync loop every 20 seconds (configurable)
+  - Updates StateContainer with trading state and change detection
+  - Broadcasts trading_state via StatusReporter after each sync
+  - Emits console-friendly system activity messages
+- **Console Message Format**: "Trading session synced: X positions, $Y balance, Z settlements"
+- **Emits Events**: `SYSTEM_ACTIVITY` (sync type with sync_type="trading_state")
+- **Subscribes To**: None
+- **Dependencies**: V3TradingClientIntegration, V3StateContainer, EventBus, StatusReporter
+- **Architecture Note**: Runs in dedicated asyncio task for reliability (same pattern as MarketPriceSyncer)
+
 #### Yes8090Service
 - **File**: `services/yes_80_90_service.py`
 - **Purpose**: Event-driven trading service implementing the validated +5.1% edge YES at 80-90c strategy
@@ -679,7 +701,7 @@ VALID_TRANSITIONS = {
 | `ORDERBOOK_DELTA` | OrderbookClient | V3OrderbookIntegration | `MarketEvent{market_ticker, sequence_number, timestamp_ms, metadata}` |
 | `STATE_TRANSITION` | V3StateMachine | (legacy, kept for compat) | `StateTransitionEvent{from_state, to_state, context, metadata}` |
 | `TRADER_STATUS` | V3StatusReporter | V3WebSocketManager | `TraderStatusEvent{state, metrics, health, timestamp}` |
-| `SYSTEM_ACTIVITY` | V3StateMachine, V3HealthMonitor, TradingFlowOrchestrator, TradingDecisionService, WhaleExecutionService, MarketPriceSyncer, Yes8090Service | V3WebSocketManager | `SystemActivityEvent{activity_type, message, metadata}` |
+| `SYSTEM_ACTIVITY` | V3StateMachine, V3HealthMonitor, TradingFlowOrchestrator, TradingDecisionService, WhaleExecutionService, MarketPriceSyncer, TradingStateSyncer, Yes8090Service | V3WebSocketManager | `SystemActivityEvent{activity_type, message, metadata}` |
 | `PUBLIC_TRADE_RECEIVED` | V3TradesIntegration | WhaleTracker | `PublicTradeEvent{market_ticker, timestamp_ms, side, price_cents, count}` |
 | `WHALE_QUEUE_UPDATED` | WhaleTracker | V3WebSocketManager, WhaleExecutionService | `WhaleQueueEvent{queue, stats, timestamp}` |
 | `MARKET_POSITION_UPDATE` | PositionListener | V3StateContainer (via coordinator subscription) | `MarketPositionEvent{market_ticker, position_data, timestamp}` |
@@ -691,7 +713,7 @@ VALID_TRANSITIONS = {
 | activity_type | Source | Description |
 |---------------|--------|-------------|
 | `state_transition` | V3StateMachine | State machine state changes |
-| `sync` | V3Coordinator | Kalshi API sync operations |
+| `sync` | TradingStateSyncer, MarketPriceSyncer | Kalshi API sync operations (sync_type: trading_state, market_prices) |
 | `health_check` | V3HealthMonitor | Component health status |
 | `trading_cycle` | TradingFlowOrchestrator | Trading cycle start/complete |
 | `trading_decision` | TradingDecisionService | Trade execution |
@@ -803,7 +825,11 @@ Position data received from Kalshi WebSocket `market_positions` channel, convert
     g. [if trading] market_price_syncer.start():
        * Performs initial REST sync of market prices
        * Starts 30s periodic sync loop
-    h. [if strategy=YES_80_90] yes_80_90_service.start():
+    h. [if trading] trading_state_syncer.start():
+       * Performs initial trading state sync (balance, positions, orders, settlements)
+       * Starts 20s periodic sync loop in dedicated asyncio task
+       * Emits console messages: "Trading session synced: X positions, $Y balance, Z settlements"
+    i. [if strategy=YES_80_90] yes_80_90_service.start():
        * Subscribes to ORDERBOOK_SNAPSHOT/DELTA events
        * Begins monitoring for 80-90c signals
 14. System is READY
@@ -845,22 +871,24 @@ Position data received from Kalshi WebSocket `market_positions` channel, convert
    b. _event_loop_task cancelled
    c. [if yes_80_90] yes_80_90_service.stop()
       - Emits strategy_stop system activity
-   d. [if trading] market_price_syncer.stop()
+   d. [if trading] trading_state_syncer.stop()
+      - Cancels periodic sync task
+   e. [if trading] market_price_syncer.stop()
       - Cancels sync loop task
-   e. [if trading] market_ticker_listener.stop()
+   f. [if trading] market_ticker_listener.stop()
       - Closes WebSocket, cancels listener task
-   f. health_monitor.stop()
-   g. status_reporter.stop()
-   h. [if trading] trading_client_integration.stop()
+   g. health_monitor.stop()
+   h. status_reporter.stop()
+   i. [if trading] trading_client_integration.stop()
       - reset_order_group()
       - disconnect()
-   i. orderbook_integration.stop()
+   j. orderbook_integration.stop()
       - orderbook_client.stop()
-   j. state_machine -> SHUTDOWN
-   k. state_machine.stop()
-   l. websocket_manager.stop()
+   k. state_machine -> SHUTDOWN
+   l. state_machine.stop()
+   m. websocket_manager.stop()
       - Disconnect all clients
-   m. event_bus.stop()
+   n. event_bus.stop()
       - Clear all subscribers
 4. write_queue.stop()
 5. rl_db.close()
@@ -1308,6 +1336,7 @@ The system supports **degraded mode** when the orderbook WebSocket is unavailabl
 | 2024-12-29 | Added StateContainer market prices state (MarketPriceData fields and methods) | Claude |
 | 2024-12-29 | Added data flow traces: Section 6.7 YES 80-90c Strategy, Section 6.8 Market Ticker Updates | Claude |
 | 2024-12-29 | Updated startup/shutdown sequences with new component lifecycle | Claude |
+| 2024-12-29 | Added TradingStateSyncer service for reliable periodic trading state sync (20s interval) | Claude |
 
 ## 10. Cleanup Recommendations
 
