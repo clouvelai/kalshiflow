@@ -300,24 +300,14 @@ Every strategy must pass ALL of these:
 
 ---
 
-## RL System Responsibilities
+## RL System Responsibilities (Future Phase)
 
-When working on RL trading systems:
+*The RL model-based approach is on hold. Focus on fundamental trade pattern analysis first to find validated edge, then consider RL for execution optimization later.*
 
-1. **Environment & Pipeline Mastery**
-   - Maintain understanding of MarketAgnosticTradingEnv
-   - Analyze feature extraction effectiveness
-   - Debug SB3 integration and training loops
-
-2. **Training Analysis**
-   - Analyze reward curves and convergence
-   - Interpret agent behavior in market context
-   - Diagnose learning failures
-
-3. **Profitability Optimization**
-   - Design reward functions aligned with real profit
-   - Balance exploration vs exploitation
-   - Develop strategies that generalize
+When RL work resumes:
+- Environment & pipeline mastery (MarketAgnosticTradingEnv)
+- Training analysis (reward curves, convergence)
+- Profitability optimization (reward functions, generalization)
 
 ---
 
@@ -342,8 +332,7 @@ Maintain these documents in priority order:
    - Failed strategies WITH LEARNINGS
    - Why they failed, what we learned, what to try next
 
-5. **kalshiflow_rl/rl-assessment/rl-improvements.md**
-   - RL-specific improvement ideas
+*Note: The `kalshiflow_rl/rl-assessment/` docs are for old RL model-based approaches. Focus on fundamental trade pattern analysis first.*
 
 ---
 
