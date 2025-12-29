@@ -190,8 +190,9 @@ const WhaleQueuePanel = ({ whaleQueue, processingWhaleId }) => {
   const [currentTime, setCurrentTime] = useState(Date.now());
   // Local state for smooth display - keeps whales visible for minimum time
   const [displayQueue, setDisplayQueue] = useState([]);
-  // Track which whales are fading out
+  // Track which whales are fading out - use ref to avoid infinite loop in useEffect
   const [fadingWhales, setFadingWhales] = useState(new Set());
+  const fadingWhalesRef = useRef(new Set());
   // Track when each whale was first seen (for minimum display time)
   const whaleFirstSeenRef = useRef(new Map());
   // Track which whales have pending removal timeouts to avoid duplicates
@@ -201,6 +202,14 @@ const WhaleQueuePanel = ({ whaleQueue, processingWhaleId }) => {
   // Fade out duration in ms
   const FADE_OUT_DURATION = 500;
 
+  // Keep fadingWhalesRef in sync with fadingWhales state
+  useEffect(() => {
+    fadingWhalesRef.current = fadingWhales;
+  }, [fadingWhales]);
+
+  // Track last processed queue version to avoid unnecessary processing
+  const lastQueueVersionRef = useRef(null);
+
   // Debug logging for whale queue data (reduced frequency)
   useEffect(() => {
     if (whaleQueue?.queue?.length > 0) {
@@ -209,8 +218,17 @@ const WhaleQueuePanel = ({ whaleQueue, processingWhaleId }) => {
   }, [whaleQueue?.queue?.length]);
 
   // Merge incoming queue with display queue, ensuring minimum display time
+  // Note: We use fadingWhalesRef.current instead of fadingWhales in deps to avoid infinite loop
   useEffect(() => {
     const incomingQueue = whaleQueue?.queue || [];
+
+    // Skip processing if queue version hasn't changed (prevents unnecessary re-renders)
+    const queueVersion = whaleQueue?.version;
+    if (queueVersion !== undefined && queueVersion === lastQueueVersionRef.current) {
+      return;
+    }
+    lastQueueVersionRef.current = queueVersion;
+
     const incomingIds = new Set(incomingQueue.map(w => w.whale_id));
     const now = Date.now();
 
@@ -239,8 +257,9 @@ const WhaleQueuePanel = ({ whaleQueue, processingWhaleId }) => {
           const timeVisible = now - (firstSeen || now);
 
           // Only process if not already scheduled for removal and not already fading
+          // Use ref to check fadingWhales to avoid dependency loop
           if (timeVisible < MIN_DISPLAY_TIME &&
-              !fadingWhales.has(whale.whale_id) &&
+              !fadingWhalesRef.current.has(whale.whale_id) &&
               !pendingRemovalRef.current.has(whale.whale_id)) {
             // Keep in display queue but mark as processing/removing
             mergedMap.set(whale.whale_id, { ...whale, isRemoving: true });
@@ -264,7 +283,7 @@ const WhaleQueuePanel = ({ whaleQueue, processingWhaleId }) => {
                 pendingRemovalRef.current.delete(whale.whale_id);
               }, FADE_OUT_DURATION);
             }, remainingTime);
-          } else if (fadingWhales.has(whale.whale_id) || pendingRemovalRef.current.has(whale.whale_id)) {
+          } else if (fadingWhalesRef.current.has(whale.whale_id) || pendingRemovalRef.current.has(whale.whale_id)) {
             // Keep whale visible while it's fading or pending removal
             mergedMap.set(whale.whale_id, { ...whale, isRemoving: true });
           }
@@ -273,7 +292,7 @@ const WhaleQueuePanel = ({ whaleQueue, processingWhaleId }) => {
 
       return Array.from(mergedMap.values());
     });
-  }, [whaleQueue?.queue, fadingWhales]);
+  }, [whaleQueue?.queue]);  // Removed fadingWhales from deps - use ref instead
 
   // Update current time every second for age display
   useEffect(() => {
@@ -509,10 +528,10 @@ const FollowedTradesPanel = ({ followedWhales }) => {
       </div>
 
       {isExpanded && (
-      <div className="bg-gray-800/30 rounded-lg border border-gray-700/50 overflow-hidden mt-4">
+      <div className="bg-gray-800/30 rounded-lg border border-gray-700/50 overflow-hidden mt-4 max-h-[280px] overflow-y-auto">
         <table className="w-full text-sm">
-          <thead>
-            <tr className="bg-gray-900/50 border-b border-gray-700/50">
+          <thead className="sticky top-0 z-10">
+            <tr className="bg-gray-900 border-b border-gray-700/50">
               <th className="px-3 py-2 text-left text-xs text-gray-500 uppercase font-medium">Market</th>
               <th className="px-3 py-2 text-center text-xs text-gray-500 uppercase font-medium">Side</th>
               <th className="px-3 py-2 text-right text-xs text-gray-500 uppercase font-medium">Price</th>
@@ -1022,10 +1041,10 @@ const PositionListPanel = ({ positions, positionListener, sessionUpdates }) => {
       </div>
 
       {isExpanded && (
-        <div className="mt-4 bg-gray-800/30 rounded-lg border border-gray-700/50 overflow-hidden">
+        <div className="mt-4 bg-gray-800/30 rounded-lg border border-gray-700/50 overflow-hidden max-h-[280px] overflow-y-auto">
           <table className="w-full text-sm">
-            <thead>
-              <tr className="bg-gray-900/50 border-b border-gray-700/50">
+            <thead className="sticky top-0 z-10">
+              <tr className="bg-gray-900 border-b border-gray-700/50">
                 <th className="px-3 py-2 text-left text-xs text-gray-500 uppercase font-medium">Ticker</th>
                 <th className="px-3 py-2 text-center text-xs text-gray-500 uppercase font-medium">Side</th>
                 <th className="px-3 py-2 text-right text-xs text-gray-500 uppercase font-medium">Qty</th>
@@ -1035,7 +1054,7 @@ const PositionListPanel = ({ positions, positionListener, sessionUpdates }) => {
                 <th className="px-3 py-2 text-right text-xs text-gray-500 uppercase font-medium">P&L</th>
                 <th className="px-3 py-2 text-right text-xs text-gray-500 uppercase font-medium">Updated</th>
               </tr>
-              <tr className="bg-emerald-900/20 text-emerald-400 text-sm font-medium border-b border-emerald-800/30">
+              <tr className="bg-emerald-900/50 text-emerald-400 text-sm font-medium border-b border-emerald-800/30">
                 <td className="py-1.5 px-3" colSpan="2">YES ({yesPositions.length})</td>
                 <td className="py-1.5 px-3 text-right font-mono">{yesTotalQty}</td>
                 <td className="py-1.5 px-3 text-right font-mono text-gray-500">-</td>
@@ -1044,7 +1063,7 @@ const PositionListPanel = ({ positions, positionListener, sessionUpdates }) => {
                 <td className="py-1.5 px-3 text-right font-mono">{formatPnLCurrency(yesPositions.reduce((sum, p) => sum + (p.unrealized_pnl || 0), 0))}</td>
                 <td className="py-1.5 px-3"></td>
               </tr>
-              <tr className="bg-red-900/20 text-red-400 text-sm font-medium border-b border-gray-700/50">
+              <tr className="bg-red-900/50 text-red-400 text-sm font-medium border-b border-gray-700/50">
                 <td className="py-1.5 px-3" colSpan="2">NO ({noPositions.length})</td>
                 <td className="py-1.5 px-3 text-right font-mono">{noTotalQty}</td>
                 <td className="py-1.5 px-3 text-right font-mono text-gray-500">-</td>
@@ -1177,11 +1196,7 @@ const SettlementToast = ({ settlement, onDismiss }) => {
 const SettlementsPanel = ({ settlements }) => {
   const [isExpanded, setIsExpanded] = useState(true);
 
-  if (!settlements || settlements.length === 0) {
-    return null;
-  }
-
-  const totalRealizedPnl = settlements.reduce(
+  const totalRealizedPnl = (settlements || []).reduce(
     (sum, s) => sum + (s.realized_pnl || 0), 0
   );
 
@@ -1201,6 +1216,9 @@ const SettlementsPanel = ({ settlements }) => {
     });
   };
 
+  const settlementsData = settlements || [];
+  const hasSettlements = settlementsData.length > 0;
+
   return (
     <div className="bg-gray-900/50 backdrop-blur-sm rounded-xl border border-gray-800 p-4">
       <div
@@ -1217,7 +1235,7 @@ const SettlementsPanel = ({ settlements }) => {
           <h3 className="text-sm font-bold text-gray-300 uppercase tracking-wider">
             Recent Settlements
           </h3>
-          <span className="text-xs text-gray-500">({settlements.length})</span>
+          <span className="text-xs text-gray-500">({settlementsData.length})</span>
         </div>
         <div className={`px-2 py-0.5 rounded text-xs font-bold font-mono ${
           totalRealizedPnl >= 0
@@ -1229,55 +1247,63 @@ const SettlementsPanel = ({ settlements }) => {
       </div>
 
       {isExpanded && (
-        <div className="mt-4 overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="text-xs text-gray-500 uppercase border-b border-gray-800">
-                <th className="text-left py-2 px-2">Ticker</th>
-                <th className="text-center py-2 px-2">Side</th>
-                <th className="text-right py-2 px-2">Qty</th>
-                <th className="text-right py-2 px-2">Entry</th>
-                <th className="text-right py-2 px-2">Realized P&L</th>
-                <th className="text-right py-2 px-2">Closed</th>
-              </tr>
-            </thead>
-            <tbody>
-              {settlements.slice(0, 20).map((s, idx) => {
-                const isProfit = (s.realized_pnl || 0) >= 0;
-                return (
-                  <tr
-                    key={`${s.ticker}-${s.closed_at}-${idx}`}
-                    className="border-b border-gray-800/50 hover:bg-gray-800/30"
-                  >
-                    <td className="py-2 px-2 font-mono text-gray-300">{s.ticker}</td>
-                    <td className="py-2 px-2 text-center">
-                      <span className={`px-1.5 py-0.5 rounded text-xs font-bold ${
-                        s.side === 'yes'
-                          ? 'bg-green-900/30 text-green-400'
-                          : 'bg-red-900/30 text-red-400'
+        <div className="mt-4 max-h-[280px] overflow-y-auto bg-gray-800/30 rounded-lg border border-gray-700/50">
+          {hasSettlements ? (
+            <table className="w-full text-sm">
+              <thead className="sticky top-0 z-10">
+                <tr className="text-xs text-gray-500 uppercase border-b border-gray-800 bg-gray-900">
+                  <th className="text-left py-2 px-2">Ticker</th>
+                  <th className="text-center py-2 px-2">Side</th>
+                  <th className="text-right py-2 px-2">Qty</th>
+                  <th className="text-right py-2 px-2">Entry</th>
+                  <th className="text-right py-2 px-2">Realized P&L</th>
+                  <th className="text-right py-2 px-2">Closed</th>
+                </tr>
+              </thead>
+              <tbody>
+                {settlementsData.map((s, idx) => {
+                  const isProfit = (s.realized_pnl || 0) >= 0;
+                  return (
+                    <tr
+                      key={`${s.ticker}-${s.closed_at}-${idx}`}
+                      className="border-b border-gray-800/50 hover:bg-gray-800/30"
+                    >
+                      <td className="py-2 px-2 font-mono text-gray-300">{s.ticker}</td>
+                      <td className="py-2 px-2 text-center">
+                        <span className={`px-1.5 py-0.5 rounded text-xs font-bold ${
+                          s.side === 'yes'
+                            ? 'bg-green-900/30 text-green-400'
+                            : 'bg-red-900/30 text-red-400'
+                        }`}>
+                          {s.side?.toUpperCase()}
+                        </span>
+                      </td>
+                      <td className="py-2 px-2 text-right font-mono text-gray-400">
+                        {Math.abs(s.position || 0)}
+                      </td>
+                      <td className="py-2 px-2 text-right font-mono text-gray-400">
+                        ${((s.total_traded || 0) / 100).toFixed(2)}
+                      </td>
+                      <td className={`py-2 px-2 text-right font-mono font-bold ${
+                        isProfit ? 'text-green-400' : 'text-red-400'
                       }`}>
-                        {s.side?.toUpperCase()}
-                      </span>
-                    </td>
-                    <td className="py-2 px-2 text-right font-mono text-gray-400">
-                      {Math.abs(s.position || 0)}
-                    </td>
-                    <td className="py-2 px-2 text-right font-mono text-gray-400">
-                      ${((s.total_traded || 0) / 100).toFixed(2)}
-                    </td>
-                    <td className={`py-2 px-2 text-right font-mono font-bold ${
-                      isProfit ? 'text-green-400' : 'text-red-400'
-                    }`}>
-                      {formatCurrency(s.realized_pnl || 0)}
-                    </td>
-                    <td className="py-2 px-2 text-right text-xs text-gray-500">
-                      {formatTime(s.closed_at)}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+                        {formatCurrency(s.realized_pnl || 0)}
+                      </td>
+                      <td className="py-2 px-2 text-right text-xs text-gray-500">
+                        {formatTime(s.closed_at)}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          ) : (
+            <div className="flex flex-col items-center justify-center py-8 text-gray-500">
+              <CheckCircle className="w-8 h-8 mb-2 text-gray-600" />
+              <span className="text-sm">No settlements yet</span>
+              <span className="text-xs text-gray-600 mt-1">Closed positions will appear here</span>
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -1324,6 +1350,15 @@ const V3TraderConsole = () => {
   const messagesContainerRef = useRef(null);
   const reconnectTimeoutRef = useRef(null);
   const lastMessageRef = useRef(null);
+  // Use ref for currentState in WebSocket handler to avoid recreating connectWebSocket on every state change
+  const currentStateRef = useRef(currentState);
+  // Counter for unique message IDs to avoid duplicate keys with same timestamp
+  const messageIdCounter = useRef(0);
+
+  // Keep currentStateRef in sync with currentState without triggering re-renders
+  useEffect(() => {
+    currentStateRef.current = currentState;
+  }, [currentState]);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -1448,8 +1483,10 @@ const V3TraderConsole = () => {
       formattedMetadata.context = metadata.context;
     }
     
+    // Generate unique ID using counter to avoid duplicate keys
+    messageIdCounter.current += 1;
     const newMessage = {
-      id: Date.now() + Math.random(),
+      id: `${Date.now()}-${messageIdCounter.current}`,
       type,
       content: cleanContent,
       originalContent: content,
@@ -1527,17 +1564,17 @@ const V3TraderConsole = () => {
                 if (metadata?.severity) {
                   // Use severity from backend if available
                   messageType = metadata.severity; // 'info', 'warning', 'error'
-                } else if (activity_type === 'sync' && currentState === 'ERROR') {
+                } else if (activity_type === 'sync' && currentStateRef.current === 'ERROR') {
                   // Override for sync messages in ERROR state - they're not errors!
                   messageType = 'info';
                 }
-                
+
                 // Add message to console
                 addMessage(messageType, message, {
                   activity_type,
                   timestamp,
                   metadata,
-                  state: metadata?.to_state || currentState
+                  state: metadata?.to_state || currentStateRef.current
                 });
               }
               break;
@@ -1566,8 +1603,9 @@ const V3TraderConsole = () => {
                 });
 
                 // Handle settlements - show toast for new ones
-                if (data.data.settlements) {
-                  const newSettlements = data.data.settlements;
+                if (data.data.settlements !== undefined) {
+                  const newSettlements = data.data.settlements || [];
+                  console.log('[V3TraderConsole] Received settlements:', newSettlements.length, newSettlements);
                   setSettlements(prevSettlements => {
                     // If we have new settlements (more than before), show toast
                     if (newSettlements.length > prevSettlements.length && newSettlements[0]) {
@@ -1607,7 +1645,7 @@ const V3TraderConsole = () => {
               break;
               
             case 'state_transition':
-              const fromState = data.data.from_state || currentState;
+              const fromState = data.data.from_state || currentStateRef.current;
               const toState = data.data.to_state || data.data.state;
               setCurrentState(toState);
               
@@ -1768,7 +1806,9 @@ const V3TraderConsole = () => {
       addMessage('error', `Failed to connect: ${error.message}`);
       setWsStatus('error');
     }
-  }, [addMessage, currentState]);
+    // Note: currentState is accessed via currentStateRef.current to avoid recreating
+    // this callback on every state change, which would cause infinite loop
+  }, [addMessage]);
 
   useEffect(() => {
     connectWebSocket();
