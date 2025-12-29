@@ -25,6 +25,7 @@ if TYPE_CHECKING:
     from ..services.whale_tracker import WhaleTracker
     from ..services.trading_decision_service import TradingDecisionService
     from ..services.whale_execution_service import WhaleExecutionService
+    from .state_container import StateContainer
 
 logger = logging.getLogger("kalshiflow_rl.traderv3.websocket_manager")
 
@@ -67,6 +68,7 @@ class V3WebSocketManager:
         self._event_bus = event_bus
         self._state_machine = state_machine
         self._whale_tracker = whale_tracker
+        self._state_container: Optional['StateContainer'] = None
         self._trading_service: Optional['TradingDecisionService'] = None
         self._whale_execution_service: Optional['WhaleExecutionService'] = None
         self._clients: Dict[str, WebSocketClient] = {}
@@ -128,6 +130,19 @@ class V3WebSocketManager:
         """
         self._whale_execution_service = whale_execution_service
         logger.info("WhaleExecutionService set on WebSocket manager")
+
+    def set_state_container(self, state_container: 'StateContainer') -> None:
+        """
+        Set the state container for sending trading state to new clients.
+
+        This allows immediate trading state broadcast when clients connect,
+        rather than waiting for the next periodic update.
+
+        Args:
+            state_container: StateContainer instance
+        """
+        self._state_container = state_container
+        logger.info("StateContainer set on WebSocket manager")
 
     async def start(self) -> None:
         """Start the WebSocket manager."""
@@ -257,6 +272,35 @@ class V3WebSocketManager:
                     logger.debug(f"Sent whale queue snapshot to client {client_id}: {len(queue_state.get('queue', []))} whales")
                 except Exception as e:
                     logger.warning(f"Could not send whale queue snapshot to client {client_id}: {e}")
+
+            # Send trading state snapshot immediately (don't wait for periodic broadcast)
+            if self._state_container and client_id in self._clients:
+                try:
+                    trading_summary = self._state_container.get_trading_summary()
+                    if trading_summary.get("has_state"):
+                        trading_state_msg = {
+                            "type": "trading_state",
+                            "data": {
+                                "timestamp": time.time(),
+                                "version": trading_summary["version"],
+                                "balance": trading_summary["balance"],
+                                "portfolio_value": trading_summary["portfolio_value"],
+                                "position_count": trading_summary["position_count"],
+                                "order_count": trading_summary["order_count"],
+                                "positions": trading_summary["positions"],
+                                "open_orders": trading_summary["open_orders"],
+                                "order_list": trading_summary.get("order_list", []),
+                                "sync_timestamp": trading_summary["sync_timestamp"],
+                                "pnl": trading_summary.get("pnl"),
+                                "positions_details": trading_summary.get("positions_details", []),
+                                "settlements": trading_summary.get("settlements", []),
+                                "settlements_count": trading_summary.get("settlements_count", 0),
+                            }
+                        }
+                        await self._send_to_client(client_id, trading_state_msg)
+                        logger.info(f"Sent immediate trading state to client {client_id}: {trading_summary['position_count']} positions, {trading_summary.get('settlements_count', 0)} settlements")
+                except Exception as e:
+                    logger.warning(f"Could not send trading state to client {client_id}: {e}")
 
             # Now handle incoming messages
             # (Current state is already included in the historical transitions replay)

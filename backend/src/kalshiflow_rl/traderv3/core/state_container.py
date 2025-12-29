@@ -45,6 +45,7 @@ Thread Safety:
 import time
 import logging
 import asyncio
+from datetime import datetime
 from collections import deque
 from typing import Dict, Any, Optional, Callable, Awaitable, TypeVar, List
 from dataclasses import dataclass, field
@@ -238,21 +239,58 @@ class V3StateContainer:
         self._trading_state_version += 1
         self._last_update = time.time()
 
-        # On first sync, populate settlements from REST API data
-        # This shows recent historical settlements before any new ones arrive via WebSocket
-        if len(self._settled_positions) == 0 and state.settlements:
+        # Sync settlements from REST API on every sync (same pattern as positions)
+        # This ensures settlements stay in sync with Kalshi's ground truth
+        if state.settlements:
+            self._settled_positions.clear()
             for s in state.settlements[:50]:  # Last 50
+                # Determine which side the position was on
+                is_yes_position = s.get("yes_count", 0) > 0
+                count = s.get("yes_count", 0) if is_yes_position else s.get("no_count", 0)
+                total_cost = s.get("yes_total_cost", 0) if is_yes_position else s.get("no_total_cost", 0)
+
+                # Parse ISO timestamp to epoch seconds (frontend expects seconds)
+                settled_time_str = s.get("settled_time")
+                if settled_time_str:
+                    try:
+                        # Handle ISO 8601 format: "2025-01-15T10:30:00Z"
+                        closed_at = datetime.fromisoformat(settled_time_str.replace('Z', '+00:00')).timestamp()
+                    except (ValueError, AttributeError):
+                        closed_at = time.time()
+                else:
+                    closed_at = time.time()
+
+                # fee_cost is a STRING in DOLLARS (e.g., "0.34") - convert to cents
+                fee_cost_str = s.get("fee_cost", "0")
+                try:
+                    fees_cents = int(float(fee_cost_str) * 100)
+                except (ValueError, TypeError):
+                    fees_cents = 0
+
+                # Revenue is total payout in cents (100c per contract if won, 0 if lost)
+                revenue = s.get("revenue", 0)
+
+                # Net P&L = payout - cost - fees (all in cents)
+                net_pnl = revenue - total_cost - fees_cents
+
                 settlement = {
                     "ticker": s.get("ticker", ""),
-                    "position": s.get("yes_count", 0) or s.get("no_count", 0),
-                    "side": "yes" if s.get("yes_count", 0) > 0 else "no",
-                    "total_traded": 0,  # Not available in settlements API
-                    "realized_pnl": s.get("revenue", 0),  # Revenue = payout in cents
-                    "closed_at": s.get("settled_time") or time.time(),
+                    "position": count,
+                    "side": "yes" if is_yes_position else "no",
+                    "market_result": s.get("market_result", ""),
+                    # Economics (all in cents)
+                    "total_cost": total_cost,           # Total cost basis
+                    "revenue": revenue,                  # Total payout
+                    "fees": fees_cents,                  # Fees in cents
+                    "net_pnl": net_pnl,                  # Actual profit/loss
+                    # Legacy fields for backwards compatibility
+                    "total_traded": total_cost,
+                    "realized_pnl": net_pnl,             # FIXED: was revenue, now actual P&L
+                    "closed_at": closed_at,
                 }
                 self._settled_positions.append(settlement)
-            self._total_settlements_count = len(self._settled_positions)
-            logger.info(f"Pre-populated {len(self._settled_positions)} historical settlements from REST API")
+            self._total_settlements_count = len(state.settlements)
+            logger.debug(f"Synced {len(self._settled_positions)} settlements from REST API")
 
         # Log significant changes
         if changes:

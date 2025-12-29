@@ -275,6 +275,9 @@ class V3StatusReporter:
                 "positions_details": trading_summary.get("positions_details", []),
                 # Position listener health (real-time position updates)
                 "position_listener": position_listener_health,
+                # Settlements history for UI display
+                "settlements": trading_summary.get("settlements", []),
+                "settlements_count": trading_summary.get("settlements_count", 0),
             })
 
             logger.debug(f"Broadcast trading state v{trading_summary['version']}")

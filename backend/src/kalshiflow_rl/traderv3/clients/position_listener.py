@@ -471,9 +471,19 @@ class PositionListener:
         Returns:
             Dictionary with listener statistics
         """
+        # Check connection status safely (different WS libraries have different attributes)
+        connected = False
+        if self._ws is not None:
+            if hasattr(self._ws, 'closed'):
+                connected = not self._ws.closed
+            elif hasattr(self._ws, 'close_code'):
+                connected = self._ws.close_code is None
+            else:
+                connected = True  # Assume connected if we can't check
+
         return {
             "running": self._running,
-            "connected": self._ws is not None and not self._ws.closed if self._ws else False,
+            "connected": connected,
             "positions_received": self._positions_received,
             "positions_processed": self._positions_processed,
             "connection_count": self._connection_count,

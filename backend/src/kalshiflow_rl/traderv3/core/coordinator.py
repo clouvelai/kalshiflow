@@ -123,6 +123,9 @@ class V3Coordinator:
             # Set trading service on websocket manager for followed whale IDs
             self._websocket_manager.set_trading_service(self._trading_service)
 
+            # Set state container for immediate trading state on client connect
+            self._websocket_manager.set_state_container(self._state_container)
+
             # Initialize trading flow orchestrator
             self._trading_orchestrator = TradingFlowOrchestrator(
                 config=config,

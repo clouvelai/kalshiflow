@@ -1192,12 +1192,13 @@ const SettlementToast = ({ settlement, onDismiss }) => {
   );
 };
 
-// SettlementsPanel - Shows history of closed positions
+// SettlementsPanel - Shows history of closed positions with economics
 const SettlementsPanel = ({ settlements }) => {
   const [isExpanded, setIsExpanded] = useState(true);
 
-  const totalRealizedPnl = (settlements || []).reduce(
-    (sum, s) => sum + (s.realized_pnl || 0), 0
+  // Calculate total net P&L across all settlements
+  const totalNetPnl = (settlements || []).reduce(
+    (sum, s) => sum + (s.net_pnl || s.realized_pnl || 0), 0
   );
 
   const formatCurrency = (cents) => {
@@ -1205,6 +1206,8 @@ const SettlementsPanel = ({ settlements }) => {
     const prefix = cents >= 0 ? '+' : '-';
     return `${prefix}$${dollars.toFixed(2)}`;
   };
+
+  const formatCents = (cents) => `${cents}c`;
 
   const formatTime = (timestamp) => {
     if (!timestamp) return 'N/A';
@@ -1238,11 +1241,11 @@ const SettlementsPanel = ({ settlements }) => {
           <span className="text-xs text-gray-500">({settlementsData.length})</span>
         </div>
         <div className={`px-2 py-0.5 rounded text-xs font-bold font-mono ${
-          totalRealizedPnl >= 0
+          totalNetPnl >= 0
             ? 'bg-green-900/30 text-green-400'
             : 'bg-red-900/30 text-red-400'
         }`}>
-          {formatCurrency(totalRealizedPnl)}
+          {formatCurrency(totalNetPnl)}
         </div>
       </div>
 
@@ -1255,20 +1258,28 @@ const SettlementsPanel = ({ settlements }) => {
                   <th className="text-left py-2 px-2">Ticker</th>
                   <th className="text-center py-2 px-2">Side</th>
                   <th className="text-right py-2 px-2">Qty</th>
-                  <th className="text-right py-2 px-2">Entry</th>
-                  <th className="text-right py-2 px-2">Realized P&L</th>
+                  <th className="text-right py-2 px-2">Cost</th>
+                  <th className="text-right py-2 px-2">Payout</th>
+                  <th className="text-right py-2 px-2">Fees</th>
+                  <th className="text-right py-2 px-2">Net P&L</th>
                   <th className="text-right py-2 px-2">Closed</th>
                 </tr>
               </thead>
               <tbody>
                 {settlementsData.map((s, idx) => {
-                  const isProfit = (s.realized_pnl || 0) >= 0;
+                  const qty = Math.abs(s.position || 0);
+                  const totalCost = s.total_cost || s.total_traded || 0;
+                  const revenue = s.revenue || 0;
+                  const fees = s.fees || 0;
+                  const netPnl = s.net_pnl ?? (revenue - totalCost - fees);
+                  const isProfit = netPnl >= 0;
+
                   return (
                     <tr
                       key={`${s.ticker}-${s.closed_at}-${idx}`}
                       className="border-b border-gray-800/50 hover:bg-gray-800/30"
                     >
-                      <td className="py-2 px-2 font-mono text-gray-300">{s.ticker}</td>
+                      <td className="py-2 px-2 font-mono text-gray-300 text-xs">{s.ticker}</td>
                       <td className="py-2 px-2 text-center">
                         <span className={`px-1.5 py-0.5 rounded text-xs font-bold ${
                           s.side === 'yes'
@@ -1279,15 +1290,21 @@ const SettlementsPanel = ({ settlements }) => {
                         </span>
                       </td>
                       <td className="py-2 px-2 text-right font-mono text-gray-400">
-                        {Math.abs(s.position || 0)}
+                        {qty}
                       </td>
                       <td className="py-2 px-2 text-right font-mono text-gray-400">
-                        ${((s.total_traded || 0) / 100).toFixed(2)}
+                        {formatCents(totalCost)}
+                      </td>
+                      <td className="py-2 px-2 text-right font-mono text-gray-400">
+                        {formatCents(revenue)}
+                      </td>
+                      <td className="py-2 px-2 text-right font-mono text-gray-500 text-xs">
+                        {fees > 0 ? formatCents(fees) : '-'}
                       </td>
                       <td className={`py-2 px-2 text-right font-mono font-bold ${
                         isProfit ? 'text-green-400' : 'text-red-400'
                       }`}>
-                        {formatCurrency(s.realized_pnl || 0)}
+                        {formatCurrency(netPnl)}
                       </td>
                       <td className="py-2 px-2 text-right text-xs text-gray-500">
                         {formatTime(s.closed_at)}
