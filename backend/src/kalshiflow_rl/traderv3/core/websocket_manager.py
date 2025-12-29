@@ -280,6 +280,38 @@ class V3WebSocketManager:
             if self._whale_tracker and client_id in self._clients:
                 try:
                     queue_state = self._whale_tracker.get_queue_state()
+
+                    # Get followed whale data from trading service (matches broadcast format)
+                    followed_whale_ids: List[str] = []
+                    followed_whales: List[Dict] = []
+                    if self._trading_service:
+                        try:
+                            followed_whale_ids = list(self._trading_service.get_followed_whale_ids())
+                            followed_whales = self._trading_service.get_followed_whales()
+                        except Exception as e:
+                            logger.debug(f"Could not get trading service data for initial snapshot: {e}")
+
+                    # Get decision history from whale execution service (matches broadcast format)
+                    decision_history: List[Dict] = []
+                    decision_stats: Dict[str, Any] = {}
+                    if self._whale_execution_service:
+                        try:
+                            decision_history = self._whale_execution_service.get_decision_history()
+                            stats = self._whale_execution_service.get_stats()
+                            decision_stats = {
+                                "whales_detected": stats.get("whales_processed", 0),
+                                "whales_followed": stats.get("whales_followed", 0),
+                                "whales_skipped": stats.get("whales_skipped", 0),
+                                "rate_limited": stats.get("rate_limited_count", 0),
+                                "skipped_age": stats.get("skipped_age", 0),
+                                "skipped_position": stats.get("skipped_position", 0),
+                                "skipped_orders": stats.get("skipped_orders", 0),
+                                "already_followed": stats.get("already_followed", 0),
+                                "failed": stats.get("failed", 0),
+                            }
+                        except Exception as e:
+                            logger.debug(f"Could not get whale execution service data for initial snapshot: {e}")
+
                     whale_snapshot = {
                         "type": "whale_queue",
                         "data": {
@@ -289,6 +321,11 @@ class V3WebSocketManager:
                                 "trades_discarded": 0,
                                 "discard_rate_percent": 0
                             }),
+                            # Match broadcast format - include all whale tracking fields
+                            "followed_whale_ids": followed_whale_ids,
+                            "followed_whales": followed_whales,
+                            "decision_history": decision_history,
+                            "decision_stats": decision_stats,
                             "timestamp": time.strftime("%H:%M:%S")
                         }
                     }
@@ -335,11 +372,16 @@ class V3WebSocketManager:
                                 # Include market prices (merged into positions_details)
                                 "market_prices": trading_summary.get("market_prices"),
                                 # Health fields - syncer included if available
+                                # Note: position_listener and market_ticker_listener are None here
+                                # because websocket_manager doesn't have references to them.
+                                # Periodic broadcasts from status_reporter include real values.
                                 "position_listener": None,
                                 "market_ticker_listener": None,
                                 "market_price_syncer": market_price_syncer_health,
                                 # Order group - must match status_reporter.py
                                 "order_group": trading_summary.get("order_group"),
+                                # Changes since last update - match status_reporter.py format
+                                "changes": trading_summary.get("changes"),
                             }
                         }
                         await self._send_to_client(client_id, trading_state_msg)
