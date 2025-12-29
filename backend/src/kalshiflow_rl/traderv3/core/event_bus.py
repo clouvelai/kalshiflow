@@ -897,7 +897,8 @@ class EventBus:
             - 5-second timeout on all subscriber callbacks
             - Logs but doesn't fail on individual callback errors
         """
-        subscribers = self._subscribers.get(event.event_type, [])
+        # Copy subscriber list to prevent mutation during iteration
+        subscribers = list(self._subscribers.get(event.event_type, []))
         
         if not subscribers:
             logger.debug(f"No subscribers for event type: {event.event_type.value}")

@@ -641,9 +641,7 @@ class V3WebSocketManager:
         Args:
             client_id: Client ID to disconnect
         """
-        if client_id not in self._clients:
-            return
-        
+        # Atomic pop - avoids check-then-pop race condition
         client = self._clients.pop(client_id, None)
         if not client:
             return

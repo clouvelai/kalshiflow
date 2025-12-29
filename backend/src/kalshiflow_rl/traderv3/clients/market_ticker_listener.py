@@ -214,8 +214,16 @@ class MarketTickerListener:
                 self._pending_unsubscriptions.update(to_remove)
 
             # If connected, process subscription changes immediately
-            if self._ws and not self._ws.closed:
-                await self._process_subscription_changes()
+            if self._ws:
+                # Safe check for connection state (websockets library compatibility)
+                ws_closed = False
+                if hasattr(self._ws, 'closed'):
+                    ws_closed = self._ws.closed
+                elif hasattr(self._ws, 'close_code'):
+                    ws_closed = self._ws.close_code is not None
+
+                if not ws_closed:
+                    await self._process_subscription_changes()
 
     async def _setup_auth(self) -> None:
         """

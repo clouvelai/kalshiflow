@@ -226,7 +226,9 @@ class TraderStateMachine:
             },
             TraderState.ERROR: {
                 TraderState.STARTUP,  # Recovery: restart from beginning
-                TraderState.SHUTDOWN
+                TraderState.SHUTDOWN,
+                TraderState.READY,  # Direct recovery when data is flowing
+                TraderState.ORDERBOOK_CONNECT,  # Reconnection recovery
             },
             TraderState.SHUTDOWN: set()  # Terminal state
         }

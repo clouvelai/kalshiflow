@@ -32,14 +32,18 @@ This document is the bridge between research and implementation - the trader-spe
 
 1. **[RESOLVED]** Are there time-of-day patterns in Kalshi trading? -> Weak patterns, not actionable
 2. **[RESOLVED]** Do category-specific strategies exist? -> Yes, but subsets of base strategy
-3. **[RESOLVED]** Can we detect informed traders before price moves? -> No, whale trades are just price
+3. **[RESOLVED-Session004]** Can we detect informed traders before price moves? -> NO, the market is efficient
 4. **[RESOLVED]** Is there edge in fading whale consensus (contrarian)? -> No, it's just price
 5. **[RESOLVED]** Do new markets show initial mispricing? -> No actionable edge
 6. **[RESOLVED-Session003]** Is there edge at 70-80c range? -> YES! NO at 70-80c has +51.3% edge
 7. **[OPEN]** Can execution timing (slippage) be optimized?
-8. **[OPEN]** Does edge change as market approaches expiry?
+8. **[RESOLVED-Session004]** Does edge change as market approaches expiry? -> NO, edge is consistent throughout
 9. **[OPEN]** Are there cross-market correlations to exploit?
 10. **[OPEN]** Can category-specific strategies (KXBTCD, KXNCAAMBGAME) scale?
+11. **[RESOLVED-Session004]** Is there edge at 50-60c and 60-70c ranges? -> YES! S005/S006 validated
+12. **[RESOLVED-Session004]** Do insider trading patterns exist? -> NO, market is efficient
+13. **[OPEN]** Can we combine multiple NO strategies for diversification?
+14. **[OPEN]** What is optimal position sizing across strategies?
 
 ---
 
@@ -59,7 +63,14 @@ This document is the bridge between research and implementation - the trader-spe
 | Does price momentum/reversion work? | NO - negative profit | +1-2% edge but loses money | 2025-12-29 |
 | Does trade sequencing predict outcomes? | NO - fails concentration | Sequential patterns not reliable | 2025-12-29 |
 | Does NO at 70-80c have edge? | **YES - +51.3%** | 1,437 mkts, $1M profit, 23.7% conc | 2025-12-29 |
-| Does NO at 60-70c have edge? | YES - +30.5% | 1,321 mkts, passes validation | 2025-12-29 |
+| Does NO at 60-70c have edge? | **YES - +30.5%** | 1,321 mkts, passes validation (S005) | 2025-12-29 |
+| Does NO at 50-60c have edge? | **YES - +10.0%** | 1,362 mkts, $405k profit (S006) | 2025-12-29 |
+| Does NO at 80-90c have edge? | **YES - +69.2%** | 1,676 mkts, corrected calculation | 2025-12-29 |
+| Does NO at 90-100c have edge? | **YES - +90.3%** | 2,476 mkts, highest edge! | 2025-12-29 |
+| Are there insider trading patterns? | **NO - market efficient** | Edge same regardless of timing | 2025-12-29 |
+| Do pre-move whale trades predict? | **NO** | No unique edge over price | 2025-12-29 |
+| Does late whale activity have edge? | **NO** | Same edge as earlier trades | 2025-12-29 |
+| Does mega-whale conviction help? | **MARGINAL +3-5%** | Not worth complexity | 2025-12-29 |
 
 ---
 
@@ -70,7 +81,7 @@ This document is the bridge between research and implementation - the trader-spe
 | ID | Hypothesis | Status | Edge | Markets | Notes |
 |----|------------|--------|------|---------|-------|
 | H001 | YES at 80-90c beats market | Validated | +5.1% | 2,110 | Favorite-longshot bias |
-| H002 | NO at 80-90c beats market | Validated | +3.3% | 2,808 | Same mechanism |
+| H002 | NO at 80-90c beats market | Validated | +69.2% | 1,676 | Corrected edge calculation |
 | H003 | Follow whales at 30-70c | Rejected | - | - | Concentration >30% |
 | H004 | Follow 100% whale consensus | Rejected | -22% | - | Actually contrarian signal |
 | H005 | Time-of-day patterns | Rejected | weak | 612 | Hour 07 NO has +15.7% but loses money |
@@ -87,14 +98,114 @@ This document is the bridge between research and implementation - the trader-spe
 | H016 | Consecutive trade direction | Rejected | - | - | Not predictive |
 | H017 | Day of week patterns | Rejected | - | - | No reliable edge |
 | H018 | Price movement patterns | Rejected | - | - | Just price proxies |
-| H019 | NO at 70-80c range | **Validated** | +51.3% | 1,437 | NEW! Highest edge strategy |
+| H019 | NO at 70-80c range | **Validated** | +51.3% | 1,437 | S004 in VALIDATED_STRATEGIES |
 | H020 | Dollar volume per market | Rejected | - | - | No unique edge |
-| H021 | NO at 60-70c range | Promising | +30.5% | 1,321 | Valid but lower edge |
+| H021 | NO at 60-70c range | **Validated** | +30.5% | 1,321 | S005 in VALIDATED_STRATEGIES |
 | H022 | Category-specific (KXBTCD, KXNCAAMBGAME) | Promising | varies | 60-120 | Need more data |
+| H023 | Pre-move whale activity (insider) | Rejected | same | - | No unique edge over price (Session 004) |
+| H024 | Late whale activity | Rejected | same | - | No timing advantage (Session 004) |
+| H025 | Mega-whale conviction (1000+) | Rejected | +3-5% | ~300 | Marginal improvement only (Session 004) |
+| H026 | Contrarian whale bets | Rejected | - | - | No predictive power (Session 004) |
+| H027 | Volume concentration | Rejected | - | - | Does not predict outcomes (Session 004) |
+| H028 | Last trade direction | Rejected | - | - | Same as price signal (Session 004) |
+| H029 | NO at 50-60c range | **Validated** | +10.0% | 1,362 | S006 in VALIDATED_STRATEGIES |
+| H030 | NO at 90-100c range | **Validated** | +90.3% | 2,476 | S003 corrected edge (Session 004) |
 
 ---
 
 ## Session Log
+
+### Session 004 - 2025-12-29
+**Objective**: Detect insider trading patterns and validate new strategies
+**Continuing from**: Session 003 (price-based strategies validated)
+**Analyst**: Quant Agent (Opus 4.5)
+**Duration**: ~2 hours
+**Session Status**: COMPLETED - INSIDER TRADING ANALYSIS + NEW STRATEGIES VALIDATED
+
+**Mission**: Investigate cases where large bets were placed before major market moves - evidence of traders acting on information ahead of the market.
+
+**Research Focus**:
+1. Pre-move whale activity: Large trades preceding price shifts
+2. Timing patterns: How far ahead of resolution do informed traders act?
+3. Size anomalies: Unusually large positions before events resolve
+4. Conviction indicators: High-price bets that win vs lose
+
+**Key Findings**:
+
+1. **NO SIGNIFICANT INSIDER TRADING DETECTED**
+   - Edge is consistent across early/mid/late market lifecycle
+   - Whale trades show ~3-5% better edge than retail at same prices (marginal)
+   - Trade timing does NOT predict outcomes beyond price level
+   - The edge is BEHAVIORAL (favorite-longshot bias), not INFORMATIONAL
+
+2. **PRICE REMAINS THE DOMINANT SIGNAL**
+   - NO at 70-80c: ~51-53% edge regardless of when in market lifecycle
+   - NO at 80-90c: ~69-70% edge regardless of timing
+   - No additional predictive power from:
+     - Trade timing (early vs late)
+     - Trade size (whale vs retail)
+     - Trade direction changes
+     - Volume concentration patterns
+
+3. **MARKET APPEARS RELATIVELY EFFICIENT**
+   - 89.4% of markets have total trading duration <= 1 hour
+   - Price information is incorporated rapidly
+   - No systematic "smart money" advantage detected
+   - The bias we exploit is structural, not informational
+
+4. **NEW STRATEGIES VALIDATED**:
+   - **S005: NO at 60-70c**: +30.5% edge, 1,321 markets, temporally stable
+   - **S006: NO at 50-60c**: +10.0% edge, 1,362 markets, temporally stable
+   - Also validated alternative ranges: 55-65c (+19.4%), 65-75c (+40.4%), 75-85c (+61.5%)
+
+**Statistical Validation Summary**:
+
+| Strategy | Markets | Win Rate | Breakeven | Edge | Temporal Stability |
+|----------|---------|----------|-----------|------|-------------------|
+| NO at 50-60c | 1,362 | 55.7% | 45.7% | +10.0% | 54.2% -> 57.1% |
+| NO at 55-65c | 1,331 | 60.3% | 40.8% | +19.4% | 56.5% -> 60.7% |
+| NO at 60-70c | 1,321 | 66.1% | 35.6% | +30.5% | 60.9% -> 67.7% |
+| NO at 65-75c | 1,352 | 70.9% | 30.5% | +40.4% | 66.0% -> 71.3% |
+| NO at 70-80c | 1,437 | 76.5% | 25.3% | +51.3% | 73.1% -> 75.5% |
+| NO at 75-85c | 1,572 | 81.9% | 20.3% | +61.5% | 77.5% -> 80.0% |
+| NO at 80-90c | 1,676 | 84.5% | 15.3% | +69.2% | 81.7% -> 84.7% |
+| NO at 90-100c | 2,476 | 94.5% | 4.1% | +90.3% | 92.0% -> 94.5% |
+
+**Insider Trading Patterns Tested (All REJECTED)**:
+- H023: Pre-move whale activity -> No unique edge over price
+- H024: Late whale activity (final 10%) -> Same edge as earlier trades
+- H025: Mega-whale conviction (1000+ contracts) -> Same direction as smaller trades
+- H026: Contrarian whale bets -> No predictive power
+- H027: Volume concentration -> Does not predict outcomes
+- H028: Last trade direction -> Same as price-based signal
+
+**Files Created**:
+- `research/analysis/session004_insider_trading.py` - Initial analysis (complex)
+- `research/analysis/session004_efficient.py` - Optimized analysis
+- `research/reports/session004_results.json` - Strategy analysis output
+- `research/reports/session004_validated_strategies.json` - Rigorous validation
+
+**Documents Updated**:
+- `backend/src/kalshiflow_rl/traderv3/planning/VALIDATED_STRATEGIES.md`:
+  - Added S005 (NO at 60-70c)
+  - Added S006 (NO at 50-60c)
+  - Updated S002, S003 with correct edge calculations
+  - Added temporal stability checks
+  - Added Session 004 insider trading summary
+
+**Recommendations**:
+1. Implement strategies S002-S006 in priority order for diversification
+2. Consider combined multi-range strategy for maximum coverage
+3. Focus on execution optimization (slippage, timing) rather than signal improvement
+4. The behavioral edge is robust - no need to search for "insider" patterns
+
+**Next Steps**:
+1. Implement NO at 80-90c (S002) - highest absolute edge
+2. Test combined strategy running multiple NO ranges
+3. Investigate category-specific optimizations (KXBTCD, sports)
+4. Monitor for edge decay over time (market efficiency increase)
+
+---
 
 ### Session 003 - 2025-12-29
 **Objective**: Find NEW validated strategies beyond the existing price-based ones

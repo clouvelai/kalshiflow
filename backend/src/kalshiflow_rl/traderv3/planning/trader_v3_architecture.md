@@ -7,7 +7,7 @@
 
 TRADER V3 is an event-driven paper trading system for Kalshi prediction markets. It uses WebSocket connections to receive real-time orderbook data, maintains state through a centralized container with version tracking, and coordinates trading decisions through a clean component architecture. All trading data is in CENTS (Kalshi's native unit).
 
-**Current Status**: MVP complete with orderbook integration, state management, WebSocket broadcasting, and event-driven whale following ("Follow the Whale"). The WHALE_FOLLOWER strategy executes trades in real-time based on detected whale activity.
+**Current Status**: MVP complete with orderbook integration, state management, WebSocket broadcasting, event-driven whale following ("Follow the Whale"), and the validated YES 80-90c strategy. Multiple trading strategies are supported: WHALE_FOLLOWER executes trades based on detected whale activity, YES_80_90 trades the validated +5.1% edge strategy. Real-time market prices are tracked via MarketTickerListener (WebSocket) and MarketPriceSyncer (REST fallback).
 
 ## 2. Architecture Diagram
 
@@ -19,76 +19,76 @@ TRADER V3 is an event-driven paper trading system for Kalshi prediction markets.
                                              |
                                     WebSocket (ws://localhost:8005/v3/ws)
                                              |
-+====================================================================================================+
-|                                    V3 TRADER (Port 8005)                                           |
-+====================================================================================================+
-|                                                                                                    |
-|    +------------------+          +------------------+          +------------------+                |
-|    |  Starlette App   |--------->|   V3Coordinator  |<---------|    V3Config      |                |
-|    |     (app.py)     |          | (orchestration)  |          | (environment.py) |                |
-|    +------------------+          +--------+---------+          +------------------+                |
-|                                           |                                                        |
-|              +----------------------------+----------------------------+                           |
-|              |                            |                            |                           |
-|              v                            v                            v                           |
-|    +------------------+          +------------------+          +------------------+                |
-|    | V3StateMachine   |          |    EventBus      |          | V3WebSocketMgr   |                |
-|    | (state_machine)  |<-------->| (pub/sub events) |<-------->| (client comms)   |                |
-|    +------------------+          +------------------+          +------------------+                |
-|              |                            ^                            ^                           |
-|              |                            |                            |                           |
-|              v                            |                            |                           |
-|    +------------------+          +--------+--------+                   |                           |
-|    | V3StateContainer |          |                 |                   |                           |
-|    | (centralized)    |<---------+ V3HealthMonitor +-------------------+                           |
-|    +------------------+          |                 |                                               |
-|              ^                   +-----------------+                                               |
-|              |                            ^                                                        |
-|              |                            |                                                        |
-|    +---------+---------+---------+--------+--------+                                               |
-|    |                   |         |                 |                                               |
-|    v                   v         v                 v                                               |
-|  +-------------------+ +-------------------+  +----+---------------+  +-------------------+        |
-|  | V3OrderbookInteg  | |V3TradingClientInt|  | V3StatusReporter   |  | WhaleTracker      |        |
-|  | (market data)     | | (order mgmt)     |  | (status broadcast) |  | (big bet detect)  |        |
-|  +--------+----------+ +--------+---------+  +--------------------+  +--------+----------+        |
-|           |                     |                                             ^                   |
-|           |                     v                                             |                   |
-|           |            +-------------------+          +-------------------+   |                   |
-|           |            | KalshiDataSync    |--------->| TraderState       |   |                   |
-|           |            | (sync service)    |          | (state/trader_    |   |                   |
-|           |            +-------------------+          |  state.py)        |   |                   |
-|           |                     |                     +-------------------+   |                   |
-|           |                     v                                             |                   |
-|           |            +-------------------+                                  |                   |
-|           |            |TradingFlowOrch    |                                  |                   |
-|           |            | (cycle mgmt)      |                                  |                   |
-|           |            +-------------------+                                  |                   |
-|           |                     |                                             |                   |
-|           v                     v                                             |                   |
-|  +-------------------+ +-------------------+                 +----------------+--+                 |
-|  | OrderbookClient   | |KalshiDemoTrading  |                 | V3TradesIntegration|               |
-|  | (data/orderbook)  | | Client            |                 | (public trades)    |               |
-|  +--------+----------+ +--------+---------+                  +--------+-----------+               |
-|           |                     |                                     |                           |
-|           |                     |                                     v                           |
-|           |                     |                            +-------------------+                |
-|           |                     |                            | TradesClient      |                |
-|           |                     |                            | (trades WS)       |                |
-|           |                     |                            +--------+----------+                |
-|           |                     |                                     |                           |
-|           |                     |                            +--------+----------+                |
-|           |                     |                            | PositionListener  |                |
-|           |                     |                            | (positions WS)    |                |
-|           |                     |                            +--------+----------+                |
-|           |                     |                                     |                           |
-+===========|=====================|=====================================|===========================+
-            |                     |                                     |
-            v                     v                                     v
-    +---------------+     +---------------+                    +----------------+
-    | Kalshi WS API |     | Kalshi REST   |                    | Kalshi WS API  |
-    | (orderbook)   |     | (demo-api)    |                    | (user channel) |
-    +---------------+     +---------------+                    +----------------+
++====================================================================================================================+
+|                                    V3 TRADER (Port 8005)                                                            |
++====================================================================================================================+
+|                                                                                                                     |
+|    +------------------+          +------------------+          +------------------+                                 |
+|    |  Starlette App   |--------->|   V3Coordinator  |<---------|    V3Config      |                                 |
+|    |     (app.py)     |          | (orchestration)  |          | (environment.py) |                                 |
+|    +------------------+          +--------+---------+          +------------------+                                 |
+|                                           |                                                                         |
+|              +----------------------------+----------------------------+                                            |
+|              |                            |                            |                                            |
+|              v                            v                            v                                            |
+|    +------------------+          +------------------+          +------------------+                                 |
+|    | V3StateMachine   |          |    EventBus      |          | V3WebSocketMgr   |                                 |
+|    | (state_machine)  |<-------->| (pub/sub events) |<-------->| (client comms)   |                                 |
+|    +------------------+          +------------------+          +------------------+                                 |
+|              |                            ^                            ^                                            |
+|              |                            |                            |                                            |
+|              v                            |                            |                                            |
+|    +------------------+          +--------+--------+                   |                                            |
+|    | V3StateContainer |          |                 |                   |                                            |
+|    | (centralized)    |<---------+ V3HealthMonitor +-------------------+                                            |
+|    +------------------+          |                 |                                                                |
+|              ^                   +-----------------+                                                                |
+|              |                            ^                                                                         |
+|              |                            |                                                                         |
+|    +---------+---------+---------+--------+--------+---------+                                                      |
+|    |                   |         |                 |         |                                                      |
+|    v                   v         v                 v         v                                                      |
+|  +-------------------+ +-------------------+  +----+---------------+  +-------------------+  +-------------------+  |
+|  | V3OrderbookInteg  | |V3TradingClientInt|  | V3StatusReporter   |  | WhaleTracker      |  | Yes8090Service    |  |
+|  | (market data)     | | (order mgmt)     |  | (status broadcast) |  | (big bet detect)  |  | (80-90c strategy) |  |
+|  +--------+----------+ +--------+---------+  +--------------------+  +--------+----------+  +--------+----------+  |
+|           |                     |                                             ^                      |             |
+|           |                     v                                             |                      v             |
+|           |            +-------------------+          +-------------------+   |    +-------------------+           |
+|           |            | KalshiDataSync    |--------->| TraderState       |   |    |TradingDecision   |           |
+|           |            | (sync service)    |          | (state/trader_    |   |    | Service          |           |
+|           |            +-------------------+          |  state.py)        |   |    +-------------------+           |
+|           |                     |                     +-------------------+   |                                    |
+|           |                     v                                             |                                    |
+|           |            +-------------------+          +-------------------+   |                                    |
+|           |            |TradingFlowOrch    |          |WhaleExecution     |---+                                    |
+|           |            | (cycle mgmt)      |          | Service           |                                        |
+|           |            +-------------------+          +-------------------+                                        |
+|           |                     |                                                                                  |
+|           v                     v                                                                                  |
+|  +-------------------+ +-------------------+     +--------------------+     +--------------------+                 |
+|  | OrderbookClient   | |KalshiDemoTrading  |     |V3TradesIntegration |     |MarketPriceSyncer   |                 |
+|  | (data/orderbook)  | | Client            |     | (public trades)    |     | (REST price sync)  |                 |
+|  +--------+----------+ +--------+---------+      +--------+-----------+     +--------------------+                 |
+|           |                     |                         |                                                        |
+|           |                     |                         v                                                        |
+|           |                     |                +-------------------+      +--------------------+                 |
+|           |                     |                | TradesClient      |      |MarketTickerListener|                 |
+|           |                     |                | (trades WS)       |      | (ticker WS)        |                 |
+|           |                     |                +--------+----------+      +--------+-----------+                 |
+|           |                     |                         |                          |                             |
+|           |                     |                +--------+----------+               |                             |
+|           |                     |                | PositionListener  |               |                             |
+|           |                     |                | (positions WS)    |               |                             |
+|           |                     |                +--------+----------+               |                             |
+|           |                     |                         |                          |                             |
++===========|=====================|=========================|==========================|=============================+
+            |                     |                         |                          |
+            v                     v                         v                          v
+    +---------------+     +---------------+        +----------------+         +----------------+
+    | Kalshi WS API |     | Kalshi REST   |        | Kalshi WS API  |         | Kalshi WS API  |
+    | (orderbook)   |     | (demo-api)    |        | (user channel) |         | (ticker)       |
+    +---------------+     +---------------+        +----------------+         +----------------+
 ```
 
 ## 3. Component Index
@@ -106,7 +106,7 @@ TRADER V3 is an event-driven paper trading system for Kalshi prediction markets.
   - `is_healthy()` - Boolean health status
 - **Emits Events**: None directly (delegates to StatusReporter)
 - **Subscribes To**: None directly
-- **Dependencies**: V3StateMachine, EventBus, V3WebSocketManager, V3OrderbookIntegration, V3TradingClientIntegration (optional), V3StateContainer, V3HealthMonitor, V3StatusReporter, TradingFlowOrchestrator
+- **Dependencies**: V3StateMachine, EventBus, V3WebSocketManager, V3OrderbookIntegration, V3TradingClientIntegration (optional), V3StateContainer, V3HealthMonitor, V3StatusReporter, TradingFlowOrchestrator, MarketTickerListener (optional), MarketPriceSyncer (optional), Yes8090Service (optional)
 
 #### V3StateMachine
 - **File**: `core/state_machine.py`
@@ -158,6 +158,23 @@ TRADER V3 is an event-driven paper trading system for Kalshi prediction markets.
   - `_whale_state`: WhaleQueueState for whale detection queue
   - `_settled_positions`: Deque of last 50 settlements (synced from REST API)
   - `_session_updated_tickers`: Set of tickers updated via WebSocket this session
+  - `_market_prices`: Dict[str, MarketPriceData] for real-time market prices
+  - `_market_prices_version`: Version tracking for market price updates
+- **MarketPriceData Fields**:
+  - `ticker`: Market ticker string
+  - `last_price`: Last traded price (cents)
+  - `yes_bid`, `yes_ask`: YES side bid/ask prices (cents)
+  - `no_bid`, `no_ask`: NO side bid/ask prices (cents)
+  - `volume`: Total volume traded
+  - `open_interest`: Active contracts
+  - `close_time`: Market close time (ISO timestamp, from REST only)
+  - `timestamp`: Update timestamp
+- **Market Price Methods**:
+  - `update_market_price(ticker, price_data)` - Update single ticker price
+  - `get_market_price(ticker)` - Get price for ticker
+  - `get_all_market_prices()` - Get all market prices
+  - `clear_market_price(ticker)` - Remove ticker from prices
+  - `get_market_prices_summary()` - Get summary for WebSocket broadcast
 - **Emits Events**: None
 - **Subscribes To**: `MARKET_POSITION_UPDATE` (via coordinator subscription)
 - **Dependencies**: TraderState, StateChange, SessionPnLState, WhaleQueueState
@@ -311,6 +328,43 @@ TRADER V3 is an event-driven paper trading system for Kalshi prediction markets.
 - **Subscribes To**: None (listens to TradesClient callbacks)
 - **Dependencies**: TradesClient, EventBus
 
+#### MarketTickerListener
+- **File**: `clients/market_ticker_listener.py`
+- **Purpose**: WebSocket listener for real-time market price updates from Kalshi ticker channel
+- **Key Methods**:
+  - `start()` / `stop()` - Lifecycle management
+  - `update_subscriptions(tickers)` - Dynamic subscription management (add/remove tickers)
+  - `get_subscribed_tickers()` - Get list of currently subscribed tickers
+  - `get_metrics()` - Get listener statistics
+  - `get_status()` - Get full status for monitoring
+  - `is_healthy()` - Check if running and WebSocket connected
+  - `get_health_details()` - Get detailed health information
+- **Key Features**:
+  - Filtered subscription (only position tickers, not firehose)
+  - Throttled updates (configurable, default 500ms per ticker)
+  - Dynamic subscription management as positions change
+  - Automatic reconnection on disconnect
+- **Ticker Message Format** (from Kalshi):
+  ```json
+  {
+    "type": "ticker",
+    "msg": {
+      "market_ticker": "INXD-25JAN03",
+      "price": 52,           // last traded price (cents)
+      "yes_bid": 50,         // best yes bid (cents)
+      "yes_ask": 54,         // best yes ask (cents)
+      "no_bid": 46,          // best no bid (cents)
+      "no_ask": 50,          // best no ask (cents)
+      "volume": 1500,        // total volume traded
+      "open_interest": 12000,// active contracts
+      "ts": 1703808000       // unix timestamp (seconds)
+    }
+  }
+  ```
+- **Emits Events**: `MARKET_TICKER_UPDATE` (via EventBus.emit_market_ticker_update)
+- **Subscribes To**: Kalshi WebSocket `ticker` channel
+- **Dependencies**: EventBus, KalshiAuth
+
 #### PositionListener
 - **File**: `clients/position_listener.py`
 - **Purpose**: WebSocket listener for real-time position updates from Kalshi
@@ -418,6 +472,65 @@ TRADER V3 is an event-driven paper trading system for Kalshi prediction markets.
 - **Emits Events**: `SYSTEM_ACTIVITY` (whale_processing type)
 - **Subscribes To**: `WHALE_QUEUE_UPDATED`
 - **Dependencies**: EventBus, TradingDecisionService, V3StateContainer, WhaleTracker
+
+#### MarketPriceSyncer
+- **File**: `services/market_price_syncer.py`
+- **Purpose**: REST API sync for market prices on startup and periodic refresh (every 30s)
+- **Key Methods**:
+  - `start()` / `stop()` - Lifecycle management (initial sync on start)
+  - `is_healthy()` - Check if running and last sync not stale
+  - `get_health_details()` - Get detailed health information
+- **Key Properties**:
+  - `sync_count` - Number of syncs completed
+  - `tickers_synced` - Number of tickers in last sync
+  - `last_sync_time` - Timestamp of last successful sync
+- **Behavior**:
+  - Performs initial sync immediately on `start()`
+  - Runs periodic sync loop every 30 seconds (configurable)
+  - Updates StateContainer's `_market_prices` directly (batch update pattern)
+  - Fetches prices for all position tickers via REST API (batched in groups of 100)
+- **Emits Events**: `SYSTEM_ACTIVITY` (sync type with sync_type="market_prices")
+- **Subscribes To**: None
+- **Dependencies**: V3TradingClientIntegration, V3StateContainer, EventBus
+- **Architecture Note**: Works alongside MarketTickerListener WebSocket for redundancy
+
+#### Yes8090Service
+- **File**: `services/yes_80_90_service.py`
+- **Purpose**: Event-driven trading service implementing the validated +5.1% edge YES at 80-90c strategy
+- **Key Methods**:
+  - `start()` / `stop()` - Lifecycle management
+  - `is_healthy()` - Check if service is running
+  - `get_stats()` - Get comprehensive service statistics
+  - `get_decision_history()` - Get recent signal decisions
+  - `get_health_details()` - Get detailed health information
+  - `reset_processed_markets()` - Clear processed markets set for re-entry
+- **Key Classes**:
+  - `Yes8090Signal`: Detected signal with market_ticker, prices, tier, timestamp
+  - `Yes8090Decision`: Records decisions (executed, skipped, failed) for audit
+- **Signal Detection Criteria** (ALL must be true):
+  1. Best YES ask price >= 80c AND <= 90c
+  2. Best YES ask size >= min_liquidity (default: 10)
+  3. Bid-ask spread <= max_spread (default: 5c)
+  4. Market NOT already processed this session
+  5. No existing position in this market
+- **Tier System**:
+  - Tier A (83-87c): Sweet spot, higher edge, 150 contracts default
+  - Tier B (80-83c or 87-90c): Edges, 100 contracts default
+- **Features**:
+  - Token bucket rate limiting (default: 10 trades/minute)
+  - Deduplication (one entry per market per session)
+  - Decision history tracking (last 100 decisions)
+- **Configuration** (environment variables):
+  - `YES8090_MIN_PRICE`: Minimum YES ask price (default: 80)
+  - `YES8090_MAX_PRICE`: Maximum YES ask price (default: 90)
+  - `YES8090_MIN_LIQUIDITY`: Minimum contracts at best ask (default: 10)
+  - `YES8090_MAX_SPREAD`: Maximum bid-ask spread (default: 5)
+  - `YES8090_CONTRACTS`: Default contracts per trade (default: 100)
+  - `YES8090_TIER_A_CONTRACTS`: Contracts for Tier A signals (default: 150)
+  - `YES8090_MAX_CONCURRENT`: Maximum concurrent positions (default: 100)
+- **Emits Events**: `SYSTEM_ACTIVITY` (strategy_start, strategy_stop, yes_80_90_signal, yes_80_90_execute types)
+- **Subscribes To**: `ORDERBOOK_SNAPSHOT`, `ORDERBOOK_DELTA`
+- **Dependencies**: EventBus, TradingDecisionService, V3StateContainer
 
 ### 3.4 State (`traderv3/state/`)
 
@@ -566,10 +679,11 @@ VALID_TRANSITIONS = {
 | `ORDERBOOK_DELTA` | OrderbookClient | V3OrderbookIntegration | `MarketEvent{market_ticker, sequence_number, timestamp_ms, metadata}` |
 | `STATE_TRANSITION` | V3StateMachine | (legacy, kept for compat) | `StateTransitionEvent{from_state, to_state, context, metadata}` |
 | `TRADER_STATUS` | V3StatusReporter | V3WebSocketManager | `TraderStatusEvent{state, metrics, health, timestamp}` |
-| `SYSTEM_ACTIVITY` | V3StateMachine, V3HealthMonitor, TradingFlowOrchestrator, TradingDecisionService, WhaleExecutionService | V3WebSocketManager | `SystemActivityEvent{activity_type, message, metadata}` |
+| `SYSTEM_ACTIVITY` | V3StateMachine, V3HealthMonitor, TradingFlowOrchestrator, TradingDecisionService, WhaleExecutionService, MarketPriceSyncer, Yes8090Service | V3WebSocketManager | `SystemActivityEvent{activity_type, message, metadata}` |
 | `PUBLIC_TRADE_RECEIVED` | V3TradesIntegration | WhaleTracker | `PublicTradeEvent{market_ticker, timestamp_ms, side, price_cents, count}` |
 | `WHALE_QUEUE_UPDATED` | WhaleTracker | V3WebSocketManager, WhaleExecutionService | `WhaleQueueEvent{queue, stats, timestamp}` |
 | `MARKET_POSITION_UPDATE` | PositionListener | V3StateContainer (via coordinator subscription) | `MarketPositionEvent{market_ticker, position_data, timestamp}` |
+| `MARKET_TICKER_UPDATE` | MarketTickerListener | V3Coordinator (updates StateContainer) | `MarketTickerEvent{market_ticker, price_data, timestamp}` |
 | `SETTLEMENT` | (via REST sync) | - | Settlements synced from Kalshi REST API, stored in StateContainer |
 
 ### 5.1 SystemActivityEvent Types
@@ -587,8 +701,37 @@ VALID_TRANSITIONS = {
 | `connection` | V3Coordinator | WebSocket connection events |
 | `whale_processing` | WhaleExecutionService | Whale queue processing status (for frontend animation) |
 | `whale_follow` | TradingDecisionService | Successful whale follow execution |
+| `strategy_start` | Yes8090Service | YES 80-90c strategy started |
+| `strategy_stop` | Yes8090Service | YES 80-90c strategy stopped |
+| `yes_80_90_signal` | Yes8090Service | YES 80-90c signal detected in orderbook |
+| `yes_80_90_execute` | Yes8090Service | YES 80-90c signal execution result (success/failed) |
 
-### 5.2 MarketPositionEvent Payload
+### 5.2 MarketTickerEvent Payload
+
+Price data received from Kalshi WebSocket `ticker` channel:
+
+```json
+{
+  "event_type": "MARKET_TICKER_UPDATE",
+  "market_ticker": "INXD-25JAN03",
+  "price_data": {
+    "ticker": "INXD-25JAN03",
+    "last_price": 52,        // last traded price (cents)
+    "yes_bid": 50,           // best yes bid (cents)
+    "yes_ask": 54,           // best yes ask (cents)
+    "no_bid": 46,            // best no bid (cents)
+    "no_ask": 50,            // best no ask (cents)
+    "volume": 1500,          // total volume traded
+    "open_interest": 12000,  // active contracts
+    "timestamp": 1703808000  // unix timestamp (seconds)
+  },
+  "timestamp": 1703808000.5
+}
+```
+
+**Note**: MarketTickerListener applies throttling (default 500ms) per ticker to reduce event frequency.
+
+### 5.3 MarketPositionEvent Payload
 
 Position data received from Kalshi WebSocket `market_positions` channel, converted from centi-cents to cents:
 
@@ -654,6 +797,15 @@ Position data received from Kalshi WebSocket `market_positions` channel, convert
     c. _run_event_loop() starts as background task
     d. health_monitor.start()
     e. status_reporter.start()
+    f. [if trading] market_ticker_listener.start():
+       * Subscribes to position tickers via Kalshi ticker channel
+       * Emits MARKET_TICKER_UPDATE events on price changes
+    g. [if trading] market_price_syncer.start():
+       * Performs initial REST sync of market prices
+       * Starts 30s periodic sync loop
+    h. [if strategy=YES_80_90] yes_80_90_service.start():
+       * Subscribes to ORDERBOOK_SNAPSHOT/DELTA events
+       * Begins monitoring for 80-90c signals
 14. System is READY
 ```
 
@@ -691,18 +843,24 @@ Position data received from Kalshi WebSocket `market_positions` channel, convert
 3. coordinator.stop() called:
    a. _running = False
    b. _event_loop_task cancelled
-   c. health_monitor.stop()
-   d. status_reporter.stop()
-   e. [if trading] trading_client_integration.stop()
+   c. [if yes_80_90] yes_80_90_service.stop()
+      - Emits strategy_stop system activity
+   d. [if trading] market_price_syncer.stop()
+      - Cancels sync loop task
+   e. [if trading] market_ticker_listener.stop()
+      - Closes WebSocket, cancels listener task
+   f. health_monitor.stop()
+   g. status_reporter.stop()
+   h. [if trading] trading_client_integration.stop()
       - reset_order_group()
       - disconnect()
-   f. orderbook_integration.stop()
+   i. orderbook_integration.stop()
       - orderbook_client.stop()
-   g. state_machine -> SHUTDOWN
-   h. state_machine.stop()
-   i. websocket_manager.stop()
+   j. state_machine -> SHUTDOWN
+   k. state_machine.stop()
+   l. websocket_manager.stop()
       - Disconnect all clients
-   j. event_bus.stop()
+   m. event_bus.stop()
       - Clear all subscribers
 4. write_queue.stop()
 5. rl_db.close()
@@ -814,6 +972,75 @@ Position data received from Kalshi WebSocket `market_positions` channel, convert
 - **Position Closure**: When position == 0, capture settlement data before deletion
 - **Immediate Updates**: No cycle delay - position updates broadcast within 1 second
 
+### 6.7 YES 80-90c Strategy Flow (Event-Driven)
+
+```
+1. OrderbookClient receives snapshot/delta from Kalshi WebSocket
+2. EventBus emits ORDERBOOK_SNAPSHOT or ORDERBOOK_DELTA event
+3. Yes8090Service._handle_orderbook() receives event:
+   a. Acquire processing lock (prevent concurrent processing)
+   b. Skip if already processed this market
+   c. Skip if position count >= max_concurrent (100 default)
+   d. Skip if market has existing position or open orders
+4. Yes8090Service._detect_signal() evaluates orderbook:
+   a. Get best YES ask price and size from orderbook
+   b. Check: 80c <= yes_ask <= 90c
+   c. Check: yes_ask_size >= min_liquidity (10 default)
+   d. Check: bid-ask spread <= max_spread (5c default)
+   e. Determine tier: A (83-87c) or B (edges)
+   f. If all criteria met: create Yes8090Signal
+5. Yes8090Service._execute_signal() processes signal:
+   a. Check rate limit tokens (10 trades/min default)
+   b. If rate limited: return without marking processed (retry later)
+   c. Mark market as processed (deduplication)
+   d. Calculate entry price based on spread:
+      - Tight (<=2c): best_ask - 1c
+      - Normal (<=4c): midpoint
+      - Wide (>4c): best_bid + 1c
+   e. Determine position size: Tier A = 150, Tier B = 100
+   f. Create TradingDecision with YES_80_90 strategy
+   g. Call TradingDecisionService.execute_decision()
+6. TradingDecisionService places order via trading client
+7. Yes8090Service records decision in history (executed/failed)
+8. System activity events broadcast for frontend visibility
+```
+
+**Key Design Decisions:**
+- **Event-Driven**: Immediate signal processing on orderbook updates
+- **Deduplication**: Each market processed only once per session
+- **Rate Limiting**: Token bucket prevents overtrading (10 trades/min)
+- **Tier-Based Sizing**: Higher confidence signals (83-87c) get larger positions
+- **New Markets Only**: Skips markets with existing positions
+- **Hold to Settlement**: No early exit logic in MVP
+
+### 6.8 Market Ticker Price Updates Flow
+
+```
+1. MarketTickerListener connected to Kalshi WebSocket
+2. Subscribed to "ticker" channel for position tickers
+3. Kalshi sends ticker update:
+   {type: "ticker", msg: {market_ticker, price, yes_bid, yes_ask,
+                          no_bid, no_ask, volume, open_interest, ts}}
+4. MarketTickerListener._handle_ticker_message():
+   a. Increment updates_received counter
+   b. Check throttling (default 500ms per ticker)
+   c. If throttled: skip update, increment throttled counter
+   d. Extract price data from message
+5. Emit MARKET_TICKER_UPDATE via EventBus
+6. Coordinator._handle_market_ticker_update() receives event:
+   a. Calls StateContainer.update_market_price(ticker, price_data)
+7. StateContainer.update_market_price():
+   a. Create/update MarketPriceData for ticker
+   b. Increment _market_prices_version
+8. StatusReporter includes market prices in trading_state broadcast
+```
+
+**Key Design Decisions:**
+- **Filtered Subscription**: Only subscribes to position tickers (not all markets)
+- **Dynamic Subscriptions**: Tickers added/removed as positions change
+- **Throttled Updates**: Default 500ms per ticker reduces event volume
+- **Redundancy with REST**: MarketPriceSyncer provides fallback pricing
+
 ## 7. Configuration
 
 ### 7.1 Environment Variables
@@ -841,6 +1068,13 @@ Position data received from Kalshi WebSocket `market_positions` channel, convert
 | `WHALE_TOKEN_REFILL_SECONDS` | No | `20` | Token refill interval (20s = ~3 trades/minute) |
 | `WHALE_MAX_AGE_SECONDS` | No | `120` | Maximum whale age to follow (2 minutes) |
 | `V3_CLEANUP_ON_STARTUP` | No | `true` | Cancel orphaned orders on startup |
+| `YES8090_MIN_PRICE` | No | `80` | Minimum YES ask price for signals (cents) |
+| `YES8090_MAX_PRICE` | No | `90` | Maximum YES ask price for signals (cents) |
+| `YES8090_MIN_LIQUIDITY` | No | `10` | Minimum contracts at best ask |
+| `YES8090_MAX_SPREAD` | No | `5` | Maximum bid-ask spread (cents) |
+| `YES8090_CONTRACTS` | No | `100` | Default contracts per trade |
+| `YES8090_TIER_A_CONTRACTS` | No | `150` | Contracts for Tier A signals (83-87c) |
+| `YES8090_MAX_CONCURRENT` | No | `100` | Maximum concurrent positions |
 
 ### 7.2 API Endpoints
 
@@ -1068,3 +1302,52 @@ The system supports **degraded mode** when the orderbook WebSocket is unavailabl
 | 2024-12-28 | Comprehensive docs update: StateContainer (settlements, P&L, whale queue), StatusReporter (broadcast data), KalshiDataSync (sync data), demo_client (all methods), trading_state message format, settlements/position data flows | Claude |
 | 2024-12-28 | Added YES_80_90 strategy to TradingStrategy enum (validated +5.1% edge) | Claude |
 | 2024-12-28 | Added Section 7.4: Frontend Panels documentation (PositionListPanel, SettlementsPanel columns and features) | Claude |
+| 2024-12-29 | Comprehensive architecture update: Added MarketTickerListener, MarketPriceSyncer, Yes8090Service | Claude |
+| 2024-12-29 | Added MARKET_TICKER_UPDATE event, MarketTickerEvent payload (Section 5.2), YES8090_* env vars | Claude |
+| 2024-12-29 | Updated architecture diagram with new components (ticker WS, price syncer, 80-90c strategy) | Claude |
+| 2024-12-29 | Added StateContainer market prices state (MarketPriceData fields and methods) | Claude |
+| 2024-12-29 | Added data flow traces: Section 6.7 YES 80-90c Strategy, Section 6.8 Market Ticker Updates | Claude |
+| 2024-12-29 | Updated startup/shutdown sequences with new component lifecycle | Claude |
+
+## 10. Cleanup Recommendations
+
+Identified architectural issues and cleanup opportunities from Dec 2024 review:
+
+### 10.1 High Priority
+
+1. **MarketPriceSyncer Direct State Access** (`services/market_price_syncer.py:185-191`)
+   - **Issue**: Directly accesses `_market_prices` and `_market_prices_version` private attributes
+   - **Fix**: Use `update_market_price()` method or add `batch_update_market_prices()` method
+
+2. **WhaleExecutionService Memory Growth** (`services/whale_execution_service.py`)
+   - **Issue**: `_evaluated_whale_ids` set grows unbounded over session lifetime
+   - **Fix**: Implement periodic cleanup or use TTL-based cache (e.g., clear entries older than 1 hour)
+
+### 10.2 Medium Priority
+
+1. **Type Hint Inconsistency** (`core/websocket_manager.py:28`)
+   - **Issue**: Imports `StateContainer` but actual class is `V3StateContainer`
+   - **Fix**: Update import to `from .state_container import V3StateContainer`
+
+2. **Inconsistent Health Check Patterns**
+   - **Issue**: Services have different health reporting interfaces
+   - **Fix**: Standardize on both `is_healthy()` and `get_health_details()` for all components
+
+3. **Test Files in Main Package**
+   - **Files**: `traderv3/test_trading_client.py`, `traderv3/test_trading_integration.py`
+   - **Fix**: Move to `backend/tests/traderv3/` directory
+
+### 10.3 Low Priority
+
+1. **Empty `__init__.py` Files**
+   - All package `__init__.py` files are empty
+   - **Fix**: Consider adding `__all__` exports for better IDE support
+
+2. **Frontend Duplicate Components**
+   - **Issue**: Multiple WhaleQueuePanel implementations in frontend
+   - **Fix**: Consolidate to single implementation
+
+### 10.4 Documentation Notes
+
+1. **SYSTEM_ACTIVITY Event Sources**: Updated to include MarketPriceSyncer and Yes8090Service
+2. **Event Catalog Accuracy**: SETTLEMENT is synced via REST, not real-time events (clarified in docs)

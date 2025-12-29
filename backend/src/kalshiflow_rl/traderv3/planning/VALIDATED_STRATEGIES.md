@@ -1,8 +1,8 @@
 # Validated Trading Strategies
 
 > Master document tracking production-ready trading strategies for V3 Trader.
-> Maintained by: Quant Agent | Last updated: 2025-12-29
-> Source: Research validated against ~1.7M trades, ~78k settled markets
+> Maintained by: Quant Agent | Last updated: 2025-12-29 (Session 004)
+> Source: Research validated against ~1.7M trades, ~65k settled markets
 
 ## Overview
 
@@ -31,9 +31,13 @@ This document tracks strategies that have been statistically validated and are a
 | ID | Strategy | Status | Edge | Win Rate | Priority |
 |----|----------|--------|------|----------|----------|
 | S001 | YES at 80-90c | IMPLEMENTED | +5.1% | 88.9% | P0 (Active) |
-| S002 | NO at 80-90c | APPROVED | +3.3% | 87.8% | P1 (Next) |
-| S003 | NO at 90-100c | APPROVED | +1.2% | 96.5% | P2 |
-| S004 | NO at 70-80c | APPROVED | +51.3% | 76.5% | P3 (NEW) |
+| S002 | NO at 80-90c | APPROVED | +69.2% | 84.5% | P1 (Next) |
+| S003 | NO at 90-100c | APPROVED | +90.3% | 94.5% | P2 |
+| S004 | NO at 70-80c | APPROVED | +51.3% | 76.5% | P3 |
+| S005 | NO at 60-70c | APPROVED | +30.5% | 66.1% | P4 (NEW) |
+| S006 | NO at 50-60c | APPROVED | +10.0% | 55.7% | P5 (NEW) |
+
+**Session 004 Key Finding:** Insider trading patterns were NOT detected. The edge comes from favorite-longshot bias, not information asymmetry. Strategies work consistently regardless of trade timing or whale involvement.
 
 ---
 
@@ -97,17 +101,20 @@ Monitor these metrics in production:
 **Status:** APPROVED - Ready for implementation
 **Priority:** P1 - Next strategy to implement
 
-### Statistical Validation
+### Statistical Validation (Session 004 Update)
 | Metric | Value | Notes |
 |--------|-------|-------|
-| Markets Analyzed | 2,808 | Unique markets with trades in this range |
-| Win Rate | 87.8% | Market settled NO (i.e., YES lost) |
-| Breakeven Rate | 84.5% | Required win rate to break even |
-| Expected Edge | +3.3% | Win rate minus breakeven |
-| Historical Profit | $708k | Simulated profit across all markets |
+| Markets Analyzed | 1,676 | Unique markets with NO trades in this range |
+| Win Rate | 84.5% | Market settled NO (i.e., YES lost) |
+| Breakeven Rate | 15.3% | Required win rate to break even (NO cost 10-20c) |
+| Expected Edge | +69.2% | Win rate minus breakeven |
+| Historical Profit | $707,622 | Simulated profit across all markets |
 | P-Value | < 0.0001 | Statistically significant |
-| Max Concentration | 23.7% | Below 30% threshold |
+| Max Concentration | 14.2% | Below 30% threshold |
+| Temporal Stability | 81.7% -> 84.7% | Stable across first/second half of data |
 | Validation Period | Full dataset | ~1.7M trades, all time |
+
+**Note on Edge Calculation:** Edge is calculated as (win_rate - breakeven_rate). Since NO costs 10-20c (when YES is 80-90c), breakeven is only 15.3% (you risk 15c to win 85c). The 84.5% actual win rate vastly exceeds this breakeven.
 
 ### Strategy Logic
 Buy NO contracts when the YES price is between 80-90 cents (NO price 10-20 cents). This is a **different market selection** from YES_80_90 (same price range, different markets that have NO at those prices), exploiting the favorite-longshot bias.
@@ -234,17 +241,20 @@ Track in V3 console:
 **Status:** APPROVED - Ready for implementation
 **Priority:** P2 - Implement after S002
 
-### Statistical Validation
+### Statistical Validation (Session 004 Update)
 | Metric | Value | Notes |
 |--------|-------|-------|
-| Markets Analyzed | 4,741 | Largest sample of all strategies |
-| Win Rate | 96.5% | Market settled NO (YES lost) |
-| Breakeven Rate | 95.4% | Required win rate to break even |
-| Expected Edge | +1.2% | Win rate minus breakeven |
-| Historical Profit | $463k | Simulated profit across all markets |
-| P-Value | 0.0002 | Statistically significant |
-| Max Concentration | 20.3% | Below 30% threshold |
+| Markets Analyzed | 2,476 | Markets with NO trades in this range |
+| Win Rate | 94.5% | Market settled NO (YES lost) |
+| Breakeven Rate | 4.1% | Required win rate to break even (NO costs ~4c) |
+| Expected Edge | +90.3% | Win rate minus breakeven |
+| Historical Profit | $463,235 | Simulated profit across all markets |
+| P-Value | < 0.0001 | Highly statistically significant |
+| Max Concentration | 13.2% | Well below 30% threshold |
+| Temporal Stability | 92.0% -> 94.5% | Very stable across time |
 | Validation Period | Full dataset | ~1.7M trades, all time |
+
+**Note on Edge Calculation:** When YES is 90-100c, NO costs only 0-10c. Breakeven is ~4.1% (risk 4c to win 96c). The 94.5% win rate massively exceeds this breakeven, giving +90.3% edge - the highest of all strategies!
 
 ### Strategy Logic
 Buy NO contracts when the YES price is between 90-100 cents (NO price 0-10 cents). These are extreme favorites where the market is pricing >90% probability. The edge is smaller but win rate is exceptional.
@@ -477,6 +487,167 @@ Consider category-specific implementations for enhanced edge in future.
 
 ---
 
+## S005: NO at 60-70c (APPROVED FOR IMPLEMENTATION)
+
+**Status:** APPROVED - Ready for implementation
+**Priority:** P4 - New strategy validated in Session 004
+**Discovered:** 2025-12-29
+
+### Statistical Validation (Session 004)
+| Metric | Value | Notes |
+|--------|-------|-------|
+| Markets Analyzed | 1,321 | Unique markets with NO trades in this range |
+| Win Rate | 66.1% | Market settled NO (YES lost) |
+| Breakeven Rate | 35.6% | Required win rate to break even (NO cost 30-40c) |
+| Expected Edge | +30.5% | Win rate minus breakeven |
+| Historical Profit | $282,299 | Simulated profit across all markets |
+| P-Value | < 0.0001 | Statistically significant |
+| Max Concentration | 18.0% | Well below 30% threshold |
+| Temporal Stability | 60.9% -> 67.7% | Stable across first/second half |
+| Validation Period | Full dataset | ~1.7M trades, all time |
+
+### Strategy Logic
+Buy NO contracts when the YES price is between 60-70 cents (NO price 30-40 cents). This extends the favorite-longshot strategy to even lower favorites.
+
+**Why It Works:**
+- Markets priced 60-70c imply 60-70% probability for YES
+- Actual NO win rate is 66.1% (YES LOSES 66.1% of the time in these markets)
+- Breakeven is 35.6% (risk 35c to win 65c)
+- Edge = 66.1% - 35.6% = +30.5%
+
+**Trade-offs:**
+- Lower win rate than 70-80c (66.1% vs 76.5%)
+- Still solid edge (+30.5%)
+- Good for diversification across price ranges
+
+### Implementation Specification
+
+```python
+def _evaluate_no_60_70(self, market: str, orderbook: dict) -> TradingDecision:
+    """
+    NO at 60-70c strategy.
+    Edge: +30.5% | Win Rate: 66.1%
+    """
+    yes_asks = orderbook.get("yes", {}).get("asks", [])
+    if not yes_asks:
+        return TradingDecision(action="hold", market=market, reason="no_orderbook")
+
+    best_yes_price = yes_asks[0][0]
+
+    if 60 <= best_yes_price <= 70:
+        no_price = 100 - best_yes_price
+        return TradingDecision(
+            action="buy",
+            market=market,
+            side="no",
+            quantity=self.default_contract_size,
+            price=no_price,
+            reason=f"no_60_70_strategy:yes_at_{best_yes_price}c"
+        )
+
+    return TradingDecision(action="hold", market=market, reason="price_outside_range")
+```
+
+---
+
+## S006: NO at 50-60c (APPROVED FOR IMPLEMENTATION)
+
+**Status:** APPROVED - Ready for implementation
+**Priority:** P5 - New strategy validated in Session 004
+**Discovered:** 2025-12-29
+
+### Statistical Validation (Session 004)
+| Metric | Value | Notes |
+|--------|-------|-------|
+| Markets Analyzed | 1,362 | Unique markets with NO trades in this range |
+| Win Rate | 55.7% | Market settled NO (YES lost) |
+| Breakeven Rate | 45.7% | Required win rate to break even (NO cost 40-50c) |
+| Expected Edge | +10.0% | Win rate minus breakeven |
+| Historical Profit | $404,782 | Simulated profit across all markets |
+| P-Value | < 0.0001 | Statistically significant |
+| Max Concentration | 13.9% | Well below 30% threshold |
+| Temporal Stability | 54.2% -> 57.1% | Stable across first/second half |
+| Validation Period | Full dataset | ~1.7M trades, all time |
+
+### Strategy Logic
+Buy NO contracts when the YES price is between 50-60 cents (NO price 40-50 cents). This is near the edge of the favorite-longshot bias territory.
+
+**Why It Works:**
+- Markets priced 50-60c are near coin-flip territory
+- But NO actually wins 55.7% - slight edge over breakeven
+- Breakeven is 45.7% (risk 45c to win 55c)
+- Edge = 55.7% - 45.7% = +10.0%
+
+**Trade-offs:**
+- Lowest win rate (55.7%) and smallest edge (+10.0%)
+- But highest historical profit ($404k) due to larger sample
+- Use for maximum diversification
+
+### Implementation Specification
+
+```python
+def _evaluate_no_50_60(self, market: str, orderbook: dict) -> TradingDecision:
+    """
+    NO at 50-60c strategy.
+    Edge: +10.0% | Win Rate: 55.7%
+    """
+    yes_asks = orderbook.get("yes", {}).get("asks", [])
+    if not yes_asks:
+        return TradingDecision(action="hold", market=market, reason="no_orderbook")
+
+    best_yes_price = yes_asks[0][0]
+
+    if 50 <= best_yes_price <= 60:
+        no_price = 100 - best_yes_price
+        return TradingDecision(
+            action="buy",
+            market=market,
+            side="no",
+            quantity=self.default_contract_size,
+            price=no_price,
+            reason=f"no_50_60_strategy:yes_at_{best_yes_price}c"
+        )
+
+    return TradingDecision(action="hold", market=market, reason="price_outside_range")
+```
+
+---
+
+## Session 004: Insider Trading Analysis Summary
+
+**Primary Research Question:** Are there detectable insider trading patterns where large bets precede market moves?
+
+### Key Findings
+
+1. **NO SIGNIFICANT INSIDER TRADING DETECTED**
+   - Edge is consistent across early/mid/late market lifecycle
+   - Whales show similar edge to retail at the same price points
+   - Trade timing does not predict outcomes beyond price
+
+2. **PRICE IS THE DOMINANT SIGNAL**
+   - NO at 70-80c: ~51-53% edge regardless of timing
+   - NO at 80-90c: ~69-70% edge regardless of timing
+   - This is classic favorite-longshot bias, NOT insider trading
+
+3. **MEGA-WHALE BEHAVIOR**
+   - Mega-whales (1000+ contracts) show slightly better edge (+3-5%)
+   - But this is marginal improvement, not evidence of information
+   - No systematic informational advantage detected
+
+4. **MARKET EFFICIENCY**
+   - Kalshi prediction markets appear relatively efficient
+   - The edge we exploit is a well-documented behavioral bias
+   - Not insider information or a priori knowledge
+
+### Validation of New Strategies
+
+All new strategies (S005, S006) show temporal stability:
+- Win rates consistent between first and second half of data
+- No regime-dependent behavior
+- Validated across 1,000+ unique markets each
+
+---
+
 ## Rejected Strategies (Do Not Implement)
 
 These strategies were tested and failed validation:
@@ -498,13 +669,15 @@ Strategies requiring more data/analysis before approval:
 
 | Strategy | Status | Notes |
 |----------|--------|-------|
-| NO at 60-70c | PROMISING | +30.5% edge, 1,321 markets - needs more validation |
-| KXNCAAMBGAME: NO at 70-80c | PROMISING | +63.8% edge, 63 markets (category-specific) |
+| NO at 55-65c | VALIDATED | +19.4% edge, 1,331 markets - consider for implementation |
+| NO at 65-75c | VALIDATED | +40.4% edge, 1,352 markets - optimal balance of edge/win rate |
+| NO at 75-85c | VALIDATED | +61.5% edge, 1,572 markets - alternative range |
+| KXNCAAMBGAME: NO at 70-80c | PROMISING | +63.8% edge, 63 markets (category-specific, needs more data) |
 | KXBTCD: NO at all ranges | PROMISING | Crypto daily markets show consistent edge |
-| Category-Specific (NCAAF) | TESTING | +68% edge but only 62 markets |
-| Category-Specific (NFL) | TESTING | +41% edge but only 147 markets |
-| Time-to-Expiry | NOT TESTED | Needs expiry data integration |
-| Orderbook Imbalance | NOT TESTED | Needs real-time orderbook analysis |
+| KXMVESPORTSMULTIGAMEEXTENDED | PROMISING | +37.7% edge at 60-70c, 68 markets |
+| Time-to-Expiry Effects | NOT FOUND | Session 004 tested - no unique edge beyond price |
+| Insider Trading Patterns | NOT FOUND | Session 004 tested - edge is behavioral, not informational |
+| Combined Multi-Range Strategy | UNTESTED | Run S002-S006 simultaneously for diversification |
 
 ---
 
@@ -576,3 +749,9 @@ Research validates strategy -> Update this document -> Trader-specialist impleme
 | 2025-12-29 | Added cross-references and validation criteria table | Quant Agent |
 | 2025-12-29 | **Session 003**: Added S004 (NO at 70-80c) - +51.3% edge, 1,437 markets | Quant Agent |
 | 2025-12-29 | Updated Future Research with NO at 60-70c and category-specific candidates | Quant Agent |
+| 2025-12-29 | **Session 004**: Insider Trading Analysis - NO insider patterns detected | Quant Agent |
+| 2025-12-29 | **Session 004**: Added S005 (NO at 60-70c) - +30.5% edge, 1,321 markets | Quant Agent |
+| 2025-12-29 | **Session 004**: Added S006 (NO at 50-60c) - +10.0% edge, 1,362 markets | Quant Agent |
+| 2025-12-29 | **Session 004**: Updated S002, S003 with correct edge calculations | Quant Agent |
+| 2025-12-29 | **Session 004**: Added temporal stability checks to all strategies | Quant Agent |
+| 2025-12-29 | **Session 004**: Added insider trading analysis summary section | Quant Agent |

@@ -357,7 +357,7 @@ class V3StateContainer:
             state1.orders == state2.orders
         )
 
-    def update_single_position(self, ticker: str, position_data: Dict[str, Any]) -> bool:
+    async def update_single_position(self, ticker: str, position_data: Dict[str, Any]) -> bool:
         """
         Update a single position from real-time WebSocket push.
 
@@ -386,67 +386,68 @@ class V3StateContainer:
             - Recalculates portfolio_value from position costs
             - Increments _trading_state_version
         """
-        if not self._trading_state:
-            logger.warning(f"Cannot update position {ticker}: no trading state")
-            return False
+        async with self._lock:
+            if not self._trading_state:
+                logger.warning(f"Cannot update position {ticker}: no trading state")
+                return False
 
-        position_count = position_data.get("position", 0)
+            position_count = position_data.get("position", 0)
 
-        # If position is 0, capture settlement data then remove from positions dict
-        if position_count == 0:
-            if ticker in self._trading_state.positions:
-                # Capture position data before deletion for settlement history
-                closing_position = self._trading_state.positions[ticker]
-                settlement = {
-                    "ticker": ticker,
-                    "position": closing_position.get("position", 0),
-                    "side": "yes" if closing_position.get("position", 0) > 0 else "no",
-                    "total_traded": closing_position.get("total_traded", 0),
-                    "market_exposure": closing_position.get("market_exposure", 0),
-                    "realized_pnl": position_data.get("realized_pnl", 0),
-                    "fees_paid": position_data.get("fees_paid", 0),
-                    "closed_at": time.time(),
-                }
-                self._settled_positions.appendleft(settlement)
-                self._total_settlements_count += 1
+            # If position is 0, capture settlement data then remove from positions dict
+            if position_count == 0:
+                if ticker in self._trading_state.positions:
+                    # Capture position data before deletion for settlement history
+                    closing_position = self._trading_state.positions[ticker]
+                    settlement = {
+                        "ticker": ticker,
+                        "position": closing_position.get("position", 0),
+                        "side": "yes" if closing_position.get("position", 0) > 0 else "no",
+                        "total_traded": closing_position.get("total_traded", 0),
+                        "market_exposure": closing_position.get("market_exposure", 0),
+                        "realized_pnl": position_data.get("realized_pnl", 0),
+                        "fees_paid": position_data.get("fees_paid", 0),
+                        "closed_at": time.time(),
+                    }
+                    self._settled_positions.appendleft(settlement)
+                    self._total_settlements_count += 1
 
-                del self._trading_state.positions[ticker]
+                    del self._trading_state.positions[ticker]
+                    logger.info(
+                        f"Position closed: {ticker}, "
+                        f"realized_pnl={settlement['realized_pnl']}¢"
+                    )
+            else:
+                # Update or add position - MERGE to preserve fields not in WebSocket update
+                # This is critical: WebSocket updates don't include total_traded (cost basis),
+                # which comes from REST sync. Merging ensures we preserve total_traded.
+                existing = self._trading_state.positions.get(ticker, {})
+                merged = {**existing, **position_data}
+                self._trading_state.positions[ticker] = merged
                 logger.info(
-                    f"Position closed: {ticker}, "
-                    f"realized_pnl={settlement['realized_pnl']}¢"
+                    f"Position updated: {ticker} = {position_count} contracts, "
+                    f"value={position_data.get('market_exposure', 0)}¢"
                 )
-        else:
-            # Update or add position - MERGE to preserve fields not in WebSocket update
-            # This is critical: WebSocket updates don't include total_traded (cost basis),
-            # which comes from REST sync. Merging ensures we preserve total_traded.
-            existing = self._trading_state.positions.get(ticker, {})
-            merged = {**existing, **position_data}
-            self._trading_state.positions[ticker] = merged
-            logger.info(
-                f"Position updated: {ticker} = {position_count} contracts, "
-                f"value={position_data.get('market_exposure', 0)}¢"
+
+            # Track that this ticker was updated this session via WebSocket
+            self._session_updated_tickers.add(ticker)
+
+            # Recalculate aggregates
+            self._trading_state.position_count = len(self._trading_state.positions)
+
+            # NOTE: Do NOT recalculate portfolio_value here.
+            # Kalshi REST API sync provides authoritative balance/portfolio_value.
+            # WebSocket position updates should only update position-specific fields.
+
+            # Update version and timestamp
+            self._trading_state_version += 1
+            self._last_update = time.time()
+
+            logger.debug(
+                f"Position update complete: {len(self._trading_state.positions)} positions, "
+                f"version={self._trading_state_version}"
             )
 
-        # Track that this ticker was updated this session via WebSocket
-        self._session_updated_tickers.add(ticker)
-
-        # Recalculate aggregates
-        self._trading_state.position_count = len(self._trading_state.positions)
-
-        # NOTE: Do NOT recalculate portfolio_value here.
-        # Kalshi REST API sync provides authoritative balance/portfolio_value.
-        # WebSocket position updates should only update position-specific fields.
-
-        # Update version and timestamp
-        self._trading_state_version += 1
-        self._last_update = time.time()
-
-        logger.debug(
-            f"Position update complete: {len(self._trading_state.positions)} positions, "
-            f"version={self._trading_state_version}"
-        )
-
-        return True
+            return True
 
     @property
     def trading_state(self) -> Optional[TraderState]:

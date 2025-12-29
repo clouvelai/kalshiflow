@@ -618,7 +618,7 @@ class V3Coordinator:
             position_data = event.position_data
 
             # Update state container
-            if self._state_container.update_single_position(ticker, position_data):
+            if await self._state_container.update_single_position(ticker, position_data):
                 # Broadcast updated state to frontend
                 await self._status_reporter.emit_trading_state()
 

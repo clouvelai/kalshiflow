@@ -276,7 +276,9 @@ class V3TradingClientIntegration:
         # Check position size limits
         current_position = self._metrics.active_positions.get(ticker, {})
         current_size = current_position.get("position", 0)
-        if abs(current_size + count) > self._max_position_size:
+        # For buy: adds to position, for sell: reduces position
+        effective_change = count if action == "buy" else -count
+        if abs(current_size + effective_change) > self._max_position_size:
             raise ValueError(f"Position size would exceed limit ({self._max_position_size})")
         
         try:

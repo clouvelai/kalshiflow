@@ -151,6 +151,9 @@ class WhaleExecutionService:
         # This prevents re-evaluating the same whale on every WHALE_QUEUE_UPDATED event
         self._evaluated_whale_ids: set[str] = set()
 
+        # Max age for evaluated whale IDs (10 minutes = 600 seconds)
+        self._evaluated_ids_max_age_seconds = 600
+
         # State
         self._running = False
         self._started_at: Optional[float] = None
@@ -203,6 +206,9 @@ class WhaleExecutionService:
         """
         if not self._running:
             return
+
+        # Prune old whale IDs to prevent unbounded memory growth
+        self._prune_evaluated_ids()
 
         # Use lock to prevent concurrent processing
         async with self._processing_lock:
@@ -463,6 +469,30 @@ class WhaleExecutionService:
             self._tokens -= 1.0
             return True
         return False
+
+    def _prune_evaluated_ids(self) -> None:
+        """
+        Remove whale IDs older than max age to prevent unbounded memory growth.
+
+        Whale ID format is "market_ticker:timestamp_ms", so we extract the
+        timestamp and remove entries older than _evaluated_ids_max_age_seconds.
+        """
+        cutoff_ms = int((time.time() - self._evaluated_ids_max_age_seconds) * 1000)
+        to_remove = set()
+
+        for whale_id in self._evaluated_whale_ids:
+            try:
+                # whale_id format: "TICKER:timestamp_ms"
+                ts_ms = int(whale_id.split(":")[-1])
+                if ts_ms < cutoff_ms:
+                    to_remove.add(whale_id)
+            except (ValueError, IndexError):
+                # Malformed ID, skip it (don't remove since we can't parse it)
+                pass
+
+        if to_remove:
+            self._evaluated_whale_ids -= to_remove
+            logger.debug(f"Pruned {len(to_remove)} old whale IDs from evaluated set")
 
     def _record_decision(
         self,
