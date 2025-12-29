@@ -1,7 +1,7 @@
 # TRADER V3 Architecture Documentation
 
 > Machine-readable architecture reference for coding agents.
-> Last updated: 2024-12-29 (added TradingStateSyncer service)
+> Last updated: 2024-12-29 (added FillListener for real-time order fill notifications)
 
 ## 1. System Overview
 
@@ -82,6 +82,11 @@ TRADER V3 is an event-driven paper trading system for Kalshi prediction markets.
 |           |                     |                | (positions WS)    |               |                             |
 |           |                     |                +--------+----------+               |                             |
 |           |                     |                         |                          |                             |
+|           |                     |                +--------+----------+               |                             |
+|           |                     |                | FillListener      |               |                             |
+|           |                     |                | (fills WS)        |               |                             |
+|           |                     |                +--------+----------+               |                             |
+|           |                     |                         |                          |                             |
 +===========|=====================|=========================|==========================|=============================+
             |                     |                         |                          |
             v                     v                         v                          v
@@ -106,7 +111,7 @@ TRADER V3 is an event-driven paper trading system for Kalshi prediction markets.
   - `is_healthy()` - Boolean health status
 - **Emits Events**: None directly (delegates to StatusReporter)
 - **Subscribes To**: None directly
-- **Dependencies**: V3StateMachine, EventBus, V3WebSocketManager, V3OrderbookIntegration, V3TradingClientIntegration (optional), V3StateContainer, V3HealthMonitor, V3StatusReporter, TradingFlowOrchestrator, MarketTickerListener (optional), MarketPriceSyncer (optional), TradingStateSyncer (optional), Yes8090Service (optional)
+- **Dependencies**: V3StateMachine, EventBus, V3WebSocketManager, V3OrderbookIntegration, V3TradingClientIntegration (optional), V3StateContainer, V3HealthMonitor, V3StatusReporter, TradingFlowOrchestrator, MarketTickerListener (optional), MarketPriceSyncer (optional), TradingStateSyncer (optional), FillListener (optional), Yes8090Service (optional)
 
 #### V3StateMachine
 - **File**: `core/state_machine.py`
@@ -188,7 +193,7 @@ TRADER V3 is an event-driven paper trading system for Kalshi prediction markets.
   - `is_healthy()` - Check if monitor itself is healthy
 - **Emits Events**: `SYSTEM_ACTIVITY` (health_check type)
 - **Subscribes To**: None (polls components directly)
-- **Dependencies**: V3Config, V3StateMachine, EventBus, V3WebSocketManager, V3StateContainer, V3OrderbookIntegration, V3TradingClientIntegration (optional), V3TradesIntegration (optional), WhaleTracker (optional)
+- **Dependencies**: V3Config, V3StateMachine, EventBus, V3WebSocketManager, V3StateContainer, V3OrderbookIntegration, V3TradingClientIntegration (optional), V3TradesIntegration (optional), WhaleTracker (optional), FillListener (optional)
 
 #### V3StatusReporter
 - **File**: `core/status_reporter.py`
@@ -211,14 +216,22 @@ TRADER V3 is an event-driven paper trading system for Kalshi prediction markets.
 
 #### V3WebSocketManager
 - **File**: `core/websocket_manager.py`
-- **Purpose**: Manages WebSocket connections to frontend clients, broadcasts events
+- **Purpose**: Manages WebSocket connections to frontend clients, broadcasts events with message coalescing
 - **Key Methods**:
   - `start()` / `stop()` - Lifecycle management
   - `handle_websocket(websocket)` - Handle new client connection
-  - `broadcast_message(message_type, data)` - Send to all clients
+  - `broadcast_message(message_type, data)` - Send to all clients (with coalescing for frequent types)
+  - `_broadcast_immediate(message_type, data)` - Bypass coalescing for critical messages
+  - `_flush_pending()` - Flush coalesced messages to clients
   - `broadcast_console_message(level, message, context)` - Console-style message
   - `get_stats()` - Get connection statistics
   - `get_health_details()` - Get detailed health information
+- **Message Coalescing**:
+  - 100ms batching window for frequent message types
+  - **Immediate (critical)**: `state_transition`, `whale_processing`, `connection`, `system_activity`, `history_replay`
+  - **Coalesced (frequent)**: `trading_state`, `trader_status`, `whale_queue`
+  - Coalescing keeps only the latest message of each type, reducing frontend re-renders
+- **Key Fields**: `_pending_messages`, `_coalesce_task`, `_coalesce_interval`
 - **Emits Events**: None
 - **Subscribes To**: `SYSTEM_ACTIVITY`, `TRADER_STATUS`
 - **Dependencies**: EventBus, V3StateMachine (optional), Starlette WebSocket
@@ -390,6 +403,45 @@ TRADER V3 is an event-driven paper trading system for Kalshi prediction markets.
 - **Emits Events**: `MARKET_POSITION_UPDATE` (via EventBus.emit_market_position_update)
 - **Subscribes To**: None (listens to Kalshi WebSocket)
 - **Dependencies**: EventBus, KalshiAuth
+
+#### FillListener
+- **File**: `clients/fill_listener.py`
+- **Purpose**: WebSocket listener for real-time order fill notifications from Kalshi
+- **Key Methods**:
+  - `start()` / `stop()` - Lifecycle management
+  - `is_healthy()` - Check if listener is running and WebSocket connected
+  - `get_metrics()` - Get listener statistics (fills received/processed, connection count)
+  - `get_status()` - Get full status for monitoring
+  - `get_health_details()` - Get detailed health information for initialization tracker
+- **Features**:
+  - Subscribes to Kalshi `fill` WebSocket channel (authenticated)
+  - Receives all fills for the account (ignores market_tickers filter)
+  - Automatic reconnection with configurable delay
+  - Heartbeat monitoring for connection health
+  - Price values in cents (native Kalshi format)
+- **Fill Message Format** (from Kalshi):
+  ```json
+  {
+    "type": "fill",
+    "sid": 13,
+    "msg": {
+      "trade_id": "d91bc706-ee49-470d-82d8-11418bda6fed",
+      "order_id": "ee587a1c-8b87-4dcf-b721-9f6f790619fa",
+      "market_ticker": "HIGHNY-22DEC23-B53.5",
+      "is_taker": true,
+      "side": "yes",
+      "yes_price": 75,
+      "count": 278,
+      "action": "buy",
+      "ts": 1671899397,
+      "post_position": 500
+    }
+  }
+  ```
+- **Emits Events**: `ORDER_FILL` (via EventBus.emit_order_fill)
+- **Subscribes To**: None (listens to Kalshi WebSocket)
+- **Dependencies**: EventBus, KalshiAuth
+- **Architecture Note**: Provides instant feedback when orders are filled, complementing REST API sync for immediate console UX
 
 ### 3.3 Services (`traderv3/services/`)
 
@@ -706,6 +758,7 @@ VALID_TRANSITIONS = {
 | `WHALE_QUEUE_UPDATED` | WhaleTracker | V3WebSocketManager, WhaleExecutionService | `WhaleQueueEvent{queue, stats, timestamp}` |
 | `MARKET_POSITION_UPDATE` | PositionListener | V3StateContainer (via coordinator subscription) | `MarketPositionEvent{market_ticker, position_data, timestamp}` |
 | `MARKET_TICKER_UPDATE` | MarketTickerListener | V3Coordinator (updates StateContainer) | `MarketTickerEvent{market_ticker, price_data, timestamp}` |
+| `ORDER_FILL` | FillListener | (console UX, future: StateContainer) | `OrderFillEvent{trade_id, order_id, market_ticker, is_taker, side, action, price_cents, count, post_position, fill_timestamp}` |
 | `SETTLEMENT` | (via REST sync) | - | Settlements synced from Kalshi REST API, stored in StateContainer |
 
 ### 5.1 SystemActivityEvent Types
@@ -1115,16 +1168,19 @@ Position data received from Kalshi WebSocket `market_positions` channel, convert
 
 ### 7.3 WebSocket Message Types (to frontend)
 
-| Type | Description |
-|------|-------------|
-| `connection` | Initial connection acknowledgment |
-| `history_replay` | Historical state transitions for late joiners |
-| `system_activity` | Unified console messages |
-| `trader_status` | Periodic status/metrics update |
-| `trading_state` | Trading data (balance, positions, orders, P&L, settlements) - **sent immediately on connect** |
-| `whale_queue` | Whale detection queue update (when enabled) |
-| `whale_processing` | Whale processing status for frontend animation |
-| `ping` | Keep-alive ping |
+| Type | Description | Coalescing |
+|------|-------------|------------|
+| `connection` | Initial connection acknowledgment | Immediate |
+| `history_replay` | Historical state transitions for late joiners | Immediate |
+| `system_activity` | Unified console messages | Immediate |
+| `state_transition` | State machine state changes | Immediate |
+| `whale_processing` | Whale processing status for frontend animation | Immediate |
+| `trader_status` | Periodic status/metrics update | Coalesced (100ms) |
+| `trading_state` | Trading data (balance, positions, orders, P&L, settlements) | Coalesced (100ms) |
+| `whale_queue` | Whale detection queue update (when enabled) | Coalesced (100ms) |
+| `ping` | Keep-alive ping | Immediate |
+
+**Coalescing Behavior**: Messages marked "Coalesced" are batched in a 100ms window. Only the latest message of each type is sent, reducing frontend re-renders during high-frequency updates. Critical messages (Immediate) bypass coalescing for real-time responsiveness.
 
 #### trading_state Message Format
 
@@ -1307,6 +1363,8 @@ The system supports **degraded mode** when the orderbook WebSocket is unavailabl
 4. **Degraded Mode**: System continues operating without orderbook
 5. **Health Monitoring**: Non-blocking health checks that report but don't control
 6. **Atomic Updates**: Thread-safe state mutations with version tracking
+7. **Message Coalescing**: Backend batches frequent WebSocket messages (100ms window) to reduce frontend re-renders. Critical messages (state transitions, whale processing) bypass coalescing for responsiveness
+8. **Zombie Connection Detection**: Frontend monitors WebSocket heartbeats (60s timeout, 15s check interval) and forces reconnection on stale connections. Reconnect timeout cleanup prevents timer accumulation
 
 ---
 
@@ -1337,6 +1395,8 @@ The system supports **degraded mode** when the orderbook WebSocket is unavailabl
 | 2024-12-29 | Added data flow traces: Section 6.7 YES 80-90c Strategy, Section 6.8 Market Ticker Updates | Claude |
 | 2024-12-29 | Updated startup/shutdown sequences with new component lifecycle | Claude |
 | 2024-12-29 | Added TradingStateSyncer service for reliable periodic trading state sync (20s interval) | Claude |
+| 2024-12-29 | WebSocket performance: Added message coalescing (100ms batching), zombie connection detection (60s timeout) | Claude |
+| 2024-12-29 | Added FillListener component for real-time order fill notifications via Kalshi fill WebSocket channel | Claude |
 
 ## 10. Cleanup Recommendations
 
