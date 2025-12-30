@@ -57,6 +57,18 @@ class V3Config:
     yes8090_tier_a_contracts: int = 150  # Contracts for Tier A signals (83-87c)
     yes8090_max_concurrent: int = 100  # Maximum concurrent positions
 
+    # RLM (Reverse Line Movement) Strategy Configuration (for RLM_NO strategy)
+    # Validated +17.38% edge: When >65% trades are YES but price drops, bet NO
+    rlm_yes_threshold: float = 0.65  # Minimum YES trade ratio to trigger signal
+    rlm_min_trades: int = 15  # Minimum trades before evaluating signal
+    rlm_min_price_drop: int = 0  # Minimum YES price drop in cents (0 = any drop)
+    rlm_contracts: int = 100  # Contracts per trade
+    rlm_max_concurrent: int = 1000  # Maximum concurrent positions
+    rlm_allow_reentry: bool = True  # Allow adding to position on stronger signal
+    rlm_orderbook_timeout: float = 2.0  # Timeout for orderbook fetch (seconds)
+    rlm_tight_spread: int = 2  # Spread threshold for market order (cents)
+    rlm_wide_spread: int = 3  # Spread threshold for limit order (cents)
+
     # Whale Detection Configuration (optional, for Follow the Whale feature)
     enable_whale_detection: bool = False
     whale_queue_size: int = 10
@@ -69,6 +81,17 @@ class V3Config:
     # Position/Order Checking Configuration
     allow_multiple_positions_per_market: bool = False  # Skip position check for testing
     allow_multiple_orders_per_market: bool = False  # Skip orders check for testing
+
+    # Market selection mode: "config", "discovery", or "lifecycle" (default)
+    # - config: Use static market_tickers list
+    # - discovery: Auto-discover from REST API
+    # - lifecycle: Market lifecycle events via WebSocket (NEW - default)
+    market_mode: str = "lifecycle"
+
+    # Lifecycle Mode Configuration (RL_MODE=lifecycle)
+    lifecycle_categories: List[str] = field(default_factory=lambda: ["sports", "media_mentions", "entertainment", "crypto"])
+    lifecycle_max_markets: int = 1000  # Maximum tracked markets (orderbook WS limit)
+    lifecycle_sync_interval: int = 30  # Seconds between market info syncs
 
     # State Machine Configuration
     sync_duration: float = 10.0  # seconds for Kalshi data sync
@@ -119,11 +142,16 @@ class V3Config:
             raise ValueError(f"Missing required environment variables: {', '.join(missing)}")
         
         # Market configuration - use same variables as RL trader
-        mode = os.environ.get("RL_MODE", "discovery")
+        # Mode options: "config", "discovery", "lifecycle" (default)
+        market_mode = os.environ.get("RL_MODE", "lifecycle")
         market_limit = int(os.environ.get("RL_ORDERBOOK_MARKET_LIMIT", "10"))
-        
-        # Handle discovery mode or specific market tickers
-        if mode == "discovery":
+
+        # Handle market selection based on mode
+        if market_mode == "lifecycle":
+            # Lifecycle mode - markets discovered via lifecycle WebSocket events
+            market_tickers = []  # Empty - lifecycle events will populate
+            logger.info(f"Lifecycle mode enabled - markets will be discovered via lifecycle events")
+        elif market_mode == "discovery":
             # Discovery mode - OrderbookClient will auto-discover markets
             market_tickers = ["DISCOVERY"]  # Special marker for discovery mode
             logger.info(f"Discovery mode enabled with limit of {market_limit} markets")
@@ -178,6 +206,23 @@ class V3Config:
         yes8090_tier_a_contracts = int(os.environ.get("YES8090_TIER_A_CONTRACTS", "150"))
         yes8090_max_concurrent = int(os.environ.get("YES8090_MAX_CONCURRENT", "100"))
 
+        # RLM (Reverse Line Movement) strategy configuration
+        rlm_yes_threshold = float(os.environ.get("RLM_YES_THRESHOLD", "0.65"))
+        rlm_min_trades = int(os.environ.get("RLM_MIN_TRADES", "15"))
+        rlm_min_price_drop = int(os.environ.get("RLM_MIN_PRICE_DROP", "0"))
+        rlm_contracts = int(os.environ.get("RLM_CONTRACTS", "100"))
+        rlm_max_concurrent = int(os.environ.get("RLM_MAX_CONCURRENT", "1000"))
+        rlm_allow_reentry = os.environ.get("RLM_ALLOW_REENTRY", "true").lower() == "true"
+        rlm_orderbook_timeout = float(os.environ.get("RLM_ORDERBOOK_TIMEOUT", "2.0"))
+        rlm_tight_spread = int(os.environ.get("RLM_TIGHT_SPREAD", "2"))
+        rlm_wide_spread = int(os.environ.get("RLM_WIDE_SPREAD", "3"))
+
+        # Lifecycle discovery mode configuration
+        lifecycle_categories_str = os.environ.get("LIFECYCLE_CATEGORIES", "sports,media_mentions,entertainment,crypto")
+        lifecycle_categories = [c.strip() for c in lifecycle_categories_str.split(",") if c.strip()]
+        lifecycle_max_markets = int(os.environ.get("LIFECYCLE_MAX_MARKETS", "1000"))
+        lifecycle_sync_interval = int(os.environ.get("LIFECYCLE_SYNC_INTERVAL", "30"))
+
         sync_duration = float(os.environ.get("V3_SYNC_DURATION", os.environ.get("V3_CALIBRATION_DURATION", "10.0")))
         health_check_interval = float(os.environ.get("V3_HEALTH_CHECK_INTERVAL", "5.0"))
         error_recovery_delay = float(os.environ.get("V3_ERROR_RECOVERY_DELAY", "30.0"))
@@ -198,6 +243,7 @@ class V3Config:
             private_key_content=private_key_content,
             market_tickers=market_tickers,
             max_markets=max_markets,
+            market_mode=market_mode,
             orderbook_depth=orderbook_depth,
             snapshot_interval=snapshot_interval,
             enable_trading_client=enable_trading_client,
@@ -212,6 +258,15 @@ class V3Config:
             yes8090_contracts=yes8090_contracts,
             yes8090_tier_a_contracts=yes8090_tier_a_contracts,
             yes8090_max_concurrent=yes8090_max_concurrent,
+            rlm_yes_threshold=rlm_yes_threshold,
+            rlm_min_trades=rlm_min_trades,
+            rlm_min_price_drop=rlm_min_price_drop,
+            rlm_contracts=rlm_contracts,
+            rlm_max_concurrent=rlm_max_concurrent,
+            rlm_allow_reentry=rlm_allow_reentry,
+            rlm_orderbook_timeout=rlm_orderbook_timeout,
+            rlm_tight_spread=rlm_tight_spread,
+            rlm_wide_spread=rlm_wide_spread,
             enable_whale_detection=enable_whale_detection,
             whale_queue_size=whale_queue_size,
             whale_window_minutes=whale_window_minutes,
@@ -219,6 +274,9 @@ class V3Config:
             cleanup_on_startup=cleanup_on_startup,
             allow_multiple_positions_per_market=allow_multiple_positions_per_market,
             allow_multiple_orders_per_market=allow_multiple_orders_per_market,
+            lifecycle_categories=lifecycle_categories,
+            lifecycle_max_markets=lifecycle_max_markets,
+            lifecycle_sync_interval=lifecycle_sync_interval,
             sync_duration=sync_duration,
             health_check_interval=health_check_interval,
             error_recovery_delay=error_recovery_delay,
@@ -233,7 +291,12 @@ class V3Config:
         logger.info(f"Loaded V3 configuration:")
         logger.info(f"  - API URL: {api_url}")
         logger.info(f"  - WebSocket URL: {ws_url}")
-        logger.info(f"  - Markets: {', '.join(market_tickers[:3])}{'...' if len(market_tickers) > 3 else ''} ({len(market_tickers)} total)")
+        logger.info(f"  - Market mode: {market_mode.upper()}")
+        if market_mode == "lifecycle":
+            logger.info(f"    - Categories: {', '.join(lifecycle_categories)}")
+            logger.info(f"    - Max tracked: {lifecycle_max_markets}")
+        elif market_tickers:
+            logger.info(f"  - Markets: {', '.join(market_tickers[:3])}{'...' if len(market_tickers) > 3 else ''} ({len(market_tickers)} total)")
         logger.info(f"  - Max markets: {max_markets}")
         logger.info(f"  - Sync duration: {sync_duration}s")
         logger.info(f"  - Server: {host}:{port}")
@@ -263,6 +326,18 @@ class V3Config:
             logger.info(f"    - Max spread: {yes8090_max_spread}c")
             logger.info(f"    - Contracts: {yes8090_contracts} (Tier A: {yes8090_tier_a_contracts})")
             logger.info(f"    - Max concurrent: {yes8090_max_concurrent} positions")
+
+        # Log RLM config if strategy is enabled
+        if trading_strategy_str == "rlm_no":
+            logger.info(f"  - RLM (Reverse Line Movement) Strategy: ENABLED")
+            logger.info(f"    - YES threshold: {rlm_yes_threshold:.0%}")
+            logger.info(f"    - Min trades: {rlm_min_trades}")
+            logger.info(f"    - Min price drop: {rlm_min_price_drop}c")
+            logger.info(f"    - Contracts: {rlm_contracts}")
+            logger.info(f"    - Max concurrent: {rlm_max_concurrent} positions")
+            logger.info(f"    - Re-entry: {'ENABLED' if rlm_allow_reentry else 'DISABLED'}")
+            logger.info(f"    - Orderbook timeout: {rlm_orderbook_timeout}s")
+            logger.info(f"    - Spread thresholds: tight={rlm_tight_spread}c, wide={rlm_wide_spread}c")
 
         return config
     
@@ -297,6 +372,7 @@ class V3Config:
             "paper_test": TradingStrategy.PAPER_TEST,
             "rl_model": TradingStrategy.RL_MODEL,
             "yes_80_90": TradingStrategy.YES_80_90,
+            "rlm_no": TradingStrategy.RLM_NO,
             "custom": TradingStrategy.CUSTOM,
         }
 
@@ -305,15 +381,15 @@ class V3Config:
     def validate(self) -> bool:
         """
         Validate configuration.
-        
+
         Returns:
             True if configuration is valid
-            
+
         Raises:
             ValueError: If configuration is invalid
         """
-        # Validate market configuration
-        if not self.market_tickers:
+        # Validate market configuration (skip for lifecycle mode which uses empty tickers)
+        if not self.market_tickers and self.market_mode != "lifecycle":
             raise ValueError("No market tickers configured")
         
         if self.max_markets < 1:

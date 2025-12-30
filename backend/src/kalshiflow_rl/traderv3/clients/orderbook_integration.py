@@ -372,3 +372,143 @@ class V3OrderbookIntegration:
             "connection_established": time.strftime("%H:%M:%S", time.localtime(self._connection_established_time)) if self._connection_established_time else None,
             "first_snapshot_received": time.strftime("%H:%M:%S", time.localtime(self._first_snapshot_time)) if self._first_snapshot_time else None
         }
+
+    # ============================================================
+    # Dynamic Market Subscription (Event Lifecycle Discovery)
+    # ============================================================
+
+    async def subscribe_additional_markets(self, tickers: List[str]) -> bool:
+        """
+        Subscribe to additional markets on the existing connection.
+
+        Used by Event Lifecycle Discovery mode to dynamically add markets
+        when they are discovered via lifecycle events.
+
+        Args:
+            tickers: List of market tickers to subscribe to
+
+        Returns:
+            True if subscription was successful, False otherwise
+        """
+        if not self._running:
+            logger.warning("Cannot subscribe to additional markets - integration not running")
+            return False
+
+        if not tickers:
+            return True
+
+        # Filter to only new tickers
+        new_tickers = [t for t in tickers if t not in self._market_tickers]
+        if not new_tickers:
+            logger.debug("All requested tickers already subscribed")
+            return True
+
+        try:
+            # Use the underlying client method
+            success = await self._client.subscribe_additional_markets(new_tickers)
+
+            if success:
+                # Update our local tracking
+                self._market_tickers.extend(new_tickers)
+                logger.info(
+                    f"Subscribed to {len(new_tickers)} additional markets. "
+                    f"Total: {len(self._market_tickers)}"
+                )
+
+            return success
+
+        except Exception as e:
+            logger.error(f"Error subscribing to additional markets: {e}", exc_info=True)
+            self._metrics.errors += 1
+            return False
+
+    async def unsubscribe_markets(self, tickers: List[str]) -> bool:
+        """
+        Unsubscribe from markets on the existing connection.
+
+        Used by Event Lifecycle Discovery mode to remove markets when
+        they are determined (outcome resolved).
+
+        Args:
+            tickers: List of market tickers to unsubscribe from
+
+        Returns:
+            True if unsubscription was successful, False otherwise
+        """
+        if not self._running:
+            logger.warning("Cannot unsubscribe from markets - integration not running")
+            return False
+
+        if not tickers:
+            return True
+
+        # Filter to only tickers we're subscribed to
+        subscribed_tickers = [t for t in tickers if t in self._market_tickers]
+        if not subscribed_tickers:
+            logger.debug("None of the requested tickers are currently subscribed")
+            return True
+
+        try:
+            # Use the underlying client method
+            success = await self._client.unsubscribe_markets(subscribed_tickers)
+
+            if success:
+                # Update our local tracking
+                for ticker in subscribed_tickers:
+                    if ticker in self._market_tickers:
+                        self._market_tickers.remove(ticker)
+                    self._metrics.markets_connected.discard(ticker)
+
+                logger.info(
+                    f"Unsubscribed from {len(subscribed_tickers)} markets. "
+                    f"Remaining: {len(self._market_tickers)}"
+                )
+
+            return success
+
+        except Exception as e:
+            logger.error(f"Error unsubscribing from markets: {e}", exc_info=True)
+            self._metrics.errors += 1
+            return False
+
+    def get_subscribed_market_count(self) -> int:
+        """
+        Get the current number of subscribed markets.
+
+        Returns:
+            Number of markets currently subscribed to
+        """
+        return len(self._market_tickers)
+
+    def get_subscribed_markets(self) -> List[str]:
+        """
+        Get the list of currently subscribed markets.
+
+        Returns:
+            List of market tickers currently subscribed to
+        """
+        return list(self._market_tickers)
+
+    async def subscribe_market(self, ticker: str) -> bool:
+        """
+        Subscribe to a single market (wrapper for lifecycle callbacks).
+
+        Args:
+            ticker: Market ticker to subscribe to
+
+        Returns:
+            True if subscription was successful, False otherwise
+        """
+        return await self.subscribe_additional_markets([ticker])
+
+    async def unsubscribe_market(self, ticker: str) -> bool:
+        """
+        Unsubscribe from a single market (wrapper for lifecycle callbacks).
+
+        Args:
+            ticker: Market ticker to unsubscribe from
+
+        Returns:
+            True if unsubscription was successful, False otherwise
+        """
+        return await self.unsubscribe_markets([ticker])

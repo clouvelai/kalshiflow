@@ -34,8 +34,8 @@ kill_port() {
 
 # Parse arguments
 ENVIRONMENT="${1:-paper}"
-MODE="${2:-discovery}"  # Use discovery mode by default
-MARKET_LIMIT="${3:-10}"  # Limit to 10 markets
+MODE="${2:-lifecycle}"  # Use lifecycle mode by default (market discovery via lifecycle events)
+MARKET_LIMIT="${3:-1000}"  # Orderbook WS limit is 1000 markets
 
 # Port configuration - SINGLE SOURCE OF TRUTH
 BACKEND_PORT=8005  # V3 always uses 8005
@@ -78,26 +78,27 @@ if [ "$ENVIRONMENT" = "paper" ]; then
     export V3_TRADING_MAX_ORDERS="100"
     export V3_TRADING_MAX_POSITION_SIZE="1000"
 
-    # Whale follower strategy (default for paper mode)
-    export V3_TRADING_STRATEGY="whale_follower"
-    export V3_ENABLE_WHALE_DETECTION="true"
+    # RLM (Reverse Line Movement) strategy - validated +17.38% edge
+    export V3_TRADING_STRATEGY="rlm_no"
+    export V3_ENABLE_WHALE_DETECTION="false"  # Disabled - RLM is primary strategy
 
-    # Whale detection thresholds
-    export WHALE_QUEUE_SIZE="10"
-    export WHALE_WINDOW_MINUTES="5"
-    export WHALE_MIN_SIZE_CENTS="1000"  # $10 minimum (for testing)
+    # RLM signal thresholds
+    export RLM_YES_THRESHOLD="0.65"      # >65% YES trades triggers signal
+    export RLM_MIN_TRADES="15"           # Minimum trades before evaluation
+    export RLM_MIN_PRICE_DROP="0"        # Minimum price drop (0 = any drop)
+    export RLM_CONTRACTS="100"           # Position size per signal
 
-    # Rate limiting for whale following
-    export WHALE_MAX_TRADES_PER_MINUTE="20"
-    export WHALE_TOKEN_REFILL_SECONDS="3"  # 60/20 = 3 seconds per token
+    # Rate limiting for RLM execution
+    export RLM_MAX_SIGNALS_PER_MINUTE="10"
+    export RLM_TOKEN_REFILL_SECONDS="6"  # 60/10 = 6 seconds per token
 
     # Allow multiple positions/orders per market (for testing)
     export V3_ALLOW_MULTIPLE_POSITIONS="true"
     export V3_ALLOW_MULTIPLE_ORDERS="true"
 
     echo -e "${GREEN}✓ Trading client enabled (paper mode)${NC}"
-    echo -e "${GREEN}✓ Whale follower strategy active${NC}"
-    echo -e "${GREEN}✓ Whale detection enabled (min \$10)${NC}"
+    echo -e "${GREEN}✓ RLM strategy active (+17.38% validated edge)${NC}"
+    echo -e "${GREEN}✓ Lifecycle mode for market discovery${NC}"
 else
     export V3_ENABLE_TRADING_CLIENT="false"
     export V3_TRADING_STRATEGY="hold"

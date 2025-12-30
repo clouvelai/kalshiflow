@@ -29,6 +29,7 @@ if TYPE_CHECKING:
     from ..services.market_price_syncer import MarketPriceSyncer
     from ..services.trading_state_syncer import TradingStateSyncer
     from ..services.yes_80_90_service import Yes8090Service
+    from ..services.rlm_service import RLMService
     from ..config.environment import V3Config
 
 logger = logging.getLogger("kalshiflow_rl.traderv3.core.health_monitor")
@@ -53,6 +54,7 @@ NON_CRITICAL_COMPONENTS: Set[str] = {
     "trading_state_syncer",
     "whale_execution_service",
     "yes_80_90_service",
+    "rlm_service",
 }
 
 
@@ -121,6 +123,7 @@ class V3HealthMonitor:
         self._trading_state_syncer = None  # Set via setter during startup
         self._whale_execution_service = whale_execution_service
         self._yes_80_90_service = yes_80_90_service
+        self._rlm_service: Optional['RLMService'] = None  # Set via setter during lifecycle startup
 
         # Health monitoring state
         self._monitoring_task: Optional[asyncio.Task] = None
@@ -157,6 +160,10 @@ class V3HealthMonitor:
     def set_yes_80_90_service(self, service: Optional['Yes8090Service']) -> None:
         """Set YES 80-90c service reference."""
         self._yes_80_90_service = service
+
+    def set_rlm_service(self, service: Optional['RLMService']) -> None:
+        """Set RLM service reference (created during lifecycle startup)."""
+        self._rlm_service = service
 
     async def start(self) -> None:
         """Start health monitoring."""

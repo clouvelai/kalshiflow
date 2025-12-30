@@ -46,6 +46,7 @@ class TradingStrategy(Enum):
     PAPER_TEST = "paper_test"  # Simple test trades for paper mode
     RL_MODEL = "rl_model"  # Use trained RL model
     YES_80_90 = "yes_80_90"  # Buy YES at 80-90c (validated +5.1% edge)
+    RLM_NO = "rlm_no"  # Reverse Line Movement NO (validated +17.38% edge)
     CUSTOM = "custom"  # Custom strategy implementation
 
 

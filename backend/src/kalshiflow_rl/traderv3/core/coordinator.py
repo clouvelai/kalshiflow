@@ -16,9 +16,14 @@ if TYPE_CHECKING:
     from ..clients.position_listener import PositionListener
     from ..clients.market_ticker_listener import MarketTickerListener
     from ..clients.fill_listener import FillListener
+    from ..clients.lifecycle_client import LifecycleClient
+    from ..clients.lifecycle_integration import V3LifecycleIntegration
     from ..services.whale_tracker import WhaleTracker
     from ..services.market_price_syncer import MarketPriceSyncer
     from ..services.trading_state_syncer import TradingStateSyncer
+    from ..services.event_lifecycle_service import EventLifecycleService
+    from ..services.tracked_markets_syncer import TrackedMarketsSyncer
+    from ..state.tracked_markets import TrackedMarketsState
 
 from .state_machine import TraderStateMachine as V3StateMachine, TraderState as V3State
 from .event_bus import EventBus
@@ -32,6 +37,7 @@ from ..config.environment import V3Config
 from ..services.trading_decision_service import TradingDecisionService, TradingStrategy
 from ..services.whale_execution_service import WhaleExecutionService
 from ..services.yes_80_90_service import Yes8090Service
+from ..services.rlm_service import RLMService
 
 logger = logging.getLogger("kalshiflow_rl.traderv3.core.coordinator")
 
@@ -131,8 +137,8 @@ class V3Coordinator:
             self._websocket_manager.set_state_container(self._state_container)
 
             # Initialize trading flow orchestrator only for cycle-based strategies
-            # Event-driven strategies (WHALE_FOLLOWER, YES_80_90) use dedicated services instead
-            event_driven_strategies = {TradingStrategy.WHALE_FOLLOWER, TradingStrategy.YES_80_90, TradingStrategy.HOLD}
+            # Event-driven strategies (WHALE_FOLLOWER, YES_80_90, RLM_NO) use dedicated services instead
+            event_driven_strategies = {TradingStrategy.WHALE_FOLLOWER, TradingStrategy.YES_80_90, TradingStrategy.RLM_NO, TradingStrategy.HOLD}
             if strategy not in event_driven_strategies:
                 self._trading_orchestrator = TradingFlowOrchestrator(
                     config=config,
@@ -191,6 +197,9 @@ class V3Coordinator:
                 self._health_monitor.set_yes_80_90_service(self._yes_80_90_service)
                 logger.info("Yes8090Service initialized for YES at 80-90c trading strategy")
 
+        # RLM service (initialized in _connect_lifecycle when TrackedMarketsState is available)
+        self._rlm_service: Optional[RLMService] = None
+
         # Position listener for real-time position updates (initialized later if trading client available)
         self._position_listener: Optional['PositionListener'] = None
 
@@ -205,6 +214,13 @@ class V3Coordinator:
 
         # Fill listener for real-time order fill notifications
         self._fill_listener: Optional['FillListener'] = None
+
+        # Lifecycle mode components (initialized when market_mode == "lifecycle")
+        self._lifecycle_client: Optional['LifecycleClient'] = None
+        self._lifecycle_integration: Optional['V3LifecycleIntegration'] = None
+        self._tracked_markets_state: Optional['TrackedMarketsState'] = None
+        self._event_lifecycle_service: Optional['EventLifecycleService'] = None
+        self._lifecycle_syncer: Optional['TrackedMarketsSyncer'] = None
 
         self._started_at: Optional[float] = None
         self._running = False
@@ -271,6 +287,9 @@ class V3Coordinator:
         """Establish all external connections."""
         # Orderbook connection
         await self._connect_orderbook()
+
+        # Lifecycle connection (for lifecycle mode market discovery)
+        await self._connect_lifecycle()
 
         # Trades connection (if configured - optional, for whale detection)
         if self._trades_integration:
@@ -455,6 +474,165 @@ class V3Coordinator:
             logger.info(f"Trades data flowing: {metrics['trades_received']} trades received")
         else:
             logger.info("No trades received yet - this is normal during quiet market periods")
+
+    async def _connect_lifecycle(self) -> None:
+        """
+        Connect to lifecycle WebSocket for market discovery.
+
+        Only active when market_mode == "lifecycle". Creates and wires:
+        - TrackedMarketsState for market state
+        - LifecycleClient for lifecycle WebSocket
+        - V3LifecycleIntegration for EventBus integration
+        - EventLifecycleService for event processing
+        - TrackedMarketsSyncer for REST price updates
+        """
+        if self._config.market_mode != "lifecycle":
+            logger.debug(f"Skipping lifecycle connection ({self._config.market_mode} mode)")
+            return
+
+        logger.info("Starting lifecycle mode...")
+
+        try:
+            # Import here to avoid circular imports
+            from ..clients.lifecycle_client import LifecycleClient
+            from ..clients.lifecycle_integration import V3LifecycleIntegration
+            from ..services.event_lifecycle_service import EventLifecycleService
+            from ..services.tracked_markets_syncer import TrackedMarketsSyncer
+            from ..state.tracked_markets import TrackedMarketsState
+            from kalshiflow.auth import KalshiAuth
+            from ...data.database import rl_db
+
+            # 1. Create TrackedMarketsState
+            self._tracked_markets_state = TrackedMarketsState(
+                max_markets=self._config.lifecycle_max_markets
+            )
+
+            # 1a. Load tracked markets from database (startup recovery)
+            db_markets = await rl_db.get_tracked_markets(include_settled=False)
+            recovered_tickers = []
+            if db_markets:
+                loaded = await self._tracked_markets_state.load_from_db(db_markets)
+                # Track which markets were recovered for orderbook subscription
+                recovered_tickers = [m['market_ticker'] for m in db_markets if m.get('status') != 'settled']
+                logger.info(f"Recovered {loaded} tracked markets from database")
+
+            # 2. Create KalshiAuth for lifecycle WebSocket
+            auth = KalshiAuth.from_env()
+
+            # 3. Create LifecycleClient
+            self._lifecycle_client = LifecycleClient(
+                ws_url=self._config.ws_url,
+                auth=auth,
+                base_reconnect_delay=5.0,
+            )
+
+            # 4. Create V3LifecycleIntegration
+            self._lifecycle_integration = V3LifecycleIntegration(
+                lifecycle_client=self._lifecycle_client,
+                event_bus=self._event_bus,
+            )
+
+            # 5. Create EventLifecycleService
+            self._event_lifecycle_service = EventLifecycleService(
+                event_bus=self._event_bus,
+                tracked_markets=self._tracked_markets_state,
+                trading_client=self._trading_client_integration,
+                db=rl_db,
+                categories=self._config.lifecycle_categories,
+            )
+
+            # 6. Wire orderbook callbacks (for dynamic subscription)
+            self._event_lifecycle_service.set_subscribe_callback(
+                self._orderbook_integration.subscribe_market
+            )
+            self._event_lifecycle_service.set_unsubscribe_callback(
+                self._orderbook_integration.unsubscribe_market
+            )
+
+            # 7. Set TrackedMarketsState on WebSocketManager
+            self._websocket_manager.set_tracked_markets_state(self._tracked_markets_state)
+
+            # 8. Start lifecycle integration
+            await self._lifecycle_integration.start()
+
+            # 9. Wait for connection
+            connected = await self._lifecycle_integration.wait_for_connection(timeout=30.0)
+            if not connected:
+                logger.warning("Lifecycle connection failed - lifecycle mode degraded")
+                await self._event_bus.emit_system_activity(
+                    activity_type="connection",
+                    message="Lifecycle WebSocket connection failed - running in degraded mode",
+                    metadata={"degraded": True, "feature": "lifecycle", "severity": "warning"}
+                )
+                return
+
+            # 10. Start EventLifecycleService
+            await self._event_lifecycle_service.start()
+
+            # 10a. Subscribe to orderbooks for recovered markets
+            if recovered_tickers:
+                subscribed = 0
+                for ticker in recovered_tickers:
+                    try:
+                        await self._orderbook_integration.subscribe_market(ticker)
+                        subscribed += 1
+                    except Exception as e:
+                        logger.warning(f"Failed to subscribe recovered market {ticker}: {e}")
+                logger.info(f"Subscribed to {subscribed}/{len(recovered_tickers)} recovered market orderbooks")
+
+            # 10b. Initialize RLMService (if strategy is RLM_NO and trading available)
+            if self._trading_service and self._config.trading_strategy == TradingStrategy.RLM_NO:
+                self._rlm_service = RLMService(
+                    event_bus=self._event_bus,
+                    trading_service=self._trading_service,
+                    state_container=self._state_container,
+                    tracked_markets_state=self._tracked_markets_state,
+                    yes_threshold=self._config.rlm_yes_threshold,
+                    min_trades=self._config.rlm_min_trades,
+                    min_price_drop=self._config.rlm_min_price_drop,
+                    contracts_per_trade=self._config.rlm_contracts,
+                    max_concurrent=self._config.rlm_max_concurrent,
+                    allow_reentry=self._config.rlm_allow_reentry,
+                    orderbook_timeout=self._config.rlm_orderbook_timeout,
+                    tight_spread=self._config.rlm_tight_spread,
+                    wide_spread=self._config.rlm_wide_spread,
+                )
+                # Register with health monitor for health tracking
+                self._health_monitor.set_rlm_service(self._rlm_service)
+                # Register with websocket manager for real-time RLM state broadcasting
+                self._websocket_manager.set_rlm_service(self._rlm_service)
+                logger.info("RLMService initialized for RLM_NO strategy in lifecycle mode")
+
+            # 11. Start TrackedMarketsSyncer (for REST price/volume updates)
+            self._lifecycle_syncer = TrackedMarketsSyncer(
+                trading_client=self._trading_client_integration,
+                tracked_markets_state=self._tracked_markets_state,
+                event_bus=self._event_bus,
+                sync_interval=self._config.lifecycle_sync_interval,
+            )
+            await self._lifecycle_syncer.start()
+
+            logger.info(
+                f"Lifecycle mode active - tracking categories: {', '.join(self._config.lifecycle_categories)}"
+            )
+            await self._event_bus.emit_system_activity(
+                activity_type="connection",
+                message=f"Lifecycle mode active - tracking {', '.join(self._config.lifecycle_categories)}",
+                metadata={
+                    "feature": "lifecycle",
+                    "categories": self._config.lifecycle_categories,
+                    "max_markets": self._config.lifecycle_max_markets,
+                    "severity": "info"
+                }
+            )
+
+        except Exception as e:
+            logger.error(f"Failed to start lifecycle mode: {e}")
+            await self._event_bus.emit_system_activity(
+                activity_type="connection",
+                message=f"Lifecycle mode failed: {str(e)}",
+                metadata={"error": str(e), "severity": "error"}
+            )
 
     async def _connect_trading_client(self) -> None:
         """Connect to trading API."""
@@ -1078,6 +1256,20 @@ class V3Coordinator:
                 }
             )
 
+        # Start RLM service if configured (requires lifecycle mode)
+        if self._rlm_service:
+            await self._rlm_service.start()
+            logger.info("RLMService started - monitoring public trades for RLM signals")
+            await self._event_bus.emit_system_activity(
+                activity_type="strategy_active",
+                message="RLM NO strategy active - monitoring for reverse line movement",
+                metadata={
+                    "strategy": "RLM_NO",
+                    "config": self._rlm_service.get_stats().get("config", {}),
+                    "severity": "info"
+                }
+            )
+
         # Emit ready status
         status_msg = f"System ready with {len(self._config.market_tickers)} markets"
         if self._trading_client_integration:
@@ -1200,9 +1392,17 @@ class V3Coordinator:
                 total_steps += 1
             if self._yes_80_90_service:
                 total_steps += 1
+            if self._rlm_service:
+                total_steps += 1
             if self._whale_tracker:
                 total_steps += 1
             if self._trades_integration:
+                total_steps += 1
+            if self._lifecycle_syncer:
+                total_steps += 1
+            if self._event_lifecycle_service:
+                total_steps += 1
+            if self._lifecycle_integration:
                 total_steps += 1
 
             step = 1
@@ -1211,6 +1411,12 @@ class V3Coordinator:
             if self._yes_80_90_service:
                 logger.info(f"{step}/{total_steps} Stopping YES 80-90c Service...")
                 await self._yes_80_90_service.stop()
+                step += 1
+
+            # Stop RLM service (trading strategy)
+            if self._rlm_service:
+                logger.info(f"{step}/{total_steps} Stopping RLM Service...")
+                await self._rlm_service.stop()
                 step += 1
 
             # Stop whale execution service (depends on whale tracker)
@@ -1229,6 +1435,22 @@ class V3Coordinator:
             if self._trades_integration:
                 logger.info(f"{step}/{total_steps} Stopping Trades Integration...")
                 await self._trades_integration.stop()
+                step += 1
+
+            # Stop lifecycle components (in reverse order of startup)
+            if self._lifecycle_syncer:
+                logger.info(f"{step}/{total_steps} Stopping Lifecycle Syncer...")
+                await self._lifecycle_syncer.stop()
+                step += 1
+
+            if self._event_lifecycle_service:
+                logger.info(f"{step}/{total_steps} Stopping Event Lifecycle Service...")
+                await self._event_lifecycle_service.stop()
+                step += 1
+
+            if self._lifecycle_integration:
+                logger.info(f"{step}/{total_steps} Stopping Lifecycle Integration...")
+                await self._lifecycle_integration.stop()
                 step += 1
 
             # Stop position listener (before trading client)
@@ -1333,6 +1555,10 @@ class V3Coordinator:
         # Add whale execution service if configured
         if self._whale_execution_service:
             components["whale_execution_service"] = self._whale_execution_service.get_stats()
+
+        # Add RLM service if configured
+        if self._rlm_service:
+            components["rlm_service"] = self._rlm_service.get_stats()
 
         # Add position listener if configured
         if self._position_listener:

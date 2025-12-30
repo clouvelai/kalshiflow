@@ -4,6 +4,100 @@
 > Maintained by: Quant Agent | Last updated: 2025-12-30 (Session: H123 Production Validation)
 > Source: Research validated against ~1.7M trades, ~72k settled markets
 
+## CRITICAL UPDATE - Session H123 Category Validation (2025-12-30)
+
+### RLM GENERALIZES BEYOND SPORTS
+
+After validating H123 RLM on all market categories, we found **RLM is NOT sports-specific**:
+
+#### Category Validation Results
+
+| Category Group | RLM Signals | Edge | Improvement | Buckets | P-value | VERDICT |
+|----------------|-------------|------|-------------|---------|---------|---------|
+| **SPORTS** | 1,620 | +17.9% | +13.9% | 16/16 | 0.0000 | **VALID** |
+| **Crypto** | 94 | +12.8% | +8.6% | 7/8 | 0.0000 | **VALID** |
+| **Entertainment** | 76 | +14.0% | +7.8% | 8/9 | 0.0000 | **VALID** |
+| **Media_Mentions** | 90 | +24.1% | +21.4% | 13/13 | 0.0000 | **VALID (STRONGEST!)** |
+| Politics | 42 | +10.1% | +8.2% | 6/7 | 0.0626 | WEAK_EDGE |
+| Weather | 22 | +12.9% | +3.6% | 3/3 | 1.0000 | NO_EDGE |
+| Economics | 12 | N/A | N/A | N/A | N/A | INSUFFICIENT_DATA |
+
+**Key Finding**: Media_Mentions shows the STRONGEST edge (+24.1%, +21.4% improvement)! This makes sense because:
+- High retail participation (people betting on what celebrities say)
+- Classic RLM dynamic: public bets one way, price moves opposite
+- Smart money overpowering retail sentiment
+
+#### Category Filtering Guidance for V3 Trader
+
+**INCLUDE these categories:**
+1. **Sports** (KXMVE*, KXNFL*, KXNBA*, KXNHL*, KXMLB*, KXNCAAF*, KXNCAAMB*, KXEPL*, etc.)
+2. **Crypto** (KXBTC*, KXETH*, KXDOGE*, KXXRP*)
+3. **Entertainment** (KXNETFLIX*, KXSPOTIFY*, KXGG*, KXBILLBOARD*, KXRANK*)
+4. **Media_Mentions** (KXMRBEAST*, KXCOLBERT*, KXSNL*, KXLATENIGHT*, KXSURVIVOR*, KXALTMAN*, KXSWIFT*, KXNCAAMENTION*, etc.)
+
+**EXCLUDE these categories:**
+1. **Weather** (KXHIGH*, KXRAIN*, KXSNOW*) - Not statistically significant
+2. **Economics** (KXNASDAQ*, FED*, KXCPI*, KXPAYROLL*) - Insufficient data
+3. **Politics** (KXTRUMP*, KXAPR*, KXPRES*) - Weak edge, p=0.0626
+
+#### Implementation Note
+
+Add category filtering to the market lifecycle tracker:
+```python
+# Categories to INCLUDE for RLM strategy
+RLM_VALID_CATEGORIES = [
+    # Sports (highest volume)
+    r'^KXMVE', r'^KXNFL', r'^KXNBA', r'^KXNHL', r'^KXMLB',
+    r'^KXNCAAF', r'^KXNCAAMB', r'^KXNCAAWB', r'^KXEPL', r'^KXLALIGA',
+    r'^KXSERIEA', r'^KXBUNDESLIGA', r'^KXUCL', r'^KXUEL', r'^KXLIGUE',
+    # Crypto (validated edge)
+    r'^KXBTC', r'^KXETH', r'^KXDOGE', r'^KXXRP',
+    # Entertainment (validated edge)
+    r'^KXNETFLIX', r'^KXSPOTIFY', r'^KXGG', r'^KXBILLBOARD', r'^KXRANK',
+    r'^KXRT', r'^KXSTRM', r'^KXSTOCKX',
+    # Media_Mentions (STRONGEST edge!)
+    r'^KXMRBEAST', r'^KXCOLBERT', r'^KXSNL', r'^KXLATENIGHT',
+    r'^KXSURVIVOR', r'^KXALTMAN', r'^KXSWIFT', r'^KXMENTION',
+    r'^KXFEDMENTION', r'^KXNCAAMENTION', r'^KXNBAMENTION',
+]
+
+# Categories to EXCLUDE
+RLM_EXCLUDED_CATEGORIES = [
+    r'^KXHIGH', r'^KXRAIN', r'^KXSNOW',  # Weather
+    r'^KXNASDAQ', r'^FED', r'^KXCPI', r'^KXPAYROLL',  # Economics
+    r'^KXTRUMP', r'^KXAPR', r'^KXPRES',  # Politics (weak edge)
+]
+```
+
+---
+
+## CRITICAL UPDATE - LSD Session 002 Production Validation (2025-12-30)
+
+### LSD-002 Strategies Downgraded to WEAK_EDGE
+
+Production validation with H123-level rigor found that the 3 "independent" strategies from LSD Session 002 **do NOT pass the strict 80% bucket ratio threshold**.
+
+| Strategy | Markets | Raw Edge | Improvement | Buckets | VERDICT |
+|----------|---------|----------|-------------|---------|---------|
+| H-LSD-207 (Dollar-Weighted Direction) | 2,063 | +12.05% | +7.69% | 76% (13/17) | **WEAK_EDGE** |
+| H-LSD-211 (Conviction Ratio NO) | 2,719 | +11.75% | +7.46% | 60% (12/20) | **WEAK_EDGE** |
+| H-LSD-209 (Size Gradient) | 1,859 | +10.21% | +6.22% | 61% (11/18) | **WEAK_EDGE** |
+
+**Why WEAK_EDGE?**
+- All 3 passed 5/6 strict criteria (p-value, CI, temporal stability, OOS, markets)
+- All 3 FAILED the bucket ratio test: showing negative improvement at low NO prices (0-40c)
+- This suggests they may be partial price proxies - selecting markets with higher NO prices
+
+**Recommendation**: MONITOR as potential secondary signals. Do NOT implement standalone.
+- Use as confirmation when RLM also fires
+- Wait for more data to confirm they're not price proxies
+
+**Comparison to H123 RLM**:
+- H123 RLM: 94.1% bucket ratio (16/17) - **VALIDATED**
+- LSD-002 strategies: 60-76% bucket ratio - **WEAK_EDGE**
+
+---
+
 ## CRITICAL UPDATE - Session H123 Production Validation (2025-12-30)
 
 ### TWO VALIDATED STRATEGIES

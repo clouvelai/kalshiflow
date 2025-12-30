@@ -9,6 +9,7 @@ import TopTradesList from './components/TopTradesList';
 import FAQ from './components/FAQ';
 import RLTraderDashboard from './components/RLTraderDashboard';
 import V3TraderConsole from './components/V3TraderConsole';
+import { LifecycleDiscovery } from './components/lifecycle';
 
 const MainDashboard = () => {
   const {
@@ -89,9 +90,13 @@ function App() {
           path="/v3-trader" 
           element={<V3TraderConsole />} 
         />
-        <Route 
-          path="/v3" 
-          element={<V3TraderConsole />} 
+        <Route
+          path="/v3"
+          element={<V3TraderConsole />}
+        />
+        <Route
+          path="/lifecycle"
+          element={<LifecycleDiscovery />}
         />
       </Routes>
     </Router>

@@ -971,14 +971,148 @@ class OrderbookClient:
     def get_orderbook_state(self, market_ticker: str) -> Optional[SharedOrderbookState]:
         """
         Get orderbook state for a specific market.
-        
+
         Args:
             market_ticker: Market ticker to get state for
-            
+
         Returns:
             SharedOrderbookState for the market or None if not found
         """
         return self._orderbook_states.get(market_ticker)
+
+    # ============================================================
+    # Dynamic Market Subscription (Event Lifecycle Discovery)
+    # ============================================================
+
+    async def subscribe_additional_markets(self, new_tickers: List[str]) -> bool:
+        """
+        Subscribe to additional markets on an existing WebSocket connection.
+
+        Used by Event Lifecycle Discovery mode to dynamically add markets
+        after the initial connection is established. Sends a subscribe command
+        and initializes state for the new markets.
+
+        Args:
+            new_tickers: List of market tickers to subscribe to
+
+        Returns:
+            True if subscription was sent successfully, False otherwise
+        """
+        if not self._running or not self._websocket:
+            logger.warning("Cannot subscribe to additional markets - client not running or not connected")
+            return False
+
+        if not new_tickers:
+            logger.warning("No new tickers provided for subscription")
+            return False
+
+        # Filter out already subscribed tickers
+        tickers_to_add = [t for t in new_tickers if t not in self.market_tickers]
+        if not tickers_to_add:
+            logger.debug("All requested tickers already subscribed")
+            return True
+
+        try:
+            # Initialize orderbook states for new markets BEFORE subscribing
+            for ticker in tickers_to_add:
+                if ticker not in self._orderbook_states:
+                    self._orderbook_states[ticker] = await get_shared_orderbook_state(ticker)
+                    self._last_sequences[ticker] = 0
+                    logger.debug(f"Initialized state for new market: {ticker}")
+
+            # Send subscribe message for new markets
+            subscription_message = {
+                "id": 2,  # Use different ID than initial subscription
+                "cmd": "subscribe",
+                "params": {
+                    "channels": ["orderbook_delta"],
+                    "market_tickers": tickers_to_add
+                }
+            }
+
+            logger.info(f"Subscribing to {len(tickers_to_add)} additional markets: {', '.join(tickers_to_add)}")
+            await self._websocket.send(json.dumps(subscription_message))
+
+            # Add to our tracked tickers
+            self.market_tickers.extend(tickers_to_add)
+
+            logger.info(f"Successfully subscribed to additional markets. Total: {len(self.market_tickers)}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Error subscribing to additional markets: {e}", exc_info=True)
+            # Clean up partially added state
+            for ticker in tickers_to_add:
+                if ticker not in self.market_tickers:
+                    self._orderbook_states.pop(ticker, None)
+                    self._last_sequences.pop(ticker, None)
+            return False
+
+    async def unsubscribe_markets(self, tickers: List[str]) -> bool:
+        """
+        Unsubscribe from markets on an existing WebSocket connection.
+
+        Used by Event Lifecycle Discovery mode to remove markets when they
+        are determined (outcome resolved). Sends an unsubscribe command and
+        cleans up state.
+
+        Args:
+            tickers: List of market tickers to unsubscribe from
+
+        Returns:
+            True if unsubscription was sent successfully, False otherwise
+        """
+        if not self._running or not self._websocket:
+            logger.warning("Cannot unsubscribe from markets - client not running or not connected")
+            return False
+
+        if not tickers:
+            logger.warning("No tickers provided for unsubscription")
+            return False
+
+        # Filter to only tickers we're actually subscribed to
+        tickers_to_remove = [t for t in tickers if t in self.market_tickers]
+        if not tickers_to_remove:
+            logger.debug("None of the requested tickers are currently subscribed")
+            return True
+
+        try:
+            # Send unsubscribe message
+            unsubscription_message = {
+                "id": 3,  # Use different ID than subscribe
+                "cmd": "unsubscribe",
+                "params": {
+                    "channels": ["orderbook_delta"],
+                    "market_tickers": tickers_to_remove
+                }
+            }
+
+            logger.info(f"Unsubscribing from {len(tickers_to_remove)} markets: {', '.join(tickers_to_remove)}")
+            await self._websocket.send(json.dumps(unsubscription_message))
+
+            # Remove from tracked tickers and clean up state
+            for ticker in tickers_to_remove:
+                if ticker in self.market_tickers:
+                    self.market_tickers.remove(ticker)
+                self._orderbook_states.pop(ticker, None)
+                self._last_sequences.pop(ticker, None)
+                self._snapshot_received_markets.discard(ticker)
+
+            logger.info(f"Successfully unsubscribed from markets. Remaining: {len(self.market_tickers)}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Error unsubscribing from markets: {e}", exc_info=True)
+            return False
+
+    def get_subscribed_market_count(self) -> int:
+        """
+        Get the current number of subscribed markets.
+
+        Returns:
+            Number of markets currently subscribed to
+        """
+        return len(self.market_tickers)
 
 
 # Global orderbook client instance - uses configured market tickers

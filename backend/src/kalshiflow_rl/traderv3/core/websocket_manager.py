@@ -17,7 +17,7 @@ import weakref
 
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
-from .event_bus import EventBus, EventType, StateTransitionEvent, TraderStatusEvent, WhaleQueueEvent
+from .event_bus import EventBus, EventType, StateTransitionEvent, TraderStatusEvent, WhaleQueueEvent, RLMMarketUpdateEvent, RLMTradeArrivedEvent
 
 # Import for type hints only to avoid circular imports
 from typing import TYPE_CHECKING
@@ -25,6 +25,8 @@ if TYPE_CHECKING:
     from ..services.whale_tracker import WhaleTracker
     from ..services.trading_decision_service import TradingDecisionService
     from ..services.whale_execution_service import WhaleExecutionService
+    from ..services.rlm_service import RLMService
+    from ..state.tracked_markets import TrackedMarketsState
     from .state_container import StateContainer
 
 logger = logging.getLogger("kalshiflow_rl.traderv3.websocket_manager")
@@ -71,7 +73,9 @@ class V3WebSocketManager:
         self._state_container: Optional['StateContainer'] = None
         self._trading_service: Optional['TradingDecisionService'] = None
         self._whale_execution_service: Optional['WhaleExecutionService'] = None
+        self._rlm_service: Optional['RLMService'] = None  # Set via set_rlm_service()
         self._market_price_syncer = None  # Set via set_market_price_syncer()
+        self._tracked_markets_state: Optional['TrackedMarketsState'] = None  # Set via set_tracked_markets_state()
         self._clients: Dict[str, WebSocketClient] = {}
         self._client_counter = 0
         self._started_at: Optional[float] = None
@@ -160,6 +164,32 @@ class V3WebSocketManager:
         self._market_price_syncer = market_price_syncer
         logger.debug("MarketPriceSyncer set on WebSocket manager")
 
+    def set_tracked_markets_state(self, tracked_markets_state: 'TrackedMarketsState') -> None:
+        """
+        Set the tracked markets state for lifecycle discovery mode.
+
+        This enables sending tracked markets snapshots to new clients
+        and broadcasting lifecycle events (new markets tracked, status changes).
+
+        Args:
+            tracked_markets_state: TrackedMarketsState instance
+        """
+        self._tracked_markets_state = tracked_markets_state
+        logger.info("TrackedMarketsState set on WebSocket manager")
+
+    def set_rlm_service(self, rlm_service: 'RLMService') -> None:
+        """
+        Set the RLM service for sending RLM state snapshots.
+
+        This enables sending RLM market states to new clients when they
+        connect, providing immediate visibility into trade direction data.
+
+        Args:
+            rlm_service: RLMService instance
+        """
+        self._rlm_service = rlm_service
+        logger.info("RLMService set on WebSocket manager")
+
     async def start(self) -> None:
         """Start the WebSocket manager."""
         if self._running:
@@ -174,6 +204,9 @@ class V3WebSocketManager:
             self._event_bus.subscribe(EventType.SYSTEM_ACTIVITY, self._handle_system_activity)
             self._event_bus.subscribe(EventType.TRADER_STATUS, self._handle_trader_status)
             self._event_bus.subscribe(EventType.WHALE_QUEUE_UPDATED, self._handle_whale_queue_update)
+            # RLM (Reverse Line Movement) events
+            await self._event_bus.subscribe_to_rlm_market_update(self._handle_rlm_market_update)
+            await self._event_bus.subscribe_to_rlm_trade_arrived(self._handle_rlm_trade_arrived)
             logger.info("Subscribed to event bus for real-time updates")
         
         # Start periodic tasks
@@ -388,6 +421,14 @@ class V3WebSocketManager:
                         logger.info(f"Sent immediate trading state to client {client_id}: {trading_summary['position_count']} positions, {trading_summary.get('settlements_count', 0)} settlements")
                 except Exception as e:
                     logger.warning(f"Could not send trading state to client {client_id}: {e}")
+
+            # Send tracked markets snapshot if in lifecycle discovery mode
+            if self._tracked_markets_state and client_id in self._clients:
+                await self._send_tracked_markets_snapshot(client_id)
+
+            # Send RLM market states snapshot if RLM service is available
+            if self._rlm_service and client_id in self._clients:
+                await self._send_rlm_states_snapshot(client_id)
 
             # Now handle incoming messages
             # (Current state is already included in the historical transitions replay)
@@ -661,6 +702,40 @@ class V3WebSocketManager:
             "timestamp": time.strftime("%H:%M:%S", time.localtime(event.timestamp)),
         })
 
+    async def _handle_rlm_market_update(self, event: RLMMarketUpdateEvent) -> None:
+        """
+        Handle RLM market state update events from event bus.
+
+        Broadcasts market trade state (YES/NO counts, price movement) to
+        all connected frontend clients for the RLM strategy UI.
+
+        Args:
+            event: RLMMarketUpdateEvent containing market state
+        """
+        await self.broadcast_message("rlm_market_state", {
+            "market_ticker": event.market_ticker,
+            **event.state,
+            "timestamp": time.strftime("%H:%M:%S", time.localtime(event.timestamp)),
+        })
+
+    async def _handle_rlm_trade_arrived(self, event: RLMTradeArrivedEvent) -> None:
+        """
+        Handle RLM trade arrived events from event bus.
+
+        Broadcasts lightweight trade notification to all connected clients,
+        triggering pulse/glow animations on the corresponding market card.
+
+        Args:
+            event: RLMTradeArrivedEvent containing trade details
+        """
+        await self.broadcast_message("rlm_trade_arrived", {
+            "market_ticker": event.market_ticker,
+            "side": event.side,
+            "count": event.count,
+            "price_cents": event.price_cents,
+            "timestamp": time.strftime("%H:%M:%S", time.localtime(event.timestamp)),
+        })
+
     async def _handle_client_message(self, client_id: str, message: str) -> None:
         """
         Handle message from WebSocket client.
@@ -757,10 +832,10 @@ class V3WebSocketManager:
         while self._running:
             try:
                 await asyncio.sleep(self._ping_interval)
-                
+
                 if not self._clients:
                     continue
-                
+
                 # Send ping to all clients
                 ping_tasks = []
                 for client_id in list(self._clients.keys()):
@@ -768,18 +843,160 @@ class V3WebSocketManager:
                         "type": "ping",
                         "timestamp": time.time()
                     }))
-                
+
                 if ping_tasks:
                     await asyncio.gather(*ping_tasks, return_exceptions=True)
-                
+
                 logger.debug(f"Sent ping to {len(self._clients)} connected clients")
-                
+
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 logger.error(f"Error in ping task: {e}")
-    
-    
+
+    # ========== Lifecycle Discovery Mode Methods ==========
+
+    async def broadcast_tracked_markets(self) -> None:
+        """
+        Broadcast tracked markets state to all connected clients.
+
+        Called when tracked markets state changes (new market tracked,
+        status change, etc.). Sends full snapshot for simplicity.
+        """
+        if not self._tracked_markets_state:
+            return
+
+        snapshot = self._tracked_markets_state.get_snapshot()
+        await self.broadcast_message("tracked_markets", snapshot)
+
+    async def broadcast_lifecycle_event(
+        self,
+        event_type: str,
+        market_ticker: str,
+        action: str,
+        reason: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None
+    ) -> None:
+        """
+        Broadcast a lifecycle event to all connected clients.
+
+        Used for real-time updates when markets are tracked/untracked
+        or status changes occur.
+
+        Args:
+            event_type: Type of event (created, determined, settled, closed)
+            market_ticker: Affected market ticker
+            action: Action taken (tracked, rejected, unsubscribed)
+            reason: Optional reason for the action
+            metadata: Optional additional metadata
+        """
+        event_data = {
+            "event_type": event_type,
+            "market_ticker": market_ticker,
+            "action": action,
+            "reason": reason,
+            "metadata": metadata or {},
+            "timestamp": time.strftime("%H:%M:%S"),
+        }
+        await self.broadcast_message("lifecycle_event", event_data)
+
+    async def broadcast_market_info_update(
+        self,
+        ticker: str,
+        price: int,
+        volume: int,
+        open_interest: Optional[int] = None,
+        yes_bid: Optional[int] = None,
+        yes_ask: Optional[int] = None
+    ) -> None:
+        """
+        Broadcast market info update for a single tracked market.
+
+        Called by TrackedMarketsSyncer when market info is refreshed.
+        Provides real-time price/volume updates for the lifecycle grid.
+
+        Args:
+            ticker: Market ticker
+            price: Current YES price in cents
+            volume: Volume traded
+            open_interest: Optional open interest
+            yes_bid: Optional best YES bid
+            yes_ask: Optional best YES ask
+        """
+        update_data = {
+            "ticker": ticker,
+            "price": price,
+            "volume": volume,
+            "open_interest": open_interest,
+            "yes_bid": yes_bid,
+            "yes_ask": yes_ask,
+            "timestamp": time.time(),
+        }
+        await self.broadcast_message("market_info_update", update_data)
+
+    async def _send_tracked_markets_snapshot(self, client_id: str) -> None:
+        """
+        Send tracked markets snapshot to a specific client.
+
+        Called when a new client connects in lifecycle discovery mode.
+
+        Args:
+            client_id: Client ID to send snapshot to
+        """
+        if not self._tracked_markets_state:
+            return
+
+        if client_id not in self._clients:
+            return
+
+        try:
+            snapshot = self._tracked_markets_state.get_snapshot()
+            await self._send_to_client(client_id, {
+                "type": "tracked_markets",
+                "data": snapshot
+            })
+            logger.debug(
+                f"Sent tracked markets snapshot to client {client_id}: "
+                f"{snapshot['stats']['tracked']}/{snapshot['stats']['capacity']} markets"
+            )
+        except Exception as e:
+            logger.warning(f"Could not send tracked markets snapshot to client {client_id}: {e}")
+
+    async def _send_rlm_states_snapshot(self, client_id: str) -> None:
+        """
+        Send RLM market states snapshot to a specific client.
+
+        Called when a new client connects in lifecycle discovery mode.
+        Provides immediate visibility into trade direction data for all
+        tracked markets.
+
+        Args:
+            client_id: Client ID to send snapshot to
+        """
+        if not self._rlm_service:
+            return
+
+        if client_id not in self._clients:
+            return
+
+        try:
+            # Get all market states from RLM service
+            market_states = self._rlm_service.get_market_states(limit=100)
+
+            await self._send_to_client(client_id, {
+                "type": "rlm_states_snapshot",
+                "data": {
+                    "markets": market_states,
+                    "count": len(market_states),
+                    "timestamp": time.strftime("%H:%M:%S"),
+                }
+            })
+            logger.debug(
+                f"Sent RLM states snapshot to client {client_id}: {len(market_states)} markets"
+            )
+        except Exception as e:
+            logger.warning(f"Could not send RLM states snapshot to client {client_id}: {e}")
+
     def get_stats(self) -> Dict[str, Any]:
         """Get WebSocket manager statistics."""
         uptime = time.time() - self._started_at if self._started_at else 0

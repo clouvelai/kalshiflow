@@ -88,6 +88,15 @@ class EventType(Enum):
     # Real-time order fill notifications (from fill WebSocket)
     ORDER_FILL = "order_fill"
 
+    # Event Lifecycle Discovery events
+    MARKET_LIFECYCLE_EVENT = "market_lifecycle_event"  # Raw lifecycle events from Kalshi
+    MARKET_TRACKED = "market_tracked"                   # Market added to tracking
+    MARKET_DETERMINED = "market_determined"             # Market outcome resolved
+
+    # RLM (Reverse Line Movement) events
+    RLM_MARKET_UPDATE = "rlm_market_update"            # RLM state changed for a market
+    RLM_TRADE_ARRIVED = "rlm_trade_arrived"            # New trade arrived for RLM tracking
+
 
 @dataclass
 class MarketEvent:
@@ -316,6 +325,158 @@ class OrderFillEvent:
     count: int = 0
     post_position: int = 0
     fill_timestamp: int = 0
+    timestamp: float = 0.0
+
+    def __post_init__(self):
+        """Set defaults after initialization."""
+        if self.timestamp == 0.0:
+            self.timestamp = time.time()
+
+
+@dataclass
+class MarketLifecycleEvent:
+    """
+    Event data for market lifecycle events from Kalshi WebSocket.
+
+    Emitted when LifecycleIntegration receives an event from the
+    market_lifecycle_v2 channel. EventLifecycleService subscribes to
+    these events for market discovery.
+
+    Lifecycle Event Types:
+        - created: Market initialized (triggers REST lookup + category filter)
+        - activated: Market becomes tradeable
+        - deactivated: Trading paused
+        - close_date_updated: Settlement time modified
+        - determined: Outcome resolved (triggers orderbook unsubscription)
+        - settled: Positions liquidated
+
+    Attributes:
+        event_type: Always MARKET_LIFECYCLE_EVENT
+        lifecycle_event_type: Type of lifecycle event (created, determined, etc.)
+        market_ticker: Market ticker for this event
+        payload: Full event data including timestamps and metadata
+        timestamp: When the event was received locally
+    """
+    event_type: EventType = EventType.MARKET_LIFECYCLE_EVENT
+    lifecycle_event_type: str = ""  # "created", "determined", "settled", etc.
+    market_ticker: str = ""
+    payload: Optional[Dict[str, Any]] = None
+    timestamp: float = 0.0
+
+    def __post_init__(self):
+        """Set defaults after initialization."""
+        if self.timestamp == 0.0:
+            self.timestamp = time.time()
+        if self.payload is None:
+            self.payload = {}
+
+
+@dataclass
+class MarketTrackedEvent:
+    """
+    Event data for when a market is added to tracking.
+
+    Emitted by EventLifecycleService after a market passes category filtering
+    and is successfully added to TrackedMarketsState. Downstream services
+    can use this to trigger orderbook subscription.
+
+    Attributes:
+        event_type: Always MARKET_TRACKED
+        market_ticker: Market ticker that was tracked
+        category: Market category (e.g., "Sports", "Crypto")
+        market_info: Full market info from REST API
+        timestamp: When the market was tracked
+    """
+    event_type: EventType = EventType.MARKET_TRACKED
+    market_ticker: str = ""
+    category: str = ""
+    market_info: Optional[Dict[str, Any]] = None
+    timestamp: float = 0.0
+
+    def __post_init__(self):
+        """Set defaults after initialization."""
+        if self.timestamp == 0.0:
+            self.timestamp = time.time()
+        if self.market_info is None:
+            self.market_info = {}
+
+
+@dataclass
+class MarketDeterminedEvent:
+    """
+    Event data for when a market outcome is determined.
+
+    Emitted by EventLifecycleService when a tracked market receives
+    a 'determined' lifecycle event. Signals that orderbook subscription
+    should be stopped for this market.
+
+    Attributes:
+        event_type: Always MARKET_DETERMINED
+        market_ticker: Market ticker that was determined
+        result: Market result if available
+        determined_ts: Kalshi timestamp when determined (seconds)
+        timestamp: When the event was processed locally
+    """
+    event_type: EventType = EventType.MARKET_DETERMINED
+    market_ticker: str = ""
+    result: str = ""
+    determined_ts: int = 0
+    timestamp: float = 0.0
+
+    def __post_init__(self):
+        """Set defaults after initialization."""
+        if self.timestamp == 0.0:
+            self.timestamp = time.time()
+
+
+@dataclass
+class RLMMarketUpdateEvent:
+    """
+    Event data for RLM market state updates.
+
+    Emitted by RLMService when a tracked market's trade state changes.
+    Used for real-time UI updates showing trade direction and price movement.
+
+    Attributes:
+        event_type: Always RLM_MARKET_UPDATE
+        market_ticker: Market ticker for this update
+        state: Dictionary containing RLM state (yes_trades, no_trades, etc.)
+        timestamp: When the update was generated
+    """
+    event_type: EventType = EventType.RLM_MARKET_UPDATE
+    market_ticker: str = ""
+    state: Optional[Dict[str, Any]] = None
+    timestamp: float = 0.0
+
+    def __post_init__(self):
+        """Set defaults after initialization."""
+        if self.timestamp == 0.0:
+            self.timestamp = time.time()
+        if self.state is None:
+            self.state = {}
+
+
+@dataclass
+class RLMTradeArrivedEvent:
+    """
+    Event data for individual trades arriving for RLM tracking.
+
+    Emitted by RLMService for every trade in a tracked market.
+    Used for real-time UI pulse/glow animations on trade arrival.
+
+    Attributes:
+        event_type: Always RLM_TRADE_ARRIVED
+        market_ticker: Market ticker where trade occurred
+        side: Trade side ("yes" or "no")
+        count: Number of contracts in this trade
+        price_cents: Trade price in cents
+        timestamp: When the trade was received
+    """
+    event_type: EventType = EventType.RLM_TRADE_ARRIVED
+    market_ticker: str = ""
+    side: str = ""
+    count: int = 0
+    price_cents: int = 0
     timestamp: float = 0.0
 
     def __post_init__(self):
@@ -912,6 +1073,245 @@ class EventBus:
 
         self._subscribers[EventType.ORDER_FILL].append(callback)
         logger.debug(f"Added order fill subscriber: {callback.__name__}")
+
+    # ============================================================
+    # Event Lifecycle Discovery Methods
+    # ============================================================
+
+    async def emit_market_lifecycle(
+        self,
+        event_type: str,
+        market_ticker: str,
+        payload: Dict[str, Any],
+    ) -> bool:
+        """
+        Emit a market lifecycle event (non-blocking).
+
+        Called by V3LifecycleIntegration when receiving events from
+        the market_lifecycle_v2 WebSocket channel.
+
+        Args:
+            event_type: Lifecycle event type (created, determined, settled, etc.)
+            market_ticker: Market ticker for this event
+            payload: Full event payload from Kalshi
+
+        Returns:
+            True if event was queued, False if queue full
+        """
+        if not self._running:
+            return False
+
+        event = MarketLifecycleEvent(
+            event_type=EventType.MARKET_LIFECYCLE_EVENT,
+            lifecycle_event_type=event_type,
+            market_ticker=market_ticker,
+            payload=payload,
+            timestamp=time.time(),
+        )
+
+        return await self._queue_event(event)
+
+    async def emit_market_tracked(
+        self,
+        market_ticker: str,
+        category: str,
+        market_info: Dict[str, Any],
+    ) -> bool:
+        """
+        Emit a market tracked event (non-blocking).
+
+        Called by EventLifecycleService when a market passes filtering
+        and is added to tracking. Signals that orderbook subscription
+        should be started.
+
+        Args:
+            market_ticker: Market ticker that was tracked
+            category: Market category
+            market_info: Full market info from REST API
+
+        Returns:
+            True if event was queued, False if queue full
+        """
+        if not self._running:
+            return False
+
+        event = MarketTrackedEvent(
+            event_type=EventType.MARKET_TRACKED,
+            market_ticker=market_ticker,
+            category=category,
+            market_info=market_info,
+            timestamp=time.time(),
+        )
+
+        return await self._queue_event(event)
+
+    async def emit_market_determined(
+        self,
+        market_ticker: str,
+        result: str = "",
+        determined_ts: int = 0,
+    ) -> bool:
+        """
+        Emit a market determined event (non-blocking).
+
+        Called by EventLifecycleService when a tracked market's outcome
+        is resolved. Signals that orderbook subscription should be stopped.
+
+        Args:
+            market_ticker: Market ticker that was determined
+            result: Market result if available
+            determined_ts: Kalshi timestamp when determined (seconds)
+
+        Returns:
+            True if event was queued, False if queue full
+        """
+        if not self._running:
+            return False
+
+        event = MarketDeterminedEvent(
+            event_type=EventType.MARKET_DETERMINED,
+            market_ticker=market_ticker,
+            result=result,
+            determined_ts=determined_ts,
+            timestamp=time.time(),
+        )
+
+        return await self._queue_event(event)
+
+    async def subscribe_to_market_lifecycle(self, callback: Callable) -> None:
+        """
+        Subscribe to market lifecycle events.
+
+        Args:
+            callback: Async function(event: MarketLifecycleEvent) to call on event
+        """
+        if EventType.MARKET_LIFECYCLE_EVENT not in self._subscribers:
+            self._subscribers[EventType.MARKET_LIFECYCLE_EVENT] = []
+
+        self._subscribers[EventType.MARKET_LIFECYCLE_EVENT].append(callback)
+        logger.debug(f"Added market lifecycle subscriber: {callback.__name__}")
+
+    async def subscribe_to_market_tracked(self, callback: Callable) -> None:
+        """
+        Subscribe to market tracked events.
+
+        Args:
+            callback: Async function(event: MarketTrackedEvent) to call when market tracked
+        """
+        if EventType.MARKET_TRACKED not in self._subscribers:
+            self._subscribers[EventType.MARKET_TRACKED] = []
+
+        self._subscribers[EventType.MARKET_TRACKED].append(callback)
+        logger.debug(f"Added market tracked subscriber: {callback.__name__}")
+
+    async def subscribe_to_market_determined(self, callback: Callable) -> None:
+        """
+        Subscribe to market determined events.
+
+        Args:
+            callback: Async function(event: MarketDeterminedEvent) to call when market determined
+        """
+        if EventType.MARKET_DETERMINED not in self._subscribers:
+            self._subscribers[EventType.MARKET_DETERMINED] = []
+
+        self._subscribers[EventType.MARKET_DETERMINED].append(callback)
+        logger.debug(f"Added market determined subscriber: {callback.__name__}")
+
+    # ============================================================
+    # RLM (Reverse Line Movement) Event Methods
+    # ============================================================
+
+    async def emit_rlm_market_update(
+        self,
+        market_ticker: str,
+        state: Dict[str, Any],
+    ) -> bool:
+        """
+        Emit an RLM market state update event (non-blocking).
+
+        Called by RLMService when a tracked market's trade state changes.
+        Used for real-time UI updates showing trade direction and price movement.
+
+        Args:
+            market_ticker: Market ticker for this update
+            state: Dictionary containing RLM state (yes_trades, no_trades, etc.)
+
+        Returns:
+            True if event was queued, False if queue full
+        """
+        if not self._running:
+            return False
+
+        event = RLMMarketUpdateEvent(
+            event_type=EventType.RLM_MARKET_UPDATE,
+            market_ticker=market_ticker,
+            state=state,
+            timestamp=time.time(),
+        )
+
+        return await self._queue_event(event)
+
+    async def emit_rlm_trade_arrived(
+        self,
+        market_ticker: str,
+        side: str,
+        count: int,
+        price_cents: int,
+    ) -> bool:
+        """
+        Emit an RLM trade arrived event (non-blocking).
+
+        Called by RLMService for every trade in a tracked market.
+        Used for real-time UI pulse/glow animations on trade arrival.
+
+        Args:
+            market_ticker: Market ticker where trade occurred
+            side: Trade side ("yes" or "no")
+            count: Number of contracts in this trade
+            price_cents: Trade price in cents
+
+        Returns:
+            True if event was queued, False if queue full
+        """
+        if not self._running:
+            return False
+
+        event = RLMTradeArrivedEvent(
+            event_type=EventType.RLM_TRADE_ARRIVED,
+            market_ticker=market_ticker,
+            side=side,
+            count=count,
+            price_cents=price_cents,
+            timestamp=time.time(),
+        )
+
+        return await self._queue_event(event)
+
+    async def subscribe_to_rlm_market_update(self, callback: Callable) -> None:
+        """
+        Subscribe to RLM market update events.
+
+        Args:
+            callback: Async function(event: RLMMarketUpdateEvent) to call on update
+        """
+        if EventType.RLM_MARKET_UPDATE not in self._subscribers:
+            self._subscribers[EventType.RLM_MARKET_UPDATE] = []
+
+        self._subscribers[EventType.RLM_MARKET_UPDATE].append(callback)
+        logger.debug(f"Added RLM market update subscriber: {callback.__name__}")
+
+    async def subscribe_to_rlm_trade_arrived(self, callback: Callable) -> None:
+        """
+        Subscribe to RLM trade arrived events.
+
+        Args:
+            callback: Async function(event: RLMTradeArrivedEvent) to call on trade
+        """
+        if EventType.RLM_TRADE_ARRIVED not in self._subscribers:
+            self._subscribers[EventType.RLM_TRADE_ARRIVED] = []
+
+        self._subscribers[EventType.RLM_TRADE_ARRIVED].append(callback)
+        logger.debug(f"Added RLM trade arrived subscriber: {callback.__name__}")
 
     async def _queue_event(self, event: Any) -> bool:
         """
