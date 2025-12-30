@@ -740,13 +740,19 @@ class KalshiDemoTradingClient:
         except Exception as e:
             raise KalshiDemoTradingClientError(f"Failed to get fills: {e}")
     
-    async def get_markets(self, limit: int = 100, tickers: Optional[List[str]] = None) -> Dict[str, Any]:
+    async def get_markets(
+        self,
+        limit: int = 100,
+        tickers: Optional[List[str]] = None,
+        status: Optional[str] = None
+    ) -> Dict[str, Any]:
         """
         Get available markets on demo account.
 
         Args:
             limit: Maximum number of markets to return
             tickers: Optional list of specific tickers to fetch
+            status: Optional market status filter ('unopened', 'open', 'closed', 'settled')
 
         Returns:
             Markets data with market details including bid/ask prices and close_time
@@ -756,6 +762,8 @@ class KalshiDemoTradingClient:
             params = [f"limit={limit}"]
             if tickers:
                 params.append(f"tickers={','.join(tickers)}")
+            if status:
+                params.append(f"status={status}")
 
             query_string = "&".join(params)
             response = await self._make_request("GET", f"/markets?{query_string}")

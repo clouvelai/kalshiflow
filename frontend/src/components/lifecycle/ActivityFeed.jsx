@@ -7,8 +7,10 @@ import React, { useMemo } from 'react';
  * - Aggregate same-type events within 30s window
  * - NEVER collapse determined/settled events (critical)
  * - Time-grouped sections (NOW, 2 MIN AGO, etc.)
+ *
+ * Also displays upcoming markets (unopened, opening within 4 hours) at the top.
  */
-const ActivityFeed = ({ events, onClear }) => {
+const ActivityFeed = ({ events, onClear, upcomingMarkets = [] }) => {
   // Aggregate and group events
   const groupedEvents = useMemo(() => {
     if (!events || events.length === 0) return [];
@@ -110,6 +112,10 @@ const ActivityFeed = ({ events, onClear }) => {
 
       {/* Feed content */}
       <div className="flex-1 overflow-y-auto p-3 space-y-4">
+        {/* Upcoming markets section (at top) */}
+        <UpcomingSection markets={upcomingMarkets} />
+
+        {/* Activity events */}
         {groupedEvents.map((group, gIdx) => (
           <div key={gIdx}>
             {/* Time label */}
@@ -233,5 +239,69 @@ function formatAggregateEvent(action, count, category) {
   }
   return `markets ${action || 'tracked'}`;
 }
+
+/**
+ * Format countdown from seconds to human-readable string
+ */
+function formatCountdown(seconds) {
+  if (!seconds || seconds <= 0) return 'NOW';
+
+  const hours = Math.floor(seconds / 3600);
+  const mins = Math.floor((seconds % 3600) / 60);
+
+  if (hours > 0) {
+    return `${hours}h ${mins}m`;
+  }
+  return `${mins}m`;
+}
+
+/**
+ * UpcomingSection - Displays markets opening within 4 hours
+ */
+const UpcomingSection = ({ markets }) => {
+  if (!markets || markets.length === 0) return null;
+
+  return (
+    <div className="mb-4">
+      <div className="text-[10px] text-gray-500 uppercase tracking-wide mb-2 flex items-center gap-2">
+        <span className="text-amber-400">UPCOMING</span>
+        <span className="text-gray-600">({markets.length})</span>
+      </div>
+      <div className="space-y-2">
+        {markets.map((market) => (
+          <UpcomingMarketItem key={market.ticker} market={market} />
+        ))}
+      </div>
+    </div>
+  );
+};
+
+/**
+ * UpcomingMarketItem - Single upcoming market card
+ */
+const UpcomingMarketItem = ({ market }) => {
+  const countdown = formatCountdown(market.countdown_seconds);
+
+  return (
+    <div className="text-sm p-2 rounded bg-amber-900/10 border border-amber-500/20">
+      <div className="flex items-center justify-between">
+        <span className="text-gray-300 text-xs truncate flex-1 mr-2">
+          {market.title}
+        </span>
+        <span className="text-amber-400 text-xs font-mono whitespace-nowrap">
+          {countdown}
+        </span>
+      </div>
+      <div className="flex items-center justify-between mt-1">
+        <span className="text-xs text-gray-500 font-mono">
+          {market.ticker}
+        </span>
+        <span className="text-xs text-gray-600">
+          {market.category}
+        </span>
+      </div>
+    </div>
+  );
+};
 
 export default ActivityFeed;

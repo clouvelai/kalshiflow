@@ -26,6 +26,7 @@ if TYPE_CHECKING:
     from ..services.trading_decision_service import TradingDecisionService
     from ..services.whale_execution_service import WhaleExecutionService
     from ..services.rlm_service import RLMService
+    from ..services.upcoming_markets_syncer import UpcomingMarketsSyncer
     from ..state.tracked_markets import TrackedMarketsState
     from .state_container import StateContainer
 
@@ -76,6 +77,7 @@ class V3WebSocketManager:
         self._rlm_service: Optional['RLMService'] = None  # Set via set_rlm_service()
         self._market_price_syncer = None  # Set via set_market_price_syncer()
         self._tracked_markets_state: Optional['TrackedMarketsState'] = None  # Set via set_tracked_markets_state()
+        self._upcoming_markets_syncer: Optional['UpcomingMarketsSyncer'] = None  # Set via set_upcoming_markets_syncer()
         self._clients: Dict[str, WebSocketClient] = {}
         self._client_counter = 0
         self._started_at: Optional[float] = None
@@ -189,6 +191,19 @@ class V3WebSocketManager:
         """
         self._rlm_service = rlm_service
         logger.info("RLMService set on WebSocket manager")
+
+    def set_upcoming_markets_syncer(self, syncer: 'UpcomingMarketsSyncer') -> None:
+        """
+        Set the upcoming markets syncer for sending snapshots on connect.
+
+        This enables sending upcoming markets schedule to new clients when
+        they connect, providing visibility into markets opening soon.
+
+        Args:
+            syncer: UpcomingMarketsSyncer instance
+        """
+        self._upcoming_markets_syncer = syncer
+        logger.info("UpcomingMarketsSyncer set on WebSocket manager")
 
     async def start(self) -> None:
         """Start the WebSocket manager."""
@@ -429,6 +444,10 @@ class V3WebSocketManager:
             # Send RLM market states snapshot if RLM service is available
             if self._rlm_service and client_id in self._clients:
                 await self._send_rlm_states_snapshot(client_id)
+
+            # Send upcoming markets snapshot if syncer is available
+            if self._upcoming_markets_syncer and client_id in self._clients:
+                await self._send_upcoming_markets_snapshot(client_id)
 
             # Now handle incoming messages
             # (Current state is already included in the historical transitions replay)
@@ -996,6 +1015,32 @@ class V3WebSocketManager:
             )
         except Exception as e:
             logger.warning(f"Could not send RLM states snapshot to client {client_id}: {e}")
+
+    async def _send_upcoming_markets_snapshot(self, client_id: str) -> None:
+        """
+        Send upcoming markets snapshot to a specific client.
+
+        Called when a new client connects in lifecycle discovery mode.
+        Provides visibility into markets opening within the configured window.
+
+        Args:
+            client_id: Client ID to send snapshot to
+        """
+        if not self._upcoming_markets_syncer:
+            return
+
+        if client_id not in self._clients:
+            return
+
+        try:
+            snapshot_msg = self._upcoming_markets_syncer.get_snapshot_message()
+            await self._send_to_client(client_id, snapshot_msg)
+            count = snapshot_msg["data"]["count"]
+            logger.debug(
+                f"Sent upcoming markets snapshot to client {client_id}: {count} markets"
+            )
+        except Exception as e:
+            logger.warning(f"Could not send upcoming markets snapshot to client {client_id}: {e}")
 
     def get_stats(self) -> Dict[str, Any]:
         """Get WebSocket manager statistics."""

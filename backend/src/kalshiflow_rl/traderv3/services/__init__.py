@@ -11,6 +11,7 @@ from .trading_decision_service import (
 )
 from .whale_tracker import WhaleTracker, BigBet
 from .tracked_markets_syncer import TrackedMarketsSyncer
+from .upcoming_markets_syncer import UpcomingMarketsSyncer
 from .event_lifecycle_service import EventLifecycleService
 from .rlm_service import RLMService, MarketTradeState, RLMSignal, RLMDecision
 
@@ -21,6 +22,7 @@ __all__ = [
     "WhaleTracker",
     "BigBet",
     "TrackedMarketsSyncer",
+    "UpcomingMarketsSyncer",
     "EventLifecycleService",
     "RLMService",
     "MarketTradeState",

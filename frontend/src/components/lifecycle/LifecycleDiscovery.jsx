@@ -26,7 +26,9 @@ const LifecycleDiscovery = () => {
     clearEvents,
     // RLM (Reverse Line Movement) state
     rlmStates,
-    tradePulses
+    tradePulses,
+    // Upcoming markets (opening within 4 hours)
+    upcomingMarkets
   } = useLifecycleWebSocket();
 
   // Filter state
@@ -161,6 +163,7 @@ const LifecycleDiscovery = () => {
             <ActivityFeed
               events={recentEvents}
               onClear={clearEvents}
+              upcomingMarkets={upcomingMarkets}
             />
           </div>
         </div>

@@ -891,3 +891,82 @@ class V3TradingClientIntegration:
             self._metrics.api_errors += 1
             self._consecutive_api_errors += 1
             raise
+
+    async def get_upcoming_markets(
+        self,
+        limit: int = 100,
+        max_open_hours: float = 4.0
+    ) -> List[Dict[str, Any]]:
+        """
+        Fetch markets with status='unopened' opening within max_open_hours.
+
+        GET /trade-api/v2/markets?status=unopened
+
+        Args:
+            limit: Maximum number of markets to fetch
+            max_open_hours: Only include markets opening within this many hours
+
+        Returns:
+            List of upcoming market dicts with open_time within window,
+            sorted by open_time ascending (soonest first)
+
+        Raises:
+            RuntimeError: If not connected
+        """
+        import time
+        from datetime import datetime
+
+        if not self._connected:
+            raise RuntimeError("Cannot get upcoming markets - trading client not connected")
+
+        try:
+            response = await self._client.get_markets(status="unopened", limit=limit)
+            self._metrics.api_calls += 1
+            self._consecutive_api_errors = 0
+
+            markets = response.get("markets", [])
+            now_ts = time.time()
+            max_open_ts = now_ts + (max_open_hours * 3600)
+
+            # Filter markets opening within the window
+            upcoming = []
+            for market in markets:
+                # Kalshi returns open_time as ISO string or timestamp
+                open_time = market.get("open_time")
+                if not open_time:
+                    continue
+
+                # Parse open_time (ISO format: "2025-01-05T14:00:00Z")
+                try:
+                    if isinstance(open_time, str):
+                        open_dt = datetime.fromisoformat(open_time.replace("Z", "+00:00"))
+                        open_ts = open_dt.timestamp()
+                    else:
+                        open_ts = float(open_time)
+                except (ValueError, TypeError):
+                    continue
+
+                # Include if opening within window
+                if now_ts <= open_ts <= max_open_ts:
+                    countdown_seconds = int(open_ts - now_ts)
+                    upcoming.append({
+                        "ticker": market.get("ticker", ""),
+                        "title": market.get("title", ""),
+                        "category": market.get("category", ""),
+                        "open_time": open_time,
+                        "open_ts": int(open_ts),
+                        "countdown_seconds": countdown_seconds,
+                        "event_ticker": market.get("event_ticker", ""),
+                    })
+
+            # Sort by open_ts (soonest first)
+            upcoming.sort(key=lambda m: m["open_ts"])
+
+            logger.debug(f"Found {len(upcoming)} upcoming markets (within {max_open_hours}h)")
+            return upcoming
+
+        except Exception as e:
+            logger.error(f"Failed to get upcoming markets: {e}")
+            self._metrics.api_errors += 1
+            self._consecutive_api_errors += 1
+            raise

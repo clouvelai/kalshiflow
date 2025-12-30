@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from ..services.trading_state_syncer import TradingStateSyncer
     from ..services.event_lifecycle_service import EventLifecycleService
     from ..services.tracked_markets_syncer import TrackedMarketsSyncer
+    from ..services.upcoming_markets_syncer import UpcomingMarketsSyncer
     from ..state.tracked_markets import TrackedMarketsState
 
 from .state_machine import TraderStateMachine as V3StateMachine, TraderState as V3State
@@ -221,6 +222,7 @@ class V3Coordinator:
         self._tracked_markets_state: Optional['TrackedMarketsState'] = None
         self._event_lifecycle_service: Optional['EventLifecycleService'] = None
         self._lifecycle_syncer: Optional['TrackedMarketsSyncer'] = None
+        self._upcoming_markets_syncer: Optional['UpcomingMarketsSyncer'] = None
 
         self._started_at: Optional[float] = None
         self._running = False
@@ -498,6 +500,7 @@ class V3Coordinator:
             from ..clients.lifecycle_integration import V3LifecycleIntegration
             from ..services.event_lifecycle_service import EventLifecycleService
             from ..services.tracked_markets_syncer import TrackedMarketsSyncer
+            from ..services.upcoming_markets_syncer import UpcomingMarketsSyncer
             from ..state.tracked_markets import TrackedMarketsState
             from kalshiflow.auth import KalshiAuth
             from ...data.database import rl_db
@@ -611,6 +614,18 @@ class V3Coordinator:
                 sync_interval=self._config.lifecycle_sync_interval,
             )
             await self._lifecycle_syncer.start()
+
+            # 12. Start UpcomingMarketsSyncer (for upcoming markets schedule)
+            self._upcoming_markets_syncer = UpcomingMarketsSyncer(
+                trading_client=self._trading_client_integration,
+                websocket_manager=self._websocket_manager,
+                event_bus=self._event_bus,
+                sync_interval=60.0,  # Refresh every 60s
+                hours_ahead=4.0,      # 4-hour lookahead window
+            )
+            await self._upcoming_markets_syncer.start()
+            self._websocket_manager.set_upcoming_markets_syncer(self._upcoming_markets_syncer)
+            logger.info("UpcomingMarketsSyncer started - tracking markets opening within 4h")
 
             logger.info(
                 f"Lifecycle mode active - tracking categories: {', '.join(self._config.lifecycle_categories)}"
@@ -1438,6 +1453,11 @@ class V3Coordinator:
                 step += 1
 
             # Stop lifecycle components (in reverse order of startup)
+            if self._upcoming_markets_syncer:
+                logger.info(f"{step}/{total_steps} Stopping Upcoming Markets Syncer...")
+                await self._upcoming_markets_syncer.stop()
+                step += 1
+
             if self._lifecycle_syncer:
                 logger.info(f"{step}/{total_steps} Stopping Lifecycle Syncer...")
                 await self._lifecycle_syncer.stop()

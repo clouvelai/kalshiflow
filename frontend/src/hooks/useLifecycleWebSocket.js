@@ -52,6 +52,9 @@ export const useLifecycleWebSocket = ({ onMessage } = {}) => {
   // tradePulses: Map of ticker -> { side: 'yes'|'no', ts: timestamp } for pulse animation
   const [tradePulses, setTradePulses] = useState({});
 
+  // Upcoming markets (unopened markets opening within 4 hours)
+  const [upcomingMarkets, setUpcomingMarkets] = useState([]);
+
   const wsRef = useRef(null);
   const reconnectTimeoutRef = useRef(null);
   const lastPingRef = useRef(Date.now());
@@ -198,6 +201,16 @@ export const useLifecycleWebSocket = ({ onMessage } = {}) => {
         }
         break;
 
+      // ========== Upcoming Markets Messages ==========
+
+      case 'upcoming_markets':
+        // Upcoming markets schedule (markets opening within 4 hours)
+        if (data.data && data.data.markets) {
+          setUpcomingMarkets(data.data.markets);
+          setLastUpdateTime(Date.now());
+        }
+        break;
+
       default:
         // Ignore other message types (they're for other V3 features)
         break;
@@ -317,7 +330,9 @@ export const useLifecycleWebSocket = ({ onMessage } = {}) => {
     isAtCapacity: trackedMarkets.stats.tracked >= trackedMarkets.stats.capacity,
     // RLM (Reverse Line Movement) state
     rlmStates,       // Map of ticker -> RLM state
-    tradePulses      // Map of ticker -> { side, ts } for pulse animation
+    tradePulses,     // Map of ticker -> { side, ts } for pulse animation
+    // Upcoming markets (opening within 4 hours)
+    upcomingMarkets  // List of upcoming market objects
   };
 };
 
