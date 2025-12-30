@@ -1,4 +1,39 @@
 import React from 'react';
+import { Link, useLocation } from 'react-router-dom';
+
+/**
+ * NavTabs - Navigation between Trader and Discovery views
+ */
+const NavTabs = () => {
+  const location = useLocation();
+  const isTrader = location.pathname.includes('v3');
+  const isDiscovery = location.pathname.includes('lifecycle');
+
+  return (
+    <div className="flex items-center bg-gray-800/50 rounded-lg p-1">
+      <Link
+        to="/v3"
+        className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
+          isTrader
+            ? 'bg-purple-500/30 text-purple-300'
+            : 'text-gray-400 hover:text-white hover:bg-gray-700/50'
+        }`}
+      >
+        Trader
+      </Link>
+      <Link
+        to="/lifecycle"
+        className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
+          isDiscovery
+            ? 'bg-purple-500/30 text-purple-300'
+            : 'text-gray-400 hover:text-white hover:bg-gray-700/50'
+        }`}
+      >
+        Discovery
+      </Link>
+    </div>
+  );
+};
 
 /**
  * LifecycleHeader - Title, capacity bar, and connection status
@@ -25,11 +60,14 @@ const LifecycleHeader = ({ wsStatus, stats, isAtCapacity }) => {
     <header className="bg-gray-900/80 border-b border-gray-800 sticky top-0 z-10 backdrop-blur-sm">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 py-4">
         <div className="flex items-center justify-between">
-          {/* Title */}
+          {/* Title and Navigation */}
           <div className="flex items-center gap-4">
             <h1 className="text-xl font-bold text-white tracking-tight">
               LIFECYCLE DISCOVERY
             </h1>
+
+            {/* Navigation Tabs */}
+            <NavTabs />
 
             {/* Capacity indicator */}
             <div className="flex items-center gap-3">
