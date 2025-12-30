@@ -15,7 +15,7 @@ const NavTabs = () => {
         to="/v3"
         className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
           isTrader
-            ? 'bg-purple-500/30 text-purple-300'
+            ? 'bg-cyan-500/30 text-cyan-300'
             : 'text-gray-400 hover:text-white hover:bg-gray-700/50'
         }`}
       >
@@ -25,7 +25,7 @@ const NavTabs = () => {
         to="/lifecycle"
         className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
           isDiscovery
-            ? 'bg-purple-500/30 text-purple-300'
+            ? 'bg-cyan-500/30 text-cyan-300'
             : 'text-gray-400 hover:text-white hover:bg-gray-700/50'
         }`}
       >

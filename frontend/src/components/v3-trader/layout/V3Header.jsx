@@ -17,7 +17,7 @@ const NavTabs = () => {
         to="/v3"
         className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
           isTrader
-            ? 'bg-purple-500/30 text-purple-300'
+            ? 'bg-cyan-500/30 text-cyan-300'
             : 'text-gray-400 hover:text-white hover:bg-gray-700/50'
         }`}
       >
@@ -27,7 +27,7 @@ const NavTabs = () => {
         to="/lifecycle"
         className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
           isDiscovery
-            ? 'bg-purple-500/30 text-purple-300'
+            ? 'bg-cyan-500/30 text-cyan-300'
             : 'text-gray-400 hover:text-white hover:bg-gray-700/50'
         }`}
       >
@@ -47,9 +47,9 @@ const V3Header = ({ wsStatus, currentState }) => {
         <div className="flex items-center justify-between">
           <div className="flex items-center space-x-4">
             <div className="flex items-center space-x-2">
-              <Activity className="w-6 h-6 text-purple-400" />
+              <Activity className="w-6 h-6 text-cyan-400" />
               <h1 className="text-xl font-semibold text-white">TRADER V3</h1>
-              <span className="px-2 py-0.5 text-xs font-mono bg-purple-500/20 text-purple-300 rounded-full border border-purple-500/30">
+              <span className="px-2 py-0.5 text-xs font-mono bg-cyan-500/20 text-cyan-300 rounded-full border border-cyan-500/30">
                 CONSOLE
               </span>
             </div>
