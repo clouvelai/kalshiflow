@@ -416,19 +416,28 @@ class FillListener:
         is_taker = fill_data.get("is_taker", False)
         side = fill_data.get("side", "")
         action = fill_data.get("action", "")
-        # Price is in cents (1-99) - no conversion needed
+        # Kalshi WebSocket only provides yes_price (1-99 cents)
+        # For NO contracts, actual price paid is (100 - yes_price)
         yes_price = fill_data.get("yes_price", 0)
         count = fill_data.get("count", 0)
         post_position = fill_data.get("post_position", 0)
         fill_timestamp = fill_data.get("ts", 0)
 
+        # Calculate actual price based on contract side
+        # YES contracts: price = yes_price
+        # NO contracts: price = 100 - yes_price (the complement)
+        if side == "yes":
+            price_cents = yes_price
+        else:  # side == "no"
+            price_cents = 100 - yes_price
+
         # Calculate total cost in cents
-        total_cents = yes_price * count
+        total_cents = price_cents * count
 
         # Log the fill with nice formatting
         logger.info(
             f"ORDER FILLED: {action.upper()} {count} {side.upper()} "
-            f"{market_ticker} @ {yes_price}c (${total_cents / 100:.2f})"
+            f"{market_ticker} @ {price_cents}c (${total_cents / 100:.2f})"
         )
 
         # Emit via event bus
@@ -440,7 +449,7 @@ class FillListener:
                 is_taker=is_taker,
                 side=side,
                 action=action,
-                price_cents=yes_price,
+                price_cents=price_cents,  # Use calculated price, not raw yes_price
                 count=count,
                 post_position=post_position,
                 fill_timestamp=fill_timestamp,

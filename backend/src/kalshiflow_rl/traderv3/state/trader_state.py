@@ -96,11 +96,15 @@ class TraderState:
             if ticker and pos.get("position", 0) != 0:
                 positions_by_ticker[ticker] = pos
         
-        # Extract orders by order_id
+        # Extract orders by order_id - only include RESTING (open) orders
+        # Kalshi API returns orders with all statuses: resting, canceled, executed
+        # We only want active orders that can still be filled or canceled
         orders_by_id = {}
         for order in orders_data.get("orders", []):
             order_id = order.get("order_id")
-            if order_id:
+            status = order.get("status", "")
+            # Only include resting (open) orders, not executed or canceled
+            if order_id and status == "resting":
                 orders_by_id[order_id] = order
         
         return cls(
