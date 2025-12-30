@@ -76,7 +76,7 @@ if [ "$ENVIRONMENT" = "paper" ]; then
     # Trading client settings
     export V3_ENABLE_TRADING_CLIENT="true"
     export V3_TRADING_MAX_ORDERS="100"
-    export V3_TRADING_MAX_POSITION_SIZE="100"
+    export V3_TRADING_MAX_POSITION_SIZE="1000"
 
     # Whale follower strategy (default for paper mode)
     export V3_TRADING_STRATEGY="whale_follower"
@@ -88,8 +88,12 @@ if [ "$ENVIRONMENT" = "paper" ]; then
     export WHALE_MIN_SIZE_CENTS="1000"  # $10 minimum (for testing)
 
     # Rate limiting for whale following
-    export WHALE_MAX_TRADES_PER_MINUTE="10"
-    export WHALE_TOKEN_REFILL_SECONDS="6"  # 60/10 = 6 seconds per token
+    export WHALE_MAX_TRADES_PER_MINUTE="20"
+    export WHALE_TOKEN_REFILL_SECONDS="3"  # 60/20 = 3 seconds per token
+
+    # Allow multiple positions/orders per market (for testing)
+    export V3_ALLOW_MULTIPLE_POSITIONS="true"
+    export V3_ALLOW_MULTIPLE_ORDERS="true"
 
     echo -e "${GREEN}✓ Trading client enabled (paper mode)${NC}"
     echo -e "${GREEN}✓ Whale follower strategy active${NC}"

@@ -162,6 +162,7 @@ class V3Coordinator:
                 event_bus=event_bus,
                 trading_service=self._trading_service,
                 state_container=self._state_container,
+                config=self._config,
                 whale_tracker=whale_tracker,
             )
             # Connect whale execution service to WebSocket manager for decision history

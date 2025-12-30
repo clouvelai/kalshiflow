@@ -597,7 +597,31 @@ cd frontend && railway up --service kalshi-flowboard
 - use the planning agent for all planning
 - use the fullstack websocket agent for all implementation/coding
 - use the deployment agent for Railway.app deployments and production infrastructure
+- use the strategy-researcher agent to find novel hypothesis ideas from external sources (academic papers, sports betting, crypto/DeFi)
+- use the quant agent with "LSD mode" for rapid lateral hypothesis exploration (user says "LSD mode" to enable)
 - IMPORTANT: Only deploy to production when explicitly requested by the user. Never deploy autonomously.
+
+## Strategy Research System
+
+### Strategy Researcher Agent
+Use this agent to discover novel trading strategy hypotheses from external sources:
+- **Academic**: SSRN, arXiv quant-finance, prediction market papers
+- **Sports Betting**: CLV, steam moves, sharp vs square patterns
+- **Crypto/DeFi**: DEX microstructure, MEV research, Polymarket analysis
+- **Market Microstructure**: Order flow toxicity, informed trading detection
+
+Output: Hypothesis briefs in `research/hypotheses/incoming/`
+
+### Quant LSD Mode (Lateral Strategy Discovery)
+When the user says "LSD mode", the quant enters rapid exploration mode:
+- **Speed over rigor**: Quick 10-min edge checks, skip full bucket analysis
+- **Lower threshold**: Flag anything with raw edge > 5%
+- **Absurdity encouraged**: Moon phases, fibonacci trade counts, 4+ signal mega-stacks
+- **Volume over quality**: Test 10 ideas to find 1 good one
+
+User says "normal mode" to return to rigorous bucket-matched validation.
+
+See `research/LSD_MODE_INSTRUCTIONS.md` for full details.
 
 ## Managing RL Session Data
 

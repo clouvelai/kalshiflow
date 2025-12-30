@@ -350,19 +350,19 @@ class V3StatusReporter:
     async def _monitor_trading_state(self) -> None:
         """Monitor trading state version for broadcasts."""
         last_version = -1  # Start at -1 to ensure first check always broadcasts
-        
+
         while self._running:
             try:
                 await asyncio.sleep(1.0)  # Check every second
-                
+
                 # Check for version changes
                 current_version = self._state_container.trading_state_version
-                
+
                 # Only broadcast if state changed
                 if current_version > last_version:
                     await self.emit_trading_state()
                     last_version = current_version
-                    
+
             except asyncio.CancelledError:
                 break
             except Exception as e:

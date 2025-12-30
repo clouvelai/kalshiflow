@@ -169,8 +169,9 @@ PositionRow.displayName = 'PositionRow';
 
 /**
  * SideSummaryCard - Compact summary card for YES/NO positions
+ * Note: Not memoized because positions array reference stays same but ticker data changes via WebSocket
  */
-const SideSummaryCard = memo(({ side, positions }) => {
+const SideSummaryCard = ({ side, positions }) => {
   const isYes = side === 'yes';
   const totalQty = positions.reduce((sum, p) => sum + Math.abs(p.position || 0), 0);
   const aggregated = positions.reduce((acc, pos) => {
@@ -228,14 +229,13 @@ const SideSummaryCard = memo(({ side, positions }) => {
       </div>
     </div>
   );
-});
-
-SideSummaryCard.displayName = 'SideSummaryCard';
+};
 
 /**
  * PortfolioSummaryBar - Total portfolio summary statistics
+ * Note: Not memoized because positions array reference stays same but ticker data changes via WebSocket
  */
-const PortfolioSummaryBar = memo(({ positions }) => {
+const PortfolioSummaryBar = ({ positions }) => {
   const totals = positions.reduce((acc, pos) => {
     const metrics = calcPositionMetrics(pos);
     acc.totalCost += metrics.totalCost;
@@ -272,9 +272,7 @@ const PortfolioSummaryBar = memo(({ positions }) => {
       </div>
     </div>
   );
-});
-
-PortfolioSummaryBar.displayName = 'PortfolioSummaryBar';
+};
 
 /**
  * PositionListPanel - Detailed position breakdown with per-position P&L

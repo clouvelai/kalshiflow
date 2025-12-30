@@ -1,22 +1,29 @@
 """
-Whale Execution Service for TRADER V3 - Event-Driven Whale Following.
+Whale Execution Service for TRADER V3 - Whale Low Leverage Fade Strategy.
 
 Purpose:
-    This service subscribes to WHALE_QUEUE_UPDATED events and immediately
-    executes trades to follow whales, removing the 30-second cycle delay
-    from the trading flow orchestrator.
+    This service subscribes to WHALE_QUEUE_UPDATED events and executes the
+    validated "Whale Low Leverage Fade" strategy: when a whale bets YES with
+    low leverage (< 2), we FADE them by betting NO.
+
+Strategy Background (Session 013):
+    - Following whales LOSES money (all follow strategies are price proxies)
+    - Fading low-leverage YES whales has +5.79% edge, +6.78% improvement vs baseline
+    - Signal: Whale bets YES with leverage < 2 (price > 33c)
+    - Action: Bet NO (opposite of whale)
+    - Frequency: ~230 signals/day (high frequency for testing trader mechanics)
 
 Key Responsibilities:
     1. **Event Subscription** - Subscribe to WHALE_QUEUE_UPDATED from EventBus
-    2. **Token Bucket Rate Limiting** - Configurable trades/minute limit
-    3. **Immediate Execution** - Process whales as they arrive (no cycle delays)
-    4. **Decision History** - Track why each whale was followed/skipped
-    5. **Delegation** - Use TradingDecisionService.execute_decision() for orders
+    2. **Strategy Filter** - Only act on YES whales with leverage < 2
+    3. **Token Bucket Rate Limiting** - Configurable trades/minute limit
+    4. **Immediate Execution** - Process whales as they arrive (no cycle delays)
+    5. **Decision History** - Track why each whale was faded/skipped
 
 Architecture Position:
     The WhaleExecutionService sits between the WhaleTracker and TradingDecisionService:
     - WhaleTracker: Detects whales, emits WHALE_QUEUE_UPDATED events
-    - WhaleExecutionService: Receives events, validates whales, rate limits, executes
+    - WhaleExecutionService: Filters whales by strategy, rate limits, executes FADE
     - TradingDecisionService: Executes actual orders via trading client
 
 Design Principles:
@@ -35,6 +42,7 @@ from dataclasses import dataclass, field
 from typing import Dict, Any, Optional, List, TYPE_CHECKING
 
 from ..core.event_bus import EventBus, EventType, WhaleQueueEvent
+from ..core.state_machine import TraderState
 
 if TYPE_CHECKING:
     from ..services.trading_decision_service import TradingDecisionService, TradingDecision
@@ -111,6 +119,7 @@ class WhaleExecutionService:
         event_bus: EventBus,
         trading_service: 'TradingDecisionService',
         state_container: 'V3StateContainer',
+        config: 'V3Config',
         whale_tracker: Optional['WhaleTracker'] = None,
         max_trades_per_minute: int = DEFAULT_MAX_TRADES_PER_MINUTE,
         token_refill_seconds: float = DEFAULT_TOKEN_REFILL_SECONDS,
@@ -122,6 +131,7 @@ class WhaleExecutionService:
             event_bus: V3 EventBus for event subscription
             trading_service: Service for executing trades
             state_container: Container for trading state (positions, orders)
+            config: V3 configuration
             whale_tracker: Optional tracker for removing processed whales from queue
             max_trades_per_minute: Maximum trades per minute (token bucket capacity)
             token_refill_seconds: Seconds between token refills
@@ -129,6 +139,7 @@ class WhaleExecutionService:
         self._event_bus = event_bus
         self._trading_service = trading_service
         self._state_container = state_container
+        self._config = config
         self._whale_tracker = whale_tracker
 
         # Token bucket configuration
@@ -228,6 +239,13 @@ class WhaleExecutionService:
         if not whale_queue:
             return
 
+        # Wait for system to be fully ready before processing whales
+        # This prevents failures during startup when trading client isn't connected yet
+        machine_state = self._state_container.machine_state
+        if machine_state != TraderState.READY:
+            logger.debug(f"Skipping whale processing - system not ready (state={machine_state})")
+            return
+
         # Refill tokens before processing
         self._refill_tokens()
 
@@ -281,7 +299,8 @@ class WhaleExecutionService:
                 continue
 
             # Check if we have position in this market - mark as evaluated
-            if market_ticker in positions:
+            # Skip this check if allow_multiple_positions_per_market is enabled (for testing)
+            if not self._config.allow_multiple_positions_per_market and market_ticker in positions:
                 self._evaluated_whale_ids.add(whale_id)
                 self._record_decision(
                     whale_id=whale_id,
@@ -295,7 +314,8 @@ class WhaleExecutionService:
                 continue
 
             # Check if we have open orders in this market - mark as evaluated
-            if market_ticker in markets_with_orders:
+            # Skip this check if allow_multiple_orders_per_market is enabled (for testing)
+            if not self._config.allow_multiple_orders_per_market and market_ticker in markets_with_orders:
                 self._evaluated_whale_ids.add(whale_id)
                 self._record_decision(
                     whale_id=whale_id,
@@ -305,6 +325,22 @@ class WhaleExecutionService:
                 )
                 self._whales_skipped += 1
                 await self._emit_processing_complete(whale_id, "skipped_orders")
+                await self._remove_from_queue(whale_id)
+                continue
+
+            # STRATEGY FILTER: Whale Low Leverage Fade
+            # Only fade YES whales with leverage < 2 (price > 33c)
+            should_fade, fade_reason = self._should_fade_whale(whale)
+            if not should_fade:
+                self._evaluated_whale_ids.add(whale_id)
+                self._record_decision(
+                    whale_id=whale_id,
+                    action="skipped_filter",
+                    reason=f"Strategy filter: {fade_reason}",
+                    whale_data=whale,
+                )
+                self._whales_skipped += 1
+                await self._emit_processing_complete(whale_id, "skipped_filter")
                 await self._remove_from_queue(whale_id)
                 continue
 
@@ -325,27 +361,27 @@ class WhaleExecutionService:
                 # Don't add to evaluated AND don't remove - we want to retry when tokens refill
                 break
 
-            # Execute the whale follow - mark as evaluated regardless of outcome
+            # Execute the whale FADE - mark as evaluated regardless of outcome
             self._evaluated_whale_ids.add(whale_id)
-            success, order_id = await self._execute_whale_follow(whale, whale_id)
+            success, order_id = await self._execute_whale_fade(whale, whale_id, fade_reason)
 
             if success:
                 self._record_decision(
                     whale_id=whale_id,
-                    action="followed",
-                    reason=f"Followed whale on {market_ticker} {whale.get('side', 'yes').upper()}",
+                    action="faded",
+                    reason=f"FADE: Bet NO vs whale YES on {market_ticker} ({fade_reason})",
                     order_id=order_id,
                     whale_data=whale,
                 )
-                self._whales_followed += 1
+                self._whales_followed += 1  # Count as "followed" for stats
                 self._last_execution_time = time.time()
-                await self._emit_processing_complete(whale_id, "followed")
+                await self._emit_processing_complete(whale_id, "faded")
                 await self._remove_from_queue(whale_id)
             else:
                 self._record_decision(
                     whale_id=whale_id,
                     action="failed",
-                    reason=f"Failed to execute order on {market_ticker}",
+                    reason=f"Failed to execute fade order on {market_ticker}",
                     whale_data=whale,
                 )
                 self._whales_skipped += 1
@@ -359,46 +395,95 @@ class WhaleExecutionService:
                 f"(total tracked: {len(self._evaluated_whale_ids)})"
             )
 
-    async def _execute_whale_follow(
-        self,
-        whale: Dict[str, Any],
-        whale_id: str
-    ) -> tuple[bool, Optional[str]]:
+    def _should_fade_whale(self, whale_data: Dict[str, Any]) -> tuple[bool, str]:
         """
-        Execute a whale follow trade.
+        Whale Low Leverage Fade Strategy filter.
+
+        FADE (bet NO) when:
+        1. Whale bets YES
+        2. Leverage < 2 (price > 33c)
+
+        This is a VALIDATED strategy from Session 013:
+        - Edge: +5.79%
+        - Improvement vs baseline: +6.78%
+        - 11/14 price buckets positive
 
         Args:
-            whale: Whale data dict
+            whale_data: Dict containing whale trade data
+
+        Returns:
+            Tuple of (should_trade, reason)
+        """
+        side = whale_data.get("side", "")
+        price_cents = whale_data.get("price_cents", 0)
+
+        # Only fade YES whales (we bet NO to fade them)
+        if side != "yes":
+            return False, "whale_not_yes"
+
+        # Validate price
+        if price_cents <= 0 or price_cents >= 100:
+            return False, f"invalid_price:{price_cents}"
+
+        # Calculate leverage: (100 - price) / price
+        # Low leverage = price > 33c (leverage < 2)
+        leverage = (100 - price_cents) / price_cents
+
+        if leverage >= 2:
+            return False, f"leverage_too_high:{leverage:.2f}"
+
+        return True, f"fade_yes_lev:{leverage:.2f}"
+
+    async def _execute_whale_fade(
+        self,
+        whale: Dict[str, Any],
+        whale_id: str,
+        fade_reason: str
+    ) -> tuple[bool, Optional[str]]:
+        """
+        Execute a whale fade trade (bet NO to fade YES whale).
+
+        Whale Low Leverage Fade Strategy:
+        - Whale bet YES with leverage < 2
+        - We FADE by betting NO at (100 - whale_price)
+
+        Args:
+            whale: Whale data dict (must be a YES whale with low leverage)
             whale_id: Unique whale identifier
+            fade_reason: Reason string from _should_fade_whale
 
         Returns:
             Tuple of (success, order_id)
         """
         from ..services.trading_decision_service import TradingDecision, TradingStrategy
 
-        # Import constant from trading decision service
-        WHALE_FOLLOW_CONTRACTS = 5
+        # Position size for fade trades
+        WHALE_FADE_CONTRACTS = 5
 
         try:
-            # Build trading decision
             market_ticker = whale.get("market_ticker", "")
-            side = whale.get("side", "yes")
-            price_cents = whale.get("price_cents", 50)
+            whale_yes_price = whale.get("price_cents", 50)
+
+            # FADE: We bet NO at (100 - YES price)
+            # If whale bought YES at 60c, NO is at 40c
+            no_price = 100 - whale_yes_price
+            leverage = (100 - whale_yes_price) / whale_yes_price if whale_yes_price > 0 else 0
 
             decision = TradingDecision(
                 action="buy",
                 market=market_ticker,
-                side=side,
-                quantity=WHALE_FOLLOW_CONTRACTS,
-                price=price_cents,
-                reason=f"whale:{whale_id}",
+                side="no",  # FADE: Always bet NO
+                quantity=WHALE_FADE_CONTRACTS,
+                price=no_price,
+                reason=f"whale_fade:{whale_id}:{fade_reason}",
                 confidence=0.7,
-                strategy=TradingStrategy.WHALE_FOLLOWER,
+                strategy=TradingStrategy.WHALE_FOLLOWER,  # Reuse existing strategy enum
             )
 
             logger.info(
-                f"Executing whale follow: {market_ticker} {side.upper()} @ {price_cents}c "
-                f"(whale size: ${whale.get('whale_size_dollars', 0):.2f})"
+                f"FADE whale: {market_ticker} NO @ {no_price}c "
+                f"(whale: YES @ {whale_yes_price}c, lev={leverage:.2f}, "
+                f"size=${whale.get('whale_size_dollars', 0):.2f})"
             )
 
             # Execute through trading service
@@ -414,7 +499,7 @@ class WhaleExecutionService:
             return success, order_id
 
         except Exception as e:
-            logger.error(f"Error executing whale follow: {e}")
+            logger.error(f"Error executing whale fade: {e}")
             return False, None
 
     async def _emit_processing_complete(self, whale_id: str, action: str) -> None:
@@ -543,9 +628,11 @@ class WhaleExecutionService:
         skipped_age = 0
         skipped_position = 0
         skipped_orders = 0
+        skipped_filter = 0  # Strategy filter (not YES or leverage too high)
         already_followed = 0
         rate_limited = 0
         followed = 0
+        faded = 0  # Successfully faded whale
         failed = 0
 
         for decision in self._decision_history:
@@ -556,12 +643,16 @@ class WhaleExecutionService:
                 skipped_position += 1
             elif action == "skipped_orders":
                 skipped_orders += 1
+            elif action == "skipped_filter":
+                skipped_filter += 1
             elif action == "already_followed":
                 already_followed += 1
             elif action == "rate_limited":
                 rate_limited += 1
             elif action == "followed":
                 followed += 1
+            elif action == "faded":
+                faded += 1
             elif action == "failed":
                 failed += 1
 
@@ -582,9 +673,11 @@ class WhaleExecutionService:
             "skipped_age": skipped_age,
             "skipped_position": skipped_position,
             "skipped_orders": skipped_orders,
+            "skipped_filter": skipped_filter,
             "already_followed": already_followed,
             "rate_limited": rate_limited,
             "followed": followed,
+            "faded": faded,
             "failed": failed,
         }
 

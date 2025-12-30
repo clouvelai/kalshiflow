@@ -66,6 +66,10 @@ class V3Config:
     # Cleanup Configuration
     cleanup_on_startup: bool = True  # Cancel orphaned orders on startup (orders without order_group_id)
 
+    # Position/Order Checking Configuration
+    allow_multiple_positions_per_market: bool = False  # Skip position check for testing
+    allow_multiple_orders_per_market: bool = False  # Skip orders check for testing
+
     # State Machine Configuration
     sync_duration: float = 10.0  # seconds for Kalshi data sync
     health_check_interval: float = 5.0  # seconds
@@ -161,6 +165,10 @@ class V3Config:
         cleanup_default = "true" if environment == "paper" or "demo-api" in ws_url.lower() else "false"
         cleanup_on_startup = os.environ.get("V3_CLEANUP_ON_STARTUP", cleanup_default).lower() == "true"
 
+        # Position checking configuration - for testing multiple positions per market
+        allow_multiple_positions_per_market = os.environ.get("V3_ALLOW_MULTIPLE_POSITIONS", "false").lower() == "true"
+        allow_multiple_orders_per_market = os.environ.get("V3_ALLOW_MULTIPLE_ORDERS", "false").lower() == "true"
+
         # YES 80-90c strategy configuration
         yes8090_min_price = int(os.environ.get("YES8090_MIN_PRICE", "80"))
         yes8090_max_price = int(os.environ.get("YES8090_MAX_PRICE", "90"))
@@ -209,6 +217,8 @@ class V3Config:
             whale_window_minutes=whale_window_minutes,
             whale_min_size_cents=whale_min_size_cents,
             cleanup_on_startup=cleanup_on_startup,
+            allow_multiple_positions_per_market=allow_multiple_positions_per_market,
+            allow_multiple_orders_per_market=allow_multiple_orders_per_market,
             sync_duration=sync_duration,
             health_check_interval=health_check_interval,
             error_recovery_delay=error_recovery_delay,
@@ -240,6 +250,10 @@ class V3Config:
             logger.info(f"  - Whale queue: {whale_queue_size} bets, {whale_window_minutes}min window, min ${whale_min_size_cents/100:.2f}")
         else:
             logger.info(f"  - Whale detection: DISABLED")
+        if allow_multiple_positions_per_market:
+            logger.warning(f"  - ALLOW_MULTIPLE_POSITIONS: ENABLED (testing mode)")
+        if allow_multiple_orders_per_market:
+            logger.warning(f"  - ALLOW_MULTIPLE_ORDERS: ENABLED (testing mode)")
 
         # Log YES 80-90 config if strategy is enabled
         if trading_strategy_str == "yes_80_90":

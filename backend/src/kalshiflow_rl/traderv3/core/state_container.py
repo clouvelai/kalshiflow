@@ -957,6 +957,7 @@ class V3StateContainer:
             last_ws_update_time=last_ws_update_time,
         )
         self._market_prices_version += 1
+        self._trading_state_version += 1  # Trigger frontend update
         self._last_update = now
 
         logger.debug(
@@ -980,6 +981,7 @@ class V3StateContainer:
         if ticker in self._market_prices:
             del self._market_prices[ticker]
             self._market_prices_version += 1
+            self._trading_state_version += 1  # Trigger frontend update
             logger.debug(f"Market price cleared for {ticker}")
 
     @property

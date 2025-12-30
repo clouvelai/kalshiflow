@@ -188,6 +188,7 @@ class MarketPriceSyncer:
             # Increment version once for all updates
             if synced_count > 0:
                 self._state._market_prices_version += 1
+                self._state._trading_state_version += 1  # Trigger frontend update
                 self._state._last_update = now
 
             # Update health metrics
