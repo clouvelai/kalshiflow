@@ -1516,11 +1516,15 @@ class V3Coordinator:
                 total_steps += 1
             if self._lifecycle_syncer:
                 total_steps += 1
+            if self._upcoming_markets_syncer:
+                total_steps += 1
             if self._api_discovery_syncer:
                 total_steps += 1
             if self._event_lifecycle_service:
                 total_steps += 1
             if self._lifecycle_integration:
+                total_steps += 1
+            if self._trading_state_syncer:
                 total_steps += 1
 
             step = 1

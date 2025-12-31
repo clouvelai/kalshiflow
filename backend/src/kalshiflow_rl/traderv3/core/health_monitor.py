@@ -45,6 +45,7 @@ NON_CRITICAL_COMPONENTS: Set[str] = {
     "trades_integration",
     "whale_tracker",
     "health_monitor",
+    "trading_client",  # Trading can fail without crashing - degraded mode visibility
     # WebSocket listeners for real-time data
     "market_ticker_listener",
     "position_listener",
@@ -288,6 +289,10 @@ class V3HealthMonitor:
         # Add YES 80-90c service health if configured
         if self._yes_80_90_service:
             components_health["yes_80_90_service"] = self._yes_80_90_service.is_healthy()
+
+        # Add RLM service health if configured
+        if self._rlm_service:
+            components_health["rlm_service"] = self._rlm_service.is_healthy()
 
         return components_health
     
