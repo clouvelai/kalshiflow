@@ -61,7 +61,7 @@ class V3Config:
     # Validated +17.38% edge: When >65% trades are YES but price drops, bet NO
     rlm_yes_threshold: float = 0.65  # Minimum YES trade ratio to trigger signal
     rlm_min_trades: int = 15  # Minimum trades before evaluating signal
-    rlm_min_price_drop: int = 5  # Minimum YES price drop in cents (0 = any drop)
+    rlm_min_price_drop: int = 2  # Minimum YES price drop in cents (0 = any drop)
     rlm_contracts: int = 3  # Contracts per trade
     rlm_max_concurrent: int = 1000  # Maximum concurrent positions
     rlm_allow_reentry: bool = True  # Allow adding to position on stronger signal
@@ -223,7 +223,7 @@ class V3Config:
         # RLM (Reverse Line Movement) strategy configuration
         rlm_yes_threshold = float(os.environ.get("RLM_YES_THRESHOLD", "0.65"))
         rlm_min_trades = int(os.environ.get("RLM_MIN_TRADES", "15"))
-        rlm_min_price_drop = int(os.environ.get("RLM_MIN_PRICE_DROP", "0"))
+        rlm_min_price_drop = int(os.environ.get("RLM_MIN_PRICE_DROP", "2"))
         rlm_contracts = int(os.environ.get("RLM_CONTRACTS", "100"))
         rlm_max_concurrent = int(os.environ.get("RLM_MAX_CONCURRENT", "1000"))
         rlm_allow_reentry = os.environ.get("RLM_ALLOW_REENTRY", "true").lower() == "true"
