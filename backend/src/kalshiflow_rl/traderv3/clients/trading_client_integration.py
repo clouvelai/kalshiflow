@@ -1053,6 +1053,9 @@ class V3TradingClientIntegration:
 
                     for market in event.get("markets", []):
                         if market.get("status") in ("open", "active"):
+                            # Skip markets with no 24h trading activity
+                            if market.get("volume_24h", 0) <= 0:
+                                continue
                             market["category"] = event.get("category", "")
                             all_markets.append(market)
 

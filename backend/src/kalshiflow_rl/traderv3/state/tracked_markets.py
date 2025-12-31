@@ -68,6 +68,7 @@ class TrackedMarket:
         # Real-time market data (updated by syncer)
         price: Current YES price in cents
         volume: Volume traded
+        volume_24h: Volume traded in last 24 hours
         open_interest: Open interest
         yes_bid: Best YES bid
         yes_ask: Best YES ask
@@ -89,6 +90,7 @@ class TrackedMarket:
     # Real-time market data
     price: int = 0
     volume: int = 0
+    volume_24h: int = 0
     open_interest: int = 0
     yes_bid: int = 0
     yes_ask: int = 0
@@ -113,6 +115,7 @@ class TrackedMarket:
             "last_sync": self.last_sync,
             "price": self.price,
             "volume": self.volume,
+            "volume_24h": self.volume_24h,
             "open_interest": self.open_interest,
             "yes_bid": self.yes_bid,
             "yes_ask": self.yes_ask,
@@ -146,6 +149,7 @@ class TrackedMarket:
             last_sync=data.get("last_sync"),
             price=data.get("price", 0),
             volume=data.get("volume", 0),
+            volume_24h=data.get("volume_24h", 0),
             open_interest=data.get("open_interest", 0),
             yes_bid=data.get("yes_bid", 0),
             yes_ask=data.get("yes_ask", 0),

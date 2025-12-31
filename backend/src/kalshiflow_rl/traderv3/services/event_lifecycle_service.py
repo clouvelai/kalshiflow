@@ -564,6 +564,10 @@ class EventLifecycleService:
             tracked_at=time.time(),
             market_info=market_info,
             discovery_source="api",
+            # Populate volume fields from API data
+            volume=market_info.get("volume", 0),
+            volume_24h=market_info.get("volume_24h", 0),
+            open_interest=market_info.get("open_interest", 0),
         )
 
         # Step 5: Add to state

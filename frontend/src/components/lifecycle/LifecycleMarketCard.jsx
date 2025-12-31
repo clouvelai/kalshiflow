@@ -286,11 +286,16 @@ PriceDisplay.displayName = 'PriceDisplay';
 /**
  * StatsRow - Volume and time displays
  */
-const StatsRow = memo(({ volume, volumeDelta, timeSinceTrack, timeUntilClose, closingSoon }) => (
+const StatsRow = memo(({ volume, volume24h, volumeDelta, timeSinceTrack, timeUntilClose, closingSoon }) => (
   <div className="flex items-center justify-between text-xs text-gray-500">
     <div className="flex items-center gap-3">
       <span className="font-mono">
         Vol: {formatVolume(volume || 0)}
+        {volume24h > 0 && (
+          <span className="text-blue-400 ml-1.5">
+            ({formatVolume(volume24h)})
+          </span>
+        )}
         {volumeDelta !== 0 && (
           <span className={`ml-1 ${volumeDelta > 0 ? 'text-emerald-400' : 'text-red-400'}`}>
             ({volumeDelta > 0 ? '+' : ''}{formatVolume(volumeDelta)})
@@ -685,6 +690,7 @@ const LifecycleMarketCard = ({ market, rlmState, tradePulse }) => {
       <div className="mt-3">
         <StatsRow
           volume={market.volume}
+          volume24h={market.volume_24h}
           volumeDelta={volumeDelta}
           timeSinceTrack={timeSinceTrack}
           timeUntilClose={timeUntilClose}
