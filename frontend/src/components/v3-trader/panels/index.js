@@ -7,3 +7,4 @@ export { default as FollowedTradesPanel } from './FollowedTradesPanel';
 export { default as DecisionAuditPanel } from './DecisionAuditPanel';
 export { default as PositionListPanel } from './PositionListPanel';
 export { default as SettlementsPanel } from './SettlementsPanel';
+export { default as TradeProcessingPanel } from './TradeProcessingPanel';

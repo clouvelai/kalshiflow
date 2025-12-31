@@ -17,15 +17,15 @@ const INITIAL_METRICS = {
 };
 
 /**
- * Initial state for whale queue
+ * Initial state for trade processing
  */
-const INITIAL_WHALE_QUEUE = {
-  queue: [],
-  stats: { trades_seen: 0, trades_discarded: 0, discard_rate_percent: 0 },
-  followed_whale_ids: [],
-  followed_whales: [],
+const INITIAL_TRADE_PROCESSING = {
+  recent_trades: [],
+  stats: { trades_seen: 0, trades_filtered: 0, trades_tracked: 0, filter_rate_percent: 0 },
+  decisions: { detected: 0, executed: 0, rate_limited: 0, skipped: 0, reentries: 0 },
   decision_history: [],
-  decision_stats: {}
+  last_updated: null,
+  timestamp: null
 };
 
 /**
@@ -36,8 +36,7 @@ export const useV3WebSocket = ({ onMessage }) => {
   const [currentState, setCurrentState] = useState('UNKNOWN');
   const [tradingState, setTradingState] = useState(null);
   const [lastUpdateTime, setLastUpdateTime] = useState(null);
-  const [whaleQueue, setWhaleQueue] = useState(INITIAL_WHALE_QUEUE);
-  const [processingWhaleId, setProcessingWhaleId] = useState(null);
+  const [tradeProcessing, setTradeProcessing] = useState(INITIAL_TRADE_PROCESSING);
   const [settlements, setSettlements] = useState([]);
   const [newSettlement, setNewSettlement] = useState(null);
   const [newOrderFill, setNewOrderFill] = useState(null);
@@ -284,30 +283,16 @@ export const useV3WebSocket = ({ onMessage }) => {
         }
         break;
 
-      case 'whale_queue':
+      case 'trade_processing':
         if (data.data) {
-          setWhaleQueue({
-            queue: data.data.queue || [],
-            stats: data.data.stats || { trades_seen: 0, trades_discarded: 0, discard_rate_percent: 0 },
-            version: data.data.version,
-            followed_whale_ids: data.data.followed_whale_ids || [],
-            followed_whales: data.data.followed_whales || [],
+          setTradeProcessing({
+            recent_trades: data.data.recent_trades || [],
+            stats: data.data.stats || { trades_seen: 0, trades_filtered: 0, trades_tracked: 0, filter_rate_percent: 0 },
+            decisions: data.data.decisions || { detected: 0, executed: 0, rate_limited: 0, skipped: 0, reentries: 0 },
             decision_history: data.data.decision_history || [],
-            decision_stats: data.data.decision_stats || {}
+            last_updated: data.data.last_updated || null,
+            timestamp: data.data.timestamp || null
           });
-        }
-        break;
-
-      case 'whale_processing':
-        if (data.data) {
-          const { whale_id, status } = data.data;
-          if (status === 'processing') {
-            setProcessingWhaleId(whale_id);
-          } else if (status === 'complete') {
-            setTimeout(() => {
-              setProcessingWhaleId(prev => prev === whale_id ? null : prev);
-            }, 300);
-          }
         }
         break;
 
@@ -374,8 +359,7 @@ export const useV3WebSocket = ({ onMessage }) => {
     currentState,
     tradingState,
     lastUpdateTime,
-    whaleQueue,
-    processingWhaleId,
+    tradeProcessing,
     settlements,
     newSettlement,
     dismissSettlement,

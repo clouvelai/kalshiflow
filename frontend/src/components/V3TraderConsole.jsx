@@ -3,11 +3,9 @@ import TradingSessionPanel from './TradingSessionPanel';
 
 // Panel components
 import {
-  WhaleQueuePanel,
-  FollowedTradesPanel,
-  DecisionAuditPanel,
   PositionListPanel,
-  SettlementsPanel
+  SettlementsPanel,
+  TradeProcessingPanel
 } from './v3-trader/panels';
 
 // UI components
@@ -25,7 +23,7 @@ import { useV3WebSocket, useConsoleMessages } from '../hooks/v3-trader';
  * This component orchestrates the V3 trading interface:
  * - WebSocket connection to V3 trader backend
  * - Trading state display (balance, positions, orders)
- * - Whale queue monitoring and decision audit
+ * - Trade processing stats and recent trades
  * - System console output
  * - Real-time metrics display
  */
@@ -44,8 +42,7 @@ const V3TraderConsole = () => {
     currentState,
     tradingState,
     lastUpdateTime,
-    whaleQueue,
-    processingWhaleId,
+    tradeProcessing,
     settlements,
     newSettlement,
     dismissSettlement,
@@ -75,13 +72,9 @@ const V3TraderConsole = () => {
         {/* Trading Session Panel - Unified session display with animations */}
         <TradingSessionPanel tradingState={tradingState} lastUpdateTime={lastUpdateTime} />
 
-        {/* Whale Queue Panel - Above positions for visibility */}
+        {/* Trade Processing Panel - Stats and recent tracked trades */}
         <div className="mb-6">
-          <WhaleQueuePanel whaleQueue={whaleQueue} processingWhaleId={processingWhaleId} />
-          <DecisionAuditPanel
-            decisionHistory={whaleQueue.decision_history}
-            decisionStats={whaleQueue.decision_stats}
-          />
+          <TradeProcessingPanel tradeProcessing={tradeProcessing} />
         </div>
 
         {/* Position List Panel - Detailed per-position P&L */}
@@ -90,11 +83,6 @@ const V3TraderConsole = () => {
           positionListener={tradingState?.position_listener}
           sessionUpdates={tradingState?.session_updates}
         />
-
-        {/* Followed Trades - Below positions */}
-        <div className="mb-6">
-          <FollowedTradesPanel followedWhales={whaleQueue.followed_whales} />
-        </div>
 
         {/* Settlements Panel - Recently closed positions */}
         <div className="mb-6">

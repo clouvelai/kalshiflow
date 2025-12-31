@@ -10,12 +10,21 @@ import asyncio
 import json
 import logging
 import time
+from datetime import datetime
 from typing import Dict, Any, List, Optional, Set
 from dataclasses import dataclass, asdict
 from collections import deque
 import weakref
 
 from starlette.websockets import WebSocket, WebSocketDisconnect
+
+
+class DateTimeEncoder(json.JSONEncoder):
+    """Custom JSON encoder that handles datetime objects."""
+    def default(self, obj):
+        if isinstance(obj, datetime):
+            return obj.isoformat()
+        return super().default(obj)
 
 from .event_bus import EventBus, EventType, StateTransitionEvent, TraderStatusEvent, WhaleQueueEvent, RLMMarketUpdateEvent, RLMTradeArrivedEvent
 
@@ -96,6 +105,10 @@ class V3WebSocketManager:
         self._pending_messages: Dict[str, Dict[str, Any]] = {}  # type -> latest message data
         self._coalesce_task: Optional[asyncio.Task] = None
         self._coalesce_interval = 0.1  # 100ms batching window
+
+        # Trade processing heartbeat (replaces whale_queue for RLM mode)
+        self._trade_processing_task: Optional[asyncio.Task] = None
+        self._trade_processing_interval = 1.5  # 1.5 seconds
 
         # State transition history buffer (last 20 transitions)
         # This ensures late-connecting clients can see the startup sequence
@@ -192,6 +205,11 @@ class V3WebSocketManager:
         self._rlm_service = rlm_service
         logger.info("RLMService set on WebSocket manager")
 
+        # Start trade processing heartbeat if manager is already running
+        if self._running and (not self._trade_processing_task or self._trade_processing_task.done()):
+            self._trade_processing_task = asyncio.create_task(self._trade_processing_heartbeat())
+            logger.info("Started trade processing heartbeat (1.5s interval)")
+
     def set_upcoming_markets_syncer(self, syncer: 'UpcomingMarketsSyncer') -> None:
         """
         Set the upcoming markets syncer for sending snapshots on connect.
@@ -226,7 +244,12 @@ class V3WebSocketManager:
         
         # Start periodic tasks
         self._ping_task = asyncio.create_task(self._ping_clients())
-        
+
+        # Start trade processing heartbeat if RLM service is available
+        if self._rlm_service:
+            self._trade_processing_task = asyncio.create_task(self._trade_processing_heartbeat())
+            logger.info("Started trade processing heartbeat (1.5s interval)")
+
         logger.info("✅ TRADER V3 WebSocket Manager started")
     
     async def stop(self) -> None:
@@ -250,6 +273,14 @@ class V3WebSocketManager:
             self._coalesce_task.cancel()
             try:
                 await self._coalesce_task
+            except asyncio.CancelledError:
+                pass
+
+        # Cancel trade processing heartbeat task
+        if self._trade_processing_task and not self._trade_processing_task.done():
+            self._trade_processing_task.cancel()
+            try:
+                await self._trade_processing_task
             except asyncio.CancelledError:
                 pass
 
@@ -444,6 +475,8 @@ class V3WebSocketManager:
             # Send RLM market states snapshot if RLM service is available
             if self._rlm_service and client_id in self._clients:
                 await self._send_rlm_states_snapshot(client_id)
+                # Also send initial trade_processing snapshot
+                await self._send_trade_processing_snapshot(client_id)
 
             # Send upcoming markets snapshot if syncer is available
             if self._upcoming_markets_syncer and client_id in self._clients:
@@ -755,6 +788,62 @@ class V3WebSocketManager:
             "timestamp": time.strftime("%H:%M:%S", time.localtime(event.timestamp)),
         })
 
+    # ========== Trade Processing Heartbeat (replaces whale_queue for RLM) ==========
+
+    async def _trade_processing_heartbeat(self) -> None:
+        """
+        Periodic broadcast of trade processing stats.
+
+        Runs every 1.5 seconds to ensure stats are always visible in the UI,
+        even when no tracked trades are arriving.
+        """
+        while self._running:
+            try:
+                await asyncio.sleep(self._trade_processing_interval)
+                await self._broadcast_trade_processing()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Error in trade processing heartbeat: {e}")
+
+    async def _broadcast_trade_processing(self) -> None:
+        """
+        Broadcast trade processing state to all connected clients.
+
+        Sends recent tracked trades, stats, and decision breakdown.
+        Replaces the old whale_queue broadcast for RLM mode.
+        """
+        if not self._rlm_service:
+            return
+
+        stats = self._rlm_service.get_stats()
+        total = stats.get("trades_processed", 0) + stats.get("trades_filtered", 0)
+
+        # Calculate filter rate
+        filter_rate = 0.0
+        if total > 0:
+            filter_rate = round(stats.get("trades_filtered", 0) / total * 100, 1)
+
+        await self.broadcast_message("trade_processing", {
+            "recent_trades": self._rlm_service.get_recent_tracked_trades(limit=20),
+            "stats": {
+                "trades_seen": total,
+                "trades_filtered": stats.get("trades_filtered", 0),
+                "trades_tracked": stats.get("trades_processed", 0),
+                "filter_rate_percent": filter_rate,
+            },
+            "decisions": {
+                "detected": stats.get("signals_detected", 0),
+                "executed": stats.get("signals_executed", 0),
+                "rate_limited": stats.get("rate_limited_count", 0),
+                "skipped": stats.get("signals_skipped", 0),
+                "reentries": stats.get("reentries", 0),
+            },
+            "decision_history": self._rlm_service.get_decision_history(limit=20),
+            "last_updated": time.time(),
+            "timestamp": time.strftime("%H:%M:%S"),
+        })
+
     async def _handle_client_message(self, client_id: str, message: str) -> None:
         """
         Handle message from WebSocket client.
@@ -811,7 +900,8 @@ class V3WebSocketManager:
         
         try:
             # Send message directly - starlette websockets handle their own state internally
-            await client.websocket.send_text(json.dumps(message))
+            # Use custom encoder to handle datetime objects in case they leak through
+            await client.websocket.send_text(json.dumps(message, cls=DateTimeEncoder))
             self._messages_sent += 1
                 
         except (RuntimeError, ConnectionError) as e:
@@ -1015,6 +1105,56 @@ class V3WebSocketManager:
             )
         except Exception as e:
             logger.warning(f"Could not send RLM states snapshot to client {client_id}: {e}")
+
+    async def _send_trade_processing_snapshot(self, client_id: str) -> None:
+        """
+        Send trade processing snapshot to a specific client.
+
+        Called when a new client connects in RLM mode.
+        Provides immediate visibility into trade processing stats.
+
+        Args:
+            client_id: Client ID to send snapshot to
+        """
+        if not self._rlm_service:
+            return
+
+        if client_id not in self._clients:
+            return
+
+        try:
+            stats = self._rlm_service.get_stats()
+            total = stats.get("trades_processed", 0) + stats.get("trades_filtered", 0)
+
+            filter_rate = 0.0
+            if total > 0:
+                filter_rate = round(stats.get("trades_filtered", 0) / total * 100, 1)
+
+            await self._send_to_client(client_id, {
+                "type": "trade_processing",
+                "data": {
+                    "recent_trades": self._rlm_service.get_recent_tracked_trades(limit=20),
+                    "stats": {
+                        "trades_seen": total,
+                        "trades_filtered": stats.get("trades_filtered", 0),
+                        "trades_tracked": stats.get("trades_processed", 0),
+                        "filter_rate_percent": filter_rate,
+                    },
+                    "decisions": {
+                        "detected": stats.get("signals_detected", 0),
+                        "executed": stats.get("signals_executed", 0),
+                        "rate_limited": stats.get("rate_limited_count", 0),
+                        "skipped": stats.get("signals_skipped", 0),
+                        "reentries": stats.get("reentries", 0),
+                    },
+                    "decision_history": self._rlm_service.get_decision_history(limit=20),
+                    "last_updated": time.time(),
+                    "timestamp": time.strftime("%H:%M:%S"),
+                }
+            })
+            logger.debug(f"Sent trade processing snapshot to client {client_id}")
+        except Exception as e:
+            logger.warning(f"Could not send trade processing snapshot to client {client_id}: {e}")
 
     async def _send_upcoming_markets_snapshot(self, client_id: str) -> None:
         """
