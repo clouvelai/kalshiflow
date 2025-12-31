@@ -583,7 +583,9 @@ class RLMService:
                     # Log orderbook state for Phase 2 analysis
                     self._log_orderbook_at_signal(signal, snapshot)
 
-                    # Use midpoint - fair price, will fill if market agrees
+                    # TODO: Revisit pricing logic with quant - naive midpoint may hurt
+                    # strategy edge. Consider: bid+1 for passive, ask for aggressive,
+                    # or dynamic based on signal strength/urgency.
                     entry_price = (best_no_ask + best_no_bid) // 2
                 else:
                     # No orderbook data - skip this signal
