@@ -46,17 +46,27 @@ const LifecycleMarketCard = ({ market, rlmState, tradePulse }) => {
   const priceDelta = market.price_delta || 0;
   const volumeDelta = market.volume_delta || 0;
 
-  // Time since tracking
+  // Time since tracking (tracked_at is Unix seconds, Date.now() is milliseconds)
   const trackedAt = market.tracked_at;
   const timeSinceTrack = trackedAt
-    ? formatTimeSince(Date.now() - trackedAt)
+    ? formatTimeSince(Date.now() - trackedAt * 1000)
     : null;
 
   // Is this a "new" market (tracked < 5 minutes)?
-  const isNew = trackedAt && (Date.now() - trackedAt) < 5 * 60 * 1000;
+  const isNew = trackedAt && (Date.now() - trackedAt * 1000) < 5 * 60 * 1000;
 
   // Is this "hot" (high volume delta)?
   const isHot = Math.abs(volumeDelta) > 50000; // $500+ volume delta
+
+  // Time until close (from backend time_to_close_seconds or calculated from close_ts)
+  const timeToClose = market.time_to_close_seconds
+    ?? (market.close_ts ? market.close_ts - Math.floor(Date.now() / 1000) : null);
+  const timeUntilClose = timeToClose && timeToClose > 0
+    ? formatTimeUntil(timeToClose)
+    : null;
+
+  // Is this closing soon (< 1 hour)?
+  const closingSoon = timeToClose && timeToClose < 3600;
 
   return (
     <div
@@ -103,6 +113,11 @@ const LifecycleMarketCard = ({ market, rlmState, tradePulse }) => {
               HOT
             </span>
           )}
+          {closingSoon && (
+            <span className="text-[10px] bg-amber-500/20 text-amber-400 px-1.5 py-0.5 rounded">
+              SOON
+            </span>
+          )}
         </div>
       </div>
 
@@ -144,13 +159,21 @@ const LifecycleMarketCard = ({ market, rlmState, tradePulse }) => {
           </span>
         </div>
 
-        {/* Time tracked */}
-        {timeSinceTrack && (
-          <span className="flex items-center gap-1">
-            <ClockIcon />
-            {timeSinceTrack}
-          </span>
-        )}
+        {/* Time displays: tracked time + close time */}
+        <div className="flex items-center gap-2">
+          {timeSinceTrack && (
+            <span className="flex items-center gap-1" title="Time since tracking started">
+              <ClockIcon />
+              {timeSinceTrack}
+            </span>
+          )}
+          {timeUntilClose && (
+            <span className={`flex items-center gap-1 ${closingSoon ? 'text-amber-400' : ''}`} title="Time until market closes">
+              <HourglassIcon />
+              {timeUntilClose}
+            </span>
+          )}
+        </div>
       </div>
 
       {/* RLM Stats Section - Always shown (even 0 trades) */}
@@ -270,6 +293,16 @@ function formatTimeSince(ms) {
   return `${hours}h`;
 }
 
+function formatTimeUntil(seconds) {
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h`;
+  const days = Math.floor(hours / 24);
+  return `${days}d`;
+}
+
 function formatVolume(cents) {
   const dollars = Math.abs(cents) / 100;
   if (dollars >= 1000) return `$${(dollars / 1000).toFixed(1)}k`;
@@ -285,15 +318,30 @@ function getCategoryStyle(category) {
     politics: 'bg-red-500/20 text-red-400',
     economics: 'bg-green-500/20 text-green-400',
     climate: 'bg-cyan-500/20 text-cyan-400',
+    financials: 'bg-emerald-500/20 text-emerald-400',
+    science: 'bg-indigo-500/20 text-indigo-400',
+    world: 'bg-teal-500/20 text-teal-400',
+    tech: 'bg-violet-500/20 text-violet-400',
+    culture: 'bg-fuchsia-500/20 text-fuchsia-400',
   };
-  return styles[category] || 'bg-gray-500/20 text-gray-400';
+  // Case-insensitive lookup
+  const key = (category || '').toLowerCase();
+  return styles[key] || 'bg-gray-500/20 text-gray-400';
 }
 
-// Simple clock icon
+// Simple clock icon (time since tracked)
 const ClockIcon = () => (
   <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
       d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+  </svg>
+);
+
+// Hourglass icon (time until close)
+const HourglassIcon = () => (
+  <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+      d="M12 8V4m0 16v-4m-6-4h12M7 4h10v2a4 4 0 01-4 4h-2a4 4 0 01-4-4V4zm0 16h10v-2a4 4 0 00-4-4h-2a4 4 0 00-4 4v2z" />
   </svg>
 );
 

@@ -93,6 +93,14 @@ class V3Config:
     lifecycle_max_markets: int = 1000  # Maximum tracked markets (orderbook WS limit)
     lifecycle_sync_interval: int = 30  # Seconds between market info syncs
 
+    # API Discovery Configuration (bootstrap lifecycle with already-open markets)
+    api_discovery_enabled: bool = True  # Enable REST API-based market discovery
+    api_discovery_interval: int = 300  # Seconds between API discovery syncs (5 min)
+    api_discovery_batch_size: int = 200  # Maximum markets to fetch per API call
+
+    # Discovery Filtering Configuration
+    discovery_close_min_minutes: int = 10  # Skip markets closing within N minutes (avoid settling)
+
     # State Machine Configuration
     sync_duration: float = 10.0  # seconds for Kalshi data sync
     health_check_interval: float = 5.0  # seconds
@@ -223,6 +231,14 @@ class V3Config:
         lifecycle_max_markets = int(os.environ.get("LIFECYCLE_MAX_MARKETS", "1000"))
         lifecycle_sync_interval = int(os.environ.get("LIFECYCLE_SYNC_INTERVAL", "30"))
 
+        # API Discovery configuration (bootstrap with already-open markets)
+        api_discovery_enabled = os.environ.get("API_DISCOVERY_ENABLED", "true").lower() == "true"
+        api_discovery_interval = int(os.environ.get("API_DISCOVERY_INTERVAL", "300"))
+        api_discovery_batch_size = int(os.environ.get("API_DISCOVERY_BATCH_SIZE", "200"))
+
+        # Discovery Filtering configuration
+        discovery_close_min_minutes = int(os.environ.get("DISCOVERY_CLOSE_MIN_MINUTES", "10"))
+
         sync_duration = float(os.environ.get("V3_SYNC_DURATION", os.environ.get("V3_CALIBRATION_DURATION", "10.0")))
         health_check_interval = float(os.environ.get("V3_HEALTH_CHECK_INTERVAL", "5.0"))
         error_recovery_delay = float(os.environ.get("V3_ERROR_RECOVERY_DELAY", "30.0"))
@@ -277,6 +293,10 @@ class V3Config:
             lifecycle_categories=lifecycle_categories,
             lifecycle_max_markets=lifecycle_max_markets,
             lifecycle_sync_interval=lifecycle_sync_interval,
+            api_discovery_enabled=api_discovery_enabled,
+            api_discovery_interval=api_discovery_interval,
+            api_discovery_batch_size=api_discovery_batch_size,
+            discovery_close_min_minutes=discovery_close_min_minutes,
             sync_duration=sync_duration,
             health_check_interval=health_check_interval,
             error_recovery_delay=error_recovery_delay,
@@ -295,6 +315,11 @@ class V3Config:
         if market_mode == "lifecycle":
             logger.info(f"    - Categories: {', '.join(lifecycle_categories)}")
             logger.info(f"    - Max tracked: {lifecycle_max_markets}")
+            if api_discovery_enabled:
+                logger.info(f"    - API discovery: ENABLED (interval={api_discovery_interval}s, batch={api_discovery_batch_size})")
+                logger.info(f"    - Discovery filter: skip closing <{discovery_close_min_minutes}min, sorted by soonest")
+            else:
+                logger.info(f"    - API discovery: DISABLED")
         elif market_tickers:
             logger.info(f"  - Markets: {', '.join(market_tickers[:3])}{'...' if len(market_tickers) > 3 else ''} ({len(market_tickers)} total)")
         logger.info(f"  - Max markets: {max_markets}")

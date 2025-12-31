@@ -114,6 +114,7 @@ class EventLifecycleService:
         self._events_received = 0
         self._events_by_type: Dict[str, int] = {}
         self._markets_tracked = 0
+        self._markets_from_api = 0  # Markets tracked via API discovery
         self._markets_rejected_capacity = 0
         self._markets_rejected_category = 0
         self._rest_lookups = 0
@@ -282,6 +283,7 @@ class EventLifecycleService:
             close_ts=payload.get("close_ts", 0),
             tracked_at=time.time(),
             market_info=market_info,
+            discovery_source="lifecycle_ws",
         )
 
         # Add to state
@@ -300,6 +302,7 @@ class EventLifecycleService:
             open_ts=tracked_market.open_ts,
             close_ts=tracked_market.close_ts,
             market_info=market_info,
+            discovery_source="lifecycle_ws",
         )
 
         self._markets_tracked += 1
@@ -474,6 +477,139 @@ class EventLifecycleService:
 
         return False
 
+    async def track_market_from_api_data(
+        self,
+        market_info: Dict[str, Any],
+    ) -> bool:
+        """
+        Track a market directly from API data (no REST lookup needed).
+
+        Called by ApiDiscoverySyncer when discovering already-open markets
+        via REST API. This bypasses the REST lookup step since the API
+        discovery already has the full market data.
+
+        Flow:
+            1. Capacity check (fast fail)
+            2. Duplicate check
+            3. Category filter using _is_allowed_category()
+            4. Create TrackedMarket with discovery_source="api"
+            5. Persist to state and DB
+            6. Emit MARKET_TRACKED event
+            7. Call orderbook subscribe callback
+
+        Args:
+            market_info: Full market data dict from REST API
+
+        Returns:
+            True if tracked successfully, False if rejected
+        """
+        market_ticker = market_info.get("ticker", "")
+        if not market_ticker:
+            logger.warning("track_market_from_api_data: No ticker in market_info")
+            return False
+
+        # Step 1: Capacity check (fast fail)
+        if self._tracked_markets.at_capacity():
+            self._markets_rejected_capacity += 1
+            logger.debug(f"Rejected {market_ticker}: at capacity")
+            return False
+
+        # Step 2: Duplicate check
+        if self._tracked_markets.is_tracked(market_ticker):
+            logger.debug(f"Already tracking {market_ticker}")
+            return False
+
+        # Step 3: Category filter
+        category = market_info.get("category", "").lower()
+        if not self._is_allowed_category(category):
+            self._markets_rejected_category += 1
+            self._tracked_markets.record_category_rejection()
+            logger.debug(f"Rejected {market_ticker}: category '{category}' not allowed")
+            return False
+
+        # Step 4: Create tracked market with discovery_source="api"
+        # Parse timestamps from API format
+        open_time = market_info.get("open_time", "")
+        close_time = market_info.get("close_time", "")
+
+        # Convert ISO timestamps to Unix timestamps
+        open_ts = 0
+        close_ts = 0
+        try:
+            from datetime import datetime
+            if open_time:
+                if isinstance(open_time, str):
+                    open_dt = datetime.fromisoformat(open_time.replace("Z", "+00:00"))
+                    open_ts = int(open_dt.timestamp())
+                else:
+                    open_ts = int(open_time)
+            if close_time:
+                if isinstance(close_time, str):
+                    close_dt = datetime.fromisoformat(close_time.replace("Z", "+00:00"))
+                    close_ts = int(close_dt.timestamp())
+                else:
+                    close_ts = int(close_time)
+        except (ValueError, TypeError) as e:
+            logger.debug(f"Could not parse timestamps for {market_ticker}: {e}")
+
+        tracked_market = TrackedMarket(
+            ticker=market_ticker,
+            event_ticker=market_info.get("event_ticker", ""),
+            title=market_info.get("title", ""),
+            category=market_info.get("category", ""),
+            status=MarketStatus.ACTIVE,
+            created_ts=open_ts,  # Use open_ts as created_ts for API-discovered markets
+            open_ts=open_ts,
+            close_ts=close_ts,
+            tracked_at=time.time(),
+            market_info=market_info,
+            discovery_source="api",
+        )
+
+        # Step 5: Add to state
+        added = await self._tracked_markets.add_market(tracked_market)
+        if not added:
+            logger.warning(f"Failed to add {market_ticker} to state")
+            return False
+
+        # Persist to DB
+        await self._db.insert_tracked_market(
+            market_ticker=market_ticker,
+            event_ticker=tracked_market.event_ticker,
+            title=tracked_market.title,
+            category=tracked_market.category,
+            created_ts=tracked_market.created_ts,
+            open_ts=tracked_market.open_ts,
+            close_ts=tracked_market.close_ts,
+            market_info=market_info,
+            discovery_source="api",
+        )
+
+        self._markets_tracked += 1
+        self._markets_from_api += 1
+
+        # Step 6: Emit MARKET_TRACKED event
+        await self._event_bus.emit_market_tracked(
+            market_ticker=market_ticker,
+            category=tracked_market.category,
+            market_info=market_info,
+        )
+
+        # Step 7: Request orderbook subscription
+        if self._on_subscribe:
+            try:
+                success = await self._on_subscribe(market_ticker)
+                if success:
+                    logger.info(f"API discovered and subscribed to {market_ticker} ({category})")
+                else:
+                    logger.warning(f"API discovered {market_ticker} but orderbook subscription failed")
+            except Exception as e:
+                logger.error(f"Error subscribing to {market_ticker}: {e}")
+        else:
+            logger.info(f"API discovered {market_ticker} ({category}) - no subscribe callback")
+
+        return True
+
     async def start(self) -> None:
         """Start the event lifecycle service."""
         if self._running:
@@ -526,6 +662,7 @@ class EventLifecycleService:
             "events_received": self._events_received,
             "events_by_type": dict(self._events_by_type),
             "markets_tracked": self._markets_tracked,
+            "markets_from_api": self._markets_from_api,
             "rejected_capacity": self._markets_rejected_capacity,
             "rejected_category": self._markets_rejected_category,
             "rest_lookups": self._rest_lookups,
@@ -549,6 +686,7 @@ class EventLifecycleService:
             "events_received": stats["events_received"],
             "events_by_type": stats["events_by_type"],
             "markets_tracked": stats["markets_tracked"],
+            "markets_from_api": stats["markets_from_api"],
             "rejected_capacity": stats["rejected_capacity"],
             "rejected_category": stats["rejected_category"],
             "rest_lookups": stats["rest_lookups"],

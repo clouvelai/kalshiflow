@@ -535,6 +535,7 @@ class RLDatabase:
                 -- Tracking metadata
                 status VARCHAR(20) NOT NULL DEFAULT 'active',
                 tracked_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                discovery_source VARCHAR(20) NOT NULL DEFAULT 'lifecycle_ws',
 
                 -- Full REST response cached for UI grid
                 market_info JSONB
@@ -567,6 +568,20 @@ class RLDatabase:
 
         await conn.execute('''
             COMMENT ON TABLE tracked_markets IS 'Markets tracked via Event Lifecycle Discovery mode for orderbook subscription';
+        ''')
+
+        # Migration: Add discovery_source column if not exists (for existing tables)
+        await conn.execute('''
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name = 'tracked_markets' AND column_name = 'discovery_source'
+                ) THEN
+                    ALTER TABLE tracked_markets
+                    ADD COLUMN discovery_source VARCHAR(20) NOT NULL DEFAULT 'lifecycle_ws';
+                END IF;
+            END $$;
         ''')
 
     async def _create_lifecycle_events_table(self, conn: asyncpg.Connection):
@@ -1340,6 +1355,7 @@ class RLDatabase:
         open_ts: Optional[int] = None,
         close_ts: Optional[int] = None,
         market_info: Optional[Dict[str, Any]] = None,
+        discovery_source: str = "lifecycle_ws",
     ) -> Optional[int]:
         """
         Insert a new tracked market into the database.
@@ -1356,6 +1372,7 @@ class RLDatabase:
             open_ts: Market open timestamp in seconds
             close_ts: Market close timestamp in seconds
             market_info: Full REST response cached as JSONB
+            discovery_source: How market was discovered ("lifecycle_ws", "api", "db_recovery")
 
         Returns:
             Row ID if inserted successfully, None if market already exists
@@ -1367,8 +1384,8 @@ class RLDatabase:
                     INSERT INTO tracked_markets (
                         market_ticker, event_ticker, title, category,
                         created_ts, open_ts, close_ts, market_info,
-                        status, tracked_at
-                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'active', CURRENT_TIMESTAMP)
+                        status, tracked_at, discovery_source
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'active', CURRENT_TIMESTAMP, $9)
                     ON CONFLICT (market_ticker) DO NOTHING
                     RETURNING id
                 ''',
@@ -1380,6 +1397,7 @@ class RLDatabase:
                     open_ts,
                     close_ts,
                     json.dumps(market_info) if market_info else None,
+                    discovery_source,
                 )
 
                 if row_id:
@@ -1499,7 +1517,7 @@ class RLDatabase:
                 SELECT
                     id, market_ticker, event_ticker, title, category,
                     created_ts, open_ts, close_ts, determined_ts, settled_ts,
-                    status, tracked_at, market_info
+                    status, tracked_at, market_info, discovery_source
                 FROM tracked_markets
                 {where_clause}
                 ORDER BY tracked_at DESC
@@ -1535,7 +1553,7 @@ class RLDatabase:
                 SELECT
                     id, market_ticker, event_ticker, title, category,
                     created_ts, open_ts, close_ts, determined_ts, settled_ts,
-                    status, tracked_at, market_info
+                    status, tracked_at, market_info, discovery_source
                 FROM tracked_markets
                 WHERE market_ticker = $1
             ''', market_ticker)
@@ -1574,6 +1592,41 @@ class RLDatabase:
                 ''')
 
             return count or 0
+
+    async def clear_tracked_markets(self, status: Optional[str] = None) -> int:
+        """
+        Clear tracked markets from the database.
+
+        Used to reset discovery state before restarting the trader
+        with new filtering configuration.
+
+        Args:
+            status: If provided, only clear markets with this status.
+                    If None, clears ALL tracked markets.
+
+        Returns:
+            Number of markets deleted
+        """
+        async with self.get_connection() as conn:
+            try:
+                if status:
+                    result = await conn.execute('''
+                        DELETE FROM tracked_markets WHERE status = $1
+                    ''', status)
+                else:
+                    result = await conn.execute('''
+                        DELETE FROM tracked_markets
+                    ''')
+
+                # Parse "DELETE N" to get count
+                deleted = int(result.split()[-1]) if result else 0
+                logger.info(f"Cleared {deleted} tracked markets from database" +
+                           (f" (status={status})" if status else ""))
+                return deleted
+
+            except Exception as e:
+                logger.error(f"Failed to clear tracked markets: {e}")
+                return 0
 
     # ============================================================
     # Lifecycle Events CRUD Operations (Audit Trail)

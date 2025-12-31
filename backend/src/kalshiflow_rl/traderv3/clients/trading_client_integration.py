@@ -975,47 +975,65 @@ class V3TradingClientIntegration:
         self,
         categories: Optional[List[str]] = None,
         max_markets: int = 1000,
+        close_min_minutes: int = 10,
     ) -> List[Dict[str, Any]]:
         """
         Fetch open markets via events API with cursor pagination.
 
-        Uses GET /events?with_nested_markets=true to efficiently get category
-        and markets in single calls, avoiding N+1 event lookups. Paginates
-        through all events until max_markets valid markets are collected.
-
-        Used by ApiDiscoverySyncer to discover already-open markets on startup
-        and periodic refresh. Returns full market data sorted by open_time
-        descending (newest first).
+        Uses GET /events?with_nested_markets=true&min_close_ts=X to efficiently
+        get markets closing after N minutes. Results sorted by close_time ascending
+        (soonest first).
 
         Args:
             categories: Optional list of category substrings to filter by
-                        (case-insensitive substring match, same as EventLifecycleService)
-            max_markets: Maximum number of markets to fetch (default 1000)
+            max_markets: Maximum number of markets to return (default 1000)
+            close_min_minutes: Skip markets closing within N minutes (default 10)
 
         Returns:
-            List of market dicts sorted by open_time descending (newest first)
+            List of market dicts sorted by close_time ascending (soonest first)
 
         Raises:
             RuntimeError: If not connected
         """
-        from datetime import datetime
+        from datetime import datetime, timezone
 
         if not self._connected:
             raise RuntimeError("Cannot get open markets - trading client not connected")
+
+        def parse_close_time(market: Dict) -> Optional[float]:
+            """Parse close_time to timestamp, return None if invalid."""
+            close_time = market.get("close_time")
+            if not close_time:
+                return None
+            try:
+                if isinstance(close_time, str):
+                    close_dt = datetime.fromisoformat(close_time.replace("Z", "+00:00"))
+                    return close_dt.timestamp()
+                return float(close_time)
+            except (ValueError, TypeError):
+                return None
 
         try:
             all_markets: List[Dict[str, Any]] = []
             cursor: Optional[str] = None
             categories_lower = [c.lower() for c in (categories or [])]
             pages_fetched = 0
+            max_pages = 25  # Fetch up to 25 pages (~5000 events) to find soonest-closing markets
 
-            while len(all_markets) < max_markets:
-                # Fetch events page with nested markets
+            # Calculate min_close_ts for API filter (N minutes from now)
+            now_ts = int(datetime.now(timezone.utc).timestamp())
+            min_close_ts = now_ts + (close_min_minutes * 60) if close_min_minutes > 0 else None
+
+            # IMPORTANT: Fetch ALL pages first, then sort, then take top N
+            # The API returns events in arbitrary order, so soonest-closing markets
+            # may be on later pages (e.g., today's sports are often on pages 15-20)
+            while pages_fetched < max_pages:
                 response = await self._client.get_events(
                     status="open",
                     with_nested_markets=True,
-                    limit=200,  # Max per page for events API
+                    limit=200,
                     cursor=cursor,
+                    min_close_ts=min_close_ts,
                 )
                 self._metrics.api_calls += 1
                 pages_fetched += 1
@@ -1024,10 +1042,8 @@ class V3TradingClientIntegration:
                 cursor = response.get("cursor")
 
                 for event in events:
-                    # Filter by category (already on event!)
                     event_category = event.get("category", "").lower()
                     if categories_lower:
-                        # Use same logic as EventLifecycleService._is_allowed_category
                         category_match = any(
                             allowed in event_category or event_category in allowed
                             for allowed in categories_lower
@@ -1035,49 +1051,31 @@ class V3TradingClientIntegration:
                         if not category_match:
                             continue
 
-                    # Extract nested markets
                     for market in event.get("markets", []):
-                        # Accept both 'open' (production) and 'active' (demo API)
                         if market.get("status") in ("open", "active"):
-                            # Enrich market with category from parent event
                             market["category"] = event.get("category", "")
                             all_markets.append(market)
 
-                            if len(all_markets) >= max_markets:
-                                break
-
-                    if len(all_markets) >= max_markets:
-                        break
-
-                # No more pages
                 if not cursor:
                     break
 
             self._consecutive_api_errors = 0
 
-            # Sort by open_time descending (newest first)
-            def get_open_ts(market: Dict) -> float:
-                open_time = market.get("open_time")
-                if not open_time:
-                    return 0.0
-                try:
-                    if isinstance(open_time, str):
-                        open_dt = datetime.fromisoformat(open_time.replace("Z", "+00:00"))
-                        return open_dt.timestamp()
-                    else:
-                        return float(open_time)
-                except (ValueError, TypeError):
-                    return 0.0
+            # Sort by close_time ascending (soonest first)
+            all_markets.sort(key=lambda m: parse_close_time(m) or float('inf'))
 
-            all_markets.sort(key=get_open_ts, reverse=True)
-
-            # Trim to exact max_markets
+            # Take top max_markets
             result = all_markets[:max_markets]
 
+            # Log stats including soonest close time
+            soonest_close = None
+            if result:
+                soonest_close = result[0].get("close_time", "N/A")
             logger.info(
-                f"Found {len(result)} open markets via events API "
-                f"(max={max_markets}, categories={categories}, pages={pages_fetched})"
+                f"Discovery: {len(result)} markets from {len(all_markets)} total "
+                f"(pages={pages_fetched}, soonest={soonest_close})"
             )
+
             return result
 
         except Exception as e:

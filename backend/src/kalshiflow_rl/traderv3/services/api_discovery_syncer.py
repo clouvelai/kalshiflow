@@ -48,6 +48,7 @@ class ApiDiscoverySyncer:
         categories: List[str],
         sync_interval: float = 300.0,
         batch_size: int = 200,
+        close_min_minutes: int = 10,
     ):
         """
         Initialize API discovery syncer.
@@ -60,6 +61,7 @@ class ApiDiscoverySyncer:
             categories: Category list to filter markets (same as lifecycle)
             sync_interval: Seconds between periodic syncs (default 300 = 5 min)
             batch_size: Maximum markets to fetch per API call (default 200)
+            close_min_minutes: Skip markets closing within N minutes (default 10)
         """
         self._client = trading_client
         self._lifecycle_service = event_lifecycle_service
@@ -68,6 +70,7 @@ class ApiDiscoverySyncer:
         self._categories = categories
         self._sync_interval = sync_interval
         self._batch_size = batch_size
+        self._close_min_minutes = close_min_minutes
 
         # Syncer state
         self._sync_task: Optional[asyncio.Task] = None
@@ -85,7 +88,7 @@ class ApiDiscoverySyncer:
         logger.info(
             f"ApiDiscoverySyncer initialized "
             f"(sync_interval={sync_interval}s, batch_size={batch_size}, "
-            f"categories={categories})"
+            f"categories={categories}, close_min={close_min_minutes}min)"
         )
 
     async def start(self) -> None:
@@ -173,10 +176,11 @@ class ApiDiscoverySyncer:
 
             # Fetch open markets from trading client via events API
             # Uses cursor pagination to fetch up to remaining capacity
-            # Note: get_open_markets filters by categories and paginates efficiently
+            # Sorted by close_time ascending (soonest first)
             markets = await self._client.get_open_markets(
                 categories=self._categories,
-                max_markets=remaining,  # Fetch up to remaining capacity
+                max_markets=remaining,
+                close_min_minutes=self._close_min_minutes,
             )
 
             now = time.time()

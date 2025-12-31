@@ -832,6 +832,7 @@ class KalshiDemoTradingClient:
         with_nested_markets: bool = False,
         limit: int = 200,
         cursor: Optional[str] = None,
+        min_close_ts: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
         Get events with optional filtering and pagination.
@@ -847,6 +848,7 @@ class KalshiDemoTradingClient:
             with_nested_markets: Include markets nested in each event
             limit: Max results per page (1-200, default 200)
             cursor: Pagination cursor from previous response
+            min_close_ts: Filter events with at least one market closing after this Unix timestamp
 
         Returns:
             {"events": [...], "cursor": "..."} where cursor is empty if no more pages
@@ -862,6 +864,8 @@ class KalshiDemoTradingClient:
                 params.append("with_nested_markets=true")
             if cursor:
                 params.append(f"cursor={cursor}")
+            if min_close_ts:
+                params.append(f"min_close_ts={min_close_ts}")
 
             query_string = "&".join(params)
             response = await self._make_request("GET", f"/events?{query_string}")

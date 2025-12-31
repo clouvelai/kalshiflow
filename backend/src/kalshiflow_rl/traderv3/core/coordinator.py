@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from ..services.event_lifecycle_service import EventLifecycleService
     from ..services.tracked_markets_syncer import TrackedMarketsSyncer
     from ..services.upcoming_markets_syncer import UpcomingMarketsSyncer
+    from ..services.api_discovery_syncer import ApiDiscoverySyncer
     from ..state.tracked_markets import TrackedMarketsState
 
 from .state_machine import TraderStateMachine as V3StateMachine, TraderState as V3State
@@ -223,6 +224,7 @@ class V3Coordinator:
         self._event_lifecycle_service: Optional['EventLifecycleService'] = None
         self._lifecycle_syncer: Optional['TrackedMarketsSyncer'] = None
         self._upcoming_markets_syncer: Optional['UpcomingMarketsSyncer'] = None
+        self._api_discovery_syncer: Optional['ApiDiscoverySyncer'] = None
 
         self._started_at: Optional[float] = None
         self._running = False
@@ -320,6 +322,10 @@ class V3Coordinator:
 
             # Connect fill listener for real-time order fill notifications
             await self._connect_fill_listener()
+
+            # Start API discovery syncer AFTER trading client is connected
+            # This must come after trading client because it uses REST API calls
+            await self._start_api_discovery()
 
         # Transition to READY with actual metrics
         await self._transition_to_ready()
@@ -572,6 +578,13 @@ class V3Coordinator:
             # 10. Start EventLifecycleService
             await self._event_lifecycle_service.start()
 
+            # NOTE: ApiDiscoverySyncer is started AFTER trading client connects
+            # in _start_api_discovery() to ensure the client is ready for REST calls
+
+            # 10.1 Subscribe to MARKET_DETERMINED for state cleanup
+            await self._event_bus.subscribe_to_market_determined(self._handle_market_determined_cleanup)
+            logger.info("Subscribed to MARKET_DETERMINED for state cleanup")
+
             # 10a. Subscribe to orderbooks for recovered markets
             if recovered_tickers:
                 subscribed = 0
@@ -616,12 +629,14 @@ class V3Coordinator:
             await self._lifecycle_syncer.start()
 
             # 12. Start UpcomingMarketsSyncer (for upcoming markets schedule)
+            # NOTE: Paper/demo env has no realistic upcoming markets (test data opens in 2030).
+            # This feature is most useful with production API where real markets are scheduled.
             self._upcoming_markets_syncer = UpcomingMarketsSyncer(
                 trading_client=self._trading_client_integration,
                 websocket_manager=self._websocket_manager,
                 event_bus=self._event_bus,
                 sync_interval=60.0,  # Refresh every 60s
-                hours_ahead=4.0,      # 4-hour lookahead window
+                hours_ahead=24.0,    # 24-hour lookahead window
             )
             await self._upcoming_markets_syncer.start()
             self._websocket_manager.set_upcoming_markets_syncer(self._upcoming_markets_syncer)
@@ -931,6 +946,36 @@ class V3Coordinator:
         except Exception as e:
             logger.error(f"Error handling market ticker update: {e}")
 
+    async def _handle_market_determined_cleanup(self, event) -> None:
+        """
+        Handle market determined events for state cleanup.
+
+        Cleans up state container and optionally removes from tracked markets
+        to prevent unbounded memory growth.
+
+        Args:
+            event: MarketDeterminedEvent from event bus
+        """
+        try:
+            ticker = event.market_ticker
+
+            # Clean up state container (market prices, session tracking)
+            cleaned = self._state_container.cleanup_market(ticker)
+
+            # Optionally remove from tracked markets state
+            # Note: We keep it in tracked_markets_state for historical visibility
+            # but could remove after a delay if needed for memory management
+            if self._tracked_markets_state:
+                # Just log that the market was determined, don't remove yet
+                # The TrackedMarketsState keeps determined markets for UI display
+                pass
+
+            if cleaned:
+                logger.info(f"Coordinator cleaned up state for determined market: {ticker}")
+
+        except Exception as e:
+            logger.error(f"Error handling market determined cleanup: {e}")
+
     async def _update_market_ticker_subscriptions(self) -> None:
         """
         Update market ticker subscriptions based on current positions.
@@ -1040,6 +1085,62 @@ class V3Coordinator:
             # Don't fail startup if trading state syncer fails - it's non-critical
             logger.warning(f"Trading state syncer failed: {e}")
             self._trading_state_syncer = None
+
+    async def _start_api_discovery(self) -> None:
+        """
+        Start API discovery syncer for already-open markets.
+
+        This MUST be called AFTER trading client connects since it uses
+        REST API calls to fetch open markets. Called from _establish_connections()
+        after _connect_trading_client().
+        """
+        # Only start if lifecycle mode is active and config enables it
+        if self._config.market_mode != "lifecycle":
+            logger.debug("Skipping API discovery (not in lifecycle mode)")
+            return
+
+        if not self._config.api_discovery_enabled:
+            logger.debug("Skipping API discovery (disabled in config)")
+            return
+
+        if not self._trading_client_integration:
+            logger.debug("Skipping API discovery (no trading client)")
+            return
+
+        if not self._event_lifecycle_service:
+            logger.warning("Skipping API discovery (no event lifecycle service)")
+            return
+
+        try:
+            from ..services.api_discovery_syncer import ApiDiscoverySyncer
+
+            logger.info("Starting API discovery syncer for already-open markets...")
+
+            self._api_discovery_syncer = ApiDiscoverySyncer(
+                trading_client=self._trading_client_integration,
+                event_lifecycle_service=self._event_lifecycle_service,
+                tracked_markets_state=self._tracked_markets_state,
+                event_bus=self._event_bus,
+                categories=self._config.lifecycle_categories,
+                sync_interval=float(self._config.api_discovery_interval),
+                batch_size=self._config.api_discovery_batch_size,
+                close_min_minutes=self._config.discovery_close_min_minutes,
+            )
+            await self._api_discovery_syncer.start()
+
+            logger.info(
+                f"API discovery syncer active - "
+                f"categories: {', '.join(self._config.lifecycle_categories)}, "
+                f"interval: {self._config.api_discovery_interval}s"
+            )
+
+        except Exception as e:
+            logger.error(f"Failed to start API discovery syncer: {e}")
+            await self._event_bus.emit_system_activity(
+                activity_type="connection",
+                message=f"API discovery syncer failed: {str(e)}",
+                metadata={"error": str(e), "severity": "warning"}
+            )
 
     async def _connect_fill_listener(self) -> None:
         """
@@ -1415,6 +1516,8 @@ class V3Coordinator:
                 total_steps += 1
             if self._lifecycle_syncer:
                 total_steps += 1
+            if self._api_discovery_syncer:
+                total_steps += 1
             if self._event_lifecycle_service:
                 total_steps += 1
             if self._lifecycle_integration:
@@ -1461,6 +1564,11 @@ class V3Coordinator:
             if self._lifecycle_syncer:
                 logger.info(f"{step}/{total_steps} Stopping Lifecycle Syncer...")
                 await self._lifecycle_syncer.stop()
+                step += 1
+
+            if self._api_discovery_syncer:
+                logger.info(f"{step}/{total_steps} Stopping API Discovery Syncer...")
+                await self._api_discovery_syncer.stop()
                 step += 1
 
             if self._event_lifecycle_service:
@@ -1580,6 +1688,10 @@ class V3Coordinator:
         if self._rlm_service:
             components["rlm_service"] = self._rlm_service.get_stats()
 
+        # Add API discovery syncer if configured
+        if self._api_discovery_syncer:
+            components["api_discovery_syncer"] = self._api_discovery_syncer.get_health_details()
+
         # Add position listener if configured
         if self._position_listener:
             components["position_listener"] = self._position_listener.get_metrics()
@@ -1599,6 +1711,14 @@ class V3Coordinator:
         # Add trading state syncer if configured
         if self._trading_state_syncer:
             components["trading_state_syncer"] = self._trading_state_syncer.get_health_details()
+
+        # Add tracked markets state if configured (lifecycle mode)
+        if self._tracked_markets_state:
+            components["tracked_markets_state"] = self._tracked_markets_state.get_stats()
+
+        # Add event lifecycle service if configured
+        if self._event_lifecycle_service:
+            components["event_lifecycle_service"] = self._event_lifecycle_service.get_stats()
 
         # Get metrics from various sources
         orderbook_metrics = self._orderbook_integration.get_metrics()
