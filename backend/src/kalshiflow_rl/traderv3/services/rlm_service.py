@@ -416,8 +416,10 @@ class RLMService:
         market_ticker = trade_event.market_ticker
 
         # Store in tracked trades buffer (for Trade Processing panel)
+        # Generate trade_id from market_ticker and timestamp_ms since PublicTradeEvent doesn't have trade_id
+        trade_id = f"{market_ticker}:{trade_event.timestamp_ms}"
         tracked_trade = TrackedTrade(
-            trade_id=trade_event.trade_id,
+            trade_id=trade_id,
             market_ticker=market_ticker,
             side=trade_event.side,
             price_cents=trade_event.price_cents,
@@ -560,8 +562,7 @@ class RLMService:
         )
 
         try:
-            # Get orderbook for execution
-            order_type = "market"
+            # Get orderbook for execution price
             entry_price = None
 
             try:
@@ -578,21 +579,23 @@ class RLMService:
                 if no_asks and no_bids:
                     best_no_ask = min(no_asks.keys()) if no_asks else 99
                     best_no_bid = max(no_bids.keys()) if no_bids else 1
-                    no_spread = best_no_ask - best_no_bid
 
                     # Log orderbook state for Phase 2 analysis
                     self._log_orderbook_at_signal(signal, snapshot)
 
-                    if no_spread <= self._tight_spread:
-                        order_type = "market"
-                    elif no_spread >= self._wide_spread:
-                        order_type = "limit"
-                        entry_price = (best_no_ask + best_no_bid) // 2  # Midpoint
+                    # Use midpoint - fair price, will fill if market agrees
+                    entry_price = (best_no_ask + best_no_bid) // 2
+                else:
+                    # No orderbook data - skip this signal
+                    logger.warning(f"No orderbook data for {signal.market_ticker}, skipping signal")
+                    self._stats["signals_skipped"] += 1
+                    return
 
             except (asyncio.TimeoutError, Exception) as e:
-                logger.warning(f"Orderbook unavailable for {signal.market_ticker}: {e}")
+                logger.warning(f"Orderbook unavailable for {signal.market_ticker}: {e}, skipping signal")
                 self._stats["orderbook_fallbacks"] += 1
-                order_type = "market"
+                self._stats["signals_skipped"] += 1
+                return
 
             # Create trading decision
             action_type = "reentry" if signal.is_reentry else "executed"
