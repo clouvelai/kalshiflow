@@ -10,7 +10,15 @@ import React, { useMemo } from 'react';
  *
  * Also displays upcoming markets (unopened, opening within 4 hours) at the top.
  */
-const ActivityFeed = ({ events, onClear, upcomingMarkets = [] }) => {
+const ActivityFeed = ({ events, onClear, upcomingMarkets = [], rlmStates = {} }) => {
+  // Calculate tracked trades summary from RLM states
+  const { totalTrades, marketsWithTrades } = useMemo(() => {
+    const states = Object.values(rlmStates || {});
+    const total = states.reduce((sum, state) => sum + (state?.total_trades || 0), 0);
+    const withTrades = states.filter(state => (state?.total_trades || 0) > 0).length;
+    return { totalTrades: total, marketsWithTrades: withTrades };
+  }, [rlmStates]);
+
   // Aggregate and group events
   const groupedEvents = useMemo(() => {
     if (!events || events.length === 0) return [];
@@ -84,8 +92,17 @@ const ActivityFeed = ({ events, onClear, upcomingMarkets = [] }) => {
   if (events.length === 0) {
     return (
       <div className="bg-gray-900/50 rounded-lg border border-gray-800 h-full min-h-96">
-        <div className="p-3 border-b border-gray-800 flex items-center justify-between">
-          <h3 className="text-sm font-medium text-gray-300">Activity Feed</h3>
+        <div className="p-3 border-b border-gray-800">
+          <div className="flex items-center justify-between">
+            <h3 className="text-sm font-medium text-gray-300">Activity Feed</h3>
+          </div>
+          {/* Tracked Trades Summary */}
+          {totalTrades > 0 && (
+            <div className="mt-2 text-xs text-gray-400">
+              <span className="text-emerald-400 font-medium">{totalTrades}</span> trades across{' '}
+              <span className="text-blue-400 font-medium">{marketsWithTrades}</span> markets
+            </div>
+          )}
         </div>
         <div className="p-4 text-center text-gray-500 text-sm">
           <p>No activity yet</p>
@@ -100,14 +117,23 @@ const ActivityFeed = ({ events, onClear, upcomingMarkets = [] }) => {
   return (
     <div className="bg-gray-900/50 rounded-lg border border-gray-800 h-full min-h-96 flex flex-col">
       {/* Header */}
-      <div className="p-3 border-b border-gray-800 flex items-center justify-between flex-shrink-0">
-        <h3 className="text-sm font-medium text-gray-300">Activity Feed</h3>
-        <button
-          onClick={onClear}
-          className="text-xs text-gray-500 hover:text-gray-400 transition-colors"
-        >
-          Clear
-        </button>
+      <div className="p-3 border-b border-gray-800 flex-shrink-0">
+        <div className="flex items-center justify-between">
+          <h3 className="text-sm font-medium text-gray-300">Activity Feed</h3>
+          <button
+            onClick={onClear}
+            className="text-xs text-gray-500 hover:text-gray-400 transition-colors"
+          >
+            Clear
+          </button>
+        </div>
+        {/* Tracked Trades Summary */}
+        {totalTrades > 0 && (
+          <div className="mt-2 text-xs text-gray-400">
+            <span className="text-emerald-400 font-medium">{totalTrades}</span> trades across{' '}
+            <span className="text-blue-400 font-medium">{marketsWithTrades}</span> markets
+          </div>
+        )}
       </div>
 
       {/* Feed content */}

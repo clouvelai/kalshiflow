@@ -164,6 +164,7 @@ const LifecycleDiscovery = () => {
               events={recentEvents}
               onClear={clearEvents}
               upcomingMarkets={upcomingMarkets}
+              rlmStates={rlmStates}
             />
           </div>
         </div>
