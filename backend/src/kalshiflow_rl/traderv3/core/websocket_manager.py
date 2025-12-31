@@ -583,6 +583,18 @@ class V3WebSocketManager:
         if event.activity_type == "whale_processing":
             await self._handle_whale_processing(event)
             return
+
+        # Forward lifecycle events to Activity Feed
+        if event.activity_type == "lifecycle_event":
+            metadata = event.metadata or {}
+            await self.broadcast_lifecycle_event(
+                event_type=metadata.get("event_type", "tracked"),
+                market_ticker=metadata.get("market_ticker", ""),
+                action=metadata.get("action", "tracked"),
+                reason=metadata.get("reason"),
+                metadata=metadata
+            )
+            return
         
         # Extract current state from metadata if this is a state transition
         current_state = "ready"  # Default fallback state
@@ -824,6 +836,12 @@ class V3WebSocketManager:
         if total > 0:
             filter_rate = round(stats.get("trades_filtered", 0) / total * 100, 1)
 
+        # Get low_balance counter from trading service if available
+        low_balance = 0
+        if self._trading_service:
+            decision_stats = self._trading_service.get_decision_stats()
+            low_balance = decision_stats.get("low_balance", 0)
+
         await self.broadcast_message("trade_processing", {
             "recent_trades": self._rlm_service.get_recent_tracked_trades(limit=20),
             "stats": {
@@ -838,6 +856,7 @@ class V3WebSocketManager:
                 "rate_limited": stats.get("rate_limited_count", 0),
                 "skipped": stats.get("signals_skipped", 0),
                 "reentries": stats.get("reentries", 0),
+                "low_balance": low_balance,
             },
             "decision_history": self._rlm_service.get_decision_history(limit=20),
             "last_updated": time.time(),
@@ -1130,6 +1149,12 @@ class V3WebSocketManager:
             if total > 0:
                 filter_rate = round(stats.get("trades_filtered", 0) / total * 100, 1)
 
+            # Get low_balance counter from trading service if available
+            low_balance = 0
+            if self._trading_service:
+                decision_stats = self._trading_service.get_decision_stats()
+                low_balance = decision_stats.get("low_balance", 0)
+
             await self._send_to_client(client_id, {
                 "type": "trade_processing",
                 "data": {
@@ -1146,6 +1171,7 @@ class V3WebSocketManager:
                         "rate_limited": stats.get("rate_limited_count", 0),
                         "skipped": stats.get("signals_skipped", 0),
                         "reentries": stats.get("reentries", 0),
+                        "low_balance": low_balance,
                     },
                     "decision_history": self._rlm_service.get_decision_history(limit=20),
                     "last_updated": time.time(),

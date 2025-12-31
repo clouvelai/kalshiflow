@@ -208,6 +208,19 @@ class ApiDiscoverySyncer:
                 success = await self._lifecycle_service.track_market_from_api_data(market)
                 if success:
                     tracked_count += 1
+                    # Emit lifecycle event for Activity Feed
+                    await self._event_bus.emit_system_activity(
+                        activity_type="lifecycle_event",
+                        message=f"Tracked {ticker}",
+                        metadata={
+                            "event_type": "tracked",
+                            "market_ticker": ticker,
+                            "action": "tracked",
+                            "reason": "api_discovery",
+                            "category": market.get("category", ""),
+                            "title": market.get("title", ""),
+                        }
+                    )
 
             self._markets_tracked += tracked_count
 

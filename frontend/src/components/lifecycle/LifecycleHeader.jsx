@@ -38,10 +38,11 @@ const NavTabs = () => {
 /**
  * LifecycleHeader - Title, capacity bar, and connection status
  */
-const LifecycleHeader = ({ wsStatus, stats, isAtCapacity }) => {
+const LifecycleHeader = ({ wsStatus, stats, isAtCapacity, balance = 0, minTraderCash = 0 }) => {
   const tracked = stats?.tracked || 0;
   const capacity = stats?.capacity || 1000;
   const percentage = (tracked / capacity) * 100;
+  const isLowBalance = minTraderCash > 0 && balance < minTraderCash;
 
   // Color coding for capacity
   const getCapacityColor = () => {
@@ -89,6 +90,15 @@ const LifecycleHeader = ({ wsStatus, stats, isAtCapacity }) => {
               {isAtCapacity && (
                 <span className="text-xs text-red-400 font-medium px-2 py-0.5 bg-red-900/30 rounded">
                   AT CAPACITY
+                </span>
+              )}
+
+              {isLowBalance && (
+                <span
+                  className="text-xs text-amber-300/70 px-2 py-0.5 bg-amber-900/20 rounded"
+                  title={`Balance $${(balance/100).toFixed(2)} below $${(minTraderCash/100).toFixed(2)} minimum`}
+                >
+                  Low Cash
                 </span>
               )}
             </div>

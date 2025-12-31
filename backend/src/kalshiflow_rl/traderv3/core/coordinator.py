@@ -129,7 +129,8 @@ class V3Coordinator:
                 state_container=self._state_container,
                 event_bus=event_bus,
                 strategy=strategy,
-                whale_tracker=whale_tracker
+                whale_tracker=whale_tracker,
+                config=config
             )
 
             # Set trading service on websocket manager for followed whale IDs
@@ -625,6 +626,7 @@ class V3Coordinator:
                 tracked_markets_state=self._tracked_markets_state,
                 event_bus=self._event_bus,
                 sync_interval=self._config.lifecycle_sync_interval,
+                on_market_closed=self._orderbook_integration.unsubscribe_market,
             )
             await self._lifecycle_syncer.start()
 

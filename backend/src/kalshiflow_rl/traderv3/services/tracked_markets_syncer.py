@@ -10,7 +10,9 @@ Pattern: Follows MarketPriceSyncer exactly for consistency.
 import asyncio
 import logging
 import time
-from typing import Dict, Any, Optional, List, TYPE_CHECKING
+from typing import Dict, Any, Optional, List, Callable, Awaitable, TYPE_CHECKING
+
+from ..state.tracked_markets import MarketStatus
 
 if TYPE_CHECKING:
     from ..clients.trading_client_integration import V3TradingClientIntegration
@@ -38,7 +40,8 @@ class TrackedMarketsSyncer:
         trading_client: 'V3TradingClientIntegration',
         tracked_markets_state: 'TrackedMarketsState',
         event_bus: 'EventBus',
-        sync_interval: float = 30.0
+        sync_interval: float = 30.0,
+        on_market_closed: Optional[Callable[[str], Awaitable[None]]] = None
     ):
         """
         Initialize tracked markets syncer.
@@ -48,11 +51,13 @@ class TrackedMarketsSyncer:
             tracked_markets_state: State container for tracked markets
             event_bus: Event bus for system activity events
             sync_interval: Seconds between periodic syncs (default 30)
+            on_market_closed: Callback when a market is detected as closed/settled via API
         """
         self._client = trading_client
         self._state = tracked_markets_state
         self._event_bus = event_bus
         self._sync_interval = sync_interval
+        self._on_market_closed = on_market_closed
 
         # Syncer state
         self._sync_task: Optional[asyncio.Task] = None
@@ -146,12 +151,44 @@ class TrackedMarketsSyncer:
                     logger.debug(f"Batch {i // BATCH_SIZE + 1}/{(len(tickers) + BATCH_SIZE - 1) // BATCH_SIZE}: fetched {len(batch_markets)} markets")
 
             synced_count = 0
+            closed_count = 0
             now = time.time()
 
             for market in markets:
                 ticker = market.get("ticker")
                 if not ticker:
                     continue
+
+                # Check if market has closed/settled via API status
+                api_status = market.get("status", "").lower()
+                if api_status in ("closed", "settled", "inactive"):
+                    logger.info(f"Market {ticker} detected as {api_status} via API sync")
+
+                    # Update status in tracked markets state
+                    new_status = MarketStatus.SETTLED if api_status == "settled" else MarketStatus.DETERMINED
+                    await self._state.update_status(ticker, new_status)
+
+                    # Trigger cleanup callback (unsubscribe orderbook)
+                    if self._on_market_closed:
+                        try:
+                            await self._on_market_closed(ticker)
+                        except Exception as e:
+                            logger.warning(f"Failed to cleanup closed market {ticker}: {e}")
+
+                    # Emit lifecycle event for Activity Feed
+                    await self._event_bus.emit_system_activity(
+                        activity_type="lifecycle_event",
+                        message=f"Market {ticker} {api_status}",
+                        metadata={
+                            "event_type": "determined" if api_status != "settled" else "settled",
+                            "market_ticker": ticker,
+                            "action": api_status,
+                            "reason": "api_sync",
+                        }
+                    )
+
+                    closed_count += 1
+                    continue  # Skip normal update for closed markets
 
                 # Update tracked market state with latest info
                 updated = await self._state.update_market(
@@ -171,8 +208,9 @@ class TrackedMarketsSyncer:
             self._sync_count += 1
             self._markets_synced = synced_count
 
+            closed_msg = f", {closed_count} closed" if closed_count > 0 else ""
             logger.info(
-                f"Tracked markets sync complete: {synced_count}/{len(tickers)} markets "
+                f"Tracked markets sync complete: {synced_count}/{len(tickers)} markets{closed_msg} "
                 f"(sync #{self._sync_count})"
             )
 

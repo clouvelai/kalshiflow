@@ -55,6 +55,9 @@ export const useLifecycleWebSocket = ({ onMessage } = {}) => {
   // Upcoming markets (unopened markets opening within 4 hours)
   const [upcomingMarkets, setUpcomingMarkets] = useState([]);
 
+  // Trading state (balance and min_trader_cash for low cash indicator)
+  const [tradingState, setTradingState] = useState({ balance: 0, min_trader_cash: 0 });
+
   const wsRef = useRef(null);
   const reconnectTimeoutRef = useRef(null);
   const lastPingRef = useRef(Date.now());
@@ -211,6 +214,16 @@ export const useLifecycleWebSocket = ({ onMessage } = {}) => {
         }
         break;
 
+      case 'trading_state':
+        // Trading state update (balance, min_trader_cash for low cash indicator)
+        if (data.data) {
+          setTradingState({
+            balance: data.data.balance || 0,
+            min_trader_cash: data.data.min_trader_cash || 0
+          });
+        }
+        break;
+
       default:
         // Ignore other message types (they're for other V3 features)
         break;
@@ -332,7 +345,9 @@ export const useLifecycleWebSocket = ({ onMessage } = {}) => {
     rlmStates,       // Map of ticker -> RLM state
     tradePulses,     // Map of ticker -> { side, ts } for pulse animation
     // Upcoming markets (opening within 4 hours)
-    upcomingMarkets  // List of upcoming market objects
+    upcomingMarkets, // List of upcoming market objects
+    // Trading state (balance for low cash indicator)
+    tradingState     // { balance, min_trader_cash }
   };
 };
 

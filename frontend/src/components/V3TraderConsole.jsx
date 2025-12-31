@@ -66,7 +66,12 @@ const V3TraderConsole = () => {
       />
 
       {/* Header */}
-      <V3Header wsStatus={wsStatus} currentState={currentState} />
+      <V3Header
+        wsStatus={wsStatus}
+        currentState={currentState}
+        balance={tradingState?.balance || 0}
+        minTraderCash={tradingState?.min_trader_cash || 0}
+      />
 
       <div className="max-w-7xl mx-auto px-6 py-6">
         {/* Trading Session Panel - Unified session display with animations */}

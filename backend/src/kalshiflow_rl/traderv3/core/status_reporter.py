@@ -304,6 +304,7 @@ class V3StatusReporter:
                 "timestamp": time.time(),
                 "version": trading_summary["version"],
                 "balance": trading_summary["balance"],
+                "min_trader_cash": self._config.min_trader_cash,
                 "portfolio_value": trading_summary["portfolio_value"],
                 "position_count": trading_summary["position_count"],
                 "order_count": trading_summary["order_count"],

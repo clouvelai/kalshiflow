@@ -28,7 +28,9 @@ const LifecycleDiscovery = () => {
     rlmStates,
     tradePulses,
     // Upcoming markets (opening within 4 hours)
-    upcomingMarkets
+    upcomingMarkets,
+    // Trading state (balance for low cash indicator)
+    tradingState
   } = useLifecycleWebSocket();
 
   // Filter state
@@ -128,6 +130,8 @@ const LifecycleDiscovery = () => {
         wsStatus={wsStatus}
         stats={stats}
         isAtCapacity={isAtCapacity}
+        balance={tradingState?.balance || 0}
+        minTraderCash={tradingState?.min_trader_cash || 0}
       />
 
       <div className="max-w-7xl mx-auto px-4 sm:px-6 py-4">

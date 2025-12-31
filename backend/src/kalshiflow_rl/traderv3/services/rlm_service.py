@@ -579,14 +579,20 @@ class RLMService:
                 if no_asks and no_bids:
                     best_no_ask = min(no_asks.keys()) if no_asks else 99
                     best_no_bid = max(no_bids.keys()) if no_bids else 1
+                    spread = best_no_ask - best_no_bid
 
                     # Log orderbook state for Phase 2 analysis
                     self._log_orderbook_at_signal(signal, snapshot)
 
-                    # TODO: Revisit pricing logic with quant - naive midpoint may hurt
-                    # strategy edge. Consider: bid+1 for passive, ask for aggressive,
-                    # or dynamic based on signal strength/urgency.
-                    entry_price = (best_no_ask + best_no_bid) // 2
+                    # Spread-aware pricing optimized for RLM time-sensitive signals
+                    entry_price = self._calculate_no_entry_price(best_no_ask, best_no_bid, spread)
+
+                    # Log pricing decision for strategy validation
+                    spread_type = "tight" if spread <= 2 else "normal" if spread <= 4 else "wide"
+                    logger.info(
+                        f"RLM pricing: {signal.market_ticker} spread={spread}c "
+                        f"bid={best_no_bid} ask={best_no_ask} → entry={entry_price}c ({spread_type})"
+                    )
                 else:
                     # No orderbook data - skip this signal
                     logger.warning(f"No orderbook data for {signal.market_ticker}, skipping signal")
@@ -675,6 +681,39 @@ class RLMService:
                 reason=f"Exception: {str(e)}",
                 signal_data=signal.to_dict()
             )
+
+    def _calculate_no_entry_price(
+        self,
+        best_no_ask: int,
+        best_no_bid: int,
+        spread: int
+    ) -> int:
+        """
+        Calculate optimal entry price for buying NO contracts.
+
+        Spread-aware pricing optimized for RLM time-sensitive signals:
+        - Tight spread (<=2c): hit near ask for guaranteed fill
+        - Normal spread (<=4c): use midpoint for price improvement
+        - Wide spread (>4c): 75% toward ask for higher fill probability
+
+        Args:
+            best_no_ask: Best NO ask price in cents (what we pay to buy immediately)
+            best_no_bid: Best NO bid price in cents (what we'd get to sell)
+            spread: Bid-ask spread in cents
+
+        Returns:
+            Entry price in cents
+        """
+        if spread <= 2:
+            # Tight spread: join queue just below ask
+            return best_no_ask - 1
+        elif spread <= 4:
+            # Normal spread: use midpoint
+            return (best_no_ask + best_no_bid) // 2
+        else:
+            # Wide spread: be aggressive toward ask (75% from bid)
+            # This prioritizes fill probability for time-sensitive signals
+            return best_no_bid + (spread * 3 // 4)
 
     def _log_orderbook_at_signal(self, signal: RLMSignal, orderbook: Dict[str, Any]) -> None:
         """

@@ -40,7 +40,9 @@ const NavTabs = () => {
 /**
  * V3Header - Header bar for V3 Trader Console
  */
-const V3Header = ({ wsStatus, currentState }) => {
+const V3Header = ({ wsStatus, currentState, balance = 0, minTraderCash = 0 }) => {
+  const isLowBalance = minTraderCash > 0 && balance < minTraderCash;
+
   return (
     <div className="border-b border-gray-800 bg-black/30 backdrop-blur-sm sticky top-0 z-10">
       <div className="max-w-7xl mx-auto px-6 py-4">
@@ -56,6 +58,16 @@ const V3Header = ({ wsStatus, currentState }) => {
 
             {/* Navigation Tabs */}
             <NavTabs />
+
+            {/* Low Balance Indicator */}
+            {isLowBalance && (
+              <span
+                className="text-xs text-amber-300/70 px-2 py-0.5 bg-amber-900/20 rounded"
+                title={`Balance $${(balance/100).toFixed(2)} below $${(minTraderCash/100).toFixed(2)} minimum`}
+              >
+                Low Cash
+              </span>
+            )}
           </div>
 
           <div className="flex items-center space-x-6">

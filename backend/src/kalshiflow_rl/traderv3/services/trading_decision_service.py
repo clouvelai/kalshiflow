@@ -30,6 +30,7 @@ if TYPE_CHECKING:
     from ..core.state_container import V3StateContainer
     from ..core.event_bus import EventBus
     from ..services.whale_tracker import WhaleTracker
+    from ..config.environment import V3Config
     from kalshiflow_rl.data.models import OrderbookSnapshot
 
 logger = logging.getLogger("kalshiflow_rl.traderv3.services.trading_decision")
@@ -166,7 +167,8 @@ class TradingDecisionService:
         state_container: 'V3StateContainer',
         event_bus: 'EventBus',
         strategy: TradingStrategy = TradingStrategy.HOLD,
-        whale_tracker: Optional['WhaleTracker'] = None
+        whale_tracker: Optional['WhaleTracker'] = None,
+        config: Optional['V3Config'] = None
     ):
         """
         Initialize trading decision service.
@@ -177,12 +179,16 @@ class TradingDecisionService:
             event_bus: Event bus for emitting trading events
             strategy: Trading strategy to use
             whale_tracker: Optional whale tracker for WHALE_FOLLOWER strategy
+            config: Optional V3 config for balance protection settings
         """
         self._trading_client = trading_client
         self._state_container = state_container
         self._event_bus = event_bus
         self._strategy = strategy
         self._whale_tracker = whale_tracker
+
+        # Balance protection (from config or default $100.00)
+        self._min_trader_cash = config.min_trader_cash if config else 10000
 
         # Decision tracking
         self._decision_count = 0
@@ -205,7 +211,8 @@ class TradingDecisionService:
             "skipped_position": 0,
             "skipped_orders": 0,
             "already_followed": 0,
-            "rate_limited": 0
+            "rate_limited": 0,
+            "low_balance": 0  # Trades skipped due to insufficient balance
         }
 
         # RL model (loaded lazily if needed)
@@ -491,20 +498,46 @@ class TradingDecisionService:
     async def execute_decision(self, decision: TradingDecision) -> bool:
         """
         Execute a trading decision.
-        
+
         Args:
             decision: Trading decision to execute
-        
+
         Returns:
             True if execution successful, False otherwise
         """
         if not self._trading_client:
             logger.error("No trading client configured - cannot execute trades")
             return False
-        
+
         if decision.action == "hold":
             return True  # No action needed
-        
+
+        # Check minimum balance protection (only for buy actions)
+        if decision.action == "buy" and self._min_trader_cash > 0:
+            trading_state = self._state_container.trading_state
+            balance = trading_state.balance if trading_state else 0
+            if balance < self._min_trader_cash:
+                self._decision_stats["low_balance"] += 1
+                logger.warning(
+                    f"Skipping trade: balance ${balance/100:.2f} < minimum ${self._min_trader_cash/100:.2f} "
+                    f"({decision.market} {decision.side} {decision.quantity}x @ {decision.price}c)"
+                )
+                # Emit activity event for frontend visibility
+                await self._event_bus.emit_system_activity(
+                    activity_type="low_balance_skip",
+                    message=f"Trade skipped: balance ${balance/100:.2f} < ${self._min_trader_cash/100:.2f} minimum",
+                    metadata={
+                        "market": decision.market,
+                        "side": decision.side,
+                        "quantity": decision.quantity,
+                        "price": decision.price,
+                        "balance_cents": balance,
+                        "min_required_cents": self._min_trader_cash,
+                        "skip_count": self._decision_stats["low_balance"]
+                    }
+                )
+                return False
+
         try:
             # Emit decision event
             await self._event_bus.emit_system_activity(

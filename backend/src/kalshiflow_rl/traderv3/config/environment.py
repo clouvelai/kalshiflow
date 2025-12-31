@@ -61,8 +61,8 @@ class V3Config:
     # Validated +17.38% edge: When >65% trades are YES but price drops, bet NO
     rlm_yes_threshold: float = 0.65  # Minimum YES trade ratio to trigger signal
     rlm_min_trades: int = 15  # Minimum trades before evaluating signal
-    rlm_min_price_drop: int = 0  # Minimum YES price drop in cents (0 = any drop)
-    rlm_contracts: int = 100  # Contracts per trade
+    rlm_min_price_drop: int = 5  # Minimum YES price drop in cents (0 = any drop)
+    rlm_contracts: int = 3  # Contracts per trade
     rlm_max_concurrent: int = 1000  # Maximum concurrent positions
     rlm_allow_reentry: bool = True  # Allow adding to position on stronger signal
     rlm_orderbook_timeout: float = 2.0  # Timeout for orderbook fetch (seconds)
@@ -74,6 +74,9 @@ class V3Config:
     whale_queue_size: int = 10
     whale_window_minutes: int = 5
     whale_min_size_cents: int = 10000  # $100 minimum
+
+    # Balance Protection Configuration
+    min_trader_cash: int = 10000  # Minimum balance in cents ($100.00 default). Set to 0 to disable.
 
     # Cleanup Configuration
     cleanup_on_startup: bool = True  # Cancel orphaned orders on startup (orders without order_group_id)
@@ -197,6 +200,9 @@ class V3Config:
         whale_window_minutes = int(os.environ.get("WHALE_WINDOW_MINUTES", "5"))
         whale_min_size_cents = int(os.environ.get("WHALE_MIN_SIZE_CENTS", "10000"))
 
+        # Balance protection configuration - minimum cash to continue trading
+        min_trader_cash = int(os.environ.get("MIN_TRADER_CASH", "10000"))  # Default $100.00 in cents
+
         # Cleanup configuration - default True for paper trading, False for production
         cleanup_default = "true" if environment == "paper" or "demo-api" in ws_url.lower() else "false"
         cleanup_on_startup = os.environ.get("V3_CLEANUP_ON_STARTUP", cleanup_default).lower() == "true"
@@ -287,6 +293,7 @@ class V3Config:
             whale_queue_size=whale_queue_size,
             whale_window_minutes=whale_window_minutes,
             whale_min_size_cents=whale_min_size_cents,
+            min_trader_cash=min_trader_cash,
             cleanup_on_startup=cleanup_on_startup,
             allow_multiple_positions_per_market=allow_multiple_positions_per_market,
             allow_multiple_orders_per_market=allow_multiple_orders_per_market,
@@ -331,6 +338,10 @@ class V3Config:
             logger.info(f"  - Trading strategy: {trading_strategy_str.upper()}")
             logger.info(f"  - Max orders: {trading_max_orders}, Max position: {trading_max_position_size}")
             logger.info(f"  - Cleanup on startup: {cleanup_on_startup}")
+            if min_trader_cash > 0:
+                logger.info(f"  - Min cash protection: ${min_trader_cash/100:.2f} (trades skip below)")
+            else:
+                logger.info(f"  - Min cash protection: DISABLED")
         else:
             logger.info(f"  - Trading: DISABLED (orderbook only)")
         if enable_whale_detection:
