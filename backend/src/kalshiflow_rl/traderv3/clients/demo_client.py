@@ -774,7 +774,109 @@ class KalshiDemoTradingClient:
 
         except Exception as e:
             raise KalshiDemoTradingClientError(f"Failed to get markets: {e}")
-    
+
+    async def get_market(self, ticker: str) -> Dict[str, Any]:
+        """
+        Get a single market by ticker.
+
+        GET /trade-api/v2/markets/{ticker}
+
+        Args:
+            ticker: Market ticker (e.g., "INXD-25JAN03")
+
+        Returns:
+            Market data including ticker, title, status, etc.
+            Note: category field is often empty - use get_event() to get category
+
+        Raises:
+            KalshiDemoTradingClientError: If request fails
+        """
+        try:
+            response = await self._make_request("GET", f"/markets/{ticker}")
+            logger.debug(f"Retrieved market {ticker}")
+            return response
+
+        except Exception as e:
+            raise KalshiDemoTradingClientError(f"Failed to get market {ticker}: {e}")
+
+    async def get_event(self, event_ticker: str) -> Dict[str, Any]:
+        """
+        Get event details by event_ticker.
+
+        GET /trade-api/v2/events/{event_ticker}
+
+        Events contain the category field that is often empty in market responses.
+        Use this to enrich market data with category information.
+
+        Args:
+            event_ticker: Event ticker (e.g., "KXNFL-25JAN05")
+
+        Returns:
+            Event data including category field
+
+        Raises:
+            KalshiDemoTradingClientError: If request fails
+        """
+        try:
+            response = await self._make_request("GET", f"/events/{event_ticker}")
+            logger.debug(f"Retrieved event {event_ticker}")
+            return response.get("event", {})
+
+        except Exception as e:
+            logger.error(f"Failed to get event {event_ticker}: {e}")
+            return {}
+
+    async def get_events(
+        self,
+        status: Optional[str] = None,
+        with_nested_markets: bool = False,
+        limit: int = 200,
+        cursor: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Get events with optional filtering and pagination.
+
+        GET /trade-api/v2/events
+
+        This is the efficient batch endpoint for fetching multiple events
+        with their markets in a single call. Much more efficient than
+        individual get_event() calls when category filtering is needed.
+
+        Args:
+            status: Filter by 'open', 'closed', or 'settled'
+            with_nested_markets: Include markets nested in each event
+            limit: Max results per page (1-200, default 200)
+            cursor: Pagination cursor from previous response
+
+        Returns:
+            {"events": [...], "cursor": "..."} where cursor is empty if no more pages
+
+        Raises:
+            KalshiDemoTradingClientError: If request fails
+        """
+        try:
+            params = [f"limit={limit}"]
+            if status:
+                params.append(f"status={status}")
+            if with_nested_markets:
+                params.append("with_nested_markets=true")
+            if cursor:
+                params.append(f"cursor={cursor}")
+
+            query_string = "&".join(params)
+            response = await self._make_request("GET", f"/events?{query_string}")
+
+            events_count = len(response.get("events", []))
+            has_more = bool(response.get("cursor"))
+            logger.debug(
+                f"Retrieved {events_count} events "
+                f"(status={status}, nested_markets={with_nested_markets}, has_more={has_more})"
+            )
+            return response
+
+        except Exception as e:
+            raise KalshiDemoTradingClientError(f"Failed to get events: {e}")
+
     async def get_settlements(self) -> Dict[str, Any]:
         """
         Get all settlements from demo account.

@@ -970,3 +970,170 @@ class V3TradingClientIntegration:
             self._metrics.api_errors += 1
             self._consecutive_api_errors += 1
             raise
+
+    async def get_open_markets(
+        self,
+        categories: Optional[List[str]] = None,
+        max_markets: int = 1000,
+    ) -> List[Dict[str, Any]]:
+        """
+        Fetch open markets via events API with cursor pagination.
+
+        Uses GET /events?with_nested_markets=true to efficiently get category
+        and markets in single calls, avoiding N+1 event lookups. Paginates
+        through all events until max_markets valid markets are collected.
+
+        Used by ApiDiscoverySyncer to discover already-open markets on startup
+        and periodic refresh. Returns full market data sorted by open_time
+        descending (newest first).
+
+        Args:
+            categories: Optional list of category substrings to filter by
+                        (case-insensitive substring match, same as EventLifecycleService)
+            max_markets: Maximum number of markets to fetch (default 1000)
+
+        Returns:
+            List of market dicts sorted by open_time descending (newest first)
+
+        Raises:
+            RuntimeError: If not connected
+        """
+        from datetime import datetime
+
+        if not self._connected:
+            raise RuntimeError("Cannot get open markets - trading client not connected")
+
+        try:
+            all_markets: List[Dict[str, Any]] = []
+            cursor: Optional[str] = None
+            categories_lower = [c.lower() for c in (categories or [])]
+            pages_fetched = 0
+
+            while len(all_markets) < max_markets:
+                # Fetch events page with nested markets
+                response = await self._client.get_events(
+                    status="open",
+                    with_nested_markets=True,
+                    limit=200,  # Max per page for events API
+                    cursor=cursor,
+                )
+                self._metrics.api_calls += 1
+                pages_fetched += 1
+
+                events = response.get("events", [])
+                cursor = response.get("cursor")
+
+                for event in events:
+                    # Filter by category (already on event!)
+                    event_category = event.get("category", "").lower()
+                    if categories_lower:
+                        # Use same logic as EventLifecycleService._is_allowed_category
+                        category_match = any(
+                            allowed in event_category or event_category in allowed
+                            for allowed in categories_lower
+                        )
+                        if not category_match:
+                            continue
+
+                    # Extract nested markets
+                    for market in event.get("markets", []):
+                        # Accept both 'open' (production) and 'active' (demo API)
+                        if market.get("status") in ("open", "active"):
+                            # Enrich market with category from parent event
+                            market["category"] = event.get("category", "")
+                            all_markets.append(market)
+
+                            if len(all_markets) >= max_markets:
+                                break
+
+                    if len(all_markets) >= max_markets:
+                        break
+
+                # No more pages
+                if not cursor:
+                    break
+
+            self._consecutive_api_errors = 0
+
+            # Sort by open_time descending (newest first)
+            def get_open_ts(market: Dict) -> float:
+                open_time = market.get("open_time")
+                if not open_time:
+                    return 0.0
+                try:
+                    if isinstance(open_time, str):
+                        open_dt = datetime.fromisoformat(open_time.replace("Z", "+00:00"))
+                        return open_dt.timestamp()
+                    else:
+                        return float(open_time)
+                except (ValueError, TypeError):
+                    return 0.0
+
+            all_markets.sort(key=get_open_ts, reverse=True)
+
+            # Trim to exact max_markets
+            result = all_markets[:max_markets]
+
+            logger.info(
+                f"Found {len(result)} open markets via events API "
+                f"(max={max_markets}, categories={categories}, pages={pages_fetched})"
+            )
+            return result
+
+        except Exception as e:
+            logger.error(f"Failed to get open markets: {e}")
+            self._metrics.api_errors += 1
+            self._consecutive_api_errors += 1
+            raise
+
+    async def get_market(self, ticker: str) -> Optional[Dict[str, Any]]:
+        """
+        Fetch market data for a single ticker, enriched with category from event.
+
+        GET /trade-api/v2/markets/{ticker}
+
+        Note: The markets API returns empty category fields. This method
+        automatically enriches the response with category from the events API.
+
+        Args:
+            ticker: Market ticker to fetch
+
+        Returns:
+            Market data dict with category enriched from event, or None if not found
+
+        Raises:
+            RuntimeError: If not connected
+        """
+        if not self._connected:
+            raise RuntimeError("Cannot get market - trading client not connected")
+
+        try:
+            response = await self._client.get_market(ticker)
+            self._metrics.api_calls += 1
+            self._consecutive_api_errors = 0
+
+            if response:
+                market = response.get("market", response)
+
+                # Enrich with category from event if market category is empty
+                if market and not market.get("category"):
+                    event_ticker = market.get("event_ticker")
+                    if event_ticker:
+                        try:
+                            event = await self._client.get_event(event_ticker)
+                            self._metrics.api_calls += 1
+                            if event and event.get("category"):
+                                market["category"] = event["category"]
+                                logger.debug(f"Enriched {ticker} with category '{event['category']}' from event")
+                        except Exception as e:
+                            logger.debug(f"Could not enrich category for {ticker}: {e}")
+
+                return market
+
+            return None
+
+        except Exception as e:
+            logger.error(f"Failed to get market {ticker}: {e}")
+            self._metrics.api_errors += 1
+            self._consecutive_api_errors += 1
+            raise
