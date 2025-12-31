@@ -601,6 +601,78 @@ cd frontend && railway up --service kalshi-flowboard
 - use the quant agent with "LSD mode" for rapid lateral hypothesis exploration (user says "LSD mode" to enable)
 - IMPORTANT: Only deploy to production when explicitly requested by the user. Never deploy autonomously.
 
+## Multi-Session Coordination
+
+When multiple Claude Code sessions work on the same codebase, use the session tracking system to avoid conflicts and enable visibility.
+
+### Session Registration (REQUIRED)
+
+**At the start of every conversation**, register your session:
+
+```bash
+# Generate a session ID and create your session file
+SESSION_ID=$(uuidgen | cut -c1-8 | tr '[:upper:]' '[:lower:]')
+```
+
+Then create `.claude-sessions/active/{SESSION_ID}.json`:
+```json
+{
+  "session_id": "{SESSION_ID}",
+  "started_at": "2025-12-30T10:15:00Z",
+  "last_updated": "2025-12-30T10:15:00Z",
+  "branch": "current-git-branch",
+  "status": "active",
+  "current_task": "Initial task description",
+  "files_touched": [],
+  "sub_agents": []
+}
+```
+
+### Updating Session Status
+
+Update your session file when:
+1. **Switching tasks** - Update `current_task` and `last_updated`
+2. **Touching files** - Add to `files_touched` array
+3. **Spawning sub-agents** - Add to `sub_agents` array
+
+### Sub-Agent Tracking
+
+When spawning a Task agent, add it to your session's `sub_agents`:
+```json
+{
+  "sub_agents": [
+    {
+      "type": "fullstack-websocket-engineer",
+      "task": "Implementing WebSocket reconnection",
+      "started_at": "2025-12-30T10:40:00Z",
+      "status": "running"
+    }
+  ]
+}
+```
+
+Update `status` to `"completed"` when the agent finishes.
+
+### Viewing Other Sessions
+
+Before making major changes, check what other sessions are doing:
+```bash
+./scripts/claude-sessions.sh list
+```
+
+Or read files directly in `.claude-sessions/active/`.
+
+### Session Lifecycle
+
+- **Active**: Session is working (update `last_updated` regularly)
+- **Idle**: Session is waiting for user input
+- **Stale**: Session file >4 hours old (auto-cleaned)
+
+Clean up stale sessions:
+```bash
+./scripts/claude-sessions.sh clean
+```
+
 ## Strategy Research System
 
 ### Strategy Researcher Agent

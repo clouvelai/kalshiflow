@@ -106,3 +106,6 @@ models/
 
 # Project backups
 backups/
+
+# Claude Code session tracking (active session files only)
+.claude-sessions/active/*.json
