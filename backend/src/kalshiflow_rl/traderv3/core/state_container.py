@@ -984,6 +984,42 @@ class V3StateContainer:
             self._trading_state_version += 1  # Trigger frontend update
             logger.debug(f"Market price cleared for {ticker}")
 
+    def cleanup_market(self, ticker: str) -> bool:
+        """
+        Cleanup all state for a determined/settled market.
+
+        Called when MARKET_DETERMINED event is received to free memory
+        and prevent unbounded growth of market-specific state collections.
+
+        Args:
+            ticker: Market ticker to cleanup
+
+        Returns:
+            True if any state was cleaned, False if market not found in any collection
+
+        Cleans:
+            - _market_prices: Real-time price data
+            - _session_updated_tickers: WebSocket update tracking
+        """
+        cleaned = False
+
+        # Clear market prices
+        if ticker in self._market_prices:
+            del self._market_prices[ticker]
+            self._market_prices_version += 1
+            cleaned = True
+
+        # Clear session tracking
+        if ticker in self._session_updated_tickers:
+            self._session_updated_tickers.discard(ticker)
+            cleaned = True
+
+        if cleaned:
+            self._trading_state_version += 1
+            logger.info(f"Cleaned up state for determined market: {ticker}")
+
+        return cleaned
+
     @property
     def market_prices_version(self) -> int:
         """Get market prices version (increments on change)."""

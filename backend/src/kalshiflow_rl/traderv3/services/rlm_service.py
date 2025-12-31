@@ -27,7 +27,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Dict, Any, Optional, List, Set, TYPE_CHECKING
 
-from ..core.event_bus import EventBus, EventType, PublicTradeEvent
+from ..core.event_bus import EventBus, EventType, PublicTradeEvent, MarketDeterminedEvent
 from ..core.state_machine import TraderState
 from ...data.orderbook_state import get_shared_orderbook_state
 
@@ -42,9 +42,40 @@ logger = logging.getLogger("kalshiflow_rl.traderv3.services.rlm")
 # Decision history size
 DECISION_HISTORY_SIZE = 100
 
+# Recent tracked trades buffer size
+RECENT_TRACKED_TRADES_SIZE = 30
+
 # Rate limiting: 10 trades per minute
 DEFAULT_MAX_TRADES_PER_MINUTE = 10
 DEFAULT_TOKEN_REFILL_SECONDS = 6.0
+
+
+@dataclass
+class TrackedTrade:
+    """
+    Trade record for tracked markets only.
+
+    Used for the Trade Processing panel to display recent trades
+    that passed the filter (tracked markets).
+    """
+    trade_id: str
+    market_ticker: str
+    side: str  # "yes" | "no"
+    price_cents: int
+    count: int
+    timestamp: float
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for WebSocket transport."""
+        return {
+            "trade_id": self.trade_id,
+            "market_ticker": self.market_ticker,
+            "side": self.side,
+            "price_cents": self.price_cents,
+            "count": self.count,
+            "timestamp": self.timestamp,
+            "age_seconds": int(time.time() - self.timestamp),
+        }
 
 
 @dataclass
@@ -257,6 +288,9 @@ class RLMService:
         # Decision history (circular buffer)
         self._decision_history: deque[RLMDecision] = deque(maxlen=DECISION_HISTORY_SIZE)
 
+        # Recent tracked trades buffer (for Trade Processing panel)
+        self._recent_tracked_trades: deque[TrackedTrade] = deque(maxlen=RECENT_TRACKED_TRADES_SIZE)
+
         # Statistics
         self._stats = {
             "trades_processed": 0,
@@ -298,6 +332,10 @@ class RLMService:
         # Subscribe to public trade events
         await self._event_bus.subscribe_to_public_trade(self._handle_public_trade)
         logger.info("Subscribed to PUBLIC_TRADE_RECEIVED events")
+
+        # Subscribe to market determined events (for cleanup)
+        await self._event_bus.subscribe_to_market_determined(self._handle_market_determined)
+        logger.info("Subscribed to MARKET_DETERMINED events for cleanup")
 
         # Emit startup event
         await self._event_bus.emit_system_activity(
@@ -376,6 +414,17 @@ class RLMService:
         """
         self._stats["trades_processed"] += 1
         market_ticker = trade_event.market_ticker
+
+        # Store in tracked trades buffer (for Trade Processing panel)
+        tracked_trade = TrackedTrade(
+            trade_id=trade_event.trade_id,
+            market_ticker=market_ticker,
+            side=trade_event.side,
+            price_cents=trade_event.price_cents,
+            count=trade_event.count,
+            timestamp=time.time(),
+        )
+        self._recent_tracked_trades.append(tracked_trade)
 
         # Get or create market state
         if market_ticker not in self._market_states:
@@ -704,6 +753,37 @@ class RLMService:
         last_emit = self._last_state_emit.get(market_ticker, 0.0)
         return (time.time() - last_emit) >= self._state_emit_interval
 
+    async def _handle_market_determined(self, event: MarketDeterminedEvent) -> None:
+        """
+        Handle market determined events for cleanup.
+
+        Removes all state for a market that has been determined/settled
+        to prevent unbounded memory growth.
+
+        Args:
+            event: Market determined event from EventBus
+        """
+        ticker = event.market_ticker
+        cleaned = False
+
+        # Remove from market states (trade accumulation)
+        if ticker in self._market_states:
+            del self._market_states[ticker]
+            cleaned = True
+
+        # Remove from state emit throttling dict
+        if ticker in self._last_state_emit:
+            del self._last_state_emit[ticker]
+            cleaned = True
+
+        # Remove from position tracking set
+        if ticker in self._markets_with_positions:
+            self._markets_with_positions.discard(ticker)
+            cleaned = True
+
+        if cleaned:
+            logger.info(f"RLMService cleanup for determined market: {ticker}")
+
     # Public methods for stats and monitoring
 
     def get_stats(self) -> Dict[str, Any]:
@@ -715,6 +795,7 @@ class RLMService:
             "uptime_seconds": int(time.time() - self._started_at) if self._started_at else 0,
             "markets_tracking": len(self._market_states),
             "last_execution": self._last_execution_time,
+            "rate_limited_count": self._rate_limited_count,
             **self._stats,
         }
 
@@ -730,6 +811,12 @@ class RLMService:
         decisions = list(self._decision_history)
         decisions.reverse()  # Most recent first
         return [d.to_dict() for d in decisions[:limit]]
+
+    def get_recent_tracked_trades(self, limit: int = 20) -> List[Dict[str, Any]]:
+        """Get recent tracked trades for Trade Processing panel (newest first)."""
+        trades = list(self._recent_tracked_trades)
+        trades.reverse()  # Most recent first
+        return [t.to_dict() for t in trades[:limit]]
 
     def is_healthy(self) -> bool:
         """Check if service is healthy."""

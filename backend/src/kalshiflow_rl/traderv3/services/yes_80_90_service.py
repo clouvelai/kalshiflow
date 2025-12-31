@@ -27,7 +27,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Dict, Any, Optional, List, Set, TYPE_CHECKING
 
-from ..core.event_bus import EventBus, EventType
+from ..core.event_bus import EventBus, EventType, MarketDeterminedEvent
 from ...data.orderbook_state import get_shared_orderbook_state
 
 if TYPE_CHECKING:
@@ -232,6 +232,10 @@ class Yes8090Service:
         await self._event_bus.subscribe_to_orderbook_snapshot(self._handle_orderbook)
         await self._event_bus.subscribe_to_orderbook_delta(self._handle_orderbook)
         logger.info("Subscribed to ORDERBOOK_SNAPSHOT and ORDERBOOK_DELTA events")
+
+        # Subscribe to market determined events (for cleanup)
+        await self._event_bus.subscribe_to_market_determined(self._handle_market_determined)
+        logger.info("Subscribed to MARKET_DETERMINED events for cleanup")
 
         # Emit startup event
         await self._event_bus.emit_system_activity(
@@ -605,6 +609,22 @@ class Yes8090Service:
             self._tokens -= 1.0
             return True
         return False
+
+    async def _handle_market_determined(self, event: MarketDeterminedEvent) -> None:
+        """
+        Handle market determined events for cleanup.
+
+        Removes the market from the processed set to prevent unbounded
+        memory growth. This allows the set to shrink as markets resolve.
+
+        Args:
+            event: Market determined event from EventBus
+        """
+        ticker = event.market_ticker
+
+        if ticker in self._processed_markets:
+            self._processed_markets.discard(ticker)
+            logger.info(f"Yes8090Service cleanup for determined market: {ticker}")
 
     def get_decision_history(self) -> List[Dict[str, Any]]:
         """

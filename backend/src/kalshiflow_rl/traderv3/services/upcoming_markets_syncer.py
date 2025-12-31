@@ -137,6 +137,11 @@ class UpcomingMarketsSyncer:
         Broadcasts to frontend if data changed.
         """
         try:
+            # Check if trading client is connected before attempting sync
+            if not self._client._connected:
+                logger.debug("Skipping upcoming markets sync - trading client not yet connected")
+                return
+
             # Fetch upcoming markets from trading client
             markets = await self._client.get_upcoming_markets(
                 limit=100,

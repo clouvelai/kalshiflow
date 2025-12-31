@@ -71,40 +71,6 @@ export V3_CALIBRATION_DURATION="10.0"
 export V3_HEALTH_CHECK_INTERVAL="5.0"
 export V3_WS_RECONNECT_INTERVAL="5.0"
 
-# Trading client configuration (enabled for paper environment)
-if [ "$ENVIRONMENT" = "paper" ]; then
-    # Trading client settings
-    export V3_ENABLE_TRADING_CLIENT="true"
-    export V3_TRADING_MAX_ORDERS="100"
-    export V3_TRADING_MAX_POSITION_SIZE="1000"
-
-    # RLM (Reverse Line Movement) strategy - validated +17.38% edge
-    export V3_TRADING_STRATEGY="rlm_no"
-    export V3_ENABLE_WHALE_DETECTION="false"  # Disabled - RLM is primary strategy
-
-    # RLM signal thresholds
-    export RLM_YES_THRESHOLD="0.65"      # >65% YES trades triggers signal
-    export RLM_MIN_TRADES="15"           # Minimum trades before evaluation
-    export RLM_MIN_PRICE_DROP="0"        # Minimum price drop (0 = any drop)
-    export RLM_CONTRACTS="100"           # Position size per signal
-
-    # Rate limiting for RLM execution
-    export RLM_MAX_SIGNALS_PER_MINUTE="10"
-    export RLM_TOKEN_REFILL_SECONDS="6"  # 60/10 = 6 seconds per token
-
-    # Allow multiple positions/orders per market (for testing)
-    export V3_ALLOW_MULTIPLE_POSITIONS="true"
-    export V3_ALLOW_MULTIPLE_ORDERS="true"
-
-    echo -e "${GREEN}✓ Trading client enabled (paper mode)${NC}"
-    echo -e "${GREEN}✓ RLM strategy active (+17.38% validated edge)${NC}"
-    echo -e "${GREEN}✓ Lifecycle mode for market discovery${NC}"
-else
-    export V3_ENABLE_TRADING_CLIENT="false"
-    export V3_TRADING_STRATEGY="hold"
-    echo -e "${YELLOW}⚠ Trading client disabled (production safety)${NC}"
-fi
-
 # Check if .env file exists
 ENV_FILE=".env.$ENVIRONMENT"
 if [ ! -f "$ENV_FILE" ]; then
@@ -134,6 +100,42 @@ else
     export KALSHI_API_URL="${KALSHI_API_URL:-https://api.elections.kalshi.com/trade-api/v2}"
     export KALSHI_WS_URL="${KALSHI_WS_URL:-wss://api.elections.kalshi.com/trade-api/ws/v2}"
     echo -e "${YELLOW}💰 Using PRODUCTION environment${NC}"
+fi
+
+# Trading client configuration (AFTER env file loaded to override any defaults)
+# This ensures our explicit settings take precedence
+if [ "$ENVIRONMENT" = "paper" ]; then
+    # Trading client settings
+    export V3_ENABLE_TRADING_CLIENT="true"
+    export V3_TRADING_MAX_ORDERS="100"
+    export V3_TRADING_MAX_POSITION_SIZE="1000"
+
+    # RLM (Reverse Line Movement) strategy - validated +17.38% edge
+    # ALWAYS use RLM for paper trading - this is the primary strategy
+    export V3_TRADING_STRATEGY="rlm_no"
+    export V3_ENABLE_WHALE_DETECTION="false"  # Disabled - RLM is primary strategy
+
+    # RLM signal thresholds
+    export RLM_YES_THRESHOLD="0.65"      # >65% YES trades triggers signal
+    export RLM_MIN_TRADES="15"           # Minimum trades before evaluation
+    export RLM_MIN_PRICE_DROP="0"        # Minimum price drop (0 = any drop)
+    export RLM_CONTRACTS="100"           # Position size per signal
+
+    # Rate limiting for RLM execution
+    export RLM_MAX_SIGNALS_PER_MINUTE="10"
+    export RLM_TOKEN_REFILL_SECONDS="6"  # 60/10 = 6 seconds per token
+
+    # Allow multiple positions/orders per market (for testing)
+    export V3_ALLOW_MULTIPLE_POSITIONS="true"
+    export V3_ALLOW_MULTIPLE_ORDERS="true"
+
+    echo -e "${GREEN}✓ Trading client enabled (paper mode)${NC}"
+    echo -e "${GREEN}✓ RLM strategy active (+17.38% validated edge)${NC}"
+    echo -e "${GREEN}✓ Lifecycle mode for market discovery${NC}"
+else
+    export V3_ENABLE_TRADING_CLIENT="false"
+    export V3_TRADING_STRATEGY="hold"
+    echo -e "${YELLOW}⚠ Trading client disabled (production safety)${NC}"
 fi
 
 # Function to check if frontend is running

@@ -93,6 +93,9 @@ class TrackedMarket:
     yes_bid: int = 0
     yes_ask: int = 0
 
+    # Discovery source tracking
+    discovery_source: str = "lifecycle_ws"  # "lifecycle_ws" | "api" | "db_recovery"
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for serialization."""
         return {
@@ -113,6 +116,7 @@ class TrackedMarket:
             "open_interest": self.open_interest,
             "yes_bid": self.yes_bid,
             "yes_ask": self.yes_ask,
+            "discovery_source": self.discovery_source,
             # Include time until close for UI
             "time_to_close_seconds": max(0, self.close_ts - int(time.time())) if self.close_ts else None,
         }
@@ -145,6 +149,7 @@ class TrackedMarket:
             open_interest=data.get("open_interest", 0),
             yes_bid=data.get("yes_bid", 0),
             yes_ask=data.get("yes_ask", 0),
+            discovery_source=data.get("discovery_source", "lifecycle_ws"),
         )
 
 
@@ -295,12 +300,46 @@ class TrackedMarketsState:
             return True
 
     def get_market(self, ticker: str) -> Optional[TrackedMarket]:
-        """Get a specific tracked market."""
+        """Get a specific tracked market (thread-safe)."""
+        # Note: Using synchronous access since async lock would change API
+        # Python GIL makes dict access safe, but we document thread-safety intent
         return self._markets.get(ticker)
 
     def is_tracked(self, ticker: str) -> bool:
-        """Check if a market is tracked."""
+        """Check if a market is tracked (thread-safe)."""
         return ticker in self._markets
+
+    async def remove_market(self, ticker: str) -> bool:
+        """
+        Remove a market from tracking after settlement cleanup.
+
+        Called when MARKET_DETERMINED event is processed and all cleanup
+        is complete. This frees memory by removing the TrackedMarket object.
+
+        Args:
+            ticker: Market ticker to remove
+
+        Returns:
+            True if market was found and removed, False if not found
+
+        Note:
+            Only call this after settlement/determination is fully processed.
+            The EventLifecycleService should update status to DETERMINED/SETTLED
+            before calling this method.
+        """
+        async with self._lock:
+            if ticker not in self._markets:
+                return False
+
+            market = self._markets[ticker]
+            status = market.status
+
+            del self._markets[ticker]
+            self._version += 1
+            self._last_update = time.time()
+
+            logger.info(f"Market removed from tracking: {ticker} (was {status.value})")
+            return True
 
     def get_all(self) -> List[TrackedMarket]:
         """Get all tracked markets."""

@@ -1,13 +1,24 @@
 # TRADER V3 Architecture Documentation
 
 > Machine-readable architecture reference for coding agents.
-> Last updated: 2024-12-29 (added FillListener for real-time order fill notifications)
+> Last updated: 2024-12-30 (added Lifecycle Discovery System and RLM Strategy)
 
 ## 1. System Overview
 
 TRADER V3 is an event-driven paper trading system for Kalshi prediction markets. It uses WebSocket connections to receive real-time orderbook data, maintains state through a centralized container with version tracking, and coordinates trading decisions through a clean component architecture. All trading data is in CENTS (Kalshi's native unit).
 
-**Current Status**: MVP complete with orderbook integration, state management, WebSocket broadcasting, event-driven whale following ("Follow the Whale"), and the validated YES 80-90c strategy. Multiple trading strategies are supported: WHALE_FOLLOWER executes trades based on detected whale activity, YES_80_90 trades the validated +5.1% edge strategy. Real-time market prices are tracked via MarketTickerListener (WebSocket) and MarketPriceSyncer (REST fallback).
+**Current Status**: MVP complete with orderbook integration, state management, WebSocket broadcasting, and multiple validated trading strategies.
+
+**Trading Strategies**:
+- **WHALE_FOLLOWER**: Follow big bets detected by WhaleTracker (+TBD edge)
+- **YES_80_90**: Buy YES at 80-90c (+5.1% validated edge)
+- **RLM_NO**: Reverse Line Movement - bet NO when public bets YES but price drops (+17.38% validated edge, highest)
+
+**Market Discovery Modes**:
+- **Config Mode**: Static market list from `RL_MARKET_TICKERS` environment variable
+- **Discovery Mode**: Dynamic market discovery via Lifecycle Discovery System with category filtering
+
+Real-time market prices are tracked via MarketTickerListener (WebSocket) and MarketPriceSyncer (REST fallback).
 
 ## 2. Architecture Diagram
 
