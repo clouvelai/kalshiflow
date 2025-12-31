@@ -62,6 +62,7 @@ export const useLifecycleWebSocket = ({ onMessage } = {}) => {
   const reconnectTimeoutRef = useRef(null);
   const lastPingRef = useRef(Date.now());
   const heartbeatIntervalRef = useRef(null);
+  const initialSnapshotReceivedRef = useRef(false);
 
   // Maximum number of events to keep in the feed
   const MAX_EVENTS = 100;
@@ -75,12 +76,40 @@ export const useLifecycleWebSocket = ({ onMessage } = {}) => {
       case 'tracked_markets':
         // Full snapshot of tracked markets (sent on connect and on major changes)
         if (data.data) {
+          const markets = data.data.markets || [];
+          const stats = data.data.stats || INITIAL_TRACKED_MARKETS.stats;
+
           setTrackedMarkets({
-            markets: data.data.markets || [],
-            stats: data.data.stats || INITIAL_TRACKED_MARKETS.stats,
+            markets,
+            stats,
             version: data.data.version || 0
           });
           setLastUpdateTime(Date.now());
+
+          // Create synthetic "loaded" event for initial snapshot with markets
+          if (!initialSnapshotReceivedRef.current && markets.length > 0) {
+            initialSnapshotReceivedRef.current = true;
+
+            // Create a startup event showing how many markets were loaded
+            const loadedEvent = {
+              id: `startup-${Date.now()}`,
+              event_type: 'startup',
+              market_ticker: '',
+              action: 'loaded',
+              reason: 'startup',
+              metadata: {
+                count: markets.length,
+                by_category: stats.by_category || {}
+              },
+              timestamp: new Date().toLocaleTimeString()
+            };
+
+            setRecentEvents(prev => [loadedEvent, ...prev].slice(0, MAX_EVENTS));
+
+            onMessage?.('info', `Loaded ${markets.length} tracked markets`, {
+              count: markets.length
+            });
+          }
         }
         break;
 
@@ -98,6 +127,14 @@ export const useLifecycleWebSocket = ({ onMessage } = {}) => {
           };
 
           setRecentEvents(prev => {
+            // Deduplicate: skip if same ticker+event_type within last 5 seconds
+            const isDuplicate = prev.some(e =>
+              e.market_ticker === event.market_ticker &&
+              e.event_type === event.event_type &&
+              e.timestamp === event.timestamp
+            );
+            if (isDuplicate) return prev;
+
             const updated = [event, ...prev].slice(0, MAX_EVENTS);
             return updated;
           });

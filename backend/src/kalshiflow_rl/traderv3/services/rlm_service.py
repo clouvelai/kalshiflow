@@ -312,6 +312,9 @@ class RLMService:
         self._last_state_emit: Dict[str, float] = {}
         self._state_emit_interval = 0.5  # 500ms between state updates per market
 
+        # Atomic counter for unique trade IDs (handles multiple trades in same millisecond)
+        self._trade_counter: int = 0
+
         logger.info(
             f"RLMService initialized: yes_threshold={yes_threshold:.0%}, "
             f"min_trades={min_trades}, min_price_drop={min_price_drop}c, "
@@ -416,8 +419,10 @@ class RLMService:
         market_ticker = trade_event.market_ticker
 
         # Store in tracked trades buffer (for Trade Processing panel)
-        # Generate trade_id from market_ticker and timestamp_ms since PublicTradeEvent doesn't have trade_id
-        trade_id = f"{market_ticker}:{trade_event.timestamp_ms}"
+        # Generate trade_id from market_ticker, timestamp_ms, and counter for uniqueness
+        # Counter ensures uniqueness when multiple trades occur in the same millisecond
+        self._trade_counter += 1
+        trade_id = f"{market_ticker}:{trade_event.timestamp_ms}:{self._trade_counter}"
         tracked_trade = TrackedTrade(
             trade_id=trade_id,
             market_ticker=market_ticker,

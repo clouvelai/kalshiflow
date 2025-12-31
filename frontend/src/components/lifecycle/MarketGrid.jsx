@@ -1,4 +1,5 @@
 import React from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
 import LifecycleMarketCard from './LifecycleMarketCard';
 
 /**
@@ -10,6 +11,14 @@ import LifecycleMarketCard from './LifecycleMarketCard';
  *   - rlmStates: Object mapping ticker -> RLM state
  *   - tradePulses: Object mapping ticker -> { side, ts } for pulse animation
  */
+
+// Animation variants for market cards
+const cardVariants = {
+  initial: { opacity: 0, y: -20, scale: 0.95 },
+  animate: { opacity: 1, y: 0, scale: 1 },
+  exit: { opacity: 0, scale: 0.9, transition: { duration: 0.2 } }
+};
+
 const MarketGrid = ({ marketsByCategory, showCategoryHeaders, rlmStates = {}, tradePulses = {} }) => {
   const categories = Object.entries(marketsByCategory);
 
@@ -35,14 +44,25 @@ const MarketGrid = ({ marketsByCategory, showCategoryHeaders, rlmStates = {}, tr
     const [_, markets] = categories[0];
     return (
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-        {markets.map(market => (
-          <LifecycleMarketCard
-            key={market.ticker}
-            market={market}
-            rlmState={rlmStates[market.ticker]}
-            tradePulse={tradePulses[market.ticker]}
-          />
-        ))}
+        <AnimatePresence mode="popLayout">
+          {markets.map(market => (
+            <motion.div
+              key={market.ticker}
+              layout
+              variants={cardVariants}
+              initial="initial"
+              animate="animate"
+              exit="exit"
+              transition={{ duration: 0.3, type: "spring", bounce: 0.2 }}
+            >
+              <LifecycleMarketCard
+                market={market}
+                rlmState={rlmStates[market.ticker]}
+                tradePulse={tradePulses[market.ticker]}
+              />
+            </motion.div>
+          ))}
+        </AnimatePresence>
       </div>
     );
   }
@@ -67,14 +87,25 @@ const MarketGrid = ({ marketsByCategory, showCategoryHeaders, rlmStates = {}, tr
 
           {/* Market cards grid */}
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-            {markets.map(market => (
-              <LifecycleMarketCard
-                key={market.ticker}
-                market={market}
-                rlmState={rlmStates[market.ticker]}
-                tradePulse={tradePulses[market.ticker]}
-              />
-            ))}
+            <AnimatePresence mode="popLayout">
+              {markets.map(market => (
+                <motion.div
+                  key={market.ticker}
+                  layout
+                  variants={cardVariants}
+                  initial="initial"
+                  animate="animate"
+                  exit="exit"
+                  transition={{ duration: 0.3, type: "spring", bounce: 0.2 }}
+                >
+                  <LifecycleMarketCard
+                    market={market}
+                    rlmState={rlmStates[market.ticker]}
+                    tradePulse={tradePulses[market.ticker]}
+                  />
+                </motion.div>
+              ))}
+            </AnimatePresence>
           </div>
         </div>
       ))}
