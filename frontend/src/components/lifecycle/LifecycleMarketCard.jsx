@@ -1,289 +1,62 @@
-import React, { useState } from 'react';
+import React, { memo, useRef, useEffect, useState } from 'react';
+
+// ============================================================================
+// HOOKS
+// ============================================================================
 
 /**
- * LifecycleMarketCard - Card displaying market with deltas since tracking
+ * useAnimatedValue - Hook for tracking value changes and providing animation classes
  *
- * Key insight: Everything anchored to "since you started tracking"
+ * Returns animation class and key when value changes:
+ * - Green glow + slight scale-up for increases
+ * - Red glow + slight scale-down for decreases
+ * - Uses key prop to re-trigger CSS animation
  *
- * Props:
- *   - market: Market data object
- *   - rlmState: RLM state { yes_trades, no_trades, yes_ratio, price_drop, etc. }
- *   - tradePulse: Trade pulse { side: 'yes'|'no', ts: timestamp } for animation
+ * @param {number} value - Current value to track
+ * @param {boolean} enabled - Whether animations are enabled (default true)
+ * @param {string} increaseClass - Custom class for increase animation
+ * @param {string} decreaseClass - Custom class for decrease animation
+ * @returns {{ animClass: string, animKey: number }} Animation class and unique key
  */
-const LifecycleMarketCard = ({ market, rlmState, tradePulse }) => {
-  const [expanded, setExpanded] = useState(false);
+const useAnimatedValue = (value, enabled = true, increaseClass = 'animate-value-increase', decreaseClass = 'animate-value-decrease') => {
+  const prevValueRef = useRef(value);
+  const [animState, setAnimState] = useState({ class: '', key: 0 });
 
-  // RLM stats from prop (or defaults if not available)
-  const yesTrades = rlmState?.yes_trades || 0;
-  const noTrades = rlmState?.no_trades || 0;
-  const totalTrades = rlmState?.total_trades || (yesTrades + noTrades);
-  const yesRatio = rlmState?.yes_ratio || (totalTrades > 0 ? yesTrades / totalTrades : 0);
-  const firstYesPrice = rlmState?.first_yes_price;
-  const lastYesPrice = rlmState?.last_yes_price;
-  const priceDrop = rlmState?.price_drop || 0;
+  useEffect(() => {
+    if (!enabled) return;
 
-  // Progress bar: 15 trades is the RLM signal threshold
-  const SIGNAL_THRESHOLD = 15;
-  const progressPercent = Math.min(100, (totalTrades / SIGNAL_THRESHOLD) * 100);
-  const signalReady = totalTrades >= SIGNAL_THRESHOLD && yesRatio > 0.65 && priceDrop > 0;
+    const prevValue = prevValueRef.current;
 
-  // Pulse animation class based on trade side
-  const pulseClass = tradePulse
-    ? tradePulse.side === 'yes'
-      ? 'animate-pulse-green'
-      : 'animate-pulse-red'
-    : '';
+    // Only animate if we have a valid previous value and value actually changed
+    if (prevValue !== null && prevValue !== undefined && value !== prevValue) {
+      const isIncrease = value > prevValue;
+      const animClass = isIncrease ? increaseClass : decreaseClass;
 
-  // Calculate derived values
-  const midPrice = market.yes_bid && market.yes_ask
-    ? Math.round((market.yes_bid + market.yes_ask) / 2)
-    : market.price || 0;
+      // Update animation state with new key to force re-render
+      setAnimState(prev => ({
+        class: animClass,
+        key: prev.key + 1
+      }));
 
-  const spread = market.yes_bid && market.yes_ask
-    ? market.yes_ask - market.yes_bid
-    : null;
+      // Clear animation class after animation completes
+      const timer = setTimeout(() => {
+        setAnimState(prev => ({ ...prev, class: '' }));
+      }, 500);
 
-  const priceDelta = market.price_delta || 0;
-  const volumeDelta = market.volume_delta || 0;
+      prevValueRef.current = value;
+      return () => clearTimeout(timer);
+    }
 
-  // Time since tracking (tracked_at is Unix seconds, Date.now() is milliseconds)
-  const trackedAt = market.tracked_at;
-  const timeSinceTrack = trackedAt
-    ? formatTimeSince(Date.now() - trackedAt * 1000)
-    : null;
+    prevValueRef.current = value;
+  }, [value, enabled, increaseClass, decreaseClass]);
 
-  // Is this a "new" market (tracked < 5 minutes)?
-  const isNew = trackedAt && (Date.now() - trackedAt * 1000) < 5 * 60 * 1000;
-
-  // Is this "hot" (high volume delta)?
-  const isHot = Math.abs(volumeDelta) > 50000; // $500+ volume delta
-
-  // Time until close (from backend time_to_close_seconds or calculated from close_ts)
-  const timeToClose = market.time_to_close_seconds
-    ?? (market.close_ts ? market.close_ts - Math.floor(Date.now() / 1000) : null);
-  const timeUntilClose = timeToClose && timeToClose > 0
-    ? formatTimeUntil(timeToClose)
-    : null;
-
-  // Is this closing soon (< 1 hour)?
-  const closingSoon = timeToClose && timeToClose < 3600;
-
-  return (
-    <div
-      onClick={() => setExpanded(!expanded)}
-      className={`
-        bg-gray-800/60 rounded-lg p-3 cursor-pointer
-        border transition-all duration-200
-        ${market.status === 'determined' ? 'border-amber-500/50 bg-amber-900/10' : 'border-gray-700'}
-        ${isNew ? 'ring-1 ring-blue-500/50 animate-pulse-subtle' : ''}
-        ${pulseClass}
-        hover:border-gray-600 hover:bg-gray-800/80
-      `}
-    >
-      {/* Header row */}
-      <div className="flex items-start justify-between gap-2 mb-2">
-        <div className="flex-1 min-w-0">
-          {/* Category badge + ticker */}
-          <div className="flex items-center gap-2 mb-1">
-            <span className={`text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded ${
-              getCategoryStyle(market.category)
-            }`}>
-              {market.category || 'other'}
-            </span>
-            <span className="text-xs text-gray-500 font-mono truncate">
-              {market.ticker}
-            </span>
-          </div>
-
-          {/* Event title */}
-          <h3 className="text-sm text-white font-medium truncate">
-            {market.event_title || market.title || market.ticker}
-          </h3>
-        </div>
-
-        {/* Badges */}
-        <div className="flex items-center gap-1">
-          {isNew && (
-            <span className="text-[10px] bg-blue-500/20 text-blue-400 px-1.5 py-0.5 rounded font-medium">
-              NEW
-            </span>
-          )}
-          {isHot && (
-            <span className="text-[10px] bg-orange-500/20 text-orange-400 px-1.5 py-0.5 rounded">
-              HOT
-            </span>
-          )}
-          {closingSoon && (
-            <span className="text-[10px] bg-amber-500/20 text-amber-400 px-1.5 py-0.5 rounded">
-              SOON
-            </span>
-          )}
-        </div>
-      </div>
-
-      {/* Main stats row */}
-      <div className="flex items-baseline justify-between gap-4">
-        {/* Price + spread */}
-        <div className="flex items-baseline gap-3">
-          <span className="text-lg font-mono text-white">
-            {midPrice}c
-          </span>
-          {spread !== null && (
-            <span className="text-xs text-gray-500">
-              {spread}c spread
-            </span>
-          )}
-        </div>
-
-        {/* Price delta */}
-        {priceDelta !== 0 && (
-          <span className={`text-sm font-mono ${
-            priceDelta > 0 ? 'text-emerald-400' : 'text-red-400'
-          }`}>
-            {priceDelta > 0 ? '+' : ''}{priceDelta}c
-          </span>
-        )}
-      </div>
-
-      {/* Secondary stats row */}
-      <div className="flex items-center justify-between mt-2 text-xs text-gray-500">
-        <div className="flex items-center gap-3">
-          {/* Volume + delta */}
-          <span>
-            Vol: {formatVolume(market.volume || 0)}
-            {volumeDelta !== 0 && (
-              <span className={volumeDelta > 0 ? 'text-emerald-400' : 'text-red-400'}>
-                {' '}({volumeDelta > 0 ? '+' : ''}{formatVolume(volumeDelta)})
-              </span>
-            )}
-          </span>
-        </div>
-
-        {/* Time displays: tracked time + close time */}
-        <div className="flex items-center gap-2">
-          {timeSinceTrack && (
-            <span className="flex items-center gap-1" title="Time since tracking started">
-              <ClockIcon />
-              {timeSinceTrack}
-            </span>
-          )}
-          {timeUntilClose && (
-            <span className={`flex items-center gap-1 ${closingSoon ? 'text-amber-400' : ''}`} title="Time until market closes">
-              <HourglassIcon />
-              {timeUntilClose}
-            </span>
-          )}
-        </div>
-      </div>
-
-      {/* RLM Stats Section - Always shown (even 0 trades) */}
-      <div className="mt-3 pt-2 border-t border-gray-700/50 space-y-2">
-        {/* Trade counts and ratio */}
-        <div className="flex items-center justify-between text-xs">
-          <span className="text-gray-400">Trades:</span>
-          <span className="font-mono">
-            <span className="text-emerald-400">{yesTrades} YES</span>
-            {' / '}
-            <span className="text-red-400">{noTrades} NO</span>
-            {totalTrades > 0 && (
-              <span className="text-gray-400 ml-2">
-                ({(yesRatio * 100).toFixed(1)}%)
-              </span>
-            )}
-          </span>
-        </div>
-
-        {/* Price movement */}
-        {(firstYesPrice !== null && firstYesPrice !== undefined) && (
-          <div className="flex items-center justify-between text-xs">
-            <span className="text-gray-400">Price:</span>
-            <span className="font-mono text-white">
-              {firstYesPrice}c
-              {lastYesPrice !== null && lastYesPrice !== undefined && lastYesPrice !== firstYesPrice && (
-                <>
-                  {' -> '}{lastYesPrice}c
-                  <span className={priceDrop > 0 ? 'text-red-400 ml-1' : priceDrop < 0 ? 'text-emerald-400 ml-1' : ''}>
-                    {priceDrop > 0 ? `(${String.fromCharCode(8595)}${priceDrop}c)` : priceDrop < 0 ? `(${String.fromCharCode(8593)}${Math.abs(priceDrop)}c)` : ''}
-                  </span>
-                </>
-              )}
-            </span>
-          </div>
-        )}
-
-        {/* Progress bar toward 15-trade threshold */}
-        <div className="relative">
-          <div className="h-1.5 bg-gray-700 rounded-full overflow-hidden">
-            <div
-              className={`h-full transition-all duration-300 ${
-                signalReady ? 'bg-amber-500' : progressPercent >= 100 ? 'bg-blue-500' : 'bg-gray-500'
-              }`}
-              style={{ width: `${progressPercent}%` }}
-            />
-          </div>
-          <div className="flex justify-between text-[10px] text-gray-500 mt-0.5">
-            <span>{totalTrades} trades</span>
-            {signalReady ? (
-              <span className="text-amber-400 font-medium">SIGNAL READY</span>
-            ) : (
-              <span>{SIGNAL_THRESHOLD - totalTrades > 0 ? `${SIGNAL_THRESHOLD - totalTrades} to signal` : ''}</span>
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* Expanded details */}
-      {expanded && (
-        <div className="mt-3 pt-3 border-t border-gray-700 text-xs space-y-2">
-          {/* Price details */}
-          <div className="flex justify-between text-gray-400">
-            <span>Bid / Ask:</span>
-            <span className="font-mono text-white">
-              {market.yes_bid || '-'}c / {market.yes_ask || '-'}c
-            </span>
-          </div>
-
-          {/* Open interest */}
-          {market.open_interest !== undefined && (
-            <div className="flex justify-between text-gray-400">
-              <span>Open Interest:</span>
-              <span className="font-mono text-white">
-                {market.open_interest?.toLocaleString() || '-'}
-              </span>
-            </div>
-          )}
-
-          {/* Price at discovery */}
-          {market.price_at_track !== undefined && (
-            <div className="flex justify-between text-gray-400">
-              <span>Price at discovery:</span>
-              <span className="font-mono text-white">
-                {market.price_at_track}c → {midPrice}c
-                {priceDelta !== 0 && (
-                  <span className={priceDelta > 0 ? 'text-emerald-400' : 'text-red-400'}>
-                    {' '}({priceDelta > 0 ? '+' : ''}{priceDelta}c)
-                  </span>
-                )}
-              </span>
-            </div>
-          )}
-
-          {/* Status */}
-          <div className="flex justify-between text-gray-400">
-            <span>Status:</span>
-            <span className={`font-medium ${
-              market.status === 'determined' ? 'text-amber-400' : 'text-emerald-400'
-            }`}>
-              {market.status || 'active'}
-            </span>
-          </div>
-        </div>
-      )}
-    </div>
-  );
+  return { animClass: animState.class, animKey: animState.key };
 };
 
-// Helper functions
+// ============================================================================
+// FORMATTING HELPERS
+// ============================================================================
+
 function formatTimeSince(ms) {
   const seconds = Math.floor(ms / 1000);
   if (seconds < 60) return `${seconds}s`;
@@ -309,40 +82,747 @@ function formatVolume(cents) {
   return `$${dollars.toFixed(0)}`;
 }
 
-function getCategoryStyle(category) {
-  const styles = {
-    sports: 'bg-blue-500/20 text-blue-400',
-    crypto: 'bg-orange-500/20 text-orange-400',
-    entertainment: 'bg-purple-500/20 text-purple-400',
-    media_mentions: 'bg-pink-500/20 text-pink-400',
-    politics: 'bg-red-500/20 text-red-400',
-    economics: 'bg-green-500/20 text-green-400',
-    climate: 'bg-cyan-500/20 text-cyan-400',
-    financials: 'bg-emerald-500/20 text-emerald-400',
-    science: 'bg-indigo-500/20 text-indigo-400',
-    world: 'bg-teal-500/20 text-teal-400',
-    tech: 'bg-violet-500/20 text-violet-400',
-    culture: 'bg-fuchsia-500/20 text-fuchsia-400',
-  };
-  // Case-insensitive lookup
-  const key = (category || '').toLowerCase();
-  return styles[key] || 'bg-gray-500/20 text-gray-400';
-}
+// ============================================================================
+// CATEGORY STYLE SYSTEM
+// ============================================================================
 
-// Simple clock icon (time since tracked)
-const ClockIcon = () => (
+const categoryStyles = {
+  sports: {
+    bg: 'bg-gradient-to-r from-blue-600/30 to-blue-500/20',
+    border: 'border-blue-500/40',
+    text: 'text-blue-400',
+    glow: 'shadow-blue-500/20'
+  },
+  crypto: {
+    bg: 'bg-gradient-to-r from-orange-600/30 to-orange-500/20',
+    border: 'border-orange-500/40',
+    text: 'text-orange-400',
+    glow: 'shadow-orange-500/20'
+  },
+  entertainment: {
+    bg: 'bg-gradient-to-r from-purple-600/30 to-purple-500/20',
+    border: 'border-purple-500/40',
+    text: 'text-purple-400',
+    glow: 'shadow-purple-500/20'
+  },
+  media_mentions: {
+    bg: 'bg-gradient-to-r from-pink-600/30 to-pink-500/20',
+    border: 'border-pink-500/40',
+    text: 'text-pink-400',
+    glow: 'shadow-pink-500/20'
+  },
+  politics: {
+    bg: 'bg-gradient-to-r from-red-600/30 to-red-500/20',
+    border: 'border-red-500/40',
+    text: 'text-red-400',
+    glow: 'shadow-red-500/20'
+  },
+  economics: {
+    bg: 'bg-gradient-to-r from-green-600/30 to-green-500/20',
+    border: 'border-green-500/40',
+    text: 'text-green-400',
+    glow: 'shadow-green-500/20'
+  },
+  climate: {
+    bg: 'bg-gradient-to-r from-cyan-600/30 to-cyan-500/20',
+    border: 'border-cyan-500/40',
+    text: 'text-cyan-400',
+    glow: 'shadow-cyan-500/20'
+  },
+  financials: {
+    bg: 'bg-gradient-to-r from-emerald-600/30 to-emerald-500/20',
+    border: 'border-emerald-500/40',
+    text: 'text-emerald-400',
+    glow: 'shadow-emerald-500/20'
+  },
+  science: {
+    bg: 'bg-gradient-to-r from-indigo-600/30 to-indigo-500/20',
+    border: 'border-indigo-500/40',
+    text: 'text-indigo-400',
+    glow: 'shadow-indigo-500/20'
+  },
+  world: {
+    bg: 'bg-gradient-to-r from-teal-600/30 to-teal-500/20',
+    border: 'border-teal-500/40',
+    text: 'text-teal-400',
+    glow: 'shadow-teal-500/20'
+  },
+  tech: {
+    bg: 'bg-gradient-to-r from-violet-600/30 to-violet-500/20',
+    border: 'border-violet-500/40',
+    text: 'text-violet-400',
+    glow: 'shadow-violet-500/20'
+  },
+  culture: {
+    bg: 'bg-gradient-to-r from-fuchsia-600/30 to-fuchsia-500/20',
+    border: 'border-fuchsia-500/40',
+    text: 'text-fuchsia-400',
+    glow: 'shadow-fuchsia-500/20'
+  },
+  default: {
+    bg: 'bg-gradient-to-r from-gray-600/30 to-gray-500/20',
+    border: 'border-gray-500/40',
+    text: 'text-gray-400',
+    glow: 'shadow-gray-500/20'
+  }
+};
+
+const getCategoryStyle = (category) => {
+  const key = (category || '').toLowerCase();
+  return categoryStyles[key] || categoryStyles.default;
+};
+
+// ============================================================================
+// MEMOIZED SUB-COMPONENTS
+// ============================================================================
+
+/**
+ * CategoryBadge - Gradient pill with category-specific styling
+ */
+const CategoryBadge = memo(({ category }) => {
+  const style = getCategoryStyle(category);
+
+  return (
+    <span className={`
+      text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-md
+      border backdrop-blur-sm
+      font-medium
+      ${style.bg} ${style.border} ${style.text}
+    `}>
+      {category || 'other'}
+    </span>
+  );
+});
+
+CategoryBadge.displayName = 'CategoryBadge';
+
+/**
+ * StatusBadges - Collection of NEW, HOT, SOON badges
+ */
+const StatusBadges = memo(({ isNew, isHot, closingSoon, signalReady }) => (
+  <div className="flex items-center gap-1.5">
+    {isNew && (
+      <span className="
+        text-[10px] px-2 py-0.5 rounded-md font-medium
+        bg-gradient-to-r from-blue-600/30 to-blue-500/20
+        border border-blue-500/40 text-blue-400
+        shadow-sm shadow-blue-500/20
+      ">
+        NEW
+      </span>
+    )}
+    {isHot && (
+      <span className="
+        text-[10px] px-2 py-0.5 rounded-md font-medium
+        bg-gradient-to-r from-orange-600/30 to-orange-500/20
+        border border-orange-500/40 text-orange-400
+        shadow-sm shadow-orange-500/20
+      ">
+        HOT
+      </span>
+    )}
+    {closingSoon && (
+      <span className="
+        text-[10px] px-2 py-0.5 rounded-md font-medium
+        bg-gradient-to-r from-amber-600/30 to-amber-500/20
+        border border-amber-500/40 text-amber-400
+        shadow-sm shadow-amber-500/20
+      ">
+        SOON
+      </span>
+    )}
+    {signalReady && (
+      <span className="
+        text-[10px] px-2 py-0.5 rounded-md font-bold
+        bg-gradient-to-r from-amber-500/40 to-amber-400/30
+        border border-amber-400/60 text-amber-300
+        animate-signal-pulse
+        shadow-md shadow-amber-500/30
+      ">
+        SIGNAL READY
+      </span>
+    )}
+  </div>
+));
+
+StatusBadges.displayName = 'StatusBadges';
+
+/**
+ * PriceDisplay - Price, spread, and delta with animations
+ */
+const PriceDisplay = memo(({ midPrice, spread, priceDelta, animClass }) => (
+  <div className="flex items-baseline justify-between gap-4">
+    <div className="flex items-baseline gap-3">
+      <span className={`
+        text-xl font-mono font-bold text-white
+        transition-all duration-300
+        ${animClass}
+      `}>
+        {midPrice}<span className="text-gray-500 text-base">c</span>
+      </span>
+      {spread !== null && (
+        <span className="text-xs text-gray-500 font-mono">
+          {spread}c spread
+        </span>
+      )}
+    </div>
+
+    {priceDelta !== 0 && (
+      <span className={`
+        text-sm font-mono font-medium px-2 py-0.5 rounded-md
+        ${priceDelta > 0
+          ? 'text-emerald-400 bg-emerald-500/10 border border-emerald-500/20'
+          : 'text-red-400 bg-red-500/10 border border-red-500/20'
+        }
+      `}>
+        {priceDelta > 0 ? '+' : ''}{priceDelta}c
+      </span>
+    )}
+  </div>
+));
+
+PriceDisplay.displayName = 'PriceDisplay';
+
+/**
+ * StatsRow - Volume and time displays
+ */
+const StatsRow = memo(({ volume, volumeDelta, timeSinceTrack, timeUntilClose, closingSoon }) => (
+  <div className="flex items-center justify-between text-xs text-gray-500">
+    <div className="flex items-center gap-3">
+      <span className="font-mono">
+        Vol: {formatVolume(volume || 0)}
+        {volumeDelta !== 0 && (
+          <span className={`ml-1 ${volumeDelta > 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+            ({volumeDelta > 0 ? '+' : ''}{formatVolume(volumeDelta)})
+          </span>
+        )}
+      </span>
+    </div>
+
+    <div className="flex items-center gap-3">
+      {timeSinceTrack && (
+        <span className="flex items-center gap-1.5" title="Time since tracking started">
+          <ClockIcon />
+          <span className="font-mono">{timeSinceTrack}</span>
+        </span>
+      )}
+      {timeUntilClose && (
+        <span
+          className={`flex items-center gap-1.5 ${closingSoon ? 'text-amber-400' : ''}`}
+          title="Time until market closes"
+        >
+          <HourglassIcon />
+          <span className="font-mono">{timeUntilClose}</span>
+        </span>
+      )}
+    </div>
+  </div>
+));
+
+StatsRow.displayName = 'StatsRow';
+
+/**
+ * TradeCountsDisplay - YES/NO trade counts with animations
+ */
+const TradeCountsDisplay = memo(({ yesTrades, noTrades, yesRatio, totalTrades, yesAnimClass, noAnimClass }) => (
+  <div className="flex items-center justify-between text-xs">
+    <span className="text-gray-400 font-medium">Trades:</span>
+    <span className="font-mono flex items-center gap-2">
+      <span className={`
+        text-emerald-400 px-1.5 py-0.5 rounded
+        bg-emerald-500/10 border border-emerald-500/20
+        transition-all duration-300
+        ${yesAnimClass}
+      `}>
+        {yesTrades} YES
+      </span>
+      <span className="text-gray-600">/</span>
+      <span className={`
+        text-red-400 px-1.5 py-0.5 rounded
+        bg-red-500/10 border border-red-500/20
+        transition-all duration-300
+        ${noAnimClass}
+      `}>
+        {noTrades} NO
+      </span>
+      {totalTrades > 0 && (
+        <span className="text-gray-500 font-medium ml-1">
+          ({(yesRatio * 100).toFixed(0)}%)
+        </span>
+      )}
+    </span>
+  </div>
+));
+
+TradeCountsDisplay.displayName = 'TradeCountsDisplay';
+
+/**
+ * PriceMovementDisplay - First/last price tracking
+ */
+const PriceMovementDisplay = memo(({ firstYesPrice, lastYesPrice, priceDrop }) => {
+  if (firstYesPrice === null || firstYesPrice === undefined) return null;
+
+  return (
+    <div className="flex items-center justify-between text-xs">
+      <span className="text-gray-400 font-medium">Price:</span>
+      <span className="font-mono text-white flex items-center gap-1">
+        <span className="text-gray-300">{firstYesPrice}c</span>
+        {lastYesPrice !== null && lastYesPrice !== undefined && lastYesPrice !== firstYesPrice && (
+          <>
+            <span className="text-gray-600 mx-1">{'\u2192'}</span>
+            <span className="text-white">{lastYesPrice}c</span>
+            {priceDrop !== 0 && (
+              <span className={`
+                ml-1.5 px-1.5 py-0.5 rounded text-[10px] font-medium
+                ${priceDrop > 0
+                  ? 'text-red-400 bg-red-500/10 border border-red-500/20'
+                  : 'text-emerald-400 bg-emerald-500/10 border border-emerald-500/20'
+                }
+              `}>
+                {priceDrop > 0 ? '\u2193' : '\u2191'}{Math.abs(priceDrop)}c
+              </span>
+            )}
+          </>
+        )}
+      </span>
+    </div>
+  );
+});
+
+PriceMovementDisplay.displayName = 'PriceMovementDisplay';
+
+/**
+ * ProgressBar - Animated progress toward signal threshold
+ */
+const ProgressBar = memo(({ totalTrades, signalReady, progressPercent, threshold }) => {
+  // Gradient and glow based on progress state
+  const progressGradient = signalReady
+    ? 'bg-gradient-to-r from-amber-500 to-amber-400'
+    : progressPercent >= 80
+      ? 'bg-gradient-to-r from-blue-500 to-cyan-400'
+      : progressPercent >= 50
+        ? 'bg-gradient-to-r from-blue-600 to-blue-500'
+        : 'bg-gradient-to-r from-gray-600 to-gray-500';
+
+  const progressGlow = signalReady
+    ? 'shadow-[0_0_12px_rgba(245,158,11,0.5)]'
+    : progressPercent >= 80
+      ? 'shadow-[0_0_8px_rgba(59,130,246,0.4)]'
+      : '';
+
+  const tradesRemaining = threshold - totalTrades;
+
+  return (
+    <div className="relative">
+      {/* Track */}
+      <div className="h-2 bg-gray-800/80 rounded-full overflow-hidden border border-gray-700/50">
+        {/* Fill */}
+        <div
+          className={`
+            h-full rounded-full transition-all duration-500 ease-out
+            ${progressGradient} ${progressGlow}
+          `}
+          style={{ width: `${progressPercent}%` }}
+        />
+      </div>
+
+      {/* Labels */}
+      <div className="flex justify-between text-[10px] mt-1.5">
+        <span className="text-gray-500 font-mono">{totalTrades} trades</span>
+        {signalReady ? (
+          <span className="text-amber-400 font-bold animate-signal-text">
+            SIGNAL READY
+          </span>
+        ) : tradesRemaining > 0 ? (
+          <span className="text-gray-500 font-mono">
+            {tradesRemaining} to signal
+          </span>
+        ) : (
+          <span className="text-blue-400 font-mono">
+            Threshold met
+          </span>
+        )}
+      </div>
+    </div>
+  );
+});
+
+ProgressBar.displayName = 'ProgressBar';
+
+/**
+ * ExpandedDetails - Additional details shown when card is expanded
+ */
+const ExpandedDetails = memo(({ market, midPrice, priceDelta }) => (
+  <div className="
+    mt-3 pt-3
+    border-t border-gray-700/50
+    text-xs space-y-2
+    animate-expand-in
+  ">
+    {/* Bid/Ask */}
+    <div className="flex justify-between text-gray-400">
+      <span>Bid / Ask:</span>
+      <span className="font-mono text-white">
+        {market.yes_bid || '-'}c / {market.yes_ask || '-'}c
+      </span>
+    </div>
+
+    {/* Open Interest */}
+    {market.open_interest !== undefined && (
+      <div className="flex justify-between text-gray-400">
+        <span>Open Interest:</span>
+        <span className="font-mono text-white">
+          {market.open_interest?.toLocaleString() || '-'}
+        </span>
+      </div>
+    )}
+
+    {/* Price at discovery */}
+    {market.price_at_track !== undefined && (
+      <div className="flex justify-between text-gray-400">
+        <span>Price at discovery:</span>
+        <span className="font-mono text-white">
+          {market.price_at_track}c {'\u2192'} {midPrice}c
+          {priceDelta !== 0 && (
+            <span className={`ml-1 ${priceDelta > 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+              ({priceDelta > 0 ? '+' : ''}{priceDelta}c)
+            </span>
+          )}
+        </span>
+      </div>
+    )}
+
+    {/* Status */}
+    <div className="flex justify-between text-gray-400">
+      <span>Status:</span>
+      <span className={`
+        font-medium px-2 py-0.5 rounded
+        ${market.status === 'determined'
+          ? 'text-amber-400 bg-amber-500/10 border border-amber-500/20'
+          : 'text-emerald-400 bg-emerald-500/10 border border-emerald-500/20'
+        }
+      `}>
+        {market.status || 'active'}
+      </span>
+    </div>
+  </div>
+));
+
+ExpandedDetails.displayName = 'ExpandedDetails';
+
+// ============================================================================
+// ICON COMPONENTS
+// ============================================================================
+
+const ClockIcon = memo(() => (
   <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
       d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
   </svg>
-);
+));
 
-// Hourglass icon (time until close)
-const HourglassIcon = () => (
+ClockIcon.displayName = 'ClockIcon';
+
+const HourglassIcon = memo(() => (
   <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
       d="M12 8V4m0 16v-4m-6-4h12M7 4h10v2a4 4 0 01-4 4h-2a4 4 0 01-4-4V4zm0 16h10v-2a4 4 0 00-4-4h-2a4 4 0 00-4 4v2z" />
   </svg>
-);
+));
 
-export default LifecycleMarketCard;
+HourglassIcon.displayName = 'HourglassIcon';
+
+// ============================================================================
+// MAIN COMPONENT
+// ============================================================================
+
+/**
+ * LifecycleMarketCard - Card displaying market with deltas since tracking
+ *
+ * Features:
+ * - Gradient backgrounds with backdrop blur
+ * - Value-change animations (green/red glows on trade count changes)
+ * - Hover micro-interactions (scale, shadow)
+ * - Signal-ready amber glow state
+ * - Progress bar with animated fill
+ *
+ * Props:
+ *   - market: Market data object
+ *   - rlmState: RLM state { yes_trades, no_trades, yes_ratio, price_drop, etc. }
+ *   - tradePulse: Trade pulse { side: 'yes'|'no', ts: timestamp } for animation
+ */
+const LifecycleMarketCard = ({ market, rlmState, tradePulse }) => {
+  const [expanded, setExpanded] = useState(false);
+
+  // RLM stats from prop (or defaults if not available)
+  const yesTrades = rlmState?.yes_trades || 0;
+  const noTrades = rlmState?.no_trades || 0;
+  const totalTrades = rlmState?.total_trades || (yesTrades + noTrades);
+  const yesRatio = rlmState?.yes_ratio || (totalTrades > 0 ? yesTrades / totalTrades : 0);
+  const firstYesPrice = rlmState?.first_yes_price;
+  const lastYesPrice = rlmState?.last_yes_price;
+  const priceDrop = rlmState?.price_drop || 0;
+
+  // Progress bar: 15 trades is the RLM signal threshold
+  const SIGNAL_THRESHOLD = 15;
+  const progressPercent = Math.min(100, (totalTrades / SIGNAL_THRESHOLD) * 100);
+  const signalReady = totalTrades >= SIGNAL_THRESHOLD && yesRatio > 0.65 && priceDrop > 0;
+
+  // Animated values for trade counts
+  const { animClass: yesAnimClass } = useAnimatedValue(
+    yesTrades,
+    true,
+    'animate-trade-yes-pulse',
+    'animate-trade-yes-pulse'
+  );
+  const { animClass: noAnimClass } = useAnimatedValue(
+    noTrades,
+    true,
+    'animate-trade-no-pulse',
+    'animate-trade-no-pulse'
+  );
+  const { animClass: priceAnimClass } = useAnimatedValue(
+    market.price || 0,
+    true,
+    'animate-price-change',
+    'animate-price-change'
+  );
+
+  // Calculate derived values
+  const midPrice = market.yes_bid && market.yes_ask
+    ? Math.round((market.yes_bid + market.yes_ask) / 2)
+    : market.price || 0;
+
+  const spread = market.yes_bid && market.yes_ask
+    ? market.yes_ask - market.yes_bid
+    : null;
+
+  const priceDelta = market.price_delta || 0;
+  const volumeDelta = market.volume_delta || 0;
+
+  // Time since tracking
+  const trackedAt = market.tracked_at;
+  const timeSinceTrack = trackedAt
+    ? formatTimeSince(Date.now() - trackedAt * 1000)
+    : null;
+
+  // Is this a "new" market (tracked < 5 minutes)?
+  const isNew = trackedAt && (Date.now() - trackedAt * 1000) < 5 * 60 * 1000;
+
+  // Is this "hot" (high volume delta)?
+  const isHot = Math.abs(volumeDelta) > 50000;
+
+  // Time until close
+  const timeToClose = market.time_to_close_seconds
+    ?? (market.close_ts ? market.close_ts - Math.floor(Date.now() / 1000) : null);
+  const timeUntilClose = timeToClose && timeToClose > 0
+    ? formatTimeUntil(timeToClose)
+    : null;
+
+  // Is this closing soon (< 1 hour)?
+  const closingSoon = timeToClose && timeToClose < 3600;
+
+  // Determine card border/glow state
+  const isDetermined = market.status === 'determined';
+
+  return (
+    <div
+      onClick={() => setExpanded(!expanded)}
+      className={`
+        bg-gradient-to-br from-gray-800/70 via-gray-850/60 to-gray-900/70
+        backdrop-blur-sm rounded-xl
+        border
+        shadow-lg shadow-black/10
+        transition-all duration-300 ease-out
+        cursor-pointer
+        p-4
+        ${signalReady
+          ? 'border-amber-500/60 shadow-xl shadow-amber-500/20 animate-signal-glow'
+          : isDetermined
+            ? 'border-amber-500/40 bg-amber-900/10'
+            : isNew
+              ? 'border-blue-500/40 ring-1 ring-blue-500/30'
+              : 'border-gray-700/60'
+        }
+        hover:scale-[1.02] hover:shadow-xl hover:border-gray-600/80
+      `}
+    >
+      {/* Header row */}
+      <div className="flex items-start justify-between gap-3 mb-3">
+        <div className="flex-1 min-w-0">
+          {/* Category badge + ticker */}
+          <div className="flex items-center gap-2 mb-1.5">
+            <CategoryBadge category={market.category} />
+            <span className="text-xs text-gray-500 font-mono truncate">
+              {market.ticker}
+            </span>
+          </div>
+
+          {/* Event title */}
+          <h3 className="text-sm text-white font-medium truncate leading-tight">
+            {market.event_title || market.title || market.ticker}
+          </h3>
+        </div>
+
+        {/* Status badges */}
+        <StatusBadges
+          isNew={isNew}
+          isHot={isHot}
+          closingSoon={closingSoon}
+          signalReady={signalReady}
+        />
+      </div>
+
+      {/* Main stats row */}
+      <PriceDisplay
+        midPrice={midPrice}
+        spread={spread}
+        priceDelta={priceDelta}
+        animClass={priceAnimClass}
+      />
+
+      {/* Secondary stats row */}
+      <div className="mt-3">
+        <StatsRow
+          volume={market.volume}
+          volumeDelta={volumeDelta}
+          timeSinceTrack={timeSinceTrack}
+          timeUntilClose={timeUntilClose}
+          closingSoon={closingSoon}
+        />
+      </div>
+
+      {/* RLM Stats Section */}
+      <div className="
+        mt-4 pt-3
+        border-t border-gray-700/40
+        space-y-3
+      ">
+        {/* Trade counts and ratio */}
+        <TradeCountsDisplay
+          yesTrades={yesTrades}
+          noTrades={noTrades}
+          yesRatio={yesRatio}
+          totalTrades={totalTrades}
+          yesAnimClass={yesAnimClass}
+          noAnimClass={noAnimClass}
+        />
+
+        {/* Price movement */}
+        <PriceMovementDisplay
+          firstYesPrice={firstYesPrice}
+          lastYesPrice={lastYesPrice}
+          priceDrop={priceDrop}
+        />
+
+        {/* Progress bar */}
+        <ProgressBar
+          totalTrades={totalTrades}
+          signalReady={signalReady}
+          progressPercent={progressPercent}
+          threshold={SIGNAL_THRESHOLD}
+        />
+      </div>
+
+      {/* Expanded details */}
+      {expanded && (
+        <ExpandedDetails
+          market={market}
+          midPrice={midPrice}
+          priceDelta={priceDelta}
+        />
+      )}
+
+      {/* Animation Keyframes */}
+      <style>{`
+        @keyframes trade-yes-pulse {
+          0% { box-shadow: none; }
+          50% { box-shadow: 0 0 12px rgba(34, 197, 94, 0.5); }
+          100% { box-shadow: none; }
+        }
+
+        @keyframes trade-no-pulse {
+          0% { box-shadow: none; }
+          50% { box-shadow: 0 0 12px rgba(239, 68, 68, 0.5); }
+          100% { box-shadow: none; }
+        }
+
+        @keyframes price-change {
+          0% { text-shadow: none; }
+          50% { text-shadow: 0 0 8px rgba(255, 255, 255, 0.5); }
+          100% { text-shadow: none; }
+        }
+
+        @keyframes signal-glow {
+          0%, 100% { box-shadow: 0 0 15px rgba(245, 158, 11, 0.3), 0 10px 15px -3px rgba(0, 0, 0, 0.1); }
+          50% { box-shadow: 0 0 25px rgba(245, 158, 11, 0.5), 0 10px 15px -3px rgba(0, 0, 0, 0.1); }
+        }
+
+        @keyframes signal-pulse {
+          0%, 100% { opacity: 1; transform: scale(1); }
+          50% { opacity: 0.9; transform: scale(1.02); }
+        }
+
+        @keyframes signal-text {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.7; }
+        }
+
+        @keyframes value-increase {
+          0% { transform: scale(1); box-shadow: none; }
+          50% { transform: scale(1.02); box-shadow: 0 0 12px rgba(34, 197, 94, 0.4); }
+          100% { transform: scale(1); box-shadow: none; }
+        }
+
+        @keyframes value-decrease {
+          0% { transform: scale(1); box-shadow: none; }
+          50% { transform: scale(0.98); box-shadow: 0 0 12px rgba(239, 68, 68, 0.4); }
+          100% { transform: scale(1); box-shadow: none; }
+        }
+
+        @keyframes expand-in {
+          0% { opacity: 0; transform: translateY(-8px); }
+          100% { opacity: 1; transform: translateY(0); }
+        }
+
+        .animate-trade-yes-pulse {
+          animation: trade-yes-pulse 450ms ease-out;
+        }
+
+        .animate-trade-no-pulse {
+          animation: trade-no-pulse 450ms ease-out;
+        }
+
+        .animate-price-change {
+          animation: price-change 400ms ease-out;
+        }
+
+        .animate-signal-glow {
+          animation: signal-glow 2s ease-in-out infinite;
+        }
+
+        .animate-signal-pulse {
+          animation: signal-pulse 1.5s ease-in-out infinite;
+        }
+
+        .animate-signal-text {
+          animation: signal-text 1.5s ease-in-out infinite;
+        }
+
+        .animate-value-increase {
+          animation: value-increase 450ms ease-out;
+        }
+
+        .animate-value-decrease {
+          animation: value-decrease 450ms ease-out;
+        }
+
+        .animate-expand-in {
+          animation: expand-in 200ms ease-out;
+        }
+      `}</style>
+    </div>
+  );
+};
+
+export default memo(LifecycleMarketCard);
