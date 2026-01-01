@@ -189,6 +189,25 @@ function getEventStyle(eventType) {
         typeColor: 'bg-red-500/20 text-red-400',
         bgColor: 'bg-red-900/5'
       };
+    // Trading activity events
+    case 'rlm_signal':
+      return {
+        typeLabel: 'SIGNAL',
+        typeColor: 'bg-amber-500/20 text-amber-400',
+        bgColor: 'bg-amber-900/5'
+      };
+    case 'order_fill':
+      return {
+        typeLabel: 'FILL',
+        typeColor: 'bg-emerald-500/20 text-emerald-400',
+        bgColor: 'bg-emerald-900/5'
+      };
+    case 'order_placed':
+      return {
+        typeLabel: 'ORDER',
+        typeColor: 'bg-blue-500/20 text-blue-400',
+        bgColor: 'bg-blue-900/5'
+      };
     default:
       return {
         typeLabel: eventType?.toUpperCase()?.slice(0, 6) || 'EVENT',
@@ -224,6 +243,13 @@ function formatEventMessage(event) {
       return event.action || 'Market tracked';
     case 'closed':
       return event.metadata?.reason || 'Market closed';
+    // Trading activity events
+    case 'rlm_signal':
+      return event.reason || event.metadata?.message || 'Signal detected';
+    case 'order_fill':
+      return event.reason || event.metadata?.message || 'Order filled';
+    case 'order_placed':
+      return event.reason || event.metadata?.message || 'Order placed';
     default:
       return event.action || event.metadata?.message || event.event_type || 'Event';
   }

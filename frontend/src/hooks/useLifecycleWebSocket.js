@@ -256,7 +256,34 @@ export const useLifecycleWebSocket = ({ onMessage } = {}) => {
         if (data.data) {
           setTradingState({
             balance: data.data.balance || 0,
-            min_trader_cash: data.data.min_trader_cash || 0
+            min_trader_cash: data.data.min_trader_cash || 0,
+            rlm_config: data.data.rlm_config || null
+          });
+        }
+        break;
+
+      case 'system_activity':
+        // Handle trading activity events (RLM signals, order fills, etc.)
+        if (data.data) {
+          const activityData = data.data;
+          const event = {
+            id: `activity-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+            event_type: activityData.activity_type,  // 'rlm_signal', 'order_fill', etc.
+            market_ticker: activityData.metadata?.market_ticker || activityData.metadata?.ticker || '',
+            action: activityData.activity_type,
+            reason: activityData.message,
+            metadata: activityData.metadata || {},
+            timestamp: activityData.timestamp || new Date().toLocaleTimeString()
+          };
+
+          setRecentEvents(prev => {
+            const updated = [event, ...prev].slice(0, MAX_EVENTS);
+            return updated;
+          });
+
+          onMessage?.('activity', activityData.message, {
+            activity_type: activityData.activity_type,
+            ...activityData.metadata
           });
         }
         break;
