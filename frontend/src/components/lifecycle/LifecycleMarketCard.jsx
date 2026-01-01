@@ -197,10 +197,19 @@ const CategoryBadge = memo(({ category }) => {
 CategoryBadge.displayName = 'CategoryBadge';
 
 /**
- * StatusBadges - Collection of NEW, HOT, SOON badges
+ * StatusBadges - Collection of NEW, HOT, SOON, DORMANT badges
  */
-const StatusBadges = memo(({ isNew, isHot, closingSoon, signalReady }) => (
+const StatusBadges = memo(({ isNew, isHot, closingSoon, signalReady, isDormant }) => (
   <div className="flex items-center gap-1.5">
+    {isDormant && (
+      <span className="
+        text-[10px] px-2 py-0.5 rounded-md font-medium
+        bg-gradient-to-r from-gray-600/30 to-gray-500/20
+        border border-gray-500/40 text-gray-400
+      ">
+        DORMANT
+      </span>
+    )}
     {isNew && (
       <span className="
         text-[10px] px-2 py-0.5 rounded-md font-medium
@@ -522,6 +531,194 @@ const ExpandedDetails = memo(({ market, midPrice, priceDelta }) => (
 
 ExpandedDetails.displayName = 'ExpandedDetails';
 
+/**
+ * TradingStateDisplay - Shows our trading activity in this market
+ *
+ * Displays:
+ * - Active/recent orders with status badges
+ * - Current position with P&L
+ * - Settlement with final P&L
+ */
+const TradingStateDisplay = memo(({ trading, market }) => {
+  if (!trading) return null;
+
+  const { orders = [], position, settlement, trading_state } = trading;
+
+  // Filter to active orders
+  const activeOrders = orders.filter(o => ['pending', 'resting', 'partial'].includes(o.status));
+
+  // Format cents to dollars
+  const formatPnL = (cents) => {
+    const dollars = cents / 100;
+    const sign = dollars >= 0 ? '+' : '';
+    return `${sign}$${Math.abs(dollars).toFixed(2)}`;
+  };
+
+  // Calculate unrealized P&L using live market prices
+  const calcUnrealizedPnL = (pos, mkt) => {
+    if (!pos || pos.count === 0) return pos?.unrealized_pnl || 0;
+
+    const qty = pos.count;
+    const totalCost = pos.total_cost || (qty * pos.avg_entry_price);
+
+    // Get current YES price from market (prefer bid/ask midpoint, then price)
+    const currentYesPrice = mkt?.yes_bid && mkt?.yes_ask
+      ? Math.round((mkt.yes_bid + mkt.yes_ask) / 2)
+      : mkt?.price || 0;
+
+    // If no price data, fall back to backend's calculation
+    if (!currentYesPrice) return pos.unrealized_pnl || 0;
+
+    // Calculate value based on side (NO = inverse of YES price)
+    const valuePerContract = pos.side === 'no'
+      ? (100 - currentYesPrice)
+      : currentYesPrice;
+
+    const totalValue = valuePerContract * qty;
+    return totalValue - totalCost;  // Returns cents
+  };
+
+  // Nothing to show
+  if (!position && !settlement && activeOrders.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="
+      mt-3 pt-2.5
+      border-t border-gray-700/40
+      space-y-2
+    ">
+      {/* Section header */}
+      <div className="flex items-center gap-2 mb-1.5">
+        <span className="text-[10px] uppercase tracking-wide text-cyan-400 font-medium">
+          Trading
+        </span>
+        <span className={`
+          text-[9px] uppercase px-1.5 py-0.5 rounded font-medium
+          ${trading_state === 'position_open'
+            ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40'
+            : trading_state === 'settled'
+              ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+              : 'bg-gray-500/20 text-gray-400 border border-gray-500/40'
+          }
+        `}>
+          {trading_state?.replace('_', ' ') || 'monitoring'}
+        </span>
+      </div>
+
+      {/* Active Orders */}
+      {activeOrders.length > 0 && (
+        <div className="space-y-1.5">
+          {activeOrders.map((order) => (
+            <div
+              key={order.order_id}
+              className="
+                flex items-center justify-between
+                text-xs px-2 py-1 rounded
+                bg-gray-800/50 border border-gray-700/40
+              "
+            >
+              <div className="flex items-center gap-2">
+                <span className={`
+                  px-1.5 py-0.5 rounded text-[10px] font-bold uppercase
+                  ${order.action === 'buy'
+                    ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                    : 'bg-red-500/20 text-red-400 border border-red-500/30'
+                  }
+                `}>
+                  {order.action}
+                </span>
+                <span className="text-gray-300 font-mono">
+                  {order.count} {order.side?.toUpperCase()}
+                </span>
+                <span className="text-gray-500">@</span>
+                <span className="text-white font-mono">{order.price}c</span>
+              </div>
+              <span className={`
+                text-[10px] px-1.5 py-0.5 rounded font-medium
+                ${order.status === 'pending'
+                  ? 'bg-yellow-500/20 text-yellow-400 animate-pulse'
+                  : order.status === 'partial'
+                    ? 'bg-blue-500/20 text-blue-400'
+                    : 'bg-gray-500/20 text-gray-400'
+                }
+              `}>
+                {order.status === 'partial' ? `${order.fill_count}/${order.count}` : order.status}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Current Position */}
+      {position && position.count > 0 && (
+        <div className={`
+          flex items-center justify-between
+          text-xs px-2 py-1.5 rounded-md
+          ${calcUnrealizedPnL(position, market) >= 0
+            ? 'bg-emerald-900/20 border border-emerald-500/25'
+            : 'bg-red-900/20 border border-red-500/25'
+          }
+        `}>
+          <div className="flex items-center gap-1.5">
+            <span className="text-gray-400 font-medium">POS:</span>
+            <span className={`
+              font-mono font-medium
+              ${position.side === 'yes' ? 'text-emerald-400' : 'text-red-400'}
+            `}>
+              {position.count} {position.side?.toUpperCase()}
+            </span>
+            <span className="text-gray-600">@</span>
+            <span className="text-gray-400 font-mono">{position.avg_entry_price}c</span>
+          </div>
+          <span className={`
+            font-mono font-semibold
+            ${calcUnrealizedPnL(position, market) >= 0 ? 'text-emerald-400' : 'text-red-400'}
+          `}>
+            {formatPnL(calcUnrealizedPnL(position, market))}
+          </span>
+        </div>
+      )}
+
+      {/* Settlement */}
+      {settlement && (
+        <div className={`
+          flex items-center justify-between
+          text-xs px-2 py-1.5 rounded-md
+          ${settlement.final_pnl >= 0
+            ? 'bg-emerald-900/25 border border-emerald-500/30'
+            : 'bg-red-900/25 border border-red-500/30'
+          }
+        `}>
+          <div className="flex items-center gap-1.5">
+            <span className={`
+              px-1.5 py-0.5 rounded font-bold text-[10px] uppercase
+              ${settlement.final_pnl >= 0
+                ? 'bg-emerald-500/25 text-emerald-300'
+                : 'bg-red-500/25 text-red-300'
+              }
+            `}>
+              {settlement.final_pnl >= 0 ? 'WIN' : 'LOSS'}
+            </span>
+            <span className="text-gray-500">
+              Settled <span className="text-gray-300 font-medium uppercase">{settlement.result}</span>
+            </span>
+          </div>
+          <span className={`
+            font-mono font-bold
+            ${settlement.final_pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}
+          `}>
+            {formatPnL(settlement.final_pnl)}
+          </span>
+        </div>
+      )}
+    </div>
+  );
+});
+
+TradingStateDisplay.displayName = 'TradingStateDisplay';
+
 // ============================================================================
 // ICON COMPONENTS
 // ============================================================================
@@ -562,8 +759,9 @@ HourglassIcon.displayName = 'HourglassIcon';
  *   - market: Market data object
  *   - rlmState: RLM state { yes_trades, no_trades, yes_ratio, price_drop, etc. }
  *   - tradePulse: Trade pulse { side: 'yes'|'no', ts: timestamp } for animation
+ *   - rlmConfig: RLM strategy config from backend { min_trades, yes_threshold, min_price_drop }
  */
-const LifecycleMarketCard = ({ market, rlmState, tradePulse }) => {
+const LifecycleMarketCard = ({ market, rlmState, tradePulse, rlmConfig }) => {
   const [expanded, setExpanded] = useState(false);
 
   // RLM stats from prop (or defaults if not available)
@@ -576,10 +774,14 @@ const LifecycleMarketCard = ({ market, rlmState, tradePulse }) => {
   const priceDrop = rlmState?.price_drop || 0;
   const signalTriggerCount = rlmState?.signal_trigger_count || 0;
 
-  // Progress bar: 15 trades is the RLM signal threshold
-  const SIGNAL_THRESHOLD = 15;
-  const progressPercent = Math.min(100, (totalTrades / SIGNAL_THRESHOLD) * 100);
-  const signalReady = totalTrades >= SIGNAL_THRESHOLD && yesRatio > 0.65 && priceDrop > 0;
+  // RLM strategy thresholds from backend config (with sensible fallbacks)
+  const minTrades = rlmConfig?.min_trades || 25;
+  const yesThreshold = rlmConfig?.yes_threshold || 0.70;
+  const minPriceDrop = rlmConfig?.min_price_drop || 2;
+
+  // Progress bar toward signal threshold
+  const progressPercent = Math.min(100, (totalTrades / minTrades) * 100);
+  const signalReady = totalTrades >= minTrades && yesRatio >= yesThreshold && priceDrop >= minPriceDrop;
 
   // Animated values for trade counts
   const { animClass: yesAnimClass } = useAnimatedValue(
@@ -635,6 +837,9 @@ const LifecycleMarketCard = ({ market, rlmState, tradePulse }) => {
   // Is this closing soon (< 1 hour)?
   const closingSoon = timeToClose && timeToClose < 3600;
 
+  // Is this market dormant (no 24h volume)?
+  const isDormant = (market.volume_24h || 0) === 0;
+
   // Determine card border/glow state
   const isDetermined = market.status === 'determined';
 
@@ -649,13 +854,15 @@ const LifecycleMarketCard = ({ market, rlmState, tradePulse }) => {
         transition-all duration-300 ease-out
         cursor-pointer
         p-4
-        ${signalReady
-          ? 'border-amber-500/60 shadow-xl shadow-amber-500/20 animate-signal-glow'
-          : isDetermined
-            ? 'border-amber-500/40 bg-amber-900/10'
-            : isNew
-              ? 'border-blue-500/40 ring-1 ring-blue-500/30'
-              : 'border-gray-700/60'
+        ${isDormant
+          ? 'opacity-50 saturate-50 border-gray-700/40'
+          : signalReady
+            ? 'border-amber-500/60 shadow-xl shadow-amber-500/20 animate-signal-glow'
+            : isDetermined
+              ? 'border-amber-500/40 bg-amber-900/10'
+              : isNew
+                ? 'border-blue-500/40 ring-1 ring-blue-500/30'
+                : 'border-gray-700/60'
         }
         hover:scale-[1.02] hover:shadow-xl hover:border-gray-600/80
       `}
@@ -679,6 +886,7 @@ const LifecycleMarketCard = ({ market, rlmState, tradePulse }) => {
 
         {/* Status badges */}
         <StatusBadges
+          isDormant={isDormant}
           isNew={isNew}
           isHot={isHot}
           closingSoon={closingSoon}
@@ -734,10 +942,13 @@ const LifecycleMarketCard = ({ market, rlmState, tradePulse }) => {
           totalTrades={totalTrades}
           signalReady={signalReady}
           progressPercent={progressPercent}
-          threshold={SIGNAL_THRESHOLD}
+          threshold={minTrades}
           signalTriggerCount={signalTriggerCount}
         />
       </div>
+
+      {/* Trading State - Orders, Positions, P&L */}
+      <TradingStateDisplay trading={market.trading} market={market} />
 
       {/* Expanded details */}
       {expanded && (
