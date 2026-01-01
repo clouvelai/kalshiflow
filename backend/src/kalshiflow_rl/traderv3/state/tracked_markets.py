@@ -98,6 +98,9 @@ class TrackedMarket:
     # Discovery source tracking
     discovery_source: str = "lifecycle_ws"  # "lifecycle_ws" | "api" | "db_recovery"
 
+    # Market result (set when determined)
+    result: Optional[str] = None  # Market result: "yes", "no", "void", or None if undetermined
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for serialization."""
         return {
@@ -120,6 +123,7 @@ class TrackedMarket:
             "yes_bid": self.yes_bid,
             "yes_ask": self.yes_ask,
             "discovery_source": self.discovery_source,
+            "result": self.result,
             # Include time until close for UI
             "time_to_close_seconds": max(0, self.close_ts - int(time.time())) if self.close_ts else None,
         }
@@ -154,6 +158,7 @@ class TrackedMarket:
             yes_bid=data.get("yes_bid", 0),
             yes_ask=data.get("yes_ask", 0),
             discovery_source=data.get("discovery_source", "lifecycle_ws"),
+            result=data.get("result"),
         )
 
 

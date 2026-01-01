@@ -141,7 +141,7 @@ class TrackedMarketPosition:
         current_value = position_data.get("market_exposure", 0)  # Current market value
 
         # Calculate avg entry price (no direct field available)
-        avg_entry = total_cost // count if count > 0 else 0
+        avg_entry = round(total_cost / count) if count > 0 else 0
 
         return cls(
             side=side,
@@ -205,7 +205,6 @@ class TradingAttachment:
     orders: Dict[str, TrackedMarketOrder] = field(default_factory=dict)
     position: Optional[TrackedMarketPosition] = None
     settlement: Optional[TrackedMarketSettlement] = None
-    signals_acted_on: List[str] = field(default_factory=list)  # Signal IDs we've followed
     version: int = 0  # For change detection
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
@@ -218,7 +217,6 @@ class TradingAttachment:
             "orders": [order.to_dict() for order in self.orders.values()],
             "position": self.position.to_dict() if self.position else None,
             "settlement": self.settlement.to_dict() if self.settlement else None,
-            "signals_acted_on": self.signals_acted_on,
             "version": self.version,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
@@ -272,6 +270,20 @@ class TradingAttachment:
                 self.trading_state = TradingState.ORDER_RESTING
         else:
             self.trading_state = TradingState.MONITORING
+
+    def mark_signal_ready(self, signal_id: str) -> None:
+        """
+        Mark that a signal is ready to act on for this market.
+
+        Called when the RLM service generates a signal for a tracked market.
+        Only transitions from MONITORING state to avoid disrupting active orders/positions.
+
+        Args:
+            signal_id: Identifier of the signal (e.g., whale_id, rlm_signal_id)
+        """
+        if self.trading_state == TradingState.MONITORING:
+            self.trading_state = TradingState.SIGNAL_READY
+            self.bump_version()
 
 
 # Type alias for container

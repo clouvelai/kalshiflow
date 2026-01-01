@@ -1250,7 +1250,7 @@ class V3Coordinator:
                 removed = self._state_container.remove_order(event.order_id)
 
                 # Update trading attachment for tracked markets (real-time fill update)
-                self._state_container.mark_order_filled_in_attachment(
+                await self._state_container.mark_order_filled_in_attachment(
                     ticker=ticker,
                     order_id=event.order_id,
                     fill_count=count,
@@ -1270,7 +1270,7 @@ class V3Coordinator:
         state, changes = await self._trading_client_integration.sync_with_kalshi()
 
         # Store in container
-        state_changed = self._state_container.update_trading_state(state, changes)
+        state_changed = await self._state_container.update_trading_state(state, changes)
 
         # Initialize session P&L tracking on first sync
         # This captures starting balance/portfolio for session P&L calculation

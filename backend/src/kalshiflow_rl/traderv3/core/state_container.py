@@ -61,6 +61,7 @@ from ..state.trading_attachment import (
     TrackedMarketSettlement,
     TradingState,
 )
+from ..state.tracked_markets import MarketStatus
 
 logger = logging.getLogger("kalshiflow_rl.traderv3.core.state_container")
 
@@ -191,14 +192,14 @@ class V3StateContainer:
     Usage Pattern:
         ```python
         container = V3StateContainer()
-        
-        # Update trading state
-        state_changed = container.update_trading_state(new_state, changes)
-        
+
+        # Update trading state (async)
+        state_changed = await container.update_trading_state(new_state, changes)
+
         # Check component health
         container.update_component_health("orderbook", True)
         is_healthy = container.is_system_healthy()
-        
+
         # Get state for broadcasting
         full_state = container.get_full_state()
         ```
@@ -267,27 +268,27 @@ class V3StateContainer:
     
     # ======== Trading State Management ========
     
-    def update_trading_state(self, state: TraderState, changes: Optional[StateChange] = None) -> bool:
+    async def update_trading_state(self, state: TraderState, changes: Optional[StateChange] = None) -> bool:
         """
         Update trading state from Kalshi sync.
-        
+
         This is called after each Kalshi API sync to update the trading
         state. It performs change detection to avoid unnecessary updates
         and increments the version number when changes occur.
-        
+
         Args:
             state: New trader state from Kalshi with positions, orders, balance
             changes: Optional delta object showing what changed
-            
+
         Returns:
             True if state actually changed (version incremented),
             False if state is identical to current (no version change)
-        
+
         Side Effects:
             - Updates _trading_state if changed
             - Increments _trading_state_version if changed
             - Logs significant changes (balance, positions, orders)
-        
+
         Note:
             Ignores sync_timestamp changes as those occur on every sync
             even when no actual data changes.
@@ -296,7 +297,7 @@ class V3StateContainer:
         if self._trading_state and self._states_are_equal(self._trading_state, state):
             logger.debug("Trading state unchanged, skipping update")
             return False
-        
+
         self._trading_state = state
         self._last_state_change = changes
         self._trading_state_version += 1
@@ -357,7 +358,8 @@ class V3StateContainer:
 
         # Sync trading attachments for tracked markets from the SAME synced data
         # This hooks into the existing sync cycle - no additional API calls
-        self._sync_trading_attachments(state)
+        # Uses lock to prevent race conditions with WebSocket events
+        await self._sync_trading_attachments(state)
 
         # Log significant changes
         if changes:
@@ -367,7 +369,7 @@ class V3StateContainer:
                 logger.info(f"Positions changed: {changes.position_count_change:+d}")
             if changes.order_count_change != 0:
                 logger.info(f"Orders changed: {changes.order_count_change:+d}")
-        
+
         return True
     
     def _states_are_equal(self, state1: TraderState, state2: TraderState) -> bool:
@@ -1083,12 +1085,16 @@ class V3StateContainer:
         self._tracked_markets = tracked_markets
         logger.info("TrackedMarketsState reference set for trading attachments")
 
-    def _sync_trading_attachments(self, state: TraderState) -> None:
+    async def _sync_trading_attachments(self, state: TraderState) -> None:
         """
         Sync trading attachments from synced trading state.
 
         Called from update_trading_state() to populate attachments
         for tracked markets from the SAME data - no additional API calls.
+
+        Uses async lock to prevent race conditions with WebSocket events
+        that also modify _trading_attachments (mark_order_filled_in_attachment,
+        update_order_in_attachment).
 
         Args:
             state: TraderState just synced from Kalshi
@@ -1096,81 +1102,121 @@ class V3StateContainer:
         if not self._tracked_markets:
             return  # No tracked markets reference yet
 
-        synced_count = 0
+        async with self._lock:
+            synced_count = 0
 
-        # Sync positions for tracked markets
-        for ticker, position_data in state.positions.items():
-            if self._tracked_markets.is_tracked(ticker):
-                attachment = self.get_or_create_trading_attachment(ticker)
+            # Sync positions for tracked markets
+            for ticker, position_data in state.positions.items():
+                try:
+                    if self._tracked_markets.is_tracked(ticker):
+                        attachment = self.get_or_create_trading_attachment(ticker)
 
-                # Create/update position from synced data
-                attachment.position = TrackedMarketPosition.from_kalshi_position(position_data)
-                attachment.update_trading_state()
-                attachment.bump_version()
-                synced_count += 1
+                        # Create/update position from synced data
+                        attachment.position = TrackedMarketPosition.from_kalshi_position(position_data)
+                        attachment.update_trading_state()
+                        attachment.bump_version()
+                        synced_count += 1
+                except Exception as e:
+                    logger.error(f"Failed to sync position for {ticker}: {e}")
+                    continue  # Continue with other positions
 
-        # Sync orders for tracked markets
-        for order_id, order_data in state.orders.items():
-            ticker = order_data.get("ticker")
-            if ticker and self._tracked_markets.is_tracked(ticker):
-                attachment = self.get_or_create_trading_attachment(ticker)
+            # Sync orders for tracked markets
+            for order_id, order_data in state.orders.items():
+                try:
+                    ticker = order_data.get("ticker")
+                    if ticker and self._tracked_markets.is_tracked(ticker):
+                        attachment = self.get_or_create_trading_attachment(ticker)
 
-                # Only add if not already tracked (preserve signal_id from placement)
-                if order_id not in attachment.orders:
-                    attachment.orders[order_id] = TrackedMarketOrder.from_kalshi_order(order_data)
-                else:
-                    # Update existing order status from sync
-                    existing = attachment.orders[order_id]
-                    existing.status = order_data.get("status", "resting")
-                    existing.fill_count = order_data.get("filled_count", 0)
+                        # Only add if not already tracked (preserve signal_id from placement)
+                        if order_id not in attachment.orders:
+                            attachment.orders[order_id] = TrackedMarketOrder.from_kalshi_order(order_data)
+                        else:
+                            # Update existing order status from sync
+                            existing = attachment.orders[order_id]
+                            existing.status = order_data.get("status", "resting")
+                            existing.fill_count = order_data.get("filled_count", 0)
 
-                attachment.update_trading_state()
-                attachment.bump_version()
+                        attachment.update_trading_state()
+                        attachment.bump_version()
+                except Exception as e:
+                    logger.error(f"Failed to sync order {order_id}: {e}")
+                    continue  # Continue with other orders
 
-        # Clean up filled/cancelled orders that are no longer in state.orders
-        # This handles the race condition where fill event arrives before order is tracked
-        for ticker, attachment in list(self._trading_attachments.items()):
-            if not attachment.orders:
-                continue
-
-            for order_id, order in list(attachment.orders.items()):
-                # Skip if already marked as filled or cancelled
-                if order.status in ("filled", "cancelled"):
+            # Clean up filled/cancelled orders that are no longer in state.orders
+            # This handles the race condition where fill event arrives before order is tracked
+            for ticker, attachment in list(self._trading_attachments.items()):
+                if not attachment.orders:
                     continue
 
-                # If order is NOT in Kalshi's active orders, it's been filled or cancelled
-                if order_id not in state.orders:
-                    # If we have a position in this market, the order was filled
-                    if ticker in state.positions:
-                        order.status = "filled"
-                        order.filled_at = time.time()
-                        order.fill_count = order.count  # Assume fully filled
-                        attachment.update_trading_state()
-                        attachment.bump_version()
-                        logger.info(
-                            f"Order marked filled from sync: {ticker} {order_id[:8]}... "
-                            f"(order not in active orders, position exists)"
-                        )
-                    else:
-                        # No position = order was cancelled or expired
-                        order.status = "cancelled"
-                        order.cancelled_at = time.time()
-                        attachment.update_trading_state()
-                        attachment.bump_version()
-                        logger.info(
-                            f"Order marked cancelled from sync: {ticker} {order_id[:8]}... "
-                            f"(order not in active orders, no position)"
-                        )
+                for order_id, order in list(attachment.orders.items()):
+                    # Skip if already marked as filled or cancelled
+                    if order.status in ("filled", "cancelled"):
+                        continue
 
-        # Detect settlements: tracked markets that HAD position but now don't
-        for ticker, attachment in list(self._trading_attachments.items()):
-            if attachment.position and ticker not in state.positions:
-                # Position was closed - capture settlement
-                self._capture_settlement_for_attachment(ticker, attachment)
+                    # If order is NOT in Kalshi's active orders, it's been filled or cancelled
+                    if order_id not in state.orders:
+                        # Check previous status to determine appropriate inference
+                        if order.status in ("resting", "partial"):
+                            # Order was confirmed active on exchange - infer from position existence
+                            if ticker in state.positions:
+                                order.status = "filled"
+                                order.filled_at = time.time()
+                                order.fill_count = order.count  # Assume fully filled
+                                attachment.update_trading_state()
+                                attachment.bump_version()
+                                logger.info(
+                                    f"Order marked filled from sync: {ticker} {order_id[:8]}... "
+                                    f"(resting order not in active orders, position exists)"
+                                )
+                            else:
+                                # No position = order was cancelled or expired
+                                order.status = "cancelled"
+                                order.cancelled_at = time.time()
+                                attachment.update_trading_state()
+                                attachment.bump_version()
+                                logger.info(
+                                    f"Order marked cancelled from sync: {ticker} {order_id[:8]}... "
+                                    f"(resting order not in active orders, no position)"
+                                )
+                        elif order.status == "pending":
+                            # Pending order disappeared without being confirmed resting - likely rejected
+                            order.status = "cancelled"
+                            order.cancelled_at = time.time()
+                            attachment.update_trading_state()
+                            attachment.bump_version()
+                            logger.warning(
+                                f"Pending order {order_id[:8]}... disappeared without being confirmed "
+                                f"resting - marking as cancelled (likely rejected)"
+                            )
+                        else:
+                            # Unknown status - default to cancelled for safety
+                            order.status = "cancelled"
+                            order.cancelled_at = time.time()
+                            attachment.update_trading_state()
+                            attachment.bump_version()
+                            logger.warning(
+                                f"Order {order_id[:8]}... with status '{order.status}' disappeared "
+                                f"- marking as cancelled"
+                            )
 
-        if synced_count > 0:
-            self._trading_attachments_version += 1
-            logger.debug(f"Synced {synced_count} trading attachments from trading state")
+            # Check for AWAITING_SETTLEMENT: positions in determined markets
+            for ticker, attachment in self._trading_attachments.items():
+                if attachment.position and attachment.trading_state == TradingState.POSITION_OPEN:
+                    market = self._tracked_markets.get_market(ticker) if self._tracked_markets else None
+                    if market and market.status == MarketStatus.DETERMINED:
+                        attachment.trading_state = TradingState.AWAITING_SETTLEMENT
+                        attachment.bump_version()
+                        logger.info(f"Market {ticker} determined with open position - awaiting settlement")
+
+            # Detect settlements: tracked markets that HAD position but now don't
+            for ticker, attachment in list(self._trading_attachments.items()):
+                if attachment.position and ticker not in state.positions:
+                    # Position was closed - capture settlement
+                    self._capture_settlement_for_attachment(ticker, attachment)
+
+            if synced_count > 0:
+                self._trading_attachments_version += 1
+                logger.debug(f"Synced {synced_count} trading attachments from trading state")
 
     def _capture_settlement_for_attachment(self, ticker: str, attachment: TradingAttachment) -> None:
         """
@@ -1185,8 +1231,14 @@ class V3StateContainer:
         result = "unknown"
         if self._tracked_markets:
             market = self._tracked_markets.get_market(ticker)
-            if market and hasattr(market, 'result'):
-                result = market.result or "unknown"
+            if market:
+                result = market.result or market.market_info.get("result") or "unknown"
+
+        # Determine if position won: YES position wins on YES result, NO position wins on NO result
+        # Settlement payout is 100 cents per contract if won, 0 if lost
+        # For void/unknown results, use 0 revenue (conservative)
+        won = (result == attachment.position.side) and result in ("yes", "no")
+        revenue = attachment.position.count * 100 if won else 0
 
         attachment.settlement = TrackedMarketSettlement(
             result=result,
@@ -1194,7 +1246,7 @@ class V3StateContainer:
             settled_at=time.time(),
             final_position=attachment.position.count,
             final_pnl=attachment.position.realized_pnl + attachment.position.unrealized_pnl,
-            revenue=attachment.position.current_value if result == attachment.position.side else 0,
+            revenue=revenue,
             cost_basis=attachment.position.total_cost,
             fees=attachment.position.fees_paid,
         )
@@ -1231,7 +1283,7 @@ class V3StateContainer:
         """Get trading attachment for a market (None if not exists)."""
         return self._trading_attachments.get(ticker)
 
-    def update_order_in_attachment(
+    async def update_order_in_attachment(
         self,
         ticker: str,
         order_id: str,
@@ -1243,28 +1295,27 @@ class V3StateContainer:
         Called by TradingDecisionService after order placement to
         immediately track the order before next sync.
 
+        Uses async lock to prevent race conditions with _sync_trading_attachments.
+
         Args:
             ticker: Market ticker
             order_id: Order ID from Kalshi
             order_data: TrackedMarketOrder with order details
         """
-        attachment = self.get_or_create_trading_attachment(ticker)
-        attachment.orders[order_id] = order_data
+        async with self._lock:
+            attachment = self.get_or_create_trading_attachment(ticker)
+            attachment.orders[order_id] = order_data
 
-        # Track signal if provided
-        if order_data.signal_id and order_data.signal_id not in attachment.signals_acted_on:
-            attachment.signals_acted_on.append(order_data.signal_id)
+            attachment.update_trading_state()
+            attachment.bump_version()
+            self._trading_attachments_version += 1
 
-        attachment.update_trading_state()
-        attachment.bump_version()
-        self._trading_attachments_version += 1
+            logger.info(
+                f"Order tracked in attachment: {ticker} {order_id[:8]}... "
+                f"{order_data.action} {order_data.count} {order_data.side} @ {order_data.price}c"
+            )
 
-        logger.info(
-            f"Order tracked in attachment: {ticker} {order_id[:8]}... "
-            f"{order_data.action} {order_data.count} {order_data.side} @ {order_data.price}c"
-        )
-
-    def mark_order_filled_in_attachment(
+    async def mark_order_filled_in_attachment(
         self,
         ticker: str,
         order_id: str,
@@ -1277,46 +1328,62 @@ class V3StateContainer:
         Called immediately when ORDER_FILL event is received, before
         the next sync cycle, for instant UI feedback.
 
+        Uses async lock to prevent race conditions with _sync_trading_attachments.
+
         Args:
             ticker: Market ticker
             order_id: Order ID that was filled
             fill_count: Number of contracts filled
             fill_price: Fill price in cents
         """
-        attachment = self._trading_attachments.get(ticker)
-        if not attachment:
-            logger.warning(f"Fill event ignored: no attachment for {ticker}")
-            return
+        async with self._lock:
+            attachment = self._trading_attachments.get(ticker)
+            if not attachment:
+                logger.warning(
+                    f"Fill event for non-tracked market {ticker}: "
+                    f"order_id={order_id}, count={fill_count}, price={fill_price}. "
+                    f"Will be reconciled in next sync."
+                )
+                return
 
-        order = attachment.orders.get(order_id)
-        if not order:
-            # This can happen if fill event arrives before order is added to attachment
-            # (race condition with fast fills). The sync cycle will catch it.
-            known_orders = [oid[:8] for oid in list(attachment.orders.keys())[:5]]
-            logger.warning(
-                f"Fill event ignored: order {order_id[:8]}... not found in attachment for {ticker}. "
-                f"Known orders: {known_orders}. Sync will reconcile."
+            order = attachment.orders.get(order_id)
+            if not order:
+                # This can happen if fill event arrives before order is added to attachment
+                # (race condition with fast fills). The sync cycle will catch it.
+                known_orders = [oid[:8] for oid in list(attachment.orders.keys())[:5]]
+                logger.warning(
+                    f"Fill event ignored: order {order_id[:8]}... not found in attachment for {ticker}. "
+                    f"Known orders: {known_orders}. Sync will reconcile."
+                )
+                return
+
+            # Calculate weighted average fill price across all fills
+            if order.fill_count > 0:
+                # We already have some fills, calculate weighted average
+                prev_total_cost = order.fill_avg_price * order.fill_count
+                new_total_cost = prev_total_cost + (fill_price * fill_count)
+                order.fill_count += fill_count
+                order.fill_avg_price = round(new_total_cost / order.fill_count)
+            else:
+                # First fill - just use the fill price
+                order.fill_count = fill_count
+                order.fill_avg_price = fill_price
+
+            # Check if fully filled
+            if order.fill_count >= order.count:
+                order.status = "filled"
+                order.filled_at = time.time()
+            else:
+                order.status = "partial"
+
+            attachment.update_trading_state()
+            attachment.bump_version()
+            self._trading_attachments_version += 1
+
+            logger.info(
+                f"Order fill tracked: {ticker} {order_id[:8]}... "
+                f"{fill_count} @ {fill_price}c (total: {order.fill_count}/{order.count})"
             )
-            return
-
-        order.fill_count += fill_count
-        order.fill_avg_price = fill_price  # Simplified - could track weighted avg
-
-        # Check if fully filled
-        if order.fill_count >= order.count:
-            order.status = "filled"
-            order.filled_at = time.time()
-        else:
-            order.status = "partial"
-
-        attachment.update_trading_state()
-        attachment.bump_version()
-        self._trading_attachments_version += 1
-
-        logger.info(
-            f"Order fill tracked: {ticker} {order_id[:8]}... "
-            f"{fill_count} @ {fill_price}c (total: {order.fill_count}/{order.count})"
-        )
 
     def get_trading_attachments_snapshot(self) -> Dict[str, Any]:
         """

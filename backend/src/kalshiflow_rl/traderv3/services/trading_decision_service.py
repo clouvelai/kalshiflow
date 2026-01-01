@@ -620,7 +620,7 @@ class TradingDecisionService:
             # Track order in trading attachment for tracked markets
             # Status is "resting" since API confirmed the order is on the book
             signal_id = f"{decision.reason}:{decision.market}:{int(time.time() * 1000)}"
-            self._state_container.update_order_in_attachment(
+            await self._state_container.update_order_in_attachment(
                 ticker=decision.market,
                 order_id=order_id,
                 order_data=TrackedMarketOrder(
@@ -762,7 +762,7 @@ class TradingDecisionService:
             # Track order in trading attachment for tracked markets
             # Status is "resting" since API confirmed the order is on the book
             signal_id = f"{decision.reason}:{decision.market}:{int(time.time() * 1000)}"
-            self._state_container.update_order_in_attachment(
+            await self._state_container.update_order_in_attachment(
                 ticker=decision.market,
                 order_id=order_id,
                 order_data=TrackedMarketOrder(

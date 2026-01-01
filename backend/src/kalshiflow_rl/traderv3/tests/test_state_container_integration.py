@@ -54,13 +54,13 @@ async def test_state_container_integration():
         )
         
         # Update with no changes (first update)
-        changed = container.update_trading_state(mock_state)
+        changed = await container.update_trading_state(mock_state)
         assert changed == True, "First state update should return True"
         assert container.trading_state_version == 1, "Version should be 1"
         logger.info(f"✅ Stored initial trading state (version {container.trading_state_version})")
-        
+
         # Try updating with same state
-        changed = container.update_trading_state(mock_state)
+        changed = await container.update_trading_state(mock_state)
         assert changed == False, "Identical state should return False"
         assert container.trading_state_version == 1, "Version should not change"
         logger.info("✅ Correctly detected no change in state")
@@ -81,7 +81,7 @@ async def test_state_container_integration():
             order_count_change=-1
         )
         
-        changed = container.update_trading_state(new_state, changes)
+        changed = await container.update_trading_state(new_state, changes)
         assert changed == True, "Changed state should return True"
         assert container.trading_state_version == 2, "Version should be 2"
         assert container.last_state_change == changes, "Changes should be stored"

@@ -137,7 +137,7 @@ class TradingStateSyncer:
             state.sync_timestamp = time.time()
 
             # Update state container
-            state_changed = self._state.update_trading_state(state, changes)
+            state_changed = await self._state.update_trading_state(state, changes)
 
             # Update health metrics
             self._last_sync_time = time.time()

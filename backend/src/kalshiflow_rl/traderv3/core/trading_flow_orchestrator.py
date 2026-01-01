@@ -262,9 +262,9 @@ class TradingFlowOrchestrator:
         try:
             # Perform sync through trading client
             state, changes = await self._trading_client.sync_with_kalshi()
-            
+
             # Update state container
-            state_changed = self._state_container.update_trading_state(state, changes)
+            state_changed = await self._state_container.update_trading_state(state, changes)
 
             # Mark sync performed
             cycle.sync_performed = True
