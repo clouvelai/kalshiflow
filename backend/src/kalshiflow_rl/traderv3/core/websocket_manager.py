@@ -995,6 +995,15 @@ class V3WebSocketManager:
             return
 
         snapshot = self._tracked_markets_state.get_snapshot()
+
+        # Include trading attachments for each tracked market
+        if self._state_container:
+            for market in snapshot.get("markets", []):
+                ticker = market.get("ticker")
+                if ticker:
+                    trading = self._state_container.get_trading_attachment_for_market(ticker)
+                    market["trading"] = trading
+
         await self.broadcast_message("tracked_markets", snapshot)
 
     async def broadcast_lifecycle_event(
@@ -1079,6 +1088,15 @@ class V3WebSocketManager:
 
         try:
             snapshot = self._tracked_markets_state.get_snapshot()
+
+            # Include trading attachments for each tracked market
+            if self._state_container:
+                for market in snapshot.get("markets", []):
+                    ticker = market.get("ticker")
+                    if ticker:
+                        trading = self._state_container.get_trading_attachment_for_market(ticker)
+                        market["trading"] = trading
+
             await self._send_to_client(client_id, {
                 "type": "tracked_markets",
                 "data": snapshot

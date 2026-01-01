@@ -25,6 +25,8 @@ from enum import Enum
 from dataclasses import dataclass, field
 from collections import deque, OrderedDict
 
+from ..state.trading_attachment import TrackedMarketOrder
+
 if TYPE_CHECKING:
     from ..clients.trading_client_integration import V3TradingClientIntegration
     from ..core.state_container import V3StateContainer
@@ -615,6 +617,40 @@ class TradingDecisionService:
                 f"@ {decision.price}c = {order_cost_cents}¢ (order_id: {order_id[:8]}...)"
             )
 
+            # Track order in trading attachment for tracked markets
+            # Status is "resting" since API confirmed the order is on the book
+            signal_id = f"{decision.reason}:{decision.market}:{int(time.time() * 1000)}"
+            self._state_container.update_order_in_attachment(
+                ticker=decision.market,
+                order_id=order_id,
+                order_data=TrackedMarketOrder(
+                    order_id=order_id,
+                    signal_id=signal_id,
+                    action="buy",
+                    side=decision.side,
+                    count=decision.quantity,
+                    price=decision.price or 0,
+                    status="resting",  # Order confirmed on book
+                    placed_at=time.time(),
+                )
+            )
+
+            # Emit order_placed activity for frontend visibility
+            await self._event_bus.emit_system_activity(
+                activity_type="order_placed",
+                message=f"Order placed: BUY {decision.quantity} {decision.side.upper()} @ {decision.price}c",
+                metadata={
+                    "order_id": order_id,
+                    "ticker": decision.market,
+                    "action": "buy",
+                    "side": decision.side,
+                    "count": decision.quantity,
+                    "price_cents": decision.price,
+                    "cost_cents": order_cost_cents,
+                    "strategy": decision.strategy.value
+                }
+            )
+
             # Track whale follow if this is a whale following decision
             whale_id = self._extract_whale_id_from_reason(decision.reason)
             if whale_id:
@@ -721,6 +757,39 @@ class TradingDecisionService:
             logger.info(
                 f"SELL order placed: {decision.quantity} {decision.side} {decision.market} "
                 f"@ {decision.price}c (order_id: {order_id[:8]}...)"
+            )
+
+            # Track order in trading attachment for tracked markets
+            # Status is "resting" since API confirmed the order is on the book
+            signal_id = f"{decision.reason}:{decision.market}:{int(time.time() * 1000)}"
+            self._state_container.update_order_in_attachment(
+                ticker=decision.market,
+                order_id=order_id,
+                order_data=TrackedMarketOrder(
+                    order_id=order_id,
+                    signal_id=signal_id,
+                    action="sell",
+                    side=decision.side,
+                    count=decision.quantity,
+                    price=decision.price or 0,
+                    status="resting",  # Order confirmed on book
+                    placed_at=time.time(),
+                )
+            )
+
+            # Emit order_placed activity for frontend visibility
+            await self._event_bus.emit_system_activity(
+                activity_type="order_placed",
+                message=f"Order placed: SELL {decision.quantity} {decision.side.upper()} @ {decision.price}c",
+                metadata={
+                    "order_id": order_id,
+                    "ticker": decision.market,
+                    "action": "sell",
+                    "side": decision.side,
+                    "count": decision.quantity,
+                    "price_cents": decision.price,
+                    "strategy": decision.strategy.value
+                }
             )
 
             return True

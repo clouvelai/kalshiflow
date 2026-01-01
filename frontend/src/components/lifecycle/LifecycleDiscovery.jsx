@@ -42,9 +42,24 @@ const LifecycleDiscovery = () => {
     sort: 'newest' // newest, volume_delta, spread, price_move
   });
 
-  // Filter and sort markets
+  // Dormant market toggle (markets with 0 volume_24h)
+  const [showDormant, setShowDormant] = useState(false);
+
+  // Calculate dormant count (before other filters)
+  const dormantCount = useMemo(
+    () => markets.filter(m => (m.volume_24h || 0) === 0).length,
+    [markets]
+  );
+
+  // Pre-filter dormant markets
+  const activeMarkets = useMemo(
+    () => showDormant ? markets : markets.filter(m => (m.volume_24h || 0) > 0),
+    [markets, showDormant]
+  );
+
+  // Filter and sort markets (using activeMarkets which excludes dormant if toggle is off)
   const filteredMarkets = useMemo(() => {
-    let result = [...markets];
+    let result = [...activeMarkets];
 
     // Search filter
     if (filters.search) {
@@ -100,7 +115,7 @@ const LifecycleDiscovery = () => {
     }
 
     return result;
-  }, [markets, filters]);
+  }, [activeMarkets, filters]);
 
   // Group markets by category for display
   const marketsByCategory = useMemo(() => {
@@ -132,6 +147,9 @@ const LifecycleDiscovery = () => {
         isAtCapacity={isAtCapacity}
         balance={tradingState?.balance || 0}
         minTraderCash={tradingState?.min_trader_cash || 0}
+        showDormant={showDormant}
+        onToggleDormant={() => setShowDormant(prev => !prev)}
+        dormantCount={dormantCount}
       />
 
       <div className="max-w-7xl mx-auto px-4 sm:px-6 py-4">
@@ -147,7 +165,7 @@ const LifecycleDiscovery = () => {
           filters={filters}
           onFilterChange={setFilters}
           marketCount={filteredMarkets.length}
-          totalCount={markets.length}
+          totalCount={activeMarkets.length}
         />
 
         {/* Main Content: 70/30 split */}
@@ -159,6 +177,7 @@ const LifecycleDiscovery = () => {
               showCategoryHeaders={!filters.category}
               rlmStates={rlmStates}
               tradePulses={tradePulses}
+              rlmConfig={tradingState?.rlm_config}
             />
           </div>
 

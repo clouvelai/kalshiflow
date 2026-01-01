@@ -329,6 +329,14 @@ class V3StatusReporter:
                 # Market prices from ticker WebSocket (real-time bid/ask prices)
                 # Note: Market data is also merged into positions_details for convenience
                 "market_prices": trading_summary.get("market_prices"),
+                # RLM strategy configuration for frontend display
+                "rlm_config": {
+                    "min_trades": self._config.rlm_min_trades,
+                    "yes_threshold": self._config.rlm_yes_threshold,
+                    "min_price_drop": self._config.rlm_min_price_drop,
+                    "contracts": self._config.rlm_contracts,
+                    "max_concurrent": self._config.rlm_max_concurrent,
+                },
             })
 
             logger.debug(f"Broadcast trading state v{trading_summary['version']}")

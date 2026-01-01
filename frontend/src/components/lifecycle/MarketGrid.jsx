@@ -10,6 +10,7 @@ import LifecycleMarketCard from './LifecycleMarketCard';
  *   - showCategoryHeaders: Boolean to show category headers
  *   - rlmStates: Object mapping ticker -> RLM state
  *   - tradePulses: Object mapping ticker -> { side, ts } for pulse animation
+ *   - rlmConfig: RLM strategy config from backend { min_trades, yes_threshold, min_price_drop }
  */
 
 // Animation variants for market cards
@@ -19,7 +20,7 @@ const cardVariants = {
   exit: { opacity: 0, scale: 0.9, transition: { duration: 0.2 } }
 };
 
-const MarketGrid = ({ marketsByCategory, showCategoryHeaders, rlmStates = {}, tradePulses = {} }) => {
+const MarketGrid = ({ marketsByCategory, showCategoryHeaders, rlmStates = {}, tradePulses = {}, rlmConfig }) => {
   const categories = Object.entries(marketsByCategory);
 
   if (categories.length === 0) {
@@ -59,6 +60,7 @@ const MarketGrid = ({ marketsByCategory, showCategoryHeaders, rlmStates = {}, tr
                 market={market}
                 rlmState={rlmStates[market.ticker]}
                 tradePulse={tradePulses[market.ticker]}
+                rlmConfig={rlmConfig}
               />
             </motion.div>
           ))}
@@ -102,6 +104,7 @@ const MarketGrid = ({ marketsByCategory, showCategoryHeaders, rlmStates = {}, tr
                     market={market}
                     rlmState={rlmStates[market.ticker]}
                     tradePulse={tradePulses[market.ticker]}
+                    rlmConfig={rlmConfig}
                   />
                 </motion.div>
               ))}

@@ -58,16 +58,18 @@ class V3Config:
     yes8090_max_concurrent: int = 100  # Maximum concurrent positions
 
     # RLM (Reverse Line Movement) Strategy Configuration (for RLM_NO strategy)
-    # Validated +17.38% edge: When >65% trades are YES but price drops, bet NO
-    rlm_yes_threshold: float = 0.65  # Minimum YES trade ratio to trigger signal
-    rlm_min_trades: int = 15  # Minimum trades before evaluating signal
-    rlm_min_price_drop: int = 2  # Minimum YES price drop in cents (0 = any drop)
-    rlm_contracts: int = 3  # Contracts per trade
+    # High reliability config: YES>70%, min_trades=25 gives 2.2% false positive rate
+    # S-001 optimization: min_price_drop=5 skips weak signals (<5c has nearly zero edge)
+    rlm_yes_threshold: float = 0.70  # Minimum YES trade ratio to trigger signal
+    rlm_min_trades: int = 25  # Minimum trades before evaluating signal
+    rlm_min_price_drop: int = 5  # Minimum YES price drop in cents (research: <5c has ~2% edge, skip)
+    rlm_contracts: int = 50  # Base contracts per trade (scaled by signal strength)
     rlm_max_concurrent: int = 1000  # Maximum concurrent positions
     rlm_allow_reentry: bool = True  # Allow adding to position on stronger signal
     rlm_orderbook_timeout: float = 2.0  # Timeout for orderbook fetch (seconds)
-    rlm_tight_spread: int = 2  # Spread threshold for market order (cents)
-    rlm_wide_spread: int = 3  # Spread threshold for limit order (cents)
+    rlm_tight_spread: int = 2  # Spread <= this: aggressive fill (ask - 1c)
+    rlm_normal_spread: int = 4  # Spread <= this: price improvement (midpoint)
+    rlm_max_spread: int = 10  # Spread > this: skip signal (protect from bad fills)
 
     # Whale Detection Configuration (optional, for Follow the Whale feature)
     enable_whale_detection: bool = False
@@ -225,13 +227,14 @@ class V3Config:
         # See RLM_IMPROVEMENTS.md Section 10 for full reliability analysis
         rlm_yes_threshold = float(os.environ.get("RLM_YES_THRESHOLD", "0.70"))
         rlm_min_trades = int(os.environ.get("RLM_MIN_TRADES", "25"))
-        rlm_min_price_drop = int(os.environ.get("RLM_MIN_PRICE_DROP", "2"))
-        rlm_contracts = int(os.environ.get("RLM_CONTRACTS", "100"))
+        rlm_min_price_drop = int(os.environ.get("RLM_MIN_PRICE_DROP", "5"))
+        rlm_contracts = int(os.environ.get("RLM_CONTRACTS", "50"))
         rlm_max_concurrent = int(os.environ.get("RLM_MAX_CONCURRENT", "1000"))
         rlm_allow_reentry = os.environ.get("RLM_ALLOW_REENTRY", "true").lower() == "true"
         rlm_orderbook_timeout = float(os.environ.get("RLM_ORDERBOOK_TIMEOUT", "2.0"))
         rlm_tight_spread = int(os.environ.get("RLM_TIGHT_SPREAD", "2"))
-        rlm_wide_spread = int(os.environ.get("RLM_WIDE_SPREAD", "3"))
+        rlm_normal_spread = int(os.environ.get("RLM_NORMAL_SPREAD", "4"))
+        rlm_max_spread = int(os.environ.get("RLM_MAX_SPREAD", "10"))
 
         # Lifecycle discovery mode configuration
         lifecycle_categories_str = os.environ.get("LIFECYCLE_CATEGORIES", "sports,media_mentions,entertainment,crypto")
@@ -290,7 +293,8 @@ class V3Config:
             rlm_allow_reentry=rlm_allow_reentry,
             rlm_orderbook_timeout=rlm_orderbook_timeout,
             rlm_tight_spread=rlm_tight_spread,
-            rlm_wide_spread=rlm_wide_spread,
+            rlm_normal_spread=rlm_normal_spread,
+            rlm_max_spread=rlm_max_spread,
             enable_whale_detection=enable_whale_detection,
             whale_queue_size=whale_queue_size,
             whale_window_minutes=whale_window_minutes,
@@ -375,7 +379,7 @@ class V3Config:
             logger.info(f"    - Max concurrent: {rlm_max_concurrent} positions")
             logger.info(f"    - Re-entry: {'ENABLED' if rlm_allow_reentry else 'DISABLED'}")
             logger.info(f"    - Orderbook timeout: {rlm_orderbook_timeout}s")
-            logger.info(f"    - Spread thresholds: tight={rlm_tight_spread}c, wide={rlm_wide_spread}c")
+            logger.info(f"    - Spread thresholds: tight={rlm_tight_spread}c, normal={rlm_normal_spread}c, max={rlm_max_spread}c")
 
         return config
     

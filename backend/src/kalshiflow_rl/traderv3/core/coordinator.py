@@ -559,8 +559,9 @@ class V3Coordinator:
                 self._orderbook_integration.unsubscribe_market
             )
 
-            # 7. Set TrackedMarketsState on WebSocketManager
+            # 7. Set TrackedMarketsState on WebSocketManager and StateContainer
             self._websocket_manager.set_tracked_markets_state(self._tracked_markets_state)
+            self._state_container.set_tracked_markets(self._tracked_markets_state)
 
             # 8. Start lifecycle integration
             await self._lifecycle_integration.start()
@@ -612,7 +613,8 @@ class V3Coordinator:
                     allow_reentry=self._config.rlm_allow_reentry,
                     orderbook_timeout=self._config.rlm_orderbook_timeout,
                     tight_spread=self._config.rlm_tight_spread,
-                    wide_spread=self._config.rlm_wide_spread,
+                    normal_spread=self._config.rlm_normal_spread,
+                    max_spread=self._config.rlm_max_spread,
                 )
                 # Register with health monitor for health tracking
                 self._health_monitor.set_rlm_service(self._rlm_service)
@@ -1246,6 +1248,15 @@ class V3Coordinator:
             # This provides instant UI feedback without waiting for REST sync
             if event.order_id:
                 removed = self._state_container.remove_order(event.order_id)
+
+                # Update trading attachment for tracked markets (real-time fill update)
+                self._state_container.mark_order_filled_in_attachment(
+                    ticker=ticker,
+                    order_id=event.order_id,
+                    fill_count=count,
+                    fill_price=price_cents
+                )
+
                 if removed:
                     await self._broadcast_trading_state()
 

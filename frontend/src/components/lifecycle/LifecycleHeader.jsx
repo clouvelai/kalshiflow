@@ -38,7 +38,16 @@ const NavTabs = () => {
 /**
  * LifecycleHeader - Title, capacity bar, and connection status
  */
-const LifecycleHeader = ({ wsStatus, stats, isAtCapacity, balance = 0, minTraderCash = 0 }) => {
+const LifecycleHeader = ({
+  wsStatus,
+  stats,
+  isAtCapacity,
+  balance = 0,
+  minTraderCash = 0,
+  showDormant = false,
+  onToggleDormant,
+  dormantCount = 0
+}) => {
   const tracked = stats?.tracked || 0;
   const capacity = stats?.capacity || 1000;
   const percentage = (tracked / capacity) * 100;
@@ -138,7 +147,30 @@ const LifecycleHeader = ({ wsStatus, stats, isAtCapacity, balance = 0, minTrader
                   <span className="text-gray-500">Settled:</span>
                   <span className="text-green-400 ml-1 font-mono">{stats.by_status?.settled || 0}</span>
                 </div>
+                {dormantCount > 0 && (
+                  <div className="text-sm">
+                    <span className="text-gray-500">Dormant:</span>
+                    <span className="text-gray-400 ml-1 font-mono">{dormantCount}</span>
+                  </div>
+                )}
               </div>
+            )}
+
+            {/* Dormant toggle */}
+            {dormantCount > 0 && onToggleDormant && (
+              <button
+                onClick={onToggleDormant}
+                className={`
+                  ml-4 px-3 py-1.5 text-xs font-medium rounded-lg
+                  transition-all duration-200
+                  ${showDormant
+                    ? 'bg-gray-600/50 text-white border border-gray-500/50'
+                    : 'bg-gray-800/50 text-gray-400 border border-gray-700/50 hover:border-gray-600/50 hover:text-gray-300'
+                  }
+                `}
+              >
+                {showDormant ? 'Hide dormant' : `Show ${dormantCount} dormant`}
+              </button>
             )}
           </div>
         </div>

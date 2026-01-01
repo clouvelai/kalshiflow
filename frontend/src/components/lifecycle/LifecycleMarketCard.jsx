@@ -600,7 +600,11 @@ const TradingStateDisplay = memo(({ trading, market }) => {
             ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40'
             : trading_state === 'settled'
               ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
-              : 'bg-gray-500/20 text-gray-400 border border-gray-500/40'
+              : trading_state === 'order_resting'
+                ? 'bg-blue-500/20 text-blue-300 border border-blue-500/40'
+                : trading_state === 'order_pending'
+                  ? 'bg-yellow-500/20 text-yellow-300 border border-yellow-500/40 animate-pulse'
+                  : 'bg-gray-500/20 text-gray-400 border border-gray-500/40'
           }
         `}>
           {trading_state?.replace('_', ' ') || 'monitoring'}
@@ -639,9 +643,13 @@ const TradingStateDisplay = memo(({ trading, market }) => {
                 text-[10px] px-1.5 py-0.5 rounded font-medium
                 ${order.status === 'pending'
                   ? 'bg-yellow-500/20 text-yellow-400 animate-pulse'
-                  : order.status === 'partial'
+                  : order.status === 'resting'
                     ? 'bg-blue-500/20 text-blue-400'
-                    : 'bg-gray-500/20 text-gray-400'
+                    : order.status === 'partial'
+                      ? 'bg-cyan-500/20 text-cyan-400'
+                      : order.status === 'filled'
+                        ? 'bg-emerald-500/20 text-emerald-400'
+                        : 'bg-gray-500/20 text-gray-400'
                 }
               `}>
                 {order.status === 'partial' ? `${order.fill_count}/${order.count}` : order.status}

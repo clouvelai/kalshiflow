@@ -234,7 +234,8 @@ class RLMService:
         allow_reentry: bool = True,
         orderbook_timeout: float = 2.0,
         tight_spread: int = 2,
-        wide_spread: int = 3,
+        normal_spread: int = 4,
+        max_spread: int = 10,
         max_trades_per_minute: int = DEFAULT_MAX_TRADES_PER_MINUTE,
         token_refill_seconds: float = DEFAULT_TOKEN_REFILL_SECONDS,
     ):
@@ -253,8 +254,9 @@ class RLMService:
             max_concurrent: Maximum concurrent positions (default: 1000)
             allow_reentry: Allow adding to position on stronger signal (default: True)
             orderbook_timeout: Timeout for orderbook fetch in seconds (default: 2.0)
-            tight_spread: Spread threshold for market order in cents (default: 2)
-            wide_spread: Spread threshold for limit order in cents (default: 3)
+            tight_spread: Spread <= this uses aggressive fill (ask - 1c)
+            normal_spread: Spread <= this uses midpoint pricing
+            max_spread: Spread > this skips signal (protects from bad fills)
             max_trades_per_minute: Rate limit - trades per minute (default: 10)
             token_refill_seconds: Seconds between token refills (default: 6.0)
         """
@@ -274,7 +276,8 @@ class RLMService:
         # Orderbook execution parameters
         self._orderbook_timeout = orderbook_timeout
         self._tight_spread = tight_spread
-        self._wide_spread = wide_spread
+        self._normal_spread = normal_spread
+        self._max_spread = max_spread
 
         # Token bucket rate limiting
         self._max_tokens = max_trades_per_minute
@@ -596,17 +599,45 @@ class RLMService:
                     best_no_bid = max(no_bids.keys()) if no_bids else 1
                     spread = best_no_ask - best_no_bid
 
+                    # P1: Max spread rejection - protect from bad fills in illiquid markets
+                    if spread > self._max_spread:
+                        logger.warning(
+                            f"Spread too wide for {signal.market_ticker}: {spread}c > {self._max_spread}c max, skipping signal"
+                        )
+                        self._stats["signals_skipped"] += 1
+                        self._record_decision(
+                            signal_id=signal_id,
+                            action="skipped",
+                            reason=f"Spread {spread}c > max {self._max_spread}c",
+                            signal_data=signal.to_dict()
+                        )
+                        return
+
                     # Log orderbook state for Phase 2 analysis
                     self._log_orderbook_at_signal(signal, snapshot)
 
-                    # Spread-aware pricing optimized for RLM time-sensitive signals
-                    entry_price = self._calculate_no_entry_price(best_no_ask, best_no_bid, spread)
+                    # P1: Position-aware pricing - stronger signals can afford more slippage
+                    # 2x positions (20c+ drop) have 30% edge, can pay for guaranteed fills
+                    # 1.5x positions (10-20c drop) have 17-19% edge, be moderately aggressive
+                    # 1x positions (5-10c drop) have 12% edge, prioritize price improvement
+                    is_high_edge = signal.price_drop >= 10  # 1.5x or 2x positions
 
-                    # Log pricing decision for strategy validation
-                    spread_type = "tight" if spread <= 2 else "normal" if spread <= 4 else "wide"
+                    # Spread-aware pricing using config thresholds
+                    entry_price = self._calculate_no_entry_price(
+                        best_no_ask, best_no_bid, spread, aggressive=is_high_edge
+                    )
+
+                    # Log pricing decision for strategy validation (use config thresholds)
+                    if spread <= self._tight_spread:
+                        spread_type = "tight"
+                    elif spread <= self._normal_spread:
+                        spread_type = "normal"
+                    else:
+                        spread_type = "wide"
+                    aggr_label = " [aggressive]" if is_high_edge else ""
                     logger.info(
                         f"RLM pricing: {signal.market_ticker} spread={spread}c "
-                        f"bid={best_no_bid} ask={best_no_ask} → entry={entry_price}c ({spread_type})"
+                        f"bid={best_no_bid} ask={best_no_ask} → entry={entry_price}c ({spread_type}{aggr_label})"
                     )
                 else:
                     # No orderbook data - skip this signal
@@ -620,22 +651,34 @@ class RLMService:
                 self._stats["signals_skipped"] += 1
                 return
 
+            # S-001: Scale position by signal strength (price drop magnitude)
+            # Research shows: 5-10c = +11.9% edge, 10-20c = +17-19.5% edge, 20c+ = +30.7% edge
+            if signal.price_drop >= 20:
+                scaled_quantity = self._contracts_per_trade * 2  # 2x for strongest signals
+                scale_label = "2x"
+            elif signal.price_drop >= 10:
+                scaled_quantity = int(self._contracts_per_trade * 1.5)  # 1.5x for strong signals
+                scale_label = "1.5x"
+            else:
+                scaled_quantity = self._contracts_per_trade  # 1x for baseline signals (5-10c)
+                scale_label = "1x"
+
             # Create trading decision
             action_type = "reentry" if signal.is_reentry else "executed"
             decision = TradingDecision(
                 action="buy",
                 market=signal.market_ticker,
                 side="no",
-                quantity=self._contracts_per_trade,
+                quantity=scaled_quantity,
                 price=entry_price,
-                reason=f"RLM signal: {signal.yes_ratio:.0%} YES, -{signal.price_drop}c drop",
+                reason=f"RLM signal: {signal.yes_ratio:.0%} YES, -{signal.price_drop}c drop ({scale_label})",
                 confidence=min(0.9, 0.7 + signal.price_drop * 0.01),  # Higher confidence for bigger drops
                 strategy=TradingStrategy.RLM_NO,
             )
 
             logger.info(
                 f"Executing RLM signal: {signal.market_ticker} "
-                f"NO @ {entry_price or 'market'}c, {self._contracts_per_trade} contracts "
+                f"NO @ {entry_price or 'market'}c, {scaled_quantity} contracts ({scale_label}) "
                 f"({'reentry' if signal.is_reentry else 'new'})"
             )
 
@@ -652,7 +695,7 @@ class RLMService:
                 # Update market state with entry parameters
                 state = self._market_states.get(signal.market_ticker)
                 if state:
-                    state.position_contracts += self._contracts_per_trade
+                    state.position_contracts += scaled_quantity
                     if not signal.is_reentry:
                         state.entry_yes_ratio = signal.yes_ratio
                         state.entry_price_drop = signal.price_drop
@@ -661,22 +704,23 @@ class RLMService:
                 self._record_decision(
                     signal_id=signal_id,
                     action=action_type,
-                    reason=f"Bought {self._contracts_per_trade} NO @ {entry_price or 'market'}c",
+                    reason=f"Bought {scaled_quantity} NO @ {entry_price or 'market'}c ({scale_label})",
                     signal_data=signal.to_dict()
                 )
 
                 # Emit success event
                 await self._event_bus.emit_system_activity(
                     activity_type="rlm_execute",
-                    message=f"RLM Executed: {signal.market_ticker} {self._contracts_per_trade} NO",
+                    message=f"RLM Executed: {signal.market_ticker} {scaled_quantity} NO ({scale_label})",
                     metadata={
                         "signal_id": signal_id,
                         "status": "success",
                         "market": signal.market_ticker,
                         "side": "no",
-                        "quantity": self._contracts_per_trade,
+                        "quantity": scaled_quantity,
                         "price": entry_price,
                         "is_reentry": signal.is_reentry,
+                        "scale": scale_label,
                     }
                 )
             else:
@@ -707,34 +751,48 @@ class RLMService:
         self,
         best_no_ask: int,
         best_no_bid: int,
-        spread: int
+        spread: int,
+        aggressive: bool = False
     ) -> int:
         """
         Calculate optimal entry price for buying NO contracts.
 
         Spread-aware pricing optimized for RLM time-sensitive signals:
-        - Tight spread (<=2c): hit near ask for guaranteed fill
-        - Normal spread (<=4c): use midpoint for price improvement
-        - Wide spread (>4c): 75% toward ask for higher fill probability
+        - Tight spread (<=tight_spread): hit near ask for guaranteed fill
+        - Normal spread (<=normal_spread): use midpoint for price improvement
+        - Wide spread (>normal_spread): 75% toward ask for higher fill probability
+
+        Position-aware adjustment (aggressive=True for high-edge signals):
+        - High-edge signals (10c+ drop) can afford slippage, prioritize fills
+        - Low-edge signals (5-10c drop) prioritize price improvement
+
+        Uses configurable thresholds: tight_spread, normal_spread (set in config).
+        Max spread rejection happens before this function is called.
 
         Args:
             best_no_ask: Best NO ask price in cents (what we pay to buy immediately)
             best_no_bid: Best NO bid price in cents (what we'd get to sell)
             spread: Bid-ask spread in cents
+            aggressive: If True, use more aggressive pricing for guaranteed fills
 
         Returns:
             Entry price in cents
         """
-        if spread <= 2:
-            # Tight spread: join queue just below ask
-            return best_no_ask - 1
-        elif spread <= 4:
-            # Normal spread: use midpoint
-            return (best_no_ask + best_no_bid) // 2
+        if spread <= self._tight_spread:
+            # Tight spread: aggressive hits ask, normal joins queue below ask
+            if aggressive:
+                return best_no_ask  # Hit ask for guaranteed fill
+            return best_no_ask - 1  # Join queue just below ask
+        elif spread <= self._normal_spread:
+            # Normal spread: aggressive pays near ask, normal uses midpoint
+            if aggressive:
+                return best_no_ask - 1  # Pay 1c below ask
+            return (best_no_ask + best_no_bid) // 2  # Use midpoint
         else:
-            # Wide spread: be aggressive toward ask (75% from bid)
-            # This prioritizes fill probability for time-sensitive signals
-            return best_no_bid + (spread * 3 // 4)
+            # Wide spread: aggressive goes 85% toward ask, normal goes 75%
+            if aggressive:
+                return best_no_bid + (spread * 85 // 100)  # 85% toward ask
+            return best_no_bid + (spread * 3 // 4)  # 75% toward ask
 
     def _log_orderbook_at_signal(self, signal: RLMSignal, orderbook: Dict[str, Any]) -> None:
         """
