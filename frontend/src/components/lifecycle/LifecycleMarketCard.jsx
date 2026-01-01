@@ -399,7 +399,7 @@ PriceMovementDisplay.displayName = 'PriceMovementDisplay';
 /**
  * ProgressBar - Animated progress toward signal threshold
  */
-const ProgressBar = memo(({ totalTrades, signalReady, progressPercent, threshold }) => {
+const ProgressBar = memo(({ totalTrades, signalReady, progressPercent, threshold, signalTriggerCount = 0 }) => {
   // Gradient and glow based on progress state
   const progressGradient = signalReady
     ? 'bg-gradient-to-r from-amber-500 to-amber-400'
@@ -433,7 +433,14 @@ const ProgressBar = memo(({ totalTrades, signalReady, progressPercent, threshold
 
       {/* Labels */}
       <div className="flex justify-between text-[10px] mt-1.5">
-        <span className="text-gray-500 font-mono">{totalTrades} trades</span>
+        <div className="flex items-center gap-2">
+          <span className="text-gray-500 font-mono">{totalTrades} trades</span>
+          {signalTriggerCount > 0 && (
+            <span className="text-amber-400 font-mono">
+              {signalTriggerCount}× triggered
+            </span>
+          )}
+        </div>
         {signalReady ? (
           <span className="text-amber-400 font-bold animate-signal-text">
             SIGNAL READY
@@ -567,6 +574,7 @@ const LifecycleMarketCard = ({ market, rlmState, tradePulse }) => {
   const firstYesPrice = rlmState?.first_yes_price;
   const lastYesPrice = rlmState?.last_yes_price;
   const priceDrop = rlmState?.price_drop || 0;
+  const signalTriggerCount = rlmState?.signal_trigger_count || 0;
 
   // Progress bar: 15 trades is the RLM signal threshold
   const SIGNAL_THRESHOLD = 15;
@@ -727,6 +735,7 @@ const LifecycleMarketCard = ({ market, rlmState, tradePulse }) => {
           signalReady={signalReady}
           progressPercent={progressPercent}
           threshold={SIGNAL_THRESHOLD}
+          signalTriggerCount={signalTriggerCount}
         />
       </div>
 

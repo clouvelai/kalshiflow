@@ -134,6 +134,10 @@ const LifecycleHeader = ({ wsStatus, stats, isAtCapacity, balance = 0, minTrader
                   <span className="text-gray-500">Determined:</span>
                   <span className="text-amber-400 ml-1 font-mono">{stats.by_status?.determined || 0}</span>
                 </div>
+                <div className="text-sm">
+                  <span className="text-gray-500">Settled:</span>
+                  <span className="text-green-400 ml-1 font-mono">{stats.by_status?.settled || 0}</span>
+                </div>
               </div>
             )}
           </div>

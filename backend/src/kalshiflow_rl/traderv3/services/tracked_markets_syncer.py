@@ -176,6 +176,8 @@ class TrackedMarketsSyncer:
                             logger.warning(f"Failed to cleanup closed market {ticker}: {e}")
 
                     # Emit lifecycle event for Activity Feed
+                    # Include result (YES/NO winner) when available
+                    result = market.get("result", "")
                     await self._event_bus.emit_system_activity(
                         activity_type="lifecycle_event",
                         message=f"Market {ticker} {api_status}",
@@ -184,6 +186,7 @@ class TrackedMarketsSyncer:
                             "market_ticker": ticker,
                             "action": api_status,
                             "reason": "api_sync",
+                            "result": result,
                         }
                     )
 

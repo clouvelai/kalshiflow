@@ -101,6 +101,9 @@ class MarketTradeState:
     entry_yes_ratio: Optional[float] = None  # Ratio when first entered
     entry_price_drop: Optional[int] = None   # Drop when first entered
 
+    # Historical tracking (not reset by _reset_signal_state)
+    signal_trigger_count: int = 0
+
     @property
     def total_trades(self) -> int:
         return self.yes_trades + self.no_trades
@@ -127,6 +130,7 @@ class MarketTradeState:
             "last_yes_price": self.last_yes_price,
             "price_drop": self.price_drop,
             "position_contracts": self.position_contracts,
+            "signal_trigger_count": self.signal_trigger_count,
         }
 
 
@@ -544,6 +548,7 @@ class RLMService:
         Execute an RLM signal by placing a NO order.
 
         Uses orderbook to determine order type (market vs limit).
+        Signal state is always reset after execution (one-shot behavior).
 
         Args:
             signal: Detected RLM signal
@@ -551,22 +556,27 @@ class RLMService:
         from ..services.trading_decision_service import TradingDecision, TradingStrategy
 
         signal_id = f"{signal.market_ticker}:{int(signal.detected_at * 1000)}"
+        trade_succeeded = False  # Track success for reset logic
 
-        # Check rate limit
-        self._refill_tokens()
-        if not self._consume_token():
-            self._rate_limited_count += 1
-            logger.debug(f"Rate limited signal {signal_id}")
-            return
-
-        # Emit processing start
-        await self._event_bus.emit_system_activity(
-            activity_type="rlm_signal",
-            message=f"RLM Signal: {signal.market_ticker} YES={signal.yes_ratio:.0%} drop={signal.price_drop}c",
-            metadata={"signal_id": signal_id, "status": "processing", **signal.to_dict()}
-        )
+        # Increment trigger count (persists across resets for historical tracking)
+        state = self._market_states.get(signal.market_ticker)
+        if state:
+            state.signal_trigger_count += 1
 
         try:
+            # Check rate limit
+            self._refill_tokens()
+            if not self._consume_token():
+                self._rate_limited_count += 1
+                logger.debug(f"Rate limited signal {signal_id}")
+                return
+
+            # Emit processing start
+            await self._event_bus.emit_system_activity(
+                activity_type="rlm_signal",
+                message=f"RLM Signal: {signal.market_ticker} YES={signal.yes_ratio:.0%} drop={signal.price_drop}c",
+                metadata={"signal_id": signal_id, "status": "processing", **signal.to_dict()}
+            )
             # Get orderbook for execution price
             entry_price = None
 
@@ -633,6 +643,7 @@ class RLMService:
             success = await self._trading_service.execute_decision(decision)
 
             if success:
+                trade_succeeded = True  # Mark success for reset logic
                 self._stats["signals_executed"] += 1
                 if signal.is_reentry:
                     self._stats["reentries"] += 1
@@ -686,6 +697,11 @@ class RLMService:
                 reason=f"Exception: {str(e)}",
                 signal_data=signal.to_dict()
             )
+
+        finally:
+            # One-shot behavior: always reset signal state after execution attempt
+            # preserve_entry=True on success keeps entry params for re-entry comparison
+            self._reset_signal_state(signal.market_ticker, preserve_entry=trade_succeeded)
 
     def _calculate_no_entry_price(
         self,
@@ -748,6 +764,34 @@ class RLMService:
 
         except Exception as e:
             logger.debug(f"Error logging orderbook: {e}")
+
+    def _reset_signal_state(self, market_ticker: str, preserve_entry: bool = True) -> None:
+        """
+        Reset signal detection state after trade attempt.
+
+        This makes the signal "one-shot" - market must re-accumulate
+        fresh trades to trigger another signal.
+
+        Args:
+            market_ticker: Market to reset
+            preserve_entry: If True, keep entry_* params for re-entry comparison
+        """
+        state = self._market_states.get(market_ticker)
+        if state:
+            # Reset signal detection counters
+            state.yes_trades = 0
+            state.no_trades = 0
+            state.first_yes_price = None
+            state.last_yes_price = None
+            state.first_trade_time = None
+            state.last_trade_time = None
+            # Keep position_contracts (we still own the position)
+            # Keep entry_yes_ratio and entry_price_drop if preserve_entry=True
+            if not preserve_entry:
+                state.entry_yes_ratio = None
+                state.entry_price_drop = None
+
+            logger.debug(f"Reset RLM signal state for {market_ticker} (preserve_entry={preserve_entry})")
 
     def _record_decision(
         self,

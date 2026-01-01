@@ -1,8 +1,38 @@
 # Validated Trading Strategies
 
 > Master document tracking production-ready trading strategies for V3 Trader.
-> Maintained by: Quant Agent | Last updated: 2025-12-30 (Session: H123 Production Validation)
+> Maintained by: Quant Agent | Last updated: 2025-12-31 (S013 Fresh Validation)
 > Source: Research validated against ~1.7M trades, ~72k settled markets
+
+---
+
+## NEXT TO IMPLEMENT: S013 (Low Leverage Variance NO)
+
+**Fresh Validation Completed: 2025-12-31**
+
+The quant has independently re-validated S013 with zero bias. Results:
+
+| Metric | Value | Threshold | Result |
+|--------|-------|-----------|--------|
+| **Bucket Ratio** | **93.3%** (14/15) | ≥ 80% | **PASS** |
+| Price Proxy Correlation | -0.02 | Near 0 | **PASS** |
+| P-value | 2.17e-08 | < 0.05 | **PASS** |
+| 95% CI | [8.01%, 14.15%] | Excludes 0 | **PASS** |
+| Temporal Stability | 4/4 quarters | ≥ 3/4 | **PASS** |
+| Concentration | 1.6% max | < 30% | **PASS** |
+
+**Why S013 complements RLM_NO:**
+- Only **4.5% overlap** with RLM markets
+- **Different mechanism**: RLM detects retail flow vs price; S013 detects bot-like patterns
+- **Expected ROI**: ~16.4% per signal ($100 bet → ~$116 return)
+
+**Signal**: `leverage_std < 0.7 AND no_ratio > 0.5 AND n_trades >= 5` → Bet NO
+
+**Validation artifacts:**
+- Script: `research/analysis/s013_fresh_validation.py`
+- Results: `research/reports/s013_fresh_validation.json`
+
+---
 
 ## CRITICAL UPDATE - Session H123 Category Validation (2025-12-30)
 

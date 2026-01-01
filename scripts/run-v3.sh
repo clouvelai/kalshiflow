@@ -110,15 +110,16 @@ if [ "$ENVIRONMENT" = "paper" ]; then
     export V3_TRADING_MAX_ORDERS="100"
     export V3_TRADING_MAX_POSITION_SIZE="1000"
 
-    # RLM (Reverse Line Movement) strategy - validated +17.38% edge
+    # RLM (Reverse Line Movement) strategy - validated edge
     # ALWAYS use RLM for paper trading - this is the primary strategy
     export V3_TRADING_STRATEGY="rlm_no"
     export V3_ENABLE_WHALE_DETECTION="false"  # Disabled - RLM is primary strategy
 
-    # RLM signal thresholds
-    export RLM_YES_THRESHOLD="0.65"      # >65% YES trades triggers signal
-    export RLM_MIN_TRADES="15"           # Minimum trades before evaluation
-    export RLM_MIN_PRICE_DROP="5"        # Minimum price drop (5 cents = quant recommended)
+    # RLM High Reliability Configuration (2.2% false positive rate)
+    # See RLM_IMPROVEMENTS.md Section 10 for full reliability analysis
+    export RLM_YES_THRESHOLD="0.70"      # >70% YES trades triggers signal (was 0.65)
+    export RLM_MIN_TRADES="25"           # Minimum trades before evaluation (was 15)
+    export RLM_MIN_PRICE_DROP="2"        # Minimum price drop in cents
     export RLM_CONTRACTS="3"             # Position size per signal (conservative)
 
     # Rate limiting for RLM execution
@@ -130,7 +131,7 @@ if [ "$ENVIRONMENT" = "paper" ]; then
     export V3_ALLOW_MULTIPLE_ORDERS="true"
 
     echo -e "${GREEN}✓ Trading client enabled (paper mode)${NC}"
-    echo -e "${GREEN}✓ RLM strategy active (+17.38% validated edge)${NC}"
+    echo -e "${GREEN}✓ RLM strategy active (High Reliability: 70%/25, 2.2% FP rate)${NC}"
     echo -e "${GREEN}✓ Lifecycle mode for market discovery${NC}"
 else
     export V3_ENABLE_TRADING_CLIENT="false"

@@ -221,8 +221,10 @@ class V3Config:
         yes8090_max_concurrent = int(os.environ.get("YES8090_MAX_CONCURRENT", "100"))
 
         # RLM (Reverse Line Movement) strategy configuration
-        rlm_yes_threshold = float(os.environ.get("RLM_YES_THRESHOLD", "0.65"))
-        rlm_min_trades = int(os.environ.get("RLM_MIN_TRADES", "15"))
+        # High reliability config: YES>70%, min_trades=25 (2.2% false positive rate)
+        # See RLM_IMPROVEMENTS.md Section 10 for full reliability analysis
+        rlm_yes_threshold = float(os.environ.get("RLM_YES_THRESHOLD", "0.70"))
+        rlm_min_trades = int(os.environ.get("RLM_MIN_TRADES", "25"))
         rlm_min_price_drop = int(os.environ.get("RLM_MIN_PRICE_DROP", "2"))
         rlm_contracts = int(os.environ.get("RLM_CONTRACTS", "100"))
         rlm_max_concurrent = int(os.environ.get("RLM_MAX_CONCURRENT", "1000"))
