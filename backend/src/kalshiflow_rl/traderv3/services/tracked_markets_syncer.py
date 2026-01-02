@@ -164,9 +164,12 @@ class TrackedMarketsSyncer:
                 if api_status in ("closed", "settled", "inactive"):
                     logger.info(f"Market {ticker} detected as {api_status} via API sync")
 
-                    # Update status in tracked markets state
+                    # Extract result (YES/NO winner) from API
+                    result = market.get("result", "")
+
+                    # Update status in tracked markets state (include result for settlement display)
                     new_status = MarketStatus.SETTLED if api_status == "settled" else MarketStatus.DETERMINED
-                    await self._state.update_status(ticker, new_status)
+                    await self._state.update_status(ticker, new_status, result=result if result else None)
 
                     # Trigger cleanup callback (unsubscribe orderbook)
                     if self._on_market_closed:
@@ -176,8 +179,6 @@ class TrackedMarketsSyncer:
                             logger.warning(f"Failed to cleanup closed market {ticker}: {e}")
 
                     # Emit lifecycle event for Activity Feed
-                    # Include result (YES/NO winner) when available
-                    result = market.get("result", "")
                     await self._event_bus.emit_system_activity(
                         activity_type="lifecycle_event",
                         message=f"Market {ticker} {api_status}",
