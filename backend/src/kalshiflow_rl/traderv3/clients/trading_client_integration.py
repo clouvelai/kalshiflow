@@ -975,19 +975,26 @@ class V3TradingClientIntegration:
         self,
         categories: Optional[List[str]] = None,
         max_markets: int = 1000,
-        close_min_minutes: int = 10,
+        min_hours_to_settlement: float = 4.0,
+        max_days_to_settlement: int = 30,
     ) -> List[Dict[str, Any]]:
         """
         Fetch open markets via events API with cursor pagination.
 
         Uses GET /events?with_nested_markets=true&min_close_ts=X to efficiently
-        get markets closing after N minutes. Results sorted by close_time ascending
-        (soonest first).
+        get markets closing after N hours. Results sorted by close_time ascending
+        (soonest first), filtered to exclude markets settling too far out.
+
+        Time-to-settlement filter rationale (from quant research):
+        - Skip <4 hours: Not enough time for RLM pattern to form
+        - Skip >30 days: Capital inefficiency (long-dated markets tie up capital)
+        - Edge is HIGHER in short-dated markets (Sports +17.9%, Media +24.1%)
 
         Args:
             categories: Optional list of category substrings to filter by
             max_markets: Maximum number of markets to return (default 1000)
-            close_min_minutes: Skip markets closing within N minutes (default 10)
+            min_hours_to_settlement: Skip markets closing <N hours (default 4.0)
+            max_days_to_settlement: Skip markets settling >N days out (default 30)
 
         Returns:
             List of market dicts sorted by close_time ascending (soonest first)
@@ -1020,9 +1027,12 @@ class V3TradingClientIntegration:
             pages_fetched = 0
             max_pages = 25  # Fetch up to 25 pages (~5000 events) to find soonest-closing markets
 
-            # Calculate min_close_ts for API filter (N minutes from now)
+            # Calculate time bounds for filtering
             now_ts = int(datetime.now(timezone.utc).timestamp())
-            min_close_ts = now_ts + (close_min_minutes * 60) if close_min_minutes > 0 else None
+            # Min: skip markets settling too soon (need time for RLM pattern)
+            min_close_ts = now_ts + int(min_hours_to_settlement * 3600) if min_hours_to_settlement > 0 else None
+            # Max: skip markets settling too far out (capital efficiency)
+            max_close_ts = now_ts + (max_days_to_settlement * 24 * 3600) if max_days_to_settlement > 0 else None
 
             # IMPORTANT: Fetch ALL pages first, then sort, then take top N
             # The API returns events in arbitrary order, so soonest-closing markets
@@ -1056,6 +1066,10 @@ class V3TradingClientIntegration:
                             # Skip markets with no 24h trading activity
                             if market.get("volume_24h", 0) <= 0:
                                 continue
+                            # Skip markets settling too far out (capital efficiency filter)
+                            close_ts = parse_close_time(market)
+                            if close_ts and max_close_ts and close_ts > max_close_ts:
+                                continue  # Too far out, skip for capital efficiency
                             market["category"] = event.get("category", "")
                             all_markets.append(market)
 

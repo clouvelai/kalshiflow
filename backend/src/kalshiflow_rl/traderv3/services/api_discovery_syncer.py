@@ -48,7 +48,8 @@ class ApiDiscoverySyncer:
         categories: List[str],
         sync_interval: float = 300.0,
         batch_size: int = 200,
-        close_min_minutes: int = 10,
+        min_hours_to_settlement: float = 4.0,
+        max_days_to_settlement: int = 30,
     ):
         """
         Initialize API discovery syncer.
@@ -61,7 +62,8 @@ class ApiDiscoverySyncer:
             categories: Category list to filter markets (same as lifecycle)
             sync_interval: Seconds between periodic syncs (default 300 = 5 min)
             batch_size: Maximum markets to fetch per API call (default 200)
-            close_min_minutes: Skip markets closing within N minutes (default 10)
+            min_hours_to_settlement: Skip markets closing <N hours (default 4.0)
+            max_days_to_settlement: Skip markets settling >N days out (default 30)
         """
         self._client = trading_client
         self._lifecycle_service = event_lifecycle_service
@@ -70,7 +72,8 @@ class ApiDiscoverySyncer:
         self._categories = categories
         self._sync_interval = sync_interval
         self._batch_size = batch_size
-        self._close_min_minutes = close_min_minutes
+        self._min_hours_to_settlement = min_hours_to_settlement
+        self._max_days_to_settlement = max_days_to_settlement
 
         # Syncer state
         self._sync_task: Optional[asyncio.Task] = None
@@ -88,7 +91,8 @@ class ApiDiscoverySyncer:
         logger.info(
             f"ApiDiscoverySyncer initialized "
             f"(sync_interval={sync_interval}s, batch_size={batch_size}, "
-            f"categories={categories}, close_min={close_min_minutes}min)"
+            f"categories={categories}, "
+            f"time_filter={min_hours_to_settlement}h-{max_days_to_settlement}d)"
         )
 
     async def start(self) -> None:
@@ -177,10 +181,12 @@ class ApiDiscoverySyncer:
             # Fetch open markets from trading client via events API
             # Uses cursor pagination to fetch up to remaining capacity
             # Sorted by close_time ascending (soonest first)
+            # Time filter: 4h-30d window for capital efficiency (from quant research)
             markets = await self._client.get_open_markets(
                 categories=self._categories,
                 max_markets=remaining,
-                close_min_minutes=self._close_min_minutes,
+                min_hours_to_settlement=self._min_hours_to_settlement,
+                max_days_to_settlement=self._max_days_to_settlement,
             )
 
             now = time.time()

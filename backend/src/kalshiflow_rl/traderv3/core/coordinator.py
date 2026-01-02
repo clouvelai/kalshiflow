@@ -619,6 +619,8 @@ class V3Coordinator:
                     tight_spread=self._config.rlm_tight_spread,
                     normal_spread=self._config.rlm_normal_spread,
                     max_spread=self._config.rlm_max_spread,
+                    min_hours_to_settlement=self._config.discovery_min_hours_to_settlement,
+                    max_days_to_settlement=self._config.discovery_max_days_to_settlement,
                 )
                 # Register with health monitor for health tracking
                 self._health_monitor.set_rlm_service(self._rlm_service)
@@ -1142,7 +1144,8 @@ class V3Coordinator:
                 categories=self._config.lifecycle_categories,
                 sync_interval=float(self._config.api_discovery_interval),
                 batch_size=self._config.api_discovery_batch_size,
-                close_min_minutes=self._config.discovery_close_min_minutes,
+                min_hours_to_settlement=self._config.discovery_min_hours_to_settlement,
+                max_days_to_settlement=self._config.discovery_max_days_to_settlement,
             )
             await self._api_discovery_syncer.start()
 

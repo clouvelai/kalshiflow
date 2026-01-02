@@ -262,6 +262,8 @@ class RLMService:
         max_spread: int = 10,
         max_trades_per_minute: int = DEFAULT_MAX_TRADES_PER_MINUTE,
         token_refill_seconds: float = DEFAULT_TOKEN_REFILL_SECONDS,
+        min_hours_to_settlement: float = 4.0,
+        max_days_to_settlement: int = 30,
     ):
         """
         Initialize RLM service.
@@ -283,6 +285,8 @@ class RLMService:
             max_spread: Spread > this skips signal (protects from bad fills)
             max_trades_per_minute: Rate limit - trades per minute (default: 10)
             token_refill_seconds: Seconds between token refills (default: 6.0)
+            min_hours_to_settlement: Skip signals for markets closing <N hours (default: 4.0)
+            max_days_to_settlement: Skip signals for markets settling >N days out (default: 30)
         """
         self._event_bus = event_bus
         self._trading_service = trading_service
@@ -302,6 +306,11 @@ class RLMService:
         self._tight_spread = tight_spread
         self._normal_spread = normal_spread
         self._max_spread = max_spread
+
+        # Time-to-settlement filter (belt-and-suspenders check)
+        # Primary filtering happens in API discovery; this catches edge cases
+        self._min_hours_to_settlement = min_hours_to_settlement
+        self._max_days_to_settlement = max_days_to_settlement
 
         # Token bucket rate limiting
         self._max_tokens = max_trades_per_minute
@@ -622,7 +631,8 @@ class RLMService:
             1. total_trades >= min_trades (sufficient activity)
             2. yes_ratio > yes_threshold (majority YES trades)
             3. price_drop >= min_price_drop (price moved toward NO)
-            4. Not at max concurrent positions (unless re-entry)
+            4. Time-to-settlement within valid window (4h to 30d)
+            5. Not at max concurrent positions (unless re-entry)
 
         Args:
             state: Market trade state
@@ -641,6 +651,30 @@ class RLMService:
         # Check price drop
         if state.price_drop < self._min_price_drop:
             return None
+
+        # Belt-and-suspenders: validate time-to-settlement is still valid
+        # Primary filtering happens in API discovery; this catches edge cases
+        tracked = self._tracked_markets_state.get_market(state.market_ticker)
+        if tracked and tracked.close_ts > 0:
+            now_ts = int(time.time())
+            hours_to_settlement = (tracked.close_ts - now_ts) / 3600
+
+            # Skip if settling too soon (not enough time for pattern to complete)
+            if hours_to_settlement < self._min_hours_to_settlement:
+                logger.debug(
+                    f"Signal skipped for {state.market_ticker}: "
+                    f"settling in {hours_to_settlement:.1f}h < {self._min_hours_to_settlement}h minimum"
+                )
+                return None
+
+            # Skip if settling too far out (capital efficiency)
+            max_hours = self._max_days_to_settlement * 24
+            if hours_to_settlement > max_hours:
+                logger.debug(
+                    f"Signal skipped for {state.market_ticker}: "
+                    f"settling in {hours_to_settlement/24:.1f}d > {self._max_days_to_settlement}d maximum"
+                )
+                return None
 
         # Check concurrent positions
         trading_state = self._state_container.trading_state

@@ -104,7 +104,11 @@ class V3Config:
     api_discovery_batch_size: int = 200  # Maximum markets to fetch per API call
 
     # Discovery Filtering Configuration
-    discovery_close_min_minutes: int = 10  # Skip markets closing within N minutes (avoid settling)
+    # Time-to-settlement filter: Focus on short-dated markets for capital efficiency
+    # Research shows: Sports (+17.9% edge), Media (+24.1%), Crypto (+12.8%) are all short-dated
+    # Politics (+10.1% weak edge) is mostly long-dated - naturally excluded by time filter
+    discovery_min_hours_to_settlement: float = 4.0  # Skip markets closing <4 hours (need time for RLM pattern)
+    discovery_max_days_to_settlement: int = 30  # Skip markets settling >30 days out (capital efficiency)
 
     # State Machine Configuration
     sync_duration: float = 10.0  # seconds for Kalshi data sync
@@ -247,8 +251,10 @@ class V3Config:
         api_discovery_interval = int(os.environ.get("API_DISCOVERY_INTERVAL", "300"))
         api_discovery_batch_size = int(os.environ.get("API_DISCOVERY_BATCH_SIZE", "200"))
 
-        # Discovery Filtering configuration
-        discovery_close_min_minutes = int(os.environ.get("DISCOVERY_CLOSE_MIN_MINUTES", "10"))
+        # Discovery Filtering configuration - time-to-settlement filter
+        # Focus on short-dated markets for capital efficiency (4h to 30d window)
+        discovery_min_hours_to_settlement = float(os.environ.get("DISCOVERY_MIN_HOURS_TO_SETTLEMENT", "4.0"))
+        discovery_max_days_to_settlement = int(os.environ.get("DISCOVERY_MAX_DAYS_TO_SETTLEMENT", "30"))
 
         sync_duration = float(os.environ.get("V3_SYNC_DURATION", os.environ.get("V3_CALIBRATION_DURATION", "10.0")))
         health_check_interval = float(os.environ.get("V3_HEALTH_CHECK_INTERVAL", "5.0"))
@@ -309,7 +315,8 @@ class V3Config:
             api_discovery_enabled=api_discovery_enabled,
             api_discovery_interval=api_discovery_interval,
             api_discovery_batch_size=api_discovery_batch_size,
-            discovery_close_min_minutes=discovery_close_min_minutes,
+            discovery_min_hours_to_settlement=discovery_min_hours_to_settlement,
+            discovery_max_days_to_settlement=discovery_max_days_to_settlement,
             sync_duration=sync_duration,
             health_check_interval=health_check_interval,
             error_recovery_delay=error_recovery_delay,
@@ -330,7 +337,7 @@ class V3Config:
             logger.info(f"    - Max tracked: {lifecycle_max_markets}")
             if api_discovery_enabled:
                 logger.info(f"    - API discovery: ENABLED (interval={api_discovery_interval}s, batch={api_discovery_batch_size})")
-                logger.info(f"    - Discovery filter: skip closing <{discovery_close_min_minutes}min, sorted by soonest")
+                logger.info(f"    - Time filter: {discovery_min_hours_to_settlement}h to {discovery_max_days_to_settlement}d (capital efficiency)")
             else:
                 logger.info(f"    - API discovery: DISABLED")
         elif market_tickers:
