@@ -580,7 +580,7 @@ def get_default_model_params(algorithm: str) -> Dict[str, Any]:
             "gamma": 0.99,
             "gae_lambda": 0.95,
             "clip_range": 0.2,
-            "ent_coef": 0.05,  # Increased from 0.01 to encourage exploration
+            "ent_coef": 0.01,  # Reduced entropy for less excessive trading
             "vf_coef": 0.5,
             "max_grad_norm": 0.5,
             "verbose": 1

@@ -40,11 +40,13 @@ yarn-error.log*
 .env.production.local
 .env.production
 .env.backup
+.env.paper
 .env.validation.backup
 
 # IDE
 .vscode/
 .idea/
+.cursor/
 *.swp
 *.swo
 *~
@@ -101,3 +103,9 @@ test-results/
 # RL Training artifacts
 backend/trained_models/
 models/
+
+# Project backups
+backups/
+
+# Claude Code session tracking (active session files only)
+.claude-sessions/active/*.json

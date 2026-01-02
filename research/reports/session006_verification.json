@@ -1,0 +1,12 @@
+{
+  "session": "006_verification",
+  "timestamp": "2025-12-29T12:52:13.105085",
+  "conclusion": "Market is efficient. No robust edge found.",
+  "no_50_80_analysis": {
+    "markets": 2210,
+    "win_rate": 0.6701357466063348,
+    "breakeven": 0.6457115762610661,
+    "edge": 0.02442417034526867,
+    "p_value": 0.008447291780558353,
+    "total_profit": 1703127.6700000002,
+    "survives_bonferroni": 

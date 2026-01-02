@@ -112,7 +112,7 @@ class SessionBasedEnvironment(gym.Env):
         self.observation_space = spaces.Box(
             low=-np.inf, high=np.inf, shape=(52,), dtype=np.float32
         )
-        self.action_space = spaces.Discrete(5)
+        self.action_space = spaces.Discrete(5)  # Default for 5-action space (session 12)
         
         logger.info(f"SessionBasedEnvironment initialized with default spaces: obs={self.observation_space.shape}, act={self.action_space.n}")
     

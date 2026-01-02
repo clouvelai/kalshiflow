@@ -14,6 +14,11 @@ src/kalshiflow_rl/trained_models/
 *.pkl
 *.pth
 
+# Exception: Include BEST_MODEL directory and contents in source control
+!src/kalshiflow_rl/BEST_MODEL/
+!src/kalshiflow_rl/BEST_MODEL/*.zip
+!src/kalshiflow_rl/BEST_MODEL/*.json
+
 # Logs
 *.log
 *.jsonl

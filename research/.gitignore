@@ -1,0 +1,12 @@
+# Large data files - keep locally but don't commit
+data/trades/*.csv
+data/markets/*.csv
+data/markets/*.json
+
+# Keep small summary files
+!data/trades/README.md
+!data/markets/README.md
+
+# Temporary analysis outputs
+*.tmp
+*.bak

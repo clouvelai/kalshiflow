@@ -1,0 +1,16 @@
+{
+  "session": "006_anomaly",
+  "timestamp": "2025-12-29T12:44:23.518237",
+  "finding": "NO trades at 50-80c show small but consistent positive edge",
+  "best_range": {
+    "low": 75,
+    "high": 85,
+    "edge": 0.022001236451404282
+  },
+  "bootstrap_ci": {
+    "mean": 0.024437841728345747,
+    "ci_low": 0.005191034883109796,
+    "ci_high": 0.043199970825447326
+  },
+  "top_10_concentration": 141.8671220343687
+}

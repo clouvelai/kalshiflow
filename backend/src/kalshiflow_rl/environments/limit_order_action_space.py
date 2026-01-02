@@ -25,18 +25,112 @@ The OrderManager handles:
 - Tracking order state for observation features
 """
 
-from typing import Optional, Dict, Any, Tuple
-from dataclasses import dataclass
+from typing import Optional, Dict, Any, Tuple, List
+from dataclasses import dataclass, field
 from enum import IntEnum
 import logging
 
 import numpy as np
 from gymnasium import spaces
 
-from ..trading.order_manager import OrderManager, OrderSide, ContractSide
 from ..data.orderbook_state import OrderbookState
 
+# DEPRECATED: /trading/ module removed, training system is broken
+# These imports will fail - training requires reimplementation
+try:
+    from ..trading.order_manager import OrderManager, OrderSide, ContractSide
+except ImportError:
+    OrderManager = None
+    OrderSide = None
+    ContractSide = None
+
 logger = logging.getLogger("kalshiflow_rl.environments.limit_order_action_space")
+
+
+@dataclass
+class PositionConfig:
+    """Central configuration for position sizing.
+    
+    EVOLUTION STRATEGY:
+    - Phase 1: sizes=[20] -> 5 actions (1 HOLD + 4 trades)
+    - Phase 2: sizes=[10, 50] -> 9 actions (1 HOLD + 8 trades)
+    - Phase 3: sizes=[5, 10, 20, 50, 100] -> 21 actions (full granularity)
+    """
+    # START WITH SINGLE SIZE FOR SIMPLICITY (5 total actions)
+    sizes: List[int] = field(default_factory=lambda: [5])  # Phase 1: Single size
+    # sizes: List[int] = field(default_factory=lambda: [10, 50])  # Phase 2: Two sizes
+    # sizes: List[int] = field(default_factory=lambda: [5, 10, 20, 50, 100])  # Phase 3: Full
+    
+    max_position_per_market: int = 500
+    max_position_value: int = 50000  # $500 in cents
+    max_portfolio_concentration: float = 0.20  # 20% max
+    min_cash_buffer: int = 5000  # $50 minimum reserve
+
+
+class PositionSizeValidator:
+    """Validator for position sizing constraints."""
+    
+    def __init__(self, config: PositionConfig):
+        self.config = config
+    
+    def validate_action(self, action: int, cash: int, current_position: int, orderbook: Dict) -> bool:
+        """Validate if action is executable given constraints."""
+        if action == 0:
+            return True  # HOLD always valid
+            
+        base_action, size_index = decode_action(action, len(self.config.sizes))
+        size = self.config.sizes[size_index]
+        
+        # Validate size constraints
+        price = self._get_execution_price(base_action, orderbook)
+        position_value = size * price
+        
+        checks = [
+            abs(current_position + size) <= self.config.max_position_per_market,
+            position_value <= self.config.max_position_value,
+            position_value <= cash * self.config.max_portfolio_concentration,
+            cash - position_value >= self.config.min_cash_buffer
+        ]
+        
+        return all(checks)
+    
+    def _get_execution_price(self, base_action: int, orderbook: Dict) -> int:
+        """Get estimated execution price for action."""
+        # Simplified price estimation - can be enhanced
+        if not orderbook or not hasattr(orderbook, 'yes_bids') or not hasattr(orderbook, 'yes_asks'):
+            return 50  # Default mid price
+        
+        if base_action in [1, 3]:  # BUY actions
+            return min(orderbook.yes_asks.keys()) if orderbook.yes_asks else 50
+        else:  # SELL actions  
+            return max(orderbook.yes_bids.keys()) if orderbook.yes_bids else 50
+
+
+def decode_action(action: int, num_sizes: int = 1) -> Tuple[int, int]:
+    """Decode single action into base action and size index.
+    
+    Flexible decoding that adapts to the number of position sizes configured.
+    
+    Args:
+        action: The raw action from the model (0 to N)
+        num_sizes: Number of position sizes available (from PositionConfig)
+    
+    Returns:
+        base_action: 0=HOLD, 1=BUY_YES, 2=SELL_YES, 3=BUY_NO, 4=SELL_NO
+        size_index: Index into the sizes array
+    """
+    if action == 0:
+        return 0, 0  # HOLD, no size
+    
+    if num_sizes == 1:
+        # Phase 1: Single size, actions 1-4 map directly to trading intents
+        return action, 0  # Always use first (only) size
+    else:
+        # Phase 2+: Multiple sizes
+        adjusted = action - 1  # Now 0-based for trading actions
+        base_action = (adjusted // num_sizes) + 1  # Which trading intent
+        size_index = adjusted % num_sizes  # Which size
+        return base_action, size_index
 
 
 class ActionType(IntEnum):
@@ -107,7 +201,7 @@ class LimitOrderActionSpace:
     def __init__(
         self, 
         order_manager: OrderManager,
-        contract_size: int = 10,
+        position_config: Optional[PositionConfig] = None,
         pricing_strategy: str = "aggressive"
     ):
         """
@@ -115,11 +209,13 @@ class LimitOrderActionSpace:
         
         Args:
             order_manager: OrderManager instance for execution
-            contract_size: Fixed number of contracts per trade
+            position_config: Position sizing configuration (defaults to PositionConfig())
             pricing_strategy: Default pricing strategy ("aggressive", "passive", "mid")
         """
         self.order_manager = order_manager
-        self.contract_size = contract_size
+        self.position_config = position_config or PositionConfig()
+        self.position_sizes = self.position_config.sizes
+        self.position_validator = PositionSizeValidator(self.position_config)
         self.pricing_strategy = pricing_strategy
         
         self.action_descriptions = {
@@ -130,16 +226,22 @@ class LimitOrderActionSpace:
             LimitOrderActions.SELL_NO_LIMIT: "Place/maintain sell order for NO contracts"
         }
         
-        logger.info(f"LimitOrderActionSpace initialized with {contract_size} contract size")
+        logger.info(f"LimitOrderActionSpace initialized with position sizes: {self.position_sizes}")
     
     def get_gym_space(self) -> spaces.Discrete:
         """
         Get the Gymnasium space representation.
         
+        Dynamically calculates space size based on configured position sizes:
+        - 1 size: 5 actions (1 HOLD + 4 trading directions)
+        - 2 sizes: 9 actions (1 HOLD + 8 trading combinations)
+        - 5 sizes: 21 actions (1 HOLD + 20 trading combinations)
+        
         Returns:
-            spaces.Discrete(5): Discrete action space with 5 actions
+            spaces.Discrete(n): Where n = 1 + (4 * num_sizes)
         """
-        return spaces.Discrete(5)
+        num_actions = 1 + (4 * len(self.position_sizes))  # HOLD + (4 directions × sizes)
+        return spaces.Discrete(num_actions)
     
     def execute_action_sync(
         self,
@@ -177,7 +279,7 @@ class LimitOrderActionSpace:
                     # Real OrderManager in async context - might not be safe
                     logger.debug(f"Real OrderManager in async context, might skip execution for action {action}")
                     return ActionExecutionResult(
-                        action_taken=LimitOrderActions(action) if 0 <= action <= 4 else LimitOrderActions.HOLD,
+                        action_taken=LimitOrderActions(decode_action(action, len(self.position_sizes))[0]) if 0 <= action <= 4 else LimitOrderActions.HOLD,
                         order_placed=False,
                         order_cancelled=False,
                         order_amended=False,
@@ -213,52 +315,56 @@ class LimitOrderActionSpace:
         Execute action synchronously for SimulatedOrderManager.
         
         This bypasses async/await and directly calls the simulated order operations
-        since they don't actually need to be async.
+        since they don't actually need to be async. Now supports 21 actions with position sizing.
         """
         try:
             if not (0 <= action <= 4):
                 return ActionExecutionResult(
-                    action_taken=LimitOrderActions(action),
+                    action_taken=LimitOrderActions.HOLD,
                     order_placed=False,
                     order_cancelled=False,
                     order_amended=False,
                     order_id=None,
-                    error_message=f"Invalid action: {action}"
+                    error_message=f"Invalid action: {action}. Must be 0-20."
                 )
             
-            action_enum = LimitOrderActions(action)
+            # Decode action into base action and size
+            base_action, size_index = decode_action(action, len(self.position_sizes))
             
             # Handle HOLD action
-            if action_enum == LimitOrderActions.HOLD:
+            if base_action == 0:
                 return self._execute_hold_action_sync(ticker, orderbook)
             
-            # Handle trading actions
-            elif action_enum == LimitOrderActions.BUY_YES_LIMIT:
-                return self._execute_buy_action_sync(ticker, ContractSide.YES, orderbook)
+            # Get position size for trading actions
+            position_size = self.position_sizes[size_index]
             
-            elif action_enum == LimitOrderActions.SELL_YES_LIMIT:
-                return self._execute_sell_action_sync(ticker, ContractSide.YES, orderbook)
+            # Handle trading actions with variable position size
+            if base_action == 1:  # BUY_YES
+                return self._execute_buy_action_sync(ticker, ContractSide.YES, orderbook, position_size)
             
-            elif action_enum == LimitOrderActions.BUY_NO_LIMIT:
-                return self._execute_buy_action_sync(ticker, ContractSide.NO, orderbook)
+            elif base_action == 2:  # SELL_YES
+                return self._execute_sell_action_sync(ticker, ContractSide.YES, orderbook, position_size)
             
-            elif action_enum == LimitOrderActions.SELL_NO_LIMIT:
-                return self._execute_sell_action_sync(ticker, ContractSide.NO, orderbook)
+            elif base_action == 3:  # BUY_NO
+                return self._execute_buy_action_sync(ticker, ContractSide.NO, orderbook, position_size)
+            
+            elif base_action == 4:  # SELL_NO
+                return self._execute_sell_action_sync(ticker, ContractSide.NO, orderbook, position_size)
             
             else:
                 return ActionExecutionResult(
-                    action_taken=action_enum,
+                    action_taken=LimitOrderActions.HOLD,
                     order_placed=False,
                     order_cancelled=False,
                     order_amended=False,
                     order_id=None,
-                    error_message=f"Unhandled action: {action_enum}"
+                    error_message=f"Unhandled base action: {base_action}"
                 )
                 
         except Exception as e:
             logger.error(f"Error executing simulated action {action}: {e}")
             return ActionExecutionResult(
-                action_taken=LimitOrderActions(action) if 0 <= action <= 4 else LimitOrderActions.HOLD,
+                action_taken=LimitOrderActions.HOLD,
                 order_placed=False,
                 order_cancelled=False,
                 order_amended=False,
@@ -277,9 +383,10 @@ class LimitOrderActionSpace:
         
         This method translates high-level agent actions into specific order
         management operations, handling all the complexity of limit orders.
+        Now supports 21 actions with variable position sizing.
         
         Args:
-            action: Integer action from 0-4
+            action: Integer action from 0-20
             ticker: Market ticker for the order
             orderbook: Current orderbook state for pricing
             
@@ -289,47 +396,51 @@ class LimitOrderActionSpace:
         try:
             if not (0 <= action <= 4):
                 return ActionExecutionResult(
-                    action_taken=LimitOrderActions(action),
+                    action_taken=LimitOrderActions.HOLD,
                     order_placed=False,
                     order_cancelled=False,
                     order_amended=False,
                     order_id=None,
-                    error_message=f"Invalid action: {action}"
+                    error_message=f"Invalid action: {action}. Must be 0-20."
                 )
             
-            action_enum = LimitOrderActions(action)
+            # Decode action into base action and size
+            base_action, size_index = decode_action(action, len(self.position_sizes))
             
             # Handle HOLD action
-            if action_enum == LimitOrderActions.HOLD:
+            if base_action == 0:
                 return await self._execute_hold_action(ticker, orderbook)
             
-            # Handle trading actions
-            elif action_enum == LimitOrderActions.BUY_YES_LIMIT:
-                return await self._execute_buy_action(ticker, ContractSide.YES, orderbook)
+            # Get position size for trading actions
+            position_size = self.position_sizes[size_index]
             
-            elif action_enum == LimitOrderActions.SELL_YES_LIMIT:
-                return await self._execute_sell_action(ticker, ContractSide.YES, orderbook)
+            # Handle trading actions with variable position size
+            if base_action == 1:  # BUY_YES
+                return await self._execute_buy_action(ticker, ContractSide.YES, orderbook, position_size)
             
-            elif action_enum == LimitOrderActions.BUY_NO_LIMIT:
-                return await self._execute_buy_action(ticker, ContractSide.NO, orderbook)
+            elif base_action == 2:  # SELL_YES
+                return await self._execute_sell_action(ticker, ContractSide.YES, orderbook, position_size)
             
-            elif action_enum == LimitOrderActions.SELL_NO_LIMIT:
-                return await self._execute_sell_action(ticker, ContractSide.NO, orderbook)
+            elif base_action == 3:  # BUY_NO
+                return await self._execute_buy_action(ticker, ContractSide.NO, orderbook, position_size)
+            
+            elif base_action == 4:  # SELL_NO
+                return await self._execute_sell_action(ticker, ContractSide.NO, orderbook, position_size)
             
             else:
                 return ActionExecutionResult(
-                    action_taken=action_enum,
+                    action_taken=LimitOrderActions.HOLD,
                     order_placed=False,
                     order_cancelled=False,
                     order_amended=False,
                     order_id=None,
-                    error_message=f"Unhandled action: {action_enum}"
+                    error_message=f"Unhandled base action: {base_action}"
                 )
                 
         except Exception as e:
             logger.error(f"Error executing action {action}: {e}")
             return ActionExecutionResult(
-                action_taken=LimitOrderActions(action) if 0 <= action <= 4 else LimitOrderActions.HOLD,
+                action_taken=LimitOrderActions.HOLD,
                 order_placed=False,
                 order_cancelled=False,
                 order_amended=False,
@@ -380,14 +491,20 @@ class LimitOrderActionSpace:
         self,
         ticker: str,
         contract_side: ContractSide,
-        orderbook: OrderbookState
+        orderbook: OrderbookState,
+        position_size: Optional[int] = None
     ) -> ActionExecutionResult:
         """
         Execute a buy action - place buy order, cancelling conflicting sells.
         
         This method implements the "one order per market" rule by cancelling
         any conflicting sell orders before placing the new buy order.
+        
+        Args:
+            position_size: Number of contracts to trade (if None, uses first position size from config)
         """
+        # Use provided position_size or fallback to contract_size for backward compatibility
+        quantity = position_size if position_size is not None else self.position_sizes[0]
         # Cancel conflicting orders (any sell orders)
         open_orders = self.order_manager.get_open_orders(ticker)
         conflicting_orders = [
@@ -442,7 +559,7 @@ class LimitOrderActionSpace:
             ticker=ticker,
             side=OrderSide.BUY,
             contract_side=contract_side,
-            quantity=self.contract_size,
+            quantity=quantity,
             orderbook=orderbook,
             pricing_strategy=self.pricing_strategy
         )
@@ -471,11 +588,17 @@ class LimitOrderActionSpace:
         self,
         ticker: str,
         contract_side: ContractSide,
-        orderbook: OrderbookState
+        orderbook: OrderbookState,
+        position_size: Optional[int] = None
     ) -> ActionExecutionResult:
         """
         Execute a sell action - place sell order, cancelling conflicting buys.
+        
+        Args:
+            position_size: Number of contracts to trade (if None, uses first position size from config)
         """
+        # Use provided position_size or fallback to contract_size for backward compatibility
+        quantity = position_size if position_size is not None else self.position_sizes[0]
         # Cancel conflicting orders (any buy orders)
         open_orders = self.order_manager.get_open_orders(ticker)
         conflicting_orders = [
@@ -530,7 +653,7 @@ class LimitOrderActionSpace:
             ticker=ticker,
             side=OrderSide.SELL,
             contract_side=contract_side,
-            quantity=self.contract_size,
+            quantity=quantity,
             orderbook=orderbook,
             pricing_strategy=self.pricing_strategy
         )
@@ -575,7 +698,7 @@ class LimitOrderActionSpace:
             'action_name': action_enum.name,
             'description': self.action_descriptions[action_enum],
             'is_trade': action != LimitOrderActions.HOLD,
-            'contract_size': self.contract_size if action != LimitOrderActions.HOLD else 0,
+            'contract_size': self.position_sizes[0] if action != LimitOrderActions.HOLD else 0,
             'order_type': 'limit' if action != LimitOrderActions.HOLD else None,
             'requires_order_management': True
         }
@@ -667,8 +790,26 @@ class LimitOrderActionSpace:
         logger.info(f"Pricing strategy updated to: {strategy}")
     
     def get_contract_size(self) -> int:
-        """Get the fixed contract size."""
-        return self.contract_size
+        """Get the default contract size.
+        
+        Deprecated: Use get_position_sizes() for multi-size support.
+        Returns first size for backward compatibility.
+        """
+        if len(self.position_sizes) > 1:
+            logger.warning("get_contract_size() called with multiple sizes configured. "
+                          "Use get_position_sizes() or get_position_size_for_action().")
+        return self.position_sizes[0]
+    
+    def get_position_sizes(self) -> List[int]:
+        """Get all configured position sizes."""
+        return self.position_sizes
+    
+    def get_position_size_for_action(self, action: int) -> int:
+        """Get the position size for a specific action."""
+        if action == 0:  # HOLD
+            return 0
+        _, size_index = decode_action(action, len(self.position_sizes))
+        return self.position_sizes[size_index]
     
     def get_action_mask(
         self,
@@ -723,7 +864,7 @@ class LimitOrderActionSpace:
             
         # Estimate worst-case cost (buying at highest ask)
         max_ask = max(max(orderbook.yes_asks.keys()), max(orderbook.no_asks.keys()) if orderbook.no_asks else 0)
-        estimated_cost = self.contract_size * max_ask / 100.0
+        estimated_cost = self.position_sizes[0] * max_ask / 100.0
         
         return cash_balance >= estimated_cost
     
@@ -754,7 +895,7 @@ class LimitOrderActionSpace:
         
         position_diff = target_position - current_position
         
-        if abs(position_diff) < self.contract_size:
+        if abs(position_diff) < self.position_sizes[0]:
             return 0, f"Position difference ({position_diff}) less than contract size"
         
         if position_diff > 0:  # Need more YES position
@@ -779,7 +920,7 @@ class LimitOrderActionSpace:
         return {
             "action_space_type": "LimitOrderActionSpace",
             "action_count": 5,
-            "contract_size": self.contract_size,
+            "contract_size": self.position_sizes[0],
             "pricing_strategy": self.pricing_strategy,
             "actions": self.get_all_actions_info(),
             "constraints": {
@@ -822,25 +963,32 @@ class LimitOrderActionSpace:
         self,
         ticker: str,
         contract_side: ContractSide,
-        orderbook: OrderbookState
+        orderbook: OrderbookState,
+        position_size: Optional[int] = None
     ) -> ActionExecutionResult:
         """Synchronous version of _execute_buy_action for SimulatedOrderManager."""
         try:
+            # Use provided position_size or fallback to contract_size for backward compatibility
+            quantity = position_size if position_size is not None else self.position_sizes[0]
             # Calculate limit price using SimulatedOrderManager's method
             limit_price = self.order_manager._calculate_limit_price(
                 OrderSide.BUY, contract_side, orderbook, self.pricing_strategy
             )
             
             # Create order info directly (bypassing async place_order)
-            from ..trading.order_manager import OrderInfo, OrderStatus
+            # DEPRECATED: This will fail - training system is broken
+            try:
+                from ..trading.order_manager import OrderInfo, OrderStatus
+            except ImportError:
+                raise RuntimeError("Training system is broken - /trading/ module was removed")
             import time
-            
+
             order = OrderInfo(
                 order_id=self.order_manager._generate_order_id(),
                 ticker=ticker,
                 side=OrderSide.BUY,
                 contract_side=contract_side,
-                quantity=self.contract_size,
+                quantity=quantity,
                 limit_price=limit_price,
                 status=OrderStatus.PENDING,
                 placed_at=time.time()
@@ -884,25 +1032,32 @@ class LimitOrderActionSpace:
         self,
         ticker: str,
         contract_side: ContractSide,
-        orderbook: OrderbookState
+        orderbook: OrderbookState,
+        position_size: Optional[int] = None
     ) -> ActionExecutionResult:
         """Synchronous version of _execute_sell_action for SimulatedOrderManager."""
         try:
+            # Use provided position_size or fallback to contract_size for backward compatibility
+            quantity = position_size if position_size is not None else self.position_sizes[0]
             # Calculate limit price using SimulatedOrderManager's method
             limit_price = self.order_manager._calculate_limit_price(
                 OrderSide.SELL, contract_side, orderbook, self.pricing_strategy
             )
             
             # Create order info directly (bypassing async place_order)
-            from ..trading.order_manager import OrderInfo, OrderStatus
+            # DEPRECATED: This will fail - training system is broken
+            try:
+                from ..trading.order_manager import OrderInfo, OrderStatus
+            except ImportError:
+                raise RuntimeError("Training system is broken - /trading/ module was removed")
             import time
-            
+
             order = OrderInfo(
                 order_id=self.order_manager._generate_order_id(),
                 ticker=ticker,
                 side=OrderSide.SELL,
                 contract_side=contract_side,
-                quantity=self.contract_size,
+                quantity=quantity,
                 limit_price=limit_price,
                 status=OrderStatus.PENDING,
                 placed_at=time.time()

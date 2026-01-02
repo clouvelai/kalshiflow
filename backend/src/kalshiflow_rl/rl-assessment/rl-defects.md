@@ -1,33 +1,109 @@
 # RL System Defects - Severity Ranked
 
-Last Updated: 2025-12-11 21:40
+Last Updated: 2025-12-16 13:00
 
 ## Critical Defects (Training Blockers)
 
-### 1. HOLD-Only Agent Behavior
+### CRITICAL: Session 12 Model Has Catastrophically Collapsed to SELL_NO-Only Policy
+**Severity**: CRITICAL - MODEL IS COMPLETELY BROKEN
+**Component**: session12_ppo_final.zip model
+**Description**: Model has collapsed to executing 95.87% SELL_NO actions - essentially a degenerate one-action policy
+**Evidence**:
+- Training statistics show 962,049 SELL_NO actions out of 1,003,520 total (95.87%)
+- Live trading shows 9+ consecutive SELL_NO orders with zero other actions
+- Entropy collapsed to 0.229 (healthy models have >1.0)
+- Last 10 training episodes used almost exclusively action 4 (SELL_NO)
+
+**Technical Analysis**:
+1. **Policy Network Bias**: SELL_YES has highest bias (0.1483) but model still chooses SELL_NO due to:
+   - Reward function systematically favoring SELL_NO
+   - Training data with market conditions biased toward NO selling
+   - Exploration collapse preventing discovery of other profitable strategies
+
+2. **Feature Space Issues**: 
+   - 7 features have zero variance (constant values)
+   - Poor feature distribution health flagged in training
+   - Model may be ignoring most features and acting on spurious correlations
+
+3. **Reward Signal Problem**:
+   - SELL_NO average reward: +1.32 per action
+   - All other actions have negative average rewards
+   - Portfolio consistently decreasing (-1634 average recent change)
+
+**Why This Happened**:
+- PPO entropy coefficient (0.01) too low to maintain exploration
+- Session 12 data may have systematic bias in market conditions
+- No action masking or diversity requirements during training
+- Reward function doesn't penalize one-sided trading
+
+**Impact**: 
+- **THIS MODEL WILL LOSE MONEY IN PRODUCTION**
+- Creates massive one-sided risk exposure
+- No ability to profit from YES movements
+- Will drain account through accumulated spread costs
+
+**Verdict**: This model is fundamentally broken and exhibits textbook policy collapse. It has learned a degenerate strategy of always selling NO regardless of market conditions. DO NOT USE IN ANY TRADING ENVIRONMENT.
+
+### 0. RLModelSelector Action Validation Bug - BLOCKS 76% OF ACTIONS
+**Severity**: CRITICAL (Production Blocker)
+**Component**: RLModelSelector in action_selector.py
+**Description**: Action validation incorrectly checks for 0-4 range instead of 0-20
+**Location**: Line 158 in `/backend/src/kalshiflow_rl/trading/action_selector.py`
+**Reproduction**:
+```python
+# Any action > 4 will be rejected and converted to HOLD
+# This affects actions 5-20 (16 out of 21 actions = 76%)
+```
+**Impact**: 
+- Model trained on 21 actions but can only use 5
+- All larger position sizes (10, 20, 50, 100 contracts) unusable except for BUY_YES
+- Model effectively crippled to 24% of its capability
+**Root Cause**: Code not updated after expanding from 5 to 21 actions
+**Suggested Fix**:
+```python
+# Line 158 in action_selector.py, change:
+if not (0 <= action_int <= 4):
+# To:
+if not (0 <= action_int <= 20):
+```
+**Verification**: After fix, test all 21 actions can be selected and executed
+
+### 1. Observation Dimension Mismatch - FIXED
+**Severity**: ~~CRITICAL~~ RESOLVED
+**Component**: MarketAgnosticKalshiEnv
+**Description**: Environment expects 54 features and provides 54 (previously had mismatch)
+**Status**: FIXED - Observation dimension correctly set to 54
+**Verification**: Confirmed via test environment creation
+
+### 2. Excessive Trading Activity (95%+) Despite Conservative Settings
 **Severity**: CRITICAL
-**Component**: MarketAgnosticKalshiEnv / Training Loop
-**Description**: Agent converges to only taking HOLD action (action 0), never placing trades
+**Component**: Action Space Design / Reward Structure
+**Description**: Agent trades 95%+ of time even with entropy coefficient 0.07
 **Reproduction**:
 ```bash
-python train_sb3.py --session 9 --algorithm ppo --total-timesteps 10000
-# Observe action distribution in logs - 99%+ HOLD actions
+python train_sb3.py --session 32 --algorithm ppo --total-timesteps 100000
+# Observe action distribution: 95%+ trading actions, only 3-4% HOLD
 ```
-**Impact**: No trading = no learning signal = no profitability
+**Impact**: Unrealistic trading frequency unsuitable for paper trading
 **Root Cause**: 
-- Sparse reward signal (only on portfolio value change)
-- Low entropy coefficient (0.01) discourages exploration
-- No exploration bonuses in reward function
+- **Action space imbalance**: 20 trading actions vs 1 HOLD (95.2% prior for trading)
+- **Large position rewards dominate**: Action 20 (100 contracts SELL_NO) has highest reward
+- **Transaction fees too weak**: 10% of spread insufficient deterrent
 **Suggested Fix**:
-1. Add exploration bonus to reward function in `market_agnostic_env.py`:
+1. **Increase transaction fee penalty** in `unified_metrics.py`:
    ```python
-   # In step() method after calculating reward
-   if action != 0:  # Non-HOLD action
-       reward += 0.001  # Small exploration bonus
+   # Line 97: Increase from 0.1 to 0.5 (50% of spread)
+   transaction_fee = 0.5 * spread_cents * (quantity / 10.0)
    ```
-2. Increase entropy coefficient in `train_sb3.py` get_default_model_params():
+2. **Add HOLD reward bonus** in `market_agnostic_env.py`:
    ```python
-   "ent_coef": 0.1,  # Was 0.01
+   # After calculating reward
+   if action == 0:  # HOLD action
+       reward += 0.0001  # Small stability bonus
+   ```
+3. **Reduce entropy coefficient further**:
+   ```python
+   "ent_coef": 0.01,  # From 0.07 to 0.01 for less exploration
    ```
 
 ### 2. Episode Boundaries Not Respecting Market Sessions
@@ -47,7 +123,25 @@ python train_sb3.py --session 9 --algorithm ppo --total-timesteps 5000
 
 ## High Severity (Performance Issues)
 
-### 3. Insufficient Training Duration Default
+### 3. Transaction Fee Too Weak
+**Severity**: HIGH
+**Component**: UnifiedRewardCalculator in unified_metrics.py
+**Description**: Transaction fee of 0.01 * spread (1% for standard trades) is unrealistically low
+**Reproduction**:
+```bash
+# Check logs during training - fee penalties are negligible
+python train_sb3.py --session 32 --algorithm ppo --total-timesteps 1000
+```
+**Impact**: Model learns unrealistic high-frequency trading behavior
+**Root Cause**: Fee multiplier set too low (0.01 instead of realistic 0.1+)
+**Suggested Fix**:
+```python
+# In unified_metrics.py line 95:
+transaction_fee = 0.1 * spread_cents * (quantity / 10.0)  # 10x increase
+```
+**Analysis**: Real costs include spread + impact + fees (~10% minimum)
+
+### 4. Insufficient Training Duration Default
 **Severity**: HIGH
 **Component**: train_sb3.py defaults
 **Description**: Default training timesteps too low for convergence
@@ -169,11 +263,12 @@ def extract_market_features():
 
 ## Priority Fix Order
 
-1. **Fix HOLD-only behavior** (Critical - prevents any learning)
-2. **Increase default training duration** (Easy fix, high impact)
-3. **Tune hyperparameters** (Simple config change, major improvement)
-4. **Add exploration features** (Medium effort, good impact)
-5. **Enable M10 diagnostics by default** (Help debugging)
+1. **Fix RLModelSelector action validation** (IMMEDIATE - blocks 76% of model actions)
+2. **Increase transaction fee to 0.1** (Quick fix, major impact on realism)
+3. **Fix HOLD-only behavior** (Critical - prevents any learning)
+4. **Increase default training duration** (Easy fix, high impact)
+5. **Tune hyperparameters** (Simple config change, major improvement)
+6. **Enable M10 diagnostics by default** (Help debugging)
 
 ## Testing After Fixes
 

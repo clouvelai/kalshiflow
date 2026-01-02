@@ -14,9 +14,13 @@
     "test:frontend-regression": "playwright test tests/frontend-e2e-regression.spec.js"
   },
   "dependencies": {
+    "@heroicons/react": "^2.2.0",
+    "framer-motion": "^12.23.26",
     "lucide-react": "^0.556.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
+    "react-router-dom": "^7.10.1",
+    "react-window": "^1.8.10",
     "recharts": "^3.5.1"
   },
   "devDependencies": {

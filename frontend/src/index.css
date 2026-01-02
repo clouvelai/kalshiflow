@@ -27,6 +27,32 @@
     background-color: rgb(100 116 139);
   }
 
+  /* Custom scrollbar for RL Trader Dashboard */
+  .custom-scrollbar {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(75, 85, 99, 0.5) transparent;
+  }
+  
+  .custom-scrollbar::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  
+  .custom-scrollbar::-webkit-scrollbar-track {
+    background: rgba(31, 41, 55, 0.3);
+    border-radius: 4px;
+  }
+  
+  .custom-scrollbar::-webkit-scrollbar-thumb {
+    background: linear-gradient(180deg, rgba(75, 85, 99, 0.7), rgba(55, 65, 81, 0.7));
+    border-radius: 4px;
+    border: 1px solid rgba(31, 41, 55, 0.3);
+  }
+  
+  .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+    background: linear-gradient(180deg, rgba(107, 114, 128, 0.9), rgba(75, 85, 99, 0.9));
+  }
+
   /* Animation utilities */
   .animate-fade-in {
     animation: fadeIn 0.5s ease-in-out;
@@ -42,6 +68,12 @@
 
   .animate-counter {
     animation: counterUp 0.8s ease-out;
+  }
+
+  /* Text utilities */
+  .text-xxs {
+    font-size: 0.625rem;
+    line-height: 0.875rem;
   }
 
   /* Text truncation utilities */
@@ -73,18 +105,64 @@
   }
 
   @keyframes slideIn {
-    from { 
-      opacity: 0; 
+    from {
+      opacity: 0;
       transform: translateX(-20px);
     }
-    to { 
-      opacity: 1; 
+    to {
+      opacity: 1;
       transform: translateX(0);
     }
   }
 
   .animate-slide-in {
     animation: slideIn 0.5s ease-out;
+  }
+
+  /* Whale queue animations */
+  @keyframes slideInFromLeft {
+    from {
+      opacity: 0;
+      transform: translateX(-30px) scale(0.98);
+      background-color: rgba(6, 182, 212, 0.2);
+    }
+    to {
+      opacity: 1;
+      transform: translateX(0) scale(1);
+      background-color: transparent;
+    }
+  }
+
+  @keyframes whaleProcessing {
+    0%, 100% {
+      background-color: rgba(59, 130, 246, 0.1);
+      box-shadow: inset 0 0 0 1px rgba(59, 130, 246, 0.3);
+    }
+    50% {
+      background-color: rgba(59, 130, 246, 0.2);
+      box-shadow: inset 0 0 0 2px rgba(59, 130, 246, 0.5);
+    }
+  }
+
+  @keyframes whaleFollowed {
+    0% {
+      background-color: rgba(34, 197, 94, 0.3);
+      box-shadow: 0 0 20px rgba(34, 197, 94, 0.4);
+      transform: scale(1.01);
+    }
+    100% {
+      background-color: rgba(34, 197, 94, 0.1);
+      box-shadow: 0 0 0 rgba(34, 197, 94, 0);
+      transform: scale(1);
+    }
+  }
+
+  .animate-whale-processing {
+    animation: whaleProcessing 1s ease-in-out infinite;
+  }
+
+  .animate-whale-followed {
+    animation: whaleFollowed 1.5s ease-out;
   }
 
   /* New entry animation - slide in with glow */
@@ -204,6 +282,264 @@
   .animate-flow-across {
     animation: flowAcross 4s linear forwards;
     will-change: left, opacity;
+  }
+
+  /* Position update pulse - highlights changed field - smoother and less intense */
+  @keyframes positionUpdatePulse {
+    0%, 100% { 
+      background-color: transparent;
+      box-shadow: 0 0 0 rgba(59, 130, 246, 0);
+    }
+    50% { 
+      background-color: rgba(59, 130, 246, 0.08);
+      box-shadow: 0 0 8px rgba(59, 130, 246, 0.2);
+    }
+  }
+
+  .animate-position-update {
+    animation: positionUpdatePulse 1.2s ease-in-out;
+  }
+
+  /* Value increase animation - green glow + slide up - smoother and less intense */
+  @keyframes valueIncrease {
+    0% { 
+      transform: translateY(0);
+      box-shadow: 0 0 0 rgba(34, 197, 94, 0);
+    }
+    50% {
+      transform: translateY(-2px);
+      box-shadow: 0 0 8px rgba(34, 197, 94, 0.3);
+    }
+    100% {
+      transform: translateY(0);
+      box-shadow: 0 0 0 rgba(34, 197, 94, 0);
+    }
+  }
+
+  .animate-value-increase {
+    animation: valueIncrease 0.8s ease-out;
+  }
+
+  /* Value decrease animation - red glow + slide down - smoother and less intense */
+  @keyframes valueDecrease {
+    0% { 
+      transform: translateY(0);
+      box-shadow: 0 0 0 rgba(239, 68, 68, 0);
+    }
+    50% {
+      transform: translateY(2px);
+      box-shadow: 0 0 8px rgba(239, 68, 68, 0.3);
+    }
+    100% {
+      transform: translateY(0);
+      box-shadow: 0 0 0 rgba(239, 68, 68, 0);
+    }
+  }
+
+  .animate-value-decrease {
+    animation: valueDecrease 0.8s ease-out;
+  }
+
+  /* Settlement animation - golden glow */
+  @keyframes settlementGlow {
+    0%, 100% { 
+      box-shadow: 0 0 0 rgba(234, 179, 8, 0);
+      border-color: rgba(234, 179, 8, 0.3);
+      transform: scale(1);
+    }
+    50% {
+      box-shadow: 0 0 40px rgba(234, 179, 8, 0.8), 0 0 60px rgba(234, 179, 8, 0.4);
+      border-color: rgba(234, 179, 8, 1);
+      transform: scale(1.02);
+    }
+  }
+
+  .animate-settlement {
+    animation: settlementGlow 1.5s ease-in-out;
+  }
+
+  /* New position animation - slide in from right with glow - smoother */
+  @keyframes newPosition {
+    0% {
+      opacity: 0;
+      transform: translateX(20px) scale(0.98);
+      box-shadow: 0 0 0 rgba(59, 130, 246, 0);
+    }
+    50% {
+      opacity: 1;
+      transform: translateX(0) scale(1);
+      box-shadow: 0 0 15px rgba(59, 130, 246, 0.3);
+    }
+    100% {
+      opacity: 1;
+      transform: translateX(0) scale(1);
+      box-shadow: 0 0 0 rgba(59, 130, 246, 0);
+    }
+  }
+
+  .animate-new-position {
+    animation: newPosition 0.9s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+  }
+
+  /* Field-specific highlight animations - smoother and less intense */
+  @keyframes fieldHighlight {
+    0%, 100% {
+      background-color: transparent;
+    }
+    50% {
+      background-color: rgba(59, 130, 246, 0.1);
+    }
+  }
+
+  .animate-field-highlight {
+    animation: fieldHighlight 1s ease-in-out;
+  }
+
+  /* Counter animation for numeric values */
+  @keyframes counterUp {
+    from {
+      opacity: 0;
+      transform: translateY(5px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  .animate-counter {
+    animation: counterUp 0.4s ease-out;
+  }
+
+  /* Trading Session Panel animations */
+  @keyframes valueIncreaseFlash {
+    0% {
+      background-color: transparent;
+      box-shadow: 0 0 0 rgba(34, 197, 94, 0);
+    }
+    20% {
+      background-color: rgba(34, 197, 94, 0.15);
+      box-shadow: 0 0 12px rgba(34, 197, 94, 0.4);
+    }
+    100% {
+      background-color: transparent;
+      box-shadow: 0 0 0 rgba(34, 197, 94, 0);
+    }
+  }
+
+  @keyframes valueDecreaseFlash {
+    0% {
+      background-color: transparent;
+      box-shadow: 0 0 0 rgba(239, 68, 68, 0);
+    }
+    20% {
+      background-color: rgba(239, 68, 68, 0.15);
+      box-shadow: 0 0 12px rgba(239, 68, 68, 0.4);
+    }
+    100% {
+      background-color: transparent;
+      box-shadow: 0 0 0 rgba(239, 68, 68, 0);
+    }
+  }
+
+  @keyframes dataUpdatePulse {
+    0% {
+      transform: scale(1);
+      opacity: 1;
+    }
+    50% {
+      transform: scale(1.3);
+      opacity: 0.7;
+    }
+    100% {
+      transform: scale(1);
+      opacity: 1;
+    }
+  }
+
+  @keyframes numberCountShimmer {
+    0% {
+      background-position: -100% 0;
+    }
+    100% {
+      background-position: 100% 0;
+    }
+  }
+
+  .animate-value-increase-flash {
+    animation: valueIncreaseFlash 800ms ease-out;
+  }
+
+  .animate-value-decrease-flash {
+    animation: valueDecreaseFlash 800ms ease-out;
+  }
+
+  .animate-data-update-pulse {
+    animation: dataUpdatePulse 500ms ease-out;
+  }
+
+  .animate-number-shimmer {
+    background: linear-gradient(
+      90deg,
+      transparent 0%,
+      rgba(255, 255, 255, 0.1) 50%,
+      transparent 100%
+    );
+    background-size: 200% 100%;
+    animation: numberCountShimmer 400ms ease-out;
+  }
+
+  /* Lifecycle Discovery - subtle pulse for new cards */
+  @keyframes pulseSoft {
+    0%, 100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.85;
+    }
+  }
+
+  .animate-pulse-subtle {
+    animation: pulseSoft 2s ease-in-out infinite;
+  }
+
+  /* RLM Trade Pulse Animations - green for YES, red for NO */
+  @keyframes pulseGreen {
+    0% {
+      box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.7);
+      border-color: rgba(34, 197, 94, 0.8);
+    }
+    50% {
+      box-shadow: 0 0 20px 4px rgba(34, 197, 94, 0.4);
+      border-color: rgba(34, 197, 94, 0.6);
+    }
+    100% {
+      box-shadow: 0 0 0 0 rgba(34, 197, 94, 0);
+      border-color: rgba(55, 65, 81, 1);
+    }
+  }
+
+  @keyframes pulseRed {
+    0% {
+      box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7);
+      border-color: rgba(239, 68, 68, 0.8);
+    }
+    50% {
+      box-shadow: 0 0 20px 4px rgba(239, 68, 68, 0.4);
+      border-color: rgba(239, 68, 68, 0.6);
+    }
+    100% {
+      box-shadow: 0 0 0 0 rgba(239, 68, 68, 0);
+      border-color: rgba(55, 65, 81, 1);
+    }
+  }
+
+  .animate-pulse-green {
+    animation: pulseGreen 1.5s ease-out forwards;
+  }
+
+  .animate-pulse-red {
+    animation: pulseRed 1.5s ease-out forwards;
   }
 }
 

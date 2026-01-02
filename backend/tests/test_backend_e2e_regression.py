@@ -240,18 +240,17 @@ class BackendE2ETestServer:
                             logger.info("VALIDATING: Snapshot message structure")
                             data = message.get("data", {})
                             required_fields = ["recent_trades", "hot_markets", "global_stats"]
-                            
+
                             for field in required_fields:
                                 if field not in data:
                                     logger.error(f"❌ FAILED: Missing required field '{field}' in snapshot")
                                     return False
                                 logger.info(f"✅ FOUND: Required field '{field}' in snapshot")
-                            
+
                             logger.info("✅ PASSED: WebSocket snapshot structure validation")
                             return True
                         elif msg_type == "trade":
-                            # If we get a trade message, that's actually great!
-                            # It means the backend is connected to Kalshi and receiving real data
+                            # Single trade message (legacy format)
                             logger.info("VALIDATING: Trade message structure")
                             data = message.get("data", {})
                             if "trade" in data and "ticker_state" in data:
@@ -260,12 +259,27 @@ class BackendE2ETestServer:
                             else:
                                 logger.error("❌ FAILED: Trade message missing 'trade' or 'ticker_state' fields")
                                 return False
-                        elif msg_type == "analytics":
-                            # Analytics messages are also valid, but continue waiting for snapshot or trade
-                            logger.info("ℹ️  INFO: Analytics message received, continuing to wait for snapshot or trade")
+                        elif msg_type == "trades":
+                            # Batched trades message (current format - 750ms batching for efficiency)
+                            logger.info("VALIDATING: Batched trades message structure")
+                            data = message.get("data", {})
+                            if "trades" in data and isinstance(data["trades"], list):
+                                trade_count = len(data["trades"])
+                                logger.info(f"✅ PASSED: WebSocket batched trades received - {trade_count} trades in batch!")
+                                return True
+                            else:
+                                logger.error("❌ FAILED: Batched trades message missing 'trades' array")
+                                return False
+                        elif msg_type in ("analytics", "analytics_update"):
+                            # Analytics messages are valid but we continue waiting for snapshot or trades
+                            logger.info("ℹ️  INFO: Analytics message received, continuing to wait for snapshot or trades")
+                            continue
+                        elif msg_type in ("hot_markets_update", "top_trades"):
+                            # Periodic update messages - valid but continue waiting
+                            logger.info(f"ℹ️  INFO: {msg_type} message received, continuing to wait for snapshot or trades")
                             continue
                         else:
-                            logger.warning(f"⚠️  WARNING: Unexpected message type '{msg_type}', expected 'snapshot' or 'trade'")
+                            logger.warning(f"⚠️  WARNING: Unexpected message type '{msg_type}', expected 'snapshot' or 'trades'")
                             continue
                     
                     # If we got here, we didn't get a proper snapshot or trade message

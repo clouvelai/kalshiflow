@@ -13,7 +13,7 @@ PRICE FORMAT CONVENTION:
 
 from typing import Dict, List, Optional, Tuple, Any, Union
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 import logging
 import json
@@ -124,6 +124,8 @@ class SessionData:
     
     # Session metadata
     markets_involved: List[str]
+    environment: Optional[str] = None  # Environment where session was collected (local/production/paper)
+    websocket_url: Optional[str] = None  # WebSocket URL used for data collection
     total_duration: timedelta = field(init=False)
     data_quality_score: float = 1.0
     
@@ -383,9 +385,11 @@ class SessionDataLoader:
             session_data = SessionData(
                 session_id=session_id,
                 start_time=session_info['started_at'],
-                end_time=session_info['ended_at'] or datetime.now(),
+                end_time=session_info['ended_at'] or datetime.now(timezone.utc),
                 data_points=data_points,
-                markets_involved=session_info['market_tickers']
+                markets_involved=session_info['market_tickers'],
+                environment=session_info.get('environment'),
+                websocket_url=session_info.get('websocket_url')
             )
             
             # Add temporal features
@@ -428,7 +432,8 @@ class SessionDataLoader:
                            market_tickers,
                            array_length(market_tickers, 1) as num_markets,
                            snapshots_count, deltas_count,
-                           ended_at - started_at as duration
+                           ended_at - started_at as duration,
+                           websocket_url, environment
                     FROM rl_orderbook_sessions 
                     WHERE ended_at IS NOT NULL 
                     AND status = 'closed'
@@ -538,8 +543,8 @@ class SessionDataLoader:
         for timestamp_ms in sorted(timestamp_groups.keys()):
             markets_data = timestamp_groups[timestamp_ms]
             
-            # Convert timestamp to datetime
-            timestamp = datetime.fromtimestamp(timestamp_ms / 1000.0)
+            # Convert timestamp to datetime (timezone-aware)
+            timestamp = datetime.fromtimestamp(timestamp_ms / 1000.0, tz=timezone.utc)
             
             # Extract market-agnostic features from orderbook states
             spreads = {}

@@ -1,0 +1,3475 @@
+{
+  "analysis_timestamp": "2025-12-15T14:37:54.684598",
+  "session_id": "unknown",
+  "probability_anchoring": {
+    "anchor_points": [
+      0,
+      5,
+      10,
+      25,
+      50,
+      75,
+      90,
+      95,
+      100
+    ],
+    "market_behaviors": {
+      "AITURING": {},
+      "AMAZONFTC-29DEC31": {
+        "50": {
+          "time_near_anchor_pct": 13.636363636363635,
+          "spread_ratio": 2.3959646910466583,
+          "stickiness_seconds": 3.0,
+          "support_resistance_strength": 0.03333333333333333
+        }
+      },
+      "APPLEUS-29DEC31": {},
+      "BEYONCEGENRE-30-AFA": {},
+      "BEYONCEGENRE-30-DEA": {},
+      "BEYONCEGENRE-30-RA": {},
+      "BEYONCEGENRE-30-TAA": {},
+      "BEYONCEGENRE-30-TCA": {},
+      "BEYONCEGENRE-30-TGA": {},
+      "BEYONCEGENRE-30-THA": {
+        "25": {
+          "time_near_anchor_pct": 51.724137931034484,
+          "spread_ratio": 0.7843137254901961,
+          "stickiness_seconds": 3.3333333333333335,
+          "support_resistance_strength": 0.0
+        }
+      },
+      "BEYONCEGENRE-30-TRA": {},
+      "BEYONCEGENRE-30-TRHA": {},
+      "CHINAUSGDP-30": {
+        "25": {
+          "time_near_anchor_pct": 26.551226551226552,
+          "spread_ratio": 0.013941398865784499,
+          "stickiness_seconds": 10.823529411764707,
+          "support_resistance_strength": 0.016304347826086956
+        }
+      },
+      "EUCLIMATE-2030": {},
+      "EUEXIT-30": {
+        "25": {
+          "time_near_anchor_pct": 99.67845659163987,
+          "spread_ratio": 0.027114210985178726,
+          "stickiness_seconds": 310.0,
+          "support_resistance_strength": 0.0
+        }
+      },
+      "EVSHARE-30JAN-30": {
+        "50": {
+          "time_near_anchor_pct": 95.16129032258065,
+          "spread_ratio": 0.12195121951219512,
+          "stickiness_seconds": 29.5,
+          "support_resistance_strength": 0.0
+        }
+      },
+      "EVSHARE-30JAN-50": {},
+      "GOVPARTYDE-28-R": {},
+      "GOVPARTYIN-28-D": {},
+      "GOVPARTYMO-28-D": {},
+      "GOVPARTYMO-28-R": {},
+      "GOVPARTYMT-28-D": {},
+      "GOVPARTYNC-28-D": {},
+      "GOVPARTYNC-28-R": {},
+      "GOVPARTYND-28-D": {
+        "10": {
+          "time_near_anchor_pct": 67.79661016949152,
+          "spread_ratio": 0.08246527777777778,
+          "stickiness_seconds": 40.0,
+          "support_resistance_strength": 0.0
+        }
+      },
+      "GOVPARTYNH-28-D": {
+        "50": {
+          "time_near_anchor_pct": 11.475409836065573,
+          "spread_ratio": 1.5859136212624585,
+          "stickiness_seconds": 42.0,
+          "support_resistance_strength": 0.0
+        }
+      },
+      "GOVPARTYNH-28-R": {},
+      "GOVPARTYUT-28-D": {
+        "50": {
+          "time_near_anchor_pct": 14.035087719298245,
+          "spread_ratio": 1.1008690828402368,
+          "stickiness_seconds": 4.0,
+          "support_resistance_strength": 0.0
+        }
+      },
+      "GOVPARTYVT-28-D": {},
+      "GOVPARTYVT-28-R": {},
+      "GOVPARTYWV-28-D": {},
+      "INDIACLIMATE-30": {},
+      "KXACTORSONNYCROCKETT-35-GLE": {},
+      "KXACTORSONNYCROCKETT-35-RYA": {
+        "10": {
+          "time_near_anchor_pct": 23.655913978494624,
+          "spread_ratio": 0.12697691504582187,
+          "stickiness_seconds": 2.4444444444444446,
+          "support_resistance_strength": 0.0
+        }
+      },
+      "KXACTORTOMCRUZ-30-TOM": {},
+      "KXAFRICALEADEROUT-35-BT": {
+        "50": {
+          "time_near_anchor_pct": 24.137931034482758,
+          "spread_ratio": 0.7437778736872392,
+          "stickiness_seconds": 14.0,
+          "support_resistance_strength": 0.0
+        }
+      },
+      "KXAFRICALEADEROUT-35-EM": {},
+      "KXAFRICALEADEROUT-35-FT": {
+        "50": {
+          "time_near_anchor_pct": 10.526315789473683,
+          "spread_ratio": 0.9835078534031414,
+          "stickiness_seconds": 6.0,
+          "support_resistance_strength": 0.0
+        }
+      },
+      "KXAFRICALEADEROUT-35-WR": {
+        "50": {
+          "time_near_anchor_pct": 28.57142857142857,
+          "spread_ratio": 1.0155249679897569,
+          "stickiness_seconds": 16.0,
+          "support_resistance_strength": 0.0
+        }
+      },
+      "KXALBERTAREFYES-29": {
+        "10": {
+          "time_near_anchor_pct": 19.390581717451525,
+          "spread_ratio": 0.07053571428571428,
+          "stickiness_seconds": 28.0,
+          "support_resistance_strength": 0.007142857142857143
+        },
+        "50": {
+          "time_near_anchor_pct": 9.418282548476455,
+          "spread_ratio": 4.354757274544396,
+          "stickiness_seconds": 1.9428571428571428,
+          "support_resistance_strength": 0.4117647058823529
+        }
+      },
+      "KXARTISTCOLLABDRAKEKENDRICK-30": {
+        "50": {
+          "time_near_anchor_pct": 39.6551724137931,
+          "spread_ratio": 1.0280682443588334,
+          "stickiness_seconds": 11.5,
+          "support_resistance_strength": 0.043478260869565216
+        }
+      },
+      "KXARTISTCOLLABTHUGANDGUNNA-30-2030": {},
+      "KXAUSTRALIAHOUSE-28-ALP": {},
+      "KXAUSTRALIAHOUSE-28-LNC": {
+        "50": {
+          "time_near_anchor_pct": 23.636363636363637,
+          "spread_ratio": 2.057315233785822,
+          "stickiness_seconds": 13.0,
+          "support_resistance_strength": 0.0
+        }
+      },
+      "KXBLUESPACEX-30": {},
+      "KXBOND-30-ATJ": {
+        "10": {
+          "time_near_anchor_pct": 42.241379310344826,
+          "spread_ratio": 0.13557000312901993,
+          "stickiness_seconds": 49.0,
+          "support_resistance_strength": 0.0
+        },
+        "25": {
+          "time_near_anchor_pct": 26.72413793103448,
+          "spread_ratio": 2.00859291084855,
+          "stickiness_seconds": 3.4444444444444446,
+          "support_resistance_strength": 0.0967741935483871
+        }
+      },
+      "KXBOND-30-CAL": {
+        "25": {
+          "time_near_anchor_pct": 33.004926108374384,
+          "spread_ratio": 1.360489776319475,
+          "stickiness_seconds": 5.583333333333333,
+          "support_resistance_strength": 0.029850746268656716
+        }
+      },
+      "KXBOND-30-HAR": {
+        "10": {
+          "time_near_anchor_pct": 22.22222222222222,
+          "spread_ratio": 0.028118723499218925,
+          "stickiness_seconds": 4.0,
+          "support_resistance_strength": 0.1875
+        },
+        "50": {
+          "time_near_anchor_pct": 54.166666666666664,
+          "spread_ratio": 2.199325773827766,
+          "stickiness_seconds": 13.0,
+          "support_resistance_strength": 0.0
+        }
+      },
+      "KXBOND-30-TOMH": {
+        "5": {
+          "time_near_anchor_pct": 21.428571428571427,
+          "spread_ratio": 0.012011356191308147,
+          "stickiness_seconds": 5.0,
+          "support_resistance_strength": 0.13333333333333333
+        },
+        "50": {
+          "time_near_anchor_pct": 52.85714285714286,
+          "spread_ratio": 2.024372415119746,
+          "stickiness_seconds": 18.5,
+          "support_resistance_strength": 0.0
+        }
+      },
+      "KXBUSHBY-30": {
+        "50": {
+          "time_near_anchor_pct": 40.76923076923077,
+          "spread_ratio": 15.067719036054548,
+          "stickiness_seconds": 2.789473684210526,
+          "support_resistance_strength": 0.07547169811320754
+        }
+      },
+      "KXCANADACUP-30": {},
+      "KXCASECESSION-30": {
+        "25": {
+          "time_near_anchor_pct": 43.07692307692308,
+          "spread_ratio": 0.2547819433817904,
+          "stickiness_seconds": 28.0,
+          "support_resistance_strength": 0.0
+        }
+      },
+      "KXCO2LEVEL-30-445": {},
+      "KXCO2LEVEL-30-450": {},
+      "KXCOLONIZEMARS-50": {},
+      "KXCOVEREA-27-ACHA": {},
+      "KXCOVEREA-27-ADYB": {},
+      "KXCOVEREA-27-DPET": {
+        "10": {
+          "time_near_anchor_pct": 33.160621761658035,
+          "spread_ratio": 0.06703039750584568,
+          "stickiness_seconds": 3.3684210526315788,
+          "support_resistance_strength": 0.078125
+        }
+      },
+      "KXCOVEREA-27-JTOP": {
+        "10": {
+          "time_near_anchor_pct": 17.431192660550458,
+          "spread_ratio": 0.16316020415232904,
+          "stickiness_seconds": 19.0,
+          "support_resistance_strength": 0.0
+        },
+        "50": {
+          "time_near_anchor_pct": 11.926605504587156,
+          "spread_ratio": 2.4123631011644515,
+          "stickiness_seconds": 6.5,
+          "support_resistance_strength": 0.0
+        }
+      },
+      "KXCOVEREA-27-SSTR": {
+        "50": {
+          "time_near_anchor_pct": 50.0,
+          "spread_ratio": 1.3311088295687885,
+          "stickiness_seconds": 14.5,
+          "support_resistance_strength": 0.0
+        }
+      },
+      "KXDATACENTER-30": {},
+      "KXDEELRIP-40-DEEL": {
+        "75": {
+          "time_near_anchor_pct": 24.242424242424242,
+          "spread_ratio": 0.07054606467358145,
+          "stickiness_seconds": 2.6666666666666665,
+          "support_resistance_strength": 0.0
+        }
+      },
+      "KXDEELRIP-40-RIPP": {},
+      "KXEARTHQUAKECALIFORNIA-35": {},
+      "KXEARTHQUAKEJAPAN-30": {
+        "50": {
+          "time_near_anchor_pct": 12.608695652173912,
+          "spread_ratio": 0.4888154725032694,
+          "stickiness_seconds": 14.5,
+          "support_resistance_strength": 0.0
+        }
+      },
+      "KXECCOMPACT-30": {},
+      "KXELONMARS-99": {
+        "5": {
+          "time_near_anchor_pct": 55.75657894736842,
+          "spread_ratio": 0.1250819969360648,
+          "stickiness_seconds": 10.272727272727273,
+          "support_resistance_strength": 0.0
+        },
+        "10": {
+          "time_near_anchor_pct": 7.072368421052631,
+          "spread_ratio": 0.49199558128739984,
+          "stickiness_seconds": 7.166666666666667,
+          "support_resistance_strength": 0.023255813953488372
+        },
+        "25": {
+          "time_near_anchor_pct": 12.993421052631579,
+          "spread_ratio": 5.915605888209358,
+          "stickiness_seconds": 6.583333333333333,
+          "support_resistance_strength": 0.0
+        },
+        "50": {
+          "time_near_anchor_pct": 3.7828947368421053,
+          "spread_ratio": 10.124061718098416,
+          "stickiness_seconds": 3.8333333333333335,
+          "support_resistance_strength": 0.0
+        }
+      },
+      "KXERUPTSUPER-0-50JAN01": {
+        "50": {
+          "time_near_anchor_pct": 12.790697674418606,
+          "spread_ratio": 1.8698418156808803,
+          "stickiness_seconds": 3.6666666666666665,
+          "support_resistance_strength": 0.0
+        }
+      },
+      "KXEUEXITCOUNTRY-30-HUN": {
+        "50": {
+          "time_near_anchor_pct": 59.32203389830508,
+          "spread_ratio": 1.1786789897219347,
+          "stickiness_seconds": 35.0,
+          "support_resistance_strength": 0.0
+        }
+      },
+      "KXEUEXITCOUNTRY-30-ITA": {
+        "50": {
+          "time_near_anchor_pct": 60.3448275862069,
+          "spread_ratio": 1.174095238095238,
+          "stickiness_seconds": 35.0,
+          "support_resistance_strength": 0.0
+        }
+      },
+      "KXEUEXITCOUNTRY-30-POL": {
+        "50": {
+          "time_near_anchor_pct": 66.10169491525424,
+          "spread_ratio": 1.195657819560588,
+          "stickiness_seconds": 39.0,
+          "support_resistance_strength": 0.0
+        }
+      },
+      "KXEUEXITCOUNTRY-30-SPA": {
+        "50": {
+          "time_near_anchor_pct": 60.3448275862069,
+          "spread_ratio": 1.174095238095238,
+          "stickiness_seconds": 35.0,
+          "support_resistance_strength": 0.0
+        }
+      },
+      "KXEUREF-30-FRA": {
+        "50": {
+          "time_near_anchor_pct": 66.10169491525424,
+          "spread_ratio": 1.195657819560588,
+          "stickiness_seconds": 39.0,
+          "support_resistance_strength": 0.0
+        }
+      },
+      "KXEUREF-30-GRE": {
+        "50": {
+          "time_near_anchor_pct": 50.0,
+          "spread_ratio": 1.1665850073493387,
+          "stickiness_seconds": 26.0,
+          "support_resistance_strength": 0.0
+        }
+      },
+      "KXEUREF-30-HUN": {
+        "50": {
+          "time_near_anchor_pct": 66.10169491525424,
+          "spread_ratio": 1.195657819560588,
+          "stickiness_seconds": 39.0,
+          "support_resistance_strength": 0.0
+        }
+      },
+      "KXEUREF-30-ITA": {
+        "50": {
+          "time_near_anchor_pct": 62.71186440677966,
+          "spread_ratio": 1.1318191330103182,
+          "stickiness_seconds": 9.25,
+          "support_resistance_strength": 0.02702702702702703
+        }
+      },
+      "KXFDATYPE1DIABETES-33": {
+        "50": {
+          "time_near_anchor_pct": 21.21212121212121,
+          "spread_ratio": 0.7815588174488319,
+          "stickiness_seconds": 14.0,
+          "support_resistance_strength": 0.0
+        }
+      },
+      "KXFUSION-30-JAN01": {
+        "50": {
+          "time_near_anchor_pct": 31.57894736842105,
+          "spread_ratio": 0.9386998254799301,
+          "stickiness_seconds": 9.0,
+          "support_resistance_strength": 0.05555555555555555
+        }
+      },
+      "KXFUSION-35-JAN01": {},
+      "KXFUSION-40-JAN01": {},
+      "KXG7LEADEROUT-45JAN01-EMAC": {},
+      "KXG7LEADEROUT-45JAN01-FMER": {
+        "50": {
+          "time_near_anchor_pct": 44.44444444444444,
+          "spread_ratio": 1.1279257465698145,
+          "stickiness_seconds": 12.0,
+          "support_resistance_strength": 0.0
+        }
+      },
+      "KXG7LEADEROUT-45JAN01-KSTA": {},
+      "KXG7LEADEROUT-45JAN01-STAK": {
+        "50": {
+          "time_near_anchor_pct": 69.23076923076923,
+          "spread_ratio": 1.2127801621363854,
+          "stickiness_seconds": 12.0,
+          "support_resistance_strength": 0.027777777777777776
+        }
+      },
+      "KXGEORGIAPARLI-28-GD": {},
+      "KXGEORGIAPARLI-28-UNM": {},
+      "KXGHANAPARLI-28-NDC": {},
+      "KXGHANAPARLI-28-NPP": {},
+      "KXGHANAPRES-28-JNAA": {},
+      "KXGHANAPRES-28-MBAW": {
+        "50": {
+          "time_near_anchor_pct": 44.0,
+          "spread_ratio": 1.0570498826049346,
+          "stickiness_seconds": 11.0,
+          "support_resistance_strength": 0.045454545454545456
+        }
+      },
+      "KXGTA6SONGS-30-ASI": {
+        "50": {
+          "time_near_anchor_pct": 10.344827586206897,
+          "spread_ratio": 0.8108603925885158,
+          "stickiness_seconds": 6.0,
+          "support_resistance_strength": 0.0
+        }
+      },
+      "KXGTA6SONGS-30-BAD": {},
+      "KXGTA6SONGS-30-BLI": {},
+      "KXGTA6SONGS-30-DES": {},
+      "KXGTA6SONGS-30-GOD": {
+        "50": {
+          "time_near_anchor_pct": 10.344827586206897,
+          "spread_ratio": 0.8108603925885158,
+          "stickiness_seconds": 6.0,
+          "support_resistance_strength": 0.0
+        }
+      },
+      "KXGTA6SONGS-30-LOO": {},
+      "KXGTA6SONGS-30-MAS": {
+        "50": {
+          "time_near_anchor_pct": 10.526315789473683,
+          "spread_ratio": 0.8072625698324021,
+          "stickiness_seconds": 6.0,
+          "support_resistance_strength": 0.0
+        }
+      },
+      "KXGTA6SONGS-30-MOB": {},
+      "KXGTA6SONGS-30-PEP": {},
+      "KXGTA6SONGS-30-ROC": {},
+      "KXGTA6SONGS-30-SHA": {},
+      "KXGTA6SONGS-30-SIC": {},
+      "KXGTA6SONGS-30-STA": {
+        "50": {
+          "time_near_anchor_pct": 10.526315789473683,
+          "spread_ratio": 0.8108866442199776,
+          "stickiness_seconds": 6.0,
+          "support_resistance_strength": 0.0
+        }
+      },
+      "KXGTA6SONGS-30-XOT": {
+        "50": {
+          "time_near_anchor_pct": 10.909090909090908,
+          "spread_ratio": 0.80320123421078,
+          "stickiness_seconds": 6.0,
+          "support_resistance_strength": 0.0
+        }
+      },
+      "KXGTAPRICE-100": {
+        "25": {
+          "time_near_anchor_pct": 8.237986270022883,
+          "spread_ratio": 0.6921430544048607,
+          "stickiness_seconds": 1.8,
+          "support_resistance_strength": 0.25
+        }
+      },
+      "KXGTAPRICE-70": {
+        "75": {
+          "time_near_anchor_pct": 77.95275590551181,
+          "spread_ratio": 1.1133913391339134,
+          "stickiness_seconds": 3.8823529411764706,
+          "support_resistance_strength": 0.0025252525252525255
+        }
+      },
+      "KXGTAPRICE-80": {
+        "50": {
+          "time_near_anchor_pct": 6.653992395437262,
+          "spread_ratio": 0.725258493353028,
+          "stickiness_seconds": 1.2962962962962963,
+          "support_resistance_strength": 0.5714285714285714
+        }
+      },
+      "KXGTAPRICE-90": {},
+      "KXINDIANAPOWELL-30-GLE": {},
+      "KXINEQUALITY-28": {
+        "50": {
+          "time_near_anchor_pct": 38.427947598253276,
+          "spread_ratio": 5.967444384156266,
+          "stickiness_seconds": 1.0057142857142858,
+          "support_resistance_strength": 0.9886363636363636
+        }
+      },
+      "KXIPOAIRTABLE-30JAN01": {},
+      "KXJAPANHOUSE-28-CDP": {
+        "50": {
+          "time_near_anchor_pct": 26.923076923076923,
+          "spread_ratio": 0.7727155727155728,
+          "stickiness_seconds": 14.0,
+          "support_resistance_strength": 0.0
+        }
+      },
+      "KXJOHNNYDEPP-35-JOH": {},
+      "KXJPMCEONEW-30-DP": {},
+      "KXJPMCEONEW-30-JP": {},
+      "KXJPMCEONEW-30-ML": {},
+      "KXJPMCEONEW-30-TR": {
+        "50": {
+          "time_near_anchor_pct": 75.86206896551724,
+          "spread_ratio": 1.1734575087310828,
+          "stickiness_seconds": 44.0,
+          "support_resistance_strength": 0.0
+        }
+      },
+      "KXLIVENATIONUS-30-JAN01": {},
+      "KXMARSVRAIL-50": {
+        "10": {
+          "time_near_anchor_pct": 15.0,
+          "spread_ratio": 0.3311314363143631,
+          "stickiness_seconds": 21.0,
+          "support_resistance_strength": 0.0
+        }
+      },
+      "KXMETEOR-30": {},
+      "KXMOLDOVAPRES-28-ASTO": {},
+      "KXMOLDOVAPRES-28-DREC": {
+        "50": {
+          "time_near_anchor_pct": 44.230769230769226,
+          "spread_ratio": 1.061259607663187,
+          "stickiness_seconds": 11.5,
+          "support_resistance_strength": 0.043478260869565216
+        }
+      },
+      "KXMOLDOVAPRES-28-ICEB": {
+        "50": {
+          "time_near_anchor_pct": 45.09803921568628,
+          "spread_ratio": 1.056728778467909,
+          "stickiness_seconds": 11.5,
+          "support_resistance_strength": 0.043478260869565216
+        }
+      },
+      "KXMOLDOVAPRES-28-IDOD": {
+        "50": {
+          "time_near_anchor_pct": 19.230769230769234,
+          "spread_ratio": 1.0107231920199502,
+          "stickiness_seconds": 10.0,
+          "support_resistance_strength": 0.0
+        }
+      },
+      "KXMOLDOVAPRES-28-IGRO": {
+        "50": {
+          "time_near_anchor_pct": 29.411764705882355,
+          "spread_ratio": 1.030406852248394,
+          "stickiness_seconds": 15.0,
+          "support_resistance_strength": 0.0
+        }
+      },
+      "KXMOLDOVAPRES-28-NGAV": {
+        "50": {
+          "time_near_anchor_pct": 44.230769230769226,
+          "spread_ratio": 1.061259607663187,
+          "stickiness_seconds": 11.5,
+          "support_resistance_strength": 0.043478260869565216
+        }
+      },
+      "KXMOONMAN-31-PRC": {},
+      "KXMOONMAN-31-USA": {
+        "50": {
+          "time_near_anchor_pct": 10.135135135135135,
+          "spread_ratio": 1.8374563591022444,
+          "stickiness_seconds": 1.25,
+          "support_resistance_strength": 0.7
+        }
+      },
+      "KXMUSKTRILLION-30": {
+        "50": {
+          "time_near_anchor_pct": 72.45901639344262,
+          "spread_ratio": 0.7221719457013575,
+          "stickiness_seconds": 55.25,
+          "support_resistance_strength": 0.0
+        }
+      },
+      "KXNBASEATTLE-30": {
+        "50": {
+          "time_near_anchor_pct": 17.24137931034483,
+          "spread_ratio": 0.7779816513761468,
+          "stickiness_seconds": 10.0,
+          "support_resistance_strength": 0.0
+        }
+      },
+      "KXNBATEAM-30": {
+        "75": {
+          "time_near_anchor_pct": 85.0,
+          "spread_ratio": 0.2222222222222222,
+          "stickiness_seconds": 51.0,
+          "support_resistance_strength": 0.0
+        }
+      },
+      "KXNEWPOPE-35-LANT": {
+        "50": {
+          "time_near_anchor_pct": 69.23076923076923,
+          "spread_ratio": 1.2127801621363854,
+          "stickiness_seconds": 12.0,
+          "support_resistance_strength": 0.027777777777777776
+        }
+      },
+      "KXNEWPOPE-35-PPAR": {
+        "50": {
+          "time_near_anchor_pct": 10.126582278481013,
+          "spread_ratio": 1.6413372763993075,
+          "stickiness_seconds": 16.0,
+          "support_resistance_strength": 0.0
+        }
+      },
+      "KXNEXTISRAELPM-45JAN01-NBEN": {},
+      "KXNEXTISRAELPM-45JAN01-YCOH": {
+        "50": {
+          "time_near_anchor_pct": 10.526315789473683,
+          "spread_ratio": 1.1243270956165086,
+          "stickiness_seconds": 3.0,
+          "support_resistance_strength": 0.0
+        }
+      },
+      "KXNEXTISRAELPM-45JAN01-YGAL": {
+        "50": {
+          "time_near_anchor_pct": 10.526315789473683,
+          "spread_ratio": 1.1197344906816442,
+          "stickiness_seconds": 3.0,
+          "support_resistance_strength": 0.0
+        }
+      },
+      "KXNEXTISRAELPM-45JAN01-YLAP": {
+        "50": {
+          "time_near_anchor_pct": 56.14035087719298,
+          "spread_ratio": 1.198696941323346,
+          "stickiness_seconds": 32.0,
+          "support_resistance_strength": 0.0
+        }
+      },
+      "KXNEXTSPEAKER-31-HJEF": {},
+      "KXNEXTSPEAKER-31-JJOR": {},
+      "KXNEXTSPEAKER-31-SSCA": {},
+      "KXNEXTUKPM-30-ABUR": {
+        "50": {
+          "time_near_anchor_pct": 68.62745098039215,
+          "spread_ratio": 1.2144696505211527,
+          "stickiness_seconds": 11.666666666666666,
+          "support_resistance_strength": 0.02857142857142857
+        }
+      },
+      "KXNEXTUKPM-30-AR": {},
+      "KXNEXTUKPM-30-NF": {},
+      "KXNEXTUKPM-30-SMAH": {
+        "50": {
+          "time_near_anchor_pct": 61.53846153846154,
+          "spread_ratio": 1.1813773833004602,
+          "stickiness_seconds": 32.0,
+          "support_resistance_strength": 0.0
+        }
+      },
+      "KXNEXTUKPM-30-WS": {
+        "50": {
+          "time_near_anchor_pct": 76.05633802816901,
+          "spread_ratio": 5.151515151515151,
+          "stickiness_seconds": 18.0,
+          "support_resistance_strength": 0.0
+        }
+      },
+      "KXOAIANTH-40-ANTH": {
+        "75": {
+          "time_near_anchor_pct": 27.573529411764707,
+          "spread_ratio": 0.013779930051116492,
+          "stickiness_seconds": 3.9473684210526314,
+          "support_resistance_strength": 0.0
+        }
+      },
+      "KXOAIANTH-40-OAI": {},
+      "KXPERFORMBONDSONG-35-DUA": {},
+      "KXPERFORMBONDSONG-35-LAN": {
+        "10": {
+          "time_near_anchor_pct": 45.76271186440678,
+          "spread_ratio": 0.061967467079783116,
+          "stickiness_seconds": 27.0,
+          "support_resistance_strength": 0.0
+        },
+        "50": {
+          "time_near_anchor_pct": 30.508474576271187,
+          "spread_ratio": 3.3178119349005426,
+          "stickiness_seconds": 18.0,
+          "support_resistance_strength": 0.0
+        }
+      },
+      "KXPERFORMBONDSONG-35-OLI": {},
+      "KXPERSONPRESFUENTES-45": {},
+      "KXPERSONPRESMAM-45": {
+        "5": {
+          "time_near_anchor_pct": 25.573770491803277,
+          "spread_ratio": 0.06533173121892606,
+          "stickiness_seconds": 2.7857142857142856,
+          "support_resistance_strength": 0.11538461538461539
+        },
+        "25": {
+          "time_near_anchor_pct": 4.590163934426229,
+          "spread_ratio": 1.4264905101741547,
+          "stickiness_seconds": 14.0,
+          "support_resistance_strength": 0.0
+        }
+      },
+      "KXPOLIOELIM-30": {
+        "50": {
+          "time_near_anchor_pct": 12.903225806451612,
+          "spread_ratio": 1.0477521807201968,
+          "stickiness_seconds": 4.0,
+          "support_resistance_strength": 0.0
+        }
+      },
+      "KXPOPCHANGESTATE10-35": {
+        "50": {
+          "time_near_anchor_pct": 48.275862068965516,
+          "spread_ratio": 1.0635249950602648,
+          "stickiness_seconds": 14.0,
+          "support_resistance_strength": 0.0
+        }
+      },
+      "KXPRESPARTY-2028-D": {
+        "50": {
+          "time_near_anchor_pct": 58.44155844155844,
+          "spread_ratio": 1.2132701421800949,
+          "stickiness_seconds": 45.0,
+          "support_resistance_strength": 0.0
+        }
+      },
+      "KXPRESPARTY-2028-R": {},
+      "KXPRESPERSON-28-ABES": {
+        "0": {
+          "time_near_anchor_pct": 51.5625,
+          "spread_ratio": 0.0039404108196054504,
+          "stickiness_seconds": 1.9411764705882353,
+          "support_resistance_strength": 0.2727272727272727
+        },
+        "25": {
+          "time_near_anchor_pct": 7.8125,
+          "spread_ratio": 3.1308668076109933,
+          "stickiness_seconds": 1.25,
+          "support_resistance_strength": 0.4
+        }
+      },
+      "KXPRESPERSON-28-AOCA": {
+        "5": {
+          "time_near_anchor_pct": 74.28571428571429,
+          "spread_ratio": 0.016759209100758395,
+          "stickiness_seconds": 6.0,
+          "support_resistance_strength": 0.02564102564102564
+        },
+        "25": {
+          "time_near_anchor_pct": 21.904761904761905,
+          "spread_ratio": 13.086445012787724,
+          "stickiness_seconds": 1.7692307692307692,
+          "support_resistance_strength": 0.21739130434782608
+        }
+      },
+      "KXPRESPERSON-28-DTRU": {
+        "5": {
+          "time_near_anchor_pct": 73.46938775510205,
+          "spread_ratio": 0.06027651323554206,
+          "stickiness_seconds": 5.538461538461538,
+          "support_resistance_strength": 0.041666666666666664
+        }
+      },
+      "KXPRESPERSON-28-GNEWS": {},
+      "KXPRESPERSON-28-GYOU": {
+        "0": {
+          "time_near_anchor_pct": 34.32835820895522,
+          "spread_ratio": 0.0,
+          "stickiness_seconds": 1.9166666666666667,
+          "support_resistance_strength": 0.30434782608695654
+        },
+        "5": {
+          "time_near_anchor_pct": 35.82089552238806,
+          "spread_ratio": 0.5491698595146871,
+          "stickiness_seconds": 3.0,
+          "support_resistance_strength": 0.20833333333333334
+        }
+      },
+      "KXPRESPERSON-28-JPRI": {
+        "0": {
+          "time_near_anchor_pct": 58.139534883720934,
+          "spread_ratio": 0.004988452655889145,
+          "stickiness_seconds": 3.5714285714285716,
+          "support_resistance_strength": 0.12
+        }
+      },
+      "KXPRESPERSON-28-JVAN": {},
+      "KXPRESPERSON-28-KHAR": {
+        "0": {
+          "time_near_anchor_pct": 17.972350230414747,
+          "spread_ratio": 0.05948203842940685,
+          "stickiness_seconds": 9.75,
+          "support_resistance_strength": 0.0
+        },
+        "5": {
+          "time_near_anchor_pct": 6.912442396313365,
+          "spread_ratio": 0.033399470899470894,
+          "stickiness_seconds": 7.5,
+          "support_resistance_strength": 0.0
+        },
+        "25": {
+          "time_near_anchor_pct": 7.834101382488479,
+          "spread_ratio": 1.7089268650414453,
+          "stickiness_seconds": 1.1333333333333333,
+          "support_resistance_strength": 0.5882352941176471
+        }
+      },
+      "KXPRESPERSON-28-MRUB": {
+        "5": {
+          "time_near_anchor_pct": 86.0,
+          "spread_ratio": 0.05134168157423971,
+          "stickiness_seconds": 8.6,
+          "support_resistance_strength": 0.023255813953488372
+        }
+      },
+      "KXPRESPERSON-28-PBUT": {},
+      "KXPRESPERSON-28-WMOO": {
+        "0": {
+          "time_near_anchor_pct": 45.614035087719294,
+          "spread_ratio": 0.023114204051199204,
+          "stickiness_seconds": 1.7333333333333334,
+          "support_resistance_strength": 0.38461538461538464
+        },
+        "25": {
+          "time_near_anchor_pct": 12.280701754385964,
+          "spread_ratio": 2.773848813452774,
+          "stickiness_seconds": 1.1666666666666667,
+          "support_resistance_strength": 0.5714285714285714
+        }
+      },
+      "KXPRIMEENGCONSUMPTION-30-COAL": {},
+      "KXPRIMEENGCONSUMPTION-30-GAS": {},
+      "KXPRIMEENGCONSUMPTION-30-OIL": {
+        "50": {
+          "time_near_anchor_pct": 53.44827586206896,
+          "spread_ratio": 0.9787234042553191,
+          "stickiness_seconds": 3.1,
+          "support_resistance_strength": 0.0
+        }
+      },
+      "KXQUANTUM-30": {
+        "50": {
+          "time_near_anchor_pct": 29.447852760736197,
+          "spread_ratio": 0.9039516047892142,
+          "stickiness_seconds": 1.92,
+          "support_resistance_strength": 0.2916666666666667
+        }
+      },
+      "KXQUANTUM-35": {
+        "50": {
+          "time_near_anchor_pct": 98.3132530120482,
+          "spread_ratio": 0.6666666666666666,
+          "stickiness_seconds": 204.0,
+          "support_resistance_strength": 0.0
+        }
+      },
+      "KXRAMPBREX-40-BREX": {},
+      "KXROBOTMARS-35": {},
+      "KXSENATENYD-28-AOC": {},
+      "KXSENATENYD-28-CSCH": {
+        "50": {
+          "time_near_anchor_pct": 99.09909909909909,
+          "spread_ratio": 0.2545454545454545,
+          "stickiness_seconds": 55.0,
+          "support_resistance_strength": 0.0
+        }
+      },
+      "KXSHOWENDFAMILYGUY-30": {},
+      "KXSHOWENDSIMPSONS-30": {
+        "50": {
+          "time_near_anchor_pct": 36.224489795918366,
+          "spread_ratio": 1.5345268542199488,
+          "stickiness_seconds": 1.0289855072463767,
+          "support_resistance_strength": 0.9436619718309859
+        }
+      },
+      "KXSPACEXMARS-30": {},
+      "KXSPORTSOWNERLBJ-30": {
+        "50": {
+          "time_near_anchor_pct": 31.03448275862069,
+          "spread_ratio": 1.018143649722597,
+          "stickiness_seconds": 18.0,
+          "support_resistance_strength": 0.0
+        }
+      },
+      "KXSWIFTKELCEWEDDINGLOCATION-30-RHO": {
+        "75": {
+          "time_near_anchor_pct": 3.292181069958848,
+          "spread_ratio": 0.1211340206185567,
+          "stickiness_seconds": 4.0,
+          "support_resistance_strength": 0.0
+        }
+      },
+      "KXSWIFTKELCEWEDDINGLOCATION-30-TEN": {
+        "10": {
+          "time_near_anchor_pct": 57.6271186440678,
+          "spread_ratio": 0.1519756838905775,
+          "stickiness_seconds": 34.0,
+          "support_resistance_strength": 0.0
+        },
+        "25": {
+          "time_near_anchor_pct": 20.33898305084746,
+          "spread_ratio": 1.8210332103321034,
+          "stickiness_seconds": 3.0,
+          "support_resistance_strength": 0.08333333333333333
+        }
+      },
+      "KXTAYLORSWIFTWEDDING-30JAN01-ALA": {},
+      "KXTAYLORSWIFTWEDDING-30JAN01-BLA": {
+        "25": {
+          "time_near_anchor_pct": 38.59649122807017,
+          "spread_ratio": 0.4772727272727273,
+          "stickiness_seconds": 1.1,
+          "support_resistance_strength": 0.875
+        }
+      },
+      "KXTAYLORSWIFTWEDDING-30JAN01-BRI": {},
+      "KXTAYLORSWIFTWEDDING-30JAN01-CAR": {},
+      "KXTAYLORSWIFTWEDDING-30JAN01-DAN": {},
+      "KXTAYLORSWIFTWEDDING-30JAN01-EST": {},
+      "KXTAYLORSWIFTWEDDING-30JAN01-GIG": {
+        "50": {
+          "time_near_anchor_pct": 94.8051948051948,
+          "spread_ratio": 1.1202435312024352,
+          "stickiness_seconds": 16.22222222222222,
+          "support_resistance_strength": 0.0
+        }
+      },
+      "KXTAYLORSWIFTWEDDING-30JAN01-KYL": {},
+      "KXTAYLORSWIFTWEDDING-30JAN01-LAN": {},
+      "KXTAYLORSWIFTWEDDING-30JAN01-SEL": {
+        "75": {
+          "time_near_anchor_pct": 24.65753424657534,
+          "spread_ratio": 0.19881229021430416,
+          "stickiness_seconds": 36.0,
+          "support_resistance_strength": 0.0
+        }
+      },
+      "KXTAYLORSWIFTWEDDING-30JAN01-SOP": {},
+      "KXTAYLORSWIFTWEDDING-30JAN01-ZOE": {},
+      "KXTIMEDECADE20S-30-EMUS": {},
+      "KXTIMEDECADE20S-30-VZEL": {},
+      "KXTIMEDECADE20S-30-XJIN": {},
+      "KXTRAVISKELCEWEDDING-30JAN01-ARI": {},
+      "KXTRAVISKELCEWEDDING-30JAN01-AUS": {},
+      "KXTRAVISKELCEWEDDING-30JAN01-PAT": {
+        "75": {
+          "time_near_anchor_pct": 29.447852760736197,
+          "spread_ratio": 0.5904128837008215,
+          "stickiness_seconds": 3.4285714285714284,
+          "support_resistance_strength": 0.041666666666666664
+        }
+      },
+      "KXTRILLIONAIRE-30-BA": {
+        "5": {
+          "time_near_anchor_pct": 81.69014084507043,
+          "spread_ratio": 0.048644292211156515,
+          "stickiness_seconds": 14.5,
+          "support_resistance_strength": 0.0
+        },
+        "25": {
+          "time_near_anchor_pct": 15.492957746478872,
+          "spread_ratio": 10.97670924117205,
+          "stickiness_seconds": 2.75,
+          "support_resistance_strength": 0.18181818181818182
+        }
+      },
+      "KXTRILLIONAIRE-30-EM": {},
+      "KXTRILLIONAIRE-30-JB": {
+        "5": {
+          "time_near_anchor_pct": 79.16666666666666,
+          "spread_ratio": 0.0680489101541733,
+          "stickiness_seconds": 14.25,
+          "support_resistance_strength": 0.0
+        }
+      },
+      "KXTRILLIONAIRE-30-JH": {
+        "5": {
+          "time_near_anchor_pct": 73.48484848484848,
+          "spread_ratio": 0.17272480862876316,
+          "stickiness_seconds": 3.5925925925925926,
+          "support_resistance_strength": 0.2268041237113402
+        },
+        "25": {
+          "time_near_anchor_pct": 15.151515151515152,
+          "spread_ratio": 8.473343605546996,
+          "stickiness_seconds": 1.25,
+          "support_resistance_strength": 0.65
+        }
+      },
+      "KXTRILLIONAIRE-30-LE": {
+        "5": {
+          "time_near_anchor_pct": 82.27848101265823,
+          "spread_ratio": 0.06389543604028283,
+          "stickiness_seconds": 16.25,
+          "support_resistance_strength": 0.0
+        }
+      },
+      "KXTRILLIONAIRE-30-LP": {
+        "5": {
+          "time_near_anchor_pct": 81.57894736842105,
+          "spread_ratio": 0.044152099477383314,
+          "stickiness_seconds": 15.5,
+          "support_resistance_strength": 0.0
+        }
+      },
+      "KXTRILLIONAIRE-30-MZ": {
+        "5": {
+          "time_near_anchor_pct": 80.0,
+          "spread_ratio": 0.029126213592233007,
+          "stickiness_seconds": 15.0,
+          "support_resistance_strength": 0.0
+        },
+        "25": {
+          "time_near_anchor_pct": 18.666666666666668,
+          "spread_ratio": 19.694285714285716,
+          "stickiness_seconds": 3.5,
+          "support_resistance_strength": 0.07142857142857142
+        }
+      },
+      "KXTRILLIONAIRE-30-SRB": {
+        "5": {
+          "time_near_anchor_pct": 80.26315789473685,
+          "spread_ratio": 0.05127629313571375,
+          "stickiness_seconds": 10.166666666666666,
+          "support_resistance_strength": 0.01639344262295082
+        },
+        "25": {
+          "time_near_anchor_pct": 17.105263157894736,
+          "spread_ratio": 10.85934065934066,
+          "stickiness_seconds": 2.1666666666666665,
+          "support_resistance_strength": 0.3076923076923077
+        }
+      },
+      "KXTURKEYPRES-28-ADAV": {
+        "50": {
+          "time_near_anchor_pct": 55.172413793103445,
+          "spread_ratio": 1.21875,
+          "stickiness_seconds": 32.0,
+          "support_resistance_strength": 0.0
+        }
+      },
+      "KXTURKEYPRES-28-EIMA": {
+        "50": {
+          "time_near_anchor_pct": 23.232323232323232,
+          "spread_ratio": 3.3678166918941486,
+          "stickiness_seconds": 11.5,
+          "support_resistance_strength": 0.0
+        }
+      },
+      "KXTURKEYPRES-28-MYAV": {
+        "10": {
+          "time_near_anchor_pct": 28.421052631578945,
+          "spread_ratio": 0.08986218614309988,
+          "stickiness_seconds": 2.7,
+          "support_resistance_strength": 0.1111111111111111
+        }
+      },
+      "KXTURKEYPRES-28-RERD": {},
+      "KXTVSEASONRELEASEACOURTOFTHORNSANDROSES-30-JAN": {},
+      "KXU3MAX-30-12": {},
+      "KXU3MAX-30-15": {
+        "50": {
+          "time_near_anchor_pct": 24.561403508771928,
+          "spread_ratio": 0.9260923458320421,
+          "stickiness_seconds": 7.0,
+          "support_resistance_strength": 0.0
+        }
+      },
+      "KXU3MAX-30-17": {
+        "50": {
+          "time_near_anchor_pct": 31.57894736842105,
+          "spread_ratio": 0.9407076824992032,
+          "stickiness_seconds": 9.0,
+          "support_resistance_strength": 0.05555555555555555
+        }
+      },
+      "KXU3MAX-30-20": {
+        "50": {
+          "time_near_anchor_pct": 86.20689655172413,
+          "spread_ratio": 0.944139941690962,
+          "stickiness_seconds": 16.666666666666668,
+          "support_resistance_strength": 0.0
+        }
+      },
+      "KXU3MAX-30-9": {
+        "50": {
+          "time_near_anchor_pct": 5.4945054945054945,
+          "spread_ratio": 0.0,
+          "stickiness_seconds": 5.0,
+          "support_resistance_strength": 0.0
+        }
+      },
+      "KXUKPARTY-29-C": {},
+      "KXUKPARTY-29-L": {},
+      "KXUKPARTY-29-R": {},
+      "KXUSTAKEOVER-30": {},
+      "KXWARMING-50": {
+        "75": {
+          "time_near_anchor_pct": 5.590062111801243,
+          "spread_ratio": 0.0,
+          "stickiness_seconds": 4.5,
+          "support_resistance_strength": 0.0
+        }
+      },
+      "KXXISUCCESSOR-45JAN01-CQI": {
+        "50": {
+          "time_near_anchor_pct": 58.620689655172406,
+          "spread_ratio": 1.1883947450518217,
+          "stickiness_seconds": 34.0,
+          "support_resistance_strength": 0.0
+        }
+      },
+      "KXXISUCCESSOR-45JAN01-DXUE": {
+        "50": {
+          "time_near_anchor_pct": 24.59016393442623,
+          "spread_ratio": 0.7754551584625758,
+          "stickiness_seconds": 15.0,
+          "support_resistance_strength": 0.0
+        }
+      },
+      "KXXISUCCESSOR-45JAN01-LQIA": {
+        "50": {
+          "time_near_anchor_pct": 62.06896551724138,
+          "spread_ratio": 1.1236048102541945,
+          "stickiness_seconds": 18.0,
+          "support_resistance_strength": 0.0
+        }
+      },
+      "KXXISUCCESSOR-45JAN01-LXI": {
+        "50": {
+          "time_near_anchor_pct": 66.66666666666666,
+          "spread_ratio": 1.207627118644068,
+          "stickiness_seconds": 38.0,
+          "support_resistance_strength": 0.0
+        }
+      },
+      "KXXISUCCESSOR-45JAN01-ZLEJ": {
+        "50": {
+          "time_near_anchor_pct": 58.620689655172406,
+          "spread_ratio": 1.1832125400303388,
+          "stickiness_seconds": 34.0,
+          "support_resistance_strength": 0.0
+        }
+      },
+      "OAIAGI-29": {},
+      "POWER-28-DH-DS-DP": {},
+      "POWER-28-DH-RS-DP": {},
+      "POWER-28-DH-RS-RP": {},
+      "POWER-28-RH-RS-RP": {
+        "25": {
+          "time_near_anchor_pct": 43.4640522875817,
+          "spread_ratio": 0.4494766050464507,
+          "stickiness_seconds": 3.388535031847134,
+          "support_resistance_strength": 0.08834586466165413
+        }
+      },
+      "SENATEAK-28-D": {},
+      "SENATEAZ-28-D": {},
+      "SENATEAZ-28-R": {
+        "25": {
+          "time_near_anchor_pct": 33.33333333333333,
+          "spread_ratio": 0.1721170395869191,
+          "stickiness_seconds": 20.0,
+          "support_resistance_strength": 0.0
+        }
+      },
+      "SENATECO-28-R": {},
+      "SENATEFL-28-D": {},
+      "SENATEGA-28-D": {},
+      "SENATEGA-28-R": {},
+      "SENATEHI-28-R": {},
+      "SENATEIA-28-D": {},
+      "SENATEIA-28-R": {},
+      "SENATEID-28-D": {},
+      "SENATEIN-28-D": {},
+      "SENATEKS-28-D": {},
+      "SENATEMD-28-R": {
+        "25": {
+          "time_near_anchor_pct": 84.21052631578947,
+          "spread_ratio": 0.962037037037037,
+          "stickiness_seconds": 12.0,
+          "support_resistance_strength": 0.0
+        }
+      },
+      "SENATEMO-28-D": {},
+      "SENATENC-28-D": {},
+      "SENATENC-28-R": {},
+      "SENATEND-28-D": {},
+      "SENATENH-28-R": {},
+      "SENATENV-28-D": {
+        "50": {
+          "time_near_anchor_pct": 45.0,
+          "spread_ratio": 4.222222222222222,
+          "stickiness_seconds": 27.0,
+          "support_resistance_strength": 0.0
+        }
+      },
+      "SENATENV-28-R": {},
+      "SENATEOH-28-D": {},
+      "SENATEOH-28-R": {},
+      "SENATEOK-28-D": {
+        "10": {
+          "time_near_anchor_pct": 55.932203389830505,
+          "spread_ratio": 0.09059233449477352,
+          "stickiness_seconds": 33.0,
+          "support_resistance_strength": 0.0
+        }
+      },
+      "SENATEPA-28-D": {},
+      "SENATEPA-28-R": {},
+      "SENATESC-28-D": {},
+      "SENATEUT-28-D": {},
+      "SENATEVT-28-R": {},
+      "SENATEWI-28-D": {},
+      "SENATEWI-28-R": {
+        "50": {
+          "time_near_anchor_pct": 92.64705882352942,
+          "spread_ratio": 0.23440383905500184,
+          "stickiness_seconds": 21.0,
+          "support_resistance_strength": 0.0
+        }
+      },
+      "STARSHIPMARS-29DEC31": {},
+      "USCLIMATE-2025": {
+        "5": {
+          "time_near_anchor_pct": 19.754977029096477,
+          "spread_ratio": 0.0,
+          "stickiness_seconds": 1.084033613445378,
+          "support_resistance_strength": 0.1937984496124031
+        }
+      },
+      "USCLIMATE-2030": {}
+    },
+    "systematic_patterns": [
+      {
+        "anchor_point": 5,
+        "markets_affected": [
+          "KXBOND-30-TOMH",
+          "KXELONMARS-99",
+          "KXPERSONPRESMAM-45",
+          "KXPRESPERSON-28-AOCA",
+          "KXPRESPERSON-28-DTRU",
+          "KXPRESPERSON-28-GYOU",
+          "KXPRESPERSON-28-KHAR",
+          "KXPRESPERSON-28-MRUB",
+          "KXTRILLIONAIRE-30-BA",
+          "KXTRILLIONAIRE-30-JB",
+          "KXTRILLIONAIRE-30-JH",
+          "KXTRILLIONAIRE-30-LE",
+          "KXTRILLIONAIRE-30-LP",
+          "KXTRILLIONAIRE-30-MZ",
+          "KXTRILLIONAIRE-30-SRB",
+          "USCLIMATE-2025"
+        ],
+        "strength": 23.274611034640344,
+        "consistency": 0.6425172144614231,
+        "exploitation_opportunity": {
+          "strategy": "psychological_level_trade",
+          "description": "Trade around 5 psychological level with tight stops",
+          "entry_condition": "Price approaches 5 with momentum",
+          "exit_condition": "Break of anchor level or 1 hour time limit",
+          "risk_level": "medium"
+        }
+      },
+      {
+        "anchor_point": 0,
+        "markets_affected": [
+          "KXPRESPERSON-28-ABES",
+          "KXPRESPERSON-28-GYOU",
+          "KXPRESPERSON-28-JPRI",
+          "KXPRESPERSON-28-KHAR",
+          "KXPRESPERSON-28-WMOO"
+        ],
+        "strength": 20.460158008587637,
+        "consistency": 0.7113879714798429,
+        "exploitation_opportunity": {
+          "strategy": "boundary_fade",
+          "description": "Fade moves toward 0 as bots provide liquidity at extremes",
+          "entry_condition": "Price moves within 3 cents of 0",
+          "exit_condition": "Price moves 5+ cents away from anchor",
+          "risk_level": "medium"
+        }
+      }
+    ],
+    "exploitation_opportunities": []
+  },
+  "information_cascades": {
+    "cascade_events": [
+      {
+        "market": "OAIAGI-29",
+        "start_time": 1765421999058,
+        "end_time": 1765422024416,
+        "price_change": 5.5,
+        "duration_seconds": 25.358,
+        "direction": "up",
+        "liquidity_impact": {
+          "pre_cascade": 720320.7,
+          "during_cascade": 719655.1333333333,
+          "post_cascade": 720430.5,
+          "liquidity_evaporation_pct": 0.09239865891215554
+        }
+      }
+    ],
+    "bot_response_patterns": {
+      "total_cascades": 1,
+      "cascade_frequency_per_hour": 0.07523353743913398,
+      "liquidity_responses": {
+        "up_moves": {
+          "avg_liquidity_evaporation": 0.09239865891215554,
+          "recovery_ratio": 1.0001524321042004
+        },
+        "down_moves": {
+          "avg_liquidity_evaporation": 0,
+          "recovery_ratio": 1
+        }
+      },
+      "identified_patterns": []
+    },
+    "cascade_triggers": {},
+    "exploitation_windows": []
+  },
+  "time_decay_patterns": {
+    "temporal_patterns": {},
+    "volatility_changes": {},
+    "spread_evolution": {
+      "AITURING": {
+        "early_avg_spread": 7.509090909090909,
+        "middle_avg_spread": 2.807588075880759,
+        "late_avg_spread": 3.087248322147651,
+        "trend": "tightening"
+      },
+      "AMAZONFTC-29DEC31": {
+        "early_avg_spread": 13.933823529411764,
+        "middle_avg_spread": 20.15686274509804,
+        "late_avg_spread": 10.787878787878787,
+        "trend": "tightening"
+      },
+      "APPLEUS-29DEC31": {
+        "early_avg_spread": 12.897590361445783,
+        "middle_avg_spread": 9.168831168831169,
+        "late_avg_spread": 9.839195979899497,
+        "trend": "tightening"
+      },
+      "BEYONCEGENRE-30-AFA": {
+        "early_avg_spread": 31.0,
+        "middle_avg_spread": 31.0,
+        "late_avg_spread": 31.0,
+        "trend": "widening"
+      },
+      "BEYONCEGENRE-30-DEA": {
+        "early_avg_spread": 42.0,
+        "middle_avg_spread": 42.0,
+        "late_avg_spread": 42.0,
+        "trend": "widening"
+      },
+      "BEYONCEGENRE-30-RA": {
+        "early_avg_spread": 39.0,
+        "middle_avg_spread": 39.0,
+        "late_avg_spread": 39.0,
+        "trend": "widening"
+      },
+      "BEYONCEGENRE-30-TAA": {
+        "early_avg_spread": 40.473684210526315,
+        "middle_avg_spread": 40.529411764705884,
+        "late_avg_spread": 40.40909090909091,
+        "trend": "tightening"
+      },
+      "BEYONCEGENRE-30-TCA": {
+        "early_avg_spread": 42.0,
+        "middle_avg_spread": 42.0,
+        "late_avg_spread": 42.0,
+        "trend": "widening"
+      },
+      "BEYONCEGENRE-30-TGA": {
+        "early_avg_spread": 32.0,
+        "middle_avg_spread": 32.0,
+        "late_avg_spread": 32.0,
+        "trend": "widening"
+      },
+      "BEYONCEGENRE-30-THA": {
+        "early_avg_spread": 45.78947368421053,
+        "middle_avg_spread": 45.8235294117647,
+        "late_avg_spread": 44.5,
+        "trend": "tightening"
+      },
+      "BEYONCEGENRE-30-TRA": {
+        "early_avg_spread": 22.0,
+        "middle_avg_spread": 22.0,
+        "late_avg_spread": 22.0,
+        "trend": "widening"
+      },
+      "BEYONCEGENRE-30-TRHA": {
+        "early_avg_spread": 22.0,
+        "middle_avg_spread": 22.0,
+        "late_avg_spread": 22.0,
+        "trend": "widening"
+      },
+      "CHINAUSGDP-30": {
+        "early_avg_spread": 23.0,
+        "middle_avg_spread": 19.745562130177515,
+        "late_avg_spread": 6.148837209302326,
+        "trend": "tightening"
+      },
+      "EUCLIMATE-2030": {
+        "early_avg_spread": 8.0,
+        "middle_avg_spread": 8.0,
+        "late_avg_spread": 8.0,
+        "trend": "widening"
+      },
+      "EUEXIT-30": {
+        "early_avg_spread": 2.761904761904762,
+        "middle_avg_spread": 1.0,
+        "late_avg_spread": 1.0,
+        "trend": "tightening"
+      },
+      "EVSHARE-30JAN-30": {
+        "early_avg_spread": 10.142857142857142,
+        "middle_avg_spread": 5.0,
+        "late_avg_spread": 5.0,
+        "trend": "tightening"
+      },
+      "EVSHARE-30JAN-50": {
+        "early_avg_spread": 38.0,
+        "middle_avg_spread": 38.0,
+        "late_avg_spread": 38.0,
+        "trend": "widening"
+      },
+      "GOVPARTYDE-28-R": {
+        "early_avg_spread": 60.63157894736842,
+        "middle_avg_spread": 61.0,
+        "late_avg_spread": 60.18181818181818,
+        "trend": "tightening"
+      },
+      "GOVPARTYIN-28-D": {
+        "early_avg_spread": 60.55555555555556,
+        "middle_avg_spread": 61.0,
+        "late_avg_spread": 60.095238095238095,
+        "trend": "tightening"
+      },
+      "GOVPARTYMO-28-D": {
+        "early_avg_spread": 17.045454545454547,
+        "middle_avg_spread": 4.0,
+        "late_avg_spread": 4.0,
+        "trend": "tightening"
+      },
+      "GOVPARTYMO-28-R": {
+        "early_avg_spread": 16.695652173913043,
+        "middle_avg_spread": 6.0,
+        "late_avg_spread": 6.0,
+        "trend": "tightening"
+      },
+      "GOVPARTYMT-28-D": {
+        "early_avg_spread": 55.73684210526316,
+        "middle_avg_spread": 22.77777777777778,
+        "late_avg_spread": 4.0,
+        "trend": "tightening"
+      },
+      "GOVPARTYNC-28-D": {
+        "early_avg_spread": 21.0,
+        "middle_avg_spread": 21.0,
+        "late_avg_spread": 21.0,
+        "trend": "widening"
+      },
+      "GOVPARTYNC-28-R": {
+        "early_avg_spread": 23.0,
+        "middle_avg_spread": 23.0,
+        "late_avg_spread": 23.0,
+        "trend": "widening"
+      },
+      "GOVPARTYND-28-D": {
+        "early_avg_spread": 57.85,
+        "middle_avg_spread": 5.0,
+        "late_avg_spread": 5.0,
+        "trend": "tightening"
+      },
+      "GOVPARTYNH-28-D": {
+        "early_avg_spread": 35.05223880597015,
+        "middle_avg_spread": 40.90909090909091,
+        "late_avg_spread": 30.84426229508197,
+        "trend": "tightening"
+      },
+      "GOVPARTYNH-28-R": {
+        "early_avg_spread": 60.1578947368421,
+        "middle_avg_spread": 37.25714285714286,
+        "late_avg_spread": 32.64397905759162,
+        "trend": "tightening"
+      },
+      "GOVPARTYUT-28-D": {
+        "early_avg_spread": 55.21052631578947,
+        "middle_avg_spread": 59.0,
+        "late_avg_spread": 54.19047619047619,
+        "trend": "tightening"
+      },
+      "GOVPARTYVT-28-D": {
+        "early_avg_spread": 23.0,
+        "middle_avg_spread": 23.0,
+        "late_avg_spread": 23.0,
+        "trend": "widening"
+      },
+      "GOVPARTYVT-28-R": {
+        "early_avg_spread": 21.0,
+        "middle_avg_spread": 21.0,
+        "late_avg_spread": 21.0,
+        "trend": "widening"
+      },
+      "GOVPARTYWV-28-D": {
+        "early_avg_spread": 58.31578947368421,
+        "middle_avg_spread": 60.0,
+        "late_avg_spread": 56.55,
+        "trend": "tightening"
+      },
+      "INDIACLIMATE-30": {
+        "early_avg_spread": 23.7,
+        "middle_avg_spread": 23.0,
+        "late_avg_spread": 22.0,
+        "trend": "tightening"
+      },
+      "KXACTORSONNYCROCKETT-35-GLE": {
+        "early_avg_spread": 64.89473684210526,
+        "middle_avg_spread": 79.0,
+        "late_avg_spread": 74.0909090909091,
+        "trend": "widening"
+      },
+      "KXACTORSONNYCROCKETT-35-RYA": {
+        "early_avg_spread": 66.27777777777777,
+        "middle_avg_spread": 70.0,
+        "late_avg_spread": 43.172413793103445,
+        "trend": "tightening"
+      },
+      "KXACTORTOMCRUZ-30-TOM": {
+        "early_avg_spread": 46.857142857142854,
+        "middle_avg_spread": 49.529411764705884,
+        "late_avg_spread": 54.0,
+        "trend": "widening"
+      },
+      "KXAFRICALEADEROUT-35-BT": {
+        "early_avg_spread": 55.89473684210526,
+        "middle_avg_spread": 70.0,
+        "late_avg_spread": 65.0909090909091,
+        "trend": "widening"
+      },
+      "KXAFRICALEADEROUT-35-EM": {
+        "early_avg_spread": 28.59259259259259,
+        "middle_avg_spread": 11.428571428571429,
+        "late_avg_spread": 7.173913043478261,
+        "trend": "tightening"
+      },
+      "KXAFRICALEADEROUT-35-FT": {
+        "early_avg_spread": 67.27777777777777,
+        "middle_avg_spread": 81.0,
+        "late_avg_spread": 76.0909090909091,
+        "trend": "widening"
+      },
+      "KXAFRICALEADEROUT-35-WR": {
+        "early_avg_spread": 70.89473684210526,
+        "middle_avg_spread": 85.0,
+        "late_avg_spread": 80.05,
+        "trend": "widening"
+      },
+      "KXALBERTAREFYES-29": {
+        "early_avg_spread": 5.575221238938053,
+        "middle_avg_spread": 27.40119760479042,
+        "late_avg_spread": 57.75,
+        "trend": "widening"
+      },
+      "KXARTISTCOLLABDRAKEKENDRICK-30": {
+        "early_avg_spread": 72.27777777777777,
+        "middle_avg_spread": 86.0,
+        "late_avg_spread": 81.0909090909091,
+        "trend": "widening"
+      },
+      "KXARTISTCOLLABTHUGANDGUNNA-30-2030": {
+        "early_avg_spread": 9.0,
+        "middle_avg_spread": 9.0,
+        "late_avg_spread": 9.0,
+        "trend": "widening"
+      },
+      "KXAUSTRALIAHOUSE-28-ALP": {
+        "early_avg_spread": 73.0,
+        "middle_avg_spread": 48.42857142857143,
+        "late_avg_spread": 7.0,
+        "trend": "tightening"
+      },
+      "KXAUSTRALIAHOUSE-28-LNC": {
+        "early_avg_spread": 55.13333333333333,
+        "middle_avg_spread": 42.888888888888886,
+        "late_avg_spread": 7.0,
+        "trend": "tightening"
+      },
+      "KXBLUESPACEX-30": {
+        "early_avg_spread": 12.666666666666666,
+        "middle_avg_spread": 14.404761904761905,
+        "late_avg_spread": 23.0,
+        "trend": "widening"
+      },
+      "KXBOND-30-ATJ": {
+        "early_avg_spread": 13.492753623188406,
+        "middle_avg_spread": 46.958333333333336,
+        "late_avg_spread": 50.78260869565217,
+        "trend": "widening"
+      },
+      "KXBOND-30-CAL": {
+        "early_avg_spread": 9.150943396226415,
+        "middle_avg_spread": 34.50819672131148,
+        "late_avg_spread": 18.416666666666668,
+        "trend": "widening"
+      },
+      "KXBOND-30-HAR": {
+        "early_avg_spread": 32.07142857142857,
+        "middle_avg_spread": 81.52380952380952,
+        "late_avg_spread": 82.91304347826087,
+        "trend": "widening"
+      },
+      "KXBOND-30-TOMH": {
+        "early_avg_spread": 31.59259259259259,
+        "middle_avg_spread": 89.4,
+        "late_avg_spread": 84.91304347826087,
+        "trend": "widening"
+      },
+      "KXBUSHBY-30": {
+        "early_avg_spread": 39.12,
+        "middle_avg_spread": 36.372093023255815,
+        "late_avg_spread": 8.0,
+        "trend": "tightening"
+      },
+      "KXCANADACUP-30": {
+        "early_avg_spread": 17.0,
+        "middle_avg_spread": 14.636363636363637,
+        "late_avg_spread": 5.0,
+        "trend": "tightening"
+      },
+      "KXCASECESSION-30": {
+        "early_avg_spread": 35.0,
+        "middle_avg_spread": 29.869565217391305,
+        "late_avg_spread": 9.0,
+        "trend": "tightening"
+      },
+      "KXCO2LEVEL-30-445": {
+        "early_avg_spread": 54.1578947368421,
+        "middle_avg_spread": 54.1764705882353,
+        "late_avg_spread": 54.13636363636363,
+        "trend": "tightening"
+      },
+      "KXCO2LEVEL-30-450": {
+        "early_avg_spread": 40.0,
+        "middle_avg_spread": 40.0,
+        "late_avg_spread": 40.0,
+        "trend": "widening"
+      },
+      "KXCOLONIZEMARS-50": {
+        "early_avg_spread": 70.0,
+        "middle_avg_spread": 70.0,
+        "late_avg_spread": 70.06896551724138,
+        "trend": "widening"
+      },
+      "KXCOVEREA-27-ACHA": {
+        "early_avg_spread": 77.92307692307692,
+        "middle_avg_spread": 92.66666666666667,
+        "late_avg_spread": 88.81481481481481,
+        "trend": "widening"
+      },
+      "KXCOVEREA-27-ADYB": {
+        "early_avg_spread": 67.92857142857143,
+        "middle_avg_spread": 53.76190476190476,
+        "late_avg_spread": 27.0,
+        "trend": "tightening"
+      },
+      "KXCOVEREA-27-DPET": {
+        "early_avg_spread": 35.22115384615385,
+        "middle_avg_spread": 43.6865671641791,
+        "late_avg_spread": 62.0,
+        "trend": "widening"
+      },
+      "KXCOVEREA-27-JTOP": {
+        "early_avg_spread": 36.016129032258064,
+        "middle_avg_spread": 27.708333333333332,
+        "late_avg_spread": 79.0,
+        "trend": "widening"
+      },
+      "KXCOVEREA-27-SSTR": {
+        "early_avg_spread": 74.92307692307692,
+        "middle_avg_spread": 77.52380952380952,
+        "late_avg_spread": 80.79166666666667,
+        "trend": "widening"
+      },
+      "KXDATACENTER-30": {
+        "early_avg_spread": 23.0,
+        "middle_avg_spread": 23.0,
+        "late_avg_spread": 23.0,
+        "trend": "widening"
+      },
+      "KXDEELRIP-40-DEEL": {
+        "early_avg_spread": 14.598086124401913,
+        "middle_avg_spread": 6.181818181818182,
+        "late_avg_spread": 5.0,
+        "trend": "tightening"
+      },
+      "KXDEELRIP-40-RIPP": {
+        "early_avg_spread": 40.04761904761905,
+        "middle_avg_spread": 20.130434782608695,
+        "late_avg_spread": 44.04,
+        "trend": "widening"
+      },
+      "KXEARTHQUAKECALIFORNIA-35": {
+        "early_avg_spread": 69.5945945945946,
+        "middle_avg_spread": 7.0,
+        "late_avg_spread": 7.454545454545454,
+        "trend": "tightening"
+      },
+      "KXEARTHQUAKEJAPAN-30": {
+        "early_avg_spread": 9.160919540229886,
+        "middle_avg_spread": 27.387096774193548,
+        "late_avg_spread": 31.0,
+        "trend": "widening"
+      },
+      "KXECCOMPACT-30": {
+        "early_avg_spread": 44.0,
+        "middle_avg_spread": 44.0,
+        "late_avg_spread": 44.0,
+        "trend": "widening"
+      },
+      "KXELONMARS-99": {
+        "early_avg_spread": 55.92307692307692,
+        "middle_avg_spread": 17.20812182741117,
+        "late_avg_spread": 3.0483870967741935,
+        "trend": "tightening"
+      },
+      "KXERUPTSUPER-0-50JAN01": {
+        "early_avg_spread": 42.49484536082474,
+        "middle_avg_spread": 55.549019607843135,
+        "late_avg_spread": 19.0,
+        "trend": "tightening"
+      },
+      "KXEUEXITCOUNTRY-30-HUN": {
+        "early_avg_spread": 74.89473684210526,
+        "middle_avg_spread": 89.0,
+        "late_avg_spread": 84.0909090909091,
+        "trend": "widening"
+      },
+      "KXEUEXITCOUNTRY-30-ITA": {
+        "early_avg_spread": 75.27777777777777,
+        "middle_avg_spread": 89.0,
+        "late_avg_spread": 84.0909090909091,
+        "trend": "widening"
+      },
+      "KXEUEXITCOUNTRY-30-POL": {
+        "early_avg_spread": 75.89473684210526,
+        "middle_avg_spread": 90.0,
+        "late_avg_spread": 85.0909090909091,
+        "trend": "widening"
+      },
+      "KXEUEXITCOUNTRY-30-SPA": {
+        "early_avg_spread": 75.27777777777777,
+        "middle_avg_spread": 89.0,
+        "late_avg_spread": 84.0909090909091,
+        "trend": "widening"
+      },
+      "KXEUREF-30-FRA": {
+        "early_avg_spread": 75.89473684210526,
+        "middle_avg_spread": 90.0,
+        "late_avg_spread": 85.0909090909091,
+        "trend": "widening"
+      },
+      "KXEUREF-30-GRE": {
+        "early_avg_spread": 76.89473684210526,
+        "middle_avg_spread": 91.58823529411765,
+        "late_avg_spread": 87.75,
+        "trend": "widening"
+      },
+      "KXEUREF-30-HUN": {
+        "early_avg_spread": 75.89473684210526,
+        "middle_avg_spread": 90.0,
+        "late_avg_spread": 85.0909090909091,
+        "trend": "widening"
+      },
+      "KXEUREF-30-ITA": {
+        "early_avg_spread": 74.89473684210526,
+        "middle_avg_spread": 89.0,
+        "late_avg_spread": 84.0909090909091,
+        "trend": "widening"
+      },
+      "KXFDATYPE1DIABETES-33": {
+        "early_avg_spread": 51.10526315789474,
+        "middle_avg_spread": 68.55555555555556,
+        "late_avg_spread": 68.17241379310344,
+        "trend": "widening"
+      },
+      "KXFUSION-30-JAN01": {
+        "early_avg_spread": 77.94736842105263,
+        "middle_avg_spread": 79.0,
+        "late_avg_spread": 74.0952380952381,
+        "trend": "tightening"
+      },
+      "KXFUSION-35-JAN01": {
+        "early_avg_spread": 17.0,
+        "middle_avg_spread": 17.0,
+        "late_avg_spread": 17.0,
+        "trend": "widening"
+      },
+      "KXFUSION-40-JAN01": {
+        "early_avg_spread": 15.0,
+        "middle_avg_spread": 15.0,
+        "late_avg_spread": 15.0,
+        "trend": "widening"
+      },
+      "KXG7LEADEROUT-45JAN01-EMAC": {
+        "early_avg_spread": 26.54189944134078,
+        "middle_avg_spread": 54.57142857142857,
+        "late_avg_spread": 50.09090909090909,
+        "trend": "widening"
+      },
+      "KXG7LEADEROUT-45JAN01-FMER": {
+        "early_avg_spread": 78.6,
+        "middle_avg_spread": 93.84615384615384,
+        "late_avg_spread": 89.03846153846153,
+        "trend": "widening"
+      },
+      "KXG7LEADEROUT-45JAN01-KSTA": {
+        "early_avg_spread": 42.875,
+        "middle_avg_spread": 59.57142857142857,
+        "late_avg_spread": 55.09090909090909,
+        "trend": "widening"
+      },
+      "KXG7LEADEROUT-45JAN01-STAK": {
+        "early_avg_spread": 73.875,
+        "middle_avg_spread": 90.57142857142857,
+        "late_avg_spread": 86.0909090909091,
+        "trend": "widening"
+      },
+      "KXGEORGIAPARLI-28-GD": {
+        "early_avg_spread": 52.57843137254902,
+        "middle_avg_spread": 45.6231884057971,
+        "late_avg_spread": 15.2,
+        "trend": "tightening"
+      },
+      "KXGEORGIAPARLI-28-UNM": {
+        "early_avg_spread": 62.875,
+        "middle_avg_spread": 79.57142857142857,
+        "late_avg_spread": 75.19047619047619,
+        "trend": "widening"
+      },
+      "KXGHANAPARLI-28-NDC": {
+        "early_avg_spread": 11.0,
+        "middle_avg_spread": 11.0,
+        "late_avg_spread": 11.0,
+        "trend": "widening"
+      },
+      "KXGHANAPARLI-28-NPP": {
+        "early_avg_spread": 11.0,
+        "middle_avg_spread": 11.0,
+        "late_avg_spread": 11.0,
+        "trend": "widening"
+      },
+      "KXGHANAPRES-28-JNAA": {
+        "early_avg_spread": 62.875,
+        "middle_avg_spread": 79.57142857142857,
+        "late_avg_spread": 75.19047619047619,
+        "trend": "widening"
+      },
+      "KXGHANAPRES-28-MBAW": {
+        "early_avg_spread": 71.13333333333334,
+        "middle_avg_spread": 87.57142857142857,
+        "late_avg_spread": 83.19047619047619,
+        "trend": "widening"
+      },
+      "KXGTA6SONGS-30-ASI": {
+        "early_avg_spread": 60.89473684210526,
+        "middle_avg_spread": 75.0,
+        "late_avg_spread": 70.0909090909091,
+        "trend": "widening"
+      },
+      "KXGTA6SONGS-30-BAD": {
+        "early_avg_spread": 19.0,
+        "middle_avg_spread": 19.0,
+        "late_avg_spread": 19.0,
+        "trend": "widening"
+      },
+      "KXGTA6SONGS-30-BLI": {
+        "early_avg_spread": 19.0,
+        "middle_avg_spread": 19.0,
+        "late_avg_spread": 19.0,
+        "trend": "widening"
+      },
+      "KXGTA6SONGS-30-DES": {
+        "early_avg_spread": 19.0,
+        "middle_avg_spread": 19.0,
+        "late_avg_spread": 19.0,
+        "trend": "widening"
+      },
+      "KXGTA6SONGS-30-GOD": {
+        "early_avg_spread": 60.89473684210526,
+        "middle_avg_spread": 75.0,
+        "late_avg_spread": 70.0909090909091,
+        "trend": "widening"
+      },
+      "KXGTA6SONGS-30-LOO": {
+        "early_avg_spread": 33.816901408450704,
+        "middle_avg_spread": 73.0,
+        "late_avg_spread": 68.19047619047619,
+        "trend": "widening"
+      },
+      "KXGTA6SONGS-30-MAS": {
+        "early_avg_spread": 61.27777777777778,
+        "middle_avg_spread": 75.0,
+        "late_avg_spread": 70.0909090909091,
+        "trend": "widening"
+      },
+      "KXGTA6SONGS-30-MOB": {
+        "early_avg_spread": 19.0,
+        "middle_avg_spread": 19.0,
+        "late_avg_spread": 19.0,
+        "trend": "widening"
+      },
+      "KXGTA6SONGS-30-PEP": {
+        "early_avg_spread": 19.0,
+        "middle_avg_spread": 19.0,
+        "late_avg_spread": 19.0,
+        "trend": "widening"
+      },
+      "KXGTA6SONGS-30-ROC": {
+        "early_avg_spread": 19.0,
+        "middle_avg_spread": 19.0,
+        "late_avg_spread": 19.0,
+        "trend": "widening"
+      },
+      "KXGTA6SONGS-30-SHA": {
+        "early_avg_spread": 13.0,
+        "middle_avg_spread": 13.0,
+        "late_avg_spread": 13.0,
+        "trend": "widening"
+      },
+      "KXGTA6SONGS-30-SIC": {
+        "early_avg_spread": 19.0,
+        "middle_avg_spread": 19.0,
+        "late_avg_spread": 19.0,
+        "trend": "widening"
+      },
+      "KXGTA6SONGS-30-STA": {
+        "early_avg_spread": 60.89473684210526,
+        "middle_avg_spread": 75.0,
+        "late_avg_spread": 70.0952380952381,
+        "trend": "widening"
+      },
+      "KXGTA6SONGS-30-XOT": {
+        "early_avg_spread": 61.64705882352941,
+        "middle_avg_spread": 75.0,
+        "late_avg_spread": 70.19047619047619,
+        "trend": "widening"
+      },
+      "KXGTAPRICE-100": {
+        "early_avg_spread": 16.296610169491526,
+        "middle_avg_spread": 1.7909407665505226,
+        "late_avg_spread": 3.96875,
+        "trend": "tightening"
+      },
+      "KXGTAPRICE-70": {
+        "early_avg_spread": 35.166666666666664,
+        "middle_avg_spread": 3.9660377358490564,
+        "late_avg_spread": 4.415584415584416,
+        "trend": "tightening"
+      },
+      "KXGTAPRICE-80": {
+        "early_avg_spread": 6.038461538461538,
+        "middle_avg_spread": 5.37037037037037,
+        "late_avg_spread": 5.269230769230769,
+        "trend": "tightening"
+      },
+      "KXGTAPRICE-90": {
+        "early_avg_spread": 12.693548387096774,
+        "middle_avg_spread": 7.028708133971292,
+        "late_avg_spread": 5.356807511737089,
+        "trend": "tightening"
+      },
+      "KXINDIANAPOWELL-30-GLE": {
+        "early_avg_spread": 71.0625,
+        "middle_avg_spread": 72.57142857142857,
+        "late_avg_spread": 68.26086956521739,
+        "trend": "tightening"
+      },
+      "KXINEQUALITY-28": {
+        "early_avg_spread": 21.404388714733543,
+        "middle_avg_spread": 14.612068965517242,
+        "late_avg_spread": 8.0,
+        "trend": "tightening"
+      },
+      "KXIPOAIRTABLE-30JAN01": {
+        "early_avg_spread": 42.27777777777778,
+        "middle_avg_spread": 56.0,
+        "late_avg_spread": 51.40909090909091,
+        "trend": "widening"
+      },
+      "KXJAPANHOUSE-28-CDP": {
+        "early_avg_spread": 58.9375,
+        "middle_avg_spread": 75.57142857142857,
+        "late_avg_spread": 71.0909090909091,
+        "trend": "widening"
+      },
+      "KXJOHNNYDEPP-35-JOH": {
+        "early_avg_spread": 8.73248407643312,
+        "middle_avg_spread": 16.0,
+        "late_avg_spread": 16.0,
+        "trend": "widening"
+      },
+      "KXJPMCEONEW-30-DP": {
+        "early_avg_spread": 58.22222222222222,
+        "middle_avg_spread": 72.0,
+        "late_avg_spread": 67.0909090909091,
+        "trend": "widening"
+      },
+      "KXJPMCEONEW-30-JP": {
+        "early_avg_spread": 70.22222222222223,
+        "middle_avg_spread": 75.0,
+        "late_avg_spread": 70.0909090909091,
+        "trend": "tightening"
+      },
+      "KXJPMCEONEW-30-ML": {
+        "early_avg_spread": 7.0,
+        "middle_avg_spread": 7.0,
+        "late_avg_spread": 7.0,
+        "trend": "widening"
+      },
+      "KXJPMCEONEW-30-TR": {
+        "early_avg_spread": 64.15789473684211,
+        "middle_avg_spread": 72.0,
+        "late_avg_spread": 72.0,
+        "trend": "widening"
+      },
+      "KXLIVENATIONUS-30-JAN01": {
+        "early_avg_spread": 21.0,
+        "middle_avg_spread": 21.0,
+        "late_avg_spread": 21.0,
+        "trend": "widening"
+      },
+      "KXMARSVRAIL-50": {
+        "early_avg_spread": 23.16949152542373,
+        "middle_avg_spread": 8.783333333333333,
+        "late_avg_spread": 9.0,
+        "trend": "tightening"
+      },
+      "KXMETEOR-30": {
+        "early_avg_spread": 2.0,
+        "middle_avg_spread": 2.2879377431906613,
+        "late_avg_spread": 3.0384615384615383,
+        "trend": "widening"
+      },
+      "KXMOLDOVAPRES-28-ASTO": {
+        "early_avg_spread": 65.13333333333334,
+        "middle_avg_spread": 81.57142857142857,
+        "late_avg_spread": 77.19047619047619,
+        "trend": "widening"
+      },
+      "KXMOLDOVAPRES-28-DREC": {
+        "early_avg_spread": 70.875,
+        "middle_avg_spread": 87.57142857142857,
+        "late_avg_spread": 83.0909090909091,
+        "trend": "widening"
+      },
+      "KXMOLDOVAPRES-28-ICEB": {
+        "early_avg_spread": 71.0,
+        "middle_avg_spread": 87.57142857142857,
+        "late_avg_spread": 83.0909090909091,
+        "trend": "widening"
+      },
+      "KXMOLDOVAPRES-28-IDOD": {
+        "early_avg_spread": 66.875,
+        "middle_avg_spread": 83.57142857142857,
+        "late_avg_spread": 79.0909090909091,
+        "trend": "widening"
+      },
+      "KXMOLDOVAPRES-28-IGRO": {
+        "early_avg_spread": 68.875,
+        "middle_avg_spread": 85.57142857142857,
+        "late_avg_spread": 81.19047619047619,
+        "trend": "widening"
+      },
+      "KXMOLDOVAPRES-28-NGAV": {
+        "early_avg_spread": 70.875,
+        "middle_avg_spread": 87.57142857142857,
+        "late_avg_spread": 83.0909090909091,
+        "trend": "widening"
+      },
+      "KXMOONMAN-31-PRC": {
+        "early_avg_spread": 13.721893491124261,
+        "middle_avg_spread": 12.47680412371134,
+        "late_avg_spread": 17.34234234234234,
+        "trend": "widening"
+      },
+      "KXMOONMAN-31-USA": {
+        "early_avg_spread": 8.924242424242424,
+        "middle_avg_spread": 10.885496183206106,
+        "late_avg_spread": 4.095959595959596,
+        "trend": "tightening"
+      },
+      "KXMUSKTRILLION-30": {
+        "early_avg_spread": 9.207920792079207,
+        "middle_avg_spread": 8.68421052631579,
+        "late_avg_spread": 11.8348623853211,
+        "trend": "widening"
+      },
+      "KXNBASEATTLE-30": {
+        "early_avg_spread": 57.89473684210526,
+        "middle_avg_spread": 72.0,
+        "late_avg_spread": 67.0909090909091,
+        "trend": "widening"
+      },
+      "KXNBATEAM-30": {
+        "early_avg_spread": 14.590909090909092,
+        "middle_avg_spread": 6.0,
+        "late_avg_spread": 6.0,
+        "trend": "tightening"
+      },
+      "KXNEWPOPE-35-LANT": {
+        "early_avg_spread": 73.875,
+        "middle_avg_spread": 90.57142857142857,
+        "late_avg_spread": 86.0909090909091,
+        "trend": "widening"
+      },
+      "KXNEWPOPE-35-PPAR": {
+        "early_avg_spread": 44.01,
+        "middle_avg_spread": 56.361111111111114,
+        "late_avg_spread": 81.0909090909091,
+        "trend": "widening"
+      },
+      "KXNEXTISRAELPM-45JAN01-NBEN": {
+        "early_avg_spread": 35.705882352941174,
+        "middle_avg_spread": 36.0,
+        "late_avg_spread": 36.0,
+        "trend": "widening"
+      },
+      "KXNEXTISRAELPM-45JAN01-YCOH": {
+        "early_avg_spread": 69.89473684210526,
+        "middle_avg_spread": 84.0,
+        "late_avg_spread": 79.0952380952381,
+        "trend": "widening"
+      },
+      "KXNEXTISRAELPM-45JAN01-YGAL": {
+        "early_avg_spread": 70.27777777777777,
+        "middle_avg_spread": 84.0,
+        "late_avg_spread": 79.0909090909091,
+        "trend": "widening"
+      },
+      "KXNEXTISRAELPM-45JAN01-YLAP": {
+        "early_avg_spread": 63.26315789473684,
+        "middle_avg_spread": 77.82352941176471,
+        "late_avg_spread": 73.0952380952381,
+        "trend": "widening"
+      },
+      "KXNEXTSPEAKER-31-HJEF": {
+        "early_avg_spread": 24.0,
+        "middle_avg_spread": 8.4,
+        "late_avg_spread": 6.0,
+        "trend": "tightening"
+      },
+      "KXNEXTSPEAKER-31-JJOR": {
+        "early_avg_spread": 41.44444444444444,
+        "middle_avg_spread": 3.0,
+        "late_avg_spread": 3.0,
+        "trend": "tightening"
+      },
+      "KXNEXTSPEAKER-31-SSCA": {
+        "early_avg_spread": 40.44444444444444,
+        "middle_avg_spread": 5.052631578947368,
+        "late_avg_spread": 3.0,
+        "trend": "tightening"
+      },
+      "KXNEXTUKPM-30-ABUR": {
+        "early_avg_spread": 73.875,
+        "middle_avg_spread": 90.57142857142857,
+        "late_avg_spread": 86.19047619047619,
+        "trend": "widening"
+      },
+      "KXNEXTUKPM-30-AR": {
+        "early_avg_spread": 52.63157894736842,
+        "middle_avg_spread": 20.38095238095238,
+        "late_avg_spread": 4.0,
+        "trend": "tightening"
+      },
+      "KXNEXTUKPM-30-NF": {
+        "early_avg_spread": 38.0,
+        "middle_avg_spread": 25.59493670886076,
+        "late_avg_spread": 24.333333333333332,
+        "trend": "tightening"
+      },
+      "KXNEXTUKPM-30-SMAH": {
+        "early_avg_spread": 74.875,
+        "middle_avg_spread": 91.57142857142857,
+        "late_avg_spread": 87.0909090909091,
+        "trend": "widening"
+      },
+      "KXNEXTUKPM-30-WS": {
+        "early_avg_spread": 40.0,
+        "middle_avg_spread": 38.2,
+        "late_avg_spread": 24.0,
+        "trend": "tightening"
+      },
+      "KXOAIANTH-40-ANTH": {
+        "early_avg_spread": 9.970297029702971,
+        "middle_avg_spread": 39.72222222222222,
+        "late_avg_spread": 45.23529411764706,
+        "trend": "widening"
+      },
+      "KXOAIANTH-40-OAI": {
+        "early_avg_spread": 35.221556886227546,
+        "middle_avg_spread": 62.5,
+        "late_avg_spread": 64.125,
+        "trend": "widening"
+      },
+      "KXPERFORMBONDSONG-35-DUA": {
+        "early_avg_spread": 35.0,
+        "middle_avg_spread": 25.28,
+        "late_avg_spread": 6.0,
+        "trend": "tightening"
+      },
+      "KXPERFORMBONDSONG-35-LAN": {
+        "early_avg_spread": 74.89473684210526,
+        "middle_avg_spread": 62.578947368421055,
+        "late_avg_spread": 5.0,
+        "trend": "tightening"
+      },
+      "KXPERFORMBONDSONG-35-OLI": {
+        "early_avg_spread": 67.875,
+        "middle_avg_spread": 55.5,
+        "late_avg_spread": 7.0,
+        "trend": "tightening"
+      },
+      "KXPERSONPRESFUENTES-45": {
+        "early_avg_spread": 22.441509433962263,
+        "middle_avg_spread": 34.26829268292683,
+        "late_avg_spread": 35.0,
+        "trend": "widening"
+      },
+      "KXPERSONPRESMAM-45": {
+        "early_avg_spread": 38.6764705882353,
+        "middle_avg_spread": 48.44,
+        "late_avg_spread": 30.97222222222222,
+        "trend": "tightening"
+      },
+      "KXPOLIOELIM-30": {
+        "early_avg_spread": 83.42105263157895,
+        "middle_avg_spread": 82.66666666666667,
+        "late_avg_spread": 83.81818181818181,
+        "trend": "widening"
+      },
+      "KXPOPCHANGESTATE10-35": {
+        "early_avg_spread": 66.89473684210526,
+        "middle_avg_spread": 81.0,
+        "late_avg_spread": 76.0909090909091,
+        "trend": "widening"
+      },
+      "KXPRESPARTY-2028-D": {
+        "early_avg_spread": 4.0,
+        "middle_avg_spread": 3.9420289855072466,
+        "late_avg_spread": 3.240740740740741,
+        "trend": "tightening"
+      },
+      "KXPRESPARTY-2028-R": {
+        "early_avg_spread": 2.763157894736842,
+        "middle_avg_spread": 1.5272727272727273,
+        "late_avg_spread": 1.0,
+        "trend": "tightening"
+      },
+      "KXPRESPERSON-28-ABES": {
+        "early_avg_spread": 32.05882352941177,
+        "middle_avg_spread": 13.904761904761905,
+        "late_avg_spread": 13.846153846153847,
+        "trend": "tightening"
+      },
+      "KXPRESPERSON-28-AOCA": {
+        "early_avg_spread": 15.11111111111111,
+        "middle_avg_spread": 9.026315789473685,
+        "late_avg_spread": 11.0,
+        "trend": "tightening"
+      },
+      "KXPRESPERSON-28-DTRU": {
+        "early_avg_spread": 12.586206896551724,
+        "middle_avg_spread": 8.1875,
+        "late_avg_spread": 3.8378378378378377,
+        "trend": "tightening"
+      },
+      "KXPRESPERSON-28-GNEWS": {
+        "early_avg_spread": 3.56656346749226,
+        "middle_avg_spread": 1.87012987012987,
+        "late_avg_spread": 2.6678571428571427,
+        "trend": "tightening"
+      },
+      "KXPRESPERSON-28-GYOU": {
+        "early_avg_spread": 34.416666666666664,
+        "middle_avg_spread": 12.8125,
+        "late_avg_spread": 8.695652173913043,
+        "trend": "tightening"
+      },
+      "KXPRESPERSON-28-JPRI": {
+        "early_avg_spread": 16.433333333333334,
+        "middle_avg_spread": 20.583333333333332,
+        "late_avg_spread": 10.03125,
+        "trend": "tightening"
+      },
+      "KXPRESPERSON-28-JVAN": {
+        "early_avg_spread": 2.7976391231028668,
+        "middle_avg_spread": 2.494186046511628,
+        "late_avg_spread": 3.0256410256410255,
+        "trend": "widening"
+      },
+      "KXPRESPERSON-28-KHAR": {
+        "early_avg_spread": 33.94219653179191,
+        "middle_avg_spread": 4.357142857142857,
+        "late_avg_spread": 4.333333333333333,
+        "trend": "tightening"
+      },
+      "KXPRESPERSON-28-MRUB": {
+        "early_avg_spread": 11.105263157894736,
+        "middle_avg_spread": 5.511627906976744,
+        "late_avg_spread": 6.2105263157894735,
+        "trend": "tightening"
+      },
+      "KXPRESPERSON-28-PBUT": {
+        "early_avg_spread": 31.066666666666666,
+        "middle_avg_spread": 19.869565217391305,
+        "late_avg_spread": 17.071428571428573,
+        "trend": "tightening"
+      },
+      "KXPRESPERSON-28-WMOO": {
+        "early_avg_spread": 27.058823529411764,
+        "middle_avg_spread": 23.0,
+        "late_avg_spread": 18.083333333333332,
+        "trend": "tightening"
+      },
+      "KXPRIMEENGCONSUMPTION-30-COAL": {
+        "early_avg_spread": 44.473684210526315,
+        "middle_avg_spread": 44.529411764705884,
+        "late_avg_spread": 44.40909090909091,
+        "trend": "tightening"
+      },
+      "KXPRIMEENGCONSUMPTION-30-GAS": {
+        "early_avg_spread": 56.473684210526315,
+        "middle_avg_spread": 56.529411764705884,
+        "late_avg_spread": 56.40909090909091,
+        "trend": "tightening"
+      },
+      "KXPRIMEENGCONSUMPTION-30-OIL": {
+        "early_avg_spread": 46.473684210526315,
+        "middle_avg_spread": 46.529411764705884,
+        "late_avg_spread": 46.40909090909091,
+        "trend": "tightening"
+      },
+      "KXQUANTUM-30": {
+        "early_avg_spread": 24.546875,
+        "middle_avg_spread": 26.970149253731343,
+        "late_avg_spread": 37.03125,
+        "trend": "widening"
+      },
+      "KXQUANTUM-35": {
+        "early_avg_spread": 4.0,
+        "middle_avg_spread": 4.0606060606060606,
+        "late_avg_spread": 4.571428571428571,
+        "trend": "widening"
+      },
+      "KXRAMPBREX-40-BREX": {
+        "early_avg_spread": 55.68421052631579,
+        "middle_avg_spread": 62.0,
+        "late_avg_spread": 57.09090909090909,
+        "trend": "widening"
+      },
+      "KXROBOTMARS-35": {
+        "early_avg_spread": 6.112704918032787,
+        "middle_avg_spread": 7.212765957446808,
+        "late_avg_spread": 3.857142857142857,
+        "trend": "tightening"
+      },
+      "KXSENATENYD-28-AOC": {
+        "early_avg_spread": 20.90909090909091,
+        "middle_avg_spread": 21.75206611570248,
+        "late_avg_spread": 22.1875,
+        "trend": "widening"
+      },
+      "KXSENATENYD-28-CSCH": {
+        "early_avg_spread": 1.0,
+        "middle_avg_spread": 1.3709677419354838,
+        "late_avg_spread": 1.3793103448275863,
+        "trend": "widening"
+      },
+      "KXSHOWENDFAMILYGUY-30": {
+        "early_avg_spread": 8.0,
+        "middle_avg_spread": 8.0,
+        "late_avg_spread": 8.0,
+        "trend": "widening"
+      },
+      "KXSHOWENDSIMPSONS-30": {
+        "early_avg_spread": 18.45631067961165,
+        "middle_avg_spread": 17.014084507042252,
+        "late_avg_spread": 25.0,
+        "trend": "widening"
+      },
+      "KXSPACEXMARS-30": {
+        "early_avg_spread": 21.846153846153847,
+        "middle_avg_spread": 22.506738544474395,
+        "late_avg_spread": 11.019886363636363,
+        "trend": "tightening"
+      },
+      "KXSPORTSOWNERLBJ-30": {
+        "early_avg_spread": 66.89473684210526,
+        "middle_avg_spread": 81.0,
+        "late_avg_spread": 76.0909090909091,
+        "trend": "widening"
+      },
+      "KXSWIFTKELCEWEDDINGLOCATION-30-RHO": {
+        "early_avg_spread": 17.34328358208955,
+        "middle_avg_spread": 5.2611940298507465,
+        "late_avg_spread": 1.9285714285714286,
+        "trend": "tightening"
+      },
+      "KXSWIFTKELCEWEDDINGLOCATION-30-TEN": {
+        "early_avg_spread": 54.94736842105263,
+        "middle_avg_spread": 20.444444444444443,
+        "late_avg_spread": 8.0,
+        "trend": "tightening"
+      },
+      "KXTAYLORSWIFTWEDDING-30JAN01-ALA": {
+        "early_avg_spread": 48.73684210526316,
+        "middle_avg_spread": 51.0,
+        "late_avg_spread": 51.95454545454545,
+        "trend": "widening"
+      },
+      "KXTAYLORSWIFTWEDDING-30JAN01-BLA": {
+        "early_avg_spread": 19.638655462184875,
+        "middle_avg_spread": 20.373493975903614,
+        "late_avg_spread": 12.576923076923077,
+        "trend": "tightening"
+      },
+      "KXTAYLORSWIFTWEDDING-30JAN01-BRI": {
+        "early_avg_spread": 23.087719298245613,
+        "middle_avg_spread": 52.05555555555556,
+        "late_avg_spread": 52.63636363636363,
+        "trend": "widening"
+      },
+      "KXTAYLORSWIFTWEDDING-30JAN01-CAR": {
+        "early_avg_spread": 52.5,
+        "middle_avg_spread": 52.588235294117645,
+        "late_avg_spread": 52.22727272727273,
+        "trend": "tightening"
+      },
+      "KXTAYLORSWIFTWEDDING-30JAN01-DAN": {
+        "early_avg_spread": 48.73684210526316,
+        "middle_avg_spread": 51.0,
+        "late_avg_spread": 51.95454545454545,
+        "trend": "widening"
+      },
+      "KXTAYLORSWIFTWEDDING-30JAN01-EST": {
+        "early_avg_spread": 24.0,
+        "middle_avg_spread": 24.0,
+        "late_avg_spread": 24.0,
+        "trend": "widening"
+      },
+      "KXTAYLORSWIFTWEDDING-30JAN01-GIG": {
+        "early_avg_spread": 10.009615384615385,
+        "middle_avg_spread": 9.68,
+        "late_avg_spread": 10.44,
+        "trend": "widening"
+      },
+      "KXTAYLORSWIFTWEDDING-30JAN01-KYL": {
+        "early_avg_spread": 7.379746835443038,
+        "middle_avg_spread": 8.671052631578947,
+        "late_avg_spread": 8.448275862068966,
+        "trend": "widening"
+      },
+      "KXTAYLORSWIFTWEDDING-30JAN01-LAN": {
+        "early_avg_spread": 34.0,
+        "middle_avg_spread": 34.0,
+        "late_avg_spread": 34.0,
+        "trend": "widening"
+      },
+      "KXTAYLORSWIFTWEDDING-30JAN01-SEL": {
+        "early_avg_spread": 46.52564102564103,
+        "middle_avg_spread": 31.267857142857142,
+        "late_avg_spread": 10.0,
+        "trend": "tightening"
+      },
+      "KXTAYLORSWIFTWEDDING-30JAN01-SOP": {
+        "early_avg_spread": 52.55555555555556,
+        "middle_avg_spread": 52.55555555555556,
+        "late_avg_spread": 40.142857142857146,
+        "trend": "tightening"
+      },
+      "KXTAYLORSWIFTWEDDING-30JAN01-ZOE": {
+        "early_avg_spread": 25.0,
+        "middle_avg_spread": 25.0,
+        "late_avg_spread": 20.46938775510204,
+        "trend": "tightening"
+      },
+      "KXTIMEDECADE20S-30-EMUS": {
+        "early_avg_spread": 12.545454545454545,
+        "middle_avg_spread": 4.488095238095238,
+        "late_avg_spread": 5.3755458515283845,
+        "trend": "tightening"
+      },
+      "KXTIMEDECADE20S-30-VZEL": {
+        "early_avg_spread": 47.0,
+        "middle_avg_spread": 46.526315789473685,
+        "late_avg_spread": 47.40909090909091,
+        "trend": "widening"
+      },
+      "KXTIMEDECADE20S-30-XJIN": {
+        "early_avg_spread": 43.0,
+        "middle_avg_spread": 43.0,
+        "late_avg_spread": 43.0,
+        "trend": "widening"
+      },
+      "KXTRAVISKELCEWEDDING-30JAN01-ARI": {
+        "early_avg_spread": 53.23076923076923,
+        "middle_avg_spread": 53.25,
+        "late_avg_spread": 36.975,
+        "trend": "tightening"
+      },
+      "KXTRAVISKELCEWEDDING-30JAN01-AUS": {
+        "early_avg_spread": 21.03,
+        "middle_avg_spread": 14.465346534653465,
+        "late_avg_spread": 10.241379310344827,
+        "trend": "tightening"
+      },
+      "KXTRAVISKELCEWEDDING-30JAN01-PAT": {
+        "early_avg_spread": 21.23404255319149,
+        "middle_avg_spread": 15.535714285714286,
+        "late_avg_spread": 11.024390243902438,
+        "trend": "tightening"
+      },
+      "KXTRILLIONAIRE-30-BA": {
+        "early_avg_spread": 25.941176470588236,
+        "middle_avg_spread": 2.3,
+        "late_avg_spread": 7.117647058823529,
+        "trend": "tightening"
+      },
+      "KXTRILLIONAIRE-30-EM": {
+        "early_avg_spread": 7.0304761904761905,
+        "middle_avg_spread": 3.984251968503937,
+        "late_avg_spread": 6.501639344262295,
+        "trend": "tightening"
+      },
+      "KXTRILLIONAIRE-30-JB": {
+        "early_avg_spread": 22.0,
+        "middle_avg_spread": 2.380952380952381,
+        "late_avg_spread": 6.314285714285714,
+        "trend": "tightening"
+      },
+      "KXTRILLIONAIRE-30-JH": {
+        "early_avg_spread": 16.04,
+        "middle_avg_spread": 3.652173913043478,
+        "late_avg_spread": 10.117647058823529,
+        "trend": "tightening"
+      },
+      "KXTRILLIONAIRE-30-LE": {
+        "early_avg_spread": 31.529411764705884,
+        "middle_avg_spread": 3.347826086956522,
+        "late_avg_spread": 8.153846153846153,
+        "trend": "tightening"
+      },
+      "KXTRILLIONAIRE-30-LP": {
+        "early_avg_spread": 28.176470588235293,
+        "middle_avg_spread": 2.3636363636363638,
+        "late_avg_spread": 8.783783783783784,
+        "trend": "tightening"
+      },
+      "KXTRILLIONAIRE-30-MZ": {
+        "early_avg_spread": 25.0,
+        "middle_avg_spread": 1.3157894736842106,
+        "late_avg_spread": 6.153846153846154,
+        "trend": "tightening"
+      },
+      "KXTRILLIONAIRE-30-SRB": {
+        "early_avg_spread": 27.176470588235293,
+        "middle_avg_spread": 4.190476190476191,
+        "late_avg_spread": 6.421052631578948,
+        "trend": "tightening"
+      },
+      "KXTURKEYPRES-28-ADAV": {
+        "early_avg_spread": 70.6,
+        "middle_avg_spread": 88.0,
+        "late_avg_spread": 83.19047619047619,
+        "trend": "widening"
+      },
+      "KXTURKEYPRES-28-EIMA": {
+        "early_avg_spread": 65.33333333333333,
+        "middle_avg_spread": 9.1,
+        "late_avg_spread": 55.903225806451616,
+        "trend": "tightening"
+      },
+      "KXTURKEYPRES-28-MYAV": {
+        "early_avg_spread": 69.65,
+        "middle_avg_spread": 42.851063829787236,
+        "late_avg_spread": 74.25,
+        "trend": "widening"
+      },
+      "KXTURKEYPRES-28-RERD": {
+        "early_avg_spread": 10.0,
+        "middle_avg_spread": 7.573033707865169,
+        "late_avg_spread": 7.8076923076923075,
+        "trend": "tightening"
+      },
+      "KXTVSEASONRELEASEACOURTOFTHORNSANDROSES-30-JAN": {
+        "early_avg_spread": 7.853658536585366,
+        "middle_avg_spread": 7.861538461538461,
+        "late_avg_spread": 7.16,
+        "trend": "tightening"
+      },
+      "KXU3MAX-30-12": {
+        "early_avg_spread": 70.42105263157895,
+        "middle_avg_spread": 72.0,
+        "late_avg_spread": 67.0909090909091,
+        "trend": "tightening"
+      },
+      "KXU3MAX-30-15": {
+        "early_avg_spread": 72.47368421052632,
+        "middle_avg_spread": 77.0,
+        "late_avg_spread": 72.0952380952381,
+        "trend": "tightening"
+      },
+      "KXU3MAX-30-17": {
+        "early_avg_spread": 80.10526315789474,
+        "middle_avg_spread": 81.0,
+        "late_avg_spread": 76.19047619047619,
+        "trend": "tightening"
+      },
+      "KXU3MAX-30-20": {
+        "early_avg_spread": 82.42105263157895,
+        "middle_avg_spread": 84.0,
+        "late_avg_spread": 79.0909090909091,
+        "trend": "tightening"
+      },
+      "KXU3MAX-30-9": {
+        "early_avg_spread": 4.377358490566038,
+        "middle_avg_spread": 4.0,
+        "late_avg_spread": 5.0,
+        "trend": "widening"
+      },
+      "KXUKPARTY-29-C": {
+        "early_avg_spread": 60.25,
+        "middle_avg_spread": 65.82352941176471,
+        "late_avg_spread": 66.65217391304348,
+        "trend": "widening"
+      },
+      "KXUKPARTY-29-L": {
+        "early_avg_spread": 37.0,
+        "middle_avg_spread": 37.0,
+        "late_avg_spread": 37.0,
+        "trend": "widening"
+      },
+      "KXUKPARTY-29-R": {
+        "early_avg_spread": 11.0,
+        "middle_avg_spread": 10.254437869822485,
+        "late_avg_spread": 2.0,
+        "trend": "tightening"
+      },
+      "KXUSTAKEOVER-30": {
+        "early_avg_spread": 41.56521739130435,
+        "middle_avg_spread": 17.3125,
+        "late_avg_spread": 6.32,
+        "trend": "tightening"
+      },
+      "KXWARMING-50": {
+        "early_avg_spread": 17.948051948051948,
+        "middle_avg_spread": 37.4,
+        "late_avg_spread": 38.0,
+        "trend": "widening"
+      },
+      "KXXISUCCESSOR-45JAN01-CQI": {
+        "early_avg_spread": 70.89473684210526,
+        "middle_avg_spread": 85.0,
+        "late_avg_spread": 80.0909090909091,
+        "trend": "widening"
+      },
+      "KXXISUCCESSOR-45JAN01-DXUE": {
+        "early_avg_spread": 48.90909090909091,
+        "middle_avg_spread": 67.52941176470588,
+        "late_avg_spread": 67.81818181818181,
+        "trend": "widening"
+      },
+      "KXXISUCCESSOR-45JAN01-LQIA": {
+        "early_avg_spread": 67.89473684210526,
+        "middle_avg_spread": 82.0,
+        "late_avg_spread": 77.0909090909091,
+        "trend": "widening"
+      },
+      "KXXISUCCESSOR-45JAN01-LXI": {
+        "early_avg_spread": 70.27777777777777,
+        "middle_avg_spread": 84.0,
+        "late_avg_spread": 79.0909090909091,
+        "trend": "widening"
+      },
+      "KXXISUCCESSOR-45JAN01-ZLEJ": {
+        "early_avg_spread": 72.89473684210526,
+        "middle_avg_spread": 87.0,
+        "late_avg_spread": 82.0909090909091,
+        "trend": "widening"
+      },
+      "OAIAGI-29": {
+        "early_avg_spread": 4.943089430894309,
+        "middle_avg_spread": 5.829896907216495,
+        "late_avg_spread": 7.450511945392491,
+        "trend": "widening"
+      },
+      "POWER-28-DH-DS-DP": {
+        "early_avg_spread": 8.040816326530612,
+        "middle_avg_spread": 15.285714285714286,
+        "late_avg_spread": 14.057553956834532,
+        "trend": "widening"
+      },
+      "POWER-28-DH-RS-DP": {
+        "early_avg_spread": 21.958333333333332,
+        "middle_avg_spread": 2.9523809523809526,
+        "late_avg_spread": 0.0,
+        "trend": "tightening"
+      },
+      "POWER-28-DH-RS-RP": {
+        "early_avg_spread": 31.727272727272727,
+        "middle_avg_spread": 5.2105263157894735,
+        "late_avg_spread": 3.0,
+        "trend": "tightening"
+      },
+      "POWER-28-RH-RS-RP": {
+        "early_avg_spread": 18.35369774919614,
+        "middle_avg_spread": 4.895397489539749,
+        "late_avg_spread": 2.540059347181009,
+        "trend": "tightening"
+      },
+      "SENATEAK-28-D": {
+        "early_avg_spread": 31.0,
+        "middle_avg_spread": 31.0,
+        "late_avg_spread": 31.0,
+        "trend": "widening"
+      },
+      "SENATEAZ-28-D": {
+        "early_avg_spread": 14.439490445859873,
+        "middle_avg_spread": 10.589285714285714,
+        "late_avg_spread": 4.622641509433962,
+        "trend": "tightening"
+      },
+      "SENATEAZ-28-R": {
+        "early_avg_spread": 29.0,
+        "middle_avg_spread": 28.0,
+        "late_avg_spread": 5.0,
+        "trend": "tightening"
+      },
+      "SENATECO-28-R": {
+        "early_avg_spread": 44.0,
+        "middle_avg_spread": 44.0,
+        "late_avg_spread": 44.0,
+        "trend": "widening"
+      },
+      "SENATEFL-28-D": {
+        "early_avg_spread": 37.0,
+        "middle_avg_spread": 37.0,
+        "late_avg_spread": 37.0,
+        "trend": "widening"
+      },
+      "SENATEGA-28-D": {
+        "early_avg_spread": 18.0,
+        "middle_avg_spread": 18.0,
+        "late_avg_spread": 18.0,
+        "trend": "widening"
+      },
+      "SENATEGA-28-R": {
+        "early_avg_spread": 23.0,
+        "middle_avg_spread": 23.0,
+        "late_avg_spread": 23.0,
+        "trend": "widening"
+      },
+      "SENATEHI-28-R": {
+        "early_avg_spread": 38.526315789473685,
+        "middle_avg_spread": 38.588235294117645,
+        "late_avg_spread": 38.22727272727273,
+        "trend": "tightening"
+      },
+      "SENATEIA-28-D": {
+        "early_avg_spread": 23.0,
+        "middle_avg_spread": 23.0,
+        "late_avg_spread": 23.0,
+        "trend": "widening"
+      },
+      "SENATEIA-28-R": {
+        "early_avg_spread": 21.0,
+        "middle_avg_spread": 21.0,
+        "late_avg_spread": 21.0,
+        "trend": "widening"
+      },
+      "SENATEID-28-D": {
+        "early_avg_spread": 40.0,
+        "middle_avg_spread": 40.0,
+        "late_avg_spread": 40.0,
+        "trend": "widening"
+      },
+      "SENATEIN-28-D": {
+        "early_avg_spread": 41.0,
+        "middle_avg_spread": 41.0,
+        "late_avg_spread": 41.0,
+        "trend": "widening"
+      },
+      "SENATEKS-28-D": {
+        "early_avg_spread": 31.0,
+        "middle_avg_spread": 31.0,
+        "late_avg_spread": 31.0,
+        "trend": "widening"
+      },
+      "SENATEMD-28-R": {
+        "early_avg_spread": 43.94736842105263,
+        "middle_avg_spread": 43.588235294117645,
+        "late_avg_spread": 43.19047619047619,
+        "trend": "tightening"
+      },
+      "SENATEMO-28-D": {
+        "early_avg_spread": 41.0,
+        "middle_avg_spread": 41.0,
+        "late_avg_spread": 41.0,
+        "trend": "widening"
+      },
+      "SENATENC-28-D": {
+        "early_avg_spread": 22.0,
+        "middle_avg_spread": 22.0,
+        "late_avg_spread": 22.0,
+        "trend": "widening"
+      },
+      "SENATENC-28-R": {
+        "early_avg_spread": 8.0,
+        "middle_avg_spread": 8.0,
+        "late_avg_spread": 8.0,
+        "trend": "widening"
+      },
+      "SENATEND-28-D": {
+        "early_avg_spread": 38.0,
+        "middle_avg_spread": 17.523809523809526,
+        "late_avg_spread": 2.0,
+        "trend": "tightening"
+      },
+      "SENATENH-28-R": {
+        "early_avg_spread": 44.0,
+        "middle_avg_spread": 44.0,
+        "late_avg_spread": 44.0,
+        "trend": "widening"
+      },
+      "SENATENV-28-D": {
+        "early_avg_spread": 21.0,
+        "middle_avg_spread": 11.55,
+        "late_avg_spread": 5.0,
+        "trend": "tightening"
+      },
+      "SENATENV-28-R": {
+        "early_avg_spread": 23.0,
+        "middle_avg_spread": 11.428571428571429,
+        "late_avg_spread": 4.0,
+        "trend": "tightening"
+      },
+      "SENATEOH-28-D": {
+        "early_avg_spread": 23.0,
+        "middle_avg_spread": 11.1,
+        "late_avg_spread": 3.0,
+        "trend": "tightening"
+      },
+      "SENATEOH-28-R": {
+        "early_avg_spread": 21.0,
+        "middle_avg_spread": 21.0,
+        "late_avg_spread": 21.0,
+        "trend": "widening"
+      },
+      "SENATEOK-28-D": {
+        "early_avg_spread": 44.0,
+        "middle_avg_spread": 20.2,
+        "late_avg_spread": 4.0,
+        "trend": "tightening"
+      },
+      "SENATEPA-28-D": {
+        "early_avg_spread": 13.0,
+        "middle_avg_spread": 13.0,
+        "late_avg_spread": 13.0,
+        "trend": "widening"
+      },
+      "SENATEPA-28-R": {
+        "early_avg_spread": 16.0,
+        "middle_avg_spread": 16.0,
+        "late_avg_spread": 16.0,
+        "trend": "widening"
+      },
+      "SENATESC-28-D": {
+        "early_avg_spread": 39.0,
+        "middle_avg_spread": 39.0,
+        "late_avg_spread": 39.0,
+        "trend": "widening"
+      },
+      "SENATEUT-28-D": {
+        "early_avg_spread": 38.526315789473685,
+        "middle_avg_spread": 38.611111111111114,
+        "late_avg_spread": 38.19047619047619,
+        "trend": "tightening"
+      },
+      "SENATEVT-28-R": {
+        "early_avg_spread": 40.0,
+        "middle_avg_spread": 40.0,
+        "late_avg_spread": 40.0,
+        "trend": "widening"
+      },
+      "SENATEWI-28-D": {
+        "early_avg_spread": 8.928571428571429,
+        "middle_avg_spread": 4.0,
+        "late_avg_spread": 3.923076923076923,
+        "trend": "tightening"
+      },
+      "SENATEWI-28-R": {
+        "early_avg_spread": 6.444444444444445,
+        "middle_avg_spread": 4.0,
+        "late_avg_spread": 4.083333333333333,
+        "trend": "tightening"
+      },
+      "STARSHIPMARS-29DEC31": {
+        "early_avg_spread": 18.30851063829787,
+        "middle_avg_spread": 2.9889502762430937,
+        "late_avg_spread": 4.127789046653144,
+        "trend": "tightening"
+      },
+      "USCLIMATE-2025": {
+        "early_avg_spread": 81.45833333333333,
+        "middle_avg_spread": 37.86138613861386,
+        "late_avg_spread": 62.785276073619634,
+        "trend": "tightening"
+      },
+      "USCLIMATE-2030": {
+        "early_avg_spread": 59.31578947368421,
+        "middle_avg_spread": 25.44,
+        "late_avg_spread": 7.0,
+        "trend": "tightening"
+      }
+    }
+  },
+  "cross_contract_arbitrage": {
+    "potential_pairs": [
+      [
+        "KXAFRICALEADEROUT-35-AT",
+        "KXAFRICALEADEROUT-35-CR"
+      ],
+      [
+        "KXAFRICALEADEROUT-35-AT",
+        "KXAFRICALEADEROUT-35-BT"
+      ],
+      [
+        "KXAFRICALEADEROUT-35-AT",
+        "KXAFRICALEADEROUT-35-JM"
+      ],
+      [
+        "KXAFRICALEADEROUT-35-AT",
+        "KXAFRICALEADEROUT-35-PK"
+      ],
+      [
+        "KXAFRICALEADEROUT-35-AT",
+        "KXAFRICALEADEROUT-35-EM"
+      ],
+      [
+        "KXAFRICALEADEROUT-35-AT",
+        "KXAFRICALEADEROUT-35-AFES"
+      ],
+      [
+        "KXAFRICALEADEROUT-35-AT",
+        "KXAFRICALEADEROUT-35-WR"
+      ],
+      [
+        "KXAFRICALEADEROUT-35-AT",
+        "KXAFRICALEADEROUT-35-FT"
+      ],
+      [
+        "KXAFRICALEADEROUT-35-AT",
+        "KXAFRICALEADEROUT-35-TAS"
+      ],
+      [
+        "KXFYREFESTPRICE-30-1400",
+        "KXFYREFESTPRICE-30-100"
+      ]
+    ],
+    "arbitrage_opportunities": [],
+    "bot_arbitrage_speed": {}
+  },
+  "bot_psychology": {
+    "risk_aversion_patterns": {
+      "GOVPARTYIN-28-R": {
+        "risk_aversion_ratio": 0.06422018348623854,
+        "interpretation": "low"
+      },
+      "GOVPARTYND-28-D": {
+        "risk_aversion_ratio": 0.08246527777777778,
+        "interpretation": "low"
+      },
+      "KXALBERTAREFYES-29": {
+        "risk_aversion_ratio": 0.15122433548537195,
+        "interpretation": "low"
+      },
+      "KXBOND-30-ATJ": {
+        "risk_aversion_ratio": 0.1189336978810663,
+        "interpretation": "low"
+      },
+      "KXBOND-30-HAR": {
+        "risk_aversion_ratio": 0.0249944208881946,
+        "interpretation": "low"
+      },
+      "KXBOND-30-JOS": {
+        "risk_aversion_ratio": 0.034162800506115566,
+        "interpretation": "low"
+      },
+      "KXBOND-30-TOM": {
+        "risk_aversion_ratio": 0.018071577621166186,
+        "interpretation": "low"
+      },
+      "KXBOND-30-TOMH": {
+        "risk_aversion_ratio": 0.012011356191308147,
+        "interpretation": "low"
+      },
+      "KXCOVEREA-27-DPET": {
+        "risk_aversion_ratio": 0.06415396952686447,
+        "interpretation": "low"
+      },
+      "KXCOVEREA-27-JTOP": {
+        "risk_aversion_ratio": 0.10646792653713069,
+        "interpretation": "low"
+      },
+      "KXELONMARS-99": {
+        "risk_aversion_ratio": 0.06585086598334822,
+        "interpretation": "low"
+      },
+      "KXMOONMAN-31-R": {
+        "risk_aversion_ratio": 0.0784313725490196,
+        "interpretation": "low"
+      },
+      "KXPERFORMBONDSONG-35-ARI": {
+        "risk_aversion_ratio": 0.08581436077057794,
+        "interpretation": "low"
+      },
+      "KXPERFORMBONDSONG-35-BEY": {
+        "risk_aversion_ratio": 0.08235294117647059,
+        "interpretation": "low"
+      },
+      "KXPERFORMBONDSONG-35-ED": {
+        "risk_aversion_ratio": 0.08433734939759036,
+        "interpretation": "low"
+      },
+      "KXPERFORMBONDSONG-35-ELT": {
+        "risk_aversion_ratio": 0.08180300500834725,
+        "interpretation": "low"
+      },
+      "KXPERFORMBONDSONG-35-HAR": {
+        "risk_aversion_ratio": 0.08477508650519032,
+        "interpretation": "low"
+      },
+      "KXPERFORMBONDSONG-35-LAD": {
+        "risk_aversion_ratio": 0.08581436077057794,
+        "interpretation": "low"
+      },
+      "KXPERFORMBONDSONG-35-LAN": {
+        "risk_aversion_ratio": 0.061967467079783116,
+        "interpretation": "low"
+      },
+      "KXPERFORMBONDSONG-35-LOR": {
+        "risk_aversion_ratio": 0.08235294117647059,
+        "interpretation": "low"
+      },
+      "KXPERFORMBONDSONG-35-MIL": {
+        "risk_aversion_ratio": 0.08433734939759036,
+        "interpretation": "low"
+      },
+      "KXPERFORMBONDSONG-35-SAB": {
+        "risk_aversion_ratio": 0.08477508650519032,
+        "interpretation": "low"
+      },
+      "KXPERFORMBONDSONG-35-SZA": {
+        "risk_aversion_ratio": 0.08477508650519032,
+        "interpretation": "low"
+      },
+      "KXPERFORMBONDSONG-35-U2": {
+        "risk_aversion_ratio": 0.09001837109614207,
+        "interpretation": "low"
+      },
+      "KXPERFORMBONDSONG-35-WEE": {
+        "risk_aversion_ratio": 0.0945945945945946,
+        "interpretation": "low"
+      },
+      "KXPERSONPRESMAM-45": {
+        "risk_aversion_ratio": 0.06533173121892606,
+        "interpretation": "low"
+      },
+      "KXPRESPERSON-28-ABES": {
+        "risk_aversion_ratio": 0.003912009870301826,
+        "interpretation": "low"
+      },
+      "KXPRESPERSON-28-AOCA": {
+        "risk_aversion_ratio": 0.016759209100758395,
+        "interpretation": "low"
+      },
+      "KXPRESPERSON-28-DTRU": {
+        "risk_aversion_ratio": 0.03547542890375109,
+        "interpretation": "low"
+      },
+      "KXPRESPERSON-28-DTRUJR": {
+        "risk_aversion_ratio": 0.0,
+        "interpretation": "low"
+      },
+      "KXPRESPERSON-28-GWHI": {
+        "risk_aversion_ratio": 0.007462686567164178,
+        "interpretation": "low"
+      },
+      "KXPRESPERSON-28-GYOU": {
+        "risk_aversion_ratio": 0.1069399576696001,
+        "interpretation": "low"
+      },
+      "KXPRESPERSON-28-JPRI": {
+        "risk_aversion_ratio": 0.005392156862745098,
+        "interpretation": "low"
+      },
+      "KXPRESPERSON-28-JSHA": {
+        "risk_aversion_ratio": 0.015214384508990316,
+        "interpretation": "low"
+      },
+      "KXPRESPERSON-28-KHAR": {
+        "risk_aversion_ratio": 0.043979779145651536,
+        "interpretation": "low"
+      },
+      "KXPRESPERSON-28-MRUB": {
+        "risk_aversion_ratio": 0.05134168157423971,
+        "interpretation": "low"
+      },
+      "KXPRESPERSON-28-PBUT": {
+        "risk_aversion_ratio": 0.0232061883168845,
+        "interpretation": "low"
+      },
+      "KXPRESPERSON-28-WMOO": {
+        "risk_aversion_ratio": 0.02002336058735191,
+        "interpretation": "low"
+      },
+      "KXPRIMEENGCONSUMPTION-30-NUCLEAR": {
+        "risk_aversion_ratio": 0.08144616607071911,
+        "interpretation": "low"
+      },
+      "KXSWIFTKELCEWEDDINGLOCATION-30-NEW": {
+        "risk_aversion_ratio": 0.16757940854326397,
+        "interpretation": "low"
+      },
+      "KXSWIFTKELCEWEDDINGLOCATION-30-TEN": {
+        "risk_aversion_ratio": 0.1519756838905775,
+        "interpretation": "low"
+      },
+      "KXTRILLIONAIRE-30-BA": {
+        "risk_aversion_ratio": 0.048644292211156515,
+        "interpretation": "low"
+      },
+      "KXTRILLIONAIRE-30-JB": {
+        "risk_aversion_ratio": 0.040100250626566414,
+        "interpretation": "low"
+      },
+      "KXTRILLIONAIRE-30-JH": {
+        "risk_aversion_ratio": 0.11801716613325573,
+        "interpretation": "low"
+      },
+      "KXTRILLIONAIRE-30-LE": {
+        "risk_aversion_ratio": 0.06389543604028283,
+        "interpretation": "low"
+      },
+      "KXTRILLIONAIRE-30-LP": {
+        "risk_aversion_ratio": 0.044152099477383314,
+        "interpretation": "low"
+      },
+      "KXTRILLIONAIRE-30-MZ": {
+        "risk_aversion_ratio": 0.029126213592233007,
+        "interpretation": "low"
+      },
+      "KXTRILLIONAIRE-30-SRB": {
+        "risk_aversion_ratio": 0.05127629313571375,
+        "interpretation": "low"
+      },
+      "KXTURKEYPRES-28-MYAV": {
+        "risk_aversion_ratio": 0.08986218614309988,
+        "interpretation": "low"
+      },
+      "POWER-28-RH-RS-DP": {
+        "risk_aversion_ratio": 0.12668918918918917,
+        "interpretation": "low"
+      },
+      "SENATEOK-28-D": {
+        "risk_aversion_ratio": 0.09059233449477352,
+        "interpretation": "low"
+      },
+      "SENATEWA-28-R": {
+        "risk_aversion_ratio": 0.08432147562582346,
+        "interpretation": "low"
+      },
+      "USCLIMATE-2025": {
+        "risk_aversion_ratio": 0.0053415198524955345,
+        "interpretation": "low"
+      }
+    },
+    "herding_behavior": {},
+    "overconfidence_indicators": {},
+    "exploitable_biases": []
+  },
+  "liquidity_hunting": {
+    "ping_patterns": [
+      {
+        "market": "KXG7LEADEROUT-45JAN01-EMAC",
+        "price_level": 42,
+        "start_time": 1765390326052,
+        "duration_ms": 2649,
+        "size": 3,
+        "side": "ask"
+      },
+      {
+        "market": "KXMUSKTRILLION-30",
+        "price_level": 48,
+        "start_time": 1765431058512,
+        "duration_ms": 2977,
+        "size": 32,
+        "side": "bid"
+      },
+      {
+        "market": "KXPERSONPRESFUENTES-45",
+        "price_level": 18,
+        "start_time": 1765394954353,
+        "duration_ms": 2143,
+        "size": 3,
+        "side": "bid"
+      },
+      {
+        "market": "KXPERSONPRESFUENTES-45",
+        "price_level": 18,
+        "start_time": 1765395196056,
+        "duration_ms": 4036,
+        "size": 3,
+        "side": "bid"
+      },
+      {
+        "market": "KXPERSONPRESFUENTES-45",
+        "price_level": 18,
+        "start_time": 1765395200618,
+        "duration_ms": 2189,
+        "size": 3,
+        "side": "bid"
+      },
+      {
+        "market": "KXPERSONPRESMAM-45",
+        "price_level": 5,
+        "start_time": 1765395019847,
+        "duration_ms": 4276,
+        "size": 3,
+        "side": "ask"
+      },
+      {
+        "market": "KXPERSONPRESMAM-45",
+        "price_level": 5,
+        "start_time": 1765395159425,
+        "duration_ms": 486,
+        "size": 24,
+        "side": "ask"
+      },
+      {
+        "market": "KXPERSONPRESMAM-45",
+        "price_level": 5,
+        "start_time": 1765395250252,
+        "duration_ms": 704,
+        "size": 11,
+        "side": "ask"
+      },
+      {
+        "market": "KXPERSONPRESMAM-45",
+        "price_level": 5,
+        "start_time": 1765395250956,
+        "duration_ms": 729,
+        "size": 19,
+        "side": "ask"
+      },
+      {
+        "market": "KXPERSONPRESMAM-45",
+        "price_level": 5,
+        "start_time": 1765395251723,
+        "duration_ms": 1962,
+        "size": 18,
+        "side": "ask"
+      },
+      {
+        "market": "KXPRESPERSON-28-DTRU",
+        "price_level": 6,
+        "start_time": 1765386447137,
+        "duration_ms": 2712,
+        "size": 2,
+        "side": "ask"
+      },
+      {
+        "market": "KXSWIFTKELCEWEDDINGLOCATION-30-RHO",
+        "price_level": 79,
+        "start_time": 1765404230975,
+        "duration_ms": 3719,
+        "size": 1,
+        "side": "ask"
+      },
+      {
+        "market": "KXSWIFTKELCEWEDDINGLOCATION-30-RHO",
+        "price_level": 79,
+        "start_time": 1765409805834,
+        "duration_ms": 4179,
+        "size": 1,
+        "side": "ask"
+      },
+      {
+        "market": "KXSWIFTKELCEWEDDINGLOCATION-30-RHO",
+        "price_level": 79,
+        "start_time": 1765409825190,
+        "duration_ms": 4757,
+        "size": 1,
+        "side": "ask"
+      },
+      {
+        "market": "KXSWIFTKELCEWEDDINGLOCATION-30-RHO",
+        "price_level": 79,
+        "start_time": 1765409851339,
+        "duration_ms": 4125,
+        "size": 1,
+        "side": "ask"
+      },
+      {
+        "market": "KXSWIFTKELCEWEDDINGLOCATION-30-RHO",
+        "price_level": 79,
+        "start_time": 1765409866957,
+        "duration_ms": 4053,
+        "size": 1,
+        "side": "ask"
+      }
+    ],
+    "iceberg_detection": [],
+    "hidden_liquidity_probes": []
+  },
+  "exploitation_strategies": {
+    "high_confidence_strategies": [
+      {
+        "name": "Probability Anchor Exploitation",
+        "description": "Exploit bot tendency to defend key psychological price levels",
+        "implementation": "Monitor 25, 50, 75 cent levels for systematic support/resistance",
+        "entry_criteria": "Price approaches anchor with momentum, spreads widen",
+        "exit_criteria": "Price breaks through anchor or 1-hour time limit",
+        "risk_level": "Medium",
+        "expected_hit_rate": "65-75%",
+        "avg_profit_target": "2-5 cents per trade"
+      },
+      {
+        "name": "Volatility Liquidity Provision",
+        "description": "Provide liquidity when bots withdraw during rapid price moves",
+        "implementation": "Detect cascade events, provide tight spreads when others withdraw",
+        "entry_criteria": ">5 cent move in <30 seconds, liquidity drops >30%",
+        "exit_criteria": "Normal liquidity returns or position filled",
+        "risk_level": "High",
+        "expected_hit_rate": "40-60%",
+        "avg_profit_target": "5-15 cents per trade"
+      }
+    ],
+    "medium_confidence_strategies": [
+      {
+        "name": "Extreme Price Risk Premium",
+        "description": "Capture risk premiums bots charge at extreme prices",
+        "implementation": "Provide liquidity at 5-15 and 85-95 cent levels with tighter spreads",
+        "entry_criteria": "Price in extreme range, bot spreads >4 cents",
+        "exit_criteria": "Price returns to normal range or position filled",
+        "risk_level": "Medium-High",
+        "expected_hit_rate": "50-70%",
+        "avg_profit_target": "3-8 cents per trade"
+      },
+      {
+        "name": "Information Cascade Fade",
+        "description": "Fade excessive moves during information cascades",
+        "implementation": "Take opposite position after >10 cent move in <60 seconds",
+        "entry_criteria": "Rapid move with no clear fundamental catalyst",
+        "exit_criteria": "50% retracement or fundamental news emerges",
+        "risk_level": "High",
+        "expected_hit_rate": "30-50%",
+        "avg_profit_target": "8-20 cents per trade"
+      }
+    ],
+    "experimental_strategies": [
+      {
+        "name": "Cross-Contract Arbitrage",
+        "description": "Arbitrage pricing discrepancies between related contracts",
+        "implementation": "Monitor related event markets for pricing inconsistencies",
+        "validation_needed": "Identify truly related contracts and fair value relationships"
+      },
+      {
+        "name": "Ping Response Exploitation",
+        "description": "Provide liquidity that bots are pinging for",
+        "implementation": "Detect ping patterns and offer the liquidity being sought",
+        "validation_needed": "Confirm ping patterns correlate with larger order flow"
+      }
+    ],
+    "implementation_priorities": [
+      {
+        "priority": 1,
+        "strategy": "Probability Anchor Exploitation",
+        "rationale": "High confidence pattern with moderate risk",
+        "capital_allocation": "40%"
+      },
+      {
+        "priority": 2,
+        "strategy": "Extreme Price Risk Premium",
+        "rationale": "Clear risk aversion pattern observed",
+        "capital_allocation": "30%"
+      },
+      {
+        "priority": 3,
+        "strategy": "Volatility Liquidity Provision",
+        "rationale": "High profit potential but requires careful risk management",
+        "capital_allocation": "20%"
+      },
+      {
+        "priority": 4,
+        "strategy": "Information Cascade Fade",
+        "rationale": "Experimental with high risk but potential for large profits",
+        "capital_allocation": "10%"
+      }
+    ]
+  },
+  "prediction_patterns": [],
+  "summary": {
+    "analysis_type": "Prediction Market Specialized Analysis",
+    "key_findings": [
+      "Strong probability anchoring behavior detected at 25, 50, 75 cent levels",
+      "Systematic liquidity withdrawal during volatility cascades",
+      "Risk aversion patterns at extreme prices (0-15, 85-100 cents)",
+      "Ping patterns suggesting liquidity hunting by sophisticated bots"
+    ],
+    "top_exploitation_opportunities": [
+      "Anchor point trading around psychological levels",
+      "Volatility liquidity provision during bot withdrawal",
+      "Risk premium capture at extreme prices"
+    ],
+    "confidence_level": "High",
+    "recommended_next_steps": [
+      "Implement probability anchor monitoring system",
+      "Develop volatility detection and response mechanism",
+      "Test extreme price liquidity provision strategies",
+      "Validate cross-contract relationship identification"
+    ]
+  }
+}

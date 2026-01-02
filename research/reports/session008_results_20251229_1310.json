@@ -1,0 +1,198 @@
+{
+  "H046_CLV": {
+    "status": "TESTED",
+    "comparisons": [
+      {
+        "side": "yes",
+        "range": [
+          50,
+          60
+        ],
+        "early_edge": -3.38571546324673,
+        "late_edge": -4.0538809079773035,
+        "edge_diff": 0.6681654447305734,
+        "early_markets": 1162.0,
+        "late_markets": 1711.0
+      },
+      {
+        "side": "yes",
+        "range": [
+          60,
+          70
+        ],
+        "early_edge": -4.908976944778621,
+        "late_edge": -7.010615916298935,
+        "edge_diff": 2.1016389715203143,
+        "early_markets": 641.0,
+        "late_markets": 1460.0
+      },
+      {
+        "side": "yes",
+        "range": [
+          70,
+          80
+        ],
+        "early_edge": -10.820511264384546,
+        "late_edge": -7.208062124969928,
+        "edge_diff": -3.6124491394146183,
+        "early_markets": 483.0,
+        "late_markets": 1211.0
+      },
+      {
+        "side": "yes",
+        "range": [
+          80,
+          90
+        ],
+        "early_edge": -4.8553121486444635,
+        "late_edge": -8.979807198418388,
+        "edge_diff": 4.124495049773925,
+        "early_markets": 343.0,
+        "late_markets": 1227.0
+      },
+      {
+        "side": "no",
+        "range": [
+          50,
+          60
+        ],
+        "early_edge": 0.10702793695946955,
+        "late_edge": -1.50430179672022,
+        "edge_diff": 1.6113297336796895,
+        "early_markets": 550.0,
+        "late_markets": 1294.0
+      },
+      {
+        "side": "no",
+        "range": [
+          60,
+          70
+        ],
+        "early_edge": -1.0568142887697363,
+        "late_edge": -2.332009871988616,
+        "edge_diff": 1.27519558321888,
+        "early_markets": 415.0,
+        "late_markets": 1259.0
+      },
+      {
+        "side": "no",
+        "range": [
+          70,
+          80
+        ],
+        "early_edge": -4.256701729590906,
+        "late_edge": -1.6183017084349216,
+        "edge_diff": -2.638400021155985,
+        "early_markets": 437.0,
+        "late_markets": 1355.0
+      },
+      {
+        "side": "no",
+        "range": [
+          80,
+          90
+        ],
+        "early_edge": -3.6998821549711347,
+        "late_edge": -2.840830795099103,
+        "edge_diff": -0.8590513598720317,
+        "early_markets": 448.0,
+        "late_markets": 1531.0
+      }
+    ],
+    "early_wins": 5.0,
+    "total_comparisons": 8,
+    "best_diff": 4.124495049773925
+  },
+  "H049_Recurring": {
+    "status": "REJECTED",
+    "reason": "No strategies pass validation"
+  },
+  "H065_Leverage": {
+    "status": "MARGINAL",
+    "best_strategy": "fade_high_leverage_yes_2",
+    "edge": 8.91035059539147,
+    "markets": 54409.0,
+    "all_results": [
+      {
+        "strategy": "fade_high_leverage_yes_2",
+        "threshold": 2,
+        "markets": 54409,
+        "win_rate": 0.9160433016596519,
+        "breakeven": 0.8269397957057372,
+        "edge_pct": 8.91035059539147,
+        "their_price": 17.306020429426287,
+        "our_price": 82.69397957057372
+      },
+      {
+        "strategy": "fade_high_leverage_yes_3",
+        "threshold": 3,
+        "markets": 48937,
+        "win_rate": 0.936571510309173,
+        "breakeven": 0.8792575743651012,
+        "edge_pct": 5.731393594407175,
+        "their_price": 12.074242563489875,
+        "our_price": 87.92575743651012
+      },
+      {
+        "strategy": "fade_high_leverage_yes_5",
+        "threshold": 5,
+        "markets": 41659,
+        "win_rate": 0.9561439304832089,
+        "breakeven": 0.922700158513863,
+        "edge_pct": 3.3443771969345892,
+        "their_price": 7.729984148613699,
+        "our_price": 92.2700158513863
+      },
+      {
+        "strategy": "fade_high_leverage_yes_10",
+        "threshold": 10,
+        "markets": 31518,
+        "win_rate": 0.9743321276730758,
+        "breakeven": 0.9559724210000228,
+        "edge_pct": 1.8359706673052978,
+        "their_price": 4.402757899997728,
+        "our_price": 95.59724210000228
+      },
+      {
+        "strategy": "low_leverage_yes",
+        "threshold": "<0.5",
+        "markets": 11441,
+        "win_rate": 0.3324010138973866,
+        "breakeven": 0.38622025463066495,
+        "edge_pct": -5.381924073327838
+      },
+      {
+        "strategy": "low_leverage_no",
+        "threshold": "<0.5",
+        "markets": 6678,
+        "win_rate": 0.8358790056903265,
+        "breakeven": 0.8817052188558846,
+        "edge_pct": -4.582621316555812
+      }
+    ]
+  },
+  "H052_FlowROC": {
+    "status": "MARGINAL",
+    "results": [
+      {
+        "strategy": "follow_shift_yes",
+        "markets": 860,
+        "win_rate": 0.6174418604651163,
+        "edge_pct": 11.74418604651163,
+        "p_value": 2.885359993239243e-12
+      },
+      {
+        "strategy": "follow_shift_no",
+        "markets": 1776,
+        "win_rate": 0.793918918918919,
+        "edge_pct": 29.3918918918919,
+        "p_value": 1.7693211103196465e-144
+      }
+    ]
+  },
+  "H062_MultiOutcome": {
+    "status": "MARGINAL",
+    "mispriced_events": 69,
+    "max_overround": 7.99
+  }
+}

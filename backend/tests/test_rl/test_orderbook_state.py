@@ -20,15 +20,23 @@ from kalshiflow_rl.data.orderbook_state import (
 
 @pytest.fixture
 def sample_snapshot():
-    """Sample snapshot data for testing."""
+    """Sample snapshot data for testing.
+    
+    Kalshi only provides bids. Asks are derived using the reciprocal relationship:
+    - YES_BID at X → NO_ASK at (99 - X)
+    - NO_BID at Y → YES_ASK at (99 - Y)
+    
+    So with yes_bids at 45,44 and no_bids at 45,44:
+    - yes_asks derived from no_bids: {54: 600, 55: 300}
+    - no_asks derived from yes_bids: {54: 1000, 55: 500}
+    """
     return {
         "market_ticker": "TEST-MARKET",
         "timestamp_ms": int(time.time() * 1000),
         "sequence_number": 100,
         "yes_bids": {"45": 1000, "44": 500},
-        "yes_asks": {"55": 800, "56": 400},
         "no_bids": {"45": 600, "44": 300},
-        "no_asks": {"55": 700, "56": 200}
+        # Note: yes_asks and no_asks in input are ignored - they're derived from bids
     }
 
 
@@ -69,17 +77,31 @@ class TestOrderbookState:
         assert state.last_sequence == 100
         assert state.market_ticker == "TEST-MARKET"
         
-        # Check yes side
+        # Check yes bids (from input)
         assert 45 in state.yes_bids
         assert state.yes_bids[45] == 1000
-        assert 55 in state.yes_asks
-        assert state.yes_asks[55] == 800
+        assert 44 in state.yes_bids
+        assert state.yes_bids[44] == 500
         
-        # Check no side
+        # Check yes asks (derived from no_bids: NO_BID at Y → YES_ASK at 99-Y)
+        # no_bids: {45: 600, 44: 300} → yes_asks: {54: 600, 55: 300}
+        assert 54 in state.yes_asks
+        assert state.yes_asks[54] == 600
+        assert 55 in state.yes_asks
+        assert state.yes_asks[55] == 300
+        
+        # Check no bids (from input)
         assert 45 in state.no_bids
         assert state.no_bids[45] == 600
+        assert 44 in state.no_bids
+        assert state.no_bids[44] == 300
+        
+        # Check no asks (derived from yes_bids: YES_BID at X → NO_ASK at 99-X)
+        # yes_bids: {45: 1000, 44: 500} → no_asks: {54: 1000, 55: 500}
+        assert 54 in state.no_asks
+        assert state.no_asks[54] == 1000
         assert 55 in state.no_asks
-        assert state.no_asks[55] == 700
+        assert state.no_asks[55] == 500
     
     def test_apply_delta_add(self, sample_snapshot):
         """Test applying add delta."""
@@ -162,39 +184,55 @@ class TestOrderbookState:
         assert state.last_sequence == 100  # Unchanged
     
     def test_spread_calculations(self, sample_snapshot):
-        """Test spread calculation."""
+        """Test spread calculation.
+        
+        With sample data:
+        - yes_bids: {45: 1000, 44: 500} → best_bid = 45
+        - yes_asks: derived from no_bids {45: 600, 44: 300} → {54: 600, 55: 300} → best_ask = 54
+        - no_bids: {45: 600, 44: 300} → best_bid = 45
+        - no_asks: derived from yes_bids {45: 1000, 44: 500} → {54: 1000, 55: 500} → best_ask = 54
+        """
         state = OrderbookState("TEST-MARKET")
         state.apply_snapshot(sample_snapshot)
         
-        # Yes spread = best_ask - best_bid = 55 - 45 = 10
+        # Yes spread = best_ask - best_bid = 54 - 45 = 9
         yes_spread = state.get_yes_spread()
-        assert yes_spread == 10
+        assert yes_spread == 9
         
-        # No spread = best_ask - best_bid = 55 - 45 = 10
+        # No spread = best_ask - best_bid = 54 - 45 = 9
         no_spread = state.get_no_spread()
-        assert no_spread == 10
+        assert no_spread == 9
     
     def test_mid_price_calculations(self, sample_snapshot):
-        """Test mid price calculation."""
+        """Test mid price calculation.
+        
+        With sample data:
+        - yes: best_bid = 45, best_ask = 54 (derived from no_bid at 45)
+        - no: best_bid = 45, best_ask = 54 (derived from yes_bid at 45)
+        """
         state = OrderbookState("TEST-MARKET")
         state.apply_snapshot(sample_snapshot)
         
-        # Yes mid = (best_bid + best_ask) / 2 = (45 + 55) / 2 = 50
+        # Yes mid = (best_bid + best_ask) / 2 = (45 + 54) / 2 = 49.5
         yes_mid = state.get_yes_mid_price()
-        assert yes_mid == Decimal('50')
+        assert yes_mid == Decimal('49.5')
         
-        # No mid = (best_bid + best_ask) / 2 = (45 + 55) / 2 = 50
+        # No mid = (best_bid + best_ask) / 2 = (45 + 54) / 2 = 49.5
         no_mid = state.get_no_mid_price()
-        assert no_mid == Decimal('50')
+        assert no_mid == Decimal('49.5')
     
     def test_cache_invalidation(self, sample_snapshot):
-        """Test that cache is invalidated on updates."""
+        """Test that cache is invalidated on updates.
+        
+        Initial state: yes_bids best=45, yes_asks best=54 → spread=9
+        After delta adding bid at 46: yes_bids best=46, yes_asks best=54 → spread=8
+        """
         state = OrderbookState("TEST-MARKET")
         state.apply_snapshot(sample_snapshot)
         
         # Calculate spread (populates cache)
         spread1 = state.get_yes_spread()
-        assert spread1 == 10
+        assert spread1 == 9  # 54 - 45 = 9
         
         # Apply delta that changes spread
         delta = {
@@ -210,7 +248,7 @@ class TestOrderbookState:
         
         # Spread should be recalculated
         spread2 = state.get_yes_spread()
-        assert spread2 == 9  # 55 - 46 = 9
+        assert spread2 == 8  # 54 - 46 = 8
     
     def test_top_levels(self, sample_snapshot):
         """Test getting top price levels."""
@@ -229,13 +267,20 @@ class TestOrderbookState:
         assert len(top_levels["yes_asks"]) <= 2
     
     def test_total_volume(self, sample_snapshot):
-        """Test total volume calculation."""
+        """Test total volume calculation.
+        
+        With sample data (only bids provided, asks derived):
+        - yes_bids: {45: 1000, 44: 500} → 1500
+        - no_bids: {45: 600, 44: 300} → 900
+        - yes_asks: {54: 600, 55: 300} → 900 (derived from no_bids)
+        - no_asks: {54: 1000, 55: 500} → 1500 (derived from yes_bids)
+        Total = 1500 + 900 + 900 + 1500 = 4800
+        """
         state = OrderbookState("TEST-MARKET")
         state.apply_snapshot(sample_snapshot)
         
-        # Total = 1000 + 500 + 800 + 400 + 600 + 300 + 700 + 200 = 4500
         total_volume = state.get_total_volume()
-        assert total_volume == 4500
+        assert total_volume == 4800
     
     def test_to_dict(self, sample_snapshot):
         """Test converting state to dictionary."""
@@ -376,7 +421,12 @@ class TestSharedOrderbookState:
     
     @pytest.mark.asyncio
     async def test_get_spreads_and_mids(self, sample_snapshot):
-        """Test atomic spreads and mids getter."""
+        """Test atomic spreads and mids getter.
+        
+        With sample data:
+        - yes: best_bid=45, best_ask=54 → spread=9, mid=49.5
+        - no: best_bid=45, best_ask=54 → spread=9, mid=49.5
+        """
         shared_state = SharedOrderbookState("TEST-MARKET")
         await shared_state.apply_snapshot(sample_snapshot)
         
@@ -387,10 +437,10 @@ class TestSharedOrderbookState:
         assert "yes_mid_price" in spreads_mids
         assert "no_mid_price" in spreads_mids
         
-        assert spreads_mids["yes_spread"] == 10
-        assert spreads_mids["no_spread"] == 10
-        assert spreads_mids["yes_mid_price"] == 50.0
-        assert spreads_mids["no_mid_price"] == 50.0
+        assert spreads_mids["yes_spread"] == 9
+        assert spreads_mids["no_spread"] == 9
+        assert spreads_mids["yes_mid_price"] == 49.5
+        assert spreads_mids["no_mid_price"] == 49.5
     
     @pytest.mark.asyncio
     async def test_get_stats(self, sample_snapshot):

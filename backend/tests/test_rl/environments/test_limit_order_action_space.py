@@ -135,7 +135,7 @@ class TestLimitOrderActionSpace:
         """Test Gym space representation."""
         gym_space = action_space.get_gym_space()
         
-        assert gym_space.n == 5
+        assert gym_space.n == 21
         assert hasattr(gym_space, 'sample')  # It's a proper Gym space
     
     def test_action_info(self, action_space):
@@ -302,10 +302,10 @@ class TestActionExecution:
     @pytest.mark.asyncio
     async def test_invalid_action_execution(self, action_space, sample_orderbook):
         """Test invalid action execution."""
-        result = await action_space.execute_action(10, "TEST", sample_orderbook)
+        result = await action_space.execute_action(25, "TEST", sample_orderbook)
         
         assert result.was_successful() is False
-        assert "not a valid" in result.error_message
+        assert "Invalid action" in result.error_message
     
     @pytest.mark.asyncio
     async def test_buy_action_execution(self, action_space, sample_orderbook, mock_order_manager):
@@ -328,7 +328,7 @@ class TestActionExecution:
         assert call_args.kwargs["ticker"] == "TEST"
         assert call_args.kwargs["side"] == OrderSide.BUY
         assert call_args.kwargs["contract_side"] == ContractSide.YES
-        assert call_args.kwargs["quantity"] == 10
+        assert call_args.kwargs["quantity"] == 5  # First position size is 5
     
     @pytest.mark.asyncio
     async def test_sell_action_execution(self, action_space, sample_orderbook, mock_order_manager):
@@ -337,7 +337,8 @@ class TestActionExecution:
         mock_order.order_id = "test_sell_123"
         mock_order_manager.place_order.return_value = mock_order
         
-        result = await action_space.execute_action(2, "TEST", sample_orderbook)
+        # Action 6 = SELL_YES with size index 0 (5 contracts)
+        result = await action_space.execute_action(6, "TEST", sample_orderbook)
         
         assert result.action_taken == LimitOrderActions.SELL_YES_LIMIT
         assert result.was_successful()

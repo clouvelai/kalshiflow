@@ -151,8 +151,8 @@ const Header = ({ connectionStatus, ...props }) => {
             </p>
           </div>
 
-          {/* Connection Status - Integrated into hero */}
-          <div className="flex items-center justify-center mt-6">
+          {/* Connection Status and Navigation - Integrated into hero */}
+          <div className="flex items-center justify-center mt-6 space-x-4">
             <div className="flex items-center space-x-3 group px-6 py-3 bg-slate-900/50 backdrop-blur-xl rounded-2xl border border-slate-800/50 hover:border-slate-700/50 transition-all duration-300" data-testid="connection-status">
               <div className="relative">
                 <div className={`w-3 h-3 rounded-full ${
@@ -187,6 +187,33 @@ const Header = ({ connectionStatus, ...props }) => {
                   ? 'Establishing Connection...'
                   : 'Connection Offline'}
               </span>
+            </div>
+            
+            {/* Navigation Links */}
+            <div className="flex items-center space-x-3">
+              <a 
+                href="/rl-trader" 
+                className="flex items-center space-x-2 px-6 py-3 bg-slate-900/50 backdrop-blur-xl rounded-2xl border border-slate-800/50 hover:border-green-500/50 hover:bg-slate-900/70 transition-all duration-300 group"
+              >
+                <svg className="w-4 h-4 text-green-400 group-hover:text-green-300 transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                </svg>
+                <span className="text-sm font-semibold text-slate-300 group-hover:text-green-400 transition-colors">
+                  RL Trader v1.0
+                </span>
+              </a>
+              
+              <a 
+                href="/v3-trader" 
+                className="flex items-center space-x-2 px-6 py-3 bg-slate-900/50 backdrop-blur-xl rounded-2xl border border-slate-800/50 hover:border-blue-500/50 hover:bg-slate-900/70 transition-all duration-300 group"
+              >
+                <svg className="w-4 h-4 text-blue-400 group-hover:text-blue-300 transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                </svg>
+                <span className="text-sm font-semibold text-slate-300 group-hover:text-blue-400 transition-colors">
+                  V3 Console
+                </span>
+              </a>
             </div>
           </div>
 

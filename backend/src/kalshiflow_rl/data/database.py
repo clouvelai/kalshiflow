@@ -97,7 +97,11 @@ class RLDatabase:
             await self._create_models_table(conn)
             await self._create_trading_episodes_table(conn)
             await self._create_trading_actions_table(conn)
-            
+
+            # Event Lifecycle Discovery tables
+            await self._create_tracked_markets_table(conn)
+            await self._create_lifecycle_events_table(conn)
+
             # Analyze tables for optimal query planning
             await conn.execute("ANALYZE rl_orderbook_sessions")
             await conn.execute("ANALYZE rl_orderbook_snapshots")
@@ -105,7 +109,7 @@ class RLDatabase:
             await conn.execute("ANALYZE rl_models")
             await conn.execute("ANALYZE rl_trading_episodes")
             await conn.execute("ANALYZE rl_trading_actions")
-            
+
             logger.info("RL database schema created successfully")
     
     async def _add_constraint_if_not_exists(self, conn: asyncpg.Connection, table_name: str, constraint_name: str, constraint_sql: str):
@@ -134,13 +138,15 @@ class RLDatabase:
                 ended_at TIMESTAMPTZ,  -- NULL while session is active
                 status VARCHAR(20) NOT NULL DEFAULT 'active',  -- active, closed, error
                 websocket_url TEXT,
+                environment TEXT,  -- Environment where session was collected (local/production/paper)
                 connection_metadata JSONB,  -- Additional connection info
                 messages_received BIGINT DEFAULT 0,
                 snapshots_count INTEGER DEFAULT 0,
                 deltas_count INTEGER DEFAULT 0,
                 last_message_at TIMESTAMPTZ,
                 error_message TEXT,  -- If session ended with error
-                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                CONSTRAINT chk_sessions_environment CHECK (environment IN ('local', 'production', 'paper', 'test'))
             );
         ''')
         
@@ -159,6 +165,11 @@ class RLDatabase:
         await conn.execute('''
             CREATE INDEX IF NOT EXISTS idx_sessions_markets 
                 ON rl_orderbook_sessions USING GIN(market_tickers);
+        ''')
+        
+        await conn.execute('''
+            CREATE INDEX IF NOT EXISTS idx_sessions_environment 
+                ON rl_orderbook_sessions(environment, started_at DESC);
         ''')
         
         # Add constraints
@@ -497,7 +508,121 @@ class RLDatabase:
         await conn.execute('''
             COMMENT ON TABLE rl_trading_actions IS 'Detailed logging of all trading actions and decisions';
         ''')
-    
+
+    async def _create_tracked_markets_table(self, conn: asyncpg.Connection):
+        """
+        Create tracked_markets table for Event Lifecycle Discovery mode.
+
+        Stores markets discovered via market_lifecycle_v2 WebSocket channel
+        and filtered by category. Provides restart recovery and capacity
+        management for orderbook subscriptions.
+        """
+        await conn.execute('''
+            CREATE TABLE IF NOT EXISTS tracked_markets (
+                id BIGSERIAL PRIMARY KEY,
+                market_ticker VARCHAR(100) NOT NULL UNIQUE,
+                event_ticker VARCHAR(100),
+                title TEXT,
+                category VARCHAR(100),
+
+                -- Lifecycle timestamps (seconds from Kalshi)
+                created_ts BIGINT,
+                open_ts BIGINT,
+                close_ts BIGINT,
+                determined_ts BIGINT,
+                settled_ts BIGINT,
+
+                -- Tracking metadata
+                status VARCHAR(20) NOT NULL DEFAULT 'active',
+                tracked_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                discovery_source VARCHAR(20) NOT NULL DEFAULT 'lifecycle_ws',
+
+                -- Full REST response cached for UI grid
+                market_info JSONB
+            );
+        ''')
+
+        # Create indexes for common queries
+        await conn.execute('''
+            CREATE INDEX IF NOT EXISTS idx_tracked_markets_status
+                ON tracked_markets(status);
+        ''')
+
+        await conn.execute('''
+            CREATE INDEX IF NOT EXISTS idx_tracked_markets_category
+                ON tracked_markets(category);
+        ''')
+
+        await conn.execute('''
+            CREATE INDEX IF NOT EXISTS idx_tracked_markets_status_category
+                ON tracked_markets(status, category);
+        ''')
+
+        # Add constraints
+        await self._add_constraint_if_not_exists(
+            conn,
+            'tracked_markets',
+            'chk_tracked_markets_status',
+            "CHECK (status IN ('active', 'determined', 'settled'))"
+        )
+
+        await conn.execute('''
+            COMMENT ON TABLE tracked_markets IS 'Markets tracked via Event Lifecycle Discovery mode for orderbook subscription';
+        ''')
+
+        # Migration: Add discovery_source column if not exists (for existing tables)
+        await conn.execute('''
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name = 'tracked_markets' AND column_name = 'discovery_source'
+                ) THEN
+                    ALTER TABLE tracked_markets
+                    ADD COLUMN discovery_source VARCHAR(20) NOT NULL DEFAULT 'lifecycle_ws';
+                END IF;
+            END $$;
+        ''')
+
+    async def _create_lifecycle_events_table(self, conn: asyncpg.Connection):
+        """
+        Create lifecycle_events table for audit trail.
+
+        Stores ALL lifecycle events received from market_lifecycle_v2 channel
+        for debugging and analysis. This includes events for both tracked and
+        rejected markets.
+        """
+        await conn.execute('''
+            CREATE TABLE IF NOT EXISTS lifecycle_events (
+                id BIGSERIAL PRIMARY KEY,
+                market_ticker VARCHAR(100) NOT NULL,
+                event_type VARCHAR(30) NOT NULL,
+                payload JSONB NOT NULL,
+                kalshi_ts BIGINT NOT NULL,
+                received_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+            );
+        ''')
+
+        # Create indexes for querying
+        await conn.execute('''
+            CREATE INDEX IF NOT EXISTS idx_lifecycle_events_ticker_ts
+                ON lifecycle_events(market_ticker, kalshi_ts DESC);
+        ''')
+
+        await conn.execute('''
+            CREATE INDEX IF NOT EXISTS idx_lifecycle_events_type
+                ON lifecycle_events(event_type);
+        ''')
+
+        await conn.execute('''
+            CREATE INDEX IF NOT EXISTS idx_lifecycle_events_received
+                ON lifecycle_events(received_at DESC);
+        ''')
+
+        await conn.execute('''
+            COMMENT ON TABLE lifecycle_events IS 'Audit trail of all market lifecycle events from Kalshi WebSocket';
+        ''')
+
     async def close(self):
         """Close database connection pool."""
         if self._pool:
@@ -507,17 +632,17 @@ class RLDatabase:
     
     # Session management operations
     
-    async def create_session(self, market_tickers: List[str], websocket_url: str = None) -> int:
+    async def create_session(self, market_tickers: List[str], websocket_url: str = None, environment: str = None) -> int:
         """Create a new orderbook session and return its ID."""
         async with self.get_connection() as conn:
             session_id = await conn.fetchval('''
                 INSERT INTO rl_orderbook_sessions (
-                    market_tickers, websocket_url, status, started_at
-                ) VALUES ($1, $2, 'active', CURRENT_TIMESTAMP)
+                    market_tickers, websocket_url, environment, status, started_at
+                ) VALUES ($1, $2, $3, 'active', CURRENT_TIMESTAMP)
                 RETURNING session_id
-            ''', market_tickers, websocket_url)
+            ''', market_tickers, websocket_url, environment)
             
-            logger.info(f"Created orderbook session {session_id} for {len(market_tickers)} markets")
+            logger.info(f"Created orderbook session {session_id} for {len(market_tickers)} markets (env: {environment})")
             return session_id
     
     async def update_session_stats(self, session_id: int, messages: int = 0, snapshots: int = 0, deltas: int = 0) -> None:
@@ -1039,6 +1164,577 @@ class RLDatabase:
                 'created_at': model_info['created_at'].isoformat(),
                 'performance': dict(episode_stats) if episode_stats else {}
             }
+    
+    async def close(self):
+        """Close database connection pool."""
+        if self._pool:
+            await self._pool.close()
+            self._pool = None
+            self._initialized = False
+            logger.info("RL database connection pool closed")
+    
+    # Session Cleanup Operations
+    
+    async def delete_session(self, session_id: int) -> Dict[str, Any]:
+        """
+        Delete a session and all related data (cascading delete).
+        
+        Returns dict with deletion statistics.
+        """
+        async with self.get_connection() as conn:
+            async with conn.transaction():
+                # Get session info before deletion
+                session = await conn.fetchrow(
+                    "SELECT * FROM rl_orderbook_sessions WHERE session_id = $1",
+                    session_id
+                )
+                
+                if not session:
+                    return {"error": f"Session {session_id} not found"}
+                
+                # Count related data before deletion
+                snapshot_count = await conn.fetchval(
+                    "SELECT COUNT(*) FROM rl_orderbook_snapshots WHERE session_id = $1",
+                    session_id
+                )
+                delta_count = await conn.fetchval(
+                    "SELECT COUNT(*) FROM rl_orderbook_deltas WHERE session_id = $1",
+                    session_id
+                )
+                
+                # Delete related data (order matters due to foreign keys)
+                await conn.execute("DELETE FROM rl_orderbook_deltas WHERE session_id = $1", session_id)
+                await conn.execute("DELETE FROM rl_orderbook_snapshots WHERE session_id = $1", session_id)
+                await conn.execute("DELETE FROM rl_orderbook_sessions WHERE session_id = $1", session_id)
+                
+                return {
+                    "session_id": session_id,
+                    "markets": session['market_tickers'],
+                    "duration": str(session['ended_at'] - session['started_at']) if session['ended_at'] else "N/A",
+                    "snapshots_deleted": snapshot_count,
+                    "deltas_deleted": delta_count,
+                    "status": "deleted"
+                }
+    
+    async def delete_sessions(self, session_ids: List[int]) -> List[Dict[str, Any]]:
+        """
+        Batch delete multiple sessions with progress tracking.
+        
+        Returns list of deletion results for each session.
+        """
+        results = []
+        for session_id in session_ids:
+            try:
+                result = await self.delete_session(session_id)
+                results.append(result)
+            except Exception as e:
+                results.append({
+                    "session_id": session_id,
+                    "error": str(e),
+                    "status": "failed"
+                })
+        return results
+    
+    async def get_empty_sessions(self) -> List[Dict[str, Any]]:
+        """Get all sessions with no snapshots or deltas."""
+        async with self.get_connection() as conn:
+            rows = await conn.fetch("""
+                SELECT 
+                    session_id,
+                    market_tickers,
+                    started_at,
+                    ended_at,
+                    status,
+                    snapshots_count,
+                    deltas_count,
+                    CASE 
+                        WHEN ended_at IS NOT NULL THEN ended_at - started_at
+                        ELSE NULL
+                    END as duration
+                FROM rl_orderbook_sessions
+                WHERE snapshots_count = 0 AND deltas_count = 0
+                ORDER BY session_id
+            """)
+            
+            return [dict(row) for row in rows]
+    
+    async def get_test_sessions(self, max_duration_minutes: int = 5, max_markets: int = 5) -> List[Dict[str, Any]]:
+        """Get sessions that appear to be test runs (short duration, few markets)."""
+        async with self.get_connection() as conn:
+            rows = await conn.fetch("""
+                SELECT 
+                    session_id,
+                    market_tickers,
+                    started_at,
+                    ended_at,
+                    status,
+                    snapshots_count,
+                    deltas_count,
+                    CASE 
+                        WHEN ended_at IS NOT NULL THEN ended_at - started_at
+                        ELSE NULL
+                    END as duration
+                FROM rl_orderbook_sessions
+                WHERE 
+                    status = 'closed'
+                    AND array_length(market_tickers, 1) <= $1
+                    AND (
+                        ended_at IS NULL 
+                        OR EXTRACT(EPOCH FROM (ended_at - started_at))/60 <= $2
+                    )
+                ORDER BY session_id
+            """, max_markets, max_duration_minutes)
+            
+            return [dict(row) for row in rows]
+    
+    async def get_sessions_by_date_range(self, start_date: datetime, end_date: datetime) -> List[Dict[str, Any]]:
+        """Get sessions within a specific date range."""
+        async with self.get_connection() as conn:
+            rows = await conn.fetch("""
+                SELECT 
+                    session_id,
+                    market_tickers,
+                    started_at,
+                    ended_at,
+                    status,
+                    snapshots_count,
+                    deltas_count,
+                    CASE 
+                        WHEN ended_at IS NOT NULL THEN ended_at - started_at
+                        ELSE NULL
+                    END as duration
+                FROM rl_orderbook_sessions
+                WHERE started_at >= $1 AND started_at <= $2
+                ORDER BY started_at DESC
+            """, start_date, end_date)
+            
+            return [dict(row) for row in rows]
+    
+    async def get_session_statistics(self) -> Dict[str, Any]:
+        """Get overall statistics about all sessions."""
+        async with self.get_connection() as conn:
+            stats = await conn.fetchrow("""
+                SELECT 
+                    COUNT(*) as total_sessions,
+                    COUNT(CASE WHEN snapshots_count > 0 OR deltas_count > 0 THEN 1 END) as sessions_with_data,
+                    COUNT(CASE WHEN snapshots_count = 0 AND deltas_count = 0 THEN 1 END) as empty_sessions,
+                    COUNT(CASE WHEN array_length(market_tickers, 1) <= 5 
+                          AND EXTRACT(EPOCH FROM (ended_at - started_at))/60 <= 5 THEN 1 END) as test_sessions,
+                    SUM(snapshots_count) as total_snapshots,
+                    SUM(deltas_count) as total_deltas
+                FROM rl_orderbook_sessions
+                WHERE status = 'closed'
+            """)
+            
+            return dict(stats)
+    
+    async def get_environment_statistics(self) -> Dict[str, int]:
+        """Get session count breakdown by environment."""
+        async with self.get_connection() as conn:
+            rows = await conn.fetch("""
+                SELECT environment, COUNT(*) as count
+                FROM rl_orderbook_sessions
+                WHERE status = 'closed'
+                GROUP BY environment
+                ORDER BY count DESC
+            """)
+            
+            return {row['environment']: row['count'] for row in rows}
+
+    # ============================================================
+    # Tracked Markets CRUD Operations (Event Lifecycle Discovery)
+    # ============================================================
+
+    async def insert_tracked_market(
+        self,
+        market_ticker: str,
+        event_ticker: Optional[str] = None,
+        title: Optional[str] = None,
+        category: Optional[str] = None,
+        created_ts: Optional[int] = None,
+        open_ts: Optional[int] = None,
+        close_ts: Optional[int] = None,
+        market_info: Optional[Dict[str, Any]] = None,
+        discovery_source: str = "lifecycle_ws",
+    ) -> Optional[int]:
+        """
+        Insert a new tracked market into the database.
+
+        Called by EventLifecycleService when a market passes category filtering
+        and capacity checks. Inserts the market with 'active' status.
+
+        Args:
+            market_ticker: Unique market identifier (UNIQUE constraint)
+            event_ticker: Parent event ticker
+            title: Market title from REST API
+            category: Category from REST API (e.g., "Sports", "Crypto")
+            created_ts: Kalshi creation timestamp in seconds
+            open_ts: Market open timestamp in seconds
+            close_ts: Market close timestamp in seconds
+            market_info: Full REST response cached as JSONB
+            discovery_source: How market was discovered ("lifecycle_ws", "api", "db_recovery")
+
+        Returns:
+            Row ID if inserted successfully, None if market already exists
+            (UNIQUE constraint violation)
+        """
+        async with self.get_connection() as conn:
+            try:
+                row_id = await conn.fetchval('''
+                    INSERT INTO tracked_markets (
+                        market_ticker, event_ticker, title, category,
+                        created_ts, open_ts, close_ts, market_info,
+                        status, tracked_at, discovery_source
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'active', CURRENT_TIMESTAMP, $9)
+                    ON CONFLICT (market_ticker) DO NOTHING
+                    RETURNING id
+                ''',
+                    market_ticker,
+                    event_ticker,
+                    title,
+                    category,
+                    created_ts,
+                    open_ts,
+                    close_ts,
+                    json.dumps(market_info) if market_info else None,
+                    discovery_source,
+                )
+
+                if row_id:
+                    logger.info(f"Tracked market inserted: {market_ticker} (category={category})")
+                else:
+                    logger.debug(f"Market already tracked: {market_ticker}")
+
+                return row_id
+
+            except Exception as e:
+                logger.error(f"Failed to insert tracked market {market_ticker}: {e}")
+                return None
+
+    async def update_tracked_market_status(
+        self,
+        market_ticker: str,
+        status: str,
+        determined_ts: Optional[int] = None,
+        settled_ts: Optional[int] = None,
+    ) -> bool:
+        """
+        Update the status of a tracked market.
+
+        Called when lifecycle events change the market state:
+        - 'determined': Market outcome resolved (stop orderbook subscription)
+        - 'settled': Positions liquidated (final state)
+
+        Args:
+            market_ticker: Market to update
+            status: New status ('active', 'determined', 'settled')
+            determined_ts: Determination timestamp in seconds (optional)
+            settled_ts: Settlement timestamp in seconds (optional)
+
+        Returns:
+            True if updated, False if market not found or error
+        """
+        async with self.get_connection() as conn:
+            try:
+                # Build dynamic update
+                updates = ["status = $2"]
+                params = [market_ticker, status]
+                param_idx = 3
+
+                if determined_ts is not None:
+                    updates.append(f"determined_ts = ${param_idx}")
+                    params.append(determined_ts)
+                    param_idx += 1
+
+                if settled_ts is not None:
+                    updates.append(f"settled_ts = ${param_idx}")
+                    params.append(settled_ts)
+                    param_idx += 1
+
+                query = f'''
+                    UPDATE tracked_markets
+                    SET {", ".join(updates)}
+                    WHERE market_ticker = $1
+                '''
+
+                result = await conn.execute(query, *params)
+                updated = result == "UPDATE 1"
+
+                if updated:
+                    logger.info(f"Tracked market status updated: {market_ticker} -> {status}")
+                else:
+                    logger.warning(f"Market not found for status update: {market_ticker}")
+
+                return updated
+
+            except Exception as e:
+                logger.error(f"Failed to update tracked market {market_ticker}: {e}")
+                return False
+
+    async def get_tracked_markets(
+        self,
+        status: Optional[str] = None,
+        category: Optional[str] = None,
+        include_settled: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """
+        Get tracked markets with optional filtering.
+
+        Used for:
+        - Startup recovery: Load all 'active' markets for orderbook subscription
+        - UI display: Show all tracked markets with their statuses
+        - Statistics: Count by category/status
+
+        Args:
+            status: Filter by specific status (None = all statuses)
+            category: Filter by category (None = all categories)
+            include_settled: Include 'settled' markets (default: False)
+
+        Returns:
+            List of tracked market dicts with all fields
+        """
+        async with self.get_connection() as conn:
+            conditions = []
+            params = []
+            param_idx = 1
+
+            if status:
+                conditions.append(f"status = ${param_idx}")
+                params.append(status)
+                param_idx += 1
+            elif not include_settled:
+                # Exclude settled by default (they're historical)
+                conditions.append("status != 'settled'")
+
+            if category:
+                conditions.append(f"category = ${param_idx}")
+                params.append(category)
+                param_idx += 1
+
+            where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+
+            query = f'''
+                SELECT
+                    id, market_ticker, event_ticker, title, category,
+                    created_ts, open_ts, close_ts, determined_ts, settled_ts,
+                    status, tracked_at, market_info, discovery_source
+                FROM tracked_markets
+                {where_clause}
+                ORDER BY tracked_at DESC
+            '''
+
+            rows = await conn.fetch(query, *params)
+
+            markets = []
+            for row in rows:
+                market_dict = dict(row)
+                # Parse JSON field
+                if market_dict.get('market_info'):
+                    try:
+                        market_dict['market_info'] = json.loads(market_dict['market_info'])
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+                markets.append(market_dict)
+
+            return markets
+
+    async def get_tracked_market(self, market_ticker: str) -> Optional[Dict[str, Any]]:
+        """
+        Get a single tracked market by ticker.
+
+        Args:
+            market_ticker: Market to retrieve
+
+        Returns:
+            Market dict or None if not found
+        """
+        async with self.get_connection() as conn:
+            row = await conn.fetchrow('''
+                SELECT
+                    id, market_ticker, event_ticker, title, category,
+                    created_ts, open_ts, close_ts, determined_ts, settled_ts,
+                    status, tracked_at, market_info, discovery_source
+                FROM tracked_markets
+                WHERE market_ticker = $1
+            ''', market_ticker)
+
+            if row:
+                market_dict = dict(row)
+                if market_dict.get('market_info'):
+                    try:
+                        market_dict['market_info'] = json.loads(market_dict['market_info'])
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+                return market_dict
+
+            return None
+
+    async def count_tracked_markets(self, status: Optional[str] = 'active') -> int:
+        """
+        Count tracked markets with optional status filter.
+
+        Used for capacity checks before adding new markets.
+
+        Args:
+            status: Status to count (default: 'active', None = all)
+
+        Returns:
+            Count of tracked markets
+        """
+        async with self.get_connection() as conn:
+            if status:
+                count = await conn.fetchval('''
+                    SELECT COUNT(*) FROM tracked_markets WHERE status = $1
+                ''', status)
+            else:
+                count = await conn.fetchval('''
+                    SELECT COUNT(*) FROM tracked_markets
+                ''')
+
+            return count or 0
+
+    async def clear_tracked_markets(self, status: Optional[str] = None) -> int:
+        """
+        Clear tracked markets from the database.
+
+        Used to reset discovery state before restarting the trader
+        with new filtering configuration.
+
+        Args:
+            status: If provided, only clear markets with this status.
+                    If None, clears ALL tracked markets.
+
+        Returns:
+            Number of markets deleted
+        """
+        async with self.get_connection() as conn:
+            try:
+                if status:
+                    result = await conn.execute('''
+                        DELETE FROM tracked_markets WHERE status = $1
+                    ''', status)
+                else:
+                    result = await conn.execute('''
+                        DELETE FROM tracked_markets
+                    ''')
+
+                # Parse "DELETE N" to get count
+                deleted = int(result.split()[-1]) if result else 0
+                logger.info(f"Cleared {deleted} tracked markets from database" +
+                           (f" (status={status})" if status else ""))
+                return deleted
+
+            except Exception as e:
+                logger.error(f"Failed to clear tracked markets: {e}")
+                return 0
+
+    # ============================================================
+    # Lifecycle Events CRUD Operations (Audit Trail)
+    # ============================================================
+
+    async def insert_lifecycle_event(
+        self,
+        market_ticker: str,
+        event_type: str,
+        payload: Dict[str, Any],
+        kalshi_ts: int,
+    ) -> Optional[int]:
+        """
+        Insert a lifecycle event into the audit trail.
+
+        Called for EVERY lifecycle event received, regardless of whether
+        the market is tracked. This provides a complete audit trail for
+        debugging and analysis.
+
+        Args:
+            market_ticker: Market ticker from the event
+            event_type: Event type (created, activated, determined, settled, etc.)
+            payload: Full event payload as JSONB
+            kalshi_ts: Kalshi timestamp in seconds
+
+        Returns:
+            Row ID if inserted, None on error
+        """
+        async with self.get_connection() as conn:
+            try:
+                row_id = await conn.fetchval('''
+                    INSERT INTO lifecycle_events (
+                        market_ticker, event_type, payload, kalshi_ts, received_at
+                    ) VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)
+                    RETURNING id
+                ''',
+                    market_ticker,
+                    event_type,
+                    json.dumps(payload),
+                    kalshi_ts,
+                )
+
+                logger.debug(f"Lifecycle event stored: {event_type} for {market_ticker}")
+                return row_id
+
+            except Exception as e:
+                logger.error(f"Failed to insert lifecycle event: {e}")
+                return None
+
+    async def get_lifecycle_events(
+        self,
+        market_ticker: Optional[str] = None,
+        event_type: Optional[str] = None,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        """
+        Get lifecycle events with optional filtering.
+
+        Used for debugging and analysis of market lifecycle.
+
+        Args:
+            market_ticker: Filter by market (None = all markets)
+            event_type: Filter by event type (None = all types)
+            limit: Maximum events to return
+
+        Returns:
+            List of lifecycle event dicts
+        """
+        async with self.get_connection() as conn:
+            conditions = []
+            params = []
+            param_idx = 1
+
+            if market_ticker:
+                conditions.append(f"market_ticker = ${param_idx}")
+                params.append(market_ticker)
+                param_idx += 1
+
+            if event_type:
+                conditions.append(f"event_type = ${param_idx}")
+                params.append(event_type)
+                param_idx += 1
+
+            where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+            params.append(limit)
+
+            query = f'''
+                SELECT
+                    id, market_ticker, event_type, payload, kalshi_ts, received_at
+                FROM lifecycle_events
+                {where_clause}
+                ORDER BY received_at DESC
+                LIMIT ${param_idx}
+            '''
+
+            rows = await conn.fetch(query, *params)
+
+            events = []
+            for row in rows:
+                event_dict = dict(row)
+                if event_dict.get('payload'):
+                    try:
+                        event_dict['payload'] = json.loads(event_dict['payload'])
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+                events.append(event_dict)
+
+            return events
 
 
 # Global RL database instance

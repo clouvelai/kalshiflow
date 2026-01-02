@@ -25,7 +25,6 @@ from kalshiflow_rl.agents.model_registry import (
     ModelConfig,
     model_registry
 )
-from kalshiflow_rl.agents.training_config import AlgorithmType
 from kalshiflow_rl.data.database import rl_db
 
 

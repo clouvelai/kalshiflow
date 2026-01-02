@@ -3,16 +3,16 @@ RL Agents module for Kalshi Flow RL Trading Subsystem.
 
 Provides high-level interfaces for:
 - Model registry and lifecycle management
-- Training configuration and validation 
-- SB3 training harness integration
-- Multi-market model training
-- Hot-reload and deployment management
 
 Key architectural principles enforced:
 - Training uses only historical data
 - No live mode allowed (training/paper only)
 - Non-blocking database operations
 - Multi-market support with proper scaling
+
+Note: Training configuration, harness, monitor, and session management
+modules are planned but not yet implemented. The following are available:
+- model_registry: Model versioning and checkpoint management
 """
 
 from .model_registry import (
@@ -21,73 +21,16 @@ from .model_registry import (
     model_registry
 )
 
-from .training_config import (
-    TrainingConfig,
-    PPOConfig,
-    A2CConfig,
-    AlgorithmType,
-    TrainingMode,
-    TrainingConfigBuilder,
-    validate_training_setup,
-    get_recommended_config,
-    QUICK_TEST_CONFIG,
-    MULTI_MARKET_CONFIG
-)
-
-from .training_harness import (
-    TrainingSession,
-    TrainingManager,
-    TrainingCallback,
-    training_manager
-)
-
-from .training_monitor import (
-    TrainingMonitor,
-    TrainingProgressCallback,
-    PerformanceMetrics,
-    create_training_monitor
-)
-
-from .session_manager import (
-    SessionManager,
-    SessionState,
-    SessionStatus,
-    session_manager
-)
+# Note: The following modules are not yet implemented:
+# - training_config (TrainingConfig, AlgorithmType, etc.)
+# - training_harness (TrainingSession, TrainingManager, etc.)
+# - training_monitor (TrainingMonitor, etc.)
+# - session_manager (SessionManager, SessionState, etc.)
+# The session_manager.py file exists but has dependencies on unimplemented modules.
 
 __all__ = [
     # Model Registry
     'ModelRegistry',
     'ModelConfig', 
     'model_registry',
-    
-    # Training Configuration
-    'TrainingConfig',
-    'PPOConfig',
-    'A2CConfig',
-    'AlgorithmType',
-    'TrainingMode',
-    'TrainingConfigBuilder',
-    'validate_training_setup',
-    'get_recommended_config',
-    'QUICK_TEST_CONFIG',
-    'MULTI_MARKET_CONFIG',
-    
-    # Training Harness
-    'TrainingSession',
-    'TrainingManager',
-    'TrainingCallback',
-    'training_manager',
-    
-    # Training Monitor
-    'TrainingMonitor',
-    'TrainingProgressCallback',
-    'PerformanceMetrics',
-    'create_training_monitor',
-    
-    # Session Manager
-    'SessionManager',
-    'SessionState',
-    'SessionStatus',
-    'session_manager'
 ]

@@ -11,8 +11,15 @@ from typing import Optional, List
 from pathlib import Path
 from dotenv import load_dotenv
 
-# Load environment variables from .env file
-load_dotenv()
+# Load environment variables based on ENVIRONMENT variable
+# Try .env.{ENVIRONMENT} first (override=True), then fall back to .env
+# Supported environments: local, production, paper
+# TODO: If test environment needs separate .env.test file, follow the same pattern:
+#   - Create .env.test with ENVIRONMENT=test and test-specific values
+#   - Tests currently work with ENVIRONMENT=test bypassing validation
+env = os.getenv("ENVIRONMENT", "local")
+load_dotenv(f".env.{env}", override=True)
+load_dotenv()  # Fallback to .env
 
 
 class RLConfig:
@@ -21,13 +28,21 @@ class RLConfig:
     def __init__(self):
         # Kalshi API Configuration (shared with main app - auth handled by KalshiAuth.from_env())
         # The auth component reads KALSHI_API_KEY_ID and KALSHI_PRIVATE_KEY_PATH/CONTENT directly
-        self.KALSHI_WS_URL: str = os.getenv("KALSHI_WS_URL", "wss://api.elections.kalshi.com/trade-api/ws/v2")
+        # Environment-specific values are loaded from .env.{ENVIRONMENT} files
+        self.KALSHI_API_KEY_ID: Optional[str] = os.getenv("KALSHI_API_KEY_ID")
+        self.KALSHI_PRIVATE_KEY_CONTENT: Optional[str] = os.getenv("KALSHI_PRIVATE_KEY_CONTENT")
         
-        # Kalshi Demo Account Configuration for Paper Trading (ISOLATED from production)
-        self.KALSHI_PAPER_TRADING_API_KEY_ID: Optional[str] = os.getenv("KALSHI_PAPER_TRADING_API_KEY_ID")
-        self.KALSHI_PAPER_TRADING_PRIVATE_KEY_CONTENT: Optional[str] = os.getenv("KALSHI_PAPER_TRADING_PRIVATE_KEY_CONTENT")
-        self.KALSHI_PAPER_TRADING_WS_URL: str = os.getenv("KALSHI_PAPER_TRADING_WS_URL", "wss://demo-api.kalshi.co/trade-api/ws/v2")
-        self.KALSHI_PAPER_TRADING_API_URL: str = os.getenv("KALSHI_PAPER_TRADING_API_URL", "https://demo-api.kalshi.co/trade-api/v2")
+        # Set default URLs based on environment
+        env = os.getenv("ENVIRONMENT", "local")
+        if env == "paper":
+            default_api_url = "https://demo-api.kalshi.co/trade-api/v2"
+            default_ws_url = "wss://demo-api.kalshi.co/trade-api/ws/v2"
+        else:
+            default_api_url = "https://api.elections.kalshi.com/trade-api/v2"
+            default_ws_url = "wss://api.elections.kalshi.com/trade-api/ws/v2"
+        
+        self.KALSHI_API_URL: str = os.getenv("KALSHI_API_URL", default_api_url)
+        self.KALSHI_WS_URL: str = os.getenv("KALSHI_WS_URL", default_ws_url)
         
         # Database Configuration (shared with main app)
         self.DATABASE_URL: str = self._get_required_env("DATABASE_URL")
@@ -42,7 +57,7 @@ class RLConfig:
         
         # Market Discovery Settings
         self.RL_MARKET_MODE: str = os.getenv("RL_MARKET_MODE", "discovery")  # "discovery" or "config"
-        self.ORDERBOOK_MARKET_LIMIT: int = int(os.getenv("ORDERBOOK_MARKET_LIMIT", "100"))  # Max markets for discovery mode
+        self.ORDERBOOK_MARKET_LIMIT: int = int(os.getenv("RL_ORDERBOOK_MARKET_LIMIT", "100"))  # Max markets for discovery mode
         
         # Orderbook Ingestion Settings
         self.ORDERBOOK_QUEUE_BATCH_SIZE: int = int(os.getenv("RL_ORDERBOOK_BATCH_SIZE", "100"))
@@ -50,8 +65,12 @@ class RLConfig:
         self.ORDERBOOK_MAX_QUEUE_SIZE: int = int(os.getenv("RL_ORDERBOOK_MAX_QUEUE_SIZE", "10000"))
         
         # WebSocket and Performance Settings
-        self.WEBSOCKET_PING_INTERVAL: int = int(os.getenv("RL_WEBSOCKET_PING_INTERVAL", "30"))
-        self.WEBSOCKET_TIMEOUT: int = int(os.getenv("RL_WEBSOCKET_TIMEOUT", "60"))
+        # Aligned with Kalshi's 10-second ping interval - we ping at 20s
+        self.WEBSOCKET_PING_INTERVAL: int = int(os.getenv("RL_WEBSOCKET_PING_INTERVAL", "20"))
+        # Reduced timeout for faster failure detection
+        self.WEBSOCKET_PING_TIMEOUT: int = int(os.getenv("RL_WEBSOCKET_PING_TIMEOUT", "30"))
+        # Legacy timeout (keeping for backward compatibility)
+        self.WEBSOCKET_TIMEOUT: int = int(os.getenv("RL_WEBSOCKET_TIMEOUT", "30"))
         self.WEBSOCKET_RECONNECT_DELAY: int = int(os.getenv("RL_WEBSOCKET_RECONNECT_DELAY", "5"))
         self.MAX_RECONNECT_ATTEMPTS: int = int(os.getenv("RL_MAX_RECONNECT_ATTEMPTS", "10"))
         
@@ -78,6 +97,33 @@ class RLConfig:
         # Training Data Settings  
         self.TRAINING_DATA_WINDOW_HOURS: int = int(os.getenv("RL_TRAINING_WINDOW_HOURS", "24"))
         self.MAX_EPISODE_STEPS: int = int(os.getenv("RL_MAX_EPISODE_STEPS", "1000"))
+        
+        # Actor/Trading Configuration
+        # RL_ACTOR_ENABLED: Master kill switch for trading actor
+        #   - Default: false (actor disabled, orderbook collector only)
+        #   - When false: Orderbook collector runs normally, no trading actions
+        #   - When true: ActorService initialized and processes orderbook events
+        self.RL_ACTOR_ENABLED: bool = os.getenv("RL_ACTOR_ENABLED", "false").lower() == "true"
+        self.RL_ACTOR_STRATEGY: str = os.getenv("RL_ACTOR_STRATEGY", "disabled")  # "rl_model" | "hardcoded" | "disabled"
+        self.RL_ACTOR_MODEL_PATH: Optional[str] = os.getenv("RL_ACTOR_MODEL_PATH")
+        self.RL_ACTOR_THROTTLE_MS: int = int(os.getenv("RL_ACTOR_THROTTLE_MS", "250"))
+        self.RL_ACTOR_CONTRACT_SIZE: int = int(os.getenv("RL_ACTOR_CONTRACT_SIZE", "5"))
+        
+        # Order Synchronization Configuration
+        self.RL_ORDER_SYNC_ENABLED: bool = os.getenv("RL_ORDER_SYNC_ENABLED", "true").lower() == "true"
+        self.RL_ORDER_SYNC_INTERVAL_SECONDS: int = int(os.getenv("RL_ORDER_SYNC_INTERVAL_SECONDS", "60"))
+        self.RL_ORDER_SYNC_ON_STARTUP: bool = os.getenv("RL_ORDER_SYNC_ON_STARTUP", "true").lower() == "true"
+        
+        # Cash Reserve Configuration
+        self.RL_MIN_CASH_RESERVE: float = float(os.getenv("RL_MIN_CASH_RESERVE", "100.0"))  # Minimum cash before trading stops
+        
+        # Position Management Configuration
+        self.RL_POSITION_TAKE_PROFIT_THRESHOLD: float = float(os.getenv("RL_POSITION_TAKE_PROFIT_THRESHOLD", "0.20"))  # 20% profit
+        self.RL_POSITION_STOP_LOSS_THRESHOLD: float = float(os.getenv("RL_POSITION_STOP_LOSS_THRESHOLD", "-0.10"))  # -10% loss
+        self.RL_POSITION_MAX_HOLD_TIME_SECONDS: int = int(os.getenv("RL_POSITION_MAX_HOLD_TIME_SECONDS", "3600"))  # 1 hour
+        self.RL_RECALIBRATION_INTERVAL_SECONDS: int = int(os.getenv("RL_RECALIBRATION_INTERVAL_SECONDS", "60"))  # 1 minute
+        self.RL_MARKET_CLOSING_BUFFER_SECONDS: int = int(os.getenv("RL_MARKET_CLOSING_BUFFER_SECONDS", "300"))  # 5 minutes
+        self.RL_TRADING_STATUS_UPDATE_INTERVAL_SECONDS: int = int(os.getenv("RL_TRADING_STATUS_UPDATE_INTERVAL_SECONDS", "10"))  # 10 seconds
         
         # Validate configuration
         self._validate_config()

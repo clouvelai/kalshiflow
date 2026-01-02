@@ -67,6 +67,29 @@ npm run dev
 # See SUPABASE_SETUP.md for detailed configuration
 ```
 
+### V3 Trader (Paper Trading)
+**Purpose**: Clean architecture trading system with WebSocket-driven state management
+```bash
+# Start V3 trader (default: paper trading, discovery mode, 10 markets)
+./scripts/run-v3.sh
+
+# Custom configurations: [environment] [mode] [market_limit]
+./scripts/run-v3.sh paper discovery 20      # More markets
+./scripts/run-v3.sh paper config 5          # Specific tickers from RL_MARKET_TICKERS
+```
+
+**Default Configuration:**
+- **Environment**: `paper` (demo account)
+- **Port**: 8005
+- **Mode**: Discovery (auto-discovers active markets)
+- **Markets**: 10 orderbook subscriptions
+
+**Access Points:**
+- **Console**: http://localhost:5173/v3-trader (requires frontend)
+- **Health**: http://localhost:8005/v3/health
+- **Status**: http://localhost:8005/v3/status
+- **WebSocket**: ws://localhost:8005/v3/ws
+
 ### Testing
 ```bash
 # Backend tests
@@ -107,8 +130,8 @@ npm run test:e2e-ui
 ### Kalshi Authentication
 - Uses RSA private key file (not API secret)
 - Environment variables:
-  - `KALSHI_API_KEY` - The API key ID
-  - `KALSHI_PRIVATE_KEY_PATH` - Path to RSA private key file
+  - `KALSHI_API_KEY_ID` - The API key ID
+  - `KALSHI_PRIVATE_KEY_CONTENT` - RSA private key content as string (or `KALSHI_PRIVATE_KEY_PATH` for file path)
 - Signature process: `timestamp_ms + method + path` → RSA sign with PSS padding → base64 encode
 - Reference implementation: https://github.com/clouvelai/prophete/blob/main/backend/app/core/auth.py
 
@@ -175,26 +198,114 @@ frontend/
 
 ## Environment Configuration
 
-Required `.env` variables:
+The project uses environment-specific `.env` files for credential management:
+
+### Environment Files
+- **`.env.local`** - Local development environment (default)
+- **`.env.production`** - Production environment
+- **`.env.paper`** - Paper trading environment (demo account)
+
+### Environment Loading Pattern
+The system loads environment variables based on the `ENVIRONMENT` variable:
+1. Loads `.env.{ENVIRONMENT}` first (with override=True)
+2. Falls back to `.env` for any missing variables
+
+**Example:**
+```bash
+# Set environment
+export ENVIRONMENT=paper  # or "local" or "production"
+
+# System will load:
+# 1. .env.paper (override=True)
+# 2. .env (fallback)
 ```
-# Kalshi API Configuration
-KALSHI_API_KEY=<your_api_key>
-KALSHI_PRIVATE_KEY_PATH=<path_to_rsa_key>
+
+### Required Variables by Environment
+
+#### Local Development (`.env.local`)
+```bash
+ENVIRONMENT=local
+
+# Kalshi API Configuration (production API for data collection)
+KALSHI_API_KEY_ID=<your_api_key_id>
+KALSHI_PRIVATE_KEY_CONTENT=<your_private_key_content>
+KALSHI_API_URL=https://api.elections.kalshi.com/trade-api/v2
 KALSHI_WS_URL=wss://api.elections.kalshi.com/trade-api/ws/v2
+
+# PostgreSQL Database Configuration (via Supabase)
+DATABASE_URL=<postgresql_connection_string>
+DATABASE_URL_POOLED=<postgresql_pooled_connection_string>
 
 # Application Settings
 WINDOW_MINUTES=10
 HOT_MARKETS_LIMIT=20
 RECENT_TRADES_LIMIT=200
 
-# PostgreSQL Database Configuration (via Supabase)
-DATABASE_URL=<postgresql_connection_string>
-DATABASE_URL_POOLED=<postgresql_pooled_connection_string>
-
 # Server Configuration
 BACKEND_PORT=8000
 FRONTEND_PORT=5173
 ```
+
+#### Production (`.env.production`)
+```bash
+ENVIRONMENT=production
+
+# Kalshi API Configuration (production API)
+KALSHI_API_KEY_ID=<your_production_api_key_id>
+KALSHI_PRIVATE_KEY_CONTENT=<your_production_private_key_content>
+KALSHI_API_URL=https://api.elections.kalshi.com/trade-api/v2
+KALSHI_WS_URL=wss://api.elections.kalshi.com/trade-api/ws/v2
+
+# PostgreSQL Database Configuration
+DATABASE_URL=<production_postgresql_connection_string>
+DATABASE_URL_POOLED=<production_pooled_connection_string>
+```
+
+#### Paper Trading (`.env.paper`)
+```bash
+ENVIRONMENT=paper
+
+# Kalshi Demo Account API Configuration (demo-api.kalshi.co)
+KALSHI_API_KEY_ID=<your_demo_api_key_id>
+KALSHI_PRIVATE_KEY_CONTENT=<your_demo_private_key_content>
+KALSHI_API_URL=https://demo-api.kalshi.co/trade-api/v2
+KALSHI_WS_URL=wss://demo-api.kalshi.co/trade-api/ws/v2
+
+# Database Configuration (shared with other environments)
+DATABASE_URL=<postgresql_connection_string>
+DATABASE_URL_POOLED=<postgresql_pooled_connection_string>
+
+# RL-Specific Configuration (optional)
+RL_MARKET_TICKERS=INXD-25JAN03,OTHER-TICKER
+RL_LOG_LEVEL=INFO
+```
+
+### Environment Switching
+
+Use the provided script to switch between environments:
+```bash
+# Switch to local development
+./scripts/switch-env.sh local
+
+# Switch to production
+./scripts/switch-env.sh production
+
+# Show current environment
+./scripts/switch-env.sh current
+```
+
+### Paper Trading Safety
+
+The `KalshiDemoTradingClient` includes validation to prevent accidental production trading:
+- ✅ **Validates URLs**: Ensures all URLs point to `demo-api.kalshi.co`
+- ✅ **Blocks Production**: Raises error if production URLs (`api.elections.kalshi.com`) are detected
+- ✅ **Clear Errors**: Provides helpful error messages directing users to use `ENVIRONMENT=paper`
+
+**To use paper trading:**
+1. Copy `.env.paper.example` to `.env.paper`
+2. Fill in your demo account credentials
+3. Set `ENVIRONMENT=paper` or use the environment switcher
+4. The demo client will automatically validate the configuration
 ## Backend E2E Regression Test
 
 **Critical test that MUST pass before any deployment or major changes.**
@@ -303,54 +414,6 @@ cd frontend && npm run test:frontend-regression
 
 This test serves as the definitive validation that the entire frontend is functional and the E2E system works with live data.
 
-## RL Orderbook Collector Service
-
-A standalone backend service for collecting multi-market orderbook data for reinforcement learning:
-
-### Features
-- **Multi-market support**: Monitors multiple Kalshi markets simultaneously via `RL_MARKET_TICKERS`
-- **Real-time WebSocket broadcasting**: Streams orderbook snapshots/deltas to frontend clients
-- **Statistics tracking**: Monitors system health and performance metrics
-- **Non-blocking architecture**: Database writes don't block WebSocket broadcasts
-
-### Configuration
-```bash
-# Environment variables
-RL_MARKET_TICKERS=MARKET1,MARKET2,MARKET3  # Comma-separated market list
-RL_ORDERBOOK_BATCH_SIZE=100                # Database write batch size
-RL_ORDERBOOK_FLUSH_INTERVAL=1.0            # Flush interval in seconds
-RL_ORDERBOOK_SAMPLE_RATE=1                 # Delta sampling rate (1 = keep all)
-```
-
-### Endpoints
-- `/rl/health` - Health check with multi-market status
-- `/rl/status` - Detailed status with per-market statistics
-- `/rl/ws` - WebSocket endpoint for real-time orderbook updates
-- `/rl/orderbook/snapshot` - REST endpoint for current snapshots
-
-### Testing
-```bash
-# Run E2E test
-./scripts/test_rl_e2e.sh
-
-# Start service locally
-./scripts/test_rl_orderbook_service.sh
-
-# Service runs on port 8002 by default for local testing
-```
-
-### WebSocket Protocol
-```json
-// Connection message
-{"type": "connection", "data": {"markets": ["M1", "M2"], "status": "connected"}}
-
-// Orderbook snapshot
-{"type": "orderbook_snapshot", "data": {"market_ticker": "M1", ...}}
-
-// Statistics update (every second)
-{"type": "stats", "data": {"markets_active": 3, "snapshots_processed": 100, ...}}
-```
-
 ## Railway Deployment
 
 The application is deployed on Railway.app for production hosting with automated deployment pipeline.
@@ -432,13 +495,196 @@ cd frontend && railway up --service kalshi-flowboard
 - use the planning agent for all planning
 - use the fullstack websocket agent for all implementation/coding
 - use the deployment agent for Railway.app deployments and production infrastructure
+- use the strategy-researcher agent to find novel hypothesis ideas from external sources (academic papers, sports betting, crypto/DeFi)
+- use the quant agent with "LSD mode" for rapid lateral hypothesis exploration (user says "LSD mode" to enable)
 - IMPORTANT: Only deploy to production when explicitly requested by the user. Never deploy autonomously.
 
-## Checking Orderbook Session Data
-- use @backend/src/kalshiflow_rl/scripts/fetch_session_data.py to lookup session collection status / metadata
--   You can now use:
-  # Analyze any session
-  uv run python backend/src/kalshiflow_rl/scripts/fetch_session_data.py --analyze 9
+## Multi-Session Coordination
 
-  # Or analyze the most recent session
-  uv run pythonbackend/src/kalshiflow_rl/scripts/fetch_session_data.py --analyze
+When multiple Claude Code sessions work on the same codebase, use the session tracking system to avoid conflicts and enable visibility.
+
+### Session Registration (REQUIRED)
+
+**At the start of every conversation**, register your session:
+
+```bash
+# Generate a session ID and create your session file
+SESSION_ID=$(uuidgen | cut -c1-8 | tr '[:upper:]' '[:lower:]')
+```
+
+Then create `.claude-sessions/active/{SESSION_ID}.json`:
+```json
+{
+  "session_id": "{SESSION_ID}",
+  "started_at": "2025-12-30T10:15:00Z",
+  "last_updated": "2025-12-30T10:15:00Z",
+  "branch": "current-git-branch",
+  "status": "active",
+  "current_task": "Initial task description",
+  "files_touched": [],
+  "sub_agents": []
+}
+```
+
+### Updating Session Status
+
+Update your session file when:
+1. **Switching tasks** - Update `current_task` and `last_updated`
+2. **Touching files** - Add to `files_touched` array
+3. **Spawning sub-agents** - Add to `sub_agents` array
+
+### Sub-Agent Tracking
+
+When spawning a Task agent, add it to your session's `sub_agents`:
+```json
+{
+  "sub_agents": [
+    {
+      "type": "fullstack-websocket-engineer",
+      "task": "Implementing WebSocket reconnection",
+      "started_at": "2025-12-30T10:40:00Z",
+      "status": "running"
+    }
+  ]
+}
+```
+
+Update `status` to `"completed"` when the agent finishes.
+
+### Viewing Other Sessions
+
+Before making major changes, check what other sessions are doing:
+```bash
+./scripts/claude-sessions.sh list
+```
+
+Or read files directly in `.claude-sessions/active/`.
+
+### Session Lifecycle
+
+- **Active**: Session is working (update `last_updated` regularly)
+- **Idle**: Session is waiting for user input
+- **Stale**: Session file >4 hours old (auto-cleaned)
+
+Clean up stale sessions:
+```bash
+./scripts/claude-sessions.sh clean
+```
+
+## Strategy Research System
+
+### Strategy Researcher Agent
+Use this agent to discover novel trading strategy hypotheses from external sources:
+- **Academic**: SSRN, arXiv quant-finance, prediction market papers
+- **Sports Betting**: CLV, steam moves, sharp vs square patterns
+- **Crypto/DeFi**: DEX microstructure, MEV research, Polymarket analysis
+- **Market Microstructure**: Order flow toxicity, informed trading detection
+
+Output: Hypothesis briefs in `research/hypotheses/incoming/`
+
+### Quant LSD Mode (Lateral Strategy Discovery)
+When the user says "LSD mode", the quant enters rapid exploration mode:
+- **Speed over rigor**: Quick 10-min edge checks, skip full bucket analysis
+- **Lower threshold**: Flag anything with raw edge > 5%
+- **Absurdity encouraged**: Moon phases, fibonacci trade counts, 4+ signal mega-stacks
+- **Volume over quality**: Test 10 ideas to find 1 good one
+
+User says "normal mode" to return to rigorous bucket-matched validation.
+
+See `research/LSD_MODE_INSTRUCTIONS.md` for full details.
+
+## Managing RL Session Data
+
+### Checking Orderbook Sessions
+Use `@backend/src/kalshiflow_rl/scripts/fetch_session_data.py` to monitor and analyze session data:
+
+```bash
+# List all available sessions
+uv run python src/kalshiflow_rl/scripts/fetch_session_data.py --list
+
+# Load and analyze specific session
+uv run python src/kalshiflow_rl/scripts/fetch_session_data.py --analyze 9
+
+# Analyze the most recent session
+uv run python src/kalshiflow_rl/scripts/fetch_session_data.py --analyze
+
+# Create market-specific view
+uv run python src/kalshiflow_rl/scripts/fetch_session_data.py --view 9 --market TICKER
+```
+
+### Cleaning Up Empty/Test Sessions
+Use `@backend/src/kalshiflow_rl/scripts/cleanup_sessions.py` to identify and remove problematic sessions:
+
+```bash
+# Check database statistics
+uv run python src/kalshiflow_rl/scripts/cleanup_sessions.py --stats
+
+# Generate cleanup report (shows what can be deleted)
+uv run python src/kalshiflow_rl/scripts/cleanup_sessions.py --report
+
+# List empty sessions (0 snapshots and 0 deltas)
+uv run python src/kalshiflow_rl/scripts/cleanup_sessions.py --list-empty
+
+# List test sessions (<5 min, ≤5 markets)
+uv run python src/kalshiflow_rl/scripts/cleanup_sessions.py --list-test
+
+# Delete specific sessions (with confirmation)
+uv run python src/kalshiflow_rl/scripts/cleanup_sessions.py --delete 2,3,8,18-22
+
+# Delete all empty sessions
+uv run python src/kalshiflow_rl/scripts/cleanup_sessions.py --delete-empty
+
+# Delete all test sessions
+uv run python src/kalshiflow_rl/scripts/cleanup_sessions.py --delete-test
+```
+
+### Session Data Quality Indicators
+- **Meaningful sessions**: Have snapshots (>0) and deltas (>0)
+- **Empty sessions**: 0 snapshots AND 0 deltas (safe to delete)
+- **Test sessions**: <5 minutes duration, ≤5 markets (usually safe to delete)
+- **Active stuck sessions**: Status='active' but no data for >24 hours (investigate before deleting)
+
+### Best Practices
+1. Run `--report` first to understand what will be deleted
+2. Check `--stats` after cleanup to verify database state
+3. Keep deletion logs for audit trail (automatically saved)
+4. Preserve sessions with any meaningful data (snapshots or deltas > 0)
+5. Document cleanup actions in `training/reports/` directory
+
+## Managing RL Trained Models
+
+### Current Model Configuration
+The active RL model is tracked in `@backend/src/kalshiflow_rl/BEST_MODEL/CURRENT_MODEL.json`:
+- **Current model**: `session32_final.zip` (21-action space with 5 contract sizes)
+- **Model location**: `@backend/src/kalshiflow_rl/BEST_MODEL/session32_final.zip`
+- **Action space**: 21 actions supporting position sizes of [5, 10, 20, 50, 100] contracts
+- **Status**: Production-ready with centralized organization
+- **Backup model**: `session9_ppo_20251211_221054` (historical reference)
+
+### Cleaning Up Trained Models
+Use `@backend/src/kalshiflow_rl/scripts/cleanup_trained_models.py` to manage the trained models directory:
+
+```bash
+# Preview what will be deleted (dry run mode - default)
+uv run python src/kalshiflow_rl/scripts/cleanup_trained_models.py
+
+# Actually delete old models (keeps only current + historical reference)
+uv run python src/kalshiflow_rl/scripts/cleanup_trained_models.py --execute
+
+# Quiet mode (minimal output)
+uv run python src/kalshiflow_rl/scripts/cleanup_trained_models.py --execute --quiet
+```
+
+### Model Cleanup Features
+- **Automatic detection**: Reads BEST_MODEL/CURRENT_MODEL.json to identify models to keep
+- **Space recovery**: Removes failed training runs and experiments (typically 400+ MB)
+- **Safety**: Always preserves current production model and historical reference
+- **Centralized organization**: Works with new BEST_MODEL directory structure
+- **Audit trail**: Saves deletion log to `src/kalshiflow_rl/logs/model_cleanup_YYYYMMDD_HHMMSS.json`
+- **Dry run default**: Won't delete anything unless `--execute` flag is used
+
+### When to Run Cleanup
+- After updating BEST_MODEL/CURRENT_MODEL.json to a new model
+- When trained_models directory exceeds 1GB
+- Before archiving or backing up the project
+- After extensive hyperparameter tuning sessions
