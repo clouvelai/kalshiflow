@@ -477,32 +477,17 @@ _states_lock = asyncio.Lock()
 async def get_shared_orderbook_state(market_ticker: str) -> SharedOrderbookState:
     """
     Get or create a shared orderbook state for a market.
-    
-    DEPRECATED: Use dependency injection via ServiceContainer instead.
-    This function is maintained for backward compatibility during migration.
-    
+
     Args:
         market_ticker: Market ticker
-        
+
     Returns:
         SharedOrderbookState instance for the market
     """
-    # Try to get from service container first
-    try:
-        from ..trading.service_container import get_default_container
-        container = await get_default_container()
-        if container.is_registered("orderbook_state_registry"):
-            registry = await container.get_service("orderbook_state_registry")
-            return await registry.get_shared_orderbook_state(market_ticker)
-    except Exception as e:
-        logger.debug(f"Service container not available, using global registry: {e}")
-        pass  # Fall back to old singleton pattern
-    
-    # Fallback to legacy global registry
     async with _states_lock:
         if market_ticker not in _orderbook_states:
             _orderbook_states[market_ticker] = SharedOrderbookState(market_ticker)
-            logger.info(f"Created new shared orderbook state for {market_ticker} (legacy registry)")
+            logger.info(f"Created new shared orderbook state for {market_ticker}")
         
         return _orderbook_states[market_ticker]
 
@@ -510,20 +495,7 @@ async def get_shared_orderbook_state(market_ticker: str) -> SharedOrderbookState
 async def get_all_orderbook_states() -> Dict[str, SharedOrderbookState]:
     """
     Get all registered orderbook states.
-    
-    DEPRECATED: Use dependency injection via ServiceContainer instead.
     """
-    # Try service container first
-    try:
-        from ..trading.service_container import get_default_container
-        container = await get_default_container()
-        if container.is_registered("orderbook_state_registry"):
-            registry = await container.get_service("orderbook_state_registry")
-            return await registry.get_all_states()
-    except Exception:
-        pass  # Fall back to old pattern
-    
-    # Fallback to legacy global registry
     async with _states_lock:
         return dict(_orderbook_states)
 

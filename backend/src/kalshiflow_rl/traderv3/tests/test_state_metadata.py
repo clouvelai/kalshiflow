@@ -12,6 +12,8 @@ import websockets
 import sys
 from pathlib import Path
 
+import pytest
+
 # Add parent to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
 
@@ -173,6 +175,7 @@ class StateMetadataValidator:
         print("="*80)
 
 
+@pytest.mark.asyncio
 async def test_state_metadata():
     """Connect to V3 WebSocket and validate state transitions."""
     validator = StateMetadataValidator()

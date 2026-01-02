@@ -12,6 +12,8 @@ import asyncio
 import logging
 from typing import Dict, Any
 
+import pytest
+
 # Setup logging
 logging.basicConfig(
     level=logging.INFO,
@@ -20,6 +22,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+@pytest.mark.asyncio
 async def test_state_container_integration():
     """Test the V3StateContainer integration."""
     
