@@ -799,6 +799,59 @@ class KalshiDemoTradingClient:
         except Exception as e:
             raise KalshiDemoTradingClientError(f"Failed to get market {ticker}: {e}")
 
+    async def get_market_candlesticks(
+        self,
+        series_ticker: str,
+        ticker: str,
+        start_ts: int,
+        end_ts: int,
+        period_interval: int = 1,
+    ) -> Dict[str, Any]:
+        """
+        Get candlestick OHLC data for a market.
+
+        GET /trade-api/v2/series/{series_ticker}/markets/{ticker}/candlesticks
+
+        Use this to get the true market open price from the first candlestick's
+        yes_bid.open value.
+
+        Args:
+            series_ticker: Series ticker (e.g., "INXD" - extracted from market ticker)
+            ticker: Market ticker (e.g., "INXD-25JAN03")
+            start_ts: Start timestamp (Unix seconds)
+            end_ts: End timestamp (Unix seconds)
+            period_interval: Candle period in minutes - 1 (1-min), 60 (1-hour), 1440 (1-day)
+
+        Returns:
+            Dict with "ticker" and "candlesticks" array. Each candlestick has:
+            - end_period_ts: Unix timestamp for period end
+            - yes_bid: OHLC for YES buy offers (open, high, low, close)
+            - yes_ask: OHLC for YES sell offers
+            - price: Trade price OHLC
+            - volume: Contracts traded
+            - open_interest: Total contracts by period end
+
+        Raises:
+            KalshiDemoTradingClientError: If request fails
+        """
+        try:
+            params = [
+                f"start_ts={start_ts}",
+                f"end_ts={end_ts}",
+                f"period_interval={period_interval}",
+            ]
+            query_string = "&".join(params)
+            path = f"/series/{series_ticker}/markets/{ticker}/candlesticks?{query_string}"
+
+            response = await self._make_request("GET", path)
+
+            candlesticks_count = len(response.get("candlesticks", []))
+            logger.debug(f"Retrieved {candlesticks_count} candlesticks for {ticker}")
+            return response
+
+        except Exception as e:
+            raise KalshiDemoTradingClientError(f"Failed to get candlesticks for {ticker}: {e}")
+
     async def get_event(self, event_ticker: str) -> Dict[str, Any]:
         """
         Get event details by event_ticker.

@@ -97,6 +97,9 @@ class EventType(Enum):
     RLM_MARKET_UPDATE = "rlm_market_update"            # RLM state changed for a market
     RLM_TRADE_ARRIVED = "rlm_trade_arrived"            # New trade arrived for RLM tracking
 
+    # True Market Open (TMO) events
+    TMO_FETCHED = "tmo_fetched"                        # True market open price fetched from candlestick API
+
 
 @dataclass
 class MarketEvent:
@@ -477,6 +480,36 @@ class RLMTradeArrivedEvent:
     side: str = ""
     count: int = 0
     price_cents: int = 0
+    timestamp: float = 0.0
+
+    def __post_init__(self):
+        """Set defaults after initialization."""
+        if self.timestamp == 0.0:
+            self.timestamp = time.time()
+
+
+@dataclass
+class TMOFetchedEvent:
+    """
+    Event data for True Market Open (TMO) price fetches.
+
+    Emitted by TrueMarketOpenFetcher when the true market open price
+    is successfully retrieved from the Kalshi candlestick API.
+
+    The TMO is the first candlestick's yes_bid.open price, representing
+    the actual market opening price (not just the first trade we observe).
+
+    Attributes:
+        event_type: Always TMO_FETCHED
+        market_ticker: Market ticker for this TMO
+        true_market_open: YES price in cents at market open
+        open_ts: Unix timestamp when the market opened
+        timestamp: When this event was created
+    """
+    event_type: EventType = EventType.TMO_FETCHED
+    market_ticker: str = ""
+    true_market_open: int = 0  # YES price in cents at market open
+    open_ts: int = 0           # Unix timestamp when market opened
     timestamp: float = 0.0
 
     def __post_init__(self):
@@ -1312,6 +1345,56 @@ class EventBus:
 
         self._subscribers[EventType.RLM_TRADE_ARRIVED].append(callback)
         logger.debug(f"Added RLM trade arrived subscriber: {callback.__name__}")
+
+    # ============================================================
+    # True Market Open (TMO) Event Methods
+    # ============================================================
+
+    async def emit_tmo_fetched(
+        self,
+        market_ticker: str,
+        true_market_open: int,
+        open_ts: int = 0,
+    ) -> bool:
+        """
+        Emit a True Market Open fetched event (non-blocking).
+
+        Called by TrueMarketOpenFetcher when the true market open price
+        is successfully retrieved from the Kalshi candlestick API.
+
+        Args:
+            market_ticker: Market ticker for this TMO
+            true_market_open: YES price in cents at market open
+            open_ts: Unix timestamp when the market opened
+
+        Returns:
+            True if event was queued, False if queue full
+        """
+        if not self._running:
+            return False
+
+        event = TMOFetchedEvent(
+            event_type=EventType.TMO_FETCHED,
+            market_ticker=market_ticker,
+            true_market_open=true_market_open,
+            open_ts=open_ts,
+            timestamp=time.time(),
+        )
+
+        return await self._queue_event(event)
+
+    async def subscribe_to_tmo_fetched(self, callback: Callable) -> None:
+        """
+        Subscribe to TMO fetched events.
+
+        Args:
+            callback: Async function(event: TMOFetchedEvent) to call when TMO fetched
+        """
+        if EventType.TMO_FETCHED not in self._subscribers:
+            self._subscribers[EventType.TMO_FETCHED] = []
+
+        self._subscribers[EventType.TMO_FETCHED].append(callback)
+        logger.debug(f"Added TMO fetched subscriber: {callback.__name__}")
 
     async def _queue_event(self, event: Any) -> bool:
         """

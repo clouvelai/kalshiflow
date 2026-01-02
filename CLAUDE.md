@@ -67,60 +67,7 @@ npm run dev
 # See SUPABASE_SETUP.md for detailed configuration
 ```
 
-### RL Development
-
-The RL system uses two focused scripts for different purposes:
-
-#### Orderbook Collection (Real Markets)
-**Purpose**: Collect data from production Kalshi API for RL training
-```bash
-# Standard data collection (real Kalshi markets)
-./scripts/run-orderbook-collector.sh
-
-# Custom configurations
-./scripts/run-orderbook-collector.sh --markets 50         # Limit to 50 markets
-./scripts/run-orderbook-collector.sh --port 8004        # Custom port
-./scripts/run-orderbook-collector.sh --env production   # Production environment
-```
-
-**Default Configuration:**
-- **Environment**: `local` (production Kalshi API for real market data)
-- **Port**: 8002
-- **Actor**: Disabled (data collection only)
-- **Markets**: 100 orderbook subscriptions
-
-**Access Points:**
-- **Health**: http://localhost:8002/rl/health
-- **Status**: http://localhost:8002/rl/status
-- **WebSocket**: ws://localhost:8002/rl/ws
-
-#### RL Trading (Paper Account)
-**Purpose**: Safe trading with RL actor service using demo account
-```bash
-# HOLD strategy (safe testing)
-./scripts/run-rl-trader.sh --strategy hardcoded
-
-# AI trading strategy (trained RL model)
-./scripts/run-rl-trader.sh --strategy rl_model
-
-# Custom configurations  
-./scripts/run-rl-trader.sh --strategy rl_model --markets 25   # AI trading with 25 markets
-./scripts/run-rl-trader.sh --port 8004 --markets 50         # Custom port and market limit
-```
-
-**Default Configuration:**
-- **Environment**: `paper` (demo account for safe trading)
-- **Port**: 8003
-- **Actor**: Enabled (trading decisions)
-- **Strategy**: `hardcoded` (HOLD only)
-
-**Access Points:**
-- **Dashboard**: http://localhost:5173/rl-trader (requires frontend running)
-- **Health**: http://localhost:8003/rl/health
-- **Status**: http://localhost:8003/rl/status
-- **WebSocket**: ws://localhost:8003/rl/ws
-
-#### V3 Trader (Paper Trading)
+### V3 Trader (Paper Trading)
 **Purpose**: Clean architecture trading system with WebSocket-driven state management
 ```bash
 # Start V3 trader (default: paper trading, discovery mode, 10 markets)
@@ -466,55 +413,6 @@ cd frontend && npm run test:frontend-regression
 - No real-time updates (Data unchanged over test duration)
 
 This test serves as the definitive validation that the entire frontend is functional and the E2E system works with live data.
-
-## RL Orderbook Collector Service
-
-A standalone backend service for collecting multi-market orderbook data for reinforcement learning:
-
-### Features
-- **Multi-market support**: Monitors multiple Kalshi markets simultaneously via `RL_MARKET_TICKERS`
-- **Real-time WebSocket broadcasting**: Streams orderbook snapshots/deltas to frontend clients
-- **Statistics tracking**: Monitors system health and performance metrics
-- **Non-blocking architecture**: Database writes don't block WebSocket broadcasts
-
-### Configuration
-```bash
-# Environment variables
-RL_MARKET_TICKERS=MARKET1,MARKET2,MARKET3  # Comma-separated market list
-RL_ORDERBOOK_BATCH_SIZE=100                # Database write batch size
-RL_ORDERBOOK_FLUSH_INTERVAL=1.0            # Flush interval in seconds
-RL_ORDERBOOK_SAMPLE_RATE=1                 # Delta sampling rate (1 = keep all)
-```
-
-### Endpoints
-- `/rl/health` - Health check with multi-market status
-- `/rl/status` - Detailed status with per-market statistics
-- `/rl/ws` - WebSocket endpoint for real-time orderbook updates
-- `/rl/orderbook/snapshot` - REST endpoint for current snapshots
-
-### Testing
-```bash
-# Run E2E test
-./scripts/test_rl_e2e.sh
-
-# Start orderbook collector locally  
-./scripts/run-orderbook-collector.sh
-
-# Start RL trader locally
-./scripts/run-rl-trader.sh
-```
-
-### WebSocket Protocol
-```json
-// Connection message
-{"type": "connection", "data": {"markets": ["M1", "M2"], "status": "connected"}}
-
-// Orderbook snapshot
-{"type": "orderbook_snapshot", "data": {"market_ticker": "M1", ...}}
-
-// Statistics update (every second)
-{"type": "stats", "data": {"markets_active": 3, "snapshots_processed": 100, ...}}
-```
 
 ## Railway Deployment
 

@@ -101,6 +101,11 @@ class TrackedMarket:
     # Market result (set when determined)
     result: Optional[str] = None  # Market result: "yes", "no", "void", or None if undetermined
 
+    # True Market Open (TMO) data - fetched from candlestick API
+    true_market_open: Optional[int] = None  # YES price at market open (cents) from candlestick API
+    tmo_fetched_at: Optional[float] = None  # When TMO was fetched
+    tmo_fetch_failed: bool = False           # Flag if TMO fetch failed (after retries)
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for serialization."""
         return {
@@ -124,6 +129,10 @@ class TrackedMarket:
             "yes_ask": self.yes_ask,
             "discovery_source": self.discovery_source,
             "result": self.result,
+            # True Market Open (TMO) data
+            "true_market_open": self.true_market_open,
+            "tmo_fetched_at": self.tmo_fetched_at,
+            "tmo_fetch_failed": self.tmo_fetch_failed,
             # Include time until close for UI
             "time_to_close_seconds": max(0, self.close_ts - int(time.time())) if self.close_ts else None,
         }
@@ -159,6 +168,9 @@ class TrackedMarket:
             yes_ask=data.get("yes_ask", 0),
             discovery_source=data.get("discovery_source", "lifecycle_ws"),
             result=data.get("result"),
+            true_market_open=data.get("true_market_open"),
+            tmo_fetched_at=data.get("tmo_fetched_at"),
+            tmo_fetch_failed=data.get("tmo_fetch_failed", False),
         )
 
 

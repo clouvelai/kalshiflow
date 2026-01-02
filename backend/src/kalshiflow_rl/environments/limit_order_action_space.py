@@ -33,8 +33,16 @@ import logging
 import numpy as np
 from gymnasium import spaces
 
-from ..trading.order_manager import OrderManager, OrderSide, ContractSide
 from ..data.orderbook_state import OrderbookState
+
+# DEPRECATED: /trading/ module removed, training system is broken
+# These imports will fail - training requires reimplementation
+try:
+    from ..trading.order_manager import OrderManager, OrderSide, ContractSide
+except ImportError:
+    OrderManager = None
+    OrderSide = None
+    ContractSide = None
 
 logger = logging.getLogger("kalshiflow_rl.environments.limit_order_action_space")
 
@@ -968,9 +976,13 @@ class LimitOrderActionSpace:
             )
             
             # Create order info directly (bypassing async place_order)
-            from ..trading.order_manager import OrderInfo, OrderStatus
+            # DEPRECATED: This will fail - training system is broken
+            try:
+                from ..trading.order_manager import OrderInfo, OrderStatus
+            except ImportError:
+                raise RuntimeError("Training system is broken - /trading/ module was removed")
             import time
-            
+
             order = OrderInfo(
                 order_id=self.order_manager._generate_order_id(),
                 ticker=ticker,
@@ -1033,9 +1045,13 @@ class LimitOrderActionSpace:
             )
             
             # Create order info directly (bypassing async place_order)
-            from ..trading.order_manager import OrderInfo, OrderStatus
+            # DEPRECATED: This will fail - training system is broken
+            try:
+                from ..trading.order_manager import OrderInfo, OrderStatus
+            except ImportError:
+                raise RuntimeError("Training system is broken - /trading/ module was removed")
             import time
-            
+
             order = OrderInfo(
                 order_id=self.order_manager._generate_order_id(),
                 ticker=ticker,

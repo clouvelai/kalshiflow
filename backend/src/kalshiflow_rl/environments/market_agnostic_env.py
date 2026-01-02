@@ -17,9 +17,17 @@ import time
 from .session_data_loader import SessionDataPoint, MarketSessionView
 from .feature_extractors import build_observation_from_session_data
 from .limit_order_action_space import LimitOrderActionSpace
-from ..trading.unified_metrics import UnifiedRewardCalculator
-from ..trading.order_manager import SimulatedOrderManager, ConsumedLiquidity
 from ..data.orderbook_state import OrderbookState
+
+# DEPRECATED: /trading/ module removed, training system is broken
+# These imports will fail - training requires reimplementation
+try:
+    from ..trading.unified_metrics import UnifiedRewardCalculator
+    from ..trading.order_manager import SimulatedOrderManager, ConsumedLiquidity
+except ImportError:
+    UnifiedRewardCalculator = None
+    SimulatedOrderManager = None
+    ConsumedLiquidity = None
 
 logger = logging.getLogger("kalshiflow_rl.environments.market_agnostic_env")
 

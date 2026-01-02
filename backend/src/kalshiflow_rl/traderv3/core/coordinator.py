@@ -40,6 +40,7 @@ from ..services.trading_decision_service import TradingDecisionService, TradingS
 from ..services.whale_execution_service import WhaleExecutionService
 from ..services.yes_80_90_service import Yes8090Service
 from ..services.rlm_service import RLMService
+from ..services.tmo_fetcher import TrueMarketOpenFetcher
 
 logger = logging.getLogger("kalshiflow_rl.traderv3.core.coordinator")
 
@@ -202,6 +203,9 @@ class V3Coordinator:
 
         # RLM service (initialized in _connect_lifecycle when TrackedMarketsState is available)
         self._rlm_service: Optional[RLMService] = None
+
+        # TMO fetcher (initialized in _connect_lifecycle when TrackedMarketsState is available)
+        self._tmo_fetcher: Optional[TrueMarketOpenFetcher] = None
 
         # Position listener for real-time position updates (initialized later if trading client available)
         self._position_listener: Optional['PositionListener'] = None
@@ -621,6 +625,18 @@ class V3Coordinator:
                 # Register with websocket manager for real-time RLM state broadcasting
                 self._websocket_manager.set_rlm_service(self._rlm_service)
                 logger.info("RLMService initialized for RLM_NO strategy in lifecycle mode")
+
+            # 10c. Initialize TrueMarketOpenFetcher (for accurate price drop calculation)
+            # This fetches true market open prices from candlestick API to improve RLM accuracy
+            if self._trading_client_integration:
+                self._tmo_fetcher = TrueMarketOpenFetcher(
+                    event_bus=self._event_bus,
+                    trading_client_integration=self._trading_client_integration,
+                    tracked_markets=self._tracked_markets_state,
+                    max_retries=3,
+                    rate_limit=10.0,  # Kalshi API limit: 10 req/s
+                )
+                logger.info("TrueMarketOpenFetcher initialized for candlestick-based price tracking")
 
             # 11. Start TrackedMarketsSyncer (for REST price/volume updates)
             self._lifecycle_syncer = TrackedMarketsSyncer(
@@ -1397,6 +1413,11 @@ class V3Coordinator:
                 }
             )
 
+        # Start TMO fetcher if configured (for accurate price drop calculation)
+        if self._tmo_fetcher:
+            await self._tmo_fetcher.start()
+            logger.info("TrueMarketOpenFetcher started - fetching market open prices from candlestick API")
+
         # Emit ready status
         status_msg = f"System ready with {len(self._config.market_tickers)} markets"
         if self._trading_client_integration:
@@ -1521,6 +1542,8 @@ class V3Coordinator:
                 total_steps += 1
             if self._rlm_service:
                 total_steps += 1
+            if self._tmo_fetcher:
+                total_steps += 1
             if self._whale_tracker:
                 total_steps += 1
             if self._trades_integration:
@@ -1550,6 +1573,12 @@ class V3Coordinator:
             if self._rlm_service:
                 logger.info(f"{step}/{total_steps} Stopping RLM Service...")
                 await self._rlm_service.stop()
+                step += 1
+
+            # Stop TMO fetcher (used by RLM for price improvement)
+            if self._tmo_fetcher:
+                logger.info(f"{step}/{total_steps} Stopping TMO Fetcher...")
+                await self._tmo_fetcher.stop()
                 step += 1
 
             # Stop whale execution service (depends on whale tracker)

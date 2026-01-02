@@ -1138,3 +1138,145 @@ class V3TradingClientIntegration:
             self._metrics.api_errors += 1
             self._consecutive_api_errors += 1
             raise
+
+    async def get_true_market_open(
+        self,
+        ticker: str,
+        market_info: Optional[Dict[str, Any]] = None,
+    ) -> Optional[int]:
+        """
+        Fetch true market open price from candlestick API.
+
+        The first candlestick's yes_bid.open price represents the true market
+        opening price, which is more accurate than the first trade we observe.
+
+        Args:
+            ticker: Market ticker (e.g., "INXD-25JAN03")
+            market_info: Optional market info dict with series_ticker and open_ts
+
+        Returns:
+            YES price in cents at market open, or None if unavailable
+
+        Raises:
+            RuntimeError: If trading client not connected
+        """
+        if not self._connected:
+            raise RuntimeError(f"Cannot fetch TMO for {ticker} - not connected")
+
+        try:
+            # Extract series_ticker
+            series_ticker = self._extract_series_ticker(ticker, market_info)
+            if not series_ticker:
+                logger.warning(f"Could not determine series_ticker for {ticker}")
+                return None
+
+            # Get open_ts from market_info or use reasonable default
+            import time as time_module
+            now = int(time_module.time())
+
+            open_ts = self._extract_open_ts(market_info)
+            if not open_ts:
+                # Default: look back 7 days for market open
+                open_ts = now - (7 * 24 * 3600)
+
+            # Search from market open to NOW to find earliest available candlestick
+            # Markets may not have had trades in the first hour/day after opening
+            end_ts = now
+
+            # Fetch candlesticks (daily candles to stay under 5000 limit for old markets)
+            # API limit: max 5000 candlesticks per request
+            # Daily = ~365/year, so safe for multi-year markets
+            response = await self._client.get_market_candlesticks(
+                series_ticker=series_ticker,
+                ticker=ticker,
+                start_ts=open_ts,
+                end_ts=end_ts,
+                period_interval=1440,  # Daily candles (1440 minutes = 24 hours)
+            )
+            self._metrics.api_calls += 1
+
+            candlesticks = response.get("candlesticks", [])
+            if not candlesticks:
+                logger.debug(f"No candlestick data for {ticker}")
+                return None
+
+            # Find first candle with actual trading (yes_bid.open > 0)
+            # Early candles may have 0 values if no bids existed that day
+            for candle in candlesticks:
+                yes_bid = candle.get("yes_bid", {})
+                tmo = yes_bid.get("open")
+
+                if tmo is not None and tmo > 0:
+                    self._consecutive_api_errors = 0
+                    logger.debug(f"TMO fetched for {ticker}: {tmo}c")
+                    return int(tmo)
+
+            logger.debug(f"No valid TMO found in {len(candlesticks)} candles for {ticker}")
+            return None
+
+        except Exception as e:
+            logger.warning(f"TMO fetch failed for {ticker}: {e}")
+            self._metrics.api_errors += 1
+            self._consecutive_api_errors += 1
+            return None
+
+    def _extract_series_ticker(
+        self,
+        ticker: str,
+        market_info: Optional[Dict[str, Any]] = None,
+    ) -> Optional[str]:
+        """
+        Extract series_ticker from market info or parse from ticker.
+
+        Args:
+            ticker: Market ticker (e.g., "INXD-25JAN03")
+            market_info: Optional market info dict
+
+        Returns:
+            Series ticker (e.g., "INXD") or None if cannot determine
+        """
+        # Try from market_info first
+        if market_info:
+            if "series_ticker" in market_info:
+                return market_info["series_ticker"]
+            # Some markets store it under different keys
+            if "market" in market_info and "series_ticker" in market_info["market"]:
+                return market_info["market"]["series_ticker"]
+
+        # Parse from ticker (e.g., "INXD-25JAN03" → "INXD")
+        if "-" in ticker:
+            return ticker.split("-")[0]
+
+        # Fallback: ticker might be the series ticker itself
+        return ticker
+
+    def _extract_open_ts(self, market_info: Optional[Dict[str, Any]] = None) -> Optional[int]:
+        """
+        Extract market open timestamp from market info.
+
+        Args:
+            market_info: Market info dict with open_time or open_ts
+
+        Returns:
+            Unix timestamp or None if not found
+        """
+        if not market_info:
+            return None
+
+        # Try direct open_ts
+        if "open_ts" in market_info:
+            return int(market_info["open_ts"])
+
+        # Try open_time (ISO format)
+        open_time = market_info.get("open_time")
+        if open_time:
+            try:
+                if isinstance(open_time, str):
+                    from datetime import datetime
+                    open_dt = datetime.fromisoformat(open_time.replace("Z", "+00:00"))
+                    return int(open_dt.timestamp())
+                return int(open_time)
+            except (ValueError, TypeError):
+                pass
+
+        return None

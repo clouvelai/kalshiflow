@@ -277,6 +277,13 @@ export const useLifecycleWebSocket = ({ onMessage } = {}) => {
           };
 
           setRecentEvents(prev => {
+            // Deduplicate: skip if same activity_type+timestamp within recent events
+            const isDuplicate = prev.some(e =>
+              e.event_type === event.event_type &&
+              e.timestamp === event.timestamp
+            );
+            if (isDuplicate) return prev;
+
             const updated = [event, ...prev].slice(0, MAX_EVENTS);
             return updated;
           });

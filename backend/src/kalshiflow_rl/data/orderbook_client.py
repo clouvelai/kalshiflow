@@ -20,8 +20,6 @@ from .orderbook_state import get_shared_orderbook_state, SharedOrderbookState
 from .write_queue import get_write_queue
 from .database import rl_db
 from ..config import config
-from ..trading.event_bus import emit_orderbook_snapshot, emit_orderbook_delta
-from ..trading.event_bus import EventBus as GlobalEventBus, EventType as GlobalEventType
 
 logger = logging.getLogger("kalshiflow_rl.orderbook_client")
 
@@ -541,12 +539,8 @@ class OrderbookClient:
                                 "timestamp_ms": snapshot_data["timestamp_ms"]}
                     )
                 else:
-                    # Fallback to global event bus for backward compatibility
-                    await emit_orderbook_snapshot(
-                        market_ticker=market_ticker,
-                        sequence_number=snapshot_data["sequence_number"],
-                        timestamp_ms=snapshot_data["timestamp_ms"]
-                    )
+                    # No event bus provided - V3 always provides one, so this is unexpected
+                    logger.debug(f"No event bus available for {market_ticker} snapshot")
             except Exception as e:
                 # Don't let event bus errors break orderbook processing
                 logger.debug(f"Event bus emit failed for {market_ticker} snapshot: {e}")
@@ -658,12 +652,8 @@ class OrderbookClient:
                                 "timestamp_ms": delta_data["timestamp_ms"]}
                     )
                 else:
-                    # Fallback to global event bus for backward compatibility
-                    await emit_orderbook_delta(
-                        market_ticker=market_ticker,
-                        sequence_number=delta_data["sequence_number"],
-                        timestamp_ms=delta_data["timestamp_ms"]
-                    )
+                    # No event bus provided - V3 always provides one, so this is unexpected
+                    logger.debug(f"No event bus available for {market_ticker} delta")
             except Exception as e:
                 # Don't let event bus errors break orderbook processing
                 logger.debug(f"Event bus emit failed for {market_ticker} delta: {e}")

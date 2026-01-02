@@ -128,13 +128,147 @@ Production validation with H123-level rigor found that the 3 "independent" strat
 
 ---
 
+## CRITICAL UPDATE - LSD-SPORTS Session (2026-01-01)
+
+### NEW VALIDATED STRATEGY: S-LATE-001 (Late-Arriving Large Money)
+
+The quant agent LSD-screened 15 sports betting hypotheses. One major win emerged:
+
+**S-LATE-001: Late-Arriving Large Money NO**
+- Hypothesis ID: SPORTS-007
+- Source: Sports betting principle "sharps bet late"
+- Raw Edge: **+19.8%**
+- **Improvement over baseline at SAME prices: +15.0%**
+- Bucket Analysis: **11/11 buckets show positive improvement (100%)**
+- Temporal Stability: **4/4 quarters positive** (22.4%, 19.5%, 20.9%, 16.2%)
+- Concentration: Top 5 markets = 4.6% (excellent diversification)
+- P-value: 0.000000 (extremely significant)
+- Sample Size: 331 markets
+- **VERDICT: VALIDATED - IMPLEMENT AS P0 STRATEGY**
+
+**Signal Definition:**
+1. Market has at least 16 trades
+2. Split trades into first 75% (early) and final 25% (late) by time
+3. Calculate "large trade ratio" (trades > $50 value) for each period
+4. Signal fires when: `late_large_ratio > early_large_ratio * 2 AND late_large_ratio > 0.2`
+5. Additionally: late large trades must favor NO (>60% of late large trades are NO)
+6. Bet: NO
+
+**Why It Works:**
+- Sharp money (informed traders) waits until close to event to place bets
+- This minimizes exposure time and maximizes information advantage
+- When late-arriving large trades disproportionately favor NO, it signals smart money betting against the retail-favored outcome
+- Retail has already moved the line, creating value for late sharps
+
+**Implementation Specification:**
+
+```python
+def detect_late_large_signal(market_trades_df) -> Optional[dict]:
+    """
+    Detect SPORTS-007: Late-Arriving Large Money signal.
+
+    Returns signal dict with 'direction' if signal fires, None otherwise.
+    """
+    if len(market_trades_df) < 16:
+        return None
+
+    n = len(market_trades_df)
+    cutoff = 3 * n // 4  # 75% point
+
+    early_trades = market_trades_df.iloc[:cutoff]
+    late_trades = market_trades_df.iloc[cutoff:]
+
+    if len(late_trades) < 4:
+        return None
+
+    LARGE_THRESHOLD_CENTS = 5000  # $50
+
+    early_large_ratio = (early_trades['trade_value_cents'] > LARGE_THRESHOLD_CENTS).mean()
+    late_large_ratio = (late_trades['trade_value_cents'] > LARGE_THRESHOLD_CENTS).mean()
+
+    # Check if late has 2x the large trade ratio AND meaningful activity
+    if not (late_large_ratio > early_large_ratio * 2 and late_large_ratio > 0.2):
+        return None
+
+    # Check direction of late large trades
+    late_large = late_trades[late_trades['trade_value_cents'] > LARGE_THRESHOLD_CENTS]
+    if len(late_large) < 2:
+        return None
+
+    late_yes_ratio = (late_large['taker_side'] == 'yes').mean()
+
+    if late_yes_ratio < 0.4:  # Late large trades favor NO
+        return {'direction': 'no', 'signal': 'late_large_no', 'strength': late_large_ratio / early_large_ratio}
+    elif late_yes_ratio > 0.6:  # Late large trades favor YES
+        return {'direction': 'yes', 'signal': 'late_large_yes', 'strength': late_large_ratio / early_large_ratio}
+
+    return None  # Neutral
+```
+
+**Validation Artifacts:**
+- Script: `research/analysis/sports007_deep_validation.py`
+- Results: `research/reports/sports007_deep_validation.json`
+- Full screening: `research/reports/sports_expert_lsd_screening_final.json`
+- Deep dive: `research/analysis/slate001_deep_dive.py` / `research/reports/slate001_deep_dive.json`
+
+**DEEP DIVE FINDINGS (2026-01-01):**
+
+1. **Real-Time Implementation**: The "final 25%" problem solved with time-based window:
+   - Final 30 min before close: **+21.6% edge** (BEST real-time approach)
+   - Final 60 min before close: +18.7% edge
+   - Preserves 70-90% of original edge without requiring knowledge of total trades
+
+2. **RLM Independence**: 34.4% overlap - strategies are PARTIALLY INDEPENDENT
+   - When BOTH fire: +20.5% edge (slight boost from stacking)
+   - S-LATE only: +19.4% edge
+   - **Recommendation: RUN BOTH for diversification**
+
+3. **Risk Profile**: LOW RISK
+   - Profit factor: 9.66x
+   - Max drawdown: 2.0%
+   - Max consecutive losses: 1
+   - Category concentration: 10.5% max (well diversified)
+
+4. **Parameter Sensitivity**: EXTREMELY ROBUST
+   - ALL 96/96 parameter combinations show >10% edge
+   - Best params: Window=10%, Ratio=1.5x, Threshold=$75 (+26.9% edge)
+   - Strategy works across all reasonable parameter ranges
+
+5. **Dollar P&L Reality**:
+   - Signals/year: ~5,492
+   - Annual profit at 1% position sizing: ~1,085% of capital
+   - S-LATE generates 19% as much annual $ as RLM (fewer signals despite higher edge)
+
+**Bucket Breakdown (All 11 positive!):**
+
+| Bucket | Win Rate | Baseline | Improvement |
+|--------|----------|----------|-------------|
+| 45c | 75.0% | 46.9% | +28.1% |
+| 50c | 82.4% | 55.7% | +26.7% |
+| 55c | 94.4% | 63.8% | +30.7% |
+| 60c | 97.0% | 70.3% | +26.6% |
+| 65c | 100.0% | 76.5% | +23.5% |
+| 70c | 96.2% | 78.0% | +18.2% |
+| 75c | 96.3% | 84.0% | +12.3% |
+| 80c | 100.0% | 88.6% | +11.4% |
+| 85c | 100.0% | 91.9% | +8.1% |
+| 90c | 100.0% | 95.7% | +4.3% |
+| 95c | 100.0% | 98.8% | +1.2% |
+
+---
+
 ## CRITICAL UPDATE - Session H123 Production Validation (2025-12-30)
 
-### TWO VALIDATED STRATEGIES
+### THREE VALIDATED STRATEGIES
 
-After rigorous bucket-matched baseline comparison, we have **TWO validated strategies**:
+After rigorous bucket-matched baseline comparison, we have **THREE validated strategies**:
 
-**S-RLM-001: Reverse Line Movement (RLM) NO - NEWLY VALIDATED (HIGHEST EDGE)**
+**S-LATE-001: Late-Arriving Large Money NO - NEWLY VALIDATED (HIGHEST IMPROVEMENT)**
+- See above for full details
+- Improvement over baseline: **+15.0%** (BEST)
+- 100% bucket ratio (11/11)
+
+**S-RLM-001: Reverse Line Movement (RLM) NO - VALIDATED (HIGHEST RAW EDGE)**
 - Hypothesis ID: H123
 - Raw Edge: **+17.38%** (base), up to **+24.88%** with optimal parameters
 - P-value: 0.0 (extremely significant)
@@ -251,6 +385,7 @@ This document tracks strategies that have been statistically validated and are a
 | S012 | Follow Millisecond Burst NO (H088) | **REJECTED - Session 012d** | +4.6% | +2.4% | p=0.0487 > 0.01, NOT SIGNIFICANT |
 | S013 | Low Leverage Variance NO (H102) | **VALIDATED - Session 012d** | +11.3% | +8.02% | 7/8 pos buckets, 4/4 quarters positive, CI excludes 0 |
 | **S-RLM-001** | **Reverse Line Movement NO (H123)** | **VALIDATED - Session H123** | **+17.38%** | **+13.44%** | **16/17 pos buckets, 4/4 quarters positive, BEST STRATEGY** |
+| **S-LATE-001** | **Late-Arriving Large Money NO (SPORTS-007)** | **VALIDATED - LSD-SPORTS** | **+19.8%** | **+15.0%** | **11/11 pos buckets, 4/4 quarters positive, NEW P0 STRATEGY** |
 
 **Session 012d UPDATE:** After applying Session 012c strict methodology (bucket-by-bucket baseline comparison), only **S013 remains validated**. S010 failed (equal pos/neg buckets), S012 failed (p > 0.01). S013 passed all checks: 7/8 positive buckets, 4/4 quarters positive, bootstrap CI excludes zero, only 4.5% overlap with S007.
 
