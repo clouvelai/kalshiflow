@@ -12,6 +12,8 @@ import os
 import sys
 from pathlib import Path
 
+import pytest
+
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
@@ -25,9 +27,14 @@ logging.basicConfig(
 logger = logging.getLogger("test_trading_client")
 
 
+@pytest.mark.asyncio
+@pytest.mark.skipif(
+    os.environ.get("ENVIRONMENT") != "paper",
+    reason="Requires ENVIRONMENT=paper with demo API credentials"
+)
 async def test_trading_client_integration():
     """Test the V3 trading client integration."""
-    
+
     # Load environment - should be in paper mode
     load_dotenv()
     

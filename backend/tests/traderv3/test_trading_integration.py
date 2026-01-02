@@ -4,6 +4,9 @@ Test script for V3 trading decision service integration.
 
 import asyncio
 import sys
+
+import pytest
+
 sys.path.insert(0, 'src')
 
 from kalshiflow_rl.traderv3.core.state_machine import TraderStateMachine
@@ -35,6 +38,7 @@ class TestConfig:
         return 'test'
 
 
+@pytest.mark.asyncio
 async def test_trading_service():
     """Test trading service integration."""
     print("=" * 60)
