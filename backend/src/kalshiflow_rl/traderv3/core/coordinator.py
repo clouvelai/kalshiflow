@@ -966,13 +966,11 @@ class V3Coordinator:
             # Clean up state container (market prices, session tracking)
             cleaned = self._state_container.cleanup_market(ticker)
 
-            # Optionally remove from tracked markets state
-            # Note: We keep it in tracked_markets_state for historical visibility
-            # but could remove after a delay if needed for memory management
+            # Remove from tracked markets state to prevent unbounded memory growth
             if self._tracked_markets_state:
-                # Just log that the market was determined, don't remove yet
-                # The TrackedMarketsState keeps determined markets for UI display
-                pass
+                removed = await self._tracked_markets_state.remove_market(ticker)
+                if removed:
+                    logger.info(f"Removed determined market from tracking: {ticker}")
 
             if cleaned:
                 logger.info(f"Coordinator cleaned up state for determined market: {ticker}")
