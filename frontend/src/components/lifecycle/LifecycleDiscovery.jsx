@@ -78,7 +78,22 @@ const LifecycleDiscovery = () => {
 
     // Status filter
     if (filters.status !== 'all') {
-      result = result.filter(m => m.status === filters.status);
+      if (filters.status === 'has_position') {
+        // Include filled positions OR resting orders
+        result = result.filter(m =>
+          (m.trading?.position?.count > 0) ||
+          (m.trading?.orders?.length > 0)
+        );
+      } else if (filters.status === 'signal_ready') {
+        // Currently meeting threshold OR has triggered before
+        result = result.filter(m => {
+          const rlmState = rlmStates[m.ticker];
+          return rlmState?.signalReady || (rlmState?.signal_trigger_count > 0);
+        });
+      } else {
+        // Standard status filter (active, determined)
+        result = result.filter(m => m.status === filters.status);
+      }
     }
 
     // Spread filter
@@ -115,7 +130,7 @@ const LifecycleDiscovery = () => {
     }
 
     return result;
-  }, [activeMarkets, filters]);
+  }, [activeMarkets, filters, rlmStates]);
 
   // Group markets by category for display
   const marketsByCategory = useMemo(() => {
