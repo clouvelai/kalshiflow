@@ -205,6 +205,7 @@ class TradingAttachment:
     orders: Dict[str, TrackedMarketOrder] = field(default_factory=dict)
     position: Optional[TrackedMarketPosition] = None
     settlement: Optional[TrackedMarketSettlement] = None
+    is_position_maxed: bool = False  # True when position is at per-market max
     version: int = 0  # For change detection
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
@@ -217,6 +218,7 @@ class TradingAttachment:
             "orders": [order.to_dict() for order in self.orders.values()],
             "position": self.position.to_dict() if self.position else None,
             "settlement": self.settlement.to_dict() if self.settlement else None,
+            "is_position_maxed": self.is_position_maxed,
             "version": self.version,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
@@ -283,6 +285,28 @@ class TradingAttachment:
         """
         if self.trading_state == TradingState.MONITORING:
             self.trading_state = TradingState.SIGNAL_READY
+            self.bump_version()
+
+    def mark_position_maxed(self) -> None:
+        """
+        Mark that this market's position is at the per-market maximum.
+
+        Called when RLM detects a signal but position is already at max.
+        Prevents signal spam and provides UI visibility.
+        """
+        if not self.is_position_maxed:
+            self.is_position_maxed = True
+            self.bump_version()
+
+    def clear_position_maxed(self) -> None:
+        """
+        Clear the position maxed flag.
+
+        Called when position reduces below max (e.g., after partial close or settlement).
+        Allows signals to fire again for this market.
+        """
+        if self.is_position_maxed:
+            self.is_position_maxed = False
             self.bump_version()
 
 

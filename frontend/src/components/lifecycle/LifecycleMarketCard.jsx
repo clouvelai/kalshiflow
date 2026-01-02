@@ -197,10 +197,19 @@ const CategoryBadge = memo(({ category }) => {
 CategoryBadge.displayName = 'CategoryBadge';
 
 /**
- * StatusBadges - Collection of NEW, HOT, SOON, DORMANT badges
+ * StatusBadges - Collection of NEW, HOT, SOON, DORMANT, MAXED badges
  */
-const StatusBadges = memo(({ isNew, isHot, closingSoon, signalReady, isDormant }) => (
+const StatusBadges = memo(({ isNew, isHot, closingSoon, signalReady, isDormant, isPositionMaxed }) => (
   <div className="flex items-center gap-1.5">
+    {isPositionMaxed && (
+      <span className="
+        text-[10px] px-2 py-0.5 rounded-md font-bold
+        bg-gradient-to-r from-red-600/40 to-red-500/30
+        border border-red-500/50 text-red-300
+      ">
+        MAXED
+      </span>
+    )}
     {isDormant && (
       <span className="
         text-[10px] px-2 py-0.5 rounded-md font-medium
@@ -371,29 +380,57 @@ const TradeCountsDisplay = memo(({ yesTrades, noTrades, yesRatio, totalTrades, y
 TradeCountsDisplay.displayName = 'TradeCountsDisplay';
 
 /**
- * PriceMovementDisplay - First/last price tracking
+ * PriceMovementDisplay - Price tracking with TMO (True Market Open) support
+ *
+ * Display format:
+ * - When TMO available: "TMO: 5c, first observed → 60c ↓55c" (drop from TMO)
+ * - When TMO not available: "Price: 9c → 60c ↓51c" (from first observed)
  */
-const PriceMovementDisplay = memo(({ firstYesPrice, lastYesPrice, priceDrop }) => {
+const PriceMovementDisplay = memo(({ firstYesPrice, lastYesPrice, priceDrop, trueMarketOpen }) => {
   if (firstYesPrice === null || firstYesPrice === undefined) return null;
+
+  // Determine if we have TMO data
+  const hasTMO = trueMarketOpen !== null && trueMarketOpen !== undefined;
+
+  // Calculate drop from TMO (if available) or first observed
+  const displayDrop = hasTMO && lastYesPrice !== null && lastYesPrice !== undefined
+    ? trueMarketOpen - lastYesPrice
+    : priceDrop;
 
   return (
     <div className="flex items-center justify-between text-xs">
-      <span className="text-gray-400 font-medium">Price:</span>
+      <span className="text-gray-400 font-medium">
+        {hasTMO ? 'TMO:' : 'Price:'}
+      </span>
       <span className="font-mono text-white flex items-center gap-1">
-        <span className="text-gray-300">{firstYesPrice}c</span>
-        {lastYesPrice !== null && lastYesPrice !== undefined && lastYesPrice !== firstYesPrice && (
+        {/* TMO or first observed price */}
+        {hasTMO ? (
+          <>
+            <span className="text-cyan-400 font-medium">{trueMarketOpen}c</span>
+            <span className="text-gray-600 text-[10px] ml-0.5">(open)</span>
+            <span className="text-gray-700 mx-1">|</span>
+            <span className="text-gray-500">{firstYesPrice}c</span>
+          </>
+        ) : (
+          <span className="text-gray-300">{firstYesPrice}c</span>
+        )}
+
+        {/* Arrow and current price */}
+        {lastYesPrice !== null && lastYesPrice !== undefined && (
           <>
             <span className="text-gray-600 mx-1">{'\u2192'}</span>
             <span className="text-white">{lastYesPrice}c</span>
-            {priceDrop !== 0 && (
+
+            {/* Drop badge (from TMO if available, otherwise from first observed) */}
+            {displayDrop !== 0 && (
               <span className={`
                 ml-1.5 px-1.5 py-0.5 rounded text-[10px] font-medium
-                ${priceDrop > 0
+                ${displayDrop > 0
                   ? 'text-red-400 bg-red-500/10 border border-red-500/20'
                   : 'text-emerald-400 bg-emerald-500/10 border border-emerald-500/20'
                 }
               `}>
-                {priceDrop > 0 ? '\u2193' : '\u2191'}{Math.abs(priceDrop)}c
+                {displayDrop > 0 ? '\u2193' : '\u2191'}{Math.abs(displayDrop)}c
               </span>
             )}
           </>
@@ -779,6 +816,7 @@ const LifecycleMarketCard = ({ market, rlmState, tradePulse, rlmConfig }) => {
   const yesRatio = rlmState?.yes_ratio || (totalTrades > 0 ? yesTrades / totalTrades : 0);
   const firstYesPrice = rlmState?.first_yes_price;
   const lastYesPrice = rlmState?.last_yes_price;
+  const trueMarketOpen = rlmState?.true_market_open;  // TMO from candlestick API
   const priceDrop = rlmState?.price_drop || 0;
   const signalTriggerCount = rlmState?.signal_trigger_count || 0;
 
@@ -899,6 +937,7 @@ const LifecycleMarketCard = ({ market, rlmState, tradePulse, rlmConfig }) => {
           isHot={isHot}
           closingSoon={closingSoon}
           signalReady={signalReady}
+          isPositionMaxed={market.trading?.is_position_maxed}
         />
       </div>
 
@@ -938,11 +977,12 @@ const LifecycleMarketCard = ({ market, rlmState, tradePulse, rlmConfig }) => {
           noAnimClass={noAnimClass}
         />
 
-        {/* Price movement */}
+        {/* Price movement (with TMO when available) */}
         <PriceMovementDisplay
           firstYesPrice={firstYesPrice}
           lastYesPrice={lastYesPrice}
           priceDrop={priceDrop}
+          trueMarketOpen={trueMarketOpen}
         />
 
         {/* Progress bar */}

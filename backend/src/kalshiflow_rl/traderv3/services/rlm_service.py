@@ -27,7 +27,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Dict, Any, Optional, List, Set, TYPE_CHECKING
 
-from ..core.event_bus import EventBus, EventType, PublicTradeEvent, MarketDeterminedEvent
+from ..core.event_bus import EventBus, EventType, PublicTradeEvent, MarketDeterminedEvent, TMOFetchedEvent
 from ..core.state_machine import TraderState
 from ...data.orderbook_state import get_shared_orderbook_state
 
@@ -84,17 +84,26 @@ class MarketTradeState:
     Per-market trade accumulation for RLM signal detection.
 
     Tracks:
-        - Trade direction counts (YES vs NO)
-        - Price movement from first trade to current
+        - Trade direction counts (YES vs NO) - reset after signal execution
+        - Price movement from market open (first trade) to current
         - Position state for re-entry logic
+    
+    IMPORTANT: first_yes_price is set once on the first trade seen and NEVER reset.
+    This matches the validated strategy which measures price drop from market open
+    throughout the entire market lifecycle. This allows signals to fire multiple times
+    as price continues to drop (with larger positions for stronger signals per S-001).
     """
     market_ticker: str
     yes_trades: int = 0
     no_trades: int = 0
-    first_yes_price: Optional[int] = None  # Anchor (from first trade)
-    last_yes_price: Optional[int] = None   # Current (updated each trade)
-    first_trade_time: Optional[float] = None
-    last_trade_time: Optional[float] = None
+    first_yes_price: Optional[int] = None  # First observed YES price (fallback if no TMO)
+    last_yes_price: Optional[int] = None   # Current trade price (updated each trade, reset after signal)
+    first_trade_time: Optional[float] = None  # When we started observing
+    last_trade_time: Optional[float] = None   # Current trade time - reset after signal
+
+    # True Market Open (TMO) - fetched from candlestick API
+    # This is the actual market opening price, more accurate than first_yes_price
+    true_market_open: Optional[int] = None  # YES price at true market open (cents)
 
     # Position tracking for re-entry
     position_contracts: int = 0
@@ -113,10 +122,22 @@ class MarketTradeState:
         return self.yes_trades / self.total_trades if self.total_trades > 0 else 0.0
 
     @property
+    def open_price(self) -> Optional[int]:
+        """Get the market open price - prefer TMO, fallback to first observed."""
+        return self.true_market_open if self.true_market_open is not None else self.first_yes_price
+
+    @property
     def price_drop(self) -> int:
-        if self.first_yes_price is None or self.last_yes_price is None:
+        """Calculate price drop from market open (TMO if available) to current price."""
+        open_price = self.open_price
+        if open_price is None or self.last_yes_price is None:
             return 0
-        return self.first_yes_price - self.last_yes_price
+        return open_price - self.last_yes_price
+
+    @property
+    def using_tmo(self) -> bool:
+        """Check if TMO is available for price drop calculation."""
+        return self.true_market_open is not None
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for logging/transport."""
@@ -128,6 +149,9 @@ class MarketTradeState:
             "yes_ratio": round(self.yes_ratio, 3),
             "first_yes_price": self.first_yes_price,
             "last_yes_price": self.last_yes_price,
+            "true_market_open": self.true_market_open,
+            "open_price": self.open_price,  # TMO or first observed
+            "using_tmo": self.using_tmo,
             "price_drop": self.price_drop,
             "position_contracts": self.position_contracts,
             "signal_trigger_count": self.signal_trigger_count,
@@ -292,6 +316,12 @@ class RLMService:
         # Track markets with open positions (for re-entry logic)
         self._markets_with_positions: Set[str] = set()
 
+        # Track markets that have hit per-market position max (for one-time event)
+        self._maxed_markets: Set[str] = set()
+
+        # Per-market position limit (matches trading_client_integration max_position_size)
+        self._per_market_max: int = 100
+
         # Decision history (circular buffer)
         self._decision_history: deque[RLMDecision] = deque(maxlen=DECISION_HISTORY_SIZE)
 
@@ -305,6 +335,7 @@ class RLMService:
             "signals_detected": 0,
             "signals_executed": 0,
             "signals_skipped": 0,
+            "signals_skipped_maxed": 0,
             "reentries": 0,
             "orderbook_fallbacks": 0,
         }
@@ -347,6 +378,10 @@ class RLMService:
         await self._event_bus.subscribe_to_market_determined(self._handle_market_determined)
         logger.info("Subscribed to MARKET_DETERMINED events for cleanup")
 
+        # Subscribe to TMO fetched events (for true market open price)
+        await self._event_bus.subscribe_to_tmo_fetched(self._handle_tmo_fetched)
+        logger.info("Subscribed to TMO_FETCHED events for price improvement")
+
         # Emit startup event
         await self._event_bus.emit_system_activity(
             activity_type="strategy_start",
@@ -375,6 +410,9 @@ class RLMService:
 
         self._event_bus.unsubscribe(EventType.MARKET_DETERMINED, self._handle_market_determined)
         logger.debug("Unsubscribed from MARKET_DETERMINED")
+
+        self._event_bus.unsubscribe(EventType.TMO_FETCHED, self._handle_tmo_fetched)
+        logger.debug("Unsubscribed from TMO_FETCHED")
 
         # Emit shutdown event
         await self._event_bus.emit_system_activity(
@@ -432,6 +470,11 @@ class RLMService:
         self._stats["trades_processed"] += 1
         market_ticker = trade_event.market_ticker
 
+        # Check if this market is at per-market position max (skip signal detection entirely)
+        if await self._check_and_handle_maxed_position(market_ticker):
+            # Market is maxed - still update state for tracking but don't detect signals
+            pass  # Continue to update trade state below, but signal detection will be skipped
+
         # Store in tracked trades buffer (for Trade Processing panel)
         # Generate trade_id from market_ticker, timestamp_ms, and counter for uniqueness
         # Counter ensures uniqueness when multiple trades occur in the same millisecond
@@ -466,11 +509,16 @@ class RLMService:
         # If trade is NO, YES price is 100 - price_cents
         yes_price = trade_event.price_cents if trade_event.side == "yes" else (100 - trade_event.price_cents)
 
-        # Track price movement
+        # Track price movement from market open (first trade) to current
+        # first_yes_price is set once on the first trade and NEVER reset (market open anchor)
+        # This matches the validated strategy which measures cumulative price drop from market open
         if state.first_yes_price is None:
             state.first_yes_price = yes_price
             state.first_trade_time = time.time()
+            logger.debug(f"Set market open anchor for {market_ticker}: first_yes_price={yes_price}c")
 
+        # Always update last_yes_price (current trade) - this is reset after signal execution
+        # Price drop = first_yes_price (market open) - last_yes_price (current)
         state.last_yes_price = yes_price
         state.last_trade_time = time.time()
 
@@ -490,10 +538,79 @@ class RLMService:
             )
             self._last_state_emit[market_ticker] = time.time()
 
+        # Skip signal detection if market is at max position
+        if market_ticker in self._maxed_markets:
+            return
+
         # Check for signal
         signal = self._detect_signal(state)
         if signal:
             await self._execute_signal(signal)
+
+    async def _check_and_handle_maxed_position(self, market_ticker: str) -> bool:
+        """
+        Check if a market is at per-market position max and handle state updates.
+
+        This prevents signal spam for markets where we're already at max position.
+        Emits a one-time activity event when a market becomes maxed, and clears
+        the flag when position reduces below max.
+
+        Args:
+            market_ticker: Market ticker to check
+
+        Returns:
+            True if market is at max position (signal detection should be skipped),
+            False otherwise
+        """
+        # Get current position for this specific market
+        trading_state = self._state_container.trading_state
+        positions = trading_state.positions if trading_state else {}
+        market_position = positions.get(market_ticker, {})
+        position_size = abs(market_position.get("position", 0))
+
+        is_maxed = position_size >= self._per_market_max
+
+        if is_maxed:
+            # Market is at max - check if we need to emit one-time event
+            if market_ticker not in self._maxed_markets:
+                self._maxed_markets.add(market_ticker)
+                self._stats["signals_skipped_maxed"] += 1
+
+                # Update TradingAttachment for UI visibility
+                attachment = self._state_container.get_trading_attachment(market_ticker)
+                if attachment:
+                    attachment.mark_position_maxed()
+
+                # Emit one-time activity event
+                await self._event_bus.emit_system_activity(
+                    activity_type="position_maxed",
+                    message=f"Position maxed for {market_ticker}: {position_size} contracts (limit: {self._per_market_max})",
+                    metadata={
+                        "market": market_ticker,
+                        "position": position_size,
+                        "limit": self._per_market_max,
+                    }
+                )
+                logger.info(
+                    f"Market {market_ticker} at max position ({position_size} contracts) - "
+                    f"skipping signal detection"
+                )
+            return True
+        else:
+            # Market is not at max - clear flag if it was previously maxed
+            if market_ticker in self._maxed_markets:
+                self._maxed_markets.discard(market_ticker)
+
+                # Clear the flag on TradingAttachment
+                attachment = self._state_container.get_trading_attachment(market_ticker)
+                if attachment:
+                    attachment.clear_position_maxed()
+
+                logger.info(
+                    f"Market {market_ticker} position reduced below max ({position_size} < {self._per_market_max}) - "
+                    f"signal detection resumed"
+                )
+            return False
 
     def _detect_signal(self, state: MarketTradeState) -> Optional[RLMSignal]:
         """
@@ -834,8 +951,12 @@ class RLMService:
         """
         Reset signal detection state after trade attempt.
 
-        This makes the signal "one-shot" - market must re-accumulate
-        fresh trades to trigger another signal.
+        CRITICAL: This follows the validated RLM strategy which measures price drop
+        from market open (first trade) throughout the entire market lifecycle.
+        
+        We reset trade counts to prevent duplicate signals from the same trades,
+        but we NEVER reset first_yes_price - it represents the market open anchor.
+        This allows price_drop to continue accumulating as the market evolves.
 
         Args:
             market_ticker: Market to reset
@@ -843,20 +964,31 @@ class RLMService:
         """
         state = self._market_states.get(market_ticker)
         if state:
-            # Reset signal detection counters
+            # Reset signal detection counters (prevents re-triggering on same trades)
             state.yes_trades = 0
             state.no_trades = 0
-            state.first_yes_price = None
+            
+            # DO NOT reset first_yes_price or first_trade_time - these are the
+            # market open anchor and must persist throughout the market lifecycle.
+            # The validated strategy measures price drop from market open, not from
+            # when we first saw the market or after signal execution.
+            
+            # Reset last_yes_price so price_drop continues tracking from original anchor
+            # After reset, the next trade will update last_yes_price, and price_drop
+            # will be calculated from first_yes_price (market open) to last_yes_price (current)
             state.last_yes_price = None
-            state.first_trade_time = None
             state.last_trade_time = None
+            
             # Keep position_contracts (we still own the position)
             # Keep entry_yes_ratio and entry_price_drop if preserve_entry=True
             if not preserve_entry:
                 state.entry_yes_ratio = None
                 state.entry_price_drop = None
 
-            logger.debug(f"Reset RLM signal state for {market_ticker} (preserve_entry={preserve_entry})")
+            logger.debug(
+                f"Reset RLM signal state for {market_ticker} (preserve_entry={preserve_entry}, "
+                f"first_yes_price={state.first_yes_price}c preserved from market open)"
+            )
 
     def _record_decision(
         self,
@@ -939,8 +1071,48 @@ class RLMService:
             self._markets_with_positions.discard(ticker)
             cleaned = True
 
+        # Remove from maxed markets tracking
+        if ticker in self._maxed_markets:
+            self._maxed_markets.discard(ticker)
+            cleaned = True
+
         if cleaned:
             logger.info(f"RLMService cleanup for determined market: {ticker}")
+
+    async def _handle_tmo_fetched(self, event: TMOFetchedEvent) -> None:
+        """
+        Handle True Market Open fetched events.
+
+        Updates the MarketTradeState with the true market open price from
+        the candlestick API. This improves price_drop accuracy by using
+        the actual market opening price instead of the first trade we observed.
+
+        Args:
+            event: TMO fetched event from EventBus
+        """
+        ticker = event.market_ticker
+        tmo = event.true_market_open
+
+        # Get or create market state
+        if ticker not in self._market_states:
+            self._market_states[ticker] = MarketTradeState(market_ticker=ticker)
+
+        state = self._market_states[ticker]
+        old_tmo = state.true_market_open
+
+        # Set the true market open
+        state.true_market_open = tmo
+
+        # Log the improvement
+        if old_tmo is None:
+            improvement = ""
+            if state.first_yes_price is not None:
+                diff = state.first_yes_price - tmo
+                if diff != 0:
+                    improvement = f" (diff from first observed: {diff:+d}c)"
+            logger.info(f"TMO set for {ticker}: {tmo}c{improvement}")
+        else:
+            logger.debug(f"TMO updated for {ticker}: {old_tmo}c -> {tmo}c")
 
     # Public methods for stats and monitoring
 
