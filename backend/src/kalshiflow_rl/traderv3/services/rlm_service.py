@@ -369,6 +369,13 @@ class RLMService:
         logger.info("Stopping RLMService...")
         self._running = False
 
+        # Unsubscribe from EventBus to prevent stale handlers
+        self._event_bus.unsubscribe(EventType.PUBLIC_TRADE_RECEIVED, self._handle_public_trade)
+        logger.debug("Unsubscribed from PUBLIC_TRADE_RECEIVED")
+
+        self._event_bus.unsubscribe(EventType.MARKET_DETERMINED, self._handle_market_determined)
+        logger.debug("Unsubscribed from MARKET_DETERMINED")
+
         # Emit shutdown event
         await self._event_bus.emit_system_activity(
             activity_type="strategy_stop",
