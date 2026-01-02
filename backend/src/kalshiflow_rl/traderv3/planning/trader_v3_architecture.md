@@ -847,7 +847,6 @@ The Trading Attachment System links trading state (orders, positions, P&L) to li
   - `orders`: Dict of TrackedMarketOrder by order_id
   - `position`: Optional TrackedMarketPosition
   - `settlement`: Optional TrackedMarketSettlement
-  - `signals_acted_on`: List of signal IDs we've followed
   - `version`: Change detection
 - **Key Properties**:
   - `has_exposure`: True if active orders or position
@@ -2011,9 +2010,8 @@ Identified architectural issues and cleanup opportunities from Dec 2024 review:
    - **Issue**: Services have different health reporting interfaces
    - **Fix**: Standardize on both `is_healthy()` and `get_health_details()` for all components
 
-3. **Test Files in Main Package**
-   - **Files**: `traderv3/test_trading_client.py`, `traderv3/test_trading_integration.py`
-   - **Fix**: Move to `backend/tests/traderv3/` directory
+3. ~~**Test Files in Main Package**~~ ✅ RESOLVED 2025-01-01
+   - **Files**: Moved to `backend/tests/traderv3/`
 
 ### 10.3 Low Priority
 

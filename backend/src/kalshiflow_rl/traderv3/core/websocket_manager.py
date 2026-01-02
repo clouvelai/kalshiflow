@@ -37,7 +37,7 @@ if TYPE_CHECKING:
     from ..services.rlm_service import RLMService
     from ..services.upcoming_markets_syncer import UpcomingMarketsSyncer
     from ..state.tracked_markets import TrackedMarketsState
-    from .state_container import StateContainer
+    from .state_container import V3StateContainer
 
 logger = logging.getLogger("kalshiflow_rl.traderv3.websocket_manager")
 
@@ -80,7 +80,7 @@ class V3WebSocketManager:
         self._event_bus = event_bus
         self._state_machine = state_machine
         self._whale_tracker = whale_tracker
-        self._state_container: Optional['StateContainer'] = None
+        self._state_container: Optional['V3StateContainer'] = None
         self._trading_service: Optional['TradingDecisionService'] = None
         self._whale_execution_service: Optional['WhaleExecutionService'] = None
         self._rlm_service: Optional['RLMService'] = None  # Set via set_rlm_service()
@@ -156,7 +156,7 @@ class V3WebSocketManager:
         self._whale_execution_service = whale_execution_service
         logger.info("WhaleExecutionService set on WebSocket manager")
 
-    def set_state_container(self, state_container: 'StateContainer') -> None:
+    def set_state_container(self, state_container: 'V3StateContainer') -> None:
         """
         Set the state container for sending trading state to new clients.
 
@@ -164,10 +164,10 @@ class V3WebSocketManager:
         rather than waiting for the next periodic update.
 
         Args:
-            state_container: StateContainer instance
+            state_container: V3StateContainer instance
         """
         self._state_container = state_container
-        logger.info("StateContainer set on WebSocket manager")
+        logger.info("V3StateContainer set on WebSocket manager")
 
     def set_market_price_syncer(self, market_price_syncer) -> None:
         """
