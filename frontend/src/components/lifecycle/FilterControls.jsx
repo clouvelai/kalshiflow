@@ -32,6 +32,7 @@ const FilterControls = ({ filters, onFilterChange, marketCount, totalCount }) =>
           <option value="all">All</option>
           <option value="active">Active</option>
           <option value="determined">Determined</option>
+          <option value="settled">Settled</option>
           <option value="has_position">Has Position</option>
           <option value="signal_ready">Signal Ready</option>
         </select>
