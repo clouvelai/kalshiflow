@@ -171,7 +171,7 @@ class TradingStateSyncer:
 
             # Emit system activity for console visibility
             await self._event_bus.emit_system_activity(
-                activity_type="sync",
+                activity_type="sync_trading",
                 message=message,
                 metadata={
                     "sync_type": "trading_state",
@@ -194,7 +194,7 @@ class TradingStateSyncer:
 
             # Emit error activity
             await self._event_bus.emit_system_activity(
-                activity_type="sync",
+                activity_type="sync_trading",
                 message=f"Trading session sync failed: {str(e)}",
                 metadata={
                     "sync_type": "trading_state",

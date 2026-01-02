@@ -597,8 +597,10 @@ class RLMService:
                 )
             return True
         else:
-            # Market is not at max - clear flag if it was previously maxed
-            if market_ticker in self._maxed_markets:
+            # Market is not at max - clear flag only if well below threshold (hysteresis)
+            # This prevents flapping when position is near the limit due to sync timing
+            hysteresis_threshold = int(self._per_market_max * 0.8)  # 80 contracts when max=100
+            if market_ticker in self._maxed_markets and position_size < hysteresis_threshold:
                 self._maxed_markets.discard(market_ticker)
 
                 # Clear the flag on TradingAttachment
@@ -607,8 +609,8 @@ class RLMService:
                     attachment.clear_position_maxed()
 
                 logger.info(
-                    f"Market {market_ticker} position reduced below max ({position_size} < {self._per_market_max}) - "
-                    f"signal detection resumed"
+                    f"Market {market_ticker} position reduced below hysteresis threshold "
+                    f"({position_size} < {hysteresis_threshold}) - signal detection resumed"
                 )
             return False
 

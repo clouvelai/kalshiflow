@@ -220,7 +220,7 @@ class TrackedMarketsSyncer:
 
             # Emit system activity for visibility
             await self._event_bus.emit_system_activity(
-                activity_type="sync",
+                activity_type="sync_markets",
                 message=f"Tracked markets synced: {synced_count} markets",
                 metadata={
                     "sync_type": "tracked_markets",

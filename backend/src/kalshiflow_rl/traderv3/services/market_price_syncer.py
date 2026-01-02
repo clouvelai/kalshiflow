@@ -203,7 +203,7 @@ class MarketPriceSyncer:
 
             # Emit system activity for visibility
             await self._event_bus.emit_system_activity(
-                activity_type="sync",
+                activity_type="sync_prices",
                 message=f"Market prices synced: {synced_count} tickers",
                 metadata={
                     "sync_type": "market_prices",
