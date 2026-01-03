@@ -49,6 +49,11 @@ export const useV3WebSocket = ({ onMessage }) => {
   const lastPingRef = useRef(Date.now());
   const heartbeatIntervalRef = useRef(null);
 
+  // Toast timeout refs for proper cleanup on reconnect/unmount
+  const orderFillTimeoutRef = useRef(null);
+  const ttlCancellationTimeoutRef = useRef(null);
+  const settlementTimeoutRef = useRef(null);
+
   // Keep currentStateRef in sync
   useEffect(() => {
     currentStateRef.current = currentState;
@@ -143,8 +148,11 @@ export const useV3WebSocket = ({ onMessage }) => {
               price_cents: metadata.price_cents,
               total_cents: metadata.total_cents
             });
-            // Auto-dismiss after 5 seconds
-            setTimeout(() => setNewOrderFill(null), 5000);
+            // Auto-dismiss after 5 seconds (with proper cleanup)
+            if (orderFillTimeoutRef.current) {
+              clearTimeout(orderFillTimeoutRef.current);
+            }
+            orderFillTimeoutRef.current = setTimeout(() => setNewOrderFill(null), 5000);
           }
 
           // Handle TTL cancellation toast notification
@@ -154,8 +162,11 @@ export const useV3WebSocket = ({ onMessage }) => {
               tickers: metadata.tickers || [],
               ttl_seconds: metadata.ttl_seconds
             });
-            // Auto-dismiss after 5 seconds
-            setTimeout(() => setNewTtlCancellation(null), 5000);
+            // Auto-dismiss after 5 seconds (with proper cleanup)
+            if (ttlCancellationTimeoutRef.current) {
+              clearTimeout(ttlCancellationTimeoutRef.current);
+            }
+            ttlCancellationTimeoutRef.current = setTimeout(() => setNewTtlCancellation(null), 5000);
           }
 
           let messageType = 'activity';
@@ -212,7 +223,11 @@ export const useV3WebSocket = ({ onMessage }) => {
               }
               if (newSettlements.length > prevSettlements.length && newSettlements[0]) {
                 setNewSettlement(newSettlements[0]);
-                setTimeout(() => setNewSettlement(null), 5000);
+                // Auto-dismiss after 5 seconds (with proper cleanup)
+                if (settlementTimeoutRef.current) {
+                  clearTimeout(settlementTimeoutRef.current);
+                }
+                settlementTimeoutRef.current = setTimeout(() => setNewSettlement(null), 5000);
               }
               return newSettlements;
             });
@@ -328,6 +343,16 @@ export const useV3WebSocket = ({ onMessage }) => {
     return () => {
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current);
+      }
+      // Clean up all toast timeouts on unmount
+      if (orderFillTimeoutRef.current) {
+        clearTimeout(orderFillTimeoutRef.current);
+      }
+      if (ttlCancellationTimeoutRef.current) {
+        clearTimeout(ttlCancellationTimeoutRef.current);
+      }
+      if (settlementTimeoutRef.current) {
+        clearTimeout(settlementTimeoutRef.current);
       }
       if (wsRef.current) {
         wsRef.current.close();
