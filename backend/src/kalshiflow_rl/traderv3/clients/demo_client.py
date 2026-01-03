@@ -221,27 +221,31 @@ class KalshiDemoTradingClient:
     def _create_auth_headers(self, method: str, path: str) -> Dict[str, str]:
         """
         Create authentication headers for demo API requests using proven KalshiAuth.
-        
+
         Args:
             method: HTTP method
-            path: API path (e.g., '/portfolio/balance')
-            
+            path: API path (e.g., '/portfolio/balance' or '/portfolio/settlements?limit=200')
+
         Returns:
             Dictionary of authentication headers
         """
         try:
+            # Strip query parameters for signature - Kalshi signature is computed on base path only
+            # The URL will still include query params, but signature excludes them
+            base_path = path.split('?')[0]
+
             # Kalshi API requires the FULL path including /trade-api/v2 for signature generation
             # The endpoint path alone (e.g., '/portfolio/balance') is not sufficient
-            full_signature_path = f"/trade-api/v2{path}"
-            
+            full_signature_path = f"/trade-api/v2{base_path}"
+
             # Use the proven KalshiAuth method with the full path for signature
             headers = self.auth.create_auth_headers(method, full_signature_path)
-            
+
             # Add content type for API requests
             headers['Content-Type'] = 'application/json'
-            
+
             return headers
-            
+
         except Exception as e:
             raise KalshiDemoAuthError(f"Failed to create auth headers: {e}")
     
@@ -934,41 +938,69 @@ class KalshiDemoTradingClient:
         except Exception as e:
             raise KalshiDemoTradingClientError(f"Failed to get events: {e}")
 
-    async def get_settlements(self) -> Dict[str, Any]:
+    async def get_settlements(self, max_settlements: int = 500) -> Dict[str, Any]:
         """
-        Get all settlements from demo account.
-        
+        Get all settlements from demo account with pagination.
+
         According to Kalshi API docs: https://docs.kalshi.com/api-reference/portfolio/get-settlements
-        All fields except fee_cost are in cents. fee_cost is a string in dollars.
-        
+        - limit: max 200 per request (default 100)
+        - cursor: pagination cursor for next page
+        - All fields except fee_cost are in cents. fee_cost is a string in dollars.
+
+        Args:
+            max_settlements: Maximum total settlements to fetch (default 500)
+
         Returns:
-            Dictionary with settlements array and cursor for pagination
-            
+            Dictionary with settlements array (paginated results combined)
+
         Raises:
             KalshiDemoTradingClientError: If request fails
         """
         try:
-            # Simple path without query parameters - fetch all settlements
-            path = "/portfolio/settlements"
-            
-            logger.info(f"Fetching all settlements from demo account (same client as balance/positions)")
-            response = await self._make_request("GET", path)
-            
-            # Validate response structure
-            if not isinstance(response, dict):
-                raise ValueError(f"Settlements response must be a dictionary, got {type(response)}")
-            
-            if "settlements" not in response:
-                raise ValueError("Settlements response missing required 'settlements' field")
-            
-            if not isinstance(response["settlements"], list):
-                raise ValueError(f"Settlements field must be a list, got {type(response['settlements'])}")
-            
-            settlements_count = len(response.get("settlements", []))
-            logger.debug(f"Retrieved {settlements_count} settlements from demo account")
-            
-            return response
-            
+            all_settlements = []
+            cursor = None
+            page = 1
+
+            logger.info(f"Fetching settlements from demo account (max {max_settlements})")
+
+            while len(all_settlements) < max_settlements:
+                # Build path with query parameters
+                path = "/portfolio/settlements?limit=200"
+                if cursor:
+                    path += f"&cursor={cursor}"
+
+                response = await self._make_request("GET", path)
+
+                # Validate response structure
+                if not isinstance(response, dict):
+                    raise ValueError(f"Settlements response must be a dictionary, got {type(response)}")
+
+                if "settlements" not in response:
+                    raise ValueError("Settlements response missing required 'settlements' field")
+
+                if not isinstance(response["settlements"], list):
+                    raise ValueError(f"Settlements field must be a list, got {type(response['settlements'])}")
+
+                page_settlements = response.get("settlements", [])
+                all_settlements.extend(page_settlements)
+
+                logger.debug(f"Page {page}: fetched {len(page_settlements)} settlements (total: {len(all_settlements)})")
+
+                # Check for more pages
+                cursor = response.get("cursor")
+                if not cursor or len(page_settlements) == 0:
+                    break  # No more pages
+
+                page += 1
+
+            # Trim to max if we exceeded
+            if len(all_settlements) > max_settlements:
+                all_settlements = all_settlements[:max_settlements]
+
+            logger.info(f"Retrieved {len(all_settlements)} total settlements from demo account ({page} pages)")
+
+            return {"settlements": all_settlements, "cursor": cursor}
+
         except ValueError as e:
             raise KalshiDemoTradingClientError(f"Invalid settlements response structure: {e}")
         except Exception as e:
