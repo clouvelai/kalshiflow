@@ -120,7 +120,7 @@ if [ "$ENVIRONMENT" = "paper" ]; then
     export RLM_YES_THRESHOLD="0.70"      # >70% YES trades triggers signal (was 0.65)
     export RLM_MIN_TRADES="25"           # Minimum trades before evaluation (was 15)
     export RLM_MIN_PRICE_DROP="2"        # Minimum price drop in cents
-    export RLM_CONTRACTS="3"             # Position size per signal (~$1.50-2 per trade)
+    export RLM_CONTRACTS="50"            # Position size per signal (scaled by price drop)
 
     # Rate limiting for RLM execution
     export RLM_MAX_SIGNALS_PER_MINUTE="10"

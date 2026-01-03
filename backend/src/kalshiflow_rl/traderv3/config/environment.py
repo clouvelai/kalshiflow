@@ -63,7 +63,7 @@ class V3Config:
     rlm_yes_threshold: float = 0.70  # Minimum YES trade ratio to trigger signal
     rlm_min_trades: int = 25  # Minimum trades before evaluating signal
     rlm_min_price_drop: int = 5  # Minimum YES price drop in cents (research: <5c has ~2% edge, skip)
-    rlm_contracts: int = 3  # Base contracts per trade (scaled by signal strength)
+    rlm_contracts: int = 50  # Base contracts per trade (scaled by signal strength)
     rlm_max_concurrent: int = 1000  # Maximum concurrent positions
     rlm_allow_reentry: bool = True  # Allow adding to position on stronger signal
     rlm_orderbook_timeout: float = 2.0  # Timeout for orderbook fetch (seconds)
