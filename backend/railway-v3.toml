@@ -1,0 +1,56 @@
+# Railway configuration for V3 Paper Trader
+# Connects to Kalshi DEMO API (demo-api.kalshi.co) for paper trading
+# Runs alongside kalshi-flowboard-backend which uses PROD API
+
+[build]
+builder = "nixpacks"
+
+[deploy]
+startCommand = "cd backend && uv run uvicorn kalshiflow_rl.traderv3.app:app --host 0.0.0.0 --port $PORT"
+healthcheckPath = "/v3/health"
+healthcheckTimeout = 30
+restartPolicyType = "on-failure"
+restartPolicyMaxRetries = 3
+
+[service]
+name = "kalshiflow-v3-trader"
+
+# ============================================
+# ENVIRONMENT VARIABLES REQUIRED
+# ============================================
+# Set via Railway dashboard or CLI (railway variables set)
+#
+# REQUIRED - Kalshi Demo Account Credentials:
+#   KALSHI_API_KEY_ID          - Demo account API key
+#   KALSHI_PRIVATE_KEY_CONTENT - Demo account RSA private key
+#   KALSHI_API_URL             - https://demo-api.kalshi.co/trade-api/v2
+#   KALSHI_WS_URL              - wss://demo-api.kalshi.co/trade-api/ws/v2
+#
+# REQUIRED - Database (Supabase PostgreSQL - shared with main app):
+#   DATABASE_URL               - PostgreSQL connection string
+#   DATABASE_URL_POOLED        - Pooled PostgreSQL connection string
+#
+# REQUIRED - Environment:
+#   ENVIRONMENT                - "paper" (CRITICAL for safety)
+#
+# TRADING CONFIGURATION (from .env.paper):
+#   V3_ENABLE_TRADING_CLIENT   - "true" (enables trading)
+#   V3_TRADING_STRATEGY        - "rlm_no" (Reverse Line Movement)
+#   V3_TRADING_MAX_ORDERS      - "100" (max concurrent orders)
+#   V3_TRADING_MAX_POSITION_SIZE - "1000" (max position per market)
+#
+# MARKET DISCOVERY:
+#   RL_MODE                    - "lifecycle" (auto-discover via WebSocket)
+#   RL_ORDERBOOK_MARKET_LIMIT  - "1000" (max markets to track)
+#
+# RLM STRATEGY:
+#   RLM_YES_THRESHOLD          - "0.70" (70% YES trade ratio)
+#   RLM_MIN_TRADES             - "25" (min trades before signal)
+#   RLM_MIN_PRICE_DROP         - "2" (min 2 cent price drop)
+#   RLM_CONTRACTS              - "20" (contracts per signal)
+#   RLM_MAX_SIGNALS_PER_MINUTE - "10" (rate limiting)
+#   RLM_TOKEN_REFILL_SECONDS   - "6" (rate limit refill)
+#
+# TESTING FLAGS:
+#   V3_ALLOW_MULTIPLE_POSITIONS - "true" (for paper testing)
+#   V3_ALLOW_MULTIPLE_ORDERS    - "true" (for paper testing)

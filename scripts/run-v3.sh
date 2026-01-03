@@ -107,8 +107,8 @@ fi
 if [ "$ENVIRONMENT" = "paper" ]; then
     # Trading client settings
     export V3_ENABLE_TRADING_CLIENT="true"
-    export V3_TRADING_MAX_ORDERS="100"
-    export V3_TRADING_MAX_POSITION_SIZE="1000"
+    export V3_TRADING_MAX_ORDERS="1000"
+    export V3_TRADING_MAX_POSITION_SIZE="100"
 
     # RLM (Reverse Line Movement) strategy - validated edge
     # ALWAYS use RLM for paper trading - this is the primary strategy
@@ -120,11 +120,14 @@ if [ "$ENVIRONMENT" = "paper" ]; then
     export RLM_YES_THRESHOLD="0.70"      # >70% YES trades triggers signal (was 0.65)
     export RLM_MIN_TRADES="25"           # Minimum trades before evaluation (was 15)
     export RLM_MIN_PRICE_DROP="2"        # Minimum price drop in cents
-    export RLM_CONTRACTS="20"            # Position size per signal (~$10-14 per trade)
+    export RLM_CONTRACTS="3"             # Position size per signal (~$1.50-2 per trade)
 
     # Rate limiting for RLM execution
     export RLM_MAX_SIGNALS_PER_MINUTE="10"
     export RLM_TOKEN_REFILL_SECONDS="6"  # 60/10 = 6 seconds per token
+
+    # Balance protection - minimum cash to continue trading ($10.00)
+    export MIN_TRADER_CASH="1000"
 
     # Allow multiple positions/orders per market (for testing)
     export V3_ALLOW_MULTIPLE_POSITIONS="true"

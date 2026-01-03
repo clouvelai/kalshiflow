@@ -43,7 +43,7 @@ class V3Config:
     
     # Trading Client Configuration (optional, only for paper/live trading)
     enable_trading_client: bool = False
-    trading_max_orders: int = 10
+    trading_max_orders: int = 1000
     trading_max_position_size: int = 100
     trading_mode: str = "paper"  # paper or production
     trading_strategy_str: str = "hold"  # Strategy string: "hold", "whale_follower", "paper_test", "rl_model", "yes_80_90"
@@ -63,7 +63,7 @@ class V3Config:
     rlm_yes_threshold: float = 0.70  # Minimum YES trade ratio to trigger signal
     rlm_min_trades: int = 25  # Minimum trades before evaluating signal
     rlm_min_price_drop: int = 5  # Minimum YES price drop in cents (research: <5c has ~2% edge, skip)
-    rlm_contracts: int = 50  # Base contracts per trade (scaled by signal strength)
+    rlm_contracts: int = 3  # Base contracts per trade (scaled by signal strength)
     rlm_max_concurrent: int = 1000  # Maximum concurrent positions
     rlm_allow_reentry: bool = True  # Allow adding to position on stronger signal
     rlm_orderbook_timeout: float = 2.0  # Timeout for orderbook fetch (seconds)
@@ -78,7 +78,7 @@ class V3Config:
     whale_min_size_cents: int = 10000  # $100 minimum
 
     # Balance Protection Configuration
-    min_trader_cash: int = 10000  # Minimum balance in cents ($100.00 default). Set to 0 to disable.
+    min_trader_cash: int = 1000  # Minimum balance in cents ($10.00 default). Set to 0 to disable.
 
     # Cleanup Configuration
     cleanup_on_startup: bool = True  # Cancel orphaned orders on startup (orders without order_group_id)
@@ -187,7 +187,7 @@ class V3Config:
         
         # Trading client configuration
         enable_trading_client = os.environ.get("V3_ENABLE_TRADING_CLIENT", "false").lower() == "true"
-        trading_max_orders = int(os.environ.get("V3_TRADING_MAX_ORDERS", "10"))
+        trading_max_orders = int(os.environ.get("V3_TRADING_MAX_ORDERS", "1000"))
         trading_max_position_size = int(os.environ.get("V3_TRADING_MAX_POSITION_SIZE", "100"))
         # Determine trading mode based on environment or explicit setting
         environment = os.environ.get("ENVIRONMENT", "local")
@@ -207,7 +207,7 @@ class V3Config:
         whale_min_size_cents = int(os.environ.get("WHALE_MIN_SIZE_CENTS", "10000"))
 
         # Balance protection configuration - minimum cash to continue trading
-        min_trader_cash = int(os.environ.get("MIN_TRADER_CASH", "10000"))  # Default $100.00 in cents
+        min_trader_cash = int(os.environ.get("MIN_TRADER_CASH", "1000"))  # Default $10.00 in cents
 
         # Cleanup configuration - default True for paper trading, False for production
         cleanup_default = "true" if environment == "paper" or "demo-api" in ws_url.lower() else "false"
@@ -232,7 +232,7 @@ class V3Config:
         rlm_yes_threshold = float(os.environ.get("RLM_YES_THRESHOLD", "0.70"))
         rlm_min_trades = int(os.environ.get("RLM_MIN_TRADES", "25"))
         rlm_min_price_drop = int(os.environ.get("RLM_MIN_PRICE_DROP", "5"))
-        rlm_contracts = int(os.environ.get("RLM_CONTRACTS", "50"))
+        rlm_contracts = int(os.environ.get("RLM_CONTRACTS", "3"))
         rlm_max_concurrent = int(os.environ.get("RLM_MAX_CONCURRENT", "1000"))
         rlm_allow_reentry = os.environ.get("RLM_ALLOW_REENTRY", "true").lower() == "true"
         rlm_orderbook_timeout = float(os.environ.get("RLM_ORDERBOOK_TIMEOUT", "2.0"))
