@@ -97,6 +97,10 @@ class OrderbookClient:
         
         # Track which markets have received snapshots (for V3 integration)
         self._snapshot_received_markets: Set[str] = set()
+
+        # Track which markets have PERSISTED snapshots to DB (separate from above for health)
+        # This prevents duplicate snapshot writes - only first snapshot per market per connection cycle
+        self._snapshot_persisted_markets: Set[str] = set()
         
         logger.info(f"OrderbookClient initialized for {len(self.market_tickers)} markets: {', '.join(self.market_tickers)}")
     
@@ -207,15 +211,30 @@ class OrderbookClient:
         ) as websocket:
             self._websocket = websocket
             self._connection_start_time = time.time()
+
+            # Clear snapshot persistence filter on reconnect (allows fresh state capture per cycle)
+            # Check before resetting reconnect_count to detect if this is a reconnect
+            if self._reconnect_count > 0:
+                logger.info(
+                    f"Reconnect detected (attempt {self._reconnect_count}) - clearing snapshot persistence filter "
+                    f"({len(self._snapshot_persisted_markets)} markets will get fresh snapshots)"
+                )
+                self._snapshot_persisted_markets.clear()
+
             self._reconnect_count = 0  # Reset on successful connection
-            
-            # Create new session
-            self._session_id = await rl_db.create_session(
-                market_tickers=self.market_tickers,
-                websocket_url=self.ws_url,
-                environment=config.ENVIRONMENT
-            )
-            
+
+            # Session continuity: Only create new session on FIRST connect, reuse on reconnect
+            # This ensures one database session per trader session (not per WebSocket connection)
+            if self._session_id is None:
+                self._session_id = await rl_db.create_session(
+                    market_tickers=self.market_tickers,
+                    websocket_url=self.ws_url,
+                    environment=config.ENVIRONMENT
+                )
+                logger.info(f"Created new orderbook session {self._session_id}")
+            else:
+                logger.info(f"Reusing existing session {self._session_id} after reconnect")
+
             self._session_state = "active"
             
             # Pass session ID to write queue
@@ -270,25 +289,25 @@ class OrderbookClient:
                 
         except ConnectionClosed as e:
             logger.warning(f"WebSocket connection closed: {e}")
-            
+
             # Clear connection event since we're disconnected
             self._connection_established.clear()
-            
-            # Close session on disconnect
+
+            # Session continuity: Do NOT close session on disconnect, just update stats
+            # Session will be reused on reconnect, only closed on trader stop()
             if self._session_id:
                 try:
-                    await rl_db.close_session(self._session_id, status='closed')
                     await rl_db.update_session_stats(
-                        self._session_id, 
-                        messages=self._messages_received, 
-                        snapshots=self._snapshots_received, 
+                        self._session_id,
+                        messages=self._messages_received,
+                        snapshots=self._snapshots_received,
                         deltas=self._deltas_received
                     )
-                    logger.info(f"Session {self._session_id} closed on disconnect")
+                    logger.info(f"Session {self._session_id} stats updated on disconnect (session preserved for reconnect)")
                 except Exception as e:
-                    logger.error(f"Failed to update session on disconnect: {e}")
-                self._session_id = None
-                self._session_state = "closed"
+                    logger.error(f"Failed to update session stats on disconnect: {e}")
+                # DO NOT clear session_id - it will be reused on reconnect
+                self._session_state = "disconnected"
             
             if self._on_disconnected:
                 try:
@@ -520,10 +539,17 @@ class OrderbookClient:
                 global_state = await get_shared_orderbook_state(market_ticker)
                 await global_state.apply_snapshot(snapshot_data)
             
-            # Queue for database persistence with session ID (non-blocking)
-            enqueue_success = await get_write_queue().enqueue_snapshot(snapshot_data)
-            
-            # Track that this market has received a snapshot (always, not just on enqueue success)
+            # Queue for database persistence - ONLY first snapshot per market per connection cycle
+            # This prevents duplicate snapshots from being persisted (reduces storage ~85%)
+            if market_ticker not in self._snapshot_persisted_markets:
+                enqueue_success = await get_write_queue().enqueue_snapshot(snapshot_data)
+                if enqueue_success:
+                    self._snapshot_persisted_markets.add(market_ticker)
+                    logger.info(f"Persisted initial snapshot for {market_ticker} (seq={snapshot_data['sequence_number']})")
+            else:
+                logger.debug(f"Skipping duplicate snapshot persistence for {market_ticker} (already persisted this cycle)")
+
+            # Track that this market has received a snapshot (always, for health tracking)
             self._snapshot_received_markets.add(market_ticker)
             
             # Trigger actor event via event bus (always emit, not dependent on database enqueue)
