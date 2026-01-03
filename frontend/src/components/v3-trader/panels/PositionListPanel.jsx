@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useRef, memo } from 'react';
-import { ChevronRight, ChevronDown, Briefcase, TrendingUp, TrendingDown, Radio, Wifi, WifiOff } from 'lucide-react';
+import React, { useState, useEffect, useRef, memo, useMemo } from 'react';
+import { ChevronRight, ChevronDown, Briefcase, TrendingUp, TrendingDown, Radio, Wifi, WifiOff, DollarSign, Layers, Activity, Clock } from 'lucide-react';
 import { formatPnLCurrency, formatCentsAsCurrency, formatRelativeTime, getSideClasses, getPnLColor } from '../../../utils/v3-trader';
 
 /**
@@ -58,6 +58,67 @@ const LiveIndicator = memo(({ isLive, lastUpdateTime }) => {
 LiveIndicator.displayName = 'LiveIndicator';
 
 /**
+ * StatBox - Enhanced stat display component with gradient and icon
+ * Matches SettlementsPanel styling
+ */
+const StatBox = memo(({ label, value, subtitle, valueClass = 'text-white', icon: Icon, accentColor = 'gray' }) => {
+  const accentStyles = {
+    cyan: 'border-cyan-500/30 bg-gradient-to-br from-cyan-950/30 via-gray-900/50 to-gray-900/30',
+    gray: 'border-gray-700/50 bg-gradient-to-br from-gray-800/40 via-gray-900/50 to-gray-900/30',
+    green: 'border-green-500/30 bg-gradient-to-br from-green-950/30 via-gray-900/50 to-gray-900/30',
+    red: 'border-red-500/30 bg-gradient-to-br from-red-950/30 via-gray-900/50 to-gray-900/30',
+    emerald: 'border-emerald-500/30 bg-gradient-to-br from-emerald-950/30 via-gray-900/50 to-gray-900/30',
+    purple: 'border-purple-500/30 bg-gradient-to-br from-purple-950/30 via-gray-900/50 to-gray-900/30',
+  };
+
+  return (
+    <div className={`
+      rounded-xl p-4 border backdrop-blur-sm
+      transition-all duration-300 ease-out
+      hover:scale-[1.02] hover:shadow-lg hover:shadow-black/20
+      ${accentStyles[accentColor] || accentStyles.gray}
+    `}>
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-xs text-gray-500 uppercase tracking-wider font-medium">{label}</span>
+        {Icon && <Icon className="w-3.5 h-3.5 text-gray-600" />}
+      </div>
+      <div className={`text-2xl font-mono font-bold tracking-tight ${valueClass}`}>
+        {value}
+      </div>
+      {subtitle && (
+        <div className="text-xs text-gray-500 mt-1 font-mono">{subtitle}</div>
+      )}
+    </div>
+  );
+});
+
+StatBox.displayName = 'StatBox';
+
+/**
+ * DecisionBox - Compact stat component
+ * Matches SettlementsPanel styling
+ */
+const DecisionBox = memo(({ label, value, valueClass = 'text-gray-400', icon: Icon }) => (
+  <div className="
+    bg-gradient-to-b from-gray-800/40 to-gray-900/40
+    rounded-lg p-3 border border-gray-700/40
+    transition-all duration-200 ease-out
+    hover:border-gray-600/50 hover:bg-gray-800/50
+    text-center
+  ">
+    <div className="flex items-center justify-center space-x-1 mb-1.5">
+      {Icon && <Icon className="w-3 h-3 text-gray-600" />}
+      <span className="text-[10px] text-gray-500 uppercase tracking-wider font-medium">{label}</span>
+    </div>
+    <div className={`text-lg font-mono font-bold ${valueClass}`}>
+      {value}
+    </div>
+  </div>
+));
+
+DecisionBox.displayName = 'DecisionBox';
+
+/**
  * Calculate position metrics for a single position
  * Centralized to avoid code duplication
  */
@@ -106,7 +167,7 @@ const PositionRow = memo(({ pos, index, isRecentlyChanged }) => {
     <tr
       className={`border-b border-gray-700/30 transition-all duration-500
         ${marketClosed
-          ? 'opacity-50 bg-gray-900/30'
+          ? 'border-l-2 border-l-amber-500/40 opacity-60 bg-amber-900/5'
           : isRecentlyChanged
             ? 'border-l-2 border-l-emerald-400/70 bg-emerald-900/10 hover:bg-gray-800/50'
             : hasLiveData
@@ -118,7 +179,7 @@ const PositionRow = memo(({ pos, index, isRecentlyChanged }) => {
         <div className="flex items-center gap-1.5">
           {/* Live indicator for WebSocket updates (hide for closed markets) */}
           {!marketClosed && <LiveIndicator isLive={hasLiveData} lastUpdateTime={pos.last_ws_update_time} />}
-          {marketClosed && <span className="w-2 h-2 rounded-full bg-yellow-500/50" title="Pending settlement" />}
+          {marketClosed && <span className="w-2 h-2 rounded-full bg-amber-500/50" title="Pending settlement" />}
           <span className={marketClosed ? 'text-gray-500' : 'text-gray-300'}>{pos.ticker}</span>
         </div>
       </td>
@@ -136,11 +197,14 @@ const PositionRow = memo(({ pos, index, isRecentlyChanged }) => {
       <td className={`px-3 py-2 text-right font-mono ${marketClosed ? 'text-gray-500' : 'text-gray-300'}`}>{qty}</td>
       <td className={`px-3 py-2 text-right font-mono ${marketClosed ? 'text-gray-600' : 'text-gray-400'}`}>{costPerContract}c</td>
       <td className={`px-3 py-2 text-right font-mono ${marketClosed ? 'text-gray-500' : hasLiveData ? 'text-emerald-300' : 'text-gray-300'}`}>
-        {valuePerContract}c
-        {!marketClosed && hasLiveData && <span className="ml-1 text-emerald-500 text-[10px]">LIVE</span>}
-      </td>
-      <td className={`px-3 py-2 text-right font-mono ${marketClosed ? 'text-gray-600' : getPnLColor(valuePerContract - costPerContract)}`}>
-        {valuePerContract - costPerContract >= 0 ? '+' : ''}{valuePerContract - costPerContract}c
+        <div className="flex items-center justify-end gap-1.5">
+          <span>{valuePerContract}c</span>
+          {/* Per-contract unrealized P&L delta */}
+          <span className={`text-[10px] ${marketClosed ? 'text-gray-600' : getPnLColor(valuePerContract - costPerContract)}`}>
+            {valuePerContract - costPerContract >= 0 ? '+' : ''}{valuePerContract - costPerContract}c
+          </span>
+          {!marketClosed && hasLiveData && <span className="text-emerald-500 text-[10px]">LIVE</span>}
+        </div>
       </td>
       <td className={`px-3 py-2 text-right font-mono font-bold ${marketClosed ? 'text-gray-500' : getPnLColor(unrealizedPnL)}`}>
         {formatPnLCurrency(unrealizedPnL)}
@@ -149,7 +213,7 @@ const PositionRow = memo(({ pos, index, isRecentlyChanged }) => {
       <td className="px-3 py-2 text-center font-mono text-xs">
         {pos.market_close_time ? (
           marketClosed ? (
-            <span className="px-2 py-0.5 rounded bg-yellow-900/30 text-yellow-500 border border-yellow-700/30 text-[10px] font-medium">
+            <span className="px-2 py-0.5 rounded bg-amber-900/30 text-amber-500 border border-amber-700/30 text-[10px] font-medium">
               SETTLING
             </span>
           ) : (
@@ -168,117 +232,11 @@ const PositionRow = memo(({ pos, index, isRecentlyChanged }) => {
 PositionRow.displayName = 'PositionRow';
 
 /**
- * SideSummaryCard - Compact summary card for YES/NO positions
- * Note: Not memoized because positions array reference stays same but ticker data changes via WebSocket
- */
-const SideSummaryCard = ({ side, positions }) => {
-  const isYes = side === 'yes';
-  const totalQty = positions.reduce((sum, p) => sum + Math.abs(p.position || 0), 0);
-  const aggregated = positions.reduce((acc, pos) => {
-    const metrics = calcPositionMetrics(pos);
-    acc.totalCost += metrics.totalCost;
-    acc.totalValue += metrics.totalValue;
-    acc.unrealizedPnL += metrics.unrealizedPnL;
-    return acc;
-  }, { totalCost: 0, totalValue: 0, unrealizedPnL: 0 });
-
-  const pnlPercent = aggregated.totalCost > 0
-    ? ((aggregated.unrealizedPnL / aggregated.totalCost) * 100).toFixed(1)
-    : 0;
-
-  return (
-    <div className={`flex-1 rounded-lg border p-3 ${
-      isYes
-        ? 'bg-green-900/20 border-green-700/40'
-        : 'bg-red-900/20 border-red-700/40'
-    }`}>
-      <div className="flex items-center justify-between mb-2">
-        <div className="flex items-center gap-2">
-          <span className={`text-sm font-bold uppercase ${isYes ? 'text-green-400' : 'text-red-400'}`}>
-            {side}
-          </span>
-          <span className="text-xs text-gray-500">({positions.length})</span>
-        </div>
-        {aggregated.unrealizedPnL >= 0 ? (
-          <TrendingUp className={`w-4 h-4 ${isYes ? 'text-green-500' : 'text-red-500'}`} />
-        ) : (
-          <TrendingDown className={`w-4 h-4 ${isYes ? 'text-green-500' : 'text-red-500'}`} />
-        )}
-      </div>
-
-      <div className="space-y-1 text-xs">
-        <div className="flex justify-between">
-          <span className="text-gray-500">Contracts</span>
-          <span className="font-mono text-gray-300">{totalQty.toLocaleString()}</span>
-        </div>
-        <div className="flex justify-between">
-          <span className="text-gray-500">Cost Basis</span>
-          <span className="font-mono text-gray-400">{formatCentsAsCurrency(aggregated.totalCost)}</span>
-        </div>
-        <div className="flex justify-between">
-          <span className="text-gray-500">Mkt Value</span>
-          <span className="font-mono text-gray-300">{formatCentsAsCurrency(aggregated.totalValue)}</span>
-        </div>
-        <div className={`flex justify-between pt-1 border-t ${isYes ? 'border-green-800/50' : 'border-red-800/50'}`}>
-          <span className="text-gray-500">P&L</span>
-          <span className={`font-mono font-bold ${getPnLColor(aggregated.unrealizedPnL)}`}>
-            {formatPnLCurrency(aggregated.unrealizedPnL)}
-            <span className="ml-1 opacity-70">({pnlPercent}%)</span>
-          </span>
-        </div>
-      </div>
-    </div>
-  );
-};
-
-/**
- * PortfolioSummaryBar - Total portfolio summary statistics
- * Note: Not memoized because positions array reference stays same but ticker data changes via WebSocket
- */
-const PortfolioSummaryBar = ({ positions }) => {
-  const totals = positions.reduce((acc, pos) => {
-    const metrics = calcPositionMetrics(pos);
-    acc.totalCost += metrics.totalCost;
-    acc.totalValue += metrics.totalValue;
-    acc.unrealizedPnL += metrics.unrealizedPnL;
-    acc.totalContracts += metrics.qty;
-    return acc;
-  }, { totalCost: 0, totalValue: 0, unrealizedPnL: 0, totalContracts: 0 });
-
-  const pnlPercent = totals.totalCost > 0
-    ? ((totals.unrealizedPnL / totals.totalCost) * 100).toFixed(1)
-    : 0;
-
-  return (
-    <div className="flex items-center justify-between px-3 py-2 bg-gray-800/50 rounded-lg border border-gray-700/50 text-xs">
-      <div className="flex items-center gap-4">
-        <div className="flex items-center gap-1.5">
-          <span className="text-gray-500">Total Cost:</span>
-          <span className="font-mono text-gray-300">{formatCentsAsCurrency(totals.totalCost)}</span>
-        </div>
-        <div className="flex items-center gap-1.5">
-          <span className="text-gray-500">Mkt Value:</span>
-          <span className="font-mono text-gray-300">{formatCentsAsCurrency(totals.totalValue)}</span>
-        </div>
-      </div>
-      <div className="flex items-center gap-1.5">
-        <span className="text-gray-500">Unrealized P&L:</span>
-        <span className={`font-mono font-bold ${getPnLColor(totals.unrealizedPnL)}`}>
-          {formatPnLCurrency(totals.unrealizedPnL)}
-        </span>
-        <span className={`font-mono ${getPnLColor(totals.unrealizedPnL)} opacity-70`}>
-          ({pnlPercent}%)
-        </span>
-      </div>
-    </div>
-  );
-};
-
-/**
  * PositionListPanel - Detailed position breakdown with per-position P&L
  */
 const PositionListPanel = ({ positions, positionListener, sessionUpdates }) => {
   const [isExpanded, setIsExpanded] = useState(true);
+  const [sideFilter, setSideFilter] = useState('all'); // 'all', 'yes', 'no'
   const [changedTickers, setChangedTickers] = useState(new Set());
   const prevPositionsRef = useRef({});
   const isFirstRender = useRef(true);
@@ -324,136 +282,286 @@ const PositionListPanel = ({ positions, positionListener, sessionUpdates }) => {
     }
   }, [positions]);
 
+  // Calculate stats using useMemo
+  const stats = useMemo(() => {
+    if (!positions || positions.length === 0) {
+      return {
+        totalPnL: 0, totalCost: 0, totalValue: 0, totalContracts: 0,
+        liveCount: 0, avgSize: 0, bestGain: 0, maxLoss: 0, settlingCount: 0, openCount: 0
+      };
+    }
+
+    let totalPnL = 0, totalCost = 0, totalValue = 0, totalContracts = 0;
+    let bestGain = -Infinity, maxLoss = Infinity;
+    let liveCount = 0, settlingCount = 0;
+
+    positions.forEach(pos => {
+      const metrics = calcPositionMetrics(pos);
+      totalPnL += metrics.unrealizedPnL;
+      totalCost += metrics.totalCost;
+      totalValue += metrics.totalValue;
+      totalContracts += metrics.qty;
+
+      if (metrics.unrealizedPnL > bestGain) bestGain = metrics.unrealizedPnL;
+      if (metrics.unrealizedPnL < maxLoss) maxLoss = metrics.unrealizedPnL;
+
+      if (isRecentWsUpdate(pos.last_ws_update_time, 5)) liveCount++;
+      if (isMarketClosed(pos.market_close_time)) settlingCount++;
+    });
+
+    const avgSize = positions.length > 0 ? totalCost / positions.length : 0;
+
+    return {
+      totalPnL,
+      totalCost,
+      totalValue,
+      totalContracts,
+      liveCount,
+      avgSize,
+      bestGain: bestGain === -Infinity ? 0 : bestGain,
+      maxLoss: maxLoss === Infinity ? 0 : maxLoss,
+      settlingCount,
+      openCount: positions.length - settlingCount
+    };
+  }, [positions]);
+
+  // Sort positions: open markets by close time (soonest first), then settling at bottom
+  const sortedPositions = useMemo(() => {
+    if (!positions || positions.length === 0) return [];
+    return [...positions].sort((a, b) => {
+      const now = Date.now();
+      const aTime = a.market_close_time ? new Date(a.market_close_time).getTime() : Infinity;
+      const bTime = b.market_close_time ? new Date(b.market_close_time).getTime() : Infinity;
+      const aClosed = aTime < now;
+      const bClosed = bTime < now;
+
+      // Settling positions go to bottom
+      if (aClosed && !bClosed) return 1;
+      if (!aClosed && bClosed) return -1;
+
+      // Within same group, sort by close time (soonest first for open, most recent for settling)
+      return aTime - bTime;
+    });
+  }, [positions]);
+
+  // Filter positions by side
+  const filteredPositions = useMemo(() => {
+    if (sideFilter === 'all') return sortedPositions;
+    return sortedPositions.filter(p => p.side === sideFilter);
+  }, [sortedPositions, sideFilter]);
+
+  // Split into open and settling
+  const openPositions = useMemo(() =>
+    filteredPositions.filter(p => !isMarketClosed(p.market_close_time)),
+    [filteredPositions]
+  );
+  const settlingPositions = useMemo(() =>
+    filteredPositions.filter(p => isMarketClosed(p.market_close_time)),
+    [filteredPositions]
+  );
+
   if (!positions || positions.length === 0) {
     return null;
   }
 
-  // Sort positions: open markets by close time (soonest first), then settling at bottom
-  const sortedPositions = [...positions].sort((a, b) => {
-    const now = Date.now();
-    const aTime = a.market_close_time ? new Date(a.market_close_time).getTime() : Infinity;
-    const bTime = b.market_close_time ? new Date(b.market_close_time).getTime() : Infinity;
-    const aClosed = aTime < now;
-    const bClosed = bTime < now;
-
-    // Settling positions go to bottom
-    if (aClosed && !bClosed) return 1;
-    if (!aClosed && bClosed) return -1;
-
-    // Within same group, sort by close time (soonest first for open, most recent for settling)
-    return aTime - bTime;
-  });
-
-  // Count settling positions for header display
-  const settlingCount = positions.filter(p => isMarketClosed(p.market_close_time)).length;
-
-  // Separate YES/NO positions for summary cards (use unsorted for consistent aggregation)
-  const yesPositions = positions.filter(p => p.side === 'yes');
-  const noPositions = positions.filter(p => p.side === 'no');
-
-  // Count positions with live WebSocket data
-  const liveDataCount = positions.filter(p => isRecentWsUpdate(p.last_ws_update_time, 5)).length;
-  const hasAnyLiveData = liveDataCount > 0;
+  const hasAnyLiveData = stats.liveCount > 0;
 
   return (
-    <div className="bg-gray-900/50 backdrop-blur-sm rounded-xl border border-gray-800 p-4 mb-4">
-      {/* Header with expand/collapse */}
+    <div className="
+      bg-gradient-to-br from-gray-900/70 via-gray-900/50 to-gray-950/70
+      backdrop-blur-md rounded-2xl
+      border border-gray-800/80
+      shadow-xl shadow-black/20
+      p-5
+    ">
+      {/* Header */}
       <div
-        className="flex items-center justify-between cursor-pointer"
+        className="flex items-center justify-between mb-5 cursor-pointer"
         onClick={() => setIsExpanded(!isExpanded)}
       >
-        <div className="flex items-center space-x-2">
-          <Briefcase className="w-4 h-4 text-purple-400" />
-          <h3 className="text-sm font-bold text-gray-300 uppercase tracking-wider">Open Positions</h3>
-          <span className="text-xs text-gray-500">
-            ({positions.length - settlingCount}{settlingCount > 0 && <span className="text-yellow-500/70"> + {settlingCount} settling</span>})
-          </span>
-          {/* Position listener status indicator */}
-          {positionListener && (
-            <div className="flex items-center gap-1.5 ml-3 px-2 py-0.5 bg-gray-800/50 rounded-full">
-              <span className={`w-1.5 h-1.5 rounded-full ${
-                positionListener.connected
-                  ? 'bg-emerald-400 animate-pulse'
-                  : 'bg-yellow-400'
-              }`} />
-              <span className="text-xs text-gray-500">
-                {positionListener.connected ? 'Live' : 'Polling'}
+        <div className="flex items-center space-x-3">
+          <div className="p-2 rounded-lg bg-gradient-to-br from-purple-900/30 to-purple-950/20 border border-purple-800/30">
+            <Briefcase className="w-4 h-4 text-purple-400" />
+          </div>
+          <div>
+            <h3 className="text-sm font-bold text-gray-200 uppercase tracking-wider">Open Positions</h3>
+            <div className="flex items-center space-x-2 mt-0.5">
+              <span className="font-mono text-[10px] text-gray-500">
+                {positions.length} positions
               </span>
-              {positionListener.positions_received > 0 && (
-                <span className="text-xs text-gray-600">
-                  ({positionListener.positions_received} updates)
-                </span>
+              {/* Live ticker data indicator */}
+              {hasAnyLiveData && (
+                <div className="flex items-center gap-1 px-1.5 py-0.5 bg-emerald-900/30 rounded border border-emerald-800/30">
+                  <span className="relative flex h-1.5 w-1.5">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                    <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-emerald-500"></span>
+                  </span>
+                  <span className="text-[10px] text-emerald-400 font-medium">
+                    {stats.liveCount} LIVE
+                  </span>
+                </div>
               )}
             </div>
-          )}
-          {/* Live ticker data indicator - shows when WebSocket price updates are flowing */}
-          {hasAnyLiveData && (
-            <div className="flex items-center gap-1.5 ml-2 px-2 py-0.5 bg-emerald-900/30 rounded-full border border-emerald-800/30">
-              <span className="relative flex h-2 w-2">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
-              </span>
-              <span className="text-xs text-emerald-400 font-medium">
-                {liveDataCount}/{positions.length} LIVE
-              </span>
-            </div>
-          )}
-          {/* Session updates count (fallback when no live data) */}
-          {!hasAnyLiveData && sessionUpdates && sessionUpdates.count > 0 && (
-            <div className="flex items-center gap-1.5 ml-2 px-2 py-0.5 bg-gray-800/50 rounded-full border border-gray-700/30">
-              <WifiOff className="w-3 h-3 text-gray-500" />
-              <span className="text-xs text-gray-500">
-                {sessionUpdates.count} updated this session
-              </span>
-            </div>
+          </div>
+        </div>
+        <div className="flex items-center space-x-3">
+          <div className={`px-3 py-1 rounded-lg text-sm font-bold font-mono ${getPnLColor(stats.totalPnL)}`}>
+            {formatPnLCurrency(stats.totalPnL)}
+          </div>
+          {isExpanded ? (
+            <ChevronDown className="w-4 h-4 text-gray-400" />
+          ) : (
+            <ChevronRight className="w-4 h-4 text-gray-400" />
           )}
         </div>
-        {isExpanded ? (
-          <ChevronDown className="w-4 h-4 text-gray-500" />
-        ) : (
-          <ChevronRight className="w-4 h-4 text-gray-500" />
-        )}
       </div>
 
       {isExpanded && (
-        <div className="mt-4 space-y-3">
-          {/* YES/NO Summary Cards */}
-          <div className="flex gap-3">
-            <SideSummaryCard side="yes" positions={yesPositions} />
-            <SideSummaryCard side="no" positions={noPositions} />
+        <>
+          {/* Stats Grid - Primary metrics (5 columns) */}
+          <div className="grid grid-cols-5 gap-3 mb-4">
+            <StatBox
+              label="Unrealized P&L"
+              value={formatPnLCurrency(stats.totalPnL)}
+              icon={DollarSign}
+              accentColor={stats.totalPnL >= 0 ? 'green' : 'red'}
+              valueClass={stats.totalPnL >= 0 ? 'text-green-400' : 'text-red-400'}
+            />
+            <StatBox
+              label="Total Exposure"
+              value={formatCentsAsCurrency(stats.totalCost)}
+              icon={Briefcase}
+              accentColor="gray"
+              valueClass="text-gray-300"
+            />
+            <StatBox
+              label="Positions"
+              value={positions.length.toString()}
+              subtitle={stats.settlingCount > 0 ? `${stats.openCount} open, ${stats.settlingCount} settling` : null}
+              icon={Layers}
+              accentColor="cyan"
+              valueClass="text-cyan-400"
+            />
+            <StatBox
+              label="Live Data"
+              value={`${stats.liveCount}/${positions.length}`}
+              icon={Activity}
+              accentColor="emerald"
+              valueClass={stats.liveCount > 0 ? 'text-emerald-400' : 'text-gray-500'}
+            />
+            <StatBox
+              label="Avg Size"
+              value={formatCentsAsCurrency(stats.avgSize)}
+              icon={TrendingUp}
+              accentColor="purple"
+              valueClass="text-purple-400"
+            />
           </div>
 
-          {/* Portfolio Summary Bar */}
-          <PortfolioSummaryBar positions={positions} />
+          {/* Secondary Stats Grid (5 columns) */}
+          <div className="grid grid-cols-5 gap-2 mb-5">
+            <DecisionBox
+              label="Best Gain"
+              value={formatPnLCurrency(stats.bestGain)}
+              valueClass={stats.bestGain > 0 ? 'text-green-400' : 'text-gray-500'}
+              icon={TrendingUp}
+            />
+            <DecisionBox
+              label="Max Loss"
+              value={formatPnLCurrency(stats.maxLoss)}
+              valueClass={stats.maxLoss < 0 ? 'text-red-400' : 'text-gray-500'}
+              icon={TrendingDown}
+            />
+            <DecisionBox
+              label="Contracts"
+              value={stats.totalContracts.toLocaleString()}
+              valueClass="text-gray-300"
+            />
+            <DecisionBox
+              label="Mkt Value"
+              value={formatCentsAsCurrency(stats.totalValue)}
+              valueClass="text-gray-300"
+            />
+            <DecisionBox
+              label="Settling"
+              value={stats.settlingCount.toString()}
+              valueClass={stats.settlingCount > 0 ? 'text-amber-400' : 'text-gray-500'}
+              icon={Clock}
+            />
+          </div>
 
           {/* Position Table */}
-          <div className="bg-gray-800/30 rounded-lg border border-gray-700/50 overflow-hidden max-h-[220px] overflow-y-auto">
-            <table className="w-full text-sm">
-              <thead className="sticky top-0 z-10">
-                <tr className="bg-gray-900 border-b border-gray-700/50">
-                  <th className="px-3 py-2 text-left text-xs text-gray-500 uppercase font-medium">Ticker</th>
-                  <th className="px-3 py-2 text-center text-xs text-gray-500 uppercase font-medium">Side</th>
-                  <th className="px-3 py-2 text-right text-xs text-gray-500 uppercase font-medium">Qty</th>
-                  <th className="px-3 py-2 text-right text-xs text-gray-500 uppercase font-medium" title="Entry cost per contract">Cost/C</th>
-                  <th className="px-3 py-2 text-right text-xs text-gray-500 uppercase font-medium" title="Current market bid">Value/C</th>
-                  <th className="px-3 py-2 text-right text-xs text-gray-500 uppercase font-medium" title="Unrealized P&L per contract">Unreal/C</th>
-                  <th className="px-3 py-2 text-right text-xs text-gray-500 uppercase font-medium">P&L</th>
-                  <th className="px-3 py-2 text-center text-xs text-gray-500 uppercase font-medium" title="When market closes">Closes</th>
-                </tr>
-              </thead>
-              <tbody>
-                {sortedPositions.map((pos, index) => (
-                  <PositionRow
-                    key={pos.ticker || index}
-                    pos={pos}
-                    index={index}
-                    isRecentlyChanged={changedTickers.has(pos.ticker)}
-                  />
+          <div className="relative">
+            <div className="flex items-center justify-between mb-3">
+              <span className="text-xs text-gray-500 uppercase tracking-wider font-medium">Position Details</span>
+              {/* Filter Toggle */}
+              <div className="flex items-center gap-1">
+                {['all', 'yes', 'no'].map(filter => (
+                  <button
+                    key={filter}
+                    onClick={(e) => { e.stopPropagation(); setSideFilter(filter); }}
+                    className={`px-2 py-1 rounded text-xs font-medium uppercase transition-all ${
+                      sideFilter === filter
+                        ? filter === 'yes' ? 'bg-green-900/50 text-green-400 border border-green-700/50'
+                        : filter === 'no' ? 'bg-red-900/50 text-red-400 border border-red-700/50'
+                        : 'bg-gray-700/50 text-gray-300 border border-gray-600/50'
+                        : 'text-gray-500 hover:text-gray-400 border border-transparent'
+                    }`}
+                  >
+                    {filter}
+                  </button>
                 ))}
-              </tbody>
-            </table>
+              </div>
+            </div>
+
+            <div className="
+              bg-gradient-to-b from-gray-800/30 to-gray-900/30
+              rounded-xl border border-gray-700/40
+              overflow-hidden
+              max-h-[280px] overflow-y-auto
+            ">
+              <table className="w-full text-sm">
+                <thead className="sticky top-0 z-10">
+                  <tr className="bg-gray-900/80 border-b border-gray-700/40">
+                    <th className="px-3 py-2.5 text-left text-[10px] text-gray-500 uppercase font-semibold tracking-wider">Ticker</th>
+                    <th className="px-3 py-2.5 text-center text-[10px] text-gray-500 uppercase font-semibold tracking-wider">Side</th>
+                    <th className="px-3 py-2.5 text-right text-[10px] text-gray-500 uppercase font-semibold tracking-wider">Qty</th>
+                    <th className="px-3 py-2.5 text-right text-[10px] text-gray-500 uppercase font-semibold tracking-wider" title="Entry cost per contract">Cost/C</th>
+                    <th className="px-3 py-2.5 text-right text-[10px] text-gray-500 uppercase font-semibold tracking-wider" title="Current market price + unrealized per contract">Price</th>
+                    <th className="px-3 py-2.5 text-right text-[10px] text-gray-500 uppercase font-semibold tracking-wider">P&L</th>
+                    <th className="px-3 py-2.5 text-center text-[10px] text-gray-500 uppercase font-semibold tracking-wider" title="When market closes">Closes</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {openPositions.map((pos, index) => (
+                    <PositionRow
+                      key={pos.ticker || index}
+                      pos={pos}
+                      index={index}
+                      isRecentlyChanged={changedTickers.has(pos.ticker)}
+                    />
+                  ))}
+                  {/* Settling Section Divider */}
+                  {settlingPositions.length > 0 && (
+                    <tr className="bg-amber-900/10 border-y border-amber-700/30">
+                      <td colSpan={7} className="px-3 py-2 text-xs text-amber-500 font-medium uppercase tracking-wider">
+                        Pending Settlement ({settlingPositions.length})
+                      </td>
+                    </tr>
+                  )}
+                  {settlingPositions.map((pos, index) => (
+                    <PositionRow
+                      key={pos.ticker || `settling-${index}`}
+                      pos={pos}
+                      index={index}
+                      isRecentlyChanged={changedTickers.has(pos.ticker)}
+                    />
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </div>
-        </div>
+        </>
       )}
     </div>
   );
