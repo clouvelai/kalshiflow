@@ -768,8 +768,13 @@ class V3Coordinator:
                     skip_count += 1
                     continue
 
-                # Delete old order groups
+                # Reset order group first (cancels all resting orders), then delete
                 try:
+                    # Reset cancels all resting orders in the group
+                    await self._trading_client_integration.reset_order_group_by_id(group_id)
+                    logger.info(f"Reset old order group (cancelled orders): {group_id[:8]}...")
+
+                    # Now delete the empty group
                     success = await self._trading_client_integration.delete_order_group_by_id(group_id)
                     if success:
                         deleted_count += 1
@@ -780,25 +785,27 @@ class V3Coordinator:
                     logger.warning(f"Failed to delete order group {group_id[:8]}...: {e}")
                     error_count += 1
 
-            if deleted_count > 0 or error_count > 0:
-                # Emit system activity for cleanup results
-                await self._event_bus.emit_system_activity(
-                    activity_type="cleanup",
-                    message=f"Startup cleanup: {deleted_count} order groups deleted, {skip_count} preserved",
-                    metadata={
-                        "deleted_count": deleted_count,
-                        "skip_count": skip_count,
-                        "error_count": error_count,
-                        "total_groups": len(order_groups),
-                        "severity": "info" if error_count == 0 else "warning"
-                    }
-                )
-                logger.info(
-                    f"Startup cleanup complete: {deleted_count} order groups deleted, "
-                    f"{skip_count} preserved, {error_count} errors"
-                )
-            else:
-                logger.info("No previous order groups needed cleanup")
+            # Always emit cleanup status for visibility
+            cleanup_message = (
+                f"Startup cleanup: {deleted_count} order groups deleted, {skip_count} preserved"
+                if deleted_count > 0 or error_count > 0
+                else "Startup cleanup: No old order groups to clean"
+            )
+            await self._event_bus.emit_system_activity(
+                activity_type="cleanup",
+                message=cleanup_message,
+                metadata={
+                    "deleted_count": deleted_count,
+                    "skip_count": skip_count,
+                    "error_count": error_count,
+                    "total_groups": len(order_groups),
+                    "severity": "info" if error_count == 0 else "warning"
+                }
+            )
+            logger.info(
+                f"Startup cleanup complete: {deleted_count} order groups deleted, "
+                f"{skip_count} preserved, {error_count} errors"
+            )
 
         except Exception as e:
             # Don't fail startup on cleanup errors - just log and continue

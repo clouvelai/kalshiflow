@@ -40,6 +40,7 @@ export const useV3WebSocket = ({ onMessage }) => {
   const [settlements, setSettlements] = useState([]);
   const [newSettlement, setNewSettlement] = useState(null);
   const [newOrderFill, setNewOrderFill] = useState(null);
+  const [newTtlCancellation, setNewTtlCancellation] = useState(null);
   const [metrics, setMetrics] = useState(INITIAL_METRICS);
 
   const wsRef = useRef(null);
@@ -144,6 +145,17 @@ export const useV3WebSocket = ({ onMessage }) => {
             });
             // Auto-dismiss after 5 seconds
             setTimeout(() => setNewOrderFill(null), 5000);
+          }
+
+          // Handle TTL cancellation toast notification
+          if (activity_type === 'orders_cancelled_ttl' && metadata) {
+            setNewTtlCancellation({
+              count: metadata.count,
+              tickers: metadata.tickers || [],
+              ttl_seconds: metadata.ttl_seconds
+            });
+            // Auto-dismiss after 5 seconds
+            setTimeout(() => setNewTtlCancellation(null), 5000);
           }
 
           let messageType = 'activity';
@@ -354,6 +366,11 @@ export const useV3WebSocket = ({ onMessage }) => {
     setNewOrderFill(null);
   }, []);
 
+  // Clear new TTL cancellation notification
+  const dismissTtlCancellation = useCallback(() => {
+    setNewTtlCancellation(null);
+  }, []);
+
   return {
     wsStatus,
     currentState,
@@ -365,6 +382,8 @@ export const useV3WebSocket = ({ onMessage }) => {
     dismissSettlement,
     newOrderFill,
     dismissOrderFill,
+    newTtlCancellation,
+    dismissTtlCancellation,
     metrics
   };
 };

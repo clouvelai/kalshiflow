@@ -465,7 +465,7 @@ const TradingSessionPanel = ({ tradingState, lastUpdateTime }) => {
 
       {/* Session Cash Flow - Row 2 */}
       {pnl && (
-        <div className="grid grid-cols-5 gap-4 mb-4">
+        <div className="grid grid-cols-6 gap-4 mb-4">
           <FlowCard
             label="Cash Invested"
             value={pnl.session_cash_invested ?? 0}
@@ -514,6 +514,16 @@ const TradingSessionPanel = ({ tradingState, lastUpdateTime }) => {
             accentColor="orange"
             valueClass="text-orange-400"
             title="Positions settled this session"
+          />
+
+          <FlowCard
+            label="TTL Cancelled"
+            value={pnl.session_orders_cancelled_ttl ?? 0}
+            formattedValue={pnl.session_orders_cancelled_ttl ?? 0}
+            icon={Clock}
+            accentColor="amber"
+            valueClass="text-amber-400"
+            title="Orders cancelled due to TTL expiry this session"
           />
         </div>
       )}

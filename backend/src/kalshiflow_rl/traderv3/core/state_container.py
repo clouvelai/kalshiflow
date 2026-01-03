@@ -231,6 +231,7 @@ class V3StateContainer:
         self._session_orders_count: int = 0       # Orders placed this session
         self._session_settlements_count: int = 0  # Positions settled this session
         self._session_total_fees_paid: int = 0   # Total fees in cents this session
+        self._session_orders_cancelled_ttl: int = 0  # Orders cancelled due to TTL expiry
 
         # Whale queue state - data from whale tracker
         self._whale_state: Optional[WhaleQueueState] = None
@@ -702,6 +703,7 @@ class V3StateContainer:
             pnl["session_orders_count"] = self._session_orders_count
             pnl["session_settlements_count"] = self._session_settlements_count
             pnl["session_total_fees_paid"] = self._session_total_fees_paid
+            pnl["session_orders_cancelled_ttl"] = self._session_orders_cancelled_ttl
             summary["pnl"] = pnl
 
         # Add session-updated positions info
@@ -775,6 +777,29 @@ class V3StateContainer:
         logger.info(
             f"Order fill recorded: {contracts} contracts @ {cost_cents}¢ | "
             f"Session totals: invested={self._session_cash_invested}¢, orders={self._session_orders_count}"
+        )
+
+    def record_ttl_cancellation(self, count: int) -> None:
+        """
+        Record orders cancelled due to TTL expiry during this session.
+
+        Called by TradingFlowOrchestrator after successfully cancelling
+        expired resting orders.
+
+        Args:
+            count: Number of orders cancelled
+
+        Side Effects:
+            - Increments _session_orders_cancelled_ttl by count
+            - Increments _trading_state_version for change detection
+        """
+        self._session_orders_cancelled_ttl += count
+        self._trading_state_version += 1
+        self._last_update = time.time()
+
+        logger.info(
+            f"TTL cancellation recorded: {count} orders | "
+            f"Session total: {self._session_orders_cancelled_ttl}"
         )
 
     def _format_position_details(self) -> List[Dict[str, Any]]:
@@ -1876,6 +1901,12 @@ class V3StateContainer:
 
         self._session_pnl_state = None
         self._session_updated_tickers = set()
+        self._session_cash_invested = 0
+        self._session_cash_received = 0
+        self._session_orders_count = 0
+        self._session_settlements_count = 0
+        self._session_total_fees_paid = 0
+        self._session_orders_cancelled_ttl = 0
 
         self._whale_state = None
         self._whale_state_version = 0

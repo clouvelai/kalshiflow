@@ -87,6 +87,10 @@ class V3Config:
     allow_multiple_positions_per_market: bool = False  # Skip position check for testing
     allow_multiple_orders_per_market: bool = False  # Skip orders check for testing
 
+    # Order TTL Configuration
+    order_ttl_enabled: bool = True  # Enable automatic cancellation of stale orders
+    order_ttl_seconds: int = 300  # Cancel resting orders older than this (5 minutes default)
+
     # Market selection mode: "config", "discovery", or "lifecycle" (default)
     # - config: Use static market_tickers list
     # - discovery: Auto-discover from REST API
@@ -217,6 +221,10 @@ class V3Config:
         allow_multiple_positions_per_market = os.environ.get("V3_ALLOW_MULTIPLE_POSITIONS", "false").lower() == "true"
         allow_multiple_orders_per_market = os.environ.get("V3_ALLOW_MULTIPLE_ORDERS", "false").lower() == "true"
 
+        # Order TTL configuration - cancel stale resting orders
+        order_ttl_enabled = os.environ.get("V3_ORDER_TTL_ENABLED", "true").lower() == "true"
+        order_ttl_seconds = int(os.environ.get("V3_ORDER_TTL_SECONDS", "300"))
+
         # YES 80-90c strategy configuration
         yes8090_min_price = int(os.environ.get("YES8090_MIN_PRICE", "80"))
         yes8090_max_price = int(os.environ.get("YES8090_MAX_PRICE", "90"))
@@ -309,6 +317,8 @@ class V3Config:
             cleanup_on_startup=cleanup_on_startup,
             allow_multiple_positions_per_market=allow_multiple_positions_per_market,
             allow_multiple_orders_per_market=allow_multiple_orders_per_market,
+            order_ttl_enabled=order_ttl_enabled,
+            order_ttl_seconds=order_ttl_seconds,
             lifecycle_categories=lifecycle_categories,
             lifecycle_max_markets=lifecycle_max_markets,
             lifecycle_sync_interval=lifecycle_sync_interval,
@@ -366,6 +376,10 @@ class V3Config:
             logger.warning(f"  - ALLOW_MULTIPLE_POSITIONS: ENABLED (testing mode)")
         if allow_multiple_orders_per_market:
             logger.warning(f"  - ALLOW_MULTIPLE_ORDERS: ENABLED (testing mode)")
+        if order_ttl_enabled:
+            logger.info(f"  - Order TTL: {order_ttl_seconds}s (auto-cancel stale resting orders)")
+        else:
+            logger.info(f"  - Order TTL: DISABLED")
 
         # Log YES 80-90 config if strategy is enabled
         if trading_strategy_str == "yes_80_90":

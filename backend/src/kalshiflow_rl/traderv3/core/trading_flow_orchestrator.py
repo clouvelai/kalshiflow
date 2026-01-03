@@ -193,7 +193,10 @@ class TradingFlowOrchestrator:
             # Phase 1: SYNC - Always sync with Kalshi first
             cycle.phase = CyclePhase.SYNC
             await self._sync_phase(cycle)
-            
+
+            # TTL Cleanup - Cancel expired resting orders (after sync, before evaluate)
+            await self._cleanup_expired_orders()
+
             # Phase 2: EVALUATE - Evaluate markets
             cycle.phase = CyclePhase.EVALUATE
             await self._evaluate_phase(cycle)
@@ -453,3 +456,100 @@ class TradingFlowOrchestrator:
             failure_rate = self._failed_cycles / self._total_cycles
             return failure_rate < 0.5
         return True
+
+    async def _cleanup_expired_orders(self) -> int:
+        """
+        Cancel orders that have exceeded the TTL (Time-to-Live).
+
+        This method iterates through all tracked markets and identifies
+        resting orders that are older than the configured TTL. These
+        stale orders are cancelled in batch to prevent capital lock-up.
+
+        Returns:
+            Number of orders cancelled
+
+        Side Effects:
+            - Calls trading client to cancel expired orders
+            - Emits system_activity event for UI notification
+            - Records TTL cancellation count in state container
+        """
+        if not self._config.order_ttl_enabled:
+            return 0
+
+        now = time.time()
+        ttl_seconds = self._config.order_ttl_seconds
+        orders_to_cancel = []
+        expired_tickers = []
+
+        # Find all expired orders from trading attachments
+        tracked_tickers = list(self._state_container.tracked_tickers) if hasattr(self._state_container, 'tracked_tickers') else []
+
+        # If no tracked tickers attribute, try to get from trading attachments directly
+        if not tracked_tickers:
+            tracked_tickers = list(self._state_container._trading_attachments.keys())
+
+        for ticker in tracked_tickers:
+            attachment = self._state_container.get_trading_attachment(ticker)
+            if not attachment:
+                continue
+
+            for order_id, order in list(attachment.orders.items()):
+                # Only cancel resting orders (not pending, filled, or cancelled)
+                if order.status != "resting":
+                    continue
+
+                # Check if order has exceeded TTL
+                order_age = now - order.placed_at
+                if order_age > ttl_seconds:
+                    orders_to_cancel.append(order_id)
+                    if ticker not in expired_tickers:
+                        expired_tickers.append(ticker)
+                    logger.info(
+                        f"Order {order_id[:8]}... on {ticker} expired "
+                        f"(age={order_age:.0f}s > TTL={ttl_seconds}s)"
+                    )
+
+        if not orders_to_cancel:
+            return 0
+
+        # Cancel expired orders in batch
+        try:
+            result = await self._trading_client._client.batch_cancel_orders(orders_to_cancel)
+            cancelled_count = len(result.get("cancelled", []))
+
+            # Update trading attachments to mark orders as cancelled
+            for ticker in expired_tickers:
+                attachment = self._state_container.get_trading_attachment(ticker)
+                if attachment:
+                    for order_id in result.get("cancelled", []):
+                        if order_id in attachment.orders:
+                            attachment.orders[order_id].status = "cancelled"
+                            attachment.orders[order_id].cancelled_at = time.time()
+                    attachment.update_trading_state()
+                    attachment.bump_version()
+
+            # Record TTL cancellation in state container
+            self._state_container.record_ttl_cancellation(cancelled_count)
+
+            # Emit activity event for frontend toast notification
+            await self._event_bus.emit_system_activity(
+                activity_type="orders_cancelled_ttl",
+                message=f"TTL expired: {cancelled_count} orders cancelled",
+                metadata={
+                    "count": cancelled_count,
+                    "tickers": expired_tickers[:5],  # First 5 tickers for display
+                    "ttl_seconds": ttl_seconds,
+                    "severity": "warning"
+                }
+            )
+
+            logger.info(
+                f"TTL cleanup: cancelled {cancelled_count} orders "
+                f"from {len(expired_tickers)} markets (TTL={ttl_seconds}s)"
+            )
+
+            return cancelled_count
+
+        except Exception as e:
+            logger.error(f"Failed to cancel expired orders: {e}")
+            return 0

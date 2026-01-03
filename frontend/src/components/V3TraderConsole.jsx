@@ -9,7 +9,7 @@ import {
 } from './v3-trader/panels';
 
 // UI components
-import { SettlementToast, OrderFillToast } from './v3-trader/ui';
+import { SettlementToast, OrderFillToast, OrderCancelledToast } from './v3-trader/ui';
 
 // Layout components
 import { V3Header, V3MetricsPanel, V3ConsoleOutput } from './v3-trader/layout';
@@ -48,6 +48,8 @@ const V3TraderConsole = () => {
     dismissSettlement,
     newOrderFill,
     dismissOrderFill,
+    newTtlCancellation,
+    dismissTtlCancellation,
     metrics
   } = useV3WebSocket({ onMessage: addMessage });
 
@@ -63,6 +65,12 @@ const V3TraderConsole = () => {
       <OrderFillToast
         fill={newOrderFill}
         onDismiss={dismissOrderFill}
+      />
+
+      {/* Order Cancelled Toast - Shows when orders expire due to TTL */}
+      <OrderCancelledToast
+        cancellation={newTtlCancellation}
+        onDismiss={dismissTtlCancellation}
       />
 
       {/* Header */}

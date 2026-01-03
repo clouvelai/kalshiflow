@@ -90,6 +90,20 @@ npm run dev
 - **Status**: http://localhost:8005/v3/status
 - **WebSocket**: ws://localhost:8005/v3/ws
 
+**Order Management:**
+
+*Order TTL (Time-to-Live)*: Resting orders are automatically cancelled after a configurable timeout to prevent capital lock-up.
+- `V3_ORDER_TTL_ENABLED`: Enable/disable TTL cleanup (default: `true`)
+- `V3_ORDER_TTL_SECONDS`: TTL threshold in seconds (default: `300` = 5 minutes)
+- Runs after each sync cycle (~30 seconds), only cancels "resting" orders (not partial fills)
+- Emits toast notification to frontend, tracks count in "TTL Cancelled" metric
+
+*Startup Cleanup*: On restart, old order groups are automatically cleaned up:
+1. **Reset** each old order group (cancels all resting orders)
+2. **Delete** the empty order group
+3. Current session's order group is preserved
+- `cleanup_on_startup: True` (default) - Enable startup cleanup
+
 ### Testing
 ```bash
 # Backend tests
