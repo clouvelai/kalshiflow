@@ -12,10 +12,11 @@ from pathlib import Path
 from contextlib import asynccontextmanager
 
 from starlette.applications import Starlette
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, StreamingResponse
 from starlette.routing import Route, WebSocketRoute
 from starlette.websockets import WebSocket
 from starlette.middleware.cors import CORSMiddleware
+from starlette.requests import Request
 from dotenv import load_dotenv
 
 # Add parent directory to path for imports
@@ -38,6 +39,9 @@ from src.kalshiflow_rl.data.orderbook_client import OrderbookClient
 
 # Import auth for TradesClient
 from kalshiflow.auth import KalshiAuth
+
+# Import order context service for CSV export
+from src.kalshiflow_rl.traderv3.services.order_context_service import get_order_context_service
 
 # Import database and write queue for orderbook data persistence
 from src.kalshiflow_rl.data.database import rl_db
@@ -71,7 +75,12 @@ async def lifespan(app):
         # Initialize database for orderbook data persistence
         logger.info("Initializing database...")
         await rl_db.initialize()
-        
+
+        # Initialize order context service with database pool
+        logger.info("Initializing order context service...")
+        order_context_service = get_order_context_service()
+        await order_context_service.initialize(db_pool=rl_db._pool)
+
         # Start write queue for async database writes
         logger.info("Starting write queue...")
         write_queue = get_write_queue()
@@ -237,7 +246,15 @@ async def lifespan(app):
             logger.info("Write queue stopped")
         except Exception as e:
             logger.error(f"Error stopping write queue: {e}")
-        
+
+        # Cleanup order context service (before closing database)
+        try:
+            order_context_service = get_order_context_service()
+            await order_context_service.cleanup()
+            logger.info("Order context service cleaned up")
+        except Exception as e:
+            logger.error(f"Error cleaning up order context service: {e}")
+
         # Close database
         try:
             await rl_db.close()
@@ -359,9 +376,90 @@ async def websocket_endpoint(websocket: WebSocket):
     if not coordinator or not coordinator._websocket_manager:
         await websocket.close(code=1003, reason="System not ready")
         return
-    
+
     # Delegate to WebSocket manager
     await coordinator._websocket_manager.handle_websocket(websocket)
+
+
+async def export_order_contexts_endpoint(request: Request):
+    """
+    Export order contexts as CSV for quant analysis.
+
+    GET /v3/export/order-contexts
+
+    Query Parameters:
+        strategy: Filter by strategy (e.g., 'rlm_no')
+        from_date: Start date (YYYY-MM-DD)
+        to_date: End date (YYYY-MM-DD)
+        settled_only: Only include settled orders (default: true)
+        format: 'csv' (default) or 'json'
+
+    Returns:
+        CSV file download or JSON array
+    """
+    try:
+        # Parse query params
+        strategy = request.query_params.get("strategy")
+        from_date = request.query_params.get("from_date") or request.query_params.get("from")
+        to_date = request.query_params.get("to_date") or request.query_params.get("to")
+        settled_only = request.query_params.get("settled_only", "true").lower() == "true"
+        output_format = request.query_params.get("format", "csv")
+
+        # Get order context service
+        order_context_service = get_order_context_service()
+
+        # Query contexts
+        contexts = await order_context_service.get_contexts_for_export(
+            strategy=strategy,
+            from_date=from_date,
+            to_date=to_date,
+            settled_only=settled_only,
+        )
+
+        if output_format == "json":
+            # Convert non-JSON-serializable types
+            from decimal import Decimal
+            for ctx in contexts:
+                for key, value in list(ctx.items()):
+                    if value is None:
+                        continue
+                    # Convert datetime to ISO string
+                    if hasattr(value, "isoformat"):
+                        ctx[key] = value.isoformat()
+                    # Convert Decimal to float
+                    elif isinstance(value, Decimal):
+                        ctx[key] = float(value)
+            return JSONResponse({
+                "order_contexts": contexts,
+                "count": len(contexts),
+                "filters": {
+                    "strategy": strategy,
+                    "from_date": from_date,
+                    "to_date": to_date,
+                    "settled_only": settled_only,
+                }
+            })
+
+        # Generate CSV
+        csv_content = order_context_service.generate_csv(contexts)
+
+        from datetime import datetime
+        filename = f"order_contexts_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+
+        return StreamingResponse(
+            iter([csv_content]),
+            media_type="text/csv",
+            headers={
+                "Content-Disposition": f"attachment; filename={filename}"
+            }
+        )
+
+    except Exception as e:
+        logger.error(f"Export order contexts failed: {e}")
+        return JSONResponse(
+            {"error": str(e)},
+            status_code=500
+        )
 
 
 # Create Starlette application
@@ -371,6 +469,7 @@ app = Starlette(
         Route("/v3/health", health_endpoint),
         Route("/v3/status", status_endpoint),
         Route("/v3/cleanup", cleanup_endpoint, methods=["POST"]),
+        Route("/v3/export/order-contexts", export_order_contexts_endpoint),
         WebSocketRoute("/v3/ws", websocket_endpoint)
     ]
 )

@@ -823,8 +823,25 @@ class RLMService:
                 scaled_quantity = self._contracts_per_trade  # 1x for baseline signals (5-10c)
                 scale_label = "1x"
 
-            # Create trading decision
+            # Create trading decision with signal params for quant analysis
             action_type = "reentry" if signal.is_reentry else "executed"
+            state = self._market_states.get(signal.market_ticker)
+            signal_params = {
+                "yes_trades": state.yes_trades if state else 0,
+                "no_trades": state.no_trades if state else 0,
+                "total_trades": state.total_trades if state else 0,
+                "yes_ratio": round(signal.yes_ratio, 4),
+                "price_drop_cents": signal.price_drop,
+                "true_market_open": state.true_market_open if state else None,
+                "last_yes_price": state.last_yes_price if state else None,
+                "using_tmo": state.using_tmo if state else False,
+                "is_reentry": signal.is_reentry,
+                "entry_yes_ratio": state.entry_yes_ratio if state else None,
+                "position_scale": scale_label,
+                "signal_trigger_count": state.signal_trigger_count if state else 1,
+                "aggressive_pricing": spread <= 2 and signal.price_drop >= 10,
+                "signal_detected_at": signal.detected_at,
+            }
             decision = TradingDecision(
                 action="buy",
                 market=signal.market_ticker,
@@ -834,6 +851,7 @@ class RLMService:
                 reason=f"RLM signal: {signal.yes_ratio:.0%} YES, -{signal.price_drop}c drop ({scale_label})",
                 confidence=min(0.9, 0.7 + signal.price_drop * 0.01),  # Higher confidence for bigger drops
                 strategy=TradingStrategy.RLM_NO,
+                signal_params=signal_params,
             )
 
             logger.info(

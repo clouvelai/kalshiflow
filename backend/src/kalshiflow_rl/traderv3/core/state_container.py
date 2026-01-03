@@ -62,10 +62,30 @@ from ..state.trading_attachment import (
     TradingState,
 )
 from ..state.tracked_markets import MarketStatus
+from ..services.order_context_service import get_order_context_service
 
 logger = logging.getLogger("kalshiflow_rl.traderv3.core.state_container")
 
 T = TypeVar('T')
+
+
+def _log_task_exception(task: asyncio.Task, context: str) -> None:
+    """
+    Callback to log exceptions from fire-and-forget asyncio tasks.
+
+    Prevents silent failures from create_task() calls by logging any
+    exception that occurred when the task completes.
+
+    Args:
+        task: The completed asyncio task
+        context: Description of what the task was doing (for log message)
+    """
+    try:
+        exc = task.exception()
+        if exc:
+            logger.error(f"{context}: {exc}")
+    except asyncio.CancelledError:
+        pass  # Task was cancelled, not an error
 
 
 @dataclass
@@ -1234,6 +1254,23 @@ class V3StateContainer:
                                     f"Order marked filled from sync: {ticker} {order_id[:8]}... "
                                     f"(resting order not in active orders, position exists)"
                                 )
+                                # Persist order context for quant analysis
+                                try:
+                                    order_context_service = get_order_context_service()
+                                    task = asyncio.create_task(
+                                        order_context_service.persist_on_fill(
+                                            order_id=order_id,
+                                            fill_count=order.fill_count,
+                                            fill_avg_price_cents=order.price,  # Use order price as approx fill price
+                                            filled_at=order.filled_at,
+                                        )
+                                    )
+                                    # Use default arg to capture order_id value in closure
+                                    task.add_done_callback(
+                                        lambda t, oid=order_id: _log_task_exception(t, f"persist_on_fill({oid[:8]})")
+                                    )
+                                except Exception as e:
+                                    logger.warning(f"Failed to persist order context: {e}")
                             else:
                                 # No position = order was cancelled or expired
                                 order.status = "cancelled"
@@ -1244,6 +1281,8 @@ class V3StateContainer:
                                     f"Order marked cancelled from sync: {ticker} {order_id[:8]}... "
                                     f"(resting order not in active orders, no position)"
                                 )
+                                # Discard staged context to prevent memory leak
+                                get_order_context_service().discard_staged_context(order_id)
                         elif order.status == "pending":
                             # Pending order disappeared without being confirmed resting - likely rejected
                             order.status = "cancelled"
@@ -1254,6 +1293,8 @@ class V3StateContainer:
                                 f"Pending order {order_id[:8]}... disappeared without being confirmed "
                                 f"resting - marking as cancelled (likely rejected)"
                             )
+                            # Discard staged context to prevent memory leak
+                            get_order_context_service().discard_staged_context(order_id)
                         else:
                             # Unknown status - default to cancelled for safety
                             order.status = "cancelled"
@@ -1264,6 +1305,8 @@ class V3StateContainer:
                                 f"Order {order_id[:8]}... with status '{order.status}' disappeared "
                                 f"- marking as cancelled"
                             )
+                            # Discard staged context to prevent memory leak
+                            get_order_context_service().discard_staged_context(order_id)
 
             # Check for AWAITING_SETTLEMENT: positions in determined markets
             for ticker, attachment in self._trading_attachments.items():
@@ -1325,6 +1368,27 @@ class V3StateContainer:
             f"Settlement captured for {ticker}: "
             f"result={result}, pnl={attachment.settlement.final_pnl}c"
         )
+
+        # Link settlement to order contexts for quant analysis
+        try:
+            order_context_service = get_order_context_service()
+            settled_at = time.time()
+            for order_id, order in attachment.orders.items():
+                if order.status == "filled":
+                    task = asyncio.create_task(
+                        order_context_service.link_settlement(
+                            order_id=order_id,
+                            market_result=result,
+                            realized_pnl_cents=attachment.settlement.final_pnl,
+                            settled_at=settled_at,
+                        )
+                    )
+                    # Use default arg to capture order_id value in closure
+                    task.add_done_callback(
+                        lambda t, oid=order_id: _log_task_exception(t, f"link_settlement({oid[:8]})")
+                    )
+        except Exception as e:
+            logger.warning(f"Failed to link settlement to order contexts: {e}")
 
     def get_or_create_trading_attachment(self, ticker: str) -> TradingAttachment:
         """

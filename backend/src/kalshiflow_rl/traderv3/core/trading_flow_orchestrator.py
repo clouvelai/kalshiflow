@@ -25,6 +25,7 @@ if TYPE_CHECKING:
     from ..config.environment import V3Config
 
 from ..services.trading_decision_service import TradingStrategy
+from ..services.order_context_service import get_order_context_service
 
 from ..core.state_machine import TraderState as V3State
 
@@ -527,6 +528,11 @@ class TradingFlowOrchestrator:
                             attachment.orders[order_id].cancelled_at = time.time()
                     attachment.update_trading_state()
                     attachment.bump_version()
+
+            # Discard staged contexts to prevent memory leak
+            order_context_service = get_order_context_service()
+            for order_id in result.get("cancelled", []):
+                order_context_service.discard_staged_context(order_id)
 
             # Record TTL cancellation in state container
             self._state_container.record_ttl_cancellation(cancelled_count)

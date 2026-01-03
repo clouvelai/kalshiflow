@@ -26,9 +26,20 @@ from dataclasses import dataclass, field
 from collections import deque, OrderedDict
 
 from ..state.trading_attachment import TrackedMarketOrder
+from ..state.order_context import (
+    StagedOrderContext,
+    OrderbookSnapshot,
+    PositionContext,
+    MarketContext,
+    SpreadTier,
+)
+from .order_context_service import get_order_context_service
+
+from ...data.orderbook_state import get_shared_orderbook_state
 
 if TYPE_CHECKING:
     from ..clients.trading_client_integration import V3TradingClientIntegration
+    from ..clients.orderbook_integration import V3OrderbookIntegration
     from ..core.state_container import V3StateContainer
     from ..core.event_bus import EventBus
     from ..services.whale_tracker import WhaleTracker
@@ -149,6 +160,7 @@ class TradingDecision:
     reason: str = ""
     confidence: float = 0.0
     strategy: TradingStrategy = TradingStrategy.HOLD
+    signal_params: Dict[str, Any] = field(default_factory=dict)  # Strategy-specific params for quant analysis
 
 
 class TradingDecisionService:
@@ -170,7 +182,8 @@ class TradingDecisionService:
         event_bus: 'EventBus',
         strategy: TradingStrategy = TradingStrategy.HOLD,
         whale_tracker: Optional['WhaleTracker'] = None,
-        config: Optional['V3Config'] = None
+        config: Optional['V3Config'] = None,
+        orderbook_integration: Optional['V3OrderbookIntegration'] = None
     ):
         """
         Initialize trading decision service.
@@ -182,12 +195,14 @@ class TradingDecisionService:
             strategy: Trading strategy to use
             whale_tracker: Optional whale tracker for WHALE_FOLLOWER strategy
             config: Optional V3 config for balance protection settings
+            orderbook_integration: Optional orderbook integration for session_id and orderbook access
         """
         self._trading_client = trading_client
         self._state_container = state_container
         self._event_bus = event_bus
         self._strategy = strategy
         self._whale_tracker = whale_tracker
+        self._orderbook_integration = orderbook_integration
 
         # Balance protection (from config or default $100.00)
         self._min_trader_cash = config.min_trader_cash if config else 10000
@@ -578,7 +593,119 @@ class TradingDecisionService:
                 metadata={"error": str(e), "decision": decision.__dict__}
             )
             return False
-    
+
+    async def _stage_order_context(
+        self,
+        order_id: str,
+        decision: TradingDecision,
+        signal_id: str,
+    ) -> None:
+        """
+        Stage order context for quant analysis.
+
+        Context is staged in memory when order is placed,
+        then persisted to DB when fill is confirmed.
+
+        Args:
+            order_id: Kalshi order ID
+            decision: Trading decision with order details
+            signal_id: Unique signal identifier
+        """
+        try:
+            # Get session_id from orderbook integration
+            session_id = None
+            if self._orderbook_integration and hasattr(self._orderbook_integration, '_client'):
+                client_stats = self._orderbook_integration._client.get_stats()
+                session_id = client_stats.get("session_id")
+                if session_id is not None:
+                    session_id = str(session_id)
+
+            # Get orderbook snapshot for this market
+            orderbook_snapshot = OrderbookSnapshot()
+            try:
+                orderbook_state = await asyncio.wait_for(
+                    get_shared_orderbook_state(decision.market),
+                    timeout=1.0  # Short timeout since we already have the order
+                )
+                snapshot = await orderbook_state.get_snapshot()
+                orderbook_snapshot = OrderbookSnapshot.from_orderbook_state(snapshot)
+            except (asyncio.TimeoutError, Exception) as e:
+                logger.debug(f"Could not capture orderbook for context: {e}")
+                # Continue with empty orderbook - don't fail context staging
+
+            # Get market context from tracked markets
+            market_context = MarketContext()
+            if self._state_container._tracked_markets:
+                tracked_market = self._state_container._tracked_markets.get_market(decision.market)
+                if tracked_market:
+                    market_context.market_category = tracked_market.category
+                    market_context.market_close_ts = tracked_market.close_ts
+                    if tracked_market.close_ts:
+                        market_context.hours_to_settlement = (tracked_market.close_ts - time.time()) / 3600
+                    market_context.trades_in_market = decision.signal_params.get("total_trades", 0)
+
+            # Get position context
+            position_context = PositionContext()
+            trading_state = self._state_container.trading_state
+            if trading_state:
+                position_context.balance_cents = trading_state.balance or 0
+                position_context.open_position_count = len(trading_state.positions) if trading_state.positions else 0
+
+                # Check existing position in this market
+                existing_pos = trading_state.positions.get(decision.market, {}) if trading_state.positions else {}
+                if existing_pos:
+                    position_context.existing_position_count = abs(existing_pos.get("position", 0))
+                    # Determine side from position count sign
+                    pos_count = existing_pos.get("position", 0)
+                    if pos_count > 0:
+                        position_context.existing_position_side = "yes"
+                    elif pos_count < 0:
+                        position_context.existing_position_side = "no"
+                    position_context.is_reentry = True
+                    position_context.entry_number = decision.signal_params.get("signal_trigger_count", 1)
+
+            # Calculate NO price at signal for edge calculation
+            no_price_at_signal = None
+            last_yes_price = decision.signal_params.get("last_yes_price")
+            if last_yes_price is not None:
+                no_price_at_signal = 100 - last_yes_price
+
+            # Create staged context
+            context = StagedOrderContext(
+                order_id=order_id,
+                market_ticker=decision.market,
+                session_id=session_id,
+                strategy=decision.strategy.value,
+                signal_id=signal_id,
+                signal_detected_at=decision.signal_params.get("signal_detected_at", time.time()),
+                signal_params=decision.signal_params,
+                market=market_context,
+                no_price_at_signal=no_price_at_signal,
+                orderbook=orderbook_snapshot,
+                position=position_context,
+                action=decision.action,
+                side=decision.side,
+                order_price_cents=decision.price,
+                order_quantity=decision.quantity,
+                order_type="limit",
+                placed_at=time.time(),
+                strategy_version="1.0",
+            )
+
+            # Stage the context
+            order_context_service = get_order_context_service()
+            order_context_service.stage_context(context)
+
+            logger.debug(
+                f"Staged order context: order_id={order_id[:8]}..., "
+                f"strategy={decision.strategy.value}, ticker={decision.market}, "
+                f"session={session_id}, ob_captured={orderbook_snapshot.best_bid_cents is not None}"
+            )
+
+        except Exception as e:
+            logger.warning(f"Failed to stage order context: {e}")
+            # Don't fail the trade if context staging fails
+
     async def _execute_buy(self, decision: TradingDecision) -> bool:
         """
         Execute a buy order through the trading client.
@@ -634,6 +761,9 @@ class TradingDecisionService:
                     placed_at=time.time(),
                 )
             )
+
+            # Stage order context for quant analysis (persisted on fill)
+            await self._stage_order_context(order_id, decision, signal_id)
 
             # Emit order_placed activity for frontend visibility
             await self._event_bus.emit_system_activity(
@@ -776,6 +906,9 @@ class TradingDecisionService:
                     placed_at=time.time(),
                 )
             )
+
+            # Stage order context for quant analysis (persisted on fill)
+            await self._stage_order_context(order_id, decision, signal_id)
 
             # Emit order_placed activity for frontend visibility
             await self._event_bus.emit_system_activity(

@@ -131,7 +131,8 @@ class V3Coordinator:
                 event_bus=event_bus,
                 strategy=strategy,
                 whale_tracker=whale_tracker,
-                config=config
+                config=config,
+                orderbook_integration=orderbook_integration
             )
 
             # Set trading service on websocket manager for followed whale IDs
