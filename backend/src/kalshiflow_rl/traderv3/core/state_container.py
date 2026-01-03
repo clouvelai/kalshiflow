@@ -219,9 +219,9 @@ class V3StateContainer:
         # via real-time WebSocket (not from initial sync)
         self._session_updated_tickers: set = set()
 
-        # Settled positions history - stores last 50 closed positions for UI display
+        # Settled positions history - stores last 500 closed positions for UI display
         # Positions are captured here before being removed from active positions
-        self._settled_positions: deque = deque(maxlen=50)
+        self._settled_positions: deque = deque(maxlen=500)
         self._total_settlements_count = 0
 
         # Session cash flow tracking (resets each trader startup)
@@ -230,6 +230,7 @@ class V3StateContainer:
         self._session_cash_received: int = 0      # Cents received from settlements this session
         self._session_orders_count: int = 0       # Orders placed this session
         self._session_settlements_count: int = 0  # Positions settled this session
+        self._session_total_fees_paid: int = 0   # Total fees in cents this session
 
         # Whale queue state - data from whale tracker
         self._whale_state: Optional[WhaleQueueState] = None
@@ -307,7 +308,7 @@ class V3StateContainer:
         # This ensures settlements stay in sync with Kalshi's ground truth
         if state.settlements:
             self._settled_positions.clear()
-            for s in state.settlements[:50]:  # Last 50
+            for s in state.settlements:  # All settlements (deque maxlen handles limit)
                 # Determine which side the position was on
                 is_yes_position = s.get("yes_count", 0) > 0
                 count = s.get("yes_count", 0) if is_yes_position else s.get("no_count", 0)
@@ -337,16 +338,28 @@ class V3StateContainer:
                 # Net P&L = payout - cost - fees (all in cents)
                 net_pnl = revenue - total_cost - fees_cents
 
+                # Computed fields for UI stats
+                side = "yes" if is_yes_position else "no"
+                entry_price = round(total_cost / count) if count > 0 else 0
+                is_win = net_pnl > 0
+                correct_prediction = side == s.get("market_result", "")
+                trade_roi = round((net_pnl / total_cost) * 100, 1) if total_cost > 0 else 0
+
                 settlement = {
                     "ticker": s.get("ticker", ""),
                     "position": count,
-                    "side": "yes" if is_yes_position else "no",
+                    "side": side,
                     "market_result": s.get("market_result", ""),
                     # Economics (all in cents)
                     "total_cost": total_cost,           # Total cost basis
                     "revenue": revenue,                  # Total payout
                     "fees": fees_cents,                  # Fees in cents
                     "net_pnl": net_pnl,                  # Actual profit/loss
+                    # Computed fields for UI
+                    "entry_price": entry_price,          # Cents per contract
+                    "is_win": is_win,                    # True if profitable
+                    "correct_prediction": correct_prediction,  # True if side == result
+                    "trade_roi": trade_roi,              # ROI percentage
                     # Legacy fields for backwards compatibility
                     "total_traded": total_cost,
                     "realized_pnl": net_pnl,             # FIXED: was revenue, now actual P&L
@@ -432,14 +445,35 @@ class V3StateContainer:
                     total_traded = closing_position.get("total_traded", 0)
                     realized_pnl = position_data.get("realized_pnl", 0)
 
+                    # Extract fees (already converted from centi-cents to cents by position_listener)
+                    fees_paid = position_data.get("fees_paid", 0)
+
+                    # Compute derived fields for UI stats (WebSocket path)
+                    position_count_signed = closing_position.get("position", 0)
+                    side = "yes" if position_count_signed > 0 else "no"
+                    count = abs(position_count_signed)
+                    entry_price = round(total_traded / count) if count > 0 else 0
+                    is_win = realized_pnl > 0
+                    trade_roi = round((realized_pnl / total_traded) * 100, 1) if total_traded > 0 else 0
+
                     settlement = {
                         "ticker": ticker,
-                        "position": closing_position.get("position", 0),
-                        "side": "yes" if closing_position.get("position", 0) > 0 else "no",
+                        "position": count,
+                        "side": side,
+                        "market_result": "",  # Not available from WebSocket, will be filled by REST sync
+                        # Economics (use same field names as REST for consistency)
+                        "total_cost": total_traded,
                         "total_traded": total_traded,
+                        "revenue": total_traded + realized_pnl,  # Approximation
                         "market_exposure": closing_position.get("market_exposure", 0),
+                        "fees": fees_paid,
+                        "net_pnl": realized_pnl,
                         "realized_pnl": realized_pnl,
-                        "fees_paid": position_data.get("fees_paid", 0),
+                        # Computed fields for UI
+                        "entry_price": entry_price,
+                        "is_win": is_win,
+                        "correct_prediction": False,  # Can't determine without market_result
+                        "trade_roi": trade_roi,
                         "closed_at": time.time(),
                     }
                     self._settled_positions.appendleft(settlement)
@@ -451,11 +485,14 @@ class V3StateContainer:
                     self._session_cash_received += max(0, cash_received)  # Can't receive negative cash
                     self._session_settlements_count += 1
 
+                    # Track session fees paid
+                    self._session_total_fees_paid += fees_paid
+
                     del self._trading_state.positions[ticker]
                     logger.info(
                         f"Position closed: {ticker}, "
-                        f"realized_pnl={realized_pnl}¢, cash_received={cash_received}¢ | "
-                        f"Session totals: received={self._session_cash_received}¢, settlements={self._session_settlements_count}"
+                        f"realized_pnl={realized_pnl}¢, fees={fees_paid}¢, cash_received={cash_received}¢ | "
+                        f"Session totals: received={self._session_cash_received}¢, fees={self._session_total_fees_paid}¢, settlements={self._session_settlements_count}"
                     )
             else:
                 # Update or add position - MERGE to preserve fields not in WebSocket update
@@ -664,6 +701,7 @@ class V3StateContainer:
             pnl["session_cash_received"] = self._session_cash_received
             pnl["session_orders_count"] = self._session_orders_count
             pnl["session_settlements_count"] = self._session_settlements_count
+            pnl["session_total_fees_paid"] = self._session_total_fees_paid
             summary["pnl"] = pnl
 
         # Add session-updated positions info
@@ -673,8 +711,11 @@ class V3StateContainer:
         }
 
         # Add settlements history for UI display
-        summary["settlements"] = list(self._settled_positions)
+        settlements_list = list(self._settled_positions)
+        summary["settlements"] = settlements_list
         summary["settlements_count"] = self._total_settlements_count
+        # Compute total fees from all displayed settlements (useful for header display)
+        summary["settlements_total_fees"] = sum(s.get("fees", 0) for s in settlements_list)
 
         # Add market prices for positions (from ticker WebSocket, separate from position data)
         summary["market_prices"] = self.get_market_prices_summary()

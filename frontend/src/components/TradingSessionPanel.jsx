@@ -13,7 +13,8 @@ import {
   Clock,
   ArrowUpCircle,
   ArrowDownCircle,
-  Hash
+  Hash,
+  Receipt
 } from 'lucide-react';
 
 // ============================================================================
@@ -464,7 +465,7 @@ const TradingSessionPanel = ({ tradingState, lastUpdateTime }) => {
 
       {/* Session Cash Flow - Row 2 */}
       {pnl && (
-        <div className="grid grid-cols-4 gap-4 mb-4">
+        <div className="grid grid-cols-5 gap-4 mb-4">
           <FlowCard
             label="Cash Invested"
             value={pnl.session_cash_invested ?? 0}
@@ -483,6 +484,16 @@ const TradingSessionPanel = ({ tradingState, lastUpdateTime }) => {
             accentColor="cyan"
             valueClass="text-cyan-400"
             title="Cash received from settlements this session"
+          />
+
+          <FlowCard
+            label="Fees Paid"
+            value={pnl.session_total_fees_paid ?? 0}
+            formattedValue={formatCurrency(pnl.session_total_fees_paid ?? 0)}
+            icon={Receipt}
+            accentColor="red"
+            valueClass="text-red-400"
+            title="Total fees paid this session"
           />
 
           <FlowCard
