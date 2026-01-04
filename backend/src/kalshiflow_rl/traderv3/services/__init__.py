@@ -9,7 +9,6 @@ from .trading_decision_service import (
     TradingStrategy,
     TradingDecision
 )
-from .whale_tracker import WhaleTracker, BigBet
 from .tracked_markets_syncer import TrackedMarketsSyncer
 from .upcoming_markets_syncer import UpcomingMarketsSyncer
 from .event_lifecycle_service import EventLifecycleService
@@ -21,8 +20,6 @@ __all__ = [
     "TradingDecisionService",
     "TradingStrategy",
     "TradingDecision",
-    "WhaleTracker",
-    "BigBet",
     "TrackedMarketsSyncer",
     "UpcomingMarketsSyncer",
     "EventLifecycleService",

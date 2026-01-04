@@ -18,7 +18,6 @@ if TYPE_CHECKING:
     from ..clients.fill_listener import FillListener
     from ..clients.lifecycle_client import LifecycleClient
     from ..clients.lifecycle_integration import V3LifecycleIntegration
-    from ..services.whale_tracker import WhaleTracker
     from ..services.market_price_syncer import MarketPriceSyncer
     from ..services.trading_state_syncer import TradingStateSyncer
     from ..services.event_lifecycle_service import EventLifecycleService
@@ -37,8 +36,6 @@ from .trading_flow_orchestrator import TradingFlowOrchestrator
 from ..clients.orderbook_integration import V3OrderbookIntegration
 from ..config.environment import V3Config
 from ..services.trading_decision_service import TradingDecisionService, TradingStrategy
-from ..services.whale_execution_service import WhaleExecutionService
-from ..services.yes_80_90_service import Yes8090Service
 from ..services.rlm_service import RLMService
 from ..services.tmo_fetcher import TrueMarketOpenFetcher
 from ..services.listener_bootstrap_service import ListenerBootstrapService
@@ -68,8 +65,7 @@ class V3Coordinator:
         websocket_manager: V3WebSocketManager,
         orderbook_integration: V3OrderbookIntegration,
         trading_client_integration: Optional['V3TradingClientIntegration'] = None,
-        trades_integration: Optional['V3TradesIntegration'] = None,
-        whale_tracker: Optional['WhaleTracker'] = None
+        trades_integration: Optional['V3TradesIntegration'] = None
     ):
         """
         Initialize coordinator.
@@ -82,7 +78,6 @@ class V3Coordinator:
             orderbook_integration: Orderbook integration instance
             trading_client_integration: Optional trading client integration
             trades_integration: Optional trades integration for public trades stream
-            whale_tracker: Optional whale tracker for big bet detection
         """
         self._config = config
         self._state_machine = state_machine
@@ -91,7 +86,6 @@ class V3Coordinator:
         self._orderbook_integration = orderbook_integration
         self._trading_client_integration = trading_client_integration
         self._trades_integration = trades_integration
-        self._whale_tracker = whale_tracker
         
         # Initialize state container
         self._state_container = V3StateContainer()
@@ -105,8 +99,7 @@ class V3Coordinator:
             state_container=self._state_container,
             orderbook_integration=orderbook_integration,
             trading_client_integration=trading_client_integration,
-            trades_integration=trades_integration,
-            whale_tracker=whale_tracker
+            trades_integration=trades_integration
         )
         
         # Initialize status reporter
@@ -141,20 +134,19 @@ class V3Coordinator:
                 state_container=self._state_container,
                 event_bus=event_bus,
                 strategy=strategy,
-                whale_tracker=whale_tracker,
                 config=config,
                 orderbook_integration=orderbook_integration
             )
 
-            # Set trading service on websocket manager for followed whale IDs
+            # Set trading service on websocket manager
             self._websocket_manager.set_trading_service(self._trading_service)
 
             # Set state container for immediate trading state on client connect
             self._websocket_manager.set_state_container(self._state_container)
 
-            # Initialize trading flow orchestrator only for cycle-based strategies
-            # Event-driven strategies (WHALE_FOLLOWER, YES_80_90, RLM_NO) use dedicated services instead
-            event_driven_strategies = {TradingStrategy.WHALE_FOLLOWER, TradingStrategy.YES_80_90, TradingStrategy.RLM_NO, TradingStrategy.HOLD}
+            # Initialize trading flow orchestrator only for non-event-driven strategies
+            # RLM_NO and HOLD are event-driven, use dedicated services instead
+            event_driven_strategies = {TradingStrategy.RLM_NO, TradingStrategy.HOLD}
             if strategy not in event_driven_strategies:
                 self._trading_orchestrator = TradingFlowOrchestrator(
                     config=config,
@@ -163,55 +155,11 @@ class V3Coordinator:
                     trading_service=self._trading_service,
                     state_container=self._state_container,
                     event_bus=event_bus,
-                    state_machine=state_machine,
-                    whale_tracker=whale_tracker
+                    state_machine=state_machine
                 )
                 logger.info(f"Trading flow orchestrator enabled for {strategy.value} strategy")
             else:
                 logger.info(f"Skipping orchestrator for event-driven {strategy.value} strategy")
-
-            # Log strategy configuration
-            if strategy == TradingStrategy.WHALE_FOLLOWER:
-                if whale_tracker:
-                    logger.info("WHALE_FOLLOWER strategy enabled with whale tracker")
-                else:
-                    logger.warning("WHALE_FOLLOWER strategy enabled but whale tracker not available")
-
-        # Initialize whale execution service (if trading client and whale tracker available)
-        self._whale_execution_service: Optional[WhaleExecutionService] = None
-        if trading_client_integration and whale_tracker and self._trading_service:
-            self._whale_execution_service = WhaleExecutionService(
-                event_bus=event_bus,
-                trading_service=self._trading_service,
-                state_container=self._state_container,
-                config=self._config,
-                whale_tracker=whale_tracker,
-            )
-            # Connect whale execution service to WebSocket manager for decision history
-            self._websocket_manager.set_whale_execution_service(self._whale_execution_service)
-            # Register with health monitor for health tracking
-            self._health_monitor.set_whale_execution_service(self._whale_execution_service)
-            logger.info("WhaleExecutionService initialized for event-driven whale following")
-
-        # Initialize YES 80-90c service (if trading client available and strategy is YES_80_90)
-        self._yes_80_90_service: Optional[Yes8090Service] = None
-        if trading_client_integration and self._trading_service:
-            if strategy == TradingStrategy.YES_80_90:
-                self._yes_80_90_service = Yes8090Service(
-                    event_bus=event_bus,
-                    trading_service=self._trading_service,
-                    state_container=self._state_container,
-                    min_price_cents=config.yes8090_min_price,
-                    max_price_cents=config.yes8090_max_price,
-                    min_liquidity=config.yes8090_min_liquidity,
-                    max_spread_cents=config.yes8090_max_spread,
-                    contracts_per_trade=config.yes8090_contracts,
-                    tier_a_contracts=config.yes8090_tier_a_contracts,
-                    max_concurrent=config.yes8090_max_concurrent,
-                )
-                # Register with health monitor for health tracking
-                self._health_monitor.set_yes_80_90_service(self._yes_80_90_service)
-                logger.info("Yes8090Service initialized for YES at 80-90c trading strategy")
 
         # RLM service (initialized in _connect_lifecycle when TrackedMarketsState is available)
         self._rlm_service: Optional[RLMService] = None
@@ -312,7 +260,7 @@ class V3Coordinator:
         # Lifecycle connection (for lifecycle mode market discovery)
         await self._connect_lifecycle()
 
-        # Trades connection (if configured - optional, for whale detection)
+        # Trades connection (if configured - optional, for public trades stream)
         if self._trades_integration:
             await self._connect_trades()
 
@@ -445,15 +393,15 @@ class V3Coordinator:
 
     async def _connect_trades(self) -> None:
         """
-        Connect to trades WebSocket for whale detection.
+        Connect to trades WebSocket for public trades stream.
 
         This connection is OPTIONAL - the system continues without it
-        if connection fails. Whale detection is a non-critical feature.
+        if connection fails. Used for RLM strategy trade flow analysis.
         """
         if not self._trades_integration:
             return
 
-        logger.info("Connecting to trades WebSocket for whale detection...")
+        logger.info("Connecting to trades WebSocket...")
 
         # Start the trades integration (which starts the trades client)
         await self._trades_integration.start()
@@ -464,37 +412,15 @@ class V3Coordinator:
 
         if not connection_success:
             logger.warning(
-                "Trades WebSocket connection failed - continuing without whale detection. "
+                "Trades WebSocket connection failed - continuing without trades stream. "
                 "This is non-critical, orderbook and trading features remain functional."
             )
             await self._event_bus.emit_system_activity(
                 activity_type="connection",
-                message="Whale detection unavailable (trades WS connection failed)",
-                metadata={"degraded": True, "feature": "whale_detection", "severity": "warning"}
+                message="Trades stream unavailable (WS connection failed)",
+                metadata={"degraded": True, "feature": "trades_stream", "severity": "warning"}
             )
             return
-
-        # Start whale tracker after trades connection
-        if self._whale_tracker:
-            await self._whale_tracker.start()
-            logger.info("Whale tracker started - monitoring for big bets")
-            await self._event_bus.emit_system_activity(
-                activity_type="connection",
-                message="Whale detection enabled - monitoring public trades",
-                metadata={"feature": "whale_detection", "severity": "info"}
-            )
-
-            # Start whale execution service for event-driven following
-            if self._whale_execution_service:
-                await self._whale_execution_service.start()
-                logger.info("Whale execution service started - event-driven following enabled")
-                await self._event_bus.emit_system_activity(
-                    activity_type="connection",
-                    message="Whale execution service started - following whales immediately",
-                    metadata={"feature": "whale_execution", "severity": "info"}
-                )
-        else:
-            logger.warning("Trades connected but no whale tracker configured")
 
         # Wait briefly for first trade to confirm data flow
         trade_flowing = await self._trades_integration.wait_for_first_trade(timeout=10.0)
@@ -1190,20 +1116,6 @@ class V3Coordinator:
         if self._trading_client_integration and self._state_container.trading_state:
             await self._status_reporter.emit_trading_state()
         
-        # Start YES 80-90c service if configured
-        if self._yes_80_90_service:
-            await self._yes_80_90_service.start()
-            logger.info("Yes8090Service started - monitoring for YES at 80-90c signals")
-            await self._event_bus.emit_system_activity(
-                activity_type="strategy_active",
-                message="YES 80-90c strategy active - scanning orderbooks",
-                metadata={
-                    "strategy": "YES_80_90",
-                    "config": self._yes_80_90_service.get_stats().get("config", {}),
-                    "severity": "info"
-                }
-            )
-
         # Start RLM service if configured (requires lifecycle mode)
         if self._rlm_service:
             await self._rlm_service.start()
@@ -1341,15 +1253,9 @@ class V3Coordinator:
                 total_steps += 1
             if self._fill_listener:
                 total_steps += 1
-            if self._whale_execution_service:
-                total_steps += 1
-            if self._yes_80_90_service:
-                total_steps += 1
             if self._rlm_service:
                 total_steps += 1
             if self._tmo_fetcher:
-                total_steps += 1
-            if self._whale_tracker:
                 total_steps += 1
             if self._trades_integration:
                 total_steps += 1
@@ -1368,12 +1274,6 @@ class V3Coordinator:
 
             step = 1
 
-            # Stop YES 80-90c service first (trading strategy)
-            if self._yes_80_90_service:
-                logger.info(f"{step}/{total_steps} Stopping YES 80-90c Service...")
-                await self._yes_80_90_service.stop()
-                step += 1
-
             # Stop RLM service (trading strategy)
             if self._rlm_service:
                 logger.info(f"{step}/{total_steps} Stopping RLM Service...")
@@ -1384,18 +1284,6 @@ class V3Coordinator:
             if self._tmo_fetcher:
                 logger.info(f"{step}/{total_steps} Stopping TMO Fetcher...")
                 await self._tmo_fetcher.stop()
-                step += 1
-
-            # Stop whale execution service (depends on whale tracker)
-            if self._whale_execution_service:
-                logger.info(f"{step}/{total_steps} Stopping Whale Execution Service...")
-                await self._whale_execution_service.stop()
-                step += 1
-
-            # Stop whale tracker (depends on trades integration)
-            if self._whale_tracker:
-                logger.info(f"{step}/{total_steps} Stopping Whale Tracker...")
-                await self._whale_tracker.stop()
                 step += 1
 
             # Stop trades integration
@@ -1525,14 +1413,6 @@ class V3Coordinator:
         if self._trades_integration:
             components["trades_integration"] = self._trades_integration.get_health_details()
 
-        # Add whale tracker if configured
-        if self._whale_tracker:
-            components["whale_tracker"] = self._whale_tracker.get_health_details()
-
-        # Add whale execution service if configured
-        if self._whale_execution_service:
-            components["whale_execution_service"] = self._whale_execution_service.get_stats()
-
         # Add RLM service if configured
         if self._rlm_service:
             components["rlm_service"] = self._rlm_service.get_stats()
@@ -1609,7 +1489,7 @@ class V3Coordinator:
         Check if system is healthy.
 
         Only checks CRITICAL components for overall health status.
-        Non-critical components (orderbook, trades, whale tracker) can be
+        Non-critical components (orderbook, trades) can be
         degraded without affecting overall system health.
 
         Returns:

@@ -1,8 +1,7 @@
 """
 System event dataclasses for TRADER V3.
 
-Contains events related to system activity, trader status, state transitions,
-and whale detection.
+Contains events related to system activity, trader status, and state transitions.
 """
 
 import time
@@ -78,7 +77,7 @@ class PublicTradeEvent:
     """
     Event data for public trades from Kalshi.
 
-    Used for whale detection and trade monitoring.
+    Used for trade monitoring and RLM strategy analysis.
 
     Attributes:
         event_type: Always PUBLIC_TRADE_RECEIVED
@@ -101,31 +100,3 @@ class PublicTradeEvent:
         """Set defaults after initialization."""
         if self.received_at == 0.0:
             self.received_at = time.time()
-
-
-@dataclass
-class WhaleQueueEvent:
-    """
-    Event data for whale queue updates.
-
-    Emitted when the whale detection queue changes.
-
-    Attributes:
-        event_type: Always WHALE_QUEUE_UPDATED
-        queue: List of whale bets in the queue
-        stats: Statistics about whale detection
-        timestamp: When the update occurred
-    """
-    event_type: EventType = EventType.WHALE_QUEUE_UPDATED
-    queue: Optional[List[Dict[str, Any]]] = None
-    stats: Optional[Dict[str, Any]] = None
-    timestamp: float = 0.0
-
-    def __post_init__(self):
-        """Set defaults after initialization."""
-        if self.timestamp == 0.0:
-            self.timestamp = time.time()
-        if self.queue is None:
-            self.queue = []
-        if self.stats is None:
-            self.stats = {}

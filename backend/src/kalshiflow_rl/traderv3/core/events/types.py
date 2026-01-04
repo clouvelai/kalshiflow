@@ -26,9 +26,8 @@ class EventType(Enum):
     CONNECTION_STATUS = "connection_status"
     SYSTEM_ACTIVITY = "system_activity"  # Unified console messaging
 
-    # Whale detection events
+    # Public trade events
     PUBLIC_TRADE_RECEIVED = "public_trade_received"
-    WHALE_QUEUE_UPDATED = "whale_queue_updated"
 
     # Real-time position updates (from WebSocket)
     MARKET_POSITION_UPDATE = "market_position_update"

@@ -31,7 +31,6 @@ from src.kalshiflow_rl.traderv3.clients.orderbook_integration import V3Orderbook
 from src.kalshiflow_rl.traderv3.clients.trading_client_integration import V3TradingClientIntegration
 from src.kalshiflow_rl.traderv3.clients.trades_client import TradesClient
 from src.kalshiflow_rl.traderv3.clients.trades_integration import V3TradesIntegration
-from src.kalshiflow_rl.traderv3.services.whale_tracker import WhaleTracker
 from src.kalshiflow_rl.traderv3.config.environment import load_config
 
 # Import existing orderbook client
@@ -156,16 +155,14 @@ async def lifespan(app):
         else:
             logger.info("Trading client disabled - orderbook only mode")
 
-        # 8. Create trades client and whale tracker (optional - for whale detection OR RLM strategy)
+        # 8. Create trades client (required for RLM strategy)
         trades_integration = None
-        whale_tracker = None
 
         # RLM strategy requires trades stream for PUBLIC_TRADE_RECEIVED events
-        needs_trades_stream = config.enable_whale_detection or config.trading_strategy_str == "rlm_no"
+        needs_trades_stream = config.trading_strategy_str == "rlm_no"
 
         if needs_trades_stream:
-            reason = "whale detection" if config.enable_whale_detection else "RLM strategy"
-            logger.info(f"Creating trades client for {reason}...")
+            logger.info("Creating trades client for RLM strategy...")
 
             # Create KalshiAuth for trades WebSocket
             auth = KalshiAuth.from_env()
@@ -182,24 +179,7 @@ async def lifespan(app):
                 event_bus=event_bus,
             )
 
-            logger.info("Trades stream ENABLED - RLM/whale will receive trade data")
-
-            # Only create WhaleTracker if whale detection is enabled
-            if config.enable_whale_detection:
-                whale_tracker = WhaleTracker(
-                    event_bus=event_bus,
-                    queue_size=config.whale_queue_size,
-                    window_minutes=config.whale_window_minutes,
-                    min_size_cents=config.whale_min_size_cents,
-                )
-
-                # Set whale tracker on websocket manager for snapshot on connect
-                websocket_manager.set_whale_tracker(whale_tracker)
-
-                logger.info(
-                    f"Whale detection configured: queue_size={config.whale_queue_size}, "
-                    f"window={config.whale_window_minutes}min, min_size=${config.whale_min_size_cents/100:.2f}"
-                )
+            logger.info("Trades stream ENABLED - RLM will receive trade data")
         else:
             logger.info("Trades stream disabled (not required for current strategy)")
 
@@ -215,7 +195,6 @@ async def lifespan(app):
             orderbook_integration=orderbook_integration,
             trading_client_integration=trading_client_integration,
             trades_integration=trades_integration,
-            whale_tracker=whale_tracker,
         )
         
         # Start the system

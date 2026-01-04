@@ -22,7 +22,6 @@ from .events import (
     TraderStatusEvent,
     SystemActivityEvent,
     PublicTradeEvent,
-    WhaleQueueEvent,
 )
 
 __all__ = [
@@ -42,5 +41,4 @@ __all__ = [
     "TraderStatusEvent",
     "SystemActivityEvent",
     "PublicTradeEvent",
-    "WhaleQueueEvent",
 ]

@@ -46,16 +46,7 @@ class V3Config:
     trading_max_orders: int = 1000
     trading_max_position_size: int = 100
     trading_mode: str = "paper"  # paper or production
-    trading_strategy_str: str = "hold"  # Strategy string: "hold", "whale_follower", "paper_test", "rl_model", "yes_80_90"
-
-    # YES 80-90c Strategy Configuration (for YES_80_90 strategy)
-    yes8090_min_price: int = 80  # Minimum YES ask price in cents
-    yes8090_max_price: int = 90  # Maximum YES ask price in cents
-    yes8090_min_liquidity: int = 10  # Minimum contracts at best ask
-    yes8090_max_spread: int = 5  # Maximum bid-ask spread in cents
-    yes8090_contracts: int = 100  # Contracts per trade (Tier B)
-    yes8090_tier_a_contracts: int = 150  # Contracts for Tier A signals (83-87c)
-    yes8090_max_concurrent: int = 100  # Maximum concurrent positions
+    trading_strategy_str: str = "hold"  # Strategy string: "hold", "rlm_no"
 
     # RLM (Reverse Line Movement) Strategy Configuration (for RLM_NO strategy)
     # High reliability config: YES>70%, min_trades=25 gives 2.2% false positive rate
@@ -70,12 +61,6 @@ class V3Config:
     rlm_tight_spread: int = 2  # Spread <= this: aggressive fill (ask - 1c)
     rlm_normal_spread: int = 4  # Spread <= this: price improvement (midpoint)
     rlm_max_spread: int = 10  # Spread > this: skip signal (protect from bad fills)
-
-    # Whale Detection Configuration (optional, for Follow the Whale feature)
-    enable_whale_detection: bool = False
-    whale_queue_size: int = 10
-    whale_window_minutes: int = 5
-    whale_min_size_cents: int = 10000  # $100 minimum
 
     # Balance Protection Configuration
     min_trader_cash: int = 1000  # Minimum balance in cents ($10.00 default). Set to 0 to disable.
@@ -201,14 +186,8 @@ class V3Config:
             trading_mode = os.environ.get("V3_TRADING_MODE", "paper")
 
         # Trading strategy configuration
-        # Options: "hold", "whale_follower", "paper_test", "rl_model"
+        # Options: "hold", "rlm_no"
         trading_strategy_str = os.environ.get("V3_TRADING_STRATEGY", "hold").lower()
-
-        # Whale detection configuration
-        enable_whale_detection = os.environ.get("V3_ENABLE_WHALE_DETECTION", "false").lower() == "true"
-        whale_queue_size = int(os.environ.get("WHALE_QUEUE_SIZE", "10"))
-        whale_window_minutes = int(os.environ.get("WHALE_WINDOW_MINUTES", "5"))
-        whale_min_size_cents = int(os.environ.get("WHALE_MIN_SIZE_CENTS", "10000"))
 
         # Balance protection configuration - minimum cash to continue trading
         min_trader_cash = int(os.environ.get("MIN_TRADER_CASH", "1000"))  # Default $10.00 in cents
@@ -224,15 +203,6 @@ class V3Config:
         # Order TTL configuration - cancel stale resting orders
         order_ttl_enabled = os.environ.get("V3_ORDER_TTL_ENABLED", "true").lower() == "true"
         order_ttl_seconds = int(os.environ.get("V3_ORDER_TTL_SECONDS", "300"))
-
-        # YES 80-90c strategy configuration
-        yes8090_min_price = int(os.environ.get("YES8090_MIN_PRICE", "80"))
-        yes8090_max_price = int(os.environ.get("YES8090_MAX_PRICE", "90"))
-        yes8090_min_liquidity = int(os.environ.get("YES8090_MIN_LIQUIDITY", "10"))
-        yes8090_max_spread = int(os.environ.get("YES8090_MAX_SPREAD", "5"))
-        yes8090_contracts = int(os.environ.get("YES8090_CONTRACTS", "100"))
-        yes8090_tier_a_contracts = int(os.environ.get("YES8090_TIER_A_CONTRACTS", "150"))
-        yes8090_max_concurrent = int(os.environ.get("YES8090_MAX_CONCURRENT", "100"))
 
         # RLM (Reverse Line Movement) strategy configuration
         # High reliability config: YES>70%, min_trades=25 (2.2% false positive rate)
@@ -292,13 +262,6 @@ class V3Config:
             trading_max_position_size=trading_max_position_size,
             trading_mode=trading_mode,
             trading_strategy_str=trading_strategy_str,
-            yes8090_min_price=yes8090_min_price,
-            yes8090_max_price=yes8090_max_price,
-            yes8090_min_liquidity=yes8090_min_liquidity,
-            yes8090_max_spread=yes8090_max_spread,
-            yes8090_contracts=yes8090_contracts,
-            yes8090_tier_a_contracts=yes8090_tier_a_contracts,
-            yes8090_max_concurrent=yes8090_max_concurrent,
             rlm_yes_threshold=rlm_yes_threshold,
             rlm_min_trades=rlm_min_trades,
             rlm_min_price_drop=rlm_min_price_drop,
@@ -309,10 +272,6 @@ class V3Config:
             rlm_tight_spread=rlm_tight_spread,
             rlm_normal_spread=rlm_normal_spread,
             rlm_max_spread=rlm_max_spread,
-            enable_whale_detection=enable_whale_detection,
-            whale_queue_size=whale_queue_size,
-            whale_window_minutes=whale_window_minutes,
-            whale_min_size_cents=whale_min_size_cents,
             min_trader_cash=min_trader_cash,
             cleanup_on_startup=cleanup_on_startup,
             allow_multiple_positions_per_market=allow_multiple_positions_per_market,
@@ -367,11 +326,6 @@ class V3Config:
                 logger.info(f"  - Min cash protection: DISABLED")
         else:
             logger.info(f"  - Trading: DISABLED (orderbook only)")
-        if enable_whale_detection:
-            logger.info(f"  - Whale detection: ENABLED")
-            logger.info(f"  - Whale queue: {whale_queue_size} bets, {whale_window_minutes}min window, min ${whale_min_size_cents/100:.2f}")
-        else:
-            logger.info(f"  - Whale detection: DISABLED")
         if allow_multiple_positions_per_market:
             logger.warning(f"  - ALLOW_MULTIPLE_POSITIONS: ENABLED (testing mode)")
         if allow_multiple_orders_per_market:
@@ -380,15 +334,6 @@ class V3Config:
             logger.info(f"  - Order TTL: {order_ttl_seconds}s (auto-cancel stale resting orders)")
         else:
             logger.info(f"  - Order TTL: DISABLED")
-
-        # Log YES 80-90 config if strategy is enabled
-        if trading_strategy_str == "yes_80_90":
-            logger.info(f"  - YES 80-90c Strategy: ENABLED")
-            logger.info(f"    - Price range: {yes8090_min_price}-{yes8090_max_price}c")
-            logger.info(f"    - Liquidity min: {yes8090_min_liquidity} contracts")
-            logger.info(f"    - Max spread: {yes8090_max_spread}c")
-            logger.info(f"    - Contracts: {yes8090_contracts} (Tier A: {yes8090_tier_a_contracts})")
-            logger.info(f"    - Max concurrent: {yes8090_max_concurrent} positions")
 
         # Log RLM config if strategy is enabled
         if trading_strategy_str == "rlm_no":
@@ -431,12 +376,7 @@ class V3Config:
 
         strategy_map = {
             "hold": TradingStrategy.HOLD,
-            "whale_follower": TradingStrategy.WHALE_FOLLOWER,
-            "paper_test": TradingStrategy.PAPER_TEST,
-            "rl_model": TradingStrategy.RL_MODEL,
-            "yes_80_90": TradingStrategy.YES_80_90,
             "rlm_no": TradingStrategy.RLM_NO,
-            "custom": TradingStrategy.CUSTOM,
         }
 
         return strategy_map.get(self.trading_strategy_str, TradingStrategy.HOLD)

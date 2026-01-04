@@ -59,7 +59,6 @@ from .events import (
     TraderStatusEvent,
     SystemActivityEvent,
     PublicTradeEvent,
-    WhaleQueueEvent,
     MarketPositionEvent,
     MarketTickerEvent,
     OrderFillEvent,
@@ -460,33 +459,6 @@ class EventBus:
 
         return await self._queue_event(event)
 
-    async def emit_whale_queue(
-        self,
-        queue: List[Dict[str, Any]],
-        stats: Dict[str, Any]
-    ) -> bool:
-        """
-        Emit a whale queue update event (non-blocking).
-
-        Args:
-            queue: List of whale bets in the queue
-            stats: Statistics about whale detection
-
-        Returns:
-            True if event was queued, False if queue full
-        """
-        if not self._running:
-            return False
-
-        event = WhaleQueueEvent(
-            event_type=EventType.WHALE_QUEUE_UPDATED,
-            queue=queue,
-            stats=stats,
-            timestamp=time.time(),
-        )
-
-        return await self._queue_event(event)
-
     async def subscribe_to_public_trade(self, callback: Callable) -> None:
         """
         Subscribe to public trade events.
@@ -499,19 +471,6 @@ class EventBus:
 
         self._subscribers[EventType.PUBLIC_TRADE_RECEIVED].append(callback)
         logger.debug(f"Added public trade subscriber: {callback.__name__}")
-
-    async def subscribe_to_whale_queue(self, callback: Callable) -> None:
-        """
-        Subscribe to whale queue update events.
-
-        Args:
-            callback: Async function(whale_event: WhaleQueueEvent) to call on update
-        """
-        if EventType.WHALE_QUEUE_UPDATED not in self._subscribers:
-            self._subscribers[EventType.WHALE_QUEUE_UPDATED] = []
-
-        self._subscribers[EventType.WHALE_QUEUE_UPDATED].append(callback)
-        logger.debug(f"Added whale queue subscriber: {callback.__name__}")
 
     async def emit_market_position_update(
         self,

@@ -8,7 +8,7 @@ the V3 trading system. Events are organized by category:
 - market_events: Market data, positions, tickers, and fills
 - lifecycle_events: Market creation, tracking, and determination
 - rlm_events: Reverse Line Movement and True Market Open
-- system_events: System activity, status, and whale detection
+- system_events: System activity and status
 
 Usage:
     from kalshiflow_rl.traderv3.core.events import (
@@ -45,7 +45,6 @@ from .system_events import (
     TraderStatusEvent,
     SystemActivityEvent,
     PublicTradeEvent,
-    WhaleQueueEvent,
 )
 
 __all__ = [
@@ -69,5 +68,4 @@ __all__ = [
     "TraderStatusEvent",
     "SystemActivityEvent",
     "PublicTradeEvent",
-    "WhaleQueueEvent",
 ]

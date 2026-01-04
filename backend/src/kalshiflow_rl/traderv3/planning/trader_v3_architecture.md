@@ -1,18 +1,55 @@
 # TRADER V3 Architecture Documentation
 
 > Machine-readable architecture reference for coding agents.
-> Last updated: 2025-01-01 (comprehensive update: Lifecycle Discovery System, TrackedMarketsState, RLM Service, Trading Attachments)
+> Last updated: 2025-01-03 (major cleanup: removed deprecated trading strategies)
+
+---
+
+## Cleanup Summary (2025-01-03)
+
+### Removed Components
+| Component | Type | Lines Removed |
+|-----------|------|---------------|
+| `whale_tracker.py` | Service | 436 |
+| `whale_execution_service.py` | Service | 700 |
+| `yes_80_90_service.py` | Service | 693 |
+| `WhaleQueuePanel.jsx` | Frontend Panel | 274 |
+| `FollowedTradesPanel.jsx` | Frontend Panel | 95 |
+| `DecisionAuditPanel.jsx` | Frontend Panel | 163 |
+
+### Removed Strategies
+- `WHALE_FOLLOWER` - Fade low-leverage YES whales
+- `YES_80_90` - Buy YES at 80-90c
+- `RL_MODEL` - Trained RL model placeholder
+- `PAPER_TEST` - Simple test trades
+- `CUSTOM` - Custom strategy implementation
+
+### Removed Configuration
+- `V3_ENABLE_WHALE_DETECTION` - Whale detection feature toggle
+- `WHALE_QUEUE_SIZE`, `WHALE_WINDOW_MINUTES`, `WHALE_MIN_SIZE_CENTS` - Whale tracker settings
+- `WHALE_MAX_TRADES_PER_MINUTE`, `WHALE_TOKEN_REFILL_SECONDS`, `WHALE_MAX_AGE_SECONDS` - Whale execution settings
+- `YES8090_*` - All YES 80-90c strategy configuration
+
+### Removed Events
+- `WHALE_QUEUE_UPDATED` - Whale queue state changes
+- `WhaleQueueEvent` - Event data class
+
+### Metrics
+- **Total lines removed**: ~3,500 (backend: 2,969, frontend: 535)
+- **Files deleted**: 6 (3 backend services, 3 frontend panels)
+- **Remaining strategies**: HOLD, RLM_NO
+
+---
 
 ## 1. System Overview
 
 TRADER V3 is an event-driven paper trading system for Kalshi prediction markets. It uses WebSocket connections to receive real-time orderbook data and lifecycle events, maintains state through a centralized container with version tracking, and coordinates trading decisions through a clean component architecture. All trading data is in CENTS (Kalshi's native unit).
 
-**Current Status**: Production-ready with lifecycle-based market discovery, multiple trading strategies, real-time WebSocket broadcasting, and comprehensive state management.
+**Current Status**: Production-ready with lifecycle-based market discovery, RLM trading strategy, real-time WebSocket broadcasting, and comprehensive state management.
 
 **Trading Strategies**:
-- **WHALE_FOLLOWER**: Fade low-leverage YES whales (bet NO when whale bets YES with leverage < 2)
-- **YES_80_90**: Buy YES at 80-90c (+5.1% validated edge)
-- **RLM_NO**: Reverse Line Movement - bet NO when public bets YES but price drops (+17.38% validated edge, highest)
+- **HOLD**: Never trade (safe default)
+- **RLM_NO**: Reverse Line Movement - bet NO when public bets YES but price drops (+17.38% validated edge)
 
 **Market Discovery Modes**:
 - **Config Mode**: Static market list from `RL_MARKET_TICKERS` environment variable
@@ -60,9 +97,9 @@ TRADER V3 is an event-driven paper trading system for Kalshi prediction markets.
 |              ^                   +-----------------+                                                                |
 |              |                            ^                                                                         |
 |              |                            |                                                                         |
-|    +---------+---------+---------+--------+--------+---------+---------+---------+                                  |
-|    |                   |         |                 |         |         |         |                                  |
-|    v                   v         v                 v         v         v         v                                  |
+|    +---------+---------+---------+--------+--------+---------+---------+                                            |
+|    |                   |         |                 |         |         |                                            |
+|    v                   v         v                 v         v         v                                            |
 |  +-------------------+ +-------------------+ +----+---------------+ +-------------------+ +-------------------+     |
 |  | V3OrderbookInteg  | |V3TradingClientInt| | V3StatusReporter   | | RLMService        | |EventLifecycleSvc  |     |
 |  | (market data)     | | (order mgmt)     | | (status broadcast) | | (RLM strategy)    | | (lifecycle proc)  |     |
@@ -126,7 +163,7 @@ TRADER V3 is an event-driven paper trading system for Kalshi prediction markets.
   - `is_healthy()` - Boolean health status
 - **Emits Events**: None directly (delegates to StatusReporter)
 - **Subscribes To**: None directly
-- **Dependencies**: V3StateMachine, EventBus, V3WebSocketManager, V3OrderbookIntegration, V3TradingClientIntegration (optional), V3StateContainer, V3HealthMonitor, V3StatusReporter, TradingFlowOrchestrator, MarketTickerListener (optional), MarketPriceSyncer (optional), TradingStateSyncer (optional), FillListener (optional), Yes8090Service (optional)
+- **Dependencies**: V3StateMachine, EventBus, V3WebSocketManager, V3OrderbookIntegration, V3TradingClientIntegration (optional), V3StateContainer, V3HealthMonitor, V3StatusReporter, TradingFlowOrchestrator, MarketTickerListener (optional), MarketPriceSyncer (optional), TradingStateSyncer (optional), FillListener (optional), RLMService (optional)
 
 #### V3StateMachine
 - **File**: `core/state_machine.py`
@@ -164,10 +201,8 @@ TRADER V3 is an event-driven paper trading system for Kalshi prediction markets.
   - `update_single_position(ticker, position_data)` - Update single position from real-time WebSocket push
   - `update_component_health(name, healthy, details)` - Update component health
   - `update_machine_state(state, context, metadata)` - Update state machine reference
-  - `update_whale_queue(state)` - Update whale queue state from tracker
   - `get_full_state()` - Get complete state snapshot
   - `get_trading_summary(order_group_id)` - Get trading state for WebSocket broadcast (includes settlements, P&L)
-  - `get_whale_summary()` - Get whale queue summary for WebSocket broadcast
   - `initialize_session_pnl(balance, portfolio_value)` - Initialize session P&L tracking on first sync
   - `set_component_degraded(component, is_degraded, reason)` - Track degraded components
   - `atomic_update(update_func)` - Thread-safe atomic state update
@@ -175,7 +210,6 @@ TRADER V3 is an event-driven paper trading system for Kalshi prediction markets.
 - **Key State Types**:
   - `_trading_state`: TraderState with positions, orders, balance, settlements
   - `_session_pnl_state`: SessionPnLState for P&L tracking from session start
-  - `_whale_state`: WhaleQueueState for whale detection queue
   - `_settled_positions`: Deque of last 50 settlements (synced from REST API)
   - `_session_updated_tickers`: Set of tickers updated via WebSocket this session
   - `_market_prices`: Dict[str, MarketPriceData] for real-time market prices
@@ -197,7 +231,7 @@ TRADER V3 is an event-driven paper trading system for Kalshi prediction markets.
   - `get_market_prices_summary()` - Get summary for WebSocket broadcast
 - **Emits Events**: None
 - **Subscribes To**: `MARKET_POSITION_UPDATE` (via coordinator subscription)
-- **Dependencies**: TraderState, StateChange, SessionPnLState, WhaleQueueState
+- **Dependencies**: TraderState, StateChange, SessionPnLState
 
 #### V3HealthMonitor
 - **File**: `core/health_monitor.py`
@@ -208,7 +242,7 @@ TRADER V3 is an event-driven paper trading system for Kalshi prediction markets.
   - `is_healthy()` - Check if monitor itself is healthy
 - **Emits Events**: `SYSTEM_ACTIVITY` (health_check type)
 - **Subscribes To**: None (polls components directly)
-- **Dependencies**: V3Config, V3StateMachine, EventBus, V3WebSocketManager, V3StateContainer, V3OrderbookIntegration, V3TradingClientIntegration (optional), V3TradesIntegration (optional), WhaleTracker (optional), FillListener (optional)
+- **Dependencies**: V3Config, V3StateMachine, EventBus, V3WebSocketManager, V3StateContainer, V3OrderbookIntegration, V3TradingClientIntegration (optional), V3TradesIntegration (optional), FillListener (optional)
 
 #### V3StatusReporter
 - **File**: `core/status_reporter.py`
@@ -243,8 +277,8 @@ TRADER V3 is an event-driven paper trading system for Kalshi prediction markets.
   - `get_health_details()` - Get detailed health information
 - **Message Coalescing**:
   - 100ms batching window for frequent message types
-  - **Immediate (critical)**: `state_transition`, `whale_processing`, `connection`, `system_activity`, `history_replay`
-  - **Coalesced (frequent)**: `trading_state`, `trader_status`, `whale_queue`
+  - **Immediate (critical)**: `state_transition`, `connection`, `system_activity`, `history_replay`
+  - **Coalesced (frequent)**: `trading_state`, `trader_status`
   - Coalescing keeps only the latest message of each type, reducing frontend re-renders
 - **Key Fields**: `_pending_messages`, `_coalesce_task`, `_coalesce_interval`
 - **Emits Events**: None
@@ -462,83 +496,20 @@ TRADER V3 is an event-driven paper trading system for Kalshi prediction markets.
 
 #### TradingDecisionService
 - **File**: `services/trading_decision_service.py`
-- **Purpose**: Implements trading strategy logic and order execution. Strategies: HOLD, WHALE_FOLLOWER, PAPER_TEST, RL_MODEL, YES_80_90, CUSTOM. Note: WHALE_FOLLOWER strategy detection/timing is handled by WhaleExecutionService; this service executes the actual orders.
+- **Purpose**: Implements trading strategy logic and order execution
 - **Available Strategies** (TradingStrategy enum):
   - `HOLD`: Never trade (safe default)
-  - `WHALE_FOLLOWER`: Follow big bets detected by WhaleTracker
-  - `PAPER_TEST`: Simple test trades for paper mode
-  - `RL_MODEL`: Use trained RL model (not yet integrated)
-  - `YES_80_90`: Buy YES at 80-90c (validated +5.1% edge strategy)
-  - `CUSTOM`: Custom strategy implementation
+  - `RLM_NO`: Reverse Line Movement - bet NO when public bets YES but price drops
 - **Key Methods**:
   - `evaluate_market(market, orderbook)` - Generate trading decision
-  - `execute_decision(decision)` - Execute a trading decision (used by WhaleExecutionService)
+  - `execute_decision(decision)` - Execute a trading decision
   - `set_strategy(strategy)` - Change trading strategy
   - `get_stats()` - Get service statistics
-  - `get_followed_whale_ids()` - Get IDs of successfully followed whales
-  - `get_followed_whales()` - Get full data for followed whales
-  - `get_decision_history(limit)` - Get recent whale decision history for audit display
-  - `get_decision_stats()` - Get whale decision statistics
 - **Key Classes**:
-  - `FollowedWhale`: Tracks whale trades we have followed (whale_id, order_id, market, side, count, price)
-  - `WhaleDecision`: Tracks decisions about whale trades (followed, skipped_age, skipped_position, etc.)
   - `TradingDecision`: Represents a trading decision (action, market, side, quantity, price)
-- **Constants**:
-  - `WHALE_FOLLOW_CONTRACTS = 5`: Fixed contracts per whale follow
-  - `WHALE_MAX_AGE_SECONDS = 120`: Skip whales older than 2 minutes
-- **Emits Events**: `SYSTEM_ACTIVITY` (trading_decision, trading_error, whale_follow types)
+- **Emits Events**: `SYSTEM_ACTIVITY` (trading_decision, trading_error types)
 - **Subscribes To**: None
-- **Dependencies**: V3TradingClientIntegration, V3StateContainer, EventBus, WhaleTracker (optional)
-
-#### WhaleTracker
-- **File**: `services/whale_tracker.py`
-- **Purpose**: Tracks biggest bets (whales) from public trades for "Follow the Whale" strategy
-- **Key Methods**:
-  - `start()` / `stop()` - Lifecycle management
-  - `is_healthy()` - Check if tracker is healthy (running + prune task active)
-  - `get_queue_state()` - Get current whale queue and statistics
-  - `get_health_details()` - Get detailed health information
-  - `remove_whale(whale_id)` - Remove whale from queue after processing
-- **Key Classes**:
-  - `BigBet`: Dataclass representing a significant trade with whale_size calculation
-    - `whale_size`: max(cost, payout) where cost=count*price_cents, payout=count*100
-    - Captures both high-conviction (expensive) and high-leverage (cheap) bets
-- **Configuration** (environment variables):
-  - `WHALE_QUEUE_SIZE`: Maximum bets in queue (default: 10)
-  - `WHALE_WINDOW_MINUTES`: Sliding window duration (default: 5)
-  - `WHALE_MIN_SIZE_CENTS`: Minimum whale_size to track (default: 10000 = $100)
-- **Emits Events**: `WHALE_QUEUE_UPDATED` (via EventBus.emit_whale_queue)
-- **Subscribes To**: `PUBLIC_TRADE_RECEIVED`
-- **Dependencies**: EventBus
-
-#### WhaleExecutionService
-- **File**: `services/whale_execution_service.py`
-- **Purpose**: Event-driven whale execution with rate limiting, deduplication, and decision tracking
-- **Key Methods**:
-  - `start()` / `stop()` - Lifecycle management
-  - `is_healthy()` - Check if service is healthy
-  - `get_decision_history(limit)` - Get recent whale decisions (most recent first)
-  - `get_stats()` - Get comprehensive statistics with skip reason breakdown
-  - `get_health_details()` - Get detailed health information
-- **Key Classes**:
-  - `WhaleDecision`: Tracks decision about a whale (followed, skipped_age, skipped_position, etc.)
-    - `whale_id`: Unique identifier (market_ticker:timestamp_ms)
-    - `action`: Decision action (followed, skipped_age, skipped_position, skipped_orders, rate_limited, failed)
-    - `reason`: Human-readable explanation
-    - `order_id`: Kalshi order ID if whale was followed
-- **Key Features**:
-  - **Token Bucket Rate Limiting**: Prevents trading too fast (configurable trades/minute)
-  - **Deduplication**: Each whale evaluated only once across all queue updates
-  - **Immediate Execution**: Processes whales on event receipt, no 30s cycle delay
-  - **Decision Audit**: Records all decisions for frontend visibility
-  - **Position Check**: Skips whales in markets where user already has a position (new markets only strategy)
-- **Configuration** (environment variables):
-  - `WHALE_MAX_TRADES_PER_MINUTE`: Rate limit capacity (default: 3)
-  - `WHALE_TOKEN_REFILL_SECONDS`: Token refill interval (default: 20s = ~3/minute)
-  - `WHALE_MAX_AGE_SECONDS`: Maximum whale age to follow (default: 120s)
-- **Emits Events**: `SYSTEM_ACTIVITY` (whale_processing type)
-- **Subscribes To**: `WHALE_QUEUE_UPDATED`
-- **Dependencies**: EventBus, TradingDecisionService, V3StateContainer, WhaleTracker
+- **Dependencies**: V3TradingClientIntegration, V3StateContainer, EventBus
 
 #### MarketPriceSyncer
 - **File**: `services/market_price_syncer.py`
@@ -582,44 +553,6 @@ TRADER V3 is an event-driven paper trading system for Kalshi prediction markets.
 - **Subscribes To**: None
 - **Dependencies**: V3TradingClientIntegration, V3StateContainer, EventBus, StatusReporter
 - **Architecture Note**: Runs in dedicated asyncio task for reliability (same pattern as MarketPriceSyncer)
-
-#### Yes8090Service
-- **File**: `services/yes_80_90_service.py`
-- **Purpose**: Event-driven trading service implementing the validated +5.1% edge YES at 80-90c strategy
-- **Key Methods**:
-  - `start()` / `stop()` - Lifecycle management
-  - `is_healthy()` - Check if service is running
-  - `get_stats()` - Get comprehensive service statistics
-  - `get_decision_history()` - Get recent signal decisions
-  - `get_health_details()` - Get detailed health information
-  - `reset_processed_markets()` - Clear processed markets set for re-entry
-- **Key Classes**:
-  - `Yes8090Signal`: Detected signal with market_ticker, prices, tier, timestamp
-  - `Yes8090Decision`: Records decisions (executed, skipped, failed) for audit
-- **Signal Detection Criteria** (ALL must be true):
-  1. Best YES ask price >= 80c AND <= 90c
-  2. Best YES ask size >= min_liquidity (default: 10)
-  3. Bid-ask spread <= max_spread (default: 5c)
-  4. Market NOT already processed this session
-  5. No existing position in this market
-- **Tier System**:
-  - Tier A (83-87c): Sweet spot, higher edge, 150 contracts default
-  - Tier B (80-83c or 87-90c): Edges, 100 contracts default
-- **Features**:
-  - Token bucket rate limiting (default: 10 trades/minute)
-  - Deduplication (one entry per market per session)
-  - Decision history tracking (last 100 decisions)
-- **Configuration** (environment variables):
-  - `YES8090_MIN_PRICE`: Minimum YES ask price (default: 80)
-  - `YES8090_MAX_PRICE`: Maximum YES ask price (default: 90)
-  - `YES8090_MIN_LIQUIDITY`: Minimum contracts at best ask (default: 10)
-  - `YES8090_MAX_SPREAD`: Maximum bid-ask spread (default: 5)
-  - `YES8090_CONTRACTS`: Default contracts per trade (default: 100)
-  - `YES8090_TIER_A_CONTRACTS`: Contracts for Tier A signals (default: 150)
-  - `YES8090_MAX_CONCURRENT`: Maximum concurrent positions (default: 100)
-- **Emits Events**: `SYSTEM_ACTIVITY` (strategy_start, strategy_stop, yes_80_90_signal, yes_80_90_execute types)
-- **Subscribes To**: `ORDERBOOK_SNAPSHOT`, `ORDERBOOK_DELTA`
-- **Dependencies**: EventBus, TradingDecisionService, V3StateContainer
 
 ### 3.4 State (`traderv3/state/`)
 
@@ -677,6 +610,7 @@ TRADER V3 is an event-driven paper trading system for Kalshi prediction markets.
   - `max_markets` - Market limit
   - `enable_trading_client` - Enable trading integration
   - `trading_mode` - "paper" or "production"
+  - `trading_strategy_str` - Strategy: "hold" or "rlm_no"
   - `port` - Server port (default 8005)
 - **Factory Method**: `from_env()` - Load from environment variables
 - **Key Methods**: `is_demo_environment()`, `get_environment_name()`, `validate()`
@@ -893,7 +827,7 @@ The Trading Attachment System links trading state (orders, positions, P&L) to li
   - `RLM_MIN_PRICE_DROP`: Minimum price drop in cents (default: 2)
   - `RLM_MIN_TRADES`: Minimum trades before signal (default: 15)
   - `RLM_CONTRACTS`: Contracts per trade (default: 5)
-  - `RLM_MAX_TRADES_PER_MINUTE`: Rate limit (default: 10)
+  - `RLM_MAX_TRADES_PER_MINUTE`: RLM rate limit (default: 10)
 - **Emits Events**: `SYSTEM_ACTIVITY` (rlm_signal, rlm_execute types), `RLM_MARKET_UPDATE`, `RLM_TRADE_ARRIVED`
 - **Subscribes To**: `PUBLIC_TRADE_RECEIVED`, `MARKET_TRACKED`, `MARKET_DETERMINED`
 - **Dependencies**: EventBus, TradingDecisionService, V3StateContainer, TrackedMarketsState
@@ -981,13 +915,12 @@ VALID_TRANSITIONS = {
 
 | Event Type | Publisher | Subscribers | Payload |
 |------------|-----------|-------------|---------|
-| `ORDERBOOK_SNAPSHOT` | OrderbookClient | V3OrderbookIntegration, Yes8090Service | `MarketEvent{market_ticker, sequence_number, timestamp_ms, metadata}` |
-| `ORDERBOOK_DELTA` | OrderbookClient | V3OrderbookIntegration, Yes8090Service | `MarketEvent{market_ticker, sequence_number, timestamp_ms, metadata}` |
+| `ORDERBOOK_SNAPSHOT` | OrderbookClient | V3OrderbookIntegration | `MarketEvent{market_ticker, sequence_number, timestamp_ms, metadata}` |
+| `ORDERBOOK_DELTA` | OrderbookClient | V3OrderbookIntegration | `MarketEvent{market_ticker, sequence_number, timestamp_ms, metadata}` |
 | `STATE_TRANSITION` | V3StateMachine | (legacy, kept for compat) | `StateTransitionEvent{from_state, to_state, context, metadata}` |
 | `TRADER_STATUS` | V3StatusReporter | V3WebSocketManager | `TraderStatusEvent{state, metrics, health, timestamp}` |
-| `SYSTEM_ACTIVITY` | V3StateMachine, V3HealthMonitor, TradingFlowOrchestrator, TradingDecisionService, WhaleExecutionService, MarketPriceSyncer, TradingStateSyncer, Yes8090Service, EventLifecycleService, RLMService, ApiDiscoverySyncer | V3WebSocketManager | `SystemActivityEvent{activity_type, message, metadata}` |
-| `PUBLIC_TRADE_RECEIVED` | V3TradesIntegration | WhaleTracker, RLMService | `PublicTradeEvent{market_ticker, timestamp_ms, side, price_cents, count}` |
-| `WHALE_QUEUE_UPDATED` | WhaleTracker | V3WebSocketManager, WhaleExecutionService | `WhaleQueueEvent{queue, stats, timestamp}` |
+| `SYSTEM_ACTIVITY` | V3StateMachine, V3HealthMonitor, TradingFlowOrchestrator, TradingDecisionService, MarketPriceSyncer, TradingStateSyncer, EventLifecycleService, RLMService, ApiDiscoverySyncer | V3WebSocketManager | `SystemActivityEvent{activity_type, message, metadata}` |
+| `PUBLIC_TRADE_RECEIVED` | V3TradesIntegration | RLMService | `PublicTradeEvent{market_ticker, timestamp_ms, side, price_cents, count}` |
 | `MARKET_POSITION_UPDATE` | PositionListener | V3StateContainer (via coordinator subscription) | `MarketPositionEvent{market_ticker, position_data, timestamp}` |
 | `MARKET_TICKER_UPDATE` | MarketTickerListener | V3Coordinator (updates StateContainer) | `MarketTickerEvent{market_ticker, price_data, timestamp}` |
 | `ORDER_FILL` | FillListener | (console UX, future: StateContainer) | `OrderFillEvent{trade_id, order_id, market_ticker, is_taker, side, action, price_cents, count, post_position, fill_timestamp}` |
@@ -1011,12 +944,6 @@ VALID_TRANSITIONS = {
 | `operation` | V3TradingClientIntegration | Order group operations |
 | `cleanup` | V3TradingClientIntegration | Orphaned order cleanup |
 | `connection` | V3Coordinator | WebSocket connection events |
-| `whale_processing` | WhaleExecutionService | Whale queue processing status (for frontend animation) |
-| `whale_follow` | TradingDecisionService | Successful whale follow execution |
-| `strategy_start` | Yes8090Service | YES 80-90c strategy started |
-| `strategy_stop` | Yes8090Service | YES 80-90c strategy stopped |
-| `yes_80_90_signal` | Yes8090Service | YES 80-90c signal detected in orderbook |
-| `yes_80_90_execute` | Yes8090Service | YES 80-90c signal execution result (success/failed) |
 | `lifecycle_event` | EventLifecycleService | Market lifecycle event (tracked, determined, settled) |
 | `discovery` | ApiDiscoverySyncer | API-based market discovery results |
 | `rlm_signal` | RLMService | RLM signal detected (price drop + YES bias) |
@@ -1124,9 +1051,9 @@ Position data received from Kalshi WebSocket `market_positions` channel, convert
        * Performs initial trading state sync (balance, positions, orders, settlements)
        * Starts 20s periodic sync loop in dedicated asyncio task
        * Emits console messages: "Trading session synced: X positions, $Y balance, Z settlements"
-    i. [if strategy=YES_80_90] yes_80_90_service.start():
-       * Subscribes to ORDERBOOK_SNAPSHOT/DELTA events
-       * Begins monitoring for 80-90c signals
+    i. [if strategy=RLM_NO] rlm_service.start():
+       * Subscribes to PUBLIC_TRADE_RECEIVED, MARKET_TRACKED, MARKET_DETERMINED events
+       * Begins monitoring for RLM signals
 14. System is READY
 ```
 
@@ -1164,7 +1091,7 @@ Position data received from Kalshi WebSocket `market_positions` channel, convert
 3. coordinator.stop() called:
    a. _running = False
    b. _event_loop_task cancelled
-   c. [if yes_80_90] yes_80_90_service.stop()
+   c. [if rlm_service] rlm_service.stop()
       - Emits strategy_stop system activity
    d. [if trading] trading_state_syncer.stop()
       - Cancels periodic sync task
@@ -1190,42 +1117,7 @@ Position data received from Kalshi WebSocket `market_positions` channel, convert
 6. Application exits
 ```
 
-### 6.4 Whale Execution Flow (Event-Driven)
-
-```
-1. TradesClient receives public trade from Kalshi WebSocket
-2. V3TradesIntegration processes trade:
-   - Emits PUBLIC_TRADE_RECEIVED event via EventBus
-3. WhaleTracker receives PUBLIC_TRADE_RECEIVED:
-   - Calculates whale_size = max(cost, payout)
-   - If whale_size >= WHALE_MIN_SIZE_CENTS:
-     * Creates BigBet, adds to priority queue
-     * Emits WHALE_QUEUE_UPDATED event
-4. WhaleExecutionService receives WHALE_QUEUE_UPDATED:
-   a. Refill rate limit tokens
-   b. For each whale in queue (sorted by whale_size desc):
-      i.   Deduplication check: Skip if whale_id in _evaluated_whale_ids
-      ii.  Age check: Skip if age > WHALE_MAX_AGE_SECONDS (record skipped_age)
-      iii. Position check: Skip if market_ticker in positions (record skipped_position)
-      iv.  Orders check: Skip if market_ticker has open orders (record skipped_orders)
-      v.   Rate limit check: Skip if no tokens available (do NOT record - retry later)
-      vi.  Execute: Call TradingDecisionService.execute_decision()
-           - TradingDecisionService._execute_buy() places order
-           - On success: Record "followed", remove from queue
-           - On failure: Record "failed", remove from queue
-   c. Emit whale_processing system activity for frontend animation
-5. Frontend receives whale_processing message and animates UI
-```
-
-**Key Design Decisions:**
-- **Immediate Execution**: Whales processed on event receipt, not 30s cycle
-- **Deduplication**: Each whale evaluated ONCE across all queue updates
-- **Rate Limiting**: Token bucket prevents trading too fast
-- **New Markets Only**: Skips whales in markets where user has ANY position
-- **Removal on Terminal Decision**: Followed/skipped/failed whales removed from queue
-- **Retry on Rate Limit**: Rate-limited whales stay in queue for retry
-
-### 6.5 Settlements Data Flow
+### 6.4 Settlements Data Flow
 
 ```
 1. KalshiDataSync.sync_with_kalshi() called (every 30s or on startup)
@@ -1261,7 +1153,7 @@ Position data received from Kalshi WebSocket `market_positions` channel, convert
 - **Deque Storage**: Last 50 settlements stored for UI display
 - **ISO Timestamp Parsing**: settled_time parsed from ISO 8601 to epoch seconds
 
-### 6.6 Real-Time Position Updates Flow
+### 6.5 Real-Time Position Updates Flow
 
 ```
 1. PositionListener connected to Kalshi WebSocket
@@ -1295,48 +1187,7 @@ Position data received from Kalshi WebSocket `market_positions` channel, convert
 - **Position Closure**: When position == 0, capture settlement data before deletion
 - **Immediate Updates**: No cycle delay - position updates broadcast within 1 second
 
-### 6.7 YES 80-90c Strategy Flow (Event-Driven)
-
-```
-1. OrderbookClient receives snapshot/delta from Kalshi WebSocket
-2. EventBus emits ORDERBOOK_SNAPSHOT or ORDERBOOK_DELTA event
-3. Yes8090Service._handle_orderbook() receives event:
-   a. Acquire processing lock (prevent concurrent processing)
-   b. Skip if already processed this market
-   c. Skip if position count >= max_concurrent (100 default)
-   d. Skip if market has existing position or open orders
-4. Yes8090Service._detect_signal() evaluates orderbook:
-   a. Get best YES ask price and size from orderbook
-   b. Check: 80c <= yes_ask <= 90c
-   c. Check: yes_ask_size >= min_liquidity (10 default)
-   d. Check: bid-ask spread <= max_spread (5c default)
-   e. Determine tier: A (83-87c) or B (edges)
-   f. If all criteria met: create Yes8090Signal
-5. Yes8090Service._execute_signal() processes signal:
-   a. Check rate limit tokens (10 trades/min default)
-   b. If rate limited: return without marking processed (retry later)
-   c. Mark market as processed (deduplication)
-   d. Calculate entry price based on spread:
-      - Tight (<=2c): best_ask - 1c
-      - Normal (<=4c): midpoint
-      - Wide (>4c): best_bid + 1c
-   e. Determine position size: Tier A = 150, Tier B = 100
-   f. Create TradingDecision with YES_80_90 strategy
-   g. Call TradingDecisionService.execute_decision()
-6. TradingDecisionService places order via trading client
-7. Yes8090Service records decision in history (executed/failed)
-8. System activity events broadcast for frontend visibility
-```
-
-**Key Design Decisions:**
-- **Event-Driven**: Immediate signal processing on orderbook updates
-- **Deduplication**: Each market processed only once per session
-- **Rate Limiting**: Token bucket prevents overtrading (10 trades/min)
-- **Tier-Based Sizing**: Higher confidence signals (83-87c) get larger positions
-- **New Markets Only**: Skips markets with existing positions
-- **Hold to Settlement**: No early exit logic in MVP
-
-### 6.8 Market Ticker Price Updates Flow
+### 6.6 Market Ticker Price Updates Flow
 
 ```
 1. MarketTickerListener connected to Kalshi WebSocket
@@ -1364,32 +1215,32 @@ Position data received from Kalshi WebSocket `market_positions` channel, convert
 - **Throttled Updates**: Default 500ms per ticker reduces event volume
 - **Redundancy with REST**: MarketPriceSyncer provides fallback pricing
 
-### 6.9 Lifecycle Market Discovery Flow
+### 6.7 Lifecycle Market Discovery Flow
 
 ```
 1. [Kalshi WS] market_lifecycle event (created)
-        ↓
+        |
 2. [LifecycleClient] Receives event, calls callback
-        ↓
+        |
 3. [V3LifecycleIntegration] emit_market_lifecycle() to EventBus
-        ↓
+        |
 4. [EventLifecycleService] _handle_lifecycle_event()
-        ↓ Check capacity (fast fail if at limit)
-        ↓ REST lookup GET /markets/{ticker}
-        ↓ Category filter (LIFECYCLE_CATEGORIES)
-        ↓
+        | Check capacity (fast fail if at limit)
+        | REST lookup GET /markets/{ticker}
+        | Category filter (LIFECYCLE_CATEGORIES)
+        |
 5. [TrackedMarketsState] add_market() if passes filters
-        ↓
+        |
 6. [RLDatabase] insert_tracked_market() for persistence
-        ↓
+        |
 7. [EventBus] emit_market_tracked()
-        ↓
+        |
 8. [EventLifecycleService] Call orderbook subscribe callback
-        ↓
+        |
 9. [V3OrderbookIntegration] Subscribe to market orderbook
-        ↓
+        |
 10. [V3WebSocketManager] broadcast_tracked_markets() + broadcast_lifecycle_event()
-         ↓
+         |
 11. [Frontend] useLifecycleWebSocket receives tracked_markets and lifecycle_event
 ```
 
@@ -1400,41 +1251,41 @@ Position data received from Kalshi WebSocket `market_positions` channel, convert
 - **Orderbook Subscription**: Dynamic orderbook subscription on market tracking
 - **Dual Broadcast**: Both full snapshot and activity event for frontend
 
-### 6.10 RLM Signal Detection Flow
+### 6.8 RLM Signal Detection Flow
 
 ```
 1. [Kalshi WS] Public trade arrives
-        ↓
+        |
 2. [TradesClient] trade callback
-        ↓
+        |
 3. [V3TradesIntegration] emit_public_trade() to EventBus
-        ↓
+        |
 4. [RLMService] _handle_public_trade()
-        ↓ Check if market is in TrackedMarketsState
-        ↓ (Skip if not tracked - only lifecycle markets)
-        ↓
+        | Check if market is in TrackedMarketsState
+        | (Skip if not tracked - only lifecycle markets)
+        |
 5. [MarketTradeState] Accumulate trade
         - Increment yes_trades or no_trades
         - Track first_yes_price and last_yes_price
         - Calculate price_drop = first - last
         - Calculate yes_ratio = yes_trades / total_trades
-        ↓
+        |
 6. [EventBus] emit_rlm_trade_arrived() (for animation pulse)
-        ↓
+        |
 7. [EventBus] emit_rlm_market_update() (state change)
-        ↓
+        |
 8. [RLMService] Check signal criteria:
         - yes_ratio >= threshold (default 0.65)
         - price_drop >= min_price_drop (default 2c)
         - trade_count >= min_trades (default 15)
         - No existing position in market
-        ↓
+        |
 9. If signal detected: Create TradingDecision (action=BUY, side=NO)
-        ↓
+        |
 10. [TradingDecisionService] execute_decision()
-        ↓
+        |
 11. [V3WebSocketManager] broadcast rlm_market_state and rlm_trade_arrived
-         ↓
+         |
 12. [Frontend] Updates rlmStates and tradePulses in useLifecycleWebSocket
 ```
 
@@ -1445,27 +1296,27 @@ Position data received from Kalshi WebSocket `market_positions` channel, convert
 - **Immediate Trade Pulses**: rlm_trade_arrived bypasses coalescing for animation
 - **Deduplication**: One signal per market per session
 
-### 6.11 API Discovery Bootstrap Flow
+### 6.9 API Discovery Bootstrap Flow
 
 ```
 1. [System Startup] ApiDiscoverySyncer.start()
-        ↓
+        |
 2. [ApiDiscoverySyncer] Fetch open markets from Kalshi REST API
         - GET /markets with status=active filter
         - Batch size: 200 markets per call
-        ↓
+        |
 3. For each market in response:
-        ↓ Category filter (LIFECYCLE_CATEGORIES)
-        ↓ Skip if close_ts < now + close_min_minutes
-        ↓ Check TrackedMarketsState capacity
-        ↓
+        | Category filter (LIFECYCLE_CATEGORIES)
+        | Skip if close_ts < now + close_min_minutes
+        | Check TrackedMarketsState capacity
+        |
 4. [EventLifecycleService] track_market_from_api_data()
         - Bypasses REST lookup (already have market data)
-        ↓
+        |
 5. [TrackedMarketsState] add_market()
-        ↓
+        |
 6. [RLDatabase] insert_tracked_market()
-        ↓
+        |
 7. Continue lifecycle WebSocket monitoring for new markets
 ```
 
@@ -1494,22 +1345,8 @@ Position data received from Kalshi WebSocket `market_positions` channel, convert
 | `V3_TRADING_MODE` | No | `paper` | Trading mode |
 | `V3_PORT` | No | `8005` | Server port |
 | `V3_LOG_LEVEL` | No | `INFO` | Logging level |
-| `V3_TRADING_STRATEGY` | No | `hold` | Trading strategy (hold, whale_follower, paper_test, rl_model) |
-| `V3_ENABLE_WHALE_DETECTION` | No | `false` | Enable whale detection feature |
-| `WHALE_QUEUE_SIZE` | No | `10` | Max whale bets to track in queue |
-| `WHALE_WINDOW_MINUTES` | No | `5` | Sliding window for whale tracking (minutes) |
-| `WHALE_MIN_SIZE_CENTS` | No | `10000` | Minimum whale_size threshold ($100 default) |
-| `WHALE_MAX_TRADES_PER_MINUTE` | No | `3` | Token bucket capacity for whale following rate limit |
-| `WHALE_TOKEN_REFILL_SECONDS` | No | `20` | Token refill interval (20s = ~3 trades/minute) |
-| `WHALE_MAX_AGE_SECONDS` | No | `120` | Maximum whale age to follow (2 minutes) |
+| `V3_TRADING_STRATEGY` | No | `hold` | Trading strategy: `hold` or `rlm_no` |
 | `V3_CLEANUP_ON_STARTUP` | No | `true` | Cancel orphaned orders on startup |
-| `YES8090_MIN_PRICE` | No | `80` | Minimum YES ask price for signals (cents) |
-| `YES8090_MAX_PRICE` | No | `90` | Maximum YES ask price for signals (cents) |
-| `YES8090_MIN_LIQUIDITY` | No | `10` | Minimum contracts at best ask |
-| `YES8090_MAX_SPREAD` | No | `5` | Maximum bid-ask spread (cents) |
-| `YES8090_CONTRACTS` | No | `100` | Default contracts per trade |
-| `YES8090_TIER_A_CONTRACTS` | No | `150` | Contracts for Tier A signals (83-87c) |
-| `YES8090_MAX_CONCURRENT` | No | `100` | Maximum concurrent positions |
 | `LIFECYCLE_CATEGORIES` | No | `sports,crypto,entertainment,media_mentions` | Comma-separated category filter for discovery |
 | `LIFECYCLE_CAPACITY` | No | `50` | Maximum tracked markets |
 | `RLM_YES_RATIO_THRESHOLD` | No | `0.65` | Minimum YES trade ratio for RLM signal |
@@ -1535,11 +1372,9 @@ Position data received from Kalshi WebSocket `market_positions` channel, convert
 | `history_replay` | Historical state transitions for late joiners | Immediate |
 | `system_activity` | Unified console messages | Immediate |
 | `state_transition` | State machine state changes | Immediate |
-| `whale_processing` | Whale processing status for frontend animation | Immediate |
 | `lifecycle_event` | Real-time lifecycle event (tracked, determined, etc.) | Immediate |
 | `trader_status` | Periodic status/metrics update | Coalesced (100ms) |
 | `trading_state` | Trading data (balance, positions, orders, P&L, settlements) | Coalesced (100ms) |
-| `whale_queue` | Whale detection queue update (when enabled) | Coalesced (100ms) |
 | `tracked_markets` | Full snapshot of tracked markets with stats | Coalesced (100ms) |
 | `market_info_update` | Incremental market price/volume update | Coalesced (100ms) |
 | `rlm_states_snapshot` | Initial snapshot of all RLM market states (on connect) | Immediate |
@@ -1602,67 +1437,6 @@ Sent immediately when a client connects via `handle_websocket()` (before waiting
        "fees": 10, "net_pnl": -2510, "closed_at": 1703600000.0}
     ],
     "settlements_count": 12               // total settlements
-  }
-}
-```
-
-#### whale_processing Message Format
-
-```json
-{
-  "type": "whale_processing",
-  "data": {
-    "whale_id": "KXBTCMINY-25-2-DEC31-70000:1703700000000",
-    "status": "processing",
-    "action": null,
-    "timestamp": 1703700001.5
-  }
-}
-```
-
-After processing:
-```json
-{
-  "type": "whale_processing",
-  "data": {
-    "whale_id": "KXBTCMINY-25-2-DEC31-70000:1703700000000",
-    "status": "complete",
-    "action": "followed",
-    "timestamp": 1703700002.3
-  }
-}
-```
-
-Possible `action` values: `followed`, `skipped_age`, `skipped_position`, `skipped_orders`, `rate_limited`, `failed`
-
-#### whale_queue Message Format
-
-```json
-{
-  "type": "whale_queue",
-  "data": {
-    "queue": [
-      {
-        "market_ticker": "INXD-25JAN03",
-        "side": "yes",
-        "price_cents": 65,
-        "count": 200,
-        "cost_dollars": 130.00,
-        "payout_dollars": 200.00,
-        "whale_size_dollars": 200.00,
-        "age_seconds": 45.2,
-        "timestamp_ms": 1703700000000
-      }
-    ],
-    "stats": {
-      "trades_seen": 1500,
-      "trades_discarded": 1450,
-      "discard_rate_percent": 96.7,
-      "queue_size": 5,
-      "window_minutes": 5,
-      "min_size_dollars": 100.0
-    },
-    "timestamp": 1703700045.2
   }
 }
 ```
@@ -1941,7 +1715,7 @@ The system supports **degraded mode** when the orderbook WebSocket is unavailabl
 4. **Degraded Mode**: System continues operating without orderbook
 5. **Health Monitoring**: Non-blocking health checks that report but don't control
 6. **Atomic Updates**: Thread-safe state mutations with version tracking
-7. **Message Coalescing**: Backend batches frequent WebSocket messages (100ms window) to reduce frontend re-renders. Critical messages (state transitions, whale processing) bypass coalescing for responsiveness
+7. **Message Coalescing**: Backend batches frequent WebSocket messages (100ms window) to reduce frontend re-renders. Critical messages (state transitions) bypass coalescing for responsiveness
 8. **Zombie Connection Detection**: Frontend monitors WebSocket heartbeats (60s timeout, 15s check interval) and forces reconnection on stale connections. Reconnect timeout cleanup prevents timer accumulation
 
 ---
@@ -1963,14 +1737,12 @@ The system supports **degraded mode** when the orderbook WebSocket is unavailabl
 | 2024-12-28 | Settlements panel fixes: fee_cost parsing (string dollars to cents), net P&L calculation (revenue-cost-fees) | Claude |
 | 2024-12-28 | PositionListener fix: Handle .closed attribute safely with fallback for different WS library versions | Claude |
 | 2024-12-28 | Immediate trading state on client connect: trading_state broadcast within 1 second via version monitoring | Claude |
-| 2024-12-28 | Comprehensive docs update: StateContainer (settlements, P&L, whale queue), StatusReporter (broadcast data), KalshiDataSync (sync data), demo_client (all methods), trading_state message format, settlements/position data flows | Claude |
-| 2024-12-28 | Added YES_80_90 strategy to TradingStrategy enum (validated +5.1% edge) | Claude |
-| 2024-12-28 | Added Section 7.4: Frontend Panels documentation (PositionListPanel, SettlementsPanel columns and features) | Claude |
-| 2024-12-29 | Comprehensive architecture update: Added MarketTickerListener, MarketPriceSyncer, Yes8090Service | Claude |
-| 2024-12-29 | Added MARKET_TICKER_UPDATE event, MarketTickerEvent payload (Section 5.2), YES8090_* env vars | Claude |
-| 2024-12-29 | Updated architecture diagram with new components (ticker WS, price syncer, 80-90c strategy) | Claude |
+| 2024-12-28 | Comprehensive docs update: StateContainer (settlements, P&L), StatusReporter (broadcast data), KalshiDataSync (sync data), demo_client (all methods), trading_state message format, settlements/position data flows | Claude |
+| 2024-12-29 | Comprehensive architecture update: Added MarketTickerListener, MarketPriceSyncer | Claude |
+| 2024-12-29 | Added MARKET_TICKER_UPDATE event, MarketTickerEvent payload (Section 5.2) | Claude |
+| 2024-12-29 | Updated architecture diagram with new components (ticker WS, price syncer) | Claude |
 | 2024-12-29 | Added StateContainer market prices state (MarketPriceData fields and methods) | Claude |
-| 2024-12-29 | Added data flow traces: Section 6.7 YES 80-90c Strategy, Section 6.8 Market Ticker Updates | Claude |
+| 2024-12-29 | Added data flow traces: Section 6.6 Market Ticker Updates | Claude |
 | 2024-12-29 | Updated startup/shutdown sequences with new component lifecycle | Claude |
 | 2024-12-29 | Added TradingStateSyncer service for reliable periodic trading state sync (20s interval) | Claude |
 | 2024-12-29 | WebSocket performance: Added message coalescing (100ms batching), zombie connection detection (60s timeout) | Claude |
@@ -1981,24 +1753,28 @@ The system supports **degraded mode** when the orderbook WebSocket is unavailabl
 | 2025-01-01 | Added RLMService for Reverse Line Movement strategy (+17.38% validated edge) | Claude |
 | 2025-01-01 | Added 5 new events: MARKET_LIFECYCLE_EVENT, MARKET_TRACKED, MARKET_DETERMINED, RLM_MARKET_UPDATE, RLM_TRADE_ARRIVED | Claude |
 | 2025-01-01 | Added 8 new WebSocket message types: tracked_markets, lifecycle_event, market_info_update, rlm_states_snapshot, rlm_market_state, rlm_trade_arrived, trade_processing, upcoming_markets | Claude |
-| 2025-01-01 | Added data flow traces: Section 6.9 (Lifecycle Discovery), Section 6.10 (RLM Signal Detection), Section 6.11 (API Discovery Bootstrap) | Claude |
+| 2025-01-01 | Added data flow traces: Section 6.7 (Lifecycle Discovery), Section 6.8 (RLM Signal Detection), Section 6.9 (API Discovery Bootstrap) | Claude |
 | 2025-01-01 | Added Section 7.5: Frontend WebSocket Hook (useLifecycleWebSocket.js) documentation | Claude |
 | 2025-01-01 | Updated architecture diagram with lifecycle components (RLMService, EventLifecycleSvc, TrackedMarketsState, etc.) | Claude |
 | 2025-01-01 | Added LIFECYCLE_* and RLM_* environment variables | Claude |
+| 2025-01-03 | **Major cleanup: Removed deprecated trading strategies** | Claude |
+| 2025-01-03 | Removed WHALE_FOLLOWER, YES_80_90, RL_MODEL, PAPER_TEST, CUSTOM strategies | Claude |
+| 2025-01-03 | Deleted whale_tracker.py (436 lines), whale_execution_service.py (700 lines), yes_80_90_service.py (693 lines) | Claude |
+| 2025-01-03 | Deleted frontend panels: WhaleQueuePanel.jsx, FollowedTradesPanel.jsx, DecisionAuditPanel.jsx | Claude |
+| 2025-01-03 | Removed WHALE_QUEUE_UPDATED event and WhaleQueueEvent data class | Claude |
+| 2025-01-03 | Removed all WHALE_* and YES8090_* environment variables | Claude |
+| 2025-01-03 | Updated strategy enum: Only HOLD and RLM_NO remain | Claude |
+| 2025-01-03 | Total cleanup: ~3,500 lines removed (backend: 2,969, frontend: 535), 6 files deleted | Claude |
 
 ## 10. Cleanup Recommendations
 
-Identified architectural issues and cleanup opportunities from Dec 2024 review:
+Identified architectural issues and cleanup opportunities:
 
 ### 10.1 High Priority
 
 1. **MarketPriceSyncer Direct State Access** (`services/market_price_syncer.py:185-191`)
    - **Issue**: Directly accesses `_market_prices` and `_market_prices_version` private attributes
    - **Fix**: Use `update_market_price()` method or add `batch_update_market_prices()` method
-
-2. **WhaleExecutionService Memory Growth** (`services/whale_execution_service.py`)
-   - **Issue**: `_evaluated_whale_ids` set grows unbounded over session lifetime
-   - **Fix**: Implement periodic cleanup or use TTL-based cache (e.g., clear entries older than 1 hour)
 
 ### 10.2 Medium Priority
 
@@ -2010,7 +1786,7 @@ Identified architectural issues and cleanup opportunities from Dec 2024 review:
    - **Issue**: Services have different health reporting interfaces
    - **Fix**: Standardize on both `is_healthy()` and `get_health_details()` for all components
 
-3. ~~**Test Files in Main Package**~~ ✅ RESOLVED 2025-01-01
+3. ~~**Test Files in Main Package**~~ RESOLVED 2025-01-01
    - **Files**: Moved to `backend/tests/traderv3/`
 
 ### 10.3 Low Priority
@@ -2019,11 +1795,7 @@ Identified architectural issues and cleanup opportunities from Dec 2024 review:
    - All package `__init__.py` files are empty
    - **Fix**: Consider adding `__all__` exports for better IDE support
 
-2. **Frontend Duplicate Components**
-   - **Issue**: Multiple WhaleQueuePanel implementations in frontend
-   - **Fix**: Consolidate to single implementation
-
 ### 10.4 Documentation Notes
 
-1. **SYSTEM_ACTIVITY Event Sources**: Updated to include MarketPriceSyncer and Yes8090Service
+1. **SYSTEM_ACTIVITY Event Sources**: Updated to include MarketPriceSyncer and RLMService
 2. **Event Catalog Accuracy**: SETTLEMENT is synced via REST, not real-time events (clarified in docs)

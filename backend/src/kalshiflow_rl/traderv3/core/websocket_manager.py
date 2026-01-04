@@ -26,14 +26,12 @@ class DateTimeEncoder(json.JSONEncoder):
             return obj.isoformat()
         return super().default(obj)
 
-from .event_bus import EventBus, EventType, StateTransitionEvent, TraderStatusEvent, WhaleQueueEvent, RLMMarketUpdateEvent, RLMTradeArrivedEvent
+from .event_bus import EventBus, EventType, StateTransitionEvent, TraderStatusEvent, RLMMarketUpdateEvent, RLMTradeArrivedEvent
 
 # Import for type hints only to avoid circular imports
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
-    from ..services.whale_tracker import WhaleTracker
     from ..services.trading_decision_service import TradingDecisionService
-    from ..services.whale_execution_service import WhaleExecutionService
     from ..services.rlm_service import RLMService
     from ..services.upcoming_markets_syncer import UpcomingMarketsSyncer
     from ..state.tracked_markets import TrackedMarketsState
@@ -68,21 +66,18 @@ class V3WebSocketManager:
     - Event bus integration for seamless updates
     """
     
-    def __init__(self, event_bus: Optional[EventBus] = None, state_machine=None, whale_tracker: Optional['WhaleTracker'] = None):
+    def __init__(self, event_bus: Optional[EventBus] = None, state_machine=None):
         """
         Initialize WebSocket manager.
 
         Args:
             event_bus: EventBus instance for subscribing to events
             state_machine: State machine instance for getting current state
-            whale_tracker: Optional WhaleTracker instance for sending whale queue snapshots
         """
         self._event_bus = event_bus
         self._state_machine = state_machine
-        self._whale_tracker = whale_tracker
         self._state_container: Optional['V3StateContainer'] = None
         self._trading_service: Optional['TradingDecisionService'] = None
-        self._whale_execution_service: Optional['WhaleExecutionService'] = None
         self._rlm_service: Optional['RLMService'] = None  # Set via set_rlm_service()
         self._market_price_syncer = None  # Set via set_market_price_syncer()
         self._tracked_markets_state: Optional['TrackedMarketsState'] = None  # Set via set_tracked_markets_state()
@@ -106,7 +101,7 @@ class V3WebSocketManager:
         self._coalesce_task: Optional[asyncio.Task] = None
         self._coalesce_interval = 0.1  # 100ms batching window
 
-        # Trade processing heartbeat (replaces whale_queue for RLM mode)
+        # Trade processing heartbeat for RLM mode
         self._trade_processing_task: Optional[asyncio.Task] = None
         self._trade_processing_interval = 1.5  # 1.5 seconds
 
@@ -116,45 +111,15 @@ class V3WebSocketManager:
 
         logger.info("TRADER V3 WebSocket Manager initialized")
 
-    def set_whale_tracker(self, whale_tracker: 'WhaleTracker') -> None:
-        """
-        Set the whale tracker instance for sending snapshots to new clients.
-
-        This allows whale_tracker to be set after initialization since it's
-        created later in the startup sequence.
-
-        Args:
-            whale_tracker: WhaleTracker instance
-        """
-        self._whale_tracker = whale_tracker
-        logger.info("WhaleTracker set on WebSocket manager")
-
     def set_trading_service(self, trading_service: 'TradingDecisionService') -> None:
         """
-        Set the trading decision service for getting followed whale IDs.
-
-        This allows trading_service to be set after initialization since it's
-        created later in the startup sequence.
+        Set the trading decision service.
 
         Args:
             trading_service: TradingDecisionService instance
         """
         self._trading_service = trading_service
         logger.info("TradingDecisionService set on WebSocket manager")
-
-    def set_whale_execution_service(self, whale_execution_service: 'WhaleExecutionService') -> None:
-        """
-        Set the whale execution service for getting decision history.
-
-        The WhaleExecutionService is the event-driven service that actually
-        processes whales and records all decisions (followed, skipped, rate_limited).
-        Its decision history is the authoritative source for the Decision Audit panel.
-
-        Args:
-            whale_execution_service: WhaleExecutionService instance
-        """
-        self._whale_execution_service = whale_execution_service
-        logger.info("WhaleExecutionService set on WebSocket manager")
 
     def set_state_container(self, state_container: 'V3StateContainer') -> None:
         """
@@ -236,7 +201,6 @@ class V3WebSocketManager:
         if self._event_bus:
             self._event_bus.subscribe(EventType.SYSTEM_ACTIVITY, self._handle_system_activity)
             self._event_bus.subscribe(EventType.TRADER_STATUS, self._handle_trader_status)
-            self._event_bus.subscribe(EventType.WHALE_QUEUE_UPDATED, self._handle_whale_queue_update)
             # RLM (Reverse Line Movement) events
             await self._event_bus.subscribe_to_rlm_market_update(self._handle_rlm_market_update)
             await self._event_bus.subscribe_to_rlm_trade_arrived(self._handle_rlm_trade_arrived)
@@ -355,64 +319,6 @@ class V3WebSocketManager:
                     await self._send_to_client(client_id, history_batch)
                     await asyncio.sleep(0.1)  # Brief pause after history replay
 
-            # Send whale queue snapshot if whale tracker is available
-            if self._whale_tracker and client_id in self._clients:
-                try:
-                    queue_state = self._whale_tracker.get_queue_state()
-
-                    # Get followed whale data from trading service (matches broadcast format)
-                    followed_whale_ids: List[str] = []
-                    followed_whales: List[Dict] = []
-                    if self._trading_service:
-                        try:
-                            followed_whale_ids = list(self._trading_service.get_followed_whale_ids())
-                            followed_whales = self._trading_service.get_followed_whales()
-                        except Exception as e:
-                            logger.debug(f"Could not get trading service data for initial snapshot: {e}")
-
-                    # Get decision history from whale execution service (matches broadcast format)
-                    decision_history: List[Dict] = []
-                    decision_stats: Dict[str, Any] = {}
-                    if self._whale_execution_service:
-                        try:
-                            decision_history = self._whale_execution_service.get_decision_history()
-                            stats = self._whale_execution_service.get_stats()
-                            decision_stats = {
-                                "whales_detected": stats.get("whales_processed", 0),
-                                "whales_followed": stats.get("whales_followed", 0),
-                                "whales_skipped": stats.get("whales_skipped", 0),
-                                "rate_limited": stats.get("rate_limited_count", 0),
-                                "skipped_age": stats.get("skipped_age", 0),
-                                "skipped_position": stats.get("skipped_position", 0),
-                                "skipped_orders": stats.get("skipped_orders", 0),
-                                "already_followed": stats.get("already_followed", 0),
-                                "failed": stats.get("failed", 0),
-                            }
-                        except Exception as e:
-                            logger.debug(f"Could not get whale execution service data for initial snapshot: {e}")
-
-                    whale_snapshot = {
-                        "type": "whale_queue",
-                        "data": {
-                            "queue": queue_state.get("queue", []),
-                            "stats": queue_state.get("stats", {
-                                "trades_seen": 0,
-                                "trades_discarded": 0,
-                                "discard_rate_percent": 0
-                            }),
-                            # Match broadcast format - include all whale tracking fields
-                            "followed_whale_ids": followed_whale_ids,
-                            "followed_whales": followed_whales,
-                            "decision_history": decision_history,
-                            "decision_stats": decision_stats,
-                            "timestamp": time.strftime("%H:%M:%S")
-                        }
-                    }
-                    await self._send_to_client(client_id, whale_snapshot)
-                    logger.debug(f"Sent whale queue snapshot to client {client_id}: {len(queue_state.get('queue', []))} whales")
-                except Exception as e:
-                    logger.warning(f"Could not send whale queue snapshot to client {client_id}: {e}")
-
             # Send trading state snapshot immediately (don't wait for periodic broadcast)
             # Includes market_price_syncer health if available for immediate visibility.
             if self._state_container and client_id in self._clients:
@@ -499,7 +405,7 @@ class V3WebSocketManager:
         Queue message for coalesced broadcast.
 
         Critical message types are sent immediately.
-        Frequent updates (trading_state, trader_status, whale_queue) are
+        Frequent updates (trading_state, trader_status) are
         coalesced within a 100ms window to batch rapid updates.
 
         Args:
@@ -507,12 +413,12 @@ class V3WebSocketManager:
             data: Message data
         """
         # Critical types need immediate delivery - no coalescing
-        critical_types = ("state_transition", "whale_processing", "connection", "system_activity", "history_replay")
+        critical_types = ("state_transition", "connection", "system_activity", "history_replay")
         if message_type in critical_types:
             await self._broadcast_immediate(message_type, data)
             return
 
-        # Coalesce frequent updates (trading_state, trader_status, whale_queue)
+        # Coalesce frequent updates (trading_state, trader_status)
         # Later messages of the same type replace earlier ones within the window
         self._pending_messages[message_type] = data
 
@@ -578,11 +484,6 @@ class V3WebSocketManager:
     async def _handle_system_activity(self, event) -> None:
         """Handle unified system activity events from event bus."""
         logger.debug(f"Handling system activity: {event.activity_type} - {event.message}")
-
-        # Handle whale_processing events specially for frontend animation
-        if event.activity_type == "whale_processing":
-            await self._handle_whale_processing(event)
-            return
 
         # Forward lifecycle events to Activity Feed
         if event.activity_type == "lifecycle_event":
@@ -668,104 +569,6 @@ class V3WebSocketManager:
             "metrics": event.metrics
         })
 
-    async def _handle_whale_queue_update(self, event: WhaleQueueEvent) -> None:
-        """
-        Handle whale queue update events from event bus.
-
-        Broadcasts whale queue state to all connected frontend clients,
-        enabling the Follow the Whale feature in the V3 console.
-
-        Includes:
-        - Current whale queue
-        - Followed whales and IDs
-        - Decision history (why whales were followed/skipped)
-        - Decision statistics
-
-        Args:
-            event: WhaleQueueEvent containing queue contents and stats
-        """
-        logger.debug(f"Handling whale queue update: {len(event.queue)} whales")
-
-        # Calculate discard rate for stats
-        discard_rate = 0.0
-        if event.stats and event.stats.get("trades_seen", 0) > 0:
-            discard_rate = (event.stats.get("trades_discarded", 0) / event.stats["trades_seen"]) * 100
-
-        # Get followed whale IDs and full data from trading service
-        # Get decision history from whale execution service (authoritative source)
-        followed_whale_ids: List[str] = []
-        followed_whales: List[Dict] = []
-        decision_history: List[Dict] = []
-        decision_stats: Dict[str, Any] = {}
-
-        # Get followed whales from TradingDecisionService (tracks successful follows)
-        if self._trading_service:
-            try:
-                followed_whale_ids = list(self._trading_service.get_followed_whale_ids())
-                followed_whales = self._trading_service.get_followed_whales()
-            except Exception as e:
-                logger.debug(f"Could not get trading service data: {e}")
-
-        # Get decision history from WhaleExecutionService (authoritative source for all decisions)
-        # This includes followed, skipped, rate_limited - everything the Decision Audit needs
-        if self._whale_execution_service:
-            try:
-                decision_history = self._whale_execution_service.get_decision_history()
-                stats = self._whale_execution_service.get_stats()
-                decision_stats = {
-                    "whales_detected": stats.get("whales_processed", 0),
-                    "whales_followed": stats.get("whales_followed", 0),
-                    "whales_skipped": stats.get("whales_skipped", 0),
-                    "rate_limited": stats.get("rate_limited_count", 0),
-                    # Categorized skip reasons for Decision Audit panel breakdown
-                    "skipped_age": stats.get("skipped_age", 0),
-                    "skipped_position": stats.get("skipped_position", 0),
-                    "skipped_orders": stats.get("skipped_orders", 0),
-                    "already_followed": stats.get("already_followed", 0),
-                    "failed": stats.get("failed", 0),
-                }
-            except Exception as e:
-                logger.debug(f"Could not get whale execution service data: {e}")
-
-        # Format message for frontend
-        whale_data = {
-            "queue": event.queue,  # Already serialized by WhaleTracker
-            "stats": {
-                "trades_seen": event.stats.get("trades_seen", 0) if event.stats else 0,
-                "trades_discarded": event.stats.get("trades_discarded", 0) if event.stats else 0,
-                "discard_rate_percent": round(discard_rate, 1),
-            },
-            "followed_whale_ids": followed_whale_ids,  # IDs of whales we have followed
-            "followed_whales": followed_whales,  # Full data for followed trades section
-            "decision_history": decision_history,  # Recent decisions with reasons
-            "decision_stats": decision_stats,  # Aggregate stats (detected/followed/skipped)
-            "timestamp": time.strftime("%H:%M:%S", time.localtime(event.timestamp)),
-        }
-
-        await self.broadcast_message("whale_queue", whale_data)
-
-    async def _handle_whale_processing(self, event) -> None:
-        """
-        Handle whale processing events for frontend animation.
-
-        Broadcasts processing state to all clients so they can show
-        a subtle glow/pulse animation on the whale row being processed.
-
-        Args:
-            event: SystemActivityEvent with activity_type="whale_processing"
-        """
-        metadata = event.metadata or {}
-        whale_id = metadata.get("whale_id", "")
-        status = metadata.get("status", "")  # "processing" or "complete"
-        action = metadata.get("action", "")  # "followed", "skipped_*", etc.
-
-        await self.broadcast_message("whale_processing", {
-            "whale_id": whale_id,
-            "status": status,
-            "action": action,
-            "timestamp": time.strftime("%H:%M:%S", time.localtime(event.timestamp)),
-        })
-
     async def _handle_rlm_market_update(self, event: RLMMarketUpdateEvent) -> None:
         """
         Handle RLM market state update events from event bus.
@@ -800,7 +603,7 @@ class V3WebSocketManager:
             "timestamp": time.strftime("%H:%M:%S", time.localtime(event.timestamp)),
         })
 
-    # ========== Trade Processing Heartbeat (replaces whale_queue for RLM) ==========
+    # ========== Trade Processing Heartbeat for RLM ==========
 
     async def _trade_processing_heartbeat(self) -> None:
         """
@@ -823,7 +626,7 @@ class V3WebSocketManager:
         Broadcast trade processing state to all connected clients.
 
         Sends recent tracked trades, stats, and decision breakdown.
-        Replaces the old whale_queue broadcast for RLM mode.
+        Provides trade processing stats for RLM mode.
         """
         if not self._rlm_service:
             return

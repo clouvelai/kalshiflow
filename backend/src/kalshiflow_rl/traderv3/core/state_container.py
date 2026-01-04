@@ -53,7 +53,6 @@ from enum import Enum
 
 from ..state.trader_state import TraderState, StateChange, SessionPnLState
 from .state_machine import TraderState as V3State  # State machine states
-from ..services.whale_tracker import BigBet
 from ..state.trading_attachment import (
     TradingAttachment,
     TrackedMarketOrder,
@@ -123,28 +122,6 @@ class ComponentHealth:
             self.error_count += 1
         elif healthy:
             self.error_count = 0  # Reset on healthy status
-
-
-@dataclass
-class WhaleQueueState:
-    """
-    State for the whale tracker queue.
-
-    Tracks the current state of whale detection, including the queue
-    of big bets and statistics about trade filtering.
-
-    Attributes:
-        queue: List of BigBet objects in the whale queue
-        trades_seen: Total number of public trades processed
-        trades_discarded: Number of trades that didn't meet threshold
-        window_minutes: Sliding window duration
-        last_update: Timestamp of last queue update
-    """
-    queue: List[BigBet] = field(default_factory=list)
-    trades_seen: int = 0
-    trades_discarded: int = 0
-    window_minutes: int = 5
-    last_update: float = 0.0
 
 
 @dataclass
@@ -252,10 +229,6 @@ class V3StateContainer:
         self._session_settlements_count: int = 0  # Positions settled this session
         self._session_total_fees_paid: int = 0   # Total fees in cents this session
         self._session_orders_cancelled_ttl: int = 0  # Orders cancelled due to TTL expiry
-
-        # Whale queue state - data from whale tracker
-        self._whale_state: Optional[WhaleQueueState] = None
-        self._whale_state_version = 0  # Increment on each whale queue update
 
         # Market prices state - real-time prices from ticker WebSocket
         # Separate from position data to avoid overwriting position values
@@ -921,94 +894,6 @@ class V3StateContainer:
             for pos in self._trading_state.positions.values()
         )
 
-    # ======== Whale Queue State Management ========
-
-    def update_whale_queue(self, state: WhaleQueueState) -> bool:
-        """
-        Update whale queue state from whale tracker.
-
-        This is called by the whale tracker when the queue changes,
-        either due to new whales being detected or old ones being pruned.
-
-        Args:
-            state: New whale queue state with queue contents and stats
-
-        Returns:
-            True if state was updated (version incremented),
-            False if state is identical to current
-
-        Side Effects:
-            - Updates _whale_state
-            - Increments _whale_state_version
-            - Updates _last_update timestamp
-        """
-        # Always update whale state (queue changes are meaningful)
-        self._whale_state = state
-        self._whale_state_version += 1
-        self._last_update = time.time()
-
-        logger.debug(
-            f"Whale queue updated: {len(state.queue)} whales, "
-            f"trades_seen={state.trades_seen}, discarded={state.trades_discarded}"
-        )
-
-        return True
-
-    @property
-    def whale_state(self) -> Optional[WhaleQueueState]:
-        """Get current whale queue state."""
-        return self._whale_state
-
-    @property
-    def whale_state_version(self) -> int:
-        """Get whale state version (increments on change)."""
-        return self._whale_state_version
-
-    def get_whale_summary(self) -> Dict[str, Any]:
-        """
-        Get whale queue summary for broadcasting.
-
-        Provides a clean summary of whale queue state suitable for
-        WebSocket broadcast to frontend clients.
-
-        Returns:
-            Dict containing:
-                - has_state: Whether whale state exists
-                - version: State version number
-                - queue: List of whale bets (serialized)
-                - stats: Queue statistics
-        """
-        if not self._whale_state:
-            return {
-                "has_state": False,
-                "version": 0
-            }
-
-        state = self._whale_state
-        now_ms = int(time.time() * 1000)
-
-        # Serialize queue for transport
-        queue_data = [bet.to_dict(now_ms) for bet in state.queue]
-
-        # Calculate discard rate
-        discard_rate = 0.0
-        if state.trades_seen > 0:
-            discard_rate = (state.trades_discarded / state.trades_seen) * 100
-
-        return {
-            "has_state": True,
-            "version": self._whale_state_version,
-            "queue": queue_data,
-            "stats": {
-                "trades_seen": state.trades_seen,
-                "trades_discarded": state.trades_discarded,
-                "discard_rate_percent": round(discard_rate, 1),
-                "queue_size": len(state.queue),
-                "window_minutes": state.window_minutes,
-                "last_update": state.last_update,
-            }
-        }
-
     # ======== Market Prices State Management ========
 
     def update_market_price(self, ticker: str, price_data: Dict[str, Any]) -> bool:
@@ -1648,7 +1533,7 @@ class V3StateContainer:
             Empty dict if no components are degraded.
 
         Example:
-            {"orderbook_integration": "connection lost", "whale_tracker": "unavailable"}
+            {"orderbook_integration": "connection lost", "trades_integration": "unavailable"}
         """
         return self._machine_state_metadata.get("degraded_components", {}).copy()
 
@@ -1752,7 +1637,6 @@ class V3StateContainer:
         """
         return {
             "trading": self.get_trading_summary(),
-            "whale": self.get_whale_summary(),
             "health": self.get_health_summary(),
             "machine": {
                 "state": self._machine_state.value if self._machine_state else None,
@@ -1763,8 +1647,7 @@ class V3StateContainer:
                 "created_at": self._created_at,
                 "last_update": self._last_update,
                 "uptime": time.time() - self._created_at,
-                "trading_version": self._trading_state_version,
-                "whale_version": self._whale_state_version
+                "trading_version": self._trading_state_version
             }
         }
     
@@ -1971,9 +1854,6 @@ class V3StateContainer:
         self._session_settlements_count = 0
         self._session_total_fees_paid = 0
         self._session_orders_cancelled_ttl = 0
-
-        self._whale_state = None
-        self._whale_state_version = 0
 
         self._trading_attachments.clear()
         self._trading_attachments_version = 0
