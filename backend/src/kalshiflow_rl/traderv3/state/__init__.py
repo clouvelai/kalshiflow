@@ -2,6 +2,7 @@
 
 from .trader_state import TraderState, StateChange
 from .tracked_markets import TrackedMarketsState, TrackedMarket, MarketStatus
+from .session_pnl_tracker import SessionPnLTracker
 
 __all__ = [
     "TraderState",
@@ -9,4 +10,5 @@ __all__ = [
     "TrackedMarketsState",
     "TrackedMarket",
     "MarketStatus",
+    "SessionPnLTracker",
 ]

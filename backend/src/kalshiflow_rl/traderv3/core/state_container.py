@@ -51,7 +51,8 @@ from typing import Dict, Any, Optional, Callable, Awaitable, TypeVar, List
 from dataclasses import dataclass, field
 from enum import Enum
 
-from ..state.trader_state import TraderState, StateChange, SessionPnLState
+from ..state.trader_state import TraderState, StateChange
+from ..state.session_pnl_tracker import SessionPnLTracker
 from .state_machine import TraderState as V3State  # State machine states
 from ..state.trading_attachment import (
     TradingAttachment,
@@ -209,8 +210,8 @@ class V3StateContainer:
         self._last_state_change: Optional[StateChange] = None
         self._trading_state_version = 0  # Increment on each update for change detection
 
-        # Session P&L state - tracks P&L from session start
-        self._session_pnl_state: Optional[SessionPnLState] = None
+        # Session P&L tracker - handles all session P&L and cash flow tracking
+        self._session_pnl_tracker = SessionPnLTracker()
 
         # Session-updated tickers - tracks which positions were updated this session
         # via real-time WebSocket (not from initial sync)
@@ -220,15 +221,6 @@ class V3StateContainer:
         # Positions are captured here before being removed from active positions
         self._settled_positions: deque = deque(maxlen=500)
         self._total_settlements_count = 0
-
-        # Session cash flow tracking (resets each trader startup)
-        # Tracks only activity during THIS session, not existing positions
-        self._session_cash_invested: int = 0      # Cents spent on orders this session
-        self._session_cash_received: int = 0      # Cents received from settlements this session
-        self._session_orders_count: int = 0       # Orders placed this session
-        self._session_settlements_count: int = 0  # Positions settled this session
-        self._session_total_fees_paid: int = 0   # Total fees in cents this session
-        self._session_orders_cancelled_ttl: int = 0  # Orders cancelled due to TTL expiry
 
         # Market prices state - real-time prices from ticker WebSocket
         # Separate from position data to avoid overwriting position values
@@ -476,17 +468,15 @@ class V3StateContainer:
                     # Track session cash flow: cash received = cost basis + realized P&L
                     # This represents the actual payout from the settlement
                     cash_received = total_traded + realized_pnl
-                    self._session_cash_received += max(0, cash_received)  # Can't receive negative cash
-                    self._session_settlements_count += 1
-
-                    # Track session fees paid
-                    self._session_total_fees_paid += fees_paid
+                    self._session_pnl_tracker.record_settlement(
+                        cash_received=cash_received,
+                        fees=fees_paid
+                    )
 
                     del self._trading_state.positions[ticker]
                     logger.info(
                         f"Position closed: {ticker}, "
-                        f"realized_pnl={realized_pnl}¢, fees={fees_paid}¢, cash_received={cash_received}¢ | "
-                        f"Session totals: received={self._session_cash_received}¢, fees={self._session_total_fees_paid}¢, settlements={self._session_settlements_count}"
+                        f"realized_pnl={realized_pnl}c, fees={fees_paid}c, cash_received={cash_received}c"
                     )
             else:
                 # Update or add position - MERGE to preserve fields not in WebSocket update
@@ -684,20 +674,12 @@ class V3StateContainer:
         summary["positions_details"] = positions_details
 
         # Add session P&L if initialized (includes realized/unrealized breakdown)
-        if self._session_pnl_state and self._trading_state:
-            pnl = self._session_pnl_state.compute_pnl(
+        if self._session_pnl_tracker.is_initialized and self._trading_state:
+            summary["pnl"] = self._session_pnl_tracker.get_pnl_summary(
                 self._trading_state.balance,
                 self._trading_state.portfolio_value,
                 positions_details
             )
-            # Add session cash flow metrics
-            pnl["session_cash_invested"] = self._session_cash_invested
-            pnl["session_cash_received"] = self._session_cash_received
-            pnl["session_orders_count"] = self._session_orders_count
-            pnl["session_settlements_count"] = self._session_settlements_count
-            pnl["session_total_fees_paid"] = self._session_total_fees_paid
-            pnl["session_orders_cancelled_ttl"] = self._session_orders_cancelled_ttl
-            summary["pnl"] = pnl
 
         # Add session-updated positions info
         summary["session_updates"] = {
@@ -734,17 +716,7 @@ class V3StateContainer:
             This is a one-time initialization per session. Subsequent calls
             are ignored to preserve the original session start state.
         """
-        if self._session_pnl_state is None:
-            self._session_pnl_state = SessionPnLState(
-                session_start_time=time.time(),
-                starting_balance=balance,
-                starting_portfolio_value=portfolio_value
-            )
-            logger.info(
-                f"Session P&L initialized: starting equity "
-                f"{balance + portfolio_value} cents "
-                f"(balance={balance}, portfolio={portfolio_value})"
-            )
+        self._session_pnl_tracker.initialize(balance, portfolio_value)
 
     def record_order_fill(self, cost_cents: int, contracts: int = 1) -> None:
         """
@@ -754,23 +726,16 @@ class V3StateContainer:
         to track session cash flow metrics.
 
         Args:
-            cost_cents: Total cost of the order in cents (price × contracts)
+            cost_cents: Total cost of the order in cents (price x contracts)
             contracts: Number of contracts filled (for logging)
 
         Side Effects:
-            - Increments _session_cash_invested by cost_cents
-            - Increments _session_orders_count by 1
+            - Delegates to SessionPnLTracker.record_order_fill()
             - Increments _trading_state_version for change detection
         """
-        self._session_cash_invested += cost_cents
-        self._session_orders_count += 1
+        self._session_pnl_tracker.record_order_fill(cost_cents, contracts)
         self._trading_state_version += 1
         self._last_update = time.time()
-
-        logger.info(
-            f"Order fill recorded: {contracts} contracts @ {cost_cents}¢ | "
-            f"Session totals: invested={self._session_cash_invested}¢, orders={self._session_orders_count}"
-        )
 
     def record_ttl_cancellation(self, count: int) -> None:
         """
@@ -783,17 +748,12 @@ class V3StateContainer:
             count: Number of orders cancelled
 
         Side Effects:
-            - Increments _session_orders_cancelled_ttl by count
+            - Delegates to SessionPnLTracker.record_ttl_cancellation()
             - Increments _trading_state_version for change detection
         """
-        self._session_orders_cancelled_ttl += count
+        self._session_pnl_tracker.record_ttl_cancellation(count)
         self._trading_state_version += 1
         self._last_update = time.time()
-
-        logger.info(
-            f"TTL cancellation recorded: {count} orders | "
-            f"Session total: {self._session_orders_cancelled_ttl}"
-        )
 
     def _format_position_details(self) -> List[Dict[str, Any]]:
         """
@@ -1846,14 +1806,8 @@ class V3StateContainer:
         self._last_state_change = None
         self._trading_state_version = 0
 
-        self._session_pnl_state = None
+        self._session_pnl_tracker.reset()
         self._session_updated_tickers = set()
-        self._session_cash_invested = 0
-        self._session_cash_received = 0
-        self._session_orders_count = 0
-        self._session_settlements_count = 0
-        self._session_total_fees_paid = 0
-        self._session_orders_cancelled_ttl = 0
 
         self._trading_attachments.clear()
         self._trading_attachments_version = 0
