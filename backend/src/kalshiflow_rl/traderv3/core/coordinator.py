@@ -42,6 +42,7 @@ from ..services.yes_80_90_service import Yes8090Service
 from ..services.rlm_service import RLMService
 from ..services.tmo_fetcher import TrueMarketOpenFetcher
 from ..services.listener_bootstrap_service import ListenerBootstrapService
+from ..services.order_cleanup_service import OrderCleanupService
 
 logger = logging.getLogger("kalshiflow_rl.traderv3.core.coordinator")
 
@@ -322,7 +323,11 @@ class V3Coordinator:
 
             # Cleanup orphaned orders on startup if configured
             if self._config.cleanup_on_startup:
-                await self._cleanup_orphaned_orders()
+                order_cleanup = OrderCleanupService(
+                    trading_client=self._trading_client_integration,
+                    event_bus=self._event_bus,
+                )
+                await order_cleanup.cleanup_orphaned_orders()
 
             # Connect real-time position listener (non-blocking, falls back to polling on failure)
             await self._connect_position_listener()
@@ -738,95 +743,6 @@ class V3Coordinator:
                 metadata={"degraded": True, "severity": "warning"}
             )
     
-    async def _cleanup_orphaned_orders(self) -> None:
-        """
-        Cleanup previous order groups on startup.
-
-        This is called during startup to reset any existing order groups
-        from previous sessions, ensuring a clean slate for the new session.
-        The current session's order group (created in _connect_trading_client)
-        is preserved.
-        """
-        if not self._trading_client_integration:
-            return
-
-        logger.info("Cleaning up previous order groups...")
-
-        try:
-            # Get the current order group ID (created earlier in _connect_trading_client)
-            current_order_group_id = self._trading_client_integration.get_order_group_id()
-
-            # List all order groups (API doesn't support status filter)
-            order_groups = await self._trading_client_integration.list_order_groups()
-
-            if not order_groups:
-                logger.info("No previous order groups to clean up")
-                return
-
-            deleted_count = 0
-            skip_count = 0
-            error_count = 0
-
-            for group in order_groups:
-                # API returns "id" field, not "order_group_id"
-                group_id = group.get("id", "")
-                if not group_id:
-                    continue
-
-                # Skip the current session's order group
-                if group_id == current_order_group_id:
-                    logger.debug(f"Skipping current order group: {group_id[:8]}...")
-                    skip_count += 1
-                    continue
-
-                # Reset order group first (cancels all resting orders), then delete
-                try:
-                    # Reset cancels all resting orders in the group
-                    await self._trading_client_integration.reset_order_group_by_id(group_id)
-                    logger.info(f"Reset old order group (cancelled orders): {group_id[:8]}...")
-
-                    # Now delete the empty group
-                    success = await self._trading_client_integration.delete_order_group_by_id(group_id)
-                    if success:
-                        deleted_count += 1
-                        logger.info(f"Deleted previous order group: {group_id[:8]}...")
-                    else:
-                        error_count += 1
-                except Exception as e:
-                    logger.warning(f"Failed to delete order group {group_id[:8]}...: {e}")
-                    error_count += 1
-
-            # Always emit cleanup status for visibility
-            cleanup_message = (
-                f"Startup cleanup: {deleted_count} order groups deleted, {skip_count} preserved"
-                if deleted_count > 0 or error_count > 0
-                else "Startup cleanup: No old order groups to clean"
-            )
-            await self._event_bus.emit_system_activity(
-                activity_type="cleanup",
-                message=cleanup_message,
-                metadata={
-                    "deleted_count": deleted_count,
-                    "skip_count": skip_count,
-                    "error_count": error_count,
-                    "total_groups": len(order_groups),
-                    "severity": "info" if error_count == 0 else "warning"
-                }
-            )
-            logger.info(
-                f"Startup cleanup complete: {deleted_count} order groups deleted, "
-                f"{skip_count} preserved, {error_count} errors"
-            )
-
-        except Exception as e:
-            # Don't fail startup on cleanup errors - just log and continue
-            logger.warning(f"Order group cleanup failed (non-critical): {e}")
-            await self._event_bus.emit_system_activity(
-                activity_type="cleanup",
-                message=f"Startup cleanup failed: {str(e)}",
-                metadata={"error": str(e), "severity": "warning"}
-            )
-
     async def _connect_position_listener(self) -> None:
         """Connect to real-time position updates via WebSocket."""
         if not self._trading_client_integration:
