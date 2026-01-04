@@ -582,13 +582,15 @@ class V3Coordinator:
                 )
                 logger.info("TrueMarketOpenFetcher initialized for candlestick-based price tracking")
 
-            # 11. Start TrackedMarketsSyncer (for REST price/volume updates)
+            # 11. Start TrackedMarketsSyncer (for REST price/volume updates + dormant detection)
             self._lifecycle_syncer = TrackedMarketsSyncer(
                 trading_client=self._trading_client_integration,
                 tracked_markets_state=self._tracked_markets_state,
                 event_bus=self._event_bus,
                 sync_interval=self._config.lifecycle_sync_interval,
                 on_market_closed=self._orderbook_integration.unsubscribe_market,
+                config=self._config,
+                state_container=self._state_container,
             )
             await self._lifecycle_syncer.start()
 

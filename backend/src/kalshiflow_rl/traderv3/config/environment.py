@@ -99,6 +99,12 @@ class V3Config:
     discovery_min_hours_to_settlement: float = 4.0  # Skip markets closing <4 hours (need time for RLM pattern)
     discovery_max_days_to_settlement: int = 30  # Skip markets settling >30 days out (capital efficiency)
 
+    # Dormant Market Detection Configuration
+    # Automatically unsubscribe markets with zero trading activity to free subscription slots
+    dormant_detection_enabled: bool = True  # Enable/disable dormant market cleanup
+    dormant_volume_threshold: int = 0  # volume_24h <= this is "dormant" (default 0 = no activity)
+    dormant_grace_period_hours: float = 1.0  # Minimum hours tracked before considering dormant
+
     # State Machine Configuration
     sync_duration: float = 10.0  # seconds for Kalshi data sync
     health_check_interval: float = 5.0  # seconds
@@ -234,6 +240,12 @@ class V3Config:
         discovery_min_hours_to_settlement = float(os.environ.get("DISCOVERY_MIN_HOURS_TO_SETTLEMENT", "4.0"))
         discovery_max_days_to_settlement = int(os.environ.get("DISCOVERY_MAX_DAYS_TO_SETTLEMENT", "30"))
 
+        # Dormant Market Detection configuration
+        # Automatically unsubscribe markets with zero 24h volume to free slots
+        dormant_detection_enabled = os.environ.get("DORMANT_DETECTION_ENABLED", "true").lower() == "true"
+        dormant_volume_threshold = int(os.environ.get("DORMANT_VOLUME_THRESHOLD", "0"))
+        dormant_grace_period_hours = float(os.environ.get("DORMANT_GRACE_PERIOD_HOURS", "1.0"))
+
         sync_duration = float(os.environ.get("V3_SYNC_DURATION", os.environ.get("V3_CALIBRATION_DURATION", "10.0")))
         health_check_interval = float(os.environ.get("V3_HEALTH_CHECK_INTERVAL", "5.0"))
         error_recovery_delay = float(os.environ.get("V3_ERROR_RECOVERY_DELAY", "30.0"))
@@ -286,6 +298,9 @@ class V3Config:
             api_discovery_batch_size=api_discovery_batch_size,
             discovery_min_hours_to_settlement=discovery_min_hours_to_settlement,
             discovery_max_days_to_settlement=discovery_max_days_to_settlement,
+            dormant_detection_enabled=dormant_detection_enabled,
+            dormant_volume_threshold=dormant_volume_threshold,
+            dormant_grace_period_hours=dormant_grace_period_hours,
             sync_duration=sync_duration,
             health_check_interval=health_check_interval,
             error_recovery_delay=error_recovery_delay,
@@ -309,6 +324,10 @@ class V3Config:
                 logger.info(f"    - Time filter: {discovery_min_hours_to_settlement}h to {discovery_max_days_to_settlement}d (capital efficiency)")
             else:
                 logger.info(f"    - API discovery: DISABLED")
+            if dormant_detection_enabled:
+                logger.info(f"    - Dormant detection: ENABLED (volume<={dormant_volume_threshold}, grace={dormant_grace_period_hours}h)")
+            else:
+                logger.info(f"    - Dormant detection: DISABLED")
         elif market_tickers:
             logger.info(f"  - Markets: {', '.join(market_tickers[:3])}{'...' if len(market_tickers) > 3 else ''} ({len(market_tickers)} total)")
         logger.info(f"  - Max markets: {max_markets}")

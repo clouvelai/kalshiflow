@@ -18,6 +18,8 @@ if TYPE_CHECKING:
     from ..clients.trading_client_integration import V3TradingClientIntegration
     from ..state.tracked_markets import TrackedMarketsState
     from ..core.event_bus import EventBus
+    from ..core.state_container import StateContainer
+    from ..config.environment import V3Config
 
 logger = logging.getLogger("kalshiflow_rl.traderv3.services.tracked_markets_syncer")
 
@@ -41,7 +43,9 @@ class TrackedMarketsSyncer:
         tracked_markets_state: 'TrackedMarketsState',
         event_bus: 'EventBus',
         sync_interval: float = 30.0,
-        on_market_closed: Optional[Callable[[str], Awaitable[None]]] = None
+        on_market_closed: Optional[Callable[[str], Awaitable[None]]] = None,
+        config: Optional['V3Config'] = None,
+        state_container: Optional['StateContainer'] = None,
     ):
         """
         Initialize tracked markets syncer.
@@ -52,12 +56,16 @@ class TrackedMarketsSyncer:
             event_bus: Event bus for system activity events
             sync_interval: Seconds between periodic syncs (default 30)
             on_market_closed: Callback when a market is detected as closed/settled via API
+            config: V3Config for dormant detection settings
+            state_container: StateContainer for position checking (dormant detection)
         """
         self._client = trading_client
         self._state = tracked_markets_state
         self._event_bus = event_bus
         self._sync_interval = sync_interval
         self._on_market_closed = on_market_closed
+        self._config = config
+        self._state_container = state_container
 
         # Syncer state
         self._sync_task: Optional[asyncio.Task] = None
@@ -70,6 +78,9 @@ class TrackedMarketsSyncer:
         self._markets_synced: int = 0
         self._sync_errors: int = 0
         self._last_error: Optional[str] = None
+
+        # Dormant detection metrics
+        self._dormant_unsubscribed_count: int = 0
 
         logger.info(f"TrackedMarketsSyncer initialized (sync_interval={sync_interval}s)")
 
@@ -152,6 +163,7 @@ class TrackedMarketsSyncer:
 
             synced_count = 0
             closed_count = 0
+            dormant_count = 0
             now = time.time()
 
             for market in markets:
@@ -199,6 +211,7 @@ class TrackedMarketsSyncer:
                     ticker,
                     price=market.get("last_price", 0),
                     volume=market.get("volume", 0),
+                    volume_24h=market.get("volume_24h", 0),
                     open_interest=market.get("open_interest", 0),
                     yes_bid=market.get("yes_bid", 0),
                     yes_ask=market.get("yes_ask", 0),
@@ -207,14 +220,20 @@ class TrackedMarketsSyncer:
                 if updated:
                     synced_count += 1
 
+                # Check for dormant markets (zero 24h volume)
+                if await self._check_dormant_market(ticker, market):
+                    dormant_count += 1
+                    continue  # Skip further processing for this market
+
             # Update health metrics
             self._last_sync_time = now
             self._sync_count += 1
             self._markets_synced = synced_count
 
             closed_msg = f", {closed_count} closed" if closed_count > 0 else ""
+            dormant_msg = f", {dormant_count} dormant" if dormant_count > 0 else ""
             logger.info(
-                f"Tracked markets sync complete: {synced_count}/{len(tickers)} markets{closed_msg} "
+                f"Tracked markets sync complete: {synced_count}/{len(tickers)} markets{closed_msg}{dormant_msg} "
                 f"(sync #{self._sync_count})"
             )
 
@@ -248,6 +267,9 @@ class TrackedMarketsSyncer:
         now = time.time()
         uptime = now - self._started_at if self._started_at else 0
 
+        # Dormant detection config info
+        dormant_enabled = self._config.dormant_detection_enabled if self._config else False
+
         return {
             "running": self._running,
             "uptime_seconds": uptime,
@@ -258,6 +280,8 @@ class TrackedMarketsSyncer:
             "sync_errors": self._sync_errors,
             "last_error": self._last_error,
             "sync_interval": self._sync_interval,
+            "dormant_detection_enabled": dormant_enabled,
+            "dormant_unsubscribed_count": self._dormant_unsubscribed_count,
             "healthy": self._running and (
                 self._last_sync_time is None or
                 (now - self._last_sync_time) < self._sync_interval * 3
@@ -291,3 +315,92 @@ class TrackedMarketsSyncer:
     def last_sync_time(self) -> Optional[float]:
         """Get timestamp of last successful sync."""
         return self._last_sync_time
+
+    @property
+    def dormant_unsubscribed_count(self) -> int:
+        """Get count of markets unsubscribed due to dormancy."""
+        return self._dormant_unsubscribed_count
+
+    # ======== Dormant Market Detection ========
+
+    async def _check_dormant_market(self, ticker: str, market_data: Dict[str, Any]) -> bool:
+        """
+        Check if a market is dormant and should be unsubscribed.
+
+        Dormant markets have zero 24h trading volume and waste subscription slots.
+        This method detects and cleans up dormant markets to free capacity.
+
+        Args:
+            ticker: Market ticker
+            market_data: Market data from REST API (includes volume_24h)
+
+        Returns:
+            True if market was unsubscribed as dormant, False otherwise
+        """
+        # Skip if dormant detection disabled or no config
+        if not self._config or not self._config.dormant_detection_enabled:
+            return False
+
+        # Check volume threshold
+        volume_24h = market_data.get("volume_24h", 0)
+        if volume_24h > self._config.dormant_volume_threshold:
+            return False
+
+        # Check grace period - market must be tracked for minimum time
+        tracked_market = self._state.get_market(ticker)
+        if not tracked_market:
+            return False
+
+        hours_tracked = (time.time() - tracked_market.tracked_at) / 3600
+        if hours_tracked < self._config.dormant_grace_period_hours:
+            return False
+
+        # CRITICAL: Skip if market has open position
+        if self._state_container and self._state_container.trading_state:
+            positions = self._state_container.trading_state.positions or {}
+            if ticker in positions:
+                logger.debug(f"Skipping dormant cleanup for {ticker}: has open position")
+                return False
+
+            # Also check for resting orders
+            orders = self._state_container.trading_state.orders or {}
+            for order in orders.values():
+                if order.get("ticker") == ticker:
+                    logger.debug(f"Skipping dormant cleanup for {ticker}: has resting order")
+                    return False
+
+        # Unsubscribe from orderbook
+        if self._on_market_closed:
+            try:
+                await self._on_market_closed(ticker)
+            except Exception as e:
+                logger.warning(f"Failed to unsubscribe dormant market {ticker}: {e}")
+                return False
+
+        # Remove from tracked markets state
+        await self._state.remove_market(ticker)
+
+        # Update metrics
+        self._dormant_unsubscribed_count += 1
+
+        # Emit event for Activity Feed
+        await self._event_bus.emit_system_activity(
+            activity_type="lifecycle_event",
+            message=f"Dormant market unsubscribed: {ticker}",
+            metadata={
+                "event_type": "dormant",
+                "market_ticker": ticker,
+                "action": "unsubscribed",
+                "reason": "volume_24h_zero",
+                "volume_24h": volume_24h,
+                "hours_tracked": round(hours_tracked, 1),
+                "severity": "info"
+            }
+        )
+
+        logger.info(
+            f"Dormant market cleaned up: {ticker} "
+            f"(volume_24h={volume_24h}, tracked={hours_tracked:.1f}h)"
+        )
+
+        return True

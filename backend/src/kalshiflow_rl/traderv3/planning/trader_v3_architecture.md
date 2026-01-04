@@ -715,20 +715,25 @@ The Lifecycle Discovery System enables dynamic market discovery via Kalshi's rea
 
 #### TrackedMarketsSyncer
 - **File**: `services/tracked_markets_syncer.py`
-- **Purpose**: REST API sync for tracked market info with periodic refresh (30s)
+- **Purpose**: REST API sync for tracked market info with periodic refresh (30s) and dormant market cleanup
 - **Key Methods**:
   - `start()` / `stop()` - Lifecycle management (initial sync on start)
   - `sync_market_info()` - Manual sync trigger
+  - `_check_dormant_market()` - Check if market should be unsubscribed (zero volume_24h)
   - `is_healthy()` - Check if running and last sync not stale
-  - `get_health_details()` - Get detailed health information
+  - `get_health_details()` - Get detailed health information (includes dormant metrics)
 - **Behavior**:
   - Fetches prices for active tracked markets via REST API
   - Detects closed/settled markets via API status
+  - **Dormant Detection**: Unsubscribes markets with zero 24h volume after grace period
+    - Configurable via `DORMANT_DETECTION_ENABLED`, `DORMANT_VOLUME_THRESHOLD`, `DORMANT_GRACE_PERIOD_HOURS`
+    - Skips markets with open positions or resting orders
+    - Removed markets can be re-discovered by ApiDiscoverySyncer when volume returns
   - Triggers cleanup callback on market close
   - Emits lifecycle events for Activity Feed
-- **Emits Events**: `SYSTEM_ACTIVITY` (sync and lifecycle_event types)
+- **Emits Events**: `SYSTEM_ACTIVITY` (sync, lifecycle_event, and dormant event types)
 - **Subscribes To**: None
-- **Dependencies**: V3TradingClientIntegration, TrackedMarketsState, EventBus
+- **Dependencies**: V3TradingClientIntegration, TrackedMarketsState, EventBus, V3Config (optional), StateContainer (optional)
 
 #### ApiDiscoverySyncer
 - **File**: `services/api_discovery_syncer.py`
@@ -1349,6 +1354,9 @@ Position data received from Kalshi WebSocket `market_positions` channel, convert
 | `V3_CLEANUP_ON_STARTUP` | No | `true` | Cancel orphaned orders on startup |
 | `LIFECYCLE_CATEGORIES` | No | `sports,crypto,entertainment,media_mentions` | Comma-separated category filter for discovery |
 | `LIFECYCLE_CAPACITY` | No | `50` | Maximum tracked markets |
+| `DORMANT_DETECTION_ENABLED` | No | `true` | Enable dormant market cleanup (zero 24h volume) |
+| `DORMANT_VOLUME_THRESHOLD` | No | `0` | volume_24h <= this is considered dormant |
+| `DORMANT_GRACE_PERIOD_HOURS` | No | `1.0` | Minimum hours tracked before considering dormant |
 | `RLM_YES_RATIO_THRESHOLD` | No | `0.65` | Minimum YES trade ratio for RLM signal |
 | `RLM_MIN_PRICE_DROP` | No | `2` | Minimum price drop in cents for RLM signal |
 | `RLM_MIN_TRADES` | No | `15` | Minimum trades before RLM signal evaluation |
@@ -1764,6 +1772,8 @@ The system supports **degraded mode** when the orderbook WebSocket is unavailabl
 | 2025-01-03 | Removed WHALE_QUEUE_UPDATED event and WhaleQueueEvent data class | Claude |
 | 2025-01-03 | Removed all WHALE_* and YES8090_* environment variables | Claude |
 | 2025-01-03 | Updated strategy enum: Only HOLD and RLM_NO remain | Claude |
+| 2025-01-04 | Added dormant market detection to TrackedMarketsSyncer - auto-unsubscribes markets with zero 24h volume | Claude |
+| 2025-01-04 | Added DORMANT_DETECTION_ENABLED, DORMANT_VOLUME_THRESHOLD, DORMANT_GRACE_PERIOD_HOURS env vars | Claude |
 | 2025-01-03 | Total cleanup: ~3,500 lines removed (backend: 2,969, frontend: 535), 6 files deleted | Claude |
 
 ## 10. Cleanup Recommendations
