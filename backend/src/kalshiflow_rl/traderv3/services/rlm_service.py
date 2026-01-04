@@ -30,11 +30,13 @@ from typing import Dict, Any, Optional, List, Set, TYPE_CHECKING
 from ..core.event_bus import EventBus, EventType, PublicTradeEvent, MarketDeterminedEvent, TMOFetchedEvent
 from ..core.state_machine import TraderState
 from ...data.orderbook_state import get_shared_orderbook_state
+from ..state.order_context import OrderbookContext, SpreadTier, BBODepthTier
 
 if TYPE_CHECKING:
     from ..services.trading_decision_service import TradingDecisionService, TradingDecision
     from ..core.state_container import V3StateContainer
     from ..state.tracked_markets import TrackedMarketsState
+    from ..clients.orderbook_integration import V3OrderbookIntegration
 
 logger = logging.getLogger("kalshiflow_rl.traderv3.services.rlm")
 
@@ -362,6 +364,9 @@ class RLMService:
         # Atomic counter for unique trade IDs (handles multiple trades in same millisecond)
         self._trade_counter: int = 0
 
+        # Orderbook integration for signal data (set via set_orderbook_integration)
+        self._orderbook_integration: Optional['V3OrderbookIntegration'] = None
+
         logger.info(
             f"RLMService initialized: yes_threshold={yes_threshold:.0%}, "
             f"min_trades={min_trades}, min_price_drop={min_price_drop}c, "
@@ -440,6 +445,19 @@ class RLMService:
             f"executed={self._stats['signals_executed']}, "
             f"skipped={self._stats['signals_skipped']}"
         )
+
+    def set_orderbook_integration(self, integration: 'V3OrderbookIntegration') -> None:
+        """
+        Set the orderbook integration for signal data.
+
+        This enables including live orderbook signals (imbalance ratio, spread OHLC,
+        delta count, large order count) in RLM market state broadcasts.
+
+        Args:
+            integration: V3OrderbookIntegration instance
+        """
+        self._orderbook_integration = integration
+        logger.info("OrderbookIntegration set on RLMService for signal broadcasts")
 
     async def _handle_public_trade(self, trade_event: PublicTradeEvent) -> None:
         """
@@ -541,9 +559,16 @@ class RLMService:
 
         # Emit state update (throttled to max 2/sec per market)
         if self._should_emit_state_update(market_ticker):
+            # Build state dict and include orderbook signals if available
+            state_dict = state.to_dict()
+            if self._orderbook_integration:
+                orderbook_signals = self._orderbook_integration.get_orderbook_signals(market_ticker)
+                if orderbook_signals:
+                    state_dict["orderbook_signals"] = orderbook_signals
+
             await self._event_bus.emit_rlm_market_update(
                 market_ticker=market_ticker,
-                state=state.to_dict(),
+                state=state_dict,
             )
             self._last_state_emit[market_ticker] = time.time()
 
@@ -740,8 +765,9 @@ class RLMService:
                 message=f"RLM Signal: {signal.market_ticker} YES={signal.yes_ratio:.0%} drop={signal.price_drop}c",
                 metadata={"signal_id": signal_id, "status": "processing", **signal.to_dict()}
             )
-            # Get orderbook for execution price
+            # Get orderbook for execution price using enhanced OrderbookContext
             entry_price = None
+            ob_context: Optional[OrderbookContext] = None
 
             try:
                 orderbook_state = await asyncio.wait_for(
@@ -750,60 +776,92 @@ class RLMService:
                 )
                 snapshot = await orderbook_state.get_snapshot()
 
-                # Get NO spread
-                no_asks = snapshot.get("no_asks", {})
-                no_bids = snapshot.get("no_bids", {})
+                # Create enhanced OrderbookContext from snapshot
+                ob_context = OrderbookContext.from_orderbook_snapshot(snapshot)
 
-                if no_asks and no_bids:
-                    best_no_ask = min(no_asks.keys()) if no_asks else 99
-                    best_no_bid = max(no_bids.keys()) if no_bids else 1
-                    spread = best_no_ask - best_no_bid
+                # REST fallback only if WS connection is degraded (not per-market staleness)
+                # Quiet markets with no updates are fine if connection is healthy
+                if self._orderbook_integration:
+                    ws_healthy = self._orderbook_integration.is_connection_healthy()
 
-                    # P1: Max spread rejection - protect from bad fills in illiquid markets
-                    if spread > self._max_spread:
-                        logger.warning(
-                            f"Spread too wide for {signal.market_ticker}: {spread}c > {self._max_spread}c max, skipping signal"
+                    if not ws_healthy:
+                        # Connection degraded - attempt REST refresh
+                        refreshed = await self._orderbook_integration.refresh_orderbook_if_stale(
+                            signal.market_ticker
                         )
-                        self._stats["signals_skipped"] += 1
-                        self._record_decision(
-                            signal_id=signal_id,
-                            action="skipped",
-                            reason=f"Spread {spread}c > max {self._max_spread}c",
-                            signal_data=signal.to_dict()
-                        )
-                        return
+                        if refreshed:
+                            # Re-fetch snapshot and rebuild context
+                            snapshot = await orderbook_state.get_snapshot()
+                            ob_context = OrderbookContext.from_orderbook_snapshot(snapshot)
+                            self._stats["rest_refresh_successes"] = self._stats.get("rest_refresh_successes", 0) + 1
 
-                    # Log orderbook state for Phase 2 analysis
-                    self._log_orderbook_at_signal(signal, snapshot)
+                        # Only skip if connection is degraded AND data is stale after refresh attempt
+                        if ob_context.should_skip_due_to_staleness():
+                            logger.warning(
+                                f"Stale orderbook for {signal.market_ticker}: "
+                                f"WS degraded, REST refresh failed, skipping signal"
+                            )
+                            self._stats["signals_skipped"] += 1
+                            self._stats["orderbook_stale_skips"] = self._stats.get("orderbook_stale_skips", 0) + 1
+                            self._record_decision(
+                                signal_id=signal_id,
+                                action="skipped",
+                                reason="WS degraded, REST refresh failed",
+                                signal_data=signal.to_dict()
+                            )
+                            return
 
-                    # P1: Position-aware pricing - stronger signals can afford more slippage
-                    # 2x positions (20c+ drop) have 30% edge, can pay for guaranteed fills
-                    # 1.5x positions (10-20c drop) have 17-19% edge, be moderately aggressive
-                    # 1x positions (5-10c drop) have 12% edge, prioritize price improvement
-                    is_high_edge = signal.price_drop >= 10  # 1.5x or 2x positions
-
-                    # Spread-aware pricing using config thresholds
-                    entry_price = self._calculate_no_entry_price(
-                        best_no_ask, best_no_bid, spread, aggressive=is_high_edge
-                    )
-
-                    # Log pricing decision for strategy validation (use config thresholds)
-                    if spread <= self._tight_spread:
-                        spread_type = "tight"
-                    elif spread <= self._normal_spread:
-                        spread_type = "normal"
-                    else:
-                        spread_type = "wide"
-                    aggr_label = " [aggressive]" if is_high_edge else ""
-                    logger.info(
-                        f"RLM pricing: {signal.market_ticker} spread={spread}c "
-                        f"bid={best_no_bid} ask={best_no_ask} → entry={entry_price}c ({spread_type}{aggr_label})"
-                    )
-                else:
+                if ob_context.no_best_ask is None or ob_context.no_best_bid is None:
                     # No orderbook data - skip this signal
                     logger.warning(f"No orderbook data for {signal.market_ticker}, skipping signal")
                     self._stats["signals_skipped"] += 1
                     return
+
+                # P1: Max spread rejection - protect from bad fills in illiquid markets
+                if ob_context.no_spread is not None and ob_context.no_spread > self._max_spread:
+                    logger.warning(
+                        f"Spread too wide for {signal.market_ticker}: {ob_context.no_spread}c > {self._max_spread}c max, skipping signal"
+                    )
+                    self._stats["signals_skipped"] += 1
+                    self._record_decision(
+                        signal_id=signal_id,
+                        action="skipped",
+                        reason=f"Spread {ob_context.no_spread}c > max {self._max_spread}c",
+                        signal_data=signal.to_dict()
+                    )
+                    return
+
+                # Log orderbook state for Phase 2 analysis
+                self._log_orderbook_at_signal(signal, snapshot)
+
+                # P1: Position-aware pricing - stronger signals can afford more slippage
+                # 2x positions (20c+ drop) have 30% edge, can pay for guaranteed fills
+                # 1.5x positions (10-20c drop) have 17-19% edge, be moderately aggressive
+                # 1x positions (5-10c drop) have 12% edge, prioritize price improvement
+                is_high_edge = signal.price_drop >= 10  # 1.5x or 2x positions
+
+                # Use enhanced OrderbookContext for pricing (with depth awareness)
+                entry_price = ob_context.get_recommended_entry_price(
+                    aggressive=is_high_edge,
+                    max_spread=self._max_spread
+                )
+
+                # Fallback to legacy pricing if context method fails
+                if entry_price is None:
+                    entry_price = self._calculate_no_entry_price(
+                        ob_context.no_best_ask, ob_context.no_best_bid,
+                        ob_context.no_spread or 0, aggressive=is_high_edge
+                    )
+
+                # Log pricing decision with enhanced context
+                aggr_label = " [aggressive]" if is_high_edge else ""
+                depth_label = f" depth={ob_context.bbo_depth_tier.value}" if ob_context.bbo_depth_tier != BBODepthTier.UNKNOWN else ""
+                imbalance_label = f" imbal={ob_context.bid_imbalance:+.2f}" if ob_context.bid_imbalance is not None else ""
+                logger.info(
+                    f"RLM pricing: {signal.market_ticker} spread={ob_context.no_spread}c "
+                    f"bid={ob_context.no_best_bid} ask={ob_context.no_best_ask} → entry={entry_price}c "
+                    f"({ob_context.spread_tier.value}{aggr_label}{depth_label}{imbalance_label})"
+                )
 
             except (asyncio.TimeoutError, Exception) as e:
                 logger.warning(f"Orderbook unavailable for {signal.market_ticker}: {e}, skipping signal")
@@ -839,7 +897,7 @@ class RLMService:
                 "entry_yes_ratio": state.entry_yes_ratio if state else None,
                 "position_scale": scale_label,
                 "signal_trigger_count": state.signal_trigger_count if state else 1,
-                "aggressive_pricing": spread <= 2 and signal.price_drop >= 10,
+                "aggressive_pricing": ob_context.no_spread is not None and ob_context.no_spread <= 2 and signal.price_drop >= 10,
                 "signal_detected_at": signal.detected_at,
             }
             decision = TradingDecision(
@@ -1184,11 +1242,24 @@ class RLMService:
         }
 
     def get_market_states(self, limit: int = 20) -> List[Dict[str, Any]]:
-        """Get current market states for monitoring."""
+        """Get current market states for monitoring, including orderbook signals."""
         states = list(self._market_states.values())
         # Sort by total trades descending
         states.sort(key=lambda s: s.total_trades, reverse=True)
-        return [s.to_dict() for s in states[:limit]]
+
+        result = []
+        for state in states[:limit]:
+            state_dict = state.to_dict()
+            # Include orderbook signals if available
+            if self._orderbook_integration:
+                orderbook_signals = self._orderbook_integration.get_orderbook_signals(
+                    state.market_ticker
+                )
+                if orderbook_signals:
+                    state_dict["orderbook_signals"] = orderbook_signals
+            result.append(state_dict)
+
+        return result
 
     def get_decision_history(self, limit: int = 20) -> List[Dict[str, Any]]:
         """Get recent decision history."""

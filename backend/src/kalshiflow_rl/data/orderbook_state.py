@@ -19,6 +19,10 @@ from ..config import config
 
 logger = logging.getLogger("kalshiflow_rl.orderbook_state")
 
+# Maximum number of price levels to retain per side (bid/ask)
+# Reduces memory footprint while keeping sufficient depth for trading decisions
+MAX_ORDERBOOK_LEVELS = 5
+
 
 class OrderbookState:
     """
@@ -100,13 +104,15 @@ class OrderbookState:
             if 1 <= ask_price <= 99:  # Ensure valid price range
                 self.no_asks[ask_price] = size
         
-        # Invalidate cache
+        # Prune to max levels and invalidate cache
+        self._prune_to_max_levels()
         self._invalidate_cache()
-        
+
         logger.debug(
             f"Applied snapshot for {self.market_ticker}: seq={self.last_sequence}, "
             f"yes_levels={len(self.yes_bids) + len(self.yes_asks)}, "
-            f"no_levels={len(self.no_bids) + len(self.no_asks)}"
+            f"no_levels={len(self.no_bids) + len(self.no_asks)} "
+            f"(pruned to max {MAX_ORDERBOOK_LEVELS} per side)"
         )
     
     def apply_delta(self, delta_data: Dict[str, Any]) -> bool:
@@ -198,8 +204,11 @@ class OrderbookState:
         
         self.last_sequence = sequence_number
         self.last_update_time = delta_data.get('timestamp_ms', int(time.time() * 1000))
+
+        # Prune to max levels (only if needed - deltas rarely cause overflow)
+        self._prune_to_max_levels()
         self._invalidate_cache()
-        
+
         return True
     
     def _apply_price_levels(self, book: SortedDict, price_levels: Dict) -> None:
@@ -323,6 +332,44 @@ class OrderbookState:
         self._no_spread_cache = None
         self._yes_mid_cache = None
         self._no_mid_cache = None
+
+    def _prune_to_max_levels(self) -> None:
+        """
+        Prune each order book side to MAX_ORDERBOOK_LEVELS.
+
+        SortedDict maintains order, so we keep the first N entries:
+        - Bids: sorted descending (highest price first) - keep best N bids
+        - Asks: sorted ascending (lowest price first) - keep best N asks
+        """
+        max_levels = MAX_ORDERBOOK_LEVELS
+
+        # Prune YES bids (descending order, keep highest N)
+        if len(self.yes_bids) > max_levels:
+            keys_to_keep = list(self.yes_bids.keys())[:max_levels]
+            for key in list(self.yes_bids.keys()):
+                if key not in keys_to_keep:
+                    del self.yes_bids[key]
+
+        # Prune YES asks (ascending order, keep lowest N)
+        if len(self.yes_asks) > max_levels:
+            keys_to_keep = list(self.yes_asks.keys())[:max_levels]
+            for key in list(self.yes_asks.keys()):
+                if key not in keys_to_keep:
+                    del self.yes_asks[key]
+
+        # Prune NO bids (descending order, keep highest N)
+        if len(self.no_bids) > max_levels:
+            keys_to_keep = list(self.no_bids.keys())[:max_levels]
+            for key in list(self.no_bids.keys()):
+                if key not in keys_to_keep:
+                    del self.no_bids[key]
+
+        # Prune NO asks (ascending order, keep lowest N)
+        if len(self.no_asks) > max_levels:
+            keys_to_keep = list(self.no_asks.keys())[:max_levels]
+            for key in list(self.no_asks.keys()):
+                if key not in keys_to_keep:
+                    del self.no_asks[key]
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert orderbook state to dictionary representation."""
@@ -379,7 +426,42 @@ class SharedOrderbookState:
             if success:
                 await self._notify_subscribers('delta')
             return success
-    
+
+    async def apply_rest_snapshot(self, rest_data: Dict[str, Any]) -> None:
+        """
+        Apply orderbook data from REST API response (fallback for stale WS data).
+
+        Converts REST format to internal format and updates state.
+
+        REST format: { "orderbook": { "yes": [[price, count], ...], "no": [[price, count], ...] } }
+        Internal format: { "yes_bids": {price_str: size}, "no_bids": {price_str: size} }
+
+        Args:
+            rest_data: REST API response from /markets/{ticker}/orderbook
+        """
+        orderbook = rest_data.get("orderbook", {})
+
+        # Convert REST [[price, count], ...] to internal {price_str: count} format
+        yes_bids = {str(p): c for p, c in orderbook.get("yes", [])}
+        no_bids = {str(p): c for p, c in orderbook.get("no", [])}
+
+        # Build snapshot data in expected format
+        snapshot_data = {
+            "yes_bids": yes_bids,
+            "no_bids": no_bids,
+            "sequence_number": 0,  # REST doesn't provide sequence
+            "timestamp_ms": int(time.time() * 1000),  # Use current time
+        }
+
+        async with self._lock:
+            self._state.apply_snapshot(snapshot_data)
+            await self._notify_subscribers('rest_snapshot')
+
+        logger.info(
+            f"Applied REST snapshot for {self.market_ticker}: "
+            f"yes_levels={len(yes_bids)}, no_levels={len(no_bids)}"
+        )
+
     async def get_snapshot(self) -> Dict[str, Any]:
         """Get atomic snapshot of current orderbook state."""
         async with self._lock:
@@ -498,6 +580,58 @@ async def get_all_orderbook_states() -> Dict[str, SharedOrderbookState]:
     """
     async with _states_lock:
         return dict(_orderbook_states)
+
+
+async def remove_shared_orderbook_state(market_ticker: str) -> bool:
+    """
+    Remove a shared orderbook state from the global registry.
+
+    Call this when unsubscribing from a market to prevent memory leaks.
+
+    Args:
+        market_ticker: Market ticker to remove
+
+    Returns:
+        True if state was removed, False if it didn't exist
+    """
+    async with _states_lock:
+        if market_ticker in _orderbook_states:
+            del _orderbook_states[market_ticker]
+            logger.info(f"Removed shared orderbook state for {market_ticker}")
+            return True
+        return False
+
+
+async def remove_shared_orderbook_states(market_tickers: List[str]) -> int:
+    """
+    Remove multiple shared orderbook states from the global registry.
+
+    Args:
+        market_tickers: List of market tickers to remove
+
+    Returns:
+        Number of states that were removed
+    """
+    removed_count = 0
+    async with _states_lock:
+        for ticker in market_tickers:
+            if ticker in _orderbook_states:
+                del _orderbook_states[ticker]
+                removed_count += 1
+
+        if removed_count > 0:
+            logger.info(f"Removed {removed_count} shared orderbook states from global registry")
+
+    return removed_count
+
+
+def get_global_registry_size() -> int:
+    """
+    Get the current size of the global orderbook state registry.
+
+    Useful for monitoring memory usage.
+    """
+    return len(_orderbook_states)
 
 
 async def cleanup_global_orderbook_states() -> None:

@@ -33,6 +33,14 @@ class SpreadTier(Enum):
     UNKNOWN = "unknown"
 
 
+class BBODepthTier(Enum):
+    """Classification of liquidity depth at best bid/offer."""
+    THICK = "thick"      # >= 100 contracts
+    NORMAL = "normal"    # 20-99 contracts
+    THIN = "thin"        # < 20 contracts
+    UNKNOWN = "unknown"
+
+
 @dataclass
 class OrderbookSnapshot:
     """
@@ -89,6 +97,223 @@ class OrderbookSnapshot:
             "ask_size_contracts": self.ask_size_contracts,
             "spread_tier": self.spread_tier.value,
         }
+
+
+@dataclass
+class OrderbookContext:
+    """
+    Comprehensive orderbook context for trade-time pricing decisions.
+
+    Captures both YES and NO sides with depth information (levels 1-5),
+    derived metrics, and freshness indicators.
+    """
+    # === NO SIDE (Primary for NO orders) ===
+    no_best_bid: Optional[int] = None
+    no_best_ask: Optional[int] = None
+    no_spread: Optional[int] = None
+
+    # Queue depth at BBO (fill probability)
+    no_bid_size_at_bbo: Optional[int] = None
+    no_ask_size_at_bbo: Optional[int] = None
+
+    # Second level (robustness if BBO disappears)
+    no_second_bid: Optional[int] = None
+    no_second_ask: Optional[int] = None
+
+    # Total liquidity (levels 1-5)
+    no_bid_total_volume: int = 0
+    no_ask_total_volume: int = 0
+
+    # === YES SIDE (Cross-reference) ===
+    yes_best_bid: Optional[int] = None
+    yes_best_ask: Optional[int] = None
+    yes_spread: Optional[int] = None
+
+    # === DERIVED METRICS ===
+    spread_tier: SpreadTier = SpreadTier.UNKNOWN
+    bid_imbalance: Optional[float] = None  # (bid_vol - ask_vol) / (bid_vol + ask_vol)
+    bbo_depth_tier: BBODepthTier = BBODepthTier.UNKNOWN
+
+    # === FRESHNESS ===
+    last_update_ms: Optional[int] = None  # Timestamp of last orderbook update
+    captured_at: float = field(default_factory=time.time)  # When this context was built
+    is_stale: bool = False  # True if orderbook data is >5s old
+
+    @classmethod
+    def from_orderbook_snapshot(cls, snapshot: Dict[str, Any], stale_threshold_seconds: float = 5.0) -> 'OrderbookContext':
+        """
+        Create OrderbookContext from SharedOrderbookState.get_snapshot() result.
+
+        Args:
+            snapshot: Dict from SharedOrderbookState.get_snapshot()
+            stale_threshold_seconds: Max age before data is considered stale
+
+        Returns:
+            OrderbookContext with all fields populated
+        """
+        if not snapshot:
+            return cls(is_stale=True)
+
+        # Extract raw data
+        no_bids = snapshot.get("no_bids", {})
+        no_asks = snapshot.get("no_asks", {})
+        yes_bids = snapshot.get("yes_bids", {})
+        yes_asks = snapshot.get("yes_asks", {})
+        last_update_time = snapshot.get("last_update_time", 0)
+
+        # Calculate staleness
+        current_time_ms = int(time.time() * 1000)
+        is_stale = (current_time_ms - last_update_time) > (stale_threshold_seconds * 1000) if last_update_time else True
+
+        # === NO SIDE ===
+        # Sort and extract levels
+        no_bid_prices = sorted(no_bids.keys(), reverse=True)  # Descending (best first)
+        no_ask_prices = sorted(no_asks.keys())  # Ascending (best first)
+
+        no_best_bid = no_bid_prices[0] if no_bid_prices else None
+        no_best_ask = no_ask_prices[0] if no_ask_prices else None
+        no_second_bid = no_bid_prices[1] if len(no_bid_prices) > 1 else None
+        no_second_ask = no_ask_prices[1] if len(no_ask_prices) > 1 else None
+
+        no_spread = (no_best_ask - no_best_bid) if (no_best_bid is not None and no_best_ask is not None) else None
+
+        no_bid_size_at_bbo = no_bids.get(no_best_bid) if no_best_bid is not None else None
+        no_ask_size_at_bbo = no_asks.get(no_best_ask) if no_best_ask is not None else None
+
+        no_bid_total_volume = sum(no_bids.values())
+        no_ask_total_volume = sum(no_asks.values())
+
+        # === YES SIDE ===
+        yes_bid_prices = sorted(yes_bids.keys(), reverse=True)
+        yes_ask_prices = sorted(yes_asks.keys())
+
+        yes_best_bid = yes_bid_prices[0] if yes_bid_prices else None
+        yes_best_ask = yes_ask_prices[0] if yes_ask_prices else None
+        yes_spread = (yes_best_ask - yes_best_bid) if (yes_best_bid is not None and yes_best_ask is not None) else None
+
+        # === DERIVED METRICS ===
+        # Spread tier (based on NO side for NO orders)
+        spread_tier = SpreadTier.UNKNOWN
+        if no_spread is not None:
+            if no_spread <= 2:
+                spread_tier = SpreadTier.TIGHT
+            elif no_spread <= 4:
+                spread_tier = SpreadTier.NORMAL
+            else:
+                spread_tier = SpreadTier.WIDE
+
+        # Bid imbalance: positive = more bid pressure (bullish for that side)
+        bid_imbalance = None
+        total_volume = no_bid_total_volume + no_ask_total_volume
+        if total_volume > 0:
+            bid_imbalance = (no_bid_total_volume - no_ask_total_volume) / total_volume
+
+        # BBO depth tier (based on ask side for buying NO)
+        bbo_depth_tier = BBODepthTier.UNKNOWN
+        if no_ask_size_at_bbo is not None:
+            if no_ask_size_at_bbo >= 100:
+                bbo_depth_tier = BBODepthTier.THICK
+            elif no_ask_size_at_bbo >= 20:
+                bbo_depth_tier = BBODepthTier.NORMAL
+            else:
+                bbo_depth_tier = BBODepthTier.THIN
+
+        return cls(
+            # NO side
+            no_best_bid=no_best_bid,
+            no_best_ask=no_best_ask,
+            no_spread=no_spread,
+            no_bid_size_at_bbo=no_bid_size_at_bbo,
+            no_ask_size_at_bbo=no_ask_size_at_bbo,
+            no_second_bid=no_second_bid,
+            no_second_ask=no_second_ask,
+            no_bid_total_volume=no_bid_total_volume,
+            no_ask_total_volume=no_ask_total_volume,
+            # YES side
+            yes_best_bid=yes_best_bid,
+            yes_best_ask=yes_best_ask,
+            yes_spread=yes_spread,
+            # Derived
+            spread_tier=spread_tier,
+            bid_imbalance=bid_imbalance,
+            bbo_depth_tier=bbo_depth_tier,
+            # Freshness
+            last_update_ms=last_update_time,
+            captured_at=time.time(),
+            is_stale=is_stale,
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for logging/storage."""
+        return {
+            # NO side
+            "no_best_bid": self.no_best_bid,
+            "no_best_ask": self.no_best_ask,
+            "no_spread": self.no_spread,
+            "no_bid_size_at_bbo": self.no_bid_size_at_bbo,
+            "no_ask_size_at_bbo": self.no_ask_size_at_bbo,
+            "no_second_bid": self.no_second_bid,
+            "no_second_ask": self.no_second_ask,
+            "no_bid_total_volume": self.no_bid_total_volume,
+            "no_ask_total_volume": self.no_ask_total_volume,
+            # YES side
+            "yes_best_bid": self.yes_best_bid,
+            "yes_best_ask": self.yes_best_ask,
+            "yes_spread": self.yes_spread,
+            # Derived
+            "spread_tier": self.spread_tier.value,
+            "bid_imbalance": round(self.bid_imbalance, 4) if self.bid_imbalance is not None else None,
+            "bbo_depth_tier": self.bbo_depth_tier.value,
+            # Freshness
+            "last_update_ms": self.last_update_ms,
+            "captured_at": self.captured_at,
+            "is_stale": self.is_stale,
+        }
+
+    def should_skip_due_to_staleness(self) -> bool:
+        """Check if order should be skipped due to stale orderbook data."""
+        return self.is_stale
+
+    def get_recommended_entry_price(self, aggressive: bool = False, max_spread: int = 10) -> Optional[int]:
+        """
+        Calculate recommended NO entry price based on orderbook context.
+
+        Uses spread-aware pricing similar to existing RLM logic but with
+        additional depth considerations.
+
+        Args:
+            aggressive: If True, price closer to ask for faster fill
+            max_spread: Maximum spread allowed (returns None if exceeded)
+
+        Returns:
+            Recommended price in cents, or None if conditions not met
+        """
+        if self.no_best_bid is None or self.no_best_ask is None:
+            return None
+
+        if self.no_spread is None or self.no_spread > max_spread:
+            return None
+
+        # Base pricing on spread tier
+        if self.spread_tier == SpreadTier.TIGHT:
+            # Tight spread (<= 2c): price near ask
+            base_price = self.no_best_ask - 1 if not aggressive else self.no_best_ask
+        elif self.spread_tier == SpreadTier.NORMAL:
+            # Normal spread (<= 4c): midpoint or slightly above
+            midpoint = (self.no_best_bid + self.no_best_ask) // 2
+            base_price = midpoint if not aggressive else self.no_best_ask - 1
+        else:
+            # Wide spread (> 4c): bid + 75-85% of spread
+            spread_pct = 0.85 if aggressive else 0.75
+            base_price = self.no_best_bid + int(self.no_spread * spread_pct)
+
+        # Adjust for thin liquidity at BBO
+        if self.bbo_depth_tier == BBODepthTier.THIN and not aggressive:
+            # If liquidity is thin, be more aggressive to ensure fill
+            if base_price < self.no_best_ask:
+                base_price = min(base_price + 1, self.no_best_ask)
+
+        return base_price
 
 
 @dataclass

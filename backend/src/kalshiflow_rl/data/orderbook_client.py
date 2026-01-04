@@ -16,7 +16,11 @@ import websockets
 from websockets.exceptions import ConnectionClosed, InvalidMessage, InvalidStatus
 
 from .auth import get_rl_auth
-from .orderbook_state import get_shared_orderbook_state, SharedOrderbookState
+from .orderbook_state import (
+    get_shared_orderbook_state,
+    SharedOrderbookState,
+    remove_shared_orderbook_states,
+)
 from .write_queue import get_write_queue
 from .database import rl_db
 from ..config import config
@@ -98,10 +102,6 @@ class OrderbookClient:
         # Track which markets have received snapshots (for V3 integration)
         self._snapshot_received_markets: Set[str] = set()
 
-        # Track which markets have PERSISTED snapshots to DB (separate from above for health)
-        # This prevents duplicate snapshot writes - only first snapshot per market per connection cycle
-        self._snapshot_persisted_markets: Set[str] = set()
-        
         logger.info(f"OrderbookClient initialized for {len(self.market_tickers)} markets: {', '.join(self.market_tickers)}")
     
     async def start(self) -> None:
@@ -212,16 +212,10 @@ class OrderbookClient:
             self._websocket = websocket
             self._connection_start_time = time.time()
 
-            # Clear snapshot persistence filter on reconnect (allows fresh state capture per cycle)
-            # Check before resetting reconnect_count to detect if this is a reconnect
+            # Reset reconnect count on successful connection
             if self._reconnect_count > 0:
-                logger.info(
-                    f"Reconnect detected (attempt {self._reconnect_count}) - clearing snapshot persistence filter "
-                    f"({len(self._snapshot_persisted_markets)} markets will get fresh snapshots)"
-                )
-                self._snapshot_persisted_markets.clear()
-
-            self._reconnect_count = 0  # Reset on successful connection
+                logger.info(f"Reconnect successful (attempt {self._reconnect_count})")
+            self._reconnect_count = 0
 
             # Session continuity: Only create new session on FIRST connect, reuse on reconnect
             # This ensures one database session per trader session (not per WebSocket connection)
@@ -539,17 +533,8 @@ class OrderbookClient:
                 global_state = await get_shared_orderbook_state(market_ticker)
                 await global_state.apply_snapshot(snapshot_data)
             
-            # Queue for database persistence - ONLY first snapshot per market per connection cycle
-            # This prevents duplicate snapshots from being persisted (reduces storage ~85%)
-            if market_ticker not in self._snapshot_persisted_markets:
-                enqueue_success = await get_write_queue().enqueue_snapshot(snapshot_data)
-                if enqueue_success:
-                    self._snapshot_persisted_markets.add(market_ticker)
-                    logger.info(f"Persisted initial snapshot for {market_ticker} (seq={snapshot_data['sequence_number']})")
-            else:
-                logger.debug(f"Skipping duplicate snapshot persistence for {market_ticker} (already persisted this cycle)")
-
-            # Track that this market has received a snapshot (always, for health tracking)
+            # Track that this market has received a snapshot (for health tracking)
+            # Note: Raw snapshot persistence removed - signal aggregation captures historical patterns
             self._snapshot_received_markets.add(market_ticker)
             
             # Trigger actor event via event bus (always emit, not dependent on database enqueue)
@@ -1106,7 +1091,7 @@ class OrderbookClient:
             logger.info(f"Unsubscribing from {len(tickers_to_remove)} markets: {', '.join(tickers_to_remove)}")
             await self._websocket.send(json.dumps(unsubscription_message))
 
-            # Remove from tracked tickers and clean up state
+            # Remove from tracked tickers and clean up local state
             for ticker in tickers_to_remove:
                 if ticker in self.market_tickers:
                     self.market_tickers.remove(ticker)
@@ -1114,7 +1099,13 @@ class OrderbookClient:
                 self._last_sequences.pop(ticker, None)
                 self._snapshot_received_markets.discard(ticker)
 
-            logger.info(f"Successfully unsubscribed from markets. Remaining: {len(self.market_tickers)}")
+            # Clean up global registry to prevent memory leak
+            removed = await remove_shared_orderbook_states(tickers_to_remove)
+            logger.info(
+                f"Successfully unsubscribed from markets. "
+                f"Remaining: {len(self.market_tickers)}, "
+                f"Global registry cleanup: {removed} states removed"
+            )
             return True
 
         except Exception as e:
@@ -1129,7 +1120,3 @@ class OrderbookClient:
             Number of markets currently subscribed to
         """
         return len(self.market_tickers)
-
-
-# Global orderbook client instance - uses configured market tickers
-orderbook_client = OrderbookClient()

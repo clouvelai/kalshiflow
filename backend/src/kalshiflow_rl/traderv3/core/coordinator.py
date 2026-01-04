@@ -564,6 +564,8 @@ class V3Coordinator:
                     min_hours_to_settlement=self._config.discovery_min_hours_to_settlement,
                     max_days_to_settlement=self._config.discovery_max_days_to_settlement,
                 )
+                # Wire orderbook integration for signal data in market state broadcasts
+                self._rlm_service.set_orderbook_integration(self._orderbook_integration)
                 # Register with health monitor for health tracking
                 self._health_monitor.set_rlm_service(self._rlm_service)
                 # Register with websocket manager for real-time RLM state broadcasting

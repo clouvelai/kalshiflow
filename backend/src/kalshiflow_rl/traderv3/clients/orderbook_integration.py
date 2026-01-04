@@ -12,6 +12,8 @@ from typing import Dict, Any, List, Optional, Set
 from dataclasses import dataclass
 
 from ...data.orderbook_client import OrderbookClient
+from ...data.orderbook_state import get_shared_orderbook_state
+from ...data.orderbook_signals import OrderbookSignalAggregator
 from ..core.event_bus import EventBus, EventType, MarketEvent
 
 logger = logging.getLogger("kalshiflow_rl.traderv3.clients.orderbook_integration")
@@ -47,20 +49,27 @@ class V3OrderbookIntegration:
         self,
         orderbook_client: OrderbookClient,
         event_bus: EventBus,
-        market_tickers: List[str]
+        market_tickers: List[str],
+        signal_aggregator: Optional[OrderbookSignalAggregator] = None,
+        enable_signal_aggregation: bool = True,
     ):
         """
         Initialize orderbook integration.
-        
+
         Args:
             orderbook_client: Existing orderbook client instance
             event_bus: Event bus for broadcasting updates
             market_tickers: List of market tickers to subscribe to
+            signal_aggregator: Optional pre-configured signal aggregator
+            enable_signal_aggregation: If True (default), auto-creates aggregator on first snapshot
         """
         self._client = orderbook_client
         self._event_bus = event_bus  # V3's internal event bus
         self._market_tickers = market_tickers
-        
+        self._signal_aggregator = signal_aggregator
+        self._enable_signal_aggregation = enable_signal_aggregation
+        self._aggregator_initialized = signal_aggregator is not None
+
         self._metrics = OrderbookMetrics()
         self._running = False
         self._started_at: Optional[float] = None
@@ -68,7 +77,7 @@ class V3OrderbookIntegration:
         self._first_snapshot_received = False
         self._connection_established_time: Optional[float] = None
         self._first_snapshot_time: Optional[float] = None
-        
+
         # Track subscription callbacks for proper cleanup
         self._snapshot_callback = None
         self._delta_callback = None
@@ -76,14 +85,24 @@ class V3OrderbookIntegration:
         # Track client task for proper cleanup
         self._client_task: Optional[asyncio.Task] = None
 
-        logger.info(f"V3 Orderbook Integration initialized for {len(market_tickers)} markets")
+        # Trading client for REST fallback (injected after construction)
+        self._trading_client: Optional[Any] = None
+
+        # Rate limiting for REST refreshes (once per minute per market)
+        self._last_rest_refresh: Dict[str, float] = {}
+
+        aggregation_status = "enabled (lazy init)" if enable_signal_aggregation else "disabled"
+        if signal_aggregator:
+            aggregation_status = "enabled (pre-configured)"
+        logger.info(f"V3 Orderbook Integration initialized for {len(market_tickers)} markets "
+                    f"(signal aggregation: {aggregation_status})")
     
     
     async def _handle_snapshot_event(self, market_ticker: str, metadata: Dict[str, Any]) -> None:
         """Handle snapshot events from V3 event bus."""
         if not self._running:
             return
-        
+
         # Check if this is a reconnection (snapshot for a market we already had)
         # If all markets are already connected and we get another snapshot, it's a reconnection
         if len(self._metrics.markets_connected) >= len(self._market_tickers) and market_ticker in self._metrics.markets_connected:
@@ -96,18 +115,34 @@ class V3OrderbookIntegration:
             self._first_snapshot_received = False
             self._connection_established_time = None
             self._first_snapshot_time = None
-        
+
         # Update local metrics
         self._metrics.snapshots_received += 1
         self._metrics.last_snapshot_time = time.time()
-        
+
         if not self._first_snapshot_received:
             self._first_snapshot_received = True
             self._first_snapshot_time = time.time()
         # Track market as connected only when we receive its first snapshot
         # This ensures accurate connection state tracking
         self._metrics.markets_connected.add(market_ticker)
-        
+
+        # Lazy initialization of signal aggregator on first snapshot
+        # At this point we know the client has a session_id
+        if self._enable_signal_aggregation and not self._aggregator_initialized:
+            await self._initialize_signal_aggregator()
+
+        # Record snapshot for signal aggregation (10-second buckets)
+        if self._signal_aggregator:
+            try:
+                # Get the current orderbook state snapshot
+                orderbook_state = await get_shared_orderbook_state(market_ticker)
+                snapshot = await orderbook_state.get_snapshot()
+                self._signal_aggregator.record_snapshot(market_ticker, snapshot)
+            except Exception as e:
+                # Don't let aggregation errors affect main processing
+                logger.debug(f"Signal aggregation error for {market_ticker}: {e}")
+
         # Log periodically
         if self._metrics.snapshots_received % 100 == 0:
             logger.debug(f"V3 received {self._metrics.snapshots_received} snapshots, {self._metrics.deltas_received} deltas")
@@ -116,21 +151,65 @@ class V3OrderbookIntegration:
         """Handle delta events from V3 event bus."""
         if not self._running:
             return
-        
+
         # Update local metrics
         self._metrics.deltas_received += 1
         self._metrics.last_delta_time = time.time()
-    
+
+        # Record delta for signal aggregation (activity counting)
+        if self._signal_aggregator:
+            self._signal_aggregator.record_delta(market_ticker)
+
+    async def _initialize_signal_aggregator(self) -> None:
+        """
+        Lazy initialization of signal aggregator on first snapshot.
+
+        Called when signal aggregation is enabled but no aggregator was provided.
+        Creates an aggregator using the session_id from the orderbook client.
+        """
+        if self._aggregator_initialized:
+            return
+
+        try:
+            # Get session_id from the orderbook client
+            client_stats = self._client.get_stats()
+            session_id = client_stats.get("session_id")
+
+            if not session_id:
+                logger.warning("Cannot initialize signal aggregator: no session_id available yet")
+                return
+
+            # Create the signal aggregator
+            self._signal_aggregator = OrderbookSignalAggregator(
+                session_id=session_id,
+                bucket_seconds=10,
+                flush_interval=10.0,
+            )
+            await self._signal_aggregator.start()
+            self._aggregator_initialized = True
+
+            logger.info(f"✅ Signal aggregator initialized with session_id={session_id}")
+
+        except Exception as e:
+            logger.error(f"Failed to initialize signal aggregator: {e}")
+            # Don't retry - mark as initialized to prevent repeated failures
+            self._aggregator_initialized = True
+
     async def start(self) -> None:
         """Start orderbook integration."""
         if self._running:
             logger.warning("Orderbook integration is already running")
             return
-        
+
         logger.info(f"Starting V3 orderbook integration for {len(self._market_tickers)} markets")
         self._running = True
         self._started_at = time.time()
-        
+
+        # Start signal aggregator if configured
+        if self._signal_aggregator:
+            await self._signal_aggregator.start()
+            logger.info("✅ Signal aggregator started")
+
         # Subscribe to V3 event bus to track snapshots and deltas
         # OrderbookClient now publishes directly to V3 event bus
         # Store callbacks for proper cleanup
@@ -139,7 +218,7 @@ class V3OrderbookIntegration:
         await self._event_bus.subscribe_to_orderbook_snapshot(self._snapshot_callback)
         await self._event_bus.subscribe_to_orderbook_delta(self._delta_callback)
         logger.info("✅ Subscribed to V3 event bus for orderbook events")
-        
+
         # Start the orderbook client (it will publish to V3 event bus directly)
         # Track the task for proper cleanup
         self._client_task = asyncio.create_task(self._client.start())
@@ -151,10 +230,15 @@ class V3OrderbookIntegration:
         """Stop orderbook integration."""
         if not self._running:
             return
-        
+
         logger.info("Stopping V3 orderbook integration...")
         self._running = False
-        
+
+        # Stop signal aggregator (flushes remaining buckets)
+        if self._signal_aggregator:
+            await self._signal_aggregator.stop()
+            logger.info("✅ Signal aggregator stopped")
+
         # Cleanup: Event bus clears all subscribers on stop, so explicit unsubscribe isn't needed
         # If we needed to unsubscribe without stopping event bus, we would do:
         # self._event_bus.unsubscribe(EventType.ORDERBOOK_SNAPSHOT, self._snapshot_callback)
@@ -170,9 +254,9 @@ class V3OrderbookIntegration:
 
         # Stop the orderbook client
         await self._client.stop()
-        
+
         self._metrics.markets_connected.clear()
-        
+
         logger.info(f"✅ V3 Orderbook Integration stopped - Metrics: {self.get_metrics()}")
     
     async def ensure_session_for_recovery(self) -> bool:
@@ -265,8 +349,8 @@ class V3OrderbookIntegration:
     def get_metrics(self) -> Dict[str, Any]:
         """Get orderbook integration metrics."""
         uptime = time.time() - self._started_at if self._started_at else 0
-        
-        return {
+
+        metrics = {
             "running": self._running,
             "markets_connected": len(self._metrics.markets_connected),
             "markets_list": list(self._metrics.markets_connected),
@@ -278,8 +362,14 @@ class V3OrderbookIntegration:
             "last_delta_time": self._metrics.last_delta_time,
             "uptime_seconds": uptime,
             "snapshots_per_second": self._metrics.snapshots_received / max(uptime, 1),
-            "deltas_per_second": self._metrics.deltas_received / max(uptime, 1)
+            "deltas_per_second": self._metrics.deltas_received / max(uptime, 1),
         }
+
+        # Include signal aggregator stats if available
+        if self._signal_aggregator:
+            metrics["signal_aggregator"] = self._signal_aggregator.get_stats()
+
+        return metrics
     
     def is_healthy(self) -> bool:
         """Check if orderbook integration is healthy."""
@@ -512,3 +602,124 @@ class V3OrderbookIntegration:
             True if unsubscription was successful, False otherwise
         """
         return await self.unsubscribe_markets([ticker])
+
+    def get_orderbook_signals(self, market_ticker: str) -> Optional[Dict[str, Any]]:
+        """
+        Get current orderbook signals for a market.
+
+        Returns the live 10-second bucket data with imbalance ratio,
+        delta count, spread OHLC, and large order count.
+
+        Args:
+            market_ticker: Market ticker to get signals for
+
+        Returns:
+            Signal data dict or None if aggregator not ready or no data
+        """
+        if self._signal_aggregator is None:
+            return None
+        return self._signal_aggregator.get_current_bucket_signals(market_ticker)
+
+    def set_trading_client(self, trading_client: Any) -> None:
+        """
+        Inject trading client for REST API fallback.
+
+        Called after construction to enable REST orderbook refresh
+        when WebSocket data is stale.
+
+        Args:
+            trading_client: KalshiDemoTradingClient instance with get_orderbook()
+        """
+        self._trading_client = trading_client
+        logger.info("Trading client injected for REST orderbook fallback")
+
+    def is_connection_healthy(self, degraded_threshold: float = 30.0) -> bool:
+        """
+        Check if WS connection is healthy (receiving messages).
+
+        Args:
+            degraded_threshold: Seconds since last WS message to consider degraded
+
+        Returns:
+            True if connection is healthy (recent messages), False if degraded
+        """
+        client_stats = self._client.get_stats()
+        last_message_age = client_stats.get("last_message_age_seconds", 0)
+        return last_message_age < degraded_threshold
+
+    async def refresh_orderbook_if_stale(
+        self,
+        market_ticker: str,
+        connection_degraded_threshold: float = 30.0,
+        min_refresh_interval: float = 60.0
+    ) -> bool:
+        """
+        Refresh orderbook via REST only if WS connection is degraded.
+
+        Only triggers REST if:
+        1. Connection is degraded (no messages from ANY market in >30s)
+        2. Haven't REST synced this market in the last 60s
+
+        If WS connection is healthy, returns False (no refresh needed - quiet
+        markets with no updates are fine, their data is still accurate).
+
+        Args:
+            market_ticker: Market to refresh
+            connection_degraded_threshold: Seconds since last WS message to consider degraded
+            min_refresh_interval: Minimum seconds between REST refreshes per market
+
+        Returns:
+            True if REST refresh happened, False otherwise
+        """
+        from src.kalshiflow_rl.data.orderbook_state import get_shared_orderbook_state
+
+        # Check if we have a trading client for REST fallback
+        if self._trading_client is None:
+            return False
+
+        # Check connection-level health (not per-market staleness)
+        client_stats = self._client.get_stats()
+        last_message_age = client_stats.get("last_message_age_seconds", 0)
+
+        # If connection is healthy, don't REST - data is fine even if "stale"
+        if last_message_age < connection_degraded_threshold:
+            logger.debug(
+                f"Skipping REST refresh for {market_ticker}: "
+                f"WS connection healthy (last msg {last_message_age:.1f}s ago)"
+            )
+            return False
+
+        # Check rate limit (once per minute per market)
+        current_time = time.time()
+        last_refresh = self._last_rest_refresh.get(market_ticker, 0)
+        if current_time - last_refresh < min_refresh_interval:
+            logger.debug(
+                f"Skipping REST refresh for {market_ticker}: "
+                f"rate limited ({current_time - last_refresh:.0f}s since last refresh)"
+            )
+            return False
+
+        # Connection is degraded, rate limit passed - do REST refresh
+        try:
+            state = await get_shared_orderbook_state(market_ticker)
+            if state is None:
+                logger.warning(f"No orderbook state for {market_ticker}")
+                return False
+
+            logger.info(
+                f"WS connection degraded ({last_message_age:.1f}s since last msg), "
+                f"REST refreshing {market_ticker}..."
+            )
+
+            rest_data = await self._trading_client.get_orderbook(market_ticker, depth=5)
+            await state.apply_rest_snapshot(rest_data)
+
+            self._last_rest_refresh[market_ticker] = current_time
+            self._metrics.rest_refreshes = getattr(self._metrics, 'rest_refreshes', 0) + 1
+            logger.info(f"REST orderbook refresh succeeded for {market_ticker}")
+            return True
+
+        except Exception as e:
+            self._metrics.rest_refresh_failures = getattr(self._metrics, 'rest_refresh_failures', 0) + 1
+            logger.warning(f"REST orderbook refresh failed for {market_ticker}: {e}")
+            return False
