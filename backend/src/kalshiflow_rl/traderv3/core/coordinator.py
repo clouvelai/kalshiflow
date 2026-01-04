@@ -591,6 +591,7 @@ class V3Coordinator:
                 on_market_closed=self._orderbook_integration.unsubscribe_market,
                 config=self._config,
                 state_container=self._state_container,
+                db=rl_db,
             )
             await self._lifecycle_syncer.start()
 

@@ -1628,6 +1628,33 @@ class RLDatabase:
                 logger.error(f"Failed to clear tracked markets: {e}")
                 return 0
 
+    async def delete_tracked_market(self, market_ticker: str) -> bool:
+        """
+        Delete a single tracked market from the database.
+
+        Used when dormant markets are cleaned up to maintain a clean DB footprint.
+
+        Args:
+            market_ticker: The ticker of the market to delete
+
+        Returns:
+            True if the market was deleted, False otherwise
+        """
+        async with self.get_connection() as conn:
+            try:
+                result = await conn.execute('''
+                    DELETE FROM tracked_markets WHERE market_ticker = $1
+                ''', market_ticker)
+
+                deleted = result == "DELETE 1"
+                if deleted:
+                    logger.debug(f"Deleted tracked market from DB: {market_ticker}")
+                return deleted
+
+            except Exception as e:
+                logger.error(f"Failed to delete tracked market {market_ticker}: {e}")
+                return False
+
     # ============================================================
     # Lifecycle Events CRUD Operations (Audit Trail)
     # ============================================================
