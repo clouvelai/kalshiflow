@@ -14,6 +14,7 @@ from .tracked_markets_syncer import TrackedMarketsSyncer
 from .upcoming_markets_syncer import UpcomingMarketsSyncer
 from .event_lifecycle_service import EventLifecycleService
 from .rlm_service import RLMService, MarketTradeState, RLMSignal, RLMDecision
+from .listener_bootstrap_service import ListenerBootstrapService
 
 __all__ = [
     "TradingDecisionService",
@@ -28,4 +29,5 @@ __all__ = [
     "MarketTradeState",
     "RLMSignal",
     "RLMDecision",
+    "ListenerBootstrapService",
 ]
