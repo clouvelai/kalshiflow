@@ -1,0 +1,1383 @@
+{
+  "metadata": {
+    "timestamp": "2026-01-01T11:02:57.530964",
+    "analyst": "Quant Agent (Claude Opus 4.5)",
+    "session": "RLM Enhancement Validation",
+    "data_path": "/Users/samuelclark/Desktop/kalshiflow/research/data/trades/enriched_trades_resolved_ALL.csv",
+    "total_trades": 1619902,
+    "total_markets": 72791
+  },
+  "baseline_rlm": {
+    "n": 1290,
+    "valid": true,
+    "wins": 1196,
+    "win_rate": 0.9271317829457364,
+    "avg_price": 72.11019899645102,
+    "breakeven": 0.7211019899645101,
+    "edge": 0.20602979298122626,
+    "p_value": 0.0,
+    "weighted_improvement": 0.16449368327311772,
+    "pos_buckets": 16,
+    "total_buckets": 17,
+    "bucket_ratio": "16/17",
+    "bucket_pct": 0.9411764705882353,
+    "ci_95_lower": 0.1930469484546497,
+    "ci_95_upper": 0.2195027587947952,
+    "temporal_stability": "1/1",
+    "quarter_details": [
+      {
+        "quarter": "2025Q4",
+        "edge": 0.20602979298122626,
+        "n": 1290
+      }
+    ],
+    "bucket_details": [
+      {
+        "bucket": 15,
+        "sig_wr": 0.0,
+        "base_wr": 0.082010582010582,
+        "improvement": -0.082010582010582,
+        "n_sig": 5
+      },
+      {
+        "bucket": 20,
+        "sig_wr": 0.5555555555555556,
+        "base_wr": 0.11561866125760649,
+        "improvement": 0.4399368942979491,
+        "n_sig": 9
+      },
+      {
+        "bucket": 25,
+        "sig_wr": 0.25,
+        "base_wr": 0.15086206896551724,
+        "improvement": 0.09913793103448276,
+        "n_sig": 8
+      },
+      {
+        "bucket": 30,
+        "sig_wr": 0.4444444444444444,
+        "base_wr": 0.22330097087378642,
+        "improvement": 0.221143473570658,
+        "n_sig": 9
+      },
+      {
+        "bucket": 35,
+        "sig_wr": 0.6666666666666666,
+        "base_wr": 0.32262773722627736,
+        "improvement": 0.3440389294403893,
+        "n_sig": 27
+      },
+      {
+        "bucket": 40,
+        "sig_wr": 0.7631578947368421,
+        "base_wr": 0.38215859030837,
+        "improvement": 0.38099930442847213,
+        "n_sig": 38
+      },
+      {
+        "bucket": 45,
+        "sig_wr": 0.7678571428571429,
+        "base_wr": 0.46869565217391307,
+        "improvement": 0.29916149068322984,
+        "n_sig": 56
+      },
+      {
+        "bucket": 50,
+        "sig_wr": 0.7954545454545454,
+        "base_wr": 0.5565862708719852,
+        "improvement": 0.2388682745825602,
+        "n_sig": 88
+      },
+      {
+        "bucket": 55,
+        "sig_wr": 0.9342105263157895,
+        "base_wr": 0.6378845116028062,
+        "improvement": 0.29632601471298325,
+        "n_sig": 76
+      },
+      {
+        "bucket": 60,
+        "sig_wr": 0.9444444444444444,
+        "base_wr": 0.7031984948259643,
+        "improvement": 0.24124594961848012,
+        "n_sig": 90
+      },
+      {
+        "bucket": 65,
+        "sig_wr": 0.9545454545454546,
+        "base_wr": 0.7650231124807396,
+        "improvement": 0.18952234206471497,
+        "n_sig": 110
+      },
+      {
+        "bucket": 70,
+        "sig_wr": 0.9694656488549618,
+        "base_wr": 0.7797779777977798,
+        "improvement": 0.18968767105718198,
+        "n_sig": 131
+      },
+      {
+        "bucket": 75,
+        "sig_wr": 1.0,
+        "base_wr": 0.8395813047711782,
+        "improvement": 0.1604186952288218,
+        "n_sig": 159
+      },
+      {
+        "bucket": 80,
+        "sig_wr": 0.9862068965517241,
+        "base_wr": 0.8858041828613733,
+        "improvement": 0.10040271369035081,
+        "n_sig": 145
+      },
+      {
+        "bucket": 85,
+        "sig_wr": 0.9926470588235294,
+        "base_wr": 0.9187398593834505,
+        "improvement": 0.07390719944007895,
+        "n_sig": 136
+      },
+      {
+        "bucket": 90,
+        "sig_wr": 0.9914529914529915,
+        "base_wr": 0.9567770946131963,
+        "improvement": 0.03467589683979522,
+        "n_sig": 117
+      },
+      {
+        "bucket": 95,
+        "sig_wr": 0.9882352941176471,
+        "base_wr": 0.98757379546753,
+        "improvement": 0.0006614986501171094,
+        "n_sig": 85
+      }
+    ]
+  },
+  "e001_volume_weighted": {
+    "hypothesis": "Volume-weighted YES ratio may be more informative than trade-count weighted",
+    "comparison": {
+      "trade_weighted": {
+        "n": 1290,
+        "valid": true,
+        "wins": 1196,
+        "win_rate": 0.9271317829457364,
+        "avg_price": 72.11019899645102,
+        "breakeven": 0.7211019899645101,
+        "edge": 0.20602979298122626,
+        "p_value": 0.0,
+        "weighted_improvement": 0.16449368327311772,
+        "pos_buckets": 16,
+        "total_buckets": 17,
+        "bucket_ratio": "16/17",
+        "bucket_pct": 0.9411764705882353,
+        "ci_95_lower": 0.19199073025268606,
+        "ci_95_upper": 0.21890837087195,
+        "temporal_stability": "1/1",
+        "quarter_details": [
+          {
+            "quarter": "2025Q4",
+            "edge": 0.20602979298122626,
+            "n": 1290
+          }
+        ],
+        "bucket_details": [
+          {
+            "bucket": 15,
+            "sig_wr": 0.0,
+            "base_wr": 0.082010582010582,
+            "improvement": -0.082010582010582,
+            "n_sig": 5
+          },
+          {
+            "bucket": 20,
+            "sig_wr": 0.5555555555555556,
+            "base_wr": 0.11561866125760649,
+            "improvement": 0.4399368942979491,
+            "n_sig": 9
+          },
+          {
+            "bucket": 25,
+            "sig_wr": 0.25,
+            "base_wr": 0.15086206896551724,
+            "improvement": 0.09913793103448276,
+            "n_sig": 8
+          },
+          {
+            "bucket": 30,
+            "sig_wr": 0.4444444444444444,
+            "base_wr": 0.22330097087378642,
+            "improvement": 0.221143473570658,
+            "n_sig": 9
+          },
+          {
+            "bucket": 35,
+            "sig_wr": 0.6666666666666666,
+            "base_wr": 0.32262773722627736,
+            "improvement": 0.3440389294403893,
+            "n_sig": 27
+          },
+          {
+            "bucket": 40,
+            "sig_wr": 0.7631578947368421,
+            "base_wr": 0.38215859030837,
+            "improvement": 0.38099930442847213,
+            "n_sig": 38
+          },
+          {
+            "bucket": 45,
+            "sig_wr": 0.7678571428571429,
+            "base_wr": 0.46869565217391307,
+            "improvement": 0.29916149068322984,
+            "n_sig": 56
+          },
+          {
+            "bucket": 50,
+            "sig_wr": 0.7954545454545454,
+            "base_wr": 0.5565862708719852,
+            "improvement": 0.2388682745825602,
+            "n_sig": 88
+          },
+          {
+            "bucket": 55,
+            "sig_wr": 0.9342105263157895,
+            "base_wr": 0.6378845116028062,
+            "improvement": 0.29632601471298325,
+            "n_sig": 76
+          },
+          {
+            "bucket": 60,
+            "sig_wr": 0.9444444444444444,
+            "base_wr": 0.7031984948259643,
+            "improvement": 0.24124594961848012,
+            "n_sig": 90
+          },
+          {
+            "bucket": 65,
+            "sig_wr": 0.9545454545454546,
+            "base_wr": 0.7650231124807396,
+            "improvement": 0.18952234206471497,
+            "n_sig": 110
+          },
+          {
+            "bucket": 70,
+            "sig_wr": 0.9694656488549618,
+            "base_wr": 0.7797779777977798,
+            "improvement": 0.18968767105718198,
+            "n_sig": 131
+          },
+          {
+            "bucket": 75,
+            "sig_wr": 1.0,
+            "base_wr": 0.8395813047711782,
+            "improvement": 0.1604186952288218,
+            "n_sig": 159
+          },
+          {
+            "bucket": 80,
+            "sig_wr": 0.9862068965517241,
+            "base_wr": 0.8858041828613733,
+            "improvement": 0.10040271369035081,
+            "n_sig": 145
+          },
+          {
+            "bucket": 85,
+            "sig_wr": 0.9926470588235294,
+            "base_wr": 0.9187398593834505,
+            "improvement": 0.07390719944007895,
+            "n_sig": 136
+          },
+          {
+            "bucket": 90,
+            "sig_wr": 0.9914529914529915,
+            "base_wr": 0.9567770946131963,
+            "improvement": 0.03467589683979522,
+            "n_sig": 117
+          },
+          {
+            "bucket": 95,
+            "sig_wr": 0.9882352941176471,
+            "base_wr": 0.98757379546753,
+            "improvement": 0.0006614986501171094,
+            "n_sig": 85
+          }
+        ]
+      },
+      "volume_weighted": {
+        "n": 1365,
+        "valid": true,
+        "wins": 1268,
+        "win_rate": 0.928937728937729,
+        "avg_price": 72.57468044840506,
+        "breakeven": 0.7257468044840506,
+        "edge": 0.20319092445367837,
+        "p_value": 0.0,
+        "weighted_improvement": 0.16259633743176527,
+        "pos_buckets": 16,
+        "total_buckets": 17,
+        "bucket_ratio": "16/17",
+        "bucket_pct": 0.9411764705882353,
+        "ci_95_lower": 0.1885177677943464,
+        "ci_95_upper": 0.2155280333855051,
+        "temporal_stability": "1/1",
+        "quarter_details": [
+          {
+            "quarter": "2025Q4",
+            "edge": 0.20319092445367837,
+            "n": 1365
+          }
+        ],
+        "bucket_details": [
+          {
+            "bucket": 15,
+            "sig_wr": 0.0,
+            "base_wr": 0.082010582010582,
+            "improvement": -0.082010582010582,
+            "n_sig": 6
+          },
+          {
+            "bucket": 20,
+            "sig_wr": 0.46153846153846156,
+            "base_wr": 0.11561866125760649,
+            "improvement": 0.34591980028085506,
+            "n_sig": 13
+          },
+          {
+            "bucket": 25,
+            "sig_wr": 0.3333333333333333,
+            "base_wr": 0.15086206896551724,
+            "improvement": 0.18247126436781608,
+            "n_sig": 9
+          },
+          {
+            "bucket": 30,
+            "sig_wr": 0.75,
+            "base_wr": 0.22330097087378642,
+            "improvement": 0.5266990291262136,
+            "n_sig": 8
+          },
+          {
+            "bucket": 35,
+            "sig_wr": 0.5652173913043478,
+            "base_wr": 0.32262773722627736,
+            "improvement": 0.24258965407807043,
+            "n_sig": 23
+          },
+          {
+            "bucket": 40,
+            "sig_wr": 0.7837837837837838,
+            "base_wr": 0.38215859030837,
+            "improvement": 0.40162519347541376,
+            "n_sig": 37
+          },
+          {
+            "bucket": 45,
+            "sig_wr": 0.7796610169491526,
+            "base_wr": 0.46869565217391307,
+            "improvement": 0.3109653647752395,
+            "n_sig": 59
+          },
+          {
+            "bucket": 50,
+            "sig_wr": 0.8021978021978022,
+            "base_wr": 0.5565862708719852,
+            "improvement": 0.24561153132581703,
+            "n_sig": 91
+          },
+          {
+            "bucket": 55,
+            "sig_wr": 0.9545454545454546,
+            "base_wr": 0.6378845116028062,
+            "improvement": 0.31666094294264835,
+            "n_sig": 88
+          },
+          {
+            "bucket": 60,
+            "sig_wr": 0.9468085106382979,
+            "base_wr": 0.7031984948259643,
+            "improvement": 0.24361001581233355,
+            "n_sig": 94
+          },
+          {
+            "bucket": 65,
+            "sig_wr": 0.9537037037037037,
+            "base_wr": 0.7650231124807396,
+            "improvement": 0.1886805912229641,
+            "n_sig": 108
+          },
+          {
+            "bucket": 70,
+            "sig_wr": 0.9635036496350365,
+            "base_wr": 0.7797779777977798,
+            "improvement": 0.18372567183725674,
+            "n_sig": 137
+          },
+          {
+            "bucket": 75,
+            "sig_wr": 1.0,
+            "base_wr": 0.8395813047711782,
+            "improvement": 0.1604186952288218,
+            "n_sig": 152
+          },
+          {
+            "bucket": 80,
+            "sig_wr": 0.9797297297297297,
+            "base_wr": 0.8858041828613733,
+            "improvement": 0.09392554686835641,
+            "n_sig": 148
+          },
+          {
+            "bucket": 85,
+            "sig_wr": 0.9931506849315068,
+            "base_wr": 0.9187398593834505,
+            "improvement": 0.07441082554805634,
+            "n_sig": 146
+          },
+          {
+            "bucket": 90,
+            "sig_wr": 0.9925373134328358,
+            "base_wr": 0.9567770946131963,
+            "improvement": 0.03576021881963953,
+            "n_sig": 134
+          },
+          {
+            "bucket": 95,
+            "sig_wr": 0.990909090909091,
+            "base_wr": 0.98757379546753,
+            "improvement": 0.0033352954415609704,
+            "n_sig": 110
+          }
+        ]
+      },
+      "both_conditions": {
+        "n": 1099,
+        "valid": true,
+        "wins": 1019,
+        "win_rate": 0.9272065514103731,
+        "avg_price": 72.51220070275453,
+        "breakeven": 0.7251220070275453,
+        "edge": 0.20208454438282786,
+        "p_value": 0.0,
+        "weighted_improvement": 0.16198858627371837,
+        "pos_buckets": 16,
+        "total_buckets": 16,
+        "bucket_ratio": "16/16",
+        "bucket_pct": 1.0,
+        "ci_95_lower": 0.18695590597755538,
+        "ci_95_upper": 0.217873192980613,
+        "temporal_stability": "1/1",
+        "quarter_details": [
+          {
+            "quarter": "2025Q4",
+            "edge": 0.20208454438282786,
+            "n": 1099
+          }
+        ],
+        "bucket_details": [
+          {
+            "bucket": 20,
+            "sig_wr": 0.5555555555555556,
+            "base_wr": 0.11561866125760649,
+            "improvement": 0.4399368942979491,
+            "n_sig": 9
+          },
+          {
+            "bucket": 25,
+            "sig_wr": 0.25,
+            "base_wr": 0.15086206896551724,
+            "improvement": 0.09913793103448276,
+            "n_sig": 8
+          },
+          {
+            "bucket": 30,
+            "sig_wr": 0.6666666666666666,
+            "base_wr": 0.22330097087378642,
+            "improvement": 0.4433656957928802,
+            "n_sig": 6
+          },
+          {
+            "bucket": 35,
+            "sig_wr": 0.6,
+            "base_wr": 0.32262773722627736,
+            "improvement": 0.2773722627737226,
+            "n_sig": 20
+          },
+          {
+            "bucket": 40,
+            "sig_wr": 0.75,
+            "base_wr": 0.38215859030837,
+            "improvement": 0.36784140969163,
+            "n_sig": 32
+          },
+          {
+            "bucket": 45,
+            "sig_wr": 0.803921568627451,
+            "base_wr": 0.46869565217391307,
+            "improvement": 0.33522591645353794,
+            "n_sig": 51
+          },
+          {
+            "bucket": 50,
+            "sig_wr": 0.7808219178082192,
+            "base_wr": 0.5565862708719852,
+            "improvement": 0.224235646936234,
+            "n_sig": 73
+          },
+          {
+            "bucket": 55,
+            "sig_wr": 0.9344262295081968,
+            "base_wr": 0.6378845116028062,
+            "improvement": 0.2965417179053905,
+            "n_sig": 61
+          },
+          {
+            "bucket": 60,
+            "sig_wr": 0.9420289855072463,
+            "base_wr": 0.7031984948259643,
+            "improvement": 0.23883049068128204,
+            "n_sig": 69
+          },
+          {
+            "bucket": 65,
+            "sig_wr": 0.9560439560439561,
+            "base_wr": 0.7650231124807396,
+            "improvement": 0.19102084356321647,
+            "n_sig": 91
+          },
+          {
+            "bucket": 70,
+            "sig_wr": 0.9658119658119658,
+            "base_wr": 0.7797779777977798,
+            "improvement": 0.18603398801418602,
+            "n_sig": 117
+          },
+          {
+            "bucket": 75,
+            "sig_wr": 1.0,
+            "base_wr": 0.8395813047711782,
+            "improvement": 0.1604186952288218,
+            "n_sig": 132
+          },
+          {
+            "bucket": 80,
+            "sig_wr": 0.9838709677419355,
+            "base_wr": 0.8858041828613733,
+            "improvement": 0.0980667848805622,
+            "n_sig": 124
+          },
+          {
+            "bucket": 85,
+            "sig_wr": 0.9914529914529915,
+            "base_wr": 0.9187398593834505,
+            "improvement": 0.072713132069541,
+            "n_sig": 117
+          },
+          {
+            "bucket": 90,
+            "sig_wr": 0.9902912621359223,
+            "base_wr": 0.9567770946131963,
+            "improvement": 0.03351416752272607,
+            "n_sig": 103
+          },
+          {
+            "bucket": 95,
+            "sig_wr": 0.9876543209876543,
+            "base_wr": 0.98757379546753,
+            "improvement": 8.052552012427494e-05,
+            "n_sig": 81
+          }
+        ]
+      },
+      "either_condition": {
+        "n": 1556,
+        "valid": true,
+        "wins": 1445,
+        "win_rate": 0.9286632390745502,
+        "avg_price": 72.23373196990198,
+        "breakeven": 0.7223373196990198,
+        "edge": 0.20632591937553035,
+        "p_value": 0.0,
+        "weighted_improvement": 0.1652276027047228,
+        "pos_buckets": 16,
+        "total_buckets": 17,
+        "bucket_ratio": "16/17",
+        "bucket_pct": 0.9411764705882353,
+        "ci_95_lower": 0.19373768900155844,
+        "ci_95_upper": 0.21840195783656316,
+        "temporal_stability": "1/1",
+        "quarter_details": [
+          {
+            "quarter": "2025Q4",
+            "edge": 0.20632591937553035,
+            "n": 1556
+          }
+        ],
+        "bucket_details": [
+          {
+            "bucket": 15,
+            "sig_wr": 0.0,
+            "base_wr": 0.082010582010582,
+            "improvement": -0.082010582010582,
+            "n_sig": 7
+          },
+          {
+            "bucket": 20,
+            "sig_wr": 0.46153846153846156,
+            "base_wr": 0.11561866125760649,
+            "improvement": 0.34591980028085506,
+            "n_sig": 13
+          },
+          {
+            "bucket": 25,
+            "sig_wr": 0.3333333333333333,
+            "base_wr": 0.15086206896551724,
+            "improvement": 0.18247126436781608,
+            "n_sig": 9
+          },
+          {
+            "bucket": 30,
+            "sig_wr": 0.5454545454545454,
+            "base_wr": 0.22330097087378642,
+            "improvement": 0.322153574580759,
+            "n_sig": 11
+          },
+          {
+            "bucket": 35,
+            "sig_wr": 0.6333333333333333,
+            "base_wr": 0.32262773722627736,
+            "improvement": 0.31070559610705595,
+            "n_sig": 30
+          },
+          {
+            "bucket": 40,
+            "sig_wr": 0.7906976744186046,
+            "base_wr": 0.38215859030837,
+            "improvement": 0.4085390841102346,
+            "n_sig": 43
+          },
+          {
+            "bucket": 45,
+            "sig_wr": 0.75,
+            "base_wr": 0.46869565217391307,
+            "improvement": 0.28130434782608693,
+            "n_sig": 64
+          },
+          {
+            "bucket": 50,
+            "sig_wr": 0.8113207547169812,
+            "base_wr": 0.5565862708719852,
+            "improvement": 0.254734483844996,
+            "n_sig": 106
+          },
+          {
+            "bucket": 55,
+            "sig_wr": 0.9514563106796117,
+            "base_wr": 0.6378845116028062,
+            "improvement": 0.31357179907680544,
+            "n_sig": 103
+          },
+          {
+            "bucket": 60,
+            "sig_wr": 0.9478260869565217,
+            "base_wr": 0.7031984948259643,
+            "improvement": 0.2446275921305574,
+            "n_sig": 115
+          },
+          {
+            "bucket": 65,
+            "sig_wr": 0.952755905511811,
+            "base_wr": 0.7650231124807396,
+            "improvement": 0.18773279303107138,
+            "n_sig": 127
+          },
+          {
+            "bucket": 70,
+            "sig_wr": 0.9668874172185431,
+            "base_wr": 0.7797779777977798,
+            "improvement": 0.1871094394207633,
+            "n_sig": 151
+          },
+          {
+            "bucket": 75,
+            "sig_wr": 1.0,
+            "base_wr": 0.8395813047711782,
+            "improvement": 0.1604186952288218,
+            "n_sig": 179
+          },
+          {
+            "bucket": 80,
+            "sig_wr": 0.9822485207100592,
+            "base_wr": 0.8858041828613733,
+            "improvement": 0.09644433784868589,
+            "n_sig": 169
+          },
+          {
+            "bucket": 85,
+            "sig_wr": 0.9939393939393939,
+            "base_wr": 0.9187398593834505,
+            "improvement": 0.07519953455594341,
+            "n_sig": 165
+          },
+          {
+            "bucket": 90,
+            "sig_wr": 0.9932432432432432,
+            "base_wr": 0.9567770946131963,
+            "improvement": 0.036466148630046935,
+            "n_sig": 148
+          },
+          {
+            "bucket": 95,
+            "sig_wr": 0.9912280701754386,
+            "base_wr": 0.98757379546753,
+            "improvement": 0.003654274707908578,
+            "n_sig": 114
+          }
+        ]
+      }
+    },
+    "overlap_analysis": {
+      "trade_only": 191,
+      "volume_only": 266,
+      "overlap": 1099,
+      "overlap_pct": 0.7062982005141388
+    },
+    "recommendation": "KEEP CURRENT: Trade-weighted performs as well or better"
+  },
+  "f001_rlm_s013_combo": {
+    "hypothesis": "When both RLM and S013 signals fire, edge should compound",
+    "rlm_only": {
+      "n": 1290,
+      "valid": true,
+      "wins": 1196,
+      "win_rate": 0.9271317829457364,
+      "avg_price": 72.11019899645102,
+      "breakeven": 0.7211019899645101,
+      "edge": 0.20602979298122626,
+      "p_value": 0.0,
+      "weighted_improvement": 0.16449368327311772,
+      "pos_buckets": 16,
+      "total_buckets": 17,
+      "bucket_ratio": "16/17",
+      "bucket_pct": 0.9411764705882353,
+      "ci_95_lower": 0.19261496764273806,
+      "ci_95_upper": 0.21919833667040386,
+      "temporal_stability": "1/1",
+      "quarter_details": [
+        {
+          "quarter": "2025Q4",
+          "edge": 0.20602979298122626,
+          "n": 1290
+        }
+      ],
+      "bucket_details": [
+        {
+          "bucket": 15,
+          "sig_wr": 0.0,
+          "base_wr": 0.082010582010582,
+          "improvement": -0.082010582010582,
+          "n_sig": 5
+        },
+        {
+          "bucket": 20,
+          "sig_wr": 0.5555555555555556,
+          "base_wr": 0.11561866125760649,
+          "improvement": 0.4399368942979491,
+          "n_sig": 9
+        },
+        {
+          "bucket": 25,
+          "sig_wr": 0.25,
+          "base_wr": 0.15086206896551724,
+          "improvement": 0.09913793103448276,
+          "n_sig": 8
+        },
+        {
+          "bucket": 30,
+          "sig_wr": 0.4444444444444444,
+          "base_wr": 0.22330097087378642,
+          "improvement": 0.221143473570658,
+          "n_sig": 9
+        },
+        {
+          "bucket": 35,
+          "sig_wr": 0.6666666666666666,
+          "base_wr": 0.32262773722627736,
+          "improvement": 0.3440389294403893,
+          "n_sig": 27
+        },
+        {
+          "bucket": 40,
+          "sig_wr": 0.7631578947368421,
+          "base_wr": 0.38215859030837,
+          "improvement": 0.38099930442847213,
+          "n_sig": 38
+        },
+        {
+          "bucket": 45,
+          "sig_wr": 0.7678571428571429,
+          "base_wr": 0.46869565217391307,
+          "improvement": 0.29916149068322984,
+          "n_sig": 56
+        },
+        {
+          "bucket": 50,
+          "sig_wr": 0.7954545454545454,
+          "base_wr": 0.5565862708719852,
+          "improvement": 0.2388682745825602,
+          "n_sig": 88
+        },
+        {
+          "bucket": 55,
+          "sig_wr": 0.9342105263157895,
+          "base_wr": 0.6378845116028062,
+          "improvement": 0.29632601471298325,
+          "n_sig": 76
+        },
+        {
+          "bucket": 60,
+          "sig_wr": 0.9444444444444444,
+          "base_wr": 0.7031984948259643,
+          "improvement": 0.24124594961848012,
+          "n_sig": 90
+        },
+        {
+          "bucket": 65,
+          "sig_wr": 0.9545454545454546,
+          "base_wr": 0.7650231124807396,
+          "improvement": 0.18952234206471497,
+          "n_sig": 110
+        },
+        {
+          "bucket": 70,
+          "sig_wr": 0.9694656488549618,
+          "base_wr": 0.7797779777977798,
+          "improvement": 0.18968767105718198,
+          "n_sig": 131
+        },
+        {
+          "bucket": 75,
+          "sig_wr": 1.0,
+          "base_wr": 0.8395813047711782,
+          "improvement": 0.1604186952288218,
+          "n_sig": 159
+        },
+        {
+          "bucket": 80,
+          "sig_wr": 0.9862068965517241,
+          "base_wr": 0.8858041828613733,
+          "improvement": 0.10040271369035081,
+          "n_sig": 145
+        },
+        {
+          "bucket": 85,
+          "sig_wr": 0.9926470588235294,
+          "base_wr": 0.9187398593834505,
+          "improvement": 0.07390719944007895,
+          "n_sig": 136
+        },
+        {
+          "bucket": 90,
+          "sig_wr": 0.9914529914529915,
+          "base_wr": 0.9567770946131963,
+          "improvement": 0.03467589683979522,
+          "n_sig": 117
+        },
+        {
+          "bucket": 95,
+          "sig_wr": 0.9882352941176471,
+          "base_wr": 0.98757379546753,
+          "improvement": 0.0006614986501171094,
+          "n_sig": 85
+        }
+      ]
+    },
+    "s013_only": {
+      "n": 485,
+      "valid": true,
+      "wins": 384,
+      "win_rate": 0.7917525773195876,
+      "avg_price": 67.88505444107997,
+      "breakeven": 0.6788505444107997,
+      "edge": 0.11290203290878786,
+      "p_value": 5.043452455666397e-08,
+      "weighted_improvement": 0.08134651882505488,
+      "pos_buckets": 13,
+      "total_buckets": 14,
+      "bucket_ratio": "13/14",
+      "bucket_pct": 0.9285714285714286,
+      "ci_95_lower": 0.08375428710106086,
+      "ci_95_upper": 0.14070050558894986,
+      "temporal_stability": "1/1",
+      "quarter_details": [
+        {
+          "quarter": "2025Q4",
+          "edge": 0.11290203290878786,
+          "n": 485
+        }
+      ],
+      "bucket_details": [
+        {
+          "bucket": 0,
+          "sig_wr": 0.0,
+          "base_wr": 0.03902439024390244,
+          "improvement": -0.03902439024390244,
+          "n_sig": 16
+        },
+        {
+          "bucket": 35,
+          "sig_wr": 0.4,
+          "base_wr": 0.32262773722627736,
+          "improvement": 0.07737226277372267,
+          "n_sig": 10
+        },
+        {
+          "bucket": 40,
+          "sig_wr": 0.4782608695652174,
+          "base_wr": 0.38215859030837,
+          "improvement": 0.09610227925684739,
+          "n_sig": 23
+        },
+        {
+          "bucket": 45,
+          "sig_wr": 0.5609756097560976,
+          "base_wr": 0.46869565217391307,
+          "improvement": 0.09227995758218455,
+          "n_sig": 41
+        },
+        {
+          "bucket": 50,
+          "sig_wr": 0.6326530612244898,
+          "base_wr": 0.5565862708719852,
+          "improvement": 0.07606679035250463,
+          "n_sig": 49
+        },
+        {
+          "bucket": 55,
+          "sig_wr": 0.75,
+          "base_wr": 0.6378845116028062,
+          "improvement": 0.11211548839719376,
+          "n_sig": 44
+        },
+        {
+          "bucket": 60,
+          "sig_wr": 0.9230769230769231,
+          "base_wr": 0.7031984948259643,
+          "improvement": 0.21987842825095882,
+          "n_sig": 52
+        },
+        {
+          "bucket": 65,
+          "sig_wr": 0.9259259259259259,
+          "base_wr": 0.7650231124807396,
+          "improvement": 0.1609028134451863,
+          "n_sig": 27
+        },
+        {
+          "bucket": 70,
+          "sig_wr": 0.8571428571428571,
+          "base_wr": 0.7797779777977798,
+          "improvement": 0.0773648793450773,
+          "n_sig": 28
+        },
+        {
+          "bucket": 75,
+          "sig_wr": 0.92,
+          "base_wr": 0.8395813047711782,
+          "improvement": 0.08041869522882183,
+          "n_sig": 25
+        },
+        {
+          "bucket": 80,
+          "sig_wr": 1.0,
+          "base_wr": 0.8858041828613733,
+          "improvement": 0.1141958171386267,
+          "n_sig": 12
+        },
+        {
+          "bucket": 85,
+          "sig_wr": 1.0,
+          "base_wr": 0.9187398593834505,
+          "improvement": 0.08126014061654951,
+          "n_sig": 15
+        },
+        {
+          "bucket": 90,
+          "sig_wr": 1.0,
+          "base_wr": 0.9567770946131963,
+          "improvement": 0.043222905386803734,
+          "n_sig": 23
+        },
+        {
+          "bucket": 95,
+          "sig_wr": 0.990990990990991,
+          "base_wr": 0.98757379546753,
+          "improvement": 0.0034171955234609808,
+          "n_sig": 111
+        }
+      ]
+    },
+    "combined": {
+      "n": 0,
+      "valid": false,
+      "reason": "insufficient_markets_0"
+    },
+    "union": {
+      "n": 1775,
+      "valid": true,
+      "wins": 1580,
+      "win_rate": 0.8901408450704226,
+      "avg_price": 70.95572287850457,
+      "breakeven": 0.7095572287850458,
+      "edge": 0.18058361628537678,
+      "p_value": 0.0,
+      "weighted_improvement": 0.1413532716844238,
+      "pos_buckets": 16,
+      "total_buckets": 18,
+      "bucket_ratio": "16/18",
+      "bucket_pct": 0.8888888888888888,
+      "ci_95_lower": 0.16779768071868748,
+      "ci_95_upper": 0.1935043355665129,
+      "temporal_stability": "1/1",
+      "quarter_details": [
+        {
+          "quarter": "2025Q4",
+          "edge": 0.18058361628537678,
+          "n": 1775
+        }
+      ],
+      "bucket_details": [
+        {
+          "bucket": 0,
+          "sig_wr": 0.0,
+          "base_wr": 0.03902439024390244,
+          "improvement": -0.03902439024390244,
+          "n_sig": 16
+        },
+        {
+          "bucket": 15,
+          "sig_wr": 0.0,
+          "base_wr": 0.082010582010582,
+          "improvement": -0.082010582010582,
+          "n_sig": 5
+        },
+        {
+          "bucket": 20,
+          "sig_wr": 0.45454545454545453,
+          "base_wr": 0.11561866125760649,
+          "improvement": 0.338926793287848,
+          "n_sig": 11
+        },
+        {
+          "bucket": 25,
+          "sig_wr": 0.2222222222222222,
+          "base_wr": 0.15086206896551724,
+          "improvement": 0.07136015325670497,
+          "n_sig": 9
+        },
+        {
+          "bucket": 30,
+          "sig_wr": 0.38461538461538464,
+          "base_wr": 0.22330097087378642,
+          "improvement": 0.16131441374159822,
+          "n_sig": 13
+        },
+        {
+          "bucket": 35,
+          "sig_wr": 0.5945945945945946,
+          "base_wr": 0.32262773722627736,
+          "improvement": 0.27196685736831727,
+          "n_sig": 37
+        },
+        {
+          "bucket": 40,
+          "sig_wr": 0.6557377049180327,
+          "base_wr": 0.38215859030837,
+          "improvement": 0.2735791146096627,
+          "n_sig": 61
+        },
+        {
+          "bucket": 45,
+          "sig_wr": 0.6804123711340206,
+          "base_wr": 0.46869565217391307,
+          "improvement": 0.21171671896010757,
+          "n_sig": 97
+        },
+        {
+          "bucket": 50,
+          "sig_wr": 0.7372262773722628,
+          "base_wr": 0.5565862708719852,
+          "improvement": 0.18064000650027756,
+          "n_sig": 137
+        },
+        {
+          "bucket": 55,
+          "sig_wr": 0.8666666666666667,
+          "base_wr": 0.6378845116028062,
+          "improvement": 0.22878215506386046,
+          "n_sig": 120
+        },
+        {
+          "bucket": 60,
+          "sig_wr": 0.9366197183098591,
+          "base_wr": 0.7031984948259643,
+          "improvement": 0.23342122348389482,
+          "n_sig": 142
+        },
+        {
+          "bucket": 65,
+          "sig_wr": 0.948905109489051,
+          "base_wr": 0.7650231124807396,
+          "improvement": 0.18388199700831143,
+          "n_sig": 137
+        },
+        {
+          "bucket": 70,
+          "sig_wr": 0.949685534591195,
+          "base_wr": 0.7797779777977798,
+          "improvement": 0.16990755679341518,
+          "n_sig": 159
+        },
+        {
+          "bucket": 75,
+          "sig_wr": 0.9891304347826086,
+          "base_wr": 0.8395813047711782,
+          "improvement": 0.14954913001143044,
+          "n_sig": 184
+        },
+        {
+          "bucket": 80,
+          "sig_wr": 0.9872611464968153,
+          "base_wr": 0.8858041828613733,
+          "improvement": 0.10145696363544199,
+          "n_sig": 157
+        },
+        {
+          "bucket": 85,
+          "sig_wr": 0.9933774834437086,
+          "base_wr": 0.9187398593834505,
+          "improvement": 0.07463762406025809,
+          "n_sig": 151
+        },
+        {
+          "bucket": 90,
+          "sig_wr": 0.9928571428571429,
+          "base_wr": 0.9567770946131963,
+          "improvement": 0.036080048243946616,
+          "n_sig": 140
+        },
+        {
+          "bucket": 95,
+          "sig_wr": 0.9897959183673469,
+          "base_wr": 0.98757379546753,
+          "improvement": 0.0022221228998169362,
+          "n_sig": 196
+        }
+      ]
+    },
+    "overlap_analysis": {
+      "rlm_only": 1290,
+      "s013_only": 485,
+      "overlap": 0,
+      "overlap_pct_of_rlm": 0.0,
+      "overlap_pct_of_s013": 0.0,
+      "edge_boost": 0
+    },
+    "recommendation": "INSUFFICIENT: Only 0 overlap markets (need 50+)"
+  },
+  "s001_signal_strength": {
+    "hypothesis": "Larger price drops indicate stronger smart money conviction; scale positions accordingly",
+    "by_price_drop": [
+      {
+        "bucket": "0-1c",
+        "low": 0,
+        "high": 1,
+        "n": 128,
+        "valid": true,
+        "win_rate": 0.84375,
+        "avg_no_price": 81.16965615247761,
+        "edge": 0.032053438475223905,
+        "improvement": 0.030527032681748167,
+        "bucket_ratio": "4/6",
+        "bucket_pct": 0.6666666666666666,
+        "ev_per_100": 3.2053438475223857,
+        "p_value": 0.17681148843612693,
+        "ci_lower": -0.015210733315542168,
+        "ci_upper": 0.07565245817304224
+      },
+      {
+        "bucket": "1-2c",
+        "low": 1,
+        "high": 2,
+        "n": 83,
+        "valid": true,
+        "win_rate": 0.8313253012048193,
+        "avg_no_price": 83.23303320350188,
+        "edge": -0.001005030830199427,
+        "improvement": -0.006701465201537218,
+        "bucket_ratio": "2/4",
+        "bucket_pct": 0.5,
+        "ev_per_100": -0.10050308301994626,
+        "p_value": 0.5097770965090025,
+        "ci_lower": -0.06578117645050784,
+        "ci_upper": 0.06179184090237624
+      },
+      {
+        "bucket": "2-3c",
+        "low": 2,
+        "high": 3,
+        "n": 66,
+        "valid": true,
+        "win_rate": 0.7424242424242424,
+        "avg_no_price": 76.76867324970551,
+        "edge": -0.02526249007281267,
+        "improvement": -0.06611033626753338,
+        "bucket_ratio": "1/4",
+        "bucket_pct": 0.25,
+        "ev_per_100": -2.5262490072812724,
+        "p_value": 0.6865096057275177,
+        "ci_lower": -0.11073979645597451,
+        "ci_upper": 0.05767691260866428
+      },
+      {
+        "bucket": "3-5c",
+        "low": 3,
+        "high": 5,
+        "n": 99,
+        "valid": true,
+        "win_rate": 0.8484848484848485,
+        "avg_no_price": 76.51662344461178,
+        "edge": 0.08331861403873064,
+        "improvement": 0.0596518102564918,
+        "bucket_ratio": "7/8",
+        "bucket_pct": 0.875,
+        "ev_per_100": 8.331861403873068,
+        "p_value": 0.02525045697781203,
+        "ci_lower": 0.0258956775618824,
+        "ci_upper": 0.13404381449232633
+      },
+      {
+        "bucket": "5-10c",
+        "low": 5,
+        "high": 10,
+        "n": 163,
+        "valid": true,
+        "win_rate": 0.8895705521472392,
+        "avg_no_price": 77.03310722952871,
+        "edge": 0.11923947985195216,
+        "improvement": 0.08509162496311688,
+        "bucket_ratio": "10/12",
+        "bucket_pct": 0.8333333333333334,
+        "ev_per_100": 11.923947985195213,
+        "p_value": 0.00014770306377565046,
+        "ci_lower": 0.08307659718782229,
+        "ci_upper": 0.15743226492324597
+      },
+      {
+        "bucket": "10-15c",
+        "low": 10,
+        "high": 15,
+        "n": 121,
+        "valid": true,
+        "win_rate": 0.9256198347107438,
+        "avg_no_price": 75.56961312890525,
+        "edge": 0.16992370342169139,
+        "improvement": 0.1097093443090889,
+        "bucket_ratio": "7/7",
+        "bucket_pct": 1.0,
+        "ev_per_100": 16.99237034216914,
+        "p_value": 6.8010891013381425e-06,
+        "ci_lower": 0.13096305050342338,
+        "ci_upper": 0.20867074305074962
+      },
+      {
+        "bucket": "15-20c",
+        "low": 15,
+        "high": 20,
+        "n": 122,
+        "valid": true,
+        "win_rate": 0.9672131147540983,
+        "avg_no_price": 77.24609820551737,
+        "edge": 0.19475213269892466,
+        "improvement": 0.13999301890513524,
+        "bucket_ratio": "7/7",
+        "bucket_pct": 1.0,
+        "ev_per_100": 19.475213269892464,
+        "p_value": 1.441585795181055e-07,
+        "ci_lower": 0.16597898042342993,
+        "ci_upper": 0.22195899313185935
+      },
+      {
+        "bucket": "20c+",
+        "low": 20,
+        "high": 100,
+        "n": 636,
+        "valid": true,
+        "win_rate": 0.9732704402515723,
+        "avg_no_price": 66.58426595275186,
+        "edge": 0.30742778072405363,
+        "improvement": 0.2584095038121017,
+        "bucket_ratio": "13/13",
+        "bucket_pct": 1.0,
+        "ev_per_100": 30.742778072405365,
+        "p_value": 0.0,
+        "ci_lower": 0.2928351231227723,
+        "ci_upper": 0.3216011050117507
+      }
+    ],
+    "optimal_scaling": {
+      "SKIP": {
+        "buckets": [
+          "0-1c",
+          "1-2c",
+          "2-3c"
+        ],
+        "scale": 0.0,
+        "reason": "Edge too low or negative"
+      },
+      "REDUCED": {
+        "buckets": [
+          "3-5c"
+        ],
+        "scale": 0.5,
+        "reason": "Positive but weak edge"
+      },
+      "STANDARD": {
+        "buckets": [
+          "5-10c"
+        ],
+        "scale": 1.0,
+        "reason": "Solid edge"
+      },
+      "INCREASED": {
+        "buckets": [
+          "10-15c",
+          "15-20c"
+        ],
+        "scale": 1.5,
+        "reason": "Strong edge"
+      },
+      "MAXIMUM": {
+        "buckets": [
+          "20c+"
+        ],
+        "scale": 2.0,
+        "reason": "Very strong edge"
+      }
+    },
+    "ev_analysis": {},
+    "recommendation": "IMPLEMENT: Scale positions by price_drop. Best tier: 20c+ (+30.74% edge). Skip price drops < 2c."
+  },
+  "summary": {
+    "baseline_rlm_edge": 0.20602979298122626,
+    "findings": [
+      "E-001 Volume-Weighted: SKIP - Both conditions edge: +20.21% vs trade-only: +20.60%",
+      "S-001 Signal Strength: IMPLEMENT - Edge range: 33.27% across price drop buckets"
+    ],
+    "implementations": [
+      "S-001: Scale by price_drop - 20c+: +30.74% vs 2-3c: +-2.53%"
+    ],
+    "verdict": {
+      "e001": "SKIP",
+      "s001": "IMPLEMENT"
+    }
+  }
+}

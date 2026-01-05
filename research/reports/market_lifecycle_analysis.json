@@ -1,0 +1,122 @@
+{
+  "category_analysis": {
+    "OTHER": {
+      "count": 25055,
+      "median_hours": 398.4,
+      "mean_hours": 3917.3220512871685,
+      "min_hours": 1.0,
+      "max_hours": 648008.2333333333,
+      "p25_hours": 344.0833333333333,
+      "p75_hours": 3974.983333333333,
+      "pct_under_24h": 6.038714827379764,
+      "pct_under_48h": 13.17501496707244,
+      "pct_under_7d": 16.807024545998804
+    },
+    "SPORTS": {
+      "count": 13933,
+      "median_hours": 383.6666666666667,
+      "mean_hours": 1335.3878938690718,
+      "min_hours": 9.333333333333334,
+      "max_hours": 44136.0,
+      "p25_hours": 354.9166666666667,
+      "p75_hours": 428.06666666666666,
+      "pct_under_24h": 0.32297423383334534,
+      "pct_under_48h": 1.952199813392665,
+      "pct_under_7d": 8.138950692600302
+    },
+    "POLITICS": {
+      "count": 254,
+      "median_hours": 13945.0,
+      "mean_hours": 18023.62132655293,
+      "min_hours": 689.0,
+      "max_hours": 37825.0,
+      "p25_hours": 11174.983333333334,
+      "p75_hours": 25560.0,
+      "pct_under_24h": 0.0,
+      "pct_under_48h": 0.0,
+      "pct_under_7d": 0.0
+    },
+    "CRYPTO": {
+      "count": 4746,
+      "median_hours": 1.0,
+      "mean_hours": 287.66285093880225,
+      "min_hours": 0.25,
+      "max_hours": 28080.0,
+      "p25_hours": 1.0,
+      "p75_hours": 1.0,
+      "pct_under_24h": 83.31226295828066,
+      "pct_under_48h": 93.27855035819638,
+      "pct_under_7d": 93.53139485882849
+    },
+    "WEATHER": {
+      "count": 4,
+      "median_hours": 9474.991666666667,
+      "mean_hours": 8893.241666666667,
+      "min_hours": 6601.0,
+      "max_hours": 10021.983333333334,
+      "p25_hours": 8392.7375,
+      "p75_hours": 9975.495833333334,
+      "pct_under_24h": 0.0,
+      "pct_under_48h": 0.0,
+      "pct_under_7d": 0.0
+    }
+  },
+  "sports_analysis": {
+    "NFL": {
+      "count": 8030,
+      "median_hours": 390.98333333333335,
+      "mean_hours": 997.0289698007472,
+      "min_hours": 20.0,
+      "max_hours": 24817.0,
+      "pct_under_24h": 0.012453300124533,
+      "pct_6_to_24h_window": 0.012453300124533
+    },
+    "NBA": {
+      "count": 4792,
+      "median_hours": 355.9,
+      "mean_hours": 1512.029173158969,
+      "min_hours": 9.333333333333334,
+      "max_hours": 44136.0,
+      "pct_under_24h": 0.9181969949916527,
+      "pct_6_to_24h_window": 0.9181969949916527
+    },
+    "MLB": {
+      "count": 151,
+      "median_hours": 7826.066666666667,
+      "mean_hours": 13416.242052980131,
+      "min_hours": 2505.483333333333,
+      "max_hours": 25513.0,
+      "pct_under_24h": 0.0,
+      "pct_6_to_24h_window": 0.0
+    },
+    "NCAAF": {
+      "count": 917,
+      "median_hours": 527.5666666666667,
+      "mean_hours": 1412.5117048346056,
+      "min_hours": 60.61666666666667,
+      "max_hours": 25728.0,
+      "pct_under_24h": 0.0,
+      "pct_6_to_24h_window": 0.0
+    }
+  },
+  "window_applicability": {
+    "SPORTS": {
+      "total_markets": 13933,
+      "markets_with_6_24h_window": "13888",
+      "pct_with_window": 99.67702576616665,
+      "median_duration_hours": 383.6666666666667
+    },
+    "POLITICS": {
+      "total_markets": 254,
+      "markets_with_6_24h_window": "254",
+      "pct_with_window": 100.0,
+      "median_duration_hours": 13945.0
+    },
+    "OTHER": {
+      "total_markets": 25055,
+      "markets_with_6_24h_window": "23542",
+      "pct_with_window": 93.96128517262024,
+      "median_duration_hours": 398.4
+    }
+  }
+}

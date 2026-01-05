@@ -1,0 +1,39 @@
+{
+  "timestamp": "2025-12-29T16:35:49.105192",
+  "S010": {
+    "strategy": "S010",
+    "status": "REJECTED",
+    "markets": 468,
+    "win_rate": 0.12393162393162394,
+    "breakeven": 0.1859164207325739,
+    "edge": -6.198479680094995,
+    "p_value": 0.9998812720994915,
+    "improvement": -0.8981696549218635,
+    "concentration": 0.017241379310344827,
+    "criteria": {
+      "passes_markets": true,
+      "passes_edge": "False",
+      "passes_pvalue": "False",
+      "passes_proxy": "False",
+      "passes_conc": "True"
+    }
+  },
+  "S011": {
+    "strategy": "S011",
+    "status": "REJECTED",
+    "markets": 592,
+    "win_rate": 0.8108108108108109,
+    "breakeven": 0.7520374101396641,
+    "edge": 5.8773400671146785,
+    "p_value": 0.00040064660078447376,
+    "improvement": 3.5770353714770313,
+    "concentration": 0.0020833333333333333,
+    "criteria": {
+      "passes_markets": true,
+      "passes_edge": "True",
+      "passes_pvalue": "True",
+      "passes_proxy": "False",
+      "passes_conc": "True"
+    }
+  }
+}

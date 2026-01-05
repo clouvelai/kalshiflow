@@ -1,0 +1,20 @@
+{
+  "strategy_id": "S010",
+  "hypothesis": "H087_refined",
+  "description": "Follow Round-Size Bot NO Consensus when NO < 45c",
+  "signal": "Markets where >60% of round-size trades are NO AND avg NO price < 45c",
+  "action": "Bet NO at current NO price",
+  "validation": {
+    "markets": 1287,
+    "win_rate": 0.9308469308469308,
+    "avg_no_price": 16.52023071735795,
+    "breakeven": 0.1652023071735795,
+    "edge_pct": 76.56446236733512,
+    "improvement_over_baseline_pct": 40.24745073741652,
+    "p_value": 1.78756172859038e-222,
+    "temporal_stability": {
+      "first_half_edge": 76.1670050641821,
+      "second_half_edge": 76.96130250076277
+    }
+  },
+  "is_validated": 

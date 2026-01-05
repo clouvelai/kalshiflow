@@ -1,0 +1,2213 @@
+{
+  "timestamp": "2025-12-29T15:31:15.146562",
+  "session": "Session 011: Extended Drunk Betting (H086)",
+  "total_trades": 1619902,
+  "sports_trades": 1180649,
+  "time_windows_tested": [
+    "ORIGINAL_11PM_3AM",
+    "EVENING_7PM_3AM",
+    "PRIMETIME_8PM_12AM",
+    "EARLY_EVENING_6PM_11PM",
+    "FULL_WEEKEND",
+    "SAT_SUN_NIGHTS",
+    "ALL_WEEKEND_NIGHTS",
+    "THU_FRI_SAT_NIGHTS",
+    "SUNDAY_NFL_SLATE",
+    "MONDAY_NIGHT"
+  ],
+  "leverage_thresholds": {
+    "high_lev_3x": 3.0,
+    "med_lev_2x": 2.0,
+    "any_leverage": null
+  },
+  "validated_strategies": [
+    {
+      "name": "ORIGINAL_11PM_3AM__high_lev_3x",
+      "n_trades": 31755,
+      "n_markets": 631,
+      "win_rate": 92.46356985163516,
+      "breakeven": 89.30134631994221,
+      "edge": 3.1622235316929426,
+      "p_value": 0.005449173744308521,
+      "concentration": 20.90841548081606,
+      "avg_fade_price": 89.30134631994221,
+      "total_fade_profit": 168609,
+      "window_name": "ORIGINAL_11PM_3AM__high_lev_3x",
+      "concentration_passes": true,
+      "temporal_stability": {
+        "period_edges": [
+          3.274366660471273,
+          0.11415226448450166,
+          1.8762672173185946,
+          0.920589517639403
+        ],
+        "positive_periods": 4,
+        "total_periods": 4,
+        "passes": true
+      },
+      "temporal_passes": true,
+      "price_proxy_check": {
+        "signal_edge": 3.1622235316929426,
+        "baseline_edge": 2.3745906837770447,
+        "improvement": 0.7876328479158978,
+        "is_price_proxy": false,
+        "price_range": [
+          76,
+          99
+        ],
+        "signal_markets": 631,
+        "baseline_markets": 3192
+      },
+      "is_price_proxy": false,
+      "improvement_vs_baseline": 0.7876328479158978,
+      "passes_all": true
+    },
+    {
+      "name": "EVENING_7PM_3AM__high_lev_3x",
+      "n_trades": 73652,
+      "n_markets": 1026,
+      "win_rate": 93.59595311855863,
+      "breakeven": 90.19907395474984,
+      "edge": 3.396879163808797,
+      "p_value": 8.051832232797634e-05,
+      "concentration": 10.091509358415292,
+      "avg_fade_price": 90.19907395474984,
+      "total_fade_profit": 480769,
+      "window_name": "EVENING_7PM_3AM__high_lev_3x",
+      "concentration_passes": true,
+      "temporal_stability": {
+        "period_edges": [
+          2.0646496800794,
+          2.7176177459840245,
+          3.483686817697451,
+          1.2158038709516483
+        ],
+        "positive_periods": 4,
+        "total_periods": 4,
+        "passes": true
+      },
+      "temporal_passes": true,
+      "price_proxy_check": {
+        "signal_edge": 3.396879163808797,
+        "baseline_edge": 2.3745906837770447,
+        "improvement": 1.0222884800317522,
+        "is_price_proxy": false,
+        "price_range": [
+          76,
+          99
+        ],
+        "signal_markets": 1026,
+        "baseline_markets": 3192
+      },
+      "is_price_proxy": false,
+      "improvement_vs_baseline": 1.0222884800317522,
+      "passes_all": true
+    },
+    {
+      "name": "EVENING_7PM_3AM__med_lev_2x",
+      "n_trades": 92977,
+      "n_markets": 1255,
+      "win_rate": 88.88893068855442,
+      "breakeven": 85.30825189047253,
+      "edge": 3.5806787980818933,
+      "p_value": 0.0001484869104982219,
+      "concentration": 11.345196239921204,
+      "avg_fade_price": 85.30825189047253,
+      "total_fade_profit": 397029,
+      "window_name": "EVENING_7PM_3AM__med_lev_2x",
+      "concentration_passes": true,
+      "temporal_stability": {
+        "period_edges": [
+          2.861780133369407,
+          1.8022884623110413,
+          4.580794931320964,
+          0.31608673720240343
+        ],
+        "positive_periods": 4,
+        "total_periods": 4,
+        "passes": true
+      },
+      "temporal_passes": true,
+      "price_proxy_check": {
+        "signal_edge": 3.5806787980818933,
+        "baseline_edge": 2.807809649058668,
+        "improvement": 0.7728691490232253,
+        "is_price_proxy": false,
+        "price_range": [
+          67,
+          99
+        ],
+        "signal_markets": 1255,
+        "baseline_markets": 3696
+      },
+      "is_price_proxy": false,
+      "improvement_vs_baseline": 0.7728691490232253,
+      "passes_all": true
+    },
+    {
+      "name": "PRIMETIME_8PM_12AM__high_lev_3x",
+      "n_trades": 69909,
+      "n_markets": 941,
+      "win_rate": 93.51667213587096,
+      "breakeven": 90.29024211797994,
+      "edge": 3.2264300178910132,
+      "p_value": 0.00042387126675550937,
+      "concentration": 10.687839825811803,
+      "avg_fade_price": 90.29024211797994,
+      "total_fade_profit": 471757,
+      "window_name": "PRIMETIME_8PM_12AM__high_lev_3x",
+      "concentration_passes": true,
+      "temporal_stability": {
+        "period_edges": [
+          2.2030929970564994,
+          1.9104374341825658,
+          3.325111428076155,
+          1.1540109758491068
+        ],
+        "positive_periods": 4,
+        "total_periods": 4,
+        "passes": true
+      },
+      "temporal_passes": true,
+      "price_proxy_check": {
+        "signal_edge": 3.2264300178910132,
+        "baseline_edge": 2.3745906837770447,
+        "improvement": 0.8518393341139685,
+        "is_price_proxy": false,
+        "price_range": [
+          76,
+          99
+        ],
+        "signal_markets": 941,
+        "baseline_markets": 3192
+      },
+      "is_price_proxy": false,
+      "improvement_vs_baseline": 0.8518393341139685,
+      "passes_all": true
+    },
+    {
+      "name": "PRIMETIME_8PM_12AM__med_lev_2x",
+      "n_trades": 87434,
+      "n_markets": 1144,
+      "win_rate": 88.77558323697299,
+      "breakeven": 85.47548877145815,
+      "edge": 3.3000944655148468,
+      "p_value": 0.0007617469373163087,
+      "concentration": 12.248671345231642,
+      "avg_fade_price": 85.47548877145815,
+      "total_fade_profit": 398734,
+      "window_name": "PRIMETIME_8PM_12AM__med_lev_2x",
+      "concentration_passes": true,
+      "temporal_stability": {
+        "period_edges": [
+          3.2185799509299895,
+          1.10739458405974,
+          4.665476490454745,
+          0.2776239315301021
+        ],
+        "positive_periods": 4,
+        "total_periods": 4,
+        "passes": true
+      },
+      "temporal_passes": true,
+      "price_proxy_check": {
+        "signal_edge": 3.3000944655148468,
+        "baseline_edge": 2.807809649058668,
+        "improvement": 0.49228481645617883,
+        "is_price_proxy": false,
+        "price_range": [
+          67,
+          99
+        ],
+        "signal_markets": 1144,
+        "baseline_markets": 3696
+      },
+      "is_price_proxy": false,
+      "improvement_vs_baseline": 0.49228481645617883,
+      "passes_all": true
+    },
+    {
+      "name": "EARLY_EVENING_6PM_11PM__high_lev_3x",
+      "n_trades": 76287,
+      "n_markets": 975,
+      "win_rate": 93.15169461703553,
+      "breakeven": 89.63896342090054,
+      "edge": 3.5127311961349883,
+      "p_value": 0.00010348225928521355,
+      "concentration": 9.910106993695909,
+      "avg_fade_price": 89.63896342090054,
+      "total_fade_profit": 478867,
+      "window_name": "EARLY_EVENING_6PM_11PM__high_lev_3x",
+      "concentration_passes": true,
+      "temporal_stability": {
+        "period_edges": [
+          4.147467881288636,
+          2.602754371014404,
+          3.853222665760503,
+          0.7480848450926225
+        ],
+        "positive_periods": 4,
+        "total_periods": 4,
+        "passes": true
+      },
+      "temporal_passes": true,
+      "price_proxy_check": {
+        "signal_edge": 3.5127311961349883,
+        "baseline_edge": 2.3745906837770447,
+        "improvement": 1.1381405123579436,
+        "is_price_proxy": false,
+        "price_range": [
+          76,
+          99
+        ],
+        "signal_markets": 975,
+        "baseline_markets": 3192
+      },
+      "is_price_proxy": false,
+      "improvement_vs_baseline": 1.1381405123579436,
+      "passes_all": true
+    },
+    {
+      "name": "EARLY_EVENING_6PM_11PM__med_lev_2x",
+      "n_trades": 97989,
+      "n_markets": 1217,
+      "win_rate": 88.24713682075861,
+      "breakeven": 84.2355732124528,
+      "edge": 4.011563608305801,
+      "p_value": 5.761374420342195e-05,
+      "concentration": 10.505059973674857,
+      "avg_fade_price": 84.2355732124528,
+      "total_fade_profit": 460182,
+      "window_name": "EARLY_EVENING_6PM_11PM__med_lev_2x",
+      "concentration_passes": true,
+      "temporal_stability": {
+        "period_edges": [
+          4.041223055348064,
+          3.1123620961440612,
+          4.323745826083991,
+          -0.011925041513549672
+        ],
+        "positive_periods": 3,
+        "total_periods": 4,
+        "passes": true
+      },
+      "temporal_passes": true,
+      "price_proxy_check": {
+        "signal_edge": 4.011563608305801,
+        "baseline_edge": 2.807809649058668,
+        "improvement": 1.2037539592471331,
+        "is_price_proxy": false,
+        "price_range": [
+          67,
+          99
+        ],
+        "signal_markets": 1217,
+        "baseline_markets": 3696
+      },
+      "is_price_proxy": false,
+      "improvement_vs_baseline": 1.2037539592471331,
+      "passes_all": true
+    },
+    {
+      "name": "FULL_WEEKEND__med_lev_2x",
+      "n_trades": 379102,
+      "n_markets": 3430,
+      "win_rate": 87.63684823251894,
+      "breakeven": 84.70454960459446,
+      "edge": 2.932298627924479,
+      "p_value": 6.833449451348895e-07,
+      "concentration": 20.2947967572397,
+      "avg_fade_price": 84.70454960459446,
+      "total_fade_profit": 2174016,
+      "window_name": "FULL_WEEKEND__med_lev_2x",
+      "concentration_passes": true,
+      "temporal_stability": {
+        "period_edges": [
+          2.8403749467411976,
+          1.0856064445548652,
+          0.22378570870351666,
+          4.366103393657883
+        ],
+        "positive_periods": 4,
+        "total_periods": 4,
+        "passes": true
+      },
+      "temporal_passes": true,
+      "price_proxy_check": {
+        "signal_edge": 2.932298627924479,
+        "baseline_edge": 2.807809649058668,
+        "improvement": 0.124488978865811,
+        "is_price_proxy": false,
+        "price_range": [
+          67,
+          99
+        ],
+        "signal_markets": 3430,
+        "baseline_markets": 3696
+      },
+      "is_price_proxy": false,
+      "improvement_vs_baseline": 0.124488978865811,
+      "passes_all": true
+    },
+    {
+      "name": "SAT_SUN_NIGHTS__med_lev_2x",
+      "n_trades": 139623,
+      "n_markets": 1633,
+      "win_rate": 88.92140646921354,
+      "breakeven": 85.56929135031426,
+      "edge": 3.3521151188992793,
+      "p_value": 4.0660150181597254e-05,
+      "concentration": 24.535998731776974,
+      "avg_fade_price": 85.56929135031426,
+      "total_fade_profit": 321473,
+      "window_name": "SAT_SUN_NIGHTS__med_lev_2x",
+      "concentration_passes": true,
+      "temporal_stability": {
+        "period_edges": [
+          4.147659483527722,
+          0.10550706117316011,
+          4.399611746497478,
+          5.404477175754174
+        ],
+        "positive_periods": 4,
+        "total_periods": 4,
+        "passes": true
+      },
+      "temporal_passes": true,
+      "price_proxy_check": {
+        "signal_edge": 3.3521151188992793,
+        "baseline_edge": 2.807809649058668,
+        "improvement": 0.5443054698406113,
+        "is_price_proxy": false,
+        "price_range": [
+          67,
+          99
+        ],
+        "signal_markets": 1633,
+        "baseline_markets": 3696
+      },
+      "is_price_proxy": false,
+      "improvement_vs_baseline": 0.5443054698406113,
+      "passes_all": true
+    },
+    {
+      "name": "ALL_WEEKEND_NIGHTS__high_lev_3x",
+      "n_trades": 127749,
+      "n_markets": 1708,
+      "win_rate": 92.91199550740829,
+      "breakeven": 90.40601979522049,
+      "edge": 2.5059757121878135,
+      "p_value": 0.00020708681502072928,
+      "concentration": 9.970959509210678,
+      "avg_fade_price": 90.40601979522049,
+      "total_fade_profit": 474327,
+      "window_name": "ALL_WEEKEND_NIGHTS__high_lev_3x",
+      "concentration_passes": true,
+      "temporal_stability": {
+        "period_edges": [
+          1.5312048407426282,
+          3.998449426244599,
+          -0.15132873112375655,
+          4.295938976908664
+        ],
+        "positive_periods": 3,
+        "total_periods": 4,
+        "passes": true
+      },
+      "temporal_passes": true,
+      "price_proxy_check": {
+        "signal_edge": 2.5059757121878135,
+        "baseline_edge": 2.3745906837770447,
+        "improvement": 0.1313850284107687,
+        "is_price_proxy": false,
+        "price_range": [
+          76,
+          99
+        ],
+        "signal_markets": 1708,
+        "baseline_markets": 3192
+      },
+      "is_price_proxy": false,
+      "improvement_vs_baseline": 0.1313850284107687,
+      "passes_all": true
+    },
+    {
+      "name": "ALL_WEEKEND_NIGHTS__med_lev_2x",
+      "n_trades": 182498,
+      "n_markets": 2015,
+      "win_rate": 89.35534861699945,
+      "breakeven": 85.90263073604676,
+      "edge": 3.4527178809526937,
+      "p_value": 2.721804040731474e-06,
+      "concentration": 19.453853750078558,
+      "avg_fade_price": 85.90263073604676,
+      "total_fade_profit": 579047,
+      "window_name": "ALL_WEEKEND_NIGHTS__med_lev_2x",
+      "concentration_passes": true,
+      "temporal_stability": {
+        "period_edges": [
+          2.3312076546823546,
+          3.2050487920918025,
+          0.9999388099278583,
+          4.993407111094639
+        ],
+        "positive_periods": 4,
+        "total_periods": 4,
+        "passes": true
+      },
+      "temporal_passes": true,
+      "price_proxy_check": {
+        "signal_edge": 3.4527178809526937,
+        "baseline_edge": 2.807809649058668,
+        "improvement": 0.6449082318940258,
+        "is_price_proxy": false,
+        "price_range": [
+          67,
+          99
+        ],
+        "signal_markets": 2015,
+        "baseline_markets": 3696
+      },
+      "is_price_proxy": false,
+      "improvement_vs_baseline": 0.6449082318940258,
+      "passes_all": true
+    },
+    {
+      "name": "THU_FRI_SAT_NIGHTS__high_lev_3x",
+      "n_trades": 74013,
+      "n_markets": 1070,
+      "win_rate": 93.85929710246836,
+      "breakeven": 90.32524517241215,
+      "edge": 3.5340519300562145,
+      "p_value": 2.489601411792854e-05,
+      "concentration": 10.060046765936633,
+      "avg_fade_price": 90.32524517241215,
+      "total_fade_profit": 481038,
+      "window_name": "THU_FRI_SAT_NIGHTS__high_lev_3x",
+      "concentration_passes": true,
+      "temporal_stability": {
+        "period_edges": [
+          2.044611090652837,
+          2.716901349565104,
+          3.2821082731764317,
+          1.8621001348741784
+        ],
+        "positive_periods": 4,
+        "total_periods": 4,
+        "passes": true
+      },
+      "temporal_passes": true,
+      "price_proxy_check": {
+        "signal_edge": 3.5340519300562145,
+        "baseline_edge": 2.3745906837770447,
+        "improvement": 1.1594612462791698,
+        "is_price_proxy": false,
+        "price_range": [
+          76,
+          99
+        ],
+        "signal_markets": 1070,
+        "baseline_markets": 3192
+      },
+      "is_price_proxy": false,
+      "improvement_vs_baseline": 1.1594612462791698,
+      "passes_all": true
+    },
+    {
+      "name": "THU_FRI_SAT_NIGHTS__med_lev_2x",
+      "n_trades": 93677,
+      "n_markets": 1308,
+      "win_rate": 89.09832416982859,
+      "breakeven": 85.45476391771454,
+      "edge": 3.643560252114042,
+      "p_value": 7.314968728226448e-05,
+      "concentration": 11.21265843101574,
+      "avg_fade_price": 85.45476391771454,
+      "total_fade_profit": 403889,
+      "window_name": "THU_FRI_SAT_NIGHTS__med_lev_2x",
+      "concentration_passes": true,
+      "temporal_stability": {
+        "period_edges": [
+          2.505066298784542,
+          1.9813971614193404,
+          4.587094092637445,
+          0.8050622649685368
+        ],
+        "positive_periods": 4,
+        "total_periods": 4,
+        "passes": true
+      },
+      "temporal_passes": true,
+      "price_proxy_check": {
+        "signal_edge": 3.643560252114042,
+        "baseline_edge": 2.807809649058668,
+        "improvement": 0.8357506030553741,
+        "is_price_proxy": false,
+        "price_range": [
+          67,
+          99
+        ],
+        "signal_markets": 1308,
+        "baseline_markets": 3696
+      },
+      "is_price_proxy": false,
+      "improvement_vs_baseline": 0.8357506030553741,
+      "passes_all": true
+    },
+    {
+      "name": "MONDAY_NIGHT__high_lev_3x",
+      "n_trades": 1430,
+      "n_markets": 181,
+      "win_rate": 96.80579414086078,
+      "breakeven": 91.21557077819584,
+      "edge": 5.590223362664936,
+      "p_value": 0.0031548558268171753,
+      "concentration": 16.408668730650156,
+      "avg_fade_price": 91.21557077819584,
+      "total_fade_profit": 10353,
+      "window_name": "MONDAY_NIGHT__high_lev_3x",
+      "concentration_passes": true,
+      "temporal_stability": {
+        "period_edges": [
+          2.339097939097934,
+          9.97192172210134,
+          8.440758898367594,
+          5.905203522110547
+        ],
+        "positive_periods": 4,
+        "total_periods": 4,
+        "passes": true
+      },
+      "temporal_passes": true,
+      "price_proxy_check": {
+        "signal_edge": 5.590223362664936,
+        "baseline_edge": 2.3745906837770447,
+        "improvement": 3.2156326788878915,
+        "is_price_proxy": false,
+        "price_range": [
+          76,
+          99
+        ],
+        "signal_markets": 181,
+        "baseline_markets": 3192
+      },
+      "is_price_proxy": false,
+      "improvement_vs_baseline": 3.2156326788878915,
+      "passes_all": true
+    }
+  ],
+  "all_results": {
+    "ORIGINAL_11PM_3AM__high_lev_3x": {
+      "n_trades": 31755,
+      "n_markets": 631,
+      "win_rate": 92.46356985163516,
+      "breakeven": 89.30134631994221,
+      "edge": 3.1622235316929426,
+      "p_value": 0.005449173744308521,
+      "concentration": 20.90841548081606,
+      "avg_fade_price": 89.30134631994221,
+      "total_fade_profit": 168609,
+      "window_name": "ORIGINAL_11PM_3AM__high_lev_3x",
+      "concentration_passes": true,
+      "temporal_stability": {
+        "period_edges": [
+          3.274366660471273,
+          0.11415226448450166,
+          1.8762672173185946,
+          0.920589517639403
+        ],
+        "positive_periods": 4,
+        "total_periods": 4,
+        "passes": true
+      },
+      "temporal_passes": true,
+      "price_proxy_check": {
+        "signal_edge": 3.1622235316929426,
+        "baseline_edge": 2.3745906837770447,
+        "improvement": 0.7876328479158978,
+        "is_price_proxy": false,
+        "price_range": [
+          76,
+          99
+        ],
+        "signal_markets": 631,
+        "baseline_markets": 3192
+      },
+      "is_price_proxy": false,
+      "improvement_vs_baseline": 0.7876328479158978,
+      "passes_all": true
+    },
+    "ORIGINAL_11PM_3AM__med_lev_2x": {
+      "n_trades": 39416,
+      "n_markets": 797,
+      "win_rate": 86.22849174722565,
+      "breakeven": 84.63702726095859,
+      "edge": 1.591464486267058,
+      "p_value": 0.11942407614991467,
+      "concentration": 21.64737333232453,
+      "avg_fade_price": 84.63702726095859,
+      "total_fade_profit": 108912,
+      "window_name": "ORIGINAL_11PM_3AM__med_lev_2x",
+      "concentration_passes": true,
+      "temporal_stability": {
+        "period_edges": [
+          0.8851399739347676,
+          0.9762578260534172,
+          2.954616495164064,
+          -1.2053974312123072
+        ],
+        "positive_periods": 3,
+        "total_periods": 4,
+        "passes": true
+      },
+      "temporal_passes": true,
+      "price_proxy_check": {
+        "signal_edge": 1.591464486267058,
+        "baseline_edge": 2.807809649058668,
+        "improvement": -1.21634516279161,
+        "is_price_proxy": true,
+        "price_range": [
+          67,
+          99
+        ],
+        "signal_markets": 797,
+        "baseline_markets": 3696
+      },
+      "is_price_proxy": true,
+      "improvement_vs_baseline": -1.21634516279161,
+      "passes_all": false
+    },
+    "ORIGINAL_11PM_3AM__any_leverage": {
+      "n_trades": 118261,
+      "n_markets": 1646,
+      "win_rate": 54.63631592814446,
+      "breakeven": 51.169866841944376,
+      "edge": 3.466449086200085,
+      "p_value": 0.0027548471765598435,
+      "concentration": 13.013687039417224,
+      "avg_fade_price": 51.16986684194438,
+      "total_fade_profit": 288507,
+      "window_name": "ORIGINAL_11PM_3AM__any_leverage",
+      "concentration_passes": true,
+      "temporal_stability": {
+        "period_edges": [
+          3.54855991611121,
+          3.7780175005777905,
+          4.241107656265153,
+          1.6572407104692988
+        ],
+        "positive_periods": 4,
+        "total_periods": 4,
+        "passes": true
+      },
+      "temporal_passes": true,
+      "price_proxy_check": {
+        "signal_edge": 3.466449086200085,
+        "baseline_edge": 3.7130640055342834,
+        "improvement": -0.2466149193341982,
+        "is_price_proxy": true,
+        "price_range": [
+          1,
+          99
+        ],
+        "signal_markets": 1646,
+        "baseline_markets": 7002
+      },
+      "is_price_proxy": true,
+      "improvement_vs_baseline": -0.2466149193341982,
+      "passes_all": false
+    },
+    "EVENING_7PM_3AM__high_lev_3x": {
+      "n_trades": 73652,
+      "n_markets": 1026,
+      "win_rate": 93.59595311855863,
+      "breakeven": 90.19907395474984,
+      "edge": 3.396879163808797,
+      "p_value": 8.051832232797634e-05,
+      "concentration": 10.091509358415292,
+      "avg_fade_price": 90.19907395474984,
+      "total_fade_profit": 480769,
+      "window_name": "EVENING_7PM_3AM__high_lev_3x",
+      "concentration_passes": true,
+      "temporal_stability": {
+        "period_edges": [
+          2.0646496800794,
+          2.7176177459840245,
+          3.483686817697451,
+          1.2158038709516483
+        ],
+        "positive_periods": 4,
+        "total_periods": 4,
+        "passes": true
+      },
+      "temporal_passes": true,
+      "price_proxy_check": {
+        "signal_edge": 3.396879163808797,
+        "baseline_edge": 2.3745906837770447,
+        "improvement": 1.0222884800317522,
+        "is_price_proxy": false,
+        "price_range": [
+          76,
+          99
+        ],
+        "signal_markets": 1026,
+        "baseline_markets": 3192
+      },
+      "is_price_proxy": false,
+      "improvement_vs_baseline": 1.0222884800317522,
+      "passes_all": true
+    },
+    "EVENING_7PM_3AM__med_lev_2x": {
+      "n_trades": 92977,
+      "n_markets": 1255,
+      "win_rate": 88.88893068855442,
+      "breakeven": 85.30825189047253,
+      "edge": 3.5806787980818933,
+      "p_value": 0.0001484869104982219,
+      "concentration": 11.345196239921204,
+      "avg_fade_price": 85.30825189047253,
+      "total_fade_profit": 397029,
+      "window_name": "EVENING_7PM_3AM__med_lev_2x",
+      "concentration_passes": true,
+      "temporal_stability": {
+        "period_edges": [
+          2.861780133369407,
+          1.8022884623110413,
+          4.580794931320964,
+          0.31608673720240343
+        ],
+        "positive_periods": 4,
+        "total_periods": 4,
+        "passes": true
+      },
+      "temporal_passes": true,
+      "price_proxy_check": {
+        "signal_edge": 3.5806787980818933,
+        "baseline_edge": 2.807809649058668,
+        "improvement": 0.7728691490232253,
+        "is_price_proxy": false,
+        "price_range": [
+          67,
+          99
+        ],
+        "signal_markets": 1255,
+        "baseline_markets": 3696
+      },
+      "is_price_proxy": false,
+      "improvement_vs_baseline": 0.7728691490232253,
+      "passes_all": true
+    },
+    "EVENING_7PM_3AM__any_leverage": {
+      "n_trades": 272585,
+      "n_markets": 2657,
+      "win_rate": 46.77390372223174,
+      "breakeven": 43.48484729727335,
+      "edge": 3.289056424958398,
+      "p_value": 0.00038680878571648795,
+      "concentration": 16.383277918074338,
+      "avg_fade_price": 43.48484729727335,
+      "total_fade_profit": 778566,
+      "window_name": "EVENING_7PM_3AM__any_leverage",
+      "concentration_passes": true,
+      "temporal_stability": {
+        "period_edges": [
+          2.3626383736160603,
+          3.746747919723814,
+          3.7641711584176116,
+          2.9581148069157237
+        ],
+        "positive_periods": 4,
+        "total_periods": 4,
+        "passes": true
+      },
+      "temporal_passes": true,
+      "price_proxy_check": {
+        "signal_edge": 3.289056424958398,
+        "baseline_edge": 3.7130640055342834,
+        "improvement": -0.4240075805758856,
+        "is_price_proxy": true,
+        "price_range": [
+          1,
+          99
+        ],
+        "signal_markets": 2657,
+        "baseline_markets": 7002
+      },
+      "is_price_proxy": true,
+      "improvement_vs_baseline": -0.4240075805758856,
+      "passes_all": false
+    },
+    "PRIMETIME_8PM_12AM__high_lev_3x": {
+      "n_trades": 69909,
+      "n_markets": 941,
+      "win_rate": 93.51667213587096,
+      "breakeven": 90.29024211797994,
+      "edge": 3.2264300178910132,
+      "p_value": 0.00042387126675550937,
+      "concentration": 10.687839825811803,
+      "avg_fade_price": 90.29024211797994,
+      "total_fade_profit": 471757,
+      "window_name": "PRIMETIME_8PM_12AM__high_lev_3x",
+      "concentration_passes": true,
+      "temporal_stability": {
+        "period_edges": [
+          2.2030929970564994,
+          1.9104374341825658,
+          3.325111428076155,
+          1.1540109758491068
+        ],
+        "positive_periods": 4,
+        "total_periods": 4,
+        "passes": true
+      },
+      "temporal_passes": true,
+      "price_proxy_check": {
+        "signal_edge": 3.2264300178910132,
+        "baseline_edge": 2.3745906837770447,
+        "improvement": 0.8518393341139685,
+        "is_price_proxy": false,
+        "price_range": [
+          76,
+          99
+        ],
+        "signal_markets": 941,
+        "baseline_markets": 3192
+      },
+      "is_price_proxy": false,
+      "improvement_vs_baseline": 0.8518393341139685,
+      "passes_all": true
+    },
+    "PRIMETIME_8PM_12AM__med_lev_2x": {
+      "n_trades": 87434,
+      "n_markets": 1144,
+      "win_rate": 88.77558323697299,
+      "breakeven": 85.47548877145815,
+      "edge": 3.3000944655148468,
+      "p_value": 0.0007617469373163087,
+      "concentration": 12.248671345231642,
+      "avg_fade_price": 85.47548877145815,
+      "total_fade_profit": 398734,
+      "window_name": "PRIMETIME_8PM_12AM__med_lev_2x",
+      "concentration_passes": true,
+      "temporal_stability": {
+        "period_edges": [
+          3.2185799509299895,
+          1.10739458405974,
+          4.665476490454745,
+          0.2776239315301021
+        ],
+        "positive_periods": 4,
+        "total_periods": 4,
+        "passes": true
+      },
+      "temporal_passes": true,
+      "price_proxy_check": {
+        "signal_edge": 3.3000944655148468,
+        "baseline_edge": 2.807809649058668,
+        "improvement": 0.49228481645617883,
+        "is_price_proxy": false,
+        "price_range": [
+          67,
+          99
+        ],
+        "signal_markets": 1144,
+        "baseline_markets": 3696
+      },
+      "is_price_proxy": false,
+      "improvement_vs_baseline": 0.49228481645617883,
+      "passes_all": true
+    },
+    "PRIMETIME_8PM_12AM__any_leverage": {
+      "n_trades": 252854,
+      "n_markets": 2467,
+      "win_rate": 46.08348698201633,
+      "breakeven": 42.68847900033268,
+      "edge": 3.395007981683651,
+      "p_value": 0.00041277723252272506,
+      "concentration": 15.990805019104382,
+      "avg_fade_price": 42.68847900033268,
+      "total_fade_profit": 664067,
+      "window_name": "PRIMETIME_8PM_12AM__any_leverage",
+      "concentration_passes": true,
+      "temporal_stability": {
+        "period_edges": [
+          2.6556283939176692,
+          3.1447955370326963,
+          3.661805502040333,
+          2.944780153882154
+        ],
+        "positive_periods": 4,
+        "total_periods": 4,
+        "passes": true
+      },
+      "temporal_passes": true,
+      "price_proxy_check": {
+        "signal_edge": 3.395007981683651,
+        "baseline_edge": 3.7130640055342834,
+        "improvement": -0.3180560238506325,
+        "is_price_proxy": true,
+        "price_range": [
+          1,
+          99
+        ],
+        "signal_markets": 2467,
+        "baseline_markets": 7002
+      },
+      "is_price_proxy": true,
+      "improvement_vs_baseline": -0.3180560238506325,
+      "passes_all": false
+    },
+    "EARLY_EVENING_6PM_11PM__high_lev_3x": {
+      "n_trades": 76287,
+      "n_markets": 975,
+      "win_rate": 93.15169461703553,
+      "breakeven": 89.63896342090054,
+      "edge": 3.5127311961349883,
+      "p_value": 0.00010348225928521355,
+      "concentration": 9.910106993695909,
+      "avg_fade_price": 89.63896342090054,
+      "total_fade_profit": 478867,
+      "window_name": "EARLY_EVENING_6PM_11PM__high_lev_3x",
+      "concentration_passes": true,
+      "temporal_stability": {
+        "period_edges": [
+          4.147467881288636,
+          2.602754371014404,
+          3.853222665760503,
+          0.7480848450926225
+        ],
+        "positive_periods": 4,
+        "total_periods": 4,
+        "passes": true
+      },
+      "temporal_passes": true,
+      "price_proxy_check": {
+        "signal_edge": 3.5127311961349883,
+        "baseline_edge": 2.3745906837770447,
+        "improvement": 1.1381405123579436,
+        "is_price_proxy": false,
+        "price_range": [
+          76,
+          99
+        ],
+        "signal_markets": 975,
+        "baseline_markets": 3192
+      },
+      "is_price_proxy": false,
+      "improvement_vs_baseline": 1.1381405123579436,
+      "passes_all": true
+    },
+    "EARLY_EVENING_6PM_11PM__med_lev_2x": {
+      "n_trades": 97989,
+      "n_markets": 1217,
+      "win_rate": 88.24713682075861,
+      "breakeven": 84.2355732124528,
+      "edge": 4.011563608305801,
+      "p_value": 5.761374420342195e-05,
+      "concentration": 10.505059973674857,
+      "avg_fade_price": 84.2355732124528,
+      "total_fade_profit": 460182,
+      "window_name": "EARLY_EVENING_6PM_11PM__med_lev_2x",
+      "concentration_passes": true,
+      "temporal_stability": {
+        "period_edges": [
+          4.041223055348064,
+          3.1123620961440612,
+          4.323745826083991,
+          -0.011925041513549672
+        ],
+        "positive_periods": 3,
+        "total_periods": 4,
+        "passes": true
+      },
+      "temporal_passes": true,
+      "price_proxy_check": {
+        "signal_edge": 4.011563608305801,
+        "baseline_edge": 2.807809649058668,
+        "improvement": 1.2037539592471331,
+        "is_price_proxy": false,
+        "price_range": [
+          67,
+          99
+        ],
+        "signal_markets": 1217,
+        "baseline_markets": 3696
+      },
+      "is_price_proxy": false,
+      "improvement_vs_baseline": 1.2037539592471331,
+      "passes_all": true
+    },
+    "EARLY_EVENING_6PM_11PM__any_leverage": {
+      "n_trades": 282503,
+      "n_markets": 2572,
+      "win_rate": 45.88262217059545,
+      "breakeven": 42.317130423321906,
+      "edge": 3.5654917472735415,
+      "p_value": 0.0001444883940561153,
+      "concentration": 15.750047417810267,
+      "avg_fade_price": 42.317130423321906,
+      "total_fade_profit": 873483,
+      "window_name": "EARLY_EVENING_6PM_11PM__any_leverage",
+      "concentration_passes": true,
+      "temporal_stability": {
+        "period_edges": [
+          2.8481380538170455,
+          3.6160043754098368,
+          4.150775665129763,
+          2.58562169839448
+        ],
+        "positive_periods": 4,
+        "total_periods": 4,
+        "passes": true
+      },
+      "temporal_passes": true,
+      "price_proxy_check": {
+        "signal_edge": 3.5654917472735415,
+        "baseline_edge": 3.7130640055342834,
+        "improvement": -0.14757225826074194,
+        "is_price_proxy": true,
+        "price_range": [
+          1,
+          99
+        ],
+        "signal_markets": 2572,
+        "baseline_markets": 7002
+      },
+      "is_price_proxy": true,
+      "improvement_vs_baseline": -0.14757225826074194,
+      "passes_all": false
+    },
+    "FULL_WEEKEND__high_lev_3x": {
+      "n_trades": 249914,
+      "n_markets": 2973,
+      "win_rate": 91.54245825529918,
+      "breakeven": 89.29928569644093,
+      "edge": 2.243172558858242,
+      "p_value": 2.9647818984898486e-05,
+      "concentration": 9.995595658020385,
+      "avg_fade_price": 89.29928569644093,
+      "total_fade_profit": 1300468,
+      "window_name": "FULL_WEEKEND__high_lev_3x",
+      "concentration_passes": true,
+      "temporal_stability": {
+        "period_edges": [
+          1.9488697380075526,
+          0.8121185322363833,
+          1.9141064926959106,
+          3.325561200926519
+        ],
+        "positive_periods": 4,
+        "total_periods": 4,
+        "passes": true
+      },
+      "temporal_passes": true,
+      "price_proxy_check": {
+        "signal_edge": 2.243172558858242,
+        "baseline_edge": 2.3745906837770447,
+        "improvement": -0.1314181249188029,
+        "is_price_proxy": true,
+        "price_range": [
+          76,
+          99
+        ],
+        "signal_markets": 2973,
+        "baseline_markets": 3192
+      },
+      "is_price_proxy": true,
+      "improvement_vs_baseline": -0.1314181249188029,
+      "passes_all": false
+    },
+    "FULL_WEEKEND__med_lev_2x": {
+      "n_trades": 379102,
+      "n_markets": 3430,
+      "win_rate": 87.63684823251894,
+      "breakeven": 84.70454960459446,
+      "edge": 2.932298627924479,
+      "p_value": 6.833449451348895e-07,
+      "concentration": 20.2947967572397,
+      "avg_fade_price": 84.70454960459446,
+      "total_fade_profit": 2174016,
+      "window_name": "FULL_WEEKEND__med_lev_2x",
+      "concentration_passes": true,
+      "temporal_stability": {
+        "period_edges": [
+          2.8403749467411976,
+          1.0856064445548652,
+          0.22378570870351666,
+          4.366103393657883
+        ],
+        "positive_periods": 4,
+        "total_periods": 4,
+        "passes": true
+      },
+      "temporal_passes": true,
+      "price_proxy_check": {
+        "signal_edge": 2.932298627924479,
+        "baseline_edge": 2.807809649058668,
+        "improvement": 0.124488978865811,
+        "is_price_proxy": false,
+        "price_range": [
+          67,
+          99
+        ],
+        "signal_markets": 3430,
+        "baseline_markets": 3696
+      },
+      "is_price_proxy": false,
+      "improvement_vs_baseline": 0.124488978865811,
+      "passes_all": true
+    },
+    "FULL_WEEKEND__any_leverage": {
+      "n_trades": 1131824,
+      "n_markets": 6414,
+      "win_rate": 44.71252577369724,
+      "breakeven": 41.06579275854773,
+      "edge": 3.646733015149506,
+      "p_value": 2.059044160665139e-09,
+      "concentration": 13.000845695874258,
+      "avg_fade_price": 41.06579275854773,
+      "total_fade_profit": 1759090,
+      "window_name": "FULL_WEEKEND__any_leverage",
+      "concentration_passes": true,
+      "temporal_stability": {
+        "period_edges": [
+          3.1178065935960952,
+          2.688383123106952,
+          1.8712557407504604,
+          4.030165127036911
+        ],
+        "positive_periods": 4,
+        "total_periods": 4,
+        "passes": true
+      },
+      "temporal_passes": true,
+      "price_proxy_check": {
+        "signal_edge": 3.646733015149506,
+        "baseline_edge": 3.7130640055342834,
+        "improvement": -0.06633099038477752,
+        "is_price_proxy": true,
+        "price_range": [
+          1,
+          99
+        ],
+        "signal_markets": 6414,
+        "baseline_markets": 7002
+      },
+      "is_price_proxy": true,
+      "improvement_vs_baseline": -0.06633099038477752,
+      "passes_all": false
+    },
+    "SAT_SUN_NIGHTS__high_lev_3x": {
+      "n_trades": 91915,
+      "n_markets": 1369,
+      "win_rate": 92.32717465551077,
+      "breakeven": 90.05071540252354,
+      "edge": 2.2764592529872285,
+      "p_value": 0.002840680447302403,
+      "concentration": 14.057361557361558,
+      "avg_fade_price": 90.05071540252354,
+      "total_fade_profit": 160121,
+      "window_name": "SAT_SUN_NIGHTS__high_lev_3x",
+      "concentration_passes": true,
+      "temporal_stability": {
+        "period_edges": [
+          3.480325444968646,
+          0.01381211623934231,
+          0.18878834593537563,
+          3.5446314568335024
+        ],
+        "positive_periods": 4,
+        "total_periods": 4,
+        "passes": true
+      },
+      "temporal_passes": true,
+      "price_proxy_check": {
+        "signal_edge": 2.2764592529872285,
+        "baseline_edge": 2.3745906837770447,
+        "improvement": -0.09813143078981623,
+        "is_price_proxy": true,
+        "price_range": [
+          76,
+          99
+        ],
+        "signal_markets": 1369,
+        "baseline_markets": 3192
+      },
+      "is_price_proxy": true,
+      "improvement_vs_baseline": -0.09813143078981623,
+      "passes_all": false
+    },
+    "SAT_SUN_NIGHTS__med_lev_2x": {
+      "n_trades": 139623,
+      "n_markets": 1633,
+      "win_rate": 88.92140646921354,
+      "breakeven": 85.56929135031426,
+      "edge": 3.3521151188992793,
+      "p_value": 4.0660150181597254e-05,
+      "concentration": 24.535998731776974,
+      "avg_fade_price": 85.56929135031426,
+      "total_fade_profit": 321473,
+      "window_name": "SAT_SUN_NIGHTS__med_lev_2x",
+      "concentration_passes": true,
+      "temporal_stability": {
+        "period_edges": [
+          4.147659483527722,
+          0.10550706117316011,
+          4.399611746497478,
+          5.404477175754174
+        ],
+        "positive_periods": 4,
+        "total_periods": 4,
+        "passes": true
+      },
+      "temporal_passes": true,
+      "price_proxy_check": {
+        "signal_edge": 3.3521151188992793,
+        "baseline_edge": 2.807809649058668,
+        "improvement": 0.5443054698406113,
+        "is_price_proxy": false,
+        "price_range": [
+          67,
+          99
+        ],
+        "signal_markets": 1633,
+        "baseline_markets": 3696
+      },
+      "is_price_proxy": false,
+      "improvement_vs_baseline": 0.5443054698406113,
+      "passes_all": true
+    },
+    "SAT_SUN_NIGHTS__any_leverage": {
+      "n_trades": 425210,
+      "n_markets": 3197,
+      "win_rate": 49.82538111658588,
+      "breakeven": 46.72239605463534,
+      "edge": 3.102985061950542,
+      "p_value": 0.0002670584303631995,
+      "concentration": 28.212819236298646,
+      "avg_fade_price": 46.72239605463534,
+      "total_fade_profit": 718518,
+      "window_name": "SAT_SUN_NIGHTS__any_leverage",
+      "concentration_passes": true,
+      "temporal_stability": {
+        "period_edges": [
+          3.480945014361303,
+          1.617018906079648,
+          4.4304411604357385,
+          5.191835608569067
+        ],
+        "positive_periods": 4,
+        "total_periods": 4,
+        "passes": true
+      },
+      "temporal_passes": true,
+      "price_proxy_check": {
+        "signal_edge": 3.102985061950542,
+        "baseline_edge": 3.7130640055342834,
+        "improvement": -0.6100789435837415,
+        "is_price_proxy": true,
+        "price_range": [
+          1,
+          99
+        ],
+        "signal_markets": 3197,
+        "baseline_markets": 7002
+      },
+      "is_price_proxy": true,
+      "improvement_vs_baseline": -0.6100789435837415,
+      "passes_all": false
+    },
+    "ALL_WEEKEND_NIGHTS__high_lev_3x": {
+      "n_trades": 127749,
+      "n_markets": 1708,
+      "win_rate": 92.91199550740829,
+      "breakeven": 90.40601979522049,
+      "edge": 2.5059757121878135,
+      "p_value": 0.00020708681502072928,
+      "concentration": 9.970959509210678,
+      "avg_fade_price": 90.40601979522049,
+      "total_fade_profit": 474327,
+      "window_name": "ALL_WEEKEND_NIGHTS__high_lev_3x",
+      "concentration_passes": true,
+      "temporal_stability": {
+        "period_edges": [
+          1.5312048407426282,
+          3.998449426244599,
+          -0.15132873112375655,
+          4.295938976908664
+        ],
+        "positive_periods": 3,
+        "total_periods": 4,
+        "passes": true
+      },
+      "temporal_passes": true,
+      "price_proxy_check": {
+        "signal_edge": 2.5059757121878135,
+        "baseline_edge": 2.3745906837770447,
+        "improvement": 0.1313850284107687,
+        "is_price_proxy": false,
+        "price_range": [
+          76,
+          99
+        ],
+        "signal_markets": 1708,
+        "baseline_markets": 3192
+      },
+      "is_price_proxy": false,
+      "improvement_vs_baseline": 0.1313850284107687,
+      "passes_all": true
+    },
+    "ALL_WEEKEND_NIGHTS__med_lev_2x": {
+      "n_trades": 182498,
+      "n_markets": 2015,
+      "win_rate": 89.35534861699945,
+      "breakeven": 85.90263073604676,
+      "edge": 3.4527178809526937,
+      "p_value": 2.721804040731474e-06,
+      "concentration": 19.453853750078558,
+      "avg_fade_price": 85.90263073604676,
+      "total_fade_profit": 579047,
+      "window_name": "ALL_WEEKEND_NIGHTS__med_lev_2x",
+      "concentration_passes": true,
+      "temporal_stability": {
+        "period_edges": [
+          2.3312076546823546,
+          3.2050487920918025,
+          0.9999388099278583,
+          4.993407111094639
+        ],
+        "positive_periods": 4,
+        "total_periods": 4,
+        "passes": true
+      },
+      "temporal_passes": true,
+      "price_proxy_check": {
+        "signal_edge": 3.4527178809526937,
+        "baseline_edge": 2.807809649058668,
+        "improvement": 0.6449082318940258,
+        "is_price_proxy": false,
+        "price_range": [
+          67,
+          99
+        ],
+        "signal_markets": 2015,
+        "baseline_markets": 3696
+      },
+      "is_price_proxy": false,
+      "improvement_vs_baseline": 0.6449082318940258,
+      "passes_all": true
+    },
+    "ALL_WEEKEND_NIGHTS__any_leverage": {
+      "n_trades": 532835,
+      "n_markets": 4009,
+      "win_rate": 46.603931219353996,
+      "breakeven": 43.44813149686923,
+      "edge": 3.1557997224847645,
+      "p_value": 3.237924412123867e-05,
+      "concentration": 24.277998793736053,
+      "avg_fade_price": 43.44813149686923,
+      "total_fade_profit": 941572,
+      "window_name": "ALL_WEEKEND_NIGHTS__any_leverage",
+      "concentration_passes": true,
+      "temporal_stability": {
+        "period_edges": [
+          3.376430670640657,
+          3.5584475868666865,
+          1.4173803864576118,
+          4.806101929581508
+        ],
+        "positive_periods": 4,
+        "total_periods": 4,
+        "passes": true
+      },
+      "temporal_passes": true,
+      "price_proxy_check": {
+        "signal_edge": 3.1557997224847645,
+        "baseline_edge": 3.7130640055342834,
+        "improvement": -0.5572642830495189,
+        "is_price_proxy": true,
+        "price_range": [
+          1,
+          99
+        ],
+        "signal_markets": 4009,
+        "baseline_markets": 7002
+      },
+      "is_price_proxy": true,
+      "improvement_vs_baseline": -0.5572642830495189,
+      "passes_all": false
+    },
+    "THU_FRI_SAT_NIGHTS__high_lev_3x": {
+      "n_trades": 74013,
+      "n_markets": 1070,
+      "win_rate": 93.85929710246836,
+      "breakeven": 90.32524517241215,
+      "edge": 3.5340519300562145,
+      "p_value": 2.489601411792854e-05,
+      "concentration": 10.060046765936633,
+      "avg_fade_price": 90.32524517241215,
+      "total_fade_profit": 481038,
+      "window_name": "THU_FRI_SAT_NIGHTS__high_lev_3x",
+      "concentration_passes": true,
+      "temporal_stability": {
+        "period_edges": [
+          2.044611090652837,
+          2.716901349565104,
+          3.2821082731764317,
+          1.8621001348741784
+        ],
+        "positive_periods": 4,
+        "total_periods": 4,
+        "passes": true
+      },
+      "temporal_passes": true,
+      "price_proxy_check": {
+        "signal_edge": 3.5340519300562145,
+        "baseline_edge": 2.3745906837770447,
+        "improvement": 1.1594612462791698,
+        "is_price_proxy": false,
+        "price_range": [
+          76,
+          99
+        ],
+        "signal_markets": 1070,
+        "baseline_markets": 3192
+      },
+      "is_price_proxy": false,
+      "improvement_vs_baseline": 1.1594612462791698,
+      "passes_all": true
+    },
+    "THU_FRI_SAT_NIGHTS__med_lev_2x": {
+      "n_trades": 93677,
+      "n_markets": 1308,
+      "win_rate": 89.09832416982859,
+      "breakeven": 85.45476391771454,
+      "edge": 3.643560252114042,
+      "p_value": 7.314968728226448e-05,
+      "concentration": 11.21265843101574,
+      "avg_fade_price": 85.45476391771454,
+      "total_fade_profit": 403889,
+      "window_name": "THU_FRI_SAT_NIGHTS__med_lev_2x",
+      "concentration_passes": true,
+      "temporal_stability": {
+        "period_edges": [
+          2.505066298784542,
+          1.9813971614193404,
+          4.587094092637445,
+          0.8050622649685368
+        ],
+        "positive_periods": 4,
+        "total_periods": 4,
+        "passes": true
+      },
+      "temporal_passes": true,
+      "price_proxy_check": {
+        "signal_edge": 3.643560252114042,
+        "baseline_edge": 2.807809649058668,
+        "improvement": 0.8357506030553741,
+        "is_price_proxy": false,
+        "price_range": [
+          67,
+          99
+        ],
+        "signal_markets": 1308,
+        "baseline_markets": 3696
+      },
+      "is_price_proxy": false,
+      "improvement_vs_baseline": 0.8357506030553741,
+      "passes_all": true
+    },
+    "THU_FRI_SAT_NIGHTS__any_leverage": {
+      "n_trades": 274232,
+      "n_markets": 2761,
+      "win_rate": 47.39960455039174,
+      "breakeven": 44.05129619709004,
+      "edge": 3.3483083533017046,
+      "p_value": 0.00024106730049323734,
+      "concentration": 16.30882912090077,
+      "avg_fade_price": 44.05129619709004,
+      "total_fade_profit": 778883,
+      "window_name": "THU_FRI_SAT_NIGHTS__any_leverage",
+      "concentration_passes": true,
+      "temporal_stability": {
+        "period_edges": [
+          2.3920477812585164,
+          3.719141432440398,
+          3.876229735874742,
+          3.184338364614825
+        ],
+        "positive_periods": 4,
+        "total_periods": 4,
+        "passes": true
+      },
+      "temporal_passes": true,
+      "price_proxy_check": {
+        "signal_edge": 3.3483083533017046,
+        "baseline_edge": 3.7130640055342834,
+        "improvement": -0.3647556522325788,
+        "is_price_proxy": true,
+        "price_range": [
+          1,
+          99
+        ],
+        "signal_markets": 2761,
+        "baseline_markets": 7002
+      },
+      "is_price_proxy": true,
+      "improvement_vs_baseline": -0.3647556522325788,
+      "passes_all": false
+    },
+    "SUNDAY_NFL_SLATE__high_lev_3x": {
+      "n_trades": 91595,
+      "n_markets": 1394,
+      "win_rate": 89.83053691615478,
+      "breakeven": 88.25712134521521,
+      "edge": 1.5734155709395736,
+      "p_value": 0.03692966243703255,
+      "concentration": 24.48187047859798,
+      "avg_fade_price": 88.25712134521521,
+      "total_fade_profit": 722241,
+      "window_name": "SUNDAY_NFL_SLATE__high_lev_3x",
+      "concentration_passes": true,
+      "temporal_stability": {
+        "period_edges": [
+          0.33385348209804544,
+          3.7577965431218385,
+          1.444701586863295,
+          2.3115837357585156
+        ],
+        "positive_periods": 4,
+        "total_periods": 4,
+        "passes": true
+      },
+      "temporal_passes": true,
+      "price_proxy_check": {
+        "signal_edge": 1.5734155709395736,
+        "baseline_edge": 2.3745906837770447,
+        "improvement": -0.8011751128374711,
+        "is_price_proxy": true,
+        "price_range": [
+          76,
+          99
+        ],
+        "signal_markets": 1394,
+        "baseline_markets": 3192
+      },
+      "is_price_proxy": true,
+      "improvement_vs_baseline": -0.8011751128374711,
+      "passes_all": false
+    },
+    "SUNDAY_NFL_SLATE__med_lev_2x": {
+      "n_trades": 143080,
+      "n_markets": 1648,
+      "win_rate": 84.26040856554707,
+      "breakeven": 83.91632162495874,
+      "edge": 0.34408694058832845,
+      "p_value": 0.38255271640346444,
+      "concentration": 38.93358412594167,
+      "avg_fade_price": 83.91632162495874,
+      "total_fade_profit": 1223383,
+      "window_name": "SUNDAY_NFL_SLATE__med_lev_2x",
+      "concentration_passes": false,
+      "temporal_stability": {
+        "period_edges": [
+          -0.07654064212038181,
+          4.337103865495317,
+          -0.21621022435829307,
+          0.6410819302984816
+        ],
+        "positive_periods": 2,
+        "total_periods": 4,
+        "passes": true
+      },
+      "temporal_passes": true,
+      "price_proxy_check": {
+        "signal_edge": 0.34408694058832845,
+        "baseline_edge": 2.807809649058668,
+        "improvement": -2.4637227084703395,
+        "is_price_proxy": true,
+        "price_range": [
+          67,
+          99
+        ],
+        "signal_markets": 1648,
+        "baseline_markets": 3696
+      },
+      "is_price_proxy": true,
+      "improvement_vs_baseline": -2.4637227084703395,
+      "passes_all": false
+    },
+    "SUNDAY_NFL_SLATE__any_leverage": {
+      "n_trades": 403035,
+      "n_markets": 3158,
+      "win_rate": 43.33766343519941,
+      "breakeven": 40.94898646213291,
+      "edge": 2.3886769730665005,
+      "p_value": 0.003642415751060114,
+      "concentration": 19.647571216539273,
+      "avg_fade_price": 40.94898646213291,
+      "total_fade_profit": 339070,
+      "window_name": "SUNDAY_NFL_SLATE__any_leverage",
+      "concentration_passes": true,
+      "temporal_stability": {
+        "period_edges": [
+          0.9942703253913554,
+          0.332486260387449,
+          3.353816415016997,
+          3.319508916831171
+        ],
+        "positive_periods": 4,
+        "total_periods": 4,
+        "passes": true
+      },
+      "temporal_passes": true,
+      "price_proxy_check": {
+        "signal_edge": 2.3886769730665005,
+        "baseline_edge": 3.7130640055342834,
+        "improvement": -1.3243870324677829,
+        "is_price_proxy": true,
+        "price_range": [
+          1,
+          99
+        ],
+        "signal_markets": 3158,
+        "baseline_markets": 7002
+      },
+      "is_price_proxy": true,
+      "improvement_vs_baseline": -1.3243870324677829,
+      "passes_all": false
+    },
+    "MONDAY_NIGHT__high_lev_3x": {
+      "n_trades": 1430,
+      "n_markets": 181,
+      "win_rate": 96.80579414086078,
+      "breakeven": 91.21557077819584,
+      "edge": 5.590223362664936,
+      "p_value": 0.0031548558268171753,
+      "concentration": 16.408668730650156,
+      "avg_fade_price": 91.21557077819584,
+      "total_fade_profit": 10353,
+      "window_name": "MONDAY_NIGHT__high_lev_3x",
+      "concentration_passes": true,
+      "temporal_stability": {
+        "period_edges": [
+          2.339097939097934,
+          9.97192172210134,
+          8.440758898367594,
+          5.905203522110547
+        ],
+        "positive_periods": 4,
+        "total_periods": 4,
+        "passes": true
+      },
+      "temporal_passes": true,
+      "price_proxy_check": {
+        "signal_edge": 5.590223362664936,
+        "baseline_edge": 2.3745906837770447,
+        "improvement": 3.2156326788878915,
+        "is_price_proxy": false,
+        "price_range": [
+          76,
+          99
+        ],
+        "signal_markets": 181,
+        "baseline_markets": 3192
+      },
+      "is_price_proxy": false,
+      "improvement_vs_baseline": 3.2156326788878915,
+      "passes_all": true
+    },
+    "MONDAY_NIGHT__med_lev_2x": {
+      "n_trades": 1876,
+      "n_markets": 219,
+      "win_rate": 91.39135106097233,
+      "breakeven": 86.55729734432501,
+      "edge": 4.834053716647313,
+      "p_value": 0.020015277362603653,
+      "concentration": 10.25463151881172,
+      "avg_fade_price": 86.55729734432501,
+      "total_fade_profit": 12847,
+      "window_name": "MONDAY_NIGHT__med_lev_2x",
+      "concentration_passes": true,
+      "temporal_stability": {
+        "period_edges": [
+          4.087611564680538,
+          7.265927740279931,
+          6.178826003878102,
+          3.319491617193482
+        ],
+        "positive_periods": 4,
+        "total_periods": 4,
+        "passes": true
+      },
+      "temporal_passes": true,
+      "price_proxy_check": {
+        "signal_edge": 4.834053716647313,
+        "baseline_edge": 2.807809649058668,
+        "improvement": 2.026244067588645,
+        "is_price_proxy": false,
+        "price_range": [
+          67,
+          99
+        ],
+        "signal_markets": 219,
+        "baseline_markets": 3696
+      },
+      "is_price_proxy": false,
+      "improvement_vs_baseline": 2.026244067588645,
+      "passes_all": false
+    },
+    "MONDAY_NIGHT__any_leverage": {
+      "n_trades": 13612,
+      "n_markets": 412,
+      "win_rate": 58.67450367359296,
+      "breakeven": 53.146839447121486,
+      "edge": 5.527664226471474,
+      "p_value": 0.01653077930379425,
+      "concentration": 60.43464935101962,
+      "avg_fade_price": 53.146839447121486,
+      "total_fade_profit": 9159,
+      "window_name": "MONDAY_NIGHT__any_leverage",
+      "concentration_passes": false,
+      "temporal_stability": {
+        "period_edges": [
+          3.9197222637593288,
+          3.7603826713191957,
+          6.297840430033075,
+          2.4970726836802792
+        ],
+        "positive_periods": 4,
+        "total_periods": 4,
+        "passes": true
+      },
+      "temporal_passes": true,
+      "price_proxy_check": {
+        "signal_edge": 5.527664226471474,
+        "baseline_edge": 3.7130640055342834,
+        "improvement": 1.8146002209371908,
+        "is_price_proxy": false,
+        "price_range": [
+          1,
+          99
+        ],
+        "signal_markets": 412,
+        "baseline_markets": 7002
+      },
+      "is_price_proxy": false,
+      "improvement_vs_baseline": 1.8146002209371908,
+      "passes_all": false
+    }
+  },
+  "top_10_by_edge": [
+    {
+      "name": "MONDAY_NIGHT__high_lev_3x",
+      "n_trades": 1430,
+      "n_markets": 181,
+      "win_rate": 96.80579414086078,
+      "breakeven": 91.21557077819584,
+      "edge": 5.590223362664936,
+      "p_value": 0.0031548558268171753,
+      "concentration": 16.408668730650156,
+      "avg_fade_price": 91.21557077819584,
+      "total_fade_profit": 10353,
+      "window_name": "MONDAY_NIGHT__high_lev_3x",
+      "concentration_passes": true,
+      "temporal_stability": {
+        "period_edges": [
+          2.339097939097934,
+          9.97192172210134,
+          8.440758898367594,
+          5.905203522110547
+        ],
+        "positive_periods": 4,
+        "total_periods": 4,
+        "passes": true
+      },
+      "temporal_passes": true,
+      "price_proxy_check": {
+        "signal_edge": 5.590223362664936,
+        "baseline_edge": 2.3745906837770447,
+        "improvement": 3.2156326788878915,
+        "is_price_proxy": false,
+        "price_range": [
+          76,
+          99
+        ],
+        "signal_markets": 181,
+        "baseline_markets": 3192
+      },
+      "is_price_proxy": false,
+      "improvement_vs_baseline": 3.2156326788878915,
+      "passes_all": true
+    },
+    {
+      "name": "MONDAY_NIGHT__any_leverage",
+      "n_trades": 13612,
+      "n_markets": 412,
+      "win_rate": 58.67450367359296,
+      "breakeven": 53.146839447121486,
+      "edge": 5.527664226471474,
+      "p_value": 0.01653077930379425,
+      "concentration": 60.43464935101962,
+      "avg_fade_price": 53.146839447121486,
+      "total_fade_profit": 9159,
+      "window_name": "MONDAY_NIGHT__any_leverage",
+      "concentration_passes": false,
+      "temporal_stability": {
+        "period_edges": [
+          3.9197222637593288,
+          3.7603826713191957,
+          6.297840430033075,
+          2.4970726836802792
+        ],
+        "positive_periods": 4,
+        "total_periods": 4,
+        "passes": true
+      },
+      "temporal_passes": true,
+      "price_proxy_check": {
+        "signal_edge": 5.527664226471474,
+        "baseline_edge": 3.7130640055342834,
+        "improvement": 1.8146002209371908,
+        "is_price_proxy": false,
+        "price_range": [
+          1,
+          99
+        ],
+        "signal_markets": 412,
+        "baseline_markets": 7002
+      },
+      "is_price_proxy": false,
+      "improvement_vs_baseline": 1.8146002209371908,
+      "passes_all": false
+    },
+    {
+      "name": "MONDAY_NIGHT__med_lev_2x",
+      "n_trades": 1876,
+      "n_markets": 219,
+      "win_rate": 91.39135106097233,
+      "breakeven": 86.55729734432501,
+      "edge": 4.834053716647313,
+      "p_value": 0.020015277362603653,
+      "concentration": 10.25463151881172,
+      "avg_fade_price": 86.55729734432501,
+      "total_fade_profit": 12847,
+      "window_name": "MONDAY_NIGHT__med_lev_2x",
+      "concentration_passes": true,
+      "temporal_stability": {
+        "period_edges": [
+          4.087611564680538,
+          7.265927740279931,
+          6.178826003878102,
+          3.319491617193482
+        ],
+        "positive_periods": 4,
+        "total_periods": 4,
+        "passes": true
+      },
+      "temporal_passes": true,
+      "price_proxy_check": {
+        "signal_edge": 4.834053716647313,
+        "baseline_edge": 2.807809649058668,
+        "improvement": 2.026244067588645,
+        "is_price_proxy": false,
+        "price_range": [
+          67,
+          99
+        ],
+        "signal_markets": 219,
+        "baseline_markets": 3696
+      },
+      "is_price_proxy": false,
+      "improvement_vs_baseline": 2.026244067588645,
+      "passes_all": false
+    },
+    {
+      "name": "EARLY_EVENING_6PM_11PM__med_lev_2x",
+      "n_trades": 97989,
+      "n_markets": 1217,
+      "win_rate": 88.24713682075861,
+      "breakeven": 84.2355732124528,
+      "edge": 4.011563608305801,
+      "p_value": 5.761374420342195e-05,
+      "concentration": 10.505059973674857,
+      "avg_fade_price": 84.2355732124528,
+      "total_fade_profit": 460182,
+      "window_name": "EARLY_EVENING_6PM_11PM__med_lev_2x",
+      "concentration_passes": true,
+      "temporal_stability": {
+        "period_edges": [
+          4.041223055348064,
+          3.1123620961440612,
+          4.323745826083991,
+          -0.011925041513549672
+        ],
+        "positive_periods": 3,
+        "total_periods": 4,
+        "passes": true
+      },
+      "temporal_passes": true,
+      "price_proxy_check": {
+        "signal_edge": 4.011563608305801,
+        "baseline_edge": 2.807809649058668,
+        "improvement": 1.2037539592471331,
+        "is_price_proxy": false,
+        "price_range": [
+          67,
+          99
+        ],
+        "signal_markets": 1217,
+        "baseline_markets": 3696
+      },
+      "is_price_proxy": false,
+      "improvement_vs_baseline": 1.2037539592471331,
+      "passes_all": true
+    },
+    {
+      "name": "FULL_WEEKEND__any_leverage",
+      "n_trades": 1131824,
+      "n_markets": 6414,
+      "win_rate": 44.71252577369724,
+      "breakeven": 41.06579275854773,
+      "edge": 3.646733015149506,
+      "p_value": 2.059044160665139e-09,
+      "concentration": 13.000845695874258,
+      "avg_fade_price": 41.06579275854773,
+      "total_fade_profit": 1759090,
+      "window_name": "FULL_WEEKEND__any_leverage",
+      "concentration_passes": true,
+      "temporal_stability": {
+        "period_edges": [
+          3.1178065935960952,
+          2.688383123106952,
+          1.8712557407504604,
+          4.030165127036911
+        ],
+        "positive_periods": 4,
+        "total_periods": 4,
+        "passes": true
+      },
+      "temporal_passes": true,
+      "price_proxy_check": {
+        "signal_edge": 3.646733015149506,
+        "baseline_edge": 3.7130640055342834,
+        "improvement": -0.06633099038477752,
+        "is_price_proxy": true,
+        "price_range": [
+          1,
+          99
+        ],
+        "signal_markets": 6414,
+        "baseline_markets": 7002
+      },
+      "is_price_proxy": true,
+      "improvement_vs_baseline": -0.06633099038477752,
+      "passes_all": false
+    },
+    {
+      "name": "THU_FRI_SAT_NIGHTS__med_lev_2x",
+      "n_trades": 93677,
+      "n_markets": 1308,
+      "win_rate": 89.09832416982859,
+      "breakeven": 85.45476391771454,
+      "edge": 3.643560252114042,
+      "p_value": 7.314968728226448e-05,
+      "concentration": 11.21265843101574,
+      "avg_fade_price": 85.45476391771454,
+      "total_fade_profit": 403889,
+      "window_name": "THU_FRI_SAT_NIGHTS__med_lev_2x",
+      "concentration_passes": true,
+      "temporal_stability": {
+        "period_edges": [
+          2.505066298784542,
+          1.9813971614193404,
+          4.587094092637445,
+          0.8050622649685368
+        ],
+        "positive_periods": 4,
+        "total_periods": 4,
+        "passes": true
+      },
+      "temporal_passes": true,
+      "price_proxy_check": {
+        "signal_edge": 3.643560252114042,
+        "baseline_edge": 2.807809649058668,
+        "improvement": 0.8357506030553741,
+        "is_price_proxy": false,
+        "price_range": [
+          67,
+          99
+        ],
+        "signal_markets": 1308,
+        "baseline_markets": 3696
+      },
+      "is_price_proxy": false,
+      "improvement_vs_baseline": 0.8357506030553741,
+      "passes_all": true
+    },
+    {
+      "name": "EVENING_7PM_3AM__med_lev_2x",
+      "n_trades": 92977,
+      "n_markets": 1255,
+      "win_rate": 88.88893068855442,
+      "breakeven": 85.30825189047253,
+      "edge": 3.5806787980818933,
+      "p_value": 0.0001484869104982219,
+      "concentration": 11.345196239921204,
+      "avg_fade_price": 85.30825189047253,
+      "total_fade_profit": 397029,
+      "window_name": "EVENING_7PM_3AM__med_lev_2x",
+      "concentration_passes": true,
+      "temporal_stability": {
+        "period_edges": [
+          2.861780133369407,
+          1.8022884623110413,
+          4.580794931320964,
+          0.31608673720240343
+        ],
+        "positive_periods": 4,
+        "total_periods": 4,
+        "passes": true
+      },
+      "temporal_passes": true,
+      "price_proxy_check": {
+        "signal_edge": 3.5806787980818933,
+        "baseline_edge": 2.807809649058668,
+        "improvement": 0.7728691490232253,
+        "is_price_proxy": false,
+        "price_range": [
+          67,
+          99
+        ],
+        "signal_markets": 1255,
+        "baseline_markets": 3696
+      },
+      "is_price_proxy": false,
+      "improvement_vs_baseline": 0.7728691490232253,
+      "passes_all": true
+    },
+    {
+      "name": "EARLY_EVENING_6PM_11PM__any_leverage",
+      "n_trades": 282503,
+      "n_markets": 2572,
+      "win_rate": 45.88262217059545,
+      "breakeven": 42.317130423321906,
+      "edge": 3.5654917472735415,
+      "p_value": 0.0001444883940561153,
+      "concentration": 15.750047417810267,
+      "avg_fade_price": 42.317130423321906,
+      "total_fade_profit": 873483,
+      "window_name": "EARLY_EVENING_6PM_11PM__any_leverage",
+      "concentration_passes": true,
+      "temporal_stability": {
+        "period_edges": [
+          2.8481380538170455,
+          3.6160043754098368,
+          4.150775665129763,
+          2.58562169839448
+        ],
+        "positive_periods": 4,
+        "total_periods": 4,
+        "passes": true
+      },
+      "temporal_passes": true,
+      "price_proxy_check": {
+        "signal_edge": 3.5654917472735415,
+        "baseline_edge": 3.7130640055342834,
+        "improvement": -0.14757225826074194,
+        "is_price_proxy": true,
+        "price_range": [
+          1,
+          99
+        ],
+        "signal_markets": 2572,
+        "baseline_markets": 7002
+      },
+      "is_price_proxy": true,
+      "improvement_vs_baseline": -0.14757225826074194,
+      "passes_all": false
+    },
+    {
+      "name": "THU_FRI_SAT_NIGHTS__high_lev_3x",
+      "n_trades": 74013,
+      "n_markets": 1070,
+      "win_rate": 93.85929710246836,
+      "breakeven": 90.32524517241215,
+      "edge": 3.5340519300562145,
+      "p_value": 2.489601411792854e-05,
+      "concentration": 10.060046765936633,
+      "avg_fade_price": 90.32524517241215,
+      "total_fade_profit": 481038,
+      "window_name": "THU_FRI_SAT_NIGHTS__high_lev_3x",
+      "concentration_passes": true,
+      "temporal_stability": {
+        "period_edges": [
+          2.044611090652837,
+          2.716901349565104,
+          3.2821082731764317,
+          1.8621001348741784
+        ],
+        "positive_periods": 4,
+        "total_periods": 4,
+        "passes": true
+      },
+      "temporal_passes": true,
+      "price_proxy_check": {
+        "signal_edge": 3.5340519300562145,
+        "baseline_edge": 2.3745906837770447,
+        "improvement": 1.1594612462791698,
+        "is_price_proxy": false,
+        "price_range": [
+          76,
+          99
+        ],
+        "signal_markets": 1070,
+        "baseline_markets": 3192
+      },
+      "is_price_proxy": false,
+      "improvement_vs_baseline": 1.1594612462791698,
+      "passes_all": true
+    },
+    {
+      "name": "EARLY_EVENING_6PM_11PM__high_lev_3x",
+      "n_trades": 76287,
+      "n_markets": 975,
+      "win_rate": 93.15169461703553,
+      "breakeven": 89.63896342090054,
+      "edge": 3.5127311961349883,
+      "p_value": 0.00010348225928521355,
+      "concentration": 9.910106993695909,
+      "avg_fade_price": 89.63896342090054,
+      "total_fade_profit": 478867,
+      "window_name": "EARLY_EVENING_6PM_11PM__high_lev_3x",
+      "concentration_passes": true,
+      "temporal_stability": {
+        "period_edges": [
+          4.147467881288636,
+          2.602754371014404,
+          3.853222665760503,
+          0.7480848450926225
+        ],
+        "positive_periods": 4,
+        "total_periods": 4,
+        "passes": true
+      },
+      "temporal_passes": true,
+      "price_proxy_check": {
+        "signal_edge": 3.5127311961349883,
+        "baseline_edge": 2.3745906837770447,
+        "improvement": 1.1381405123579436,
+        "is_price_proxy": false,
+        "price_range": [
+          76,
+          99
+        ],
+        "signal_markets": 975,
+        "baseline_markets": 3192
+      },
+      "is_price_proxy": false,
+      "improvement_vs_baseline": 1.1381405123579436,
+      "passes_all": true
+    }
+  ]
+}

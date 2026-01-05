@@ -1,0 +1,221 @@
+{
+  "research_id": "ob_signal_research_20250105",
+  "title": "Orderbook Signals Research for RLM_NO Strategy Enhancement",
+  "generated_at": "2026-01-05T15:30:00Z",
+  "baseline_performance": {
+    "strategy": "RLM_NO (Reverse Line Movement - bet NO)",
+    "claimed_edge": "+17.38%",
+    "claimed_win_rate": "90.2%",
+    "claimed_markets": 1986,
+    "source": "Historical validation from research/VALIDATED_STRATEGIES.md"
+  },
+
+  "phase_0_data_availability": {
+    "status": "PARTIAL_DATA",
+    "order_contexts": {
+      "total_trades": 487,
+      "settled_trades": 132,
+      "market_result_values": {
+        "unknown": 132,
+        "null": 355
+      },
+      "issue": "Settlement linking sets market_result='unknown' instead of 'yes'/'no'",
+      "realized_pnl_status": "All values are 0 - PnL calculation not implemented",
+      "bbo_data_coverage": {
+        "has_spread": "100%",
+        "has_spread_tier": "100%",
+        "has_slippage": "100%",
+        "quality": "GOOD - all settled trades have BBO data"
+      }
+    },
+    "orderbook_signals": {
+      "total_buckets": 103595,
+      "unique_markets": 9069,
+      "sessions": 22,
+      "join_feasibility": {
+        "exact_10s_window": 1,
+        "nearest_60s": 1,
+        "ticker_only": 1,
+        "issue": "Session ID format mismatch between order_contexts and orderbook_signals"
+      }
+    },
+    "decision": "Cannot correlate orderbook signals with trade outcomes due to settlement linking bug and session ID mismatch"
+  },
+
+  "phase_0b_bbo_analysis": {
+    "description": "Analysis of BBO data captured in order_contexts (without win/loss correlation)",
+    "sample_size": 132,
+    "overall_statistics": {
+      "avg_spread_cents": 3.28,
+      "median_spread_cents": 3.0,
+      "spread_range": [1, 33],
+      "spread_iqr": [1.0, 4.0],
+      "avg_slippage_cents": 1.56,
+      "avg_bid_size_contracts": 468,
+      "avg_ask_size_contracts": 287,
+      "avg_no_price_at_signal_cents": 75.37
+    },
+    "by_spread_tier": [
+      {"tier": "tight", "count": 65, "pct": 49.2, "avg_spread": 1.37, "avg_slippage": 0.91, "avg_no_price": 79.40},
+      {"tier": "normal", "count": 38, "pct": 28.8, "avg_spread": 3.29, "avg_slippage": 1.21, "avg_no_price": 75.13},
+      {"tier": "wide", "count": 29, "pct": 22.0, "avg_spread": 7.55, "avg_slippage": 3.48, "avg_no_price": 66.66}
+    ],
+    "spread_slippage_correlation": {
+      "0-2c_tight": {"count": 65, "avg_slippage": 0.91, "slippage_range": [-5, 8]},
+      "3-4c_normal": {"count": 38, "avg_slippage": 1.21, "slippage_range": [-2, 5]},
+      "5-6c_wide": {"count": 15, "avg_slippage": 2.73, "slippage_range": [-1, 5]},
+      "7+c_very_wide": {"count": 14, "avg_slippage": 4.29, "slippage_range": [-2, 12]}
+    },
+    "insight": "Strong correlation between spread and slippage - wider spreads lead to worse execution"
+  },
+
+  "orderbook_signals_analysis": {
+    "description": "Analysis of 10-second aggregated orderbook signals",
+    "sample_size": 103595,
+    "statistics": {
+      "avg_no_spread_close": 5.09,
+      "avg_yes_spread_close": 5.09,
+      "avg_no_imbalance": 0.4863,
+      "avg_yes_imbalance": 0.5137,
+      "avg_large_order_count": 0.67
+    },
+    "imbalance_distribution": {
+      "0-30%_ask_heavy": {"count": 5886, "pct": 5.7, "avg_spread": 4.74},
+      "30-40%": {"count": 881, "pct": 0.9, "avg_spread": 6.26},
+      "40-50%": {"count": 1910, "pct": 1.8, "avg_spread": 3.78},
+      "50-60%_balanced": {"count": 91912, "pct": 88.7, "avg_spread": 3.26},
+      "60-70%": {"count": 408, "pct": 0.4, "avg_spread": 5.67},
+      "70-100%_bid_heavy": {"count": 2598, "pct": 2.5, "avg_spread": 9.80}
+    },
+    "large_order_correlation": {
+      "observation": "Markets with more large orders have tighter spreads",
+      "0_large_orders": {"avg_spread": 9.54},
+      "2_large_orders": {"avg_spread": 7.87},
+      "4_large_orders": {"avg_spread": 4.64},
+      "16_large_orders": {"avg_spread": 1.46}
+    }
+  },
+
+  "hypotheses_status": {
+    "OB-001_skip_wide_spread": {
+      "description": "Skip when spread > 4c",
+      "status": "CANNOT_TEST",
+      "reason": "No win/loss outcome data available"
+    },
+    "OB-002_skip_thin_liquidity": {
+      "description": "Skip when no_ask_size_at_bbo < 50 contracts",
+      "status": "CANNOT_TEST",
+      "reason": "No win/loss outcome data available"
+    },
+    "OB-003_boost_large_orders": {
+      "description": "Prioritize when large_order_count > 0",
+      "status": "CANNOT_TEST",
+      "reason": "No win/loss outcome data available"
+    },
+    "OB-004_skip_expanding_spread": {
+      "description": "Skip when spread is expanding",
+      "status": "CANNOT_TEST",
+      "reason": "No win/loss outcome data available"
+    }
+  },
+
+  "data_collection_issues": [
+    {
+      "issue": "Settlement Linking Bug",
+      "description": "market_result is set to 'unknown' instead of actual 'yes' or 'no' outcome",
+      "impact": "Cannot calculate win rate, edge, or validate hypotheses",
+      "priority": "P0 - CRITICAL",
+      "fix_location": "backend/src/kalshiflow_rl/traderv3/state/order_context.py or settlement service"
+    },
+    {
+      "issue": "Realized PnL Not Calculated",
+      "description": "realized_pnl_cents is always 0 for settled trades",
+      "impact": "Cannot calculate actual profit/loss per trade",
+      "priority": "P0 - CRITICAL",
+      "fix_location": "Settlement linking service"
+    },
+    {
+      "issue": "Session ID Format Mismatch",
+      "description": "order_contexts uses different session_id format than orderbook_signals",
+      "impact": "Cannot join orderbook signals with trades",
+      "priority": "P1 - HIGH",
+      "fix_location": "Ensure consistent session_id format in both tables"
+    },
+    {
+      "issue": "BBO Depth Data Missing in orderbook_signals",
+      "description": "no_bid_size_at_bbo_avg and no_ask_size_at_bbo_avg are all 0",
+      "impact": "Cannot analyze BBO depth from orderbook_signals (though available in order_contexts)",
+      "priority": "P2 - MEDIUM",
+      "fix_location": "backend/src/kalshiflow_rl/data/orderbook_signals.py - BucketState.update_from_snapshot()"
+    }
+  ],
+
+  "actionable_insights": [
+    {
+      "insight": "Spread strongly predicts slippage",
+      "evidence": "Tight spread (0-2c) avg slippage = 0.91c; Wide spread (7+c) avg slippage = 4.29c",
+      "recommendation": "Consider spread-based order sizing - smaller positions in wide spread markets"
+    },
+    {
+      "insight": "Most trades occur in tight/normal spreads",
+      "evidence": "78% of trades have spread <= 4c",
+      "recommendation": "Current strategy already favors liquid markets"
+    },
+    {
+      "insight": "Wide spreads correlate with lower NO prices",
+      "evidence": "Wide spread avg NO price = 66.66c vs tight spread = 79.40c",
+      "recommendation": "Wide spread + low NO price may indicate higher uncertainty - potential filter"
+    },
+    {
+      "insight": "Large orders correlate with tighter spreads",
+      "evidence": "Markets with 16+ large orders have avg spread of 1.46c vs 9.54c for 0 large orders",
+      "recommendation": "Consider whale presence as a positive signal for execution quality"
+    }
+  ],
+
+  "recommendations": {
+    "immediate_priority": [
+      {
+        "action": "Fix settlement linking to capture actual market_result (yes/no)",
+        "rationale": "Cannot validate any hypothesis without win/loss data",
+        "estimated_effort": "2-4 hours"
+      },
+      {
+        "action": "Implement realized_pnl_cents calculation on settlement",
+        "rationale": "Need PnL for edge calculation",
+        "estimated_effort": "1-2 hours"
+      }
+    ],
+    "secondary_priority": [
+      {
+        "action": "Fix session_id consistency between tables",
+        "rationale": "Enables joining orderbook_signals with order_contexts",
+        "estimated_effort": "1 hour"
+      },
+      {
+        "action": "Fix BBO depth aggregation in orderbook_signals",
+        "rationale": "Enables richer orderbook analysis",
+        "estimated_effort": "1-2 hours"
+      }
+    ],
+    "research_next_steps": [
+      {
+        "action": "Re-run this analysis after data fixes are implemented",
+        "rationale": "Need outcome data to test hypotheses",
+        "timeline": "After data fixes deployed + 24-48 hours of trading"
+      },
+      {
+        "action": "Implement real-time outcome tracking",
+        "rationale": "Faster feedback loop for strategy optimization",
+        "timeline": "After basic fixes"
+      }
+    ]
+  },
+
+  "conclusion": {
+    "summary": "Data collection infrastructure for RLM_NO strategy is partially working. We have good BBO data captured at order time but settlement linking is broken - market outcomes are not being properly recorded. This prevents us from testing whether orderbook signals can improve win rate.",
+    "current_state": "BLOCKED - Cannot validate hypotheses without outcome data",
+    "required_action": "Fix settlement linking (market_result + realized_pnl_cents) before continuing research",
+    "potential_value": "Based on BBO patterns, spread-based filters could potentially improve execution quality by 2-3c per trade on average"
+  }
+}

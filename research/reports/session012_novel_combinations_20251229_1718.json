@@ -1,0 +1,50 @@
+{
+  "high_lev_morning": {
+    "status": "rejected",
+    "reason": "price_proxy",
+    "edge": 0.031166038460272105,
+    "imp": 0.00014833036616907673
+  },
+  "high_lev_evening": {
+    "status": "rejected",
+    "reason": "price_proxy",
+    "edge": 0.03667206583768445,
+    "imp": 0.005603673247817297
+  },
+  "small_trades_high_lev": {
+    "status": "rejected",
+    "reason": "price_proxy",
+    "edge": 0.026819109617395753,
+    "imp": -0.008126055933039245
+  },
+  "multiple_high_lev": {
+    "status": "rejected",
+    "reason": "price_proxy",
+    "edge": 0.059237749873782164,
+    "imp": 0.009698248382904088
+  },
+  "increasing_lev": {
+    "status": "rejected",
+    "reason": "price_proxy",
+    "edge": 0.03924021754202911,
+    "imp": -0.00692125044602003
+  },
+  "high_lev_yes": {
+    "status": "rejected",
+    "reason": "price_proxy",
+    "edge": 0.022908263564106246,
+    "imp": -0.008637978830738155
+  },
+  "very_high_lev": {
+    "status": "rejected",
+    "reason": "price_proxy",
+    "edge": 0.020408084315216235,
+    "imp": -0.0016411459879016807
+  },
+  "sports_high_lev": {
+    "status": "rejected",
+    "reason": "not_significant",
+    "edge": 0.014575423591394188,
+    "p": 0.03377861345308242
+  }
+}

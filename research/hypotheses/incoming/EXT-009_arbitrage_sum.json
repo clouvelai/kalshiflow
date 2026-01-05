@@ -1,0 +1,16 @@
+{
+  "hypothesis_id": "EXT-009",
+  "source": "Vanderbilt/Polymarket Academic Research (2024)",
+  "source_url": "https://www.dlnews.com/articles/markets/polymarket-kalshi-prediction-markets-not-so-reliable-says-study/",
+  "title": "Sum-to-One Violation Detection",
+  "mechanism": "Research found that Harris + Trump contracts should sum to $1 but often didn't on Polymarket. 62 of 65 days showed mispricing. In Kalshi multi-outcome markets, can we detect when probabilities don't sum correctly and exploit the gap?",
+  "proposed_signal": {
+    "condition": "Sum of YES prices for mutually exclusive outcomes != 100c",
+    "action": "Bet on the relatively underpriced outcome",
+    "expected_edge": "+2-5% if sum violations indicate mispricing"
+  },
+  "data_requirements": ["yes_price", "event_ticker", "market_ticker"],
+  "price_proxy_risk": "MEDIUM - involves prices but measures structural arbitrage",
+  "novelty_vs_tested": "H062 tested multi-outcome mispricing but was REJECTED. This focuses specifically on SUM violations",
+  "priority": "MEDIUM"
+}

@@ -1,0 +1,16 @@
+{
+  "hypothesis_id": "EXT-007",
+  "source": "Polymarket Strategy Research (DataWallet)",
+  "source_url": "https://www.datawallet.com/crypto/top-polymarket-trading-strategies",
+  "title": "Correlated Asset Lag",
+  "mechanism": "On Polymarket, traders profit from 'correlated asset lag' - e.g., betting on a cabinet pick after a presidential win is confirmed, before that market adjusts. In Kalshi, when related markets exist, does resolution of one predict movement in another?",
+  "proposed_signal": {
+    "condition": "Market A resolves, related market B exists, bet on B in direction consistent with A outcome",
+    "action": "Trade correlated markets before they adjust",
+    "expected_edge": "+5-12% if cross-market lag exists"
+  },
+  "data_requirements": ["market_ticker", "event_ticker", "is_winner", "timestamp"],
+  "price_proxy_risk": "LOW - measures cross-market relationship",
+  "novelty_vs_tested": "H111 (same-event multi-market) is still QUEUED. This is similar but focuses on POST-resolution lag",
+  "priority": "MEDIUM"
+}

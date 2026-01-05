@@ -1,0 +1,16 @@
+{
+  "hypothesis_id": "LSD-005",
+  "source": "LSD Mode - Meta Strategy",
+  "source_url": null,
+  "title": "What Would A Drunk Do? (Do Opposite)",
+  "mechanism": "META-STRATEGY: Model the behavior of an impulsive, emotional, overconfident bettor. Identify trades that 'look like' drunk/emotional bets (high leverage, round numbers, late night, small size, momentum chasing). Then do the OPPOSITE.",
+  "proposed_signal": {
+    "condition": "Trade has: leverage > 3 AND count < 10 AND (is_weekend_night OR price_just_moved)",
+    "action": "Fade the 'drunk' trade",
+    "expected_edge": "+3-6% if emotional trades are exploitable"
+  },
+  "data_requirements": ["leverage_ratio", "count", "timestamp", "yes_price"],
+  "price_proxy_risk": "MEDIUM - includes price movement",
+  "novelty_vs_tested": "S008/S009 tested drunk betting but were INVALIDATED. This refines the drunk profile",
+  "priority": "LSD-META"
+}

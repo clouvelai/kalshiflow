@@ -1,0 +1,1163 @@
+{
+  "metadata": {
+    "analysis": "H123 Category Validation - Non-Sports Markets",
+    "session": "H123 Category Validation",
+    "timestamp": "2025-12-30T11:57:50.179167",
+    "rlm_parameters": {
+      "yes_trade_threshold": 0.7,
+      "min_trades": 5
+    }
+  },
+  "data_summary": {
+    "total_trades": 1619902,
+    "total_markets": 72791,
+    "sports_markets": 69107,
+    "non_sports_markets": 3684,
+    "non_sports_by_group": {
+      "Crypto": 1493,
+      "Economics": 279,
+      "Entertainment": 544,
+      "Media_Mentions": 416,
+      "Other": 354,
+      "Politics": 273,
+      "Time_Events": 38,
+      "Weather": 287
+    }
+  },
+  "sports_baseline": {
+    "stats": {
+      "n": 1620,
+      "valid": true,
+      "wins": "1456",
+      "win_rate": 0.8987654320987655,
+      "avg_no_price": 71.96867655890678,
+      "breakeven": 0.7196867655890677,
+      "edge": 0.17907866650969773,
+      "p_value": 0.0,
+      "weighted_improvement": 0.13877492523379292,
+      "pos_buckets": 16,
+      "total_buckets": 16,
+      "bucket_ratio": "16/16",
+      "bucket_pct": 1.0,
+      "ci_95_lower": 0.1643898718042822,
+      "ci_95_upper": 0.19376746121511326,
+      "bucket_details": [
+        {
+          "bucket": 55.0,
+          "signal_wr": 0.8640776699029126,
+          "baseline_wr": 0.6378845116028062,
+          "improvement": 0.22619315830010633,
+          "n": 103,
+          "positive": "True"
+        },
+        {
+          "bucket": 40.0,
+          "signal_wr": 0.6808510638297872,
+          "baseline_wr": 0.38215859030837,
+          "improvement": 0.2986924735214172,
+          "n": 47,
+          "positive": "True"
+        },
+        {
+          "bucket": 70.0,
+          "signal_wr": 0.9461077844311377,
+          "baseline_wr": 0.7797779777977798,
+          "improvement": 0.16632980663335795,
+          "n": 167,
+          "positive": "True"
+        },
+        {
+          "bucket": 75.0,
+          "signal_wr": 0.9608938547486033,
+          "baseline_wr": 0.8395813047711782,
+          "improvement": 0.12131254997742513,
+          "n": 179,
+          "positive": "True"
+        },
+        {
+          "bucket": 65.0,
+          "signal_wr": 0.943089430894309,
+          "baseline_wr": 0.7650231124807396,
+          "improvement": 0.17806631841356935,
+          "n": 123,
+          "positive": "True"
+        },
+        {
+          "bucket": 50.0,
+          "signal_wr": 0.7350427350427351,
+          "baseline_wr": 0.5565862708719852,
+          "improvement": 0.1784564641707499,
+          "n": 117,
+          "positive": "True"
+        },
+        {
+          "bucket": 60.0,
+          "signal_wr": 0.9134615384615384,
+          "baseline_wr": 0.7031984948259643,
+          "improvement": 0.21026304363557413,
+          "n": 104,
+          "positive": "True"
+        },
+        {
+          "bucket": 80.0,
+          "signal_wr": 0.9588235294117647,
+          "baseline_wr": 0.8858041828613733,
+          "improvement": 0.07301934655039144,
+          "n": 170,
+          "positive": "True"
+        },
+        {
+          "bucket": 90.0,
+          "signal_wr": 1.0,
+          "baseline_wr": 0.9567770946131963,
+          "improvement": 0.043222905386803734,
+          "n": 163,
+          "positive": "True"
+        },
+        {
+          "bucket": 30.0,
+          "signal_wr": 0.4666666666666667,
+          "baseline_wr": 0.22330097087378642,
+          "improvement": 0.24336569579288025,
+          "n": 15,
+          "positive": "True"
+        },
+        {
+          "bucket": 85.0,
+          "signal_wr": 0.9838709677419355,
+          "baseline_wr": 0.9187398593834505,
+          "improvement": 0.06513110835848501,
+          "n": 186,
+          "positive": "True"
+        },
+        {
+          "bucket": 95.0,
+          "signal_wr": 1.0,
+          "baseline_wr": 0.98757379546753,
+          "improvement": 0.012426204532470009,
+          "n": 106,
+          "positive": "True"
+        },
+        {
+          "bucket": 45.0,
+          "signal_wr": 0.7142857142857143,
+          "baseline_wr": 0.46869565217391307,
+          "improvement": 0.24559006211180123,
+          "n": 77,
+          "positive": "True"
+        },
+        {
+          "bucket": 35.0,
+          "signal_wr": 0.5882352941176471,
+          "baseline_wr": 0.32262773722627736,
+          "improvement": 0.2656075568913697,
+          "n": 34,
+          "positive": "True"
+        },
+        {
+          "bucket": 20.0,
+          "signal_wr": 0.42857142857142855,
+          "baseline_wr": 0.11561866125760649,
+          "improvement": 0.31295276731382204,
+          "n": 14,
+          "positive": "True"
+        },
+        {
+          "bucket": 25.0,
+          "signal_wr": 0.5555555555555556,
+          "baseline_wr": 0.15086206896551724,
+          "improvement": 0.40469348659003834,
+          "n": 9,
+          "positive": "True"
+        }
+      ]
+    },
+    "temporal": {
+      "valid": true,
+      "quarters": [
+        {
+          "quarter": "Q1",
+          "n": 405,
+          "win_rate": 0.9604938271604938,
+          "edge": 0.2335036129426109,
+          "positive": "True"
+        },
+        {
+          "quarter": "Q2",
+          "n": 405,
+          "win_rate": 0.9259259259259259,
+          "edge": 0.2079642550863613,
+          "positive": "True"
+        },
+        {
+          "quarter": "Q3",
+          "n": 405,
+          "win_rate": 0.837037037037037,
+          "edge": 0.15224197515402882,
+          "positive": "True"
+        },
+        {
+          "quarter": "Q4",
+          "n": 405,
+          "win_rate": 0.8716049382716049,
+          "edge": 0.12260482285578966,
+          "positive": "True"
+        }
+      ],
+      "positive_quarters": 4,
+      "total_quarters": 4,
+      "stable": true
+    },
+    "verdict": "VALID"
+  },
+  "non_sports_by_group": {
+    "Crypto": {
+      "n_markets": 1493,
+      "n_rlm_signals": 94,
+      "stats": {
+        "n": 94,
+        "valid": true,
+        "wins": "86",
+        "win_rate": 0.9148936170212766,
+        "avg_no_price": 78.69976339366002,
+        "breakeven": 0.7869976339366002,
+        "edge": 0.12789598308467642,
+        "p_value": 8.838393352306184e-06,
+        "weighted_improvement": 0.08642009640908371,
+        "pos_buckets": 7,
+        "total_buckets": 8,
+        "bucket_ratio": "7/8",
+        "bucket_pct": 0.875,
+        "ci_95_lower": 0.07148567000637027,
+        "ci_95_upper": 0.18430629616298258,
+        "bucket_details": [
+          {
+            "bucket": 90.0,
+            "signal_wr": 1.0,
+            "baseline_wr": 0.9567770946131963,
+            "improvement": 0.043222905386803734,
+            "n": 20,
+            "positive": "True"
+          },
+          {
+            "bucket": 75.0,
+            "signal_wr": 1.0,
+            "baseline_wr": 0.8395813047711782,
+            "improvement": 0.1604186952288218,
+            "n": 9,
+            "positive": "True"
+          },
+          {
+            "bucket": 65.0,
+            "signal_wr": 1.0,
+            "baseline_wr": 0.7650231124807396,
+            "improvement": 0.23497688751926038,
+            "n": 6,
+            "positive": "True"
+          },
+          {
+            "bucket": 80.0,
+            "signal_wr": 1.0,
+            "baseline_wr": 0.8858041828613733,
+            "improvement": 0.1141958171386267,
+            "n": 11,
+            "positive": "True"
+          },
+          {
+            "bucket": 60.0,
+            "signal_wr": 0.8571428571428571,
+            "baseline_wr": 0.7031984948259643,
+            "improvement": 0.1539443623168928,
+            "n": 7,
+            "positive": "True"
+          },
+          {
+            "bucket": 95.0,
+            "signal_wr": 1.0,
+            "baseline_wr": 0.98757379546753,
+            "improvement": 0.012426204532470009,
+            "n": 6,
+            "positive": "True"
+          },
+          {
+            "bucket": 70.0,
+            "signal_wr": 1.0,
+            "baseline_wr": 0.7797779777977798,
+            "improvement": 0.2202220222022202,
+            "n": 8,
+            "positive": "True"
+          },
+          {
+            "bucket": 85.0,
+            "signal_wr": 0.8947368421052632,
+            "baseline_wr": 0.9187398593834505,
+            "improvement": -0.024003017278187322,
+            "n": 19,
+            "positive": "False"
+          }
+        ]
+      },
+      "temporal": {
+        "valid": true,
+        "quarters": [
+          {
+            "quarter": "Q1",
+            "n": 23,
+            "win_rate": 0.9130434782608695,
+            "edge": 0.08380980351783462,
+            "positive": "True"
+          },
+          {
+            "quarter": "Q2",
+            "n": 23,
+            "win_rate": 0.9130434782608695,
+            "edge": 0.1490223821411697,
+            "positive": "True"
+          },
+          {
+            "quarter": "Q3",
+            "n": 23,
+            "win_rate": 0.9130434782608695,
+            "edge": 0.1442223611779192,
+            "positive": "True"
+          },
+          {
+            "quarter": "Q4",
+            "n": 25,
+            "win_rate": 0.92,
+            "edge": 0.13399871330841273,
+            "positive": "True"
+          }
+        ],
+        "positive_quarters": 4,
+        "total_quarters": 4,
+        "stable": true
+      },
+      "verdict": "VALID"
+    },
+    "Economics": {
+      "n_markets": 279,
+      "n_rlm_signals": 12,
+      "stats": null,
+      "temporal": null,
+      "verdict": "INSUFFICIENT_DATA"
+    },
+    "Politics": {
+      "n_markets": 273,
+      "n_rlm_signals": 42,
+      "stats": {
+        "n": 42,
+        "valid": true,
+        "wins": "36",
+        "win_rate": 0.8571428571428571,
+        "avg_no_price": 75.65923188962219,
+        "breakeven": 0.7565923188962219,
+        "edge": 0.10055053824663518,
+        "p_value": 0.06257180059830669,
+        "weighted_improvement": 0.0824054166796733,
+        "pos_buckets": 6,
+        "total_buckets": 7,
+        "bucket_ratio": "6/7",
+        "bucket_pct": 0.8571428571428571,
+        "ci_95_lower": -0.005279514195948451,
+        "ci_95_upper": 0.20638059068921882,
+        "bucket_details": [
+          {
+            "bucket": 75.0,
+            "signal_wr": 1.0,
+            "baseline_wr": 0.8395813047711782,
+            "improvement": 0.1604186952288218,
+            "n": 6,
+            "positive": "True"
+          },
+          {
+            "bucket": 95.0,
+            "signal_wr": 1.0,
+            "baseline_wr": 0.98757379546753,
+            "improvement": 0.012426204532470009,
+            "n": 3,
+            "positive": "True"
+          },
+          {
+            "bucket": 80.0,
+            "signal_wr": 1.0,
+            "baseline_wr": 0.8858041828613733,
+            "improvement": 0.1141958171386267,
+            "n": 7,
+            "positive": "True"
+          },
+          {
+            "bucket": 90.0,
+            "signal_wr": 1.0,
+            "baseline_wr": 0.9567770946131963,
+            "improvement": 0.043222905386803734,
+            "n": 6,
+            "positive": "True"
+          },
+          {
+            "bucket": 45.0,
+            "signal_wr": 0.6666666666666666,
+            "baseline_wr": 0.46869565217391307,
+            "improvement": 0.19797101449275356,
+            "n": 3,
+            "positive": "True"
+          },
+          {
+            "bucket": 85.0,
+            "signal_wr": 1.0,
+            "baseline_wr": 0.9187398593834505,
+            "improvement": 0.08126014061654951,
+            "n": 5,
+            "positive": "True"
+          },
+          {
+            "bucket": 70.0,
+            "signal_wr": 0.6666666666666666,
+            "baseline_wr": 0.7797779777977798,
+            "improvement": -0.11311131113111317,
+            "n": 3,
+            "positive": "False"
+          }
+        ]
+      },
+      "temporal": {
+        "valid": true,
+        "quarters": [
+          {
+            "quarter": "Q1",
+            "n": 10,
+            "win_rate": 0.8,
+            "edge": 0.1141013141246836,
+            "positive": "True"
+          },
+          {
+            "quarter": "Q2",
+            "n": 10,
+            "win_rate": 0.8,
+            "edge": -0.05492651302832896,
+            "positive": "False"
+          },
+          {
+            "quarter": "Q3",
+            "n": 10,
+            "win_rate": 0.9,
+            "edge": 0.13352449032449043,
+            "positive": "True"
+          },
+          {
+            "quarter": "Q4",
+            "n": 12,
+            "win_rate": 0.9166666666666666,
+            "edge": 0.19134414101251895,
+            "positive": "True"
+          }
+        ],
+        "positive_quarters": 3,
+        "total_quarters": 4,
+        "stable": true
+      },
+      "verdict": "WEAK_EDGE"
+    },
+    "Weather": {
+      "n_markets": 287,
+      "n_rlm_signals": 22,
+      "stats": {
+        "n": 22,
+        "valid": true,
+        "wins": "22",
+        "win_rate": 1.0,
+        "avg_no_price": 87.09815067911771,
+        "breakeven": 0.870981506791177,
+        "edge": 0.12901849320882297,
+        "p_value": 1.0,
+        "weighted_improvement": 0.03586870734150842,
+        "pos_buckets": 3,
+        "total_buckets": 3,
+        "bucket_ratio": "3/3",
+        "bucket_pct": 1.0,
+        "ci_95_lower": 0.12901849320882297,
+        "ci_95_upper": 0.12901849320882297,
+        "bucket_details": [
+          {
+            "bucket": 85.0,
+            "signal_wr": 1.0,
+            "baseline_wr": 0.9187398593834505,
+            "improvement": 0.08126014061654951,
+            "n": 4,
+            "positive": "True"
+          },
+          {
+            "bucket": 95.0,
+            "signal_wr": 1.0,
+            "baseline_wr": 0.98757379546753,
+            "improvement": 0.012426204532470009,
+            "n": 9,
+            "positive": "True"
+          },
+          {
+            "bucket": 90.0,
+            "signal_wr": 1.0,
+            "baseline_wr": 0.9567770946131963,
+            "improvement": 0.043222905386803734,
+            "n": 4,
+            "positive": "True"
+          }
+        ]
+      },
+      "temporal": null,
+      "verdict": "NO_EDGE"
+    },
+    "Entertainment": {
+      "n_markets": 544,
+      "n_rlm_signals": 76,
+      "stats": {
+        "n": 76,
+        "valid": true,
+        "wins": "71",
+        "win_rate": 0.9342105263157895,
+        "avg_no_price": 79.45712934064927,
+        "breakeven": 0.7945712934064928,
+        "edge": 0.1396392329092967,
+        "p_value": 9.090759562901951e-07,
+        "weighted_improvement": 0.07816355693679293,
+        "pos_buckets": 8,
+        "total_buckets": 9,
+        "bucket_ratio": "8/9",
+        "bucket_pct": 0.8888888888888888,
+        "ci_95_lower": 0.0839014282150069,
+        "ci_95_upper": 0.1953770376035865,
+        "bucket_details": [
+          {
+            "bucket": 95.0,
+            "signal_wr": 1.0,
+            "baseline_wr": 0.98757379546753,
+            "improvement": 0.012426204532470009,
+            "n": 12,
+            "positive": "True"
+          },
+          {
+            "bucket": 60.0,
+            "signal_wr": 1.0,
+            "baseline_wr": 0.7031984948259643,
+            "improvement": 0.2968015051740357,
+            "n": 3,
+            "positive": "True"
+          },
+          {
+            "bucket": 85.0,
+            "signal_wr": 1.0,
+            "baseline_wr": 0.9187398593834505,
+            "improvement": 0.08126014061654951,
+            "n": 8,
+            "positive": "True"
+          },
+          {
+            "bucket": 90.0,
+            "signal_wr": 0.9473684210526315,
+            "baseline_wr": 0.9567770946131963,
+            "improvement": -0.00940867356056474,
+            "n": 19,
+            "positive": "False"
+          },
+          {
+            "bucket": 75.0,
+            "signal_wr": 1.0,
+            "baseline_wr": 0.8395813047711782,
+            "improvement": 0.1604186952288218,
+            "n": 9,
+            "positive": "True"
+          },
+          {
+            "bucket": 55.0,
+            "signal_wr": 0.6666666666666666,
+            "baseline_wr": 0.6378845116028062,
+            "improvement": 0.028782155063860393,
+            "n": 3,
+            "positive": "True"
+          },
+          {
+            "bucket": 80.0,
+            "signal_wr": 1.0,
+            "baseline_wr": 0.8858041828613733,
+            "improvement": 0.1141958171386267,
+            "n": 7,
+            "positive": "True"
+          },
+          {
+            "bucket": 70.0,
+            "signal_wr": 1.0,
+            "baseline_wr": 0.7797779777977798,
+            "improvement": 0.2202220222022202,
+            "n": 4,
+            "positive": "True"
+          },
+          {
+            "bucket": 45.0,
+            "signal_wr": 0.6666666666666666,
+            "baseline_wr": 0.46869565217391307,
+            "improvement": 0.19797101449275356,
+            "n": 3,
+            "positive": "True"
+          }
+        ]
+      },
+      "temporal": {
+        "valid": true,
+        "quarters": [
+          {
+            "quarter": "Q1",
+            "n": 19,
+            "win_rate": 0.9473684210526315,
+            "edge": 0.13004897015094874,
+            "positive": "True"
+          },
+          {
+            "quarter": "Q2",
+            "n": 19,
+            "win_rate": 0.8947368421052632,
+            "edge": 0.20603677052391467,
+            "positive": "True"
+          },
+          {
+            "quarter": "Q3",
+            "n": 19,
+            "win_rate": 0.8947368421052632,
+            "edge": 0.09236560442481478,
+            "positive": "True"
+          },
+          {
+            "quarter": "Q4",
+            "n": 19,
+            "win_rate": 1.0,
+            "edge": 0.13010558653750826,
+            "positive": "True"
+          }
+        ],
+        "positive_quarters": 4,
+        "total_quarters": 4,
+        "stable": true
+      },
+      "verdict": "VALID"
+    },
+    "Media_Mentions": {
+      "n_markets": 416,
+      "n_rlm_signals": 90,
+      "stats": {
+        "n": 90,
+        "valid": true,
+        "wins": "82",
+        "win_rate": 0.9111111111111111,
+        "avg_no_price": 67.00258522153575,
+        "breakeven": 0.6700258522153575,
+        "edge": 0.2410852588957536,
+        "p_value": 8.881784197001252e-16,
+        "weighted_improvement": 0.21357064154316632,
+        "pos_buckets": 13,
+        "total_buckets": 13,
+        "bucket_ratio": "13/13",
+        "bucket_pct": 1.0,
+        "ci_95_lower": 0.18228974009074544,
+        "ci_95_upper": 0.29988077770076177,
+        "bucket_details": [
+          {
+            "bucket": 70.0,
+            "signal_wr": 1.0,
+            "baseline_wr": 0.7797779777977798,
+            "improvement": 0.2202220222022202,
+            "n": 13,
+            "positive": "True"
+          },
+          {
+            "bucket": 60.0,
+            "signal_wr": 1.0,
+            "baseline_wr": 0.7031984948259643,
+            "improvement": 0.2968015051740357,
+            "n": 8,
+            "positive": "True"
+          },
+          {
+            "bucket": 50.0,
+            "signal_wr": 0.75,
+            "baseline_wr": 0.5565862708719852,
+            "improvement": 0.1934137291280148,
+            "n": 4,
+            "positive": "True"
+          },
+          {
+            "bucket": 55.0,
+            "signal_wr": 1.0,
+            "baseline_wr": 0.6378845116028062,
+            "improvement": 0.36211548839719376,
+            "n": 4,
+            "positive": "True"
+          },
+          {
+            "bucket": 35.0,
+            "signal_wr": 0.75,
+            "baseline_wr": 0.32262773722627736,
+            "improvement": 0.42737226277372264,
+            "n": 4,
+            "positive": "True"
+          },
+          {
+            "bucket": 30.0,
+            "signal_wr": 0.5,
+            "baseline_wr": 0.22330097087378642,
+            "improvement": 0.2766990291262136,
+            "n": 4,
+            "positive": "True"
+          },
+          {
+            "bucket": 65.0,
+            "signal_wr": 1.0,
+            "baseline_wr": 0.7650231124807396,
+            "improvement": 0.23497688751926038,
+            "n": 7,
+            "positive": "True"
+          },
+          {
+            "bucket": 75.0,
+            "signal_wr": 1.0,
+            "baseline_wr": 0.8395813047711782,
+            "improvement": 0.1604186952288218,
+            "n": 5,
+            "positive": "True"
+          },
+          {
+            "bucket": 40.0,
+            "signal_wr": 0.8333333333333334,
+            "baseline_wr": 0.38215859030837,
+            "improvement": 0.45117474302496335,
+            "n": 6,
+            "positive": "True"
+          },
+          {
+            "bucket": 80.0,
+            "signal_wr": 1.0,
+            "baseline_wr": 0.8858041828613733,
+            "improvement": 0.1141958171386267,
+            "n": 9,
+            "positive": "True"
+          },
+          {
+            "bucket": 90.0,
+            "signal_wr": 1.0,
+            "baseline_wr": 0.9567770946131963,
+            "improvement": 0.043222905386803734,
+            "n": 6,
+            "positive": "True"
+          },
+          {
+            "bucket": 85.0,
+            "signal_wr": 1.0,
+            "baseline_wr": 0.9187398593834505,
+            "improvement": 0.08126014061654951,
+            "n": 13,
+            "positive": "True"
+          },
+          {
+            "bucket": 45.0,
+            "signal_wr": 0.6666666666666666,
+            "baseline_wr": 0.46869565217391307,
+            "improvement": 0.19797101449275356,
+            "n": 3,
+            "positive": "True"
+          }
+        ]
+      },
+      "temporal": {
+        "valid": true,
+        "quarters": [
+          {
+            "quarter": "Q1",
+            "n": 22,
+            "win_rate": 0.8636363636363636,
+            "edge": 0.1474097618973903,
+            "positive": "True"
+          },
+          {
+            "quarter": "Q2",
+            "n": 22,
+            "win_rate": 0.9545454545454546,
+            "edge": 0.23197656887405715,
+            "positive": "True"
+          },
+          {
+            "quarter": "Q3",
+            "n": 22,
+            "win_rate": 1.0,
+            "edge": 0.35034109167055827,
+            "positive": "True"
+          },
+          {
+            "quarter": "Q4",
+            "n": 24,
+            "win_rate": 0.8333333333333334,
+            "edge": 0.23515291695390372,
+            "positive": "True"
+          }
+        ],
+        "positive_quarters": 4,
+        "total_quarters": 4,
+        "stable": true
+      },
+      "verdict": "VALID"
+    },
+    "Time_Events": {
+      "n_markets": 38,
+      "n_rlm_signals": 1,
+      "verdict": "INSUFFICIENT_DATA"
+    }
+  },
+  "non_sports_by_category": {
+    "KXBTCD": {
+      "n_markets": 586,
+      "n_rlm": 31,
+      "stats": {
+        "n": 31,
+        "valid": true,
+        "wins": "29",
+        "win_rate": 0.9354838709677419,
+        "avg_no_price": 85.05776812455477,
+        "breakeven": 0.8505776812455477,
+        "edge": 0.08490618972219421,
+        "p_value": 0.054319701655648034,
+        "weighted_improvement": 0.047713991080265805,
+        "pos_buckets": 3,
+        "total_buckets": 3,
+        "bucket_ratio": "3/3",
+        "bucket_pct": 1.0,
+        "ci_95_lower": -0.0015761692629126106,
+        "ci_95_upper": 0.17138854870730102,
+        "bucket_details": [
+          {
+            "bucket": 95.0,
+            "signal_wr": 1.0,
+            "baseline_wr": 0.98757379546753,
+            "improvement": 0.012426204532470009,
+            "n": 5,
+            "positive": "True"
+          },
+          {
+            "bucket": 90.0,
+            "signal_wr": 1.0,
+            "baseline_wr": 0.9567770946131963,
+            "improvement": 0.043222905386803734,
+            "n": 13,
+            "positive": "True"
+          },
+          {
+            "bucket": 85.0,
+            "signal_wr": 1.0,
+            "baseline_wr": 0.9187398593834505,
+            "improvement": 0.08126014061654951,
+            "n": 7,
+            "positive": "True"
+          }
+        ]
+      },
+      "verdict": "WEAK_EDGE"
+    },
+    "KXBTC": {
+      "n_markets": 386,
+      "n_rlm": 38,
+      "stats": {
+        "n": 38,
+        "valid": true,
+        "wins": "36",
+        "win_rate": 0.9473684210526315,
+        "avg_no_price": 78.16808799916424,
+        "breakeven": 0.7816808799916424,
+        "edge": 0.16568754106098915,
+        "p_value": 4.7843151342874535e-06,
+        "weighted_improvement": 0.11455699591981838,
+        "pos_buckets": 5,
+        "total_buckets": 6,
+        "bucket_ratio": "5/6",
+        "bucket_pct": 0.8333333333333334,
+        "ci_95_lower": 0.09468940868420475,
+        "ci_95_upper": 0.23668567343777355,
+        "bucket_details": [
+          {
+            "bucket": 90.0,
+            "signal_wr": 1.0,
+            "baseline_wr": 0.9567770946131963,
+            "improvement": 0.043222905386803734,
+            "n": 5,
+            "positive": "True"
+          },
+          {
+            "bucket": 75.0,
+            "signal_wr": 1.0,
+            "baseline_wr": 0.8395813047711782,
+            "improvement": 0.1604186952288218,
+            "n": 5,
+            "positive": "True"
+          },
+          {
+            "bucket": 80.0,
+            "signal_wr": 1.0,
+            "baseline_wr": 0.8858041828613733,
+            "improvement": 0.1141958171386267,
+            "n": 7,
+            "positive": "True"
+          },
+          {
+            "bucket": 60.0,
+            "signal_wr": 1.0,
+            "baseline_wr": 0.7031984948259643,
+            "improvement": 0.2968015051740357,
+            "n": 4,
+            "positive": "True"
+          },
+          {
+            "bucket": 70.0,
+            "signal_wr": 1.0,
+            "baseline_wr": 0.7797779777977798,
+            "improvement": 0.2202220222022202,
+            "n": 6,
+            "positive": "True"
+          },
+          {
+            "bucket": 85.0,
+            "signal_wr": 0.8571428571428571,
+            "baseline_wr": 0.9187398593834505,
+            "improvement": -0.06159700224059339,
+            "n": 7,
+            "positive": "False"
+          }
+        ]
+      },
+      "verdict": "VALID"
+    },
+    "KXETHD": {
+      "n_markets": 209,
+      "n_rlm": 10,
+      "stats": null,
+      "verdict": "INSUFFICIENT_DATA"
+    },
+    "KXETH": {
+      "n_markets": 179,
+      "n_rlm": 15,
+      "stats": {
+        "n": 15,
+        "valid": true,
+        "wins": "12",
+        "win_rate": 0.8,
+        "avg_no_price": 69.21500481000481,
+        "breakeven": 0.6921500481000481,
+        "edge": 0.10784995189995195,
+        "p_value": 0.2963685048059794,
+        "weighted_improvement": -0.008548152598761738,
+        "pos_buckets": 1,
+        "total_buckets": 2,
+        "bucket_ratio": "1/2",
+        "bucket_pct": 0.5,
+        "ci_95_lower": -0.09457797766182235,
+        "ci_95_upper": 0.31027788146172625,
+        "bucket_details": [
+          {
+            "bucket": 65.0,
+            "signal_wr": 1.0,
+            "baseline_wr": 0.7650231124807396,
+            "improvement": 0.23497688751926038,
+            "n": 3,
+            "positive": "True"
+          },
+          {
+            "bucket": 85.0,
+            "signal_wr": 0.6666666666666666,
+            "baseline_wr": 0.9187398593834505,
+            "improvement": -0.25207319271678386,
+            "n": 3,
+            "positive": "False"
+          }
+        ]
+      },
+      "verdict": "PRICE_PROXY"
+    },
+    "KXTRUMPMENTIONB": {
+      "n_markets": 94,
+      "n_rlm": 18,
+      "stats": {
+        "n": 18,
+        "valid": true,
+        "wins": "16",
+        "win_rate": 0.8888888888888888,
+        "avg_no_price": 84.09516961051048,
+        "breakeven": 0.8409516961051048,
+        "edge": 0.047937192783784055,
+        "p_value": 0.5175335071295715,
+        "weighted_improvement": 0.07940502835921548,
+        "pos_buckets": 3,
+        "total_buckets": 3,
+        "bucket_ratio": "3/3",
+        "bucket_pct": 1.0,
+        "ci_95_lower": -0.09724799240140114,
+        "ci_95_upper": 0.19312237796896925,
+        "bucket_details": [
+          {
+            "bucket": 85.0,
+            "signal_wr": 1.0,
+            "baseline_wr": 0.9187398593834505,
+            "improvement": 0.08126014061654951,
+            "n": 3,
+            "positive": "True"
+          },
+          {
+            "bucket": 80.0,
+            "signal_wr": 1.0,
+            "baseline_wr": 0.8858041828613733,
+            "improvement": 0.1141958171386267,
+            "n": 4,
+            "positive": "True"
+          },
+          {
+            "bucket": 90.0,
+            "signal_wr": 1.0,
+            "baseline_wr": 0.9567770946131963,
+            "improvement": 0.043222905386803734,
+            "n": 4,
+            "positive": "True"
+          }
+        ]
+      },
+      "verdict": "NO_EDGE"
+    },
+    "KXNCAAMENTION": {
+      "n_markets": 49,
+      "n_rlm": 14,
+      "stats": {
+        "n": 14,
+        "valid": true,
+        "wins": "14",
+        "win_rate": 1.0,
+        "avg_no_price": 73.28129037567899,
+        "breakeven": 0.7328129037567899,
+        "edge": 0.26718709624321013,
+        "p_value": 1.0,
+        "weighted_improvement": 0.1408152327246941,
+        "pos_buckets": 2,
+        "total_buckets": 2,
+        "bucket_ratio": "2/2",
+        "bucket_pct": 1.0,
+        "ci_95_lower": 0.26718709624321013,
+        "ci_95_upper": 0.26718709624321013,
+        "bucket_details": [
+          {
+            "bucket": 85.0,
+            "signal_wr": 1.0,
+            "baseline_wr": 0.9187398593834505,
+            "improvement": 0.08126014061654951,
+            "n": 4,
+            "positive": "True"
+          },
+          {
+            "bucket": 70.0,
+            "signal_wr": 1.0,
+            "baseline_wr": 0.7797779777977798,
+            "improvement": 0.2202220222022202,
+            "n": 3,
+            "positive": "True"
+          }
+        ]
+      },
+      "verdict": "NO_EDGE"
+    },
+    "KXTRUMPMENTION": {
+      "n_markets": 43,
+      "n_rlm": 12,
+      "stats": null,
+      "verdict": "INSUFFICIENT_DATA"
+    },
+    "KXFEDMENTION": {
+      "n_markets": 41,
+      "n_rlm": 5,
+      "stats": null,
+      "verdict": "INSUFFICIENT_DATA"
+    }
+  },
+  "summary_table": [
+    {
+      "Group": "SPORTS (Baseline)",
+      "Markets": 1620,
+      "Win_Rate": "89.9%",
+      "Edge": "+17.9%",
+      "Improvement": "+13.9%",
+      "Buckets": "16/16",
+      "P_value": "0.0000",
+      "Verdict": "VALID"
+    },
+    {
+      "Group": "Crypto",
+      "Markets": 94,
+      "Win_Rate": "91.5%",
+      "Edge": "+12.8%",
+      "Improvement": "+8.6%",
+      "Buckets": "7/8",
+      "P_value": "0.0000",
+      "Verdict": "VALID"
+    },
+    {
+      "Group": "Economics",
+      "Markets": 12,
+      "Win_Rate": "N/A",
+      "Edge": "N/A",
+      "Improvement": "N/A",
+      "Buckets": "N/A",
+      "P_value": "N/A",
+      "Verdict": "INSUFFICIENT_DATA"
+    },
+    {
+      "Group": "Politics",
+      "Markets": 42,
+      "Win_Rate": "85.7%",
+      "Edge": "+10.1%",
+      "Improvement": "+8.2%",
+      "Buckets": "6/7",
+      "P_value": "0.0626",
+      "Verdict": "WEAK_EDGE"
+    },
+    {
+      "Group": "Weather",
+      "Markets": 22,
+      "Win_Rate": "100.0%",
+      "Edge": "+12.9%",
+      "Improvement": "+3.6%",
+      "Buckets": "3/3",
+      "P_value": "1.0000",
+      "Verdict": "NO_EDGE"
+    },
+    {
+      "Group": "Entertainment",
+      "Markets": 76,
+      "Win_Rate": "93.4%",
+      "Edge": "+14.0%",
+      "Improvement": "+7.8%",
+      "Buckets": "8/9",
+      "P_value": "0.0000",
+      "Verdict": "VALID"
+    },
+    {
+      "Group": "Media_Mentions",
+      "Markets": 90,
+      "Win_Rate": "91.1%",
+      "Edge": "+24.1%",
+      "Improvement": "+21.4%",
+      "Buckets": "13/13",
+      "P_value": "0.0000",
+      "Verdict": "VALID"
+    },
+    {
+      "Group": "Time_Events",
+      "Markets": 1,
+      "Win_Rate": "N/A",
+      "Edge": "N/A",
+      "Improvement": "N/A",
+      "Buckets": "N/A",
+      "P_value": "N/A",
+      "Verdict": "INSUFFICIENT_DATA"
+    }
+  ],
+  "final_recommendation": "INCLUDE_SELECTED: RLM shows valid edge in multiple category groups"
+}

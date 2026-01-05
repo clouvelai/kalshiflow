@@ -1,0 +1,55 @@
+{
+  "timestamp": "2025-12-29T16:33:46.145891",
+  "S010": {
+    "status": "REJECTED",
+    "confidence": "LOW",
+    "metrics": {
+      "strategy": "S010_Round_Size_Bot_NO",
+      "markets": 468,
+      "win_rate": 0.12393162393162394,
+      "breakeven": 0.1859164207325739,
+      "edge": -0.061984796800949954,
+      "avg_no_price": 18.59164207325739,
+      "n_wins": 58,
+      "p_value": 0.9998812720994915
+    },
+    "improvement": -0.11650718725809059,
+    "criteria": {
+      "sufficient_markets": true,
+      "positive_edge": "False",
+      "significant": "False",
+      "not_price_proxy": "False",
+      "temporal_stable": false,
+      "oos_holds": "False",
+      "not_concentrated": "True",
+      "multiple_categories": false,
+      "no_sanity_issues": false
+    }
+  },
+  "S011": {
+    "status": "VALIDATED",
+    "confidence": "MEDIUM",
+    "metrics": {
+      "strategy": "S011_Stable_Leverage_Bot_NO",
+      "markets": 592,
+      "win_rate": 0.8108108108108109,
+      "breakeven": 0.238003705012232,
+      "edge": 0.5728071057985789,
+      "avg_no_price": 23.8003705012232,
+      "n_wins": 480,
+      "p_value": 7.932505012010664e-190
+    },
+    "improvement": 0.6915385174264566,
+    "criteria": {
+      "sufficient_markets": true,
+      "positive_edge": "True",
+      "significant": "True",
+      "not_price_proxy": "True",
+      "temporal_stable": true,
+      "oos_holds": "True",
+      "not_concentrated": "True",
+      "multiple_categories": true,
+      "no_sanity_issues": false
+    }
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "hypothesis_id": "LSD-001",
+  "source": "LSD Mode - Numerological Patterns",
+  "source_url": null,
+  "title": "Fibonacci Trade Count Signal",
+  "mechanism": "ABSURD HYPOTHESIS: Markets with exactly 5, 8, 13, 21, or 34 trades may have different dynamics. The Fibonacci sequence appears in nature and markets - maybe the 'natural' stopping points for market activity reveal something.",
+  "proposed_signal": {
+    "condition": "Total trade count in market is a Fibonacci number (5, 8, 13, 21, 34)",
+    "action": "Follow the majority trade direction in Fibonacci-count markets",
+    "expected_edge": "Unknown - purely speculative"
+  },
+  "data_requirements": ["market_ticker", "trade count", "taker_side"],
+  "price_proxy_risk": "LOW - trade count is independent of price",
+  "novelty_vs_tested": "Never tested. Truly absurd.",
+  "priority": "LSD-ABSURD"
+}

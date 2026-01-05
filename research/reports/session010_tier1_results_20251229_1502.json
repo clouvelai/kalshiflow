@@ -1,0 +1,275 @@
+{
+  "timestamp": "2025-12-29T15:02:55.714009",
+  "bonferroni_threshold": 0.003,
+  "validated": [
+    {
+      "hypothesis": "H070_drunk_sports",
+      "variation": "v2_high_leverage",
+      "description": "Late night weekend sports + leverage > 3 - FADE",
+      "n_trades": 28042,
+      "n_markets": 617,
+      "win_rate": 92.77878861650208,
+      "breakeven": 89.3041512161818,
+      "edge": 3.4746374003202907,
+      "p_value": 0.0026141324544109164
+    },
+    {
+      "hypothesis": "H078_leverage_divergence",
+      "variation": "h078_low_mid",
+      "description": "Fade high-leverage (>2) trades at 30-50c",
+      "n_trades": 68286,
+      "n_markets": 4616,
+      "win_rate": 75.073938036124,
+      "breakeven": 68.61890354988086,
+      "edge": 6.455034486243161,
+      "p_value": 3.279800959070028e-22
+    },
+    {
+      "hypothesis": "H084_leverage_trend",
+      "variation": "h084_increasing_lev",
+      "description": "Fade late trades in markets with increasing leverage",
+      "n_markets": 3908,
+      "win_rate": 78.81269191402251,
+      "breakeven": 76.89687819856704,
+      "edge": 1.9158137154554722,
+      "p_value": 0.0022047994774887403
+    },
+    {
+      "hypothesis": "H072_volatility",
+      "variation": "h072_fade_move",
+      "description": "High volatility markets: FADE recent move direction",
+      "n_markets": 4300,
+      "win_rate": 52.116279069767444,
+      "breakeven": 19.115348837209304,
+      "edge": 33.00093023255815,
+      "p_value": 0.0
+    }
+  ],
+  "rejected": [
+    {
+      "hypothesis": "H070_drunk_sports",
+      "variation": "v1_base",
+      "description": "Late night (11PM-3AM ET) weekend (Fri/Sat) sports - FADE",
+      "n_trades": 100757,
+      "n_markets": 1605,
+      "win_rate": 54.685051094426484,
+      "breakeven": 51.21830879766404,
+      "edge": 3.4667422967624484,
+      "p_value": 0.0032534886044017952
+    },
+    {
+      "hypothesis": "H070_drunk_sports",
+      "variation": "v3_round_numbers",
+      "description": "Late night weekend sports + round contracts - FADE",
+      "n_trades": 12779,
+      "n_markets": 667,
+      "win_rate": 55.061491750773406,
+      "breakeven": 51.72086219843378,
+      "edge": 3.3406295523396246,
+      "p_value": 0.04757718037689516
+    },
+    {
+      "hypothesis": "H070_drunk_sports",
+      "variation": "v4_combined",
+      "description": "Late night weekend sports + (leverage>3 OR round contracts) - FADE",
+      "n_trades": 37104,
+      "n_markets": 955,
+      "win_rate": 72.33112220709766,
+      "breakeven": 69.09511907238635,
+      "edge": 3.236003134711307,
+      "p_value": 0.01824191204376613
+    },
+    {
+      "hypothesis": "H070_drunk_sports",
+      "variation": "v5_yes_only",
+      "description": "Late night weekend sports YES trades - FADE",
+      "n_trades": 70077,
+      "n_markets": 1390,
+      "win_rate": 57.33812949640288,
+      "breakeven": 53.77976184353038,
+      "edge": 3.558367652872496,
+      "p_value": 0.004157284187361104
+    },
+    {
+      "hypothesis": "H070_drunk_sports",
+      "variation": "v6_high_lev_yes",
+      "description": "Late night weekend sports + leverage>3 + YES trades - FADE",
+      "n_trades": 19920,
+      "n_markets": 426,
+      "win_rate": 90.61032863849765,
+      "breakeven": 88.75888617884267,
+      "edge": 1.8514424596549728,
+      "p_value": 0.12718443779476685
+    },
+    {
+      "hypothesis": "H071_clustering",
+      "variation": "h071",
+      "description": "Fade clusters of 5+ trades in same direction within 5 min",
+      "n_clusters": 17323,
+      "n_markets": 4373,
+      "win_rate": 48.24345390303921,
+      "breakeven": 48.55198935792464,
+      "edge": -0.30853545488543355,
+      "p_value": 0.671478588927134
+    },
+    {
+      "hypothesis": "H078_leverage_divergence",
+      "variation": "h078_mid_high",
+      "n_markets": 0,
+      "edge": 0
+    },
+    {
+      "hypothesis": "H078_leverage_divergence",
+      "variation": "h078_high",
+      "n_markets": 0,
+      "edge": 0
+    },
+    {
+      "hypothesis": "H078_leverage_divergence",
+      "variation": "h078_mid",
+      "n_markets": 0,
+      "edge": 0
+    },
+    {
+      "hypothesis": "H072_volatility",
+      "variation": "h072_follow_move",
+      "description": "High volatility markets: bet on recent move direction",
+      "n_markets": 4300,
+      "win_rate": 47.883720930232556,
+      "breakeven": 80.8846511627907,
+      "edge": -33.00093023255814,
+      "p_value": 1.0
+    }
+  ],
+  "all_results": {
+    "H070_drunk_sports": {
+      "v1_base": {
+        "description": "Late night (11PM-3AM ET) weekend (Fri/Sat) sports - FADE",
+        "n_trades": 100757,
+        "n_markets": 1605,
+        "win_rate": 54.685051094426484,
+        "breakeven": 51.21830879766404,
+        "edge": 3.4667422967624484,
+        "p_value": 0.0032534886044017952
+      },
+      "v2_high_leverage": {
+        "description": "Late night weekend sports + leverage > 3 - FADE",
+        "n_trades": 28042,
+        "n_markets": 617,
+        "win_rate": 92.77878861650208,
+        "breakeven": 89.3041512161818,
+        "edge": 3.4746374003202907,
+        "p_value": 0.0026141324544109164
+      },
+      "v3_round_numbers": {
+        "description": "Late night weekend sports + round contracts - FADE",
+        "n_trades": 12779,
+        "n_markets": 667,
+        "win_rate": 55.061491750773406,
+        "breakeven": 51.72086219843378,
+        "edge": 3.3406295523396246,
+        "p_value": 0.04757718037689516
+      },
+      "v4_combined": {
+        "description": "Late night weekend sports + (leverage>3 OR round contracts) - FADE",
+        "n_trades": 37104,
+        "n_markets": 955,
+        "win_rate": 72.33112220709766,
+        "breakeven": 69.09511907238635,
+        "edge": 3.236003134711307,
+        "p_value": 0.01824191204376613
+      },
+      "v5_yes_only": {
+        "description": "Late night weekend sports YES trades - FADE",
+        "n_trades": 70077,
+        "n_markets": 1390,
+        "win_rate": 57.33812949640288,
+        "breakeven": 53.77976184353038,
+        "edge": 3.558367652872496,
+        "p_value": 0.004157284187361104
+      },
+      "v6_high_lev_yes": {
+        "description": "Late night weekend sports + leverage>3 + YES trades - FADE",
+        "n_trades": 19920,
+        "n_markets": 426,
+        "win_rate": 90.61032863849765,
+        "breakeven": 88.75888617884267,
+        "edge": 1.8514424596549728,
+        "p_value": 0.12718443779476685
+      },
+      "price_proxy_check": {
+        "best_variation": "v5_yes_only",
+        "signal_edge": 3.558367652872496,
+        "baseline_edge": 3.7680040058060635,
+        "improvement": -0.20963635293356742,
+        "is_price_proxy": true,
+        "price_range": [
+          1,
+          99
+        ]
+      }
+    },
+    "H071_clustering": {
+      "h071": {
+        "description": "Fade clusters of 5+ trades in same direction within 5 min",
+        "n_clusters": 17323,
+        "n_markets": 4373,
+        "win_rate": 48.24345390303921,
+        "breakeven": 48.55198935792464,
+        "edge": -0.30853545488543355,
+        "p_value": 0.671478588927134
+      }
+    },
+    "H078_leverage_divergence": {
+      "h078_mid_high": {
+        "n_markets": 0,
+        "edge": 0
+      },
+      "h078_high": {
+        "n_markets": 0,
+        "edge": 0
+      },
+      "h078_mid": {
+        "n_markets": 0,
+        "edge": 0
+      },
+      "h078_low_mid": {
+        "description": "Fade high-leverage (>2) trades at 30-50c",
+        "n_trades": 68286,
+        "n_markets": 4616,
+        "win_rate": 75.073938036124,
+        "breakeven": 68.61890354988086,
+        "edge": 6.455034486243161,
+        "p_value": 3.279800959070028e-22
+      }
+    },
+    "H084_leverage_trend": {
+      "h084_increasing_lev": {
+        "description": "Fade late trades in markets with increasing leverage",
+        "n_markets": 3908,
+        "win_rate": 78.81269191402251,
+        "breakeven": 76.89687819856704,
+        "edge": 1.9158137154554722,
+        "p_value": 0.0022047994774887403
+      }
+    },
+    "H072_volatility": {
+      "h072_follow_move": {
+        "description": "High volatility markets: bet on recent move direction",
+        "n_markets": 4300,
+        "win_rate": 47.883720930232556,
+        "breakeven": 80.8846511627907,
+        "edge": -33.00093023255814,
+        "p_value": 1.0
+      },
+      "h072_fade_move": {
+        "description": "High volatility markets: FADE recent move direction",
+        "n_markets": 4300,
+        "win_rate": 52.116279069767444,
+        "breakeven": 19.115348837209304,
+        "edge": 33.00093023255815,
+        "p_value": 0.0
+      }
+    }
+  }
+}

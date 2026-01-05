@@ -1,0 +1,173 @@
+{
+  "screening_date": "2026-01-01",
+  "session": "SPORTS EXPERT LSD SCREENING",
+  "total_hypotheses_tested": 15,
+
+  "WINNERS": [
+    {
+      "id": "SPORTS-007",
+      "name": "Late-Arriving Large Money (Follow Late NO)",
+      "raw_edge": "19.8%",
+      "improvement_vs_baseline": "15.0%",
+      "bucket_ratio": "11/11 (100%)",
+      "temporal_stability": "4/4 quarters positive",
+      "concentration": "4.6% top-5",
+      "sample_size": 331,
+      "p_value": 0.000000,
+      "validation": "FULLY VALIDATED",
+      "recommendation": "IMPLEMENT - This is a major new validated strategy",
+      "mechanism": "Late-arriving large money (final 25% has 2x large trade ratio) betting NO = sharp money fading retail"
+    },
+    {
+      "id": "SPORTS-007b",
+      "name": "Late-Arriving Large Money (Follow Late YES)",
+      "raw_edge": "18.8%",
+      "temporal_stability": "4/4 quarters positive",
+      "sample_size": 337,
+      "p_value": 0.000000,
+      "validation": "LIKELY VALID but needs bucket analysis",
+      "recommendation": "Validate bucket-matched improvement before implementing"
+    }
+  ],
+
+  "PROMISING": [
+    {
+      "id": "SPORTS-009",
+      "name": "Spread Widening Before Sharp Entry (Follow Sharp NO)",
+      "raw_edge": "4.6%",
+      "improvement_vs_baseline": "3.3%",
+      "bucket_ratio": "9/20 (45%)",
+      "temporal_stability": "4/4 quarters positive",
+      "sample_size": 1278,
+      "p_value": 0.000446,
+      "validation": "WEAK - Bucket ratio below 50%",
+      "recommendation": "Monitor but do not implement yet",
+      "note": "The signal finds trades near high-NO-price buckets, which have positive edge anyway"
+    },
+    {
+      "id": "SPORTS-002",
+      "name": "Opening Move Reversal (Follow Reversal to NO)",
+      "raw_edge": "3.2%",
+      "improvement_vs_baseline": "2.4%",
+      "bucket_ratio": "10/20 (50%)",
+      "temporal_stability": "4/4 quarters positive",
+      "sample_size": 275,
+      "p_value": 0.138363,
+      "validation": "WEAK - P-value not significant, bucket ratio borderline",
+      "recommendation": "Do not implement"
+    },
+    {
+      "id": "SPORTS-012",
+      "name": "NCAAF Totals Specialist",
+      "raw_edge": "7.4%",
+      "sample_size": 372,
+      "validation": "PROMISING but needs category-specific baseline",
+      "recommendation": "Monitor for more data, already known from Session 009"
+    }
+  ],
+
+  "DEAD": [
+    {
+      "id": "SPORTS-015",
+      "name": "Fibonacci Price Attractors",
+      "initial_edge": "33.1%",
+      "issue": "LOOK-AHEAD BIAS - used final_price which correlates with outcome (r=0.81)",
+      "corrected_edge": "4.7% (just bet NO on high-Fib markets)",
+      "verdict": "INVALID - Original implementation was buggy"
+    },
+    {
+      "id": "SPORTS-001",
+      "name": "Steam Exhaustion Detection",
+      "edge": "-9.2%",
+      "sample_size": 365,
+      "verdict": "FAIL - Negative edge"
+    },
+    {
+      "id": "SPORTS-005",
+      "name": "Size Velocity Divergence",
+      "edge": "-0.4%",
+      "sample_size": 252,
+      "verdict": "FAIL - No edge"
+    },
+    {
+      "id": "SPORTS-008",
+      "name": "Size Distribution Shape Change",
+      "edge": "5.0%",
+      "note": "Raw edge OK but flagged as FAIL due to small sample in second direction",
+      "verdict": "NEEDS INVESTIGATION - May have edge in one direction"
+    },
+    {
+      "id": "SPORTS-011",
+      "name": "Category Momentum Contagion",
+      "edge": "-3.3%",
+      "sample_size": 47713,
+      "verdict": "FAIL - Negative edge with large sample = definitively rejected"
+    },
+    {
+      "id": "SPORTS-003",
+      "name": "Momentum Velocity Stall",
+      "edge": "-8.5%",
+      "sample_size": 112,
+      "verdict": "FAIL - Negative edge"
+    },
+    {
+      "id": "SPORTS-004",
+      "name": "Extreme Public Sentiment Fade",
+      "edge": "-8.9%",
+      "sample_size": 313,
+      "verdict": "FAIL - Negative edge, contrary to sports betting intuition"
+    },
+    {
+      "id": "SPORTS-006",
+      "name": "Round Number Retail Clustering",
+      "edge": "2.9%",
+      "sample_size": 381,
+      "verdict": "FAIL - Edge below threshold"
+    },
+    {
+      "id": "SPORTS-013",
+      "name": "Trade Count Milestone Fading",
+      "edge": "-1.2%",
+      "sample_size": 299,
+      "verdict": "FAIL - Negative edge (LSD idea was correctly flagged as noise)"
+    },
+    {
+      "id": "SPORTS-014",
+      "name": "Bot Signature Fade",
+      "edge": "N/A",
+      "verdict": "FAIL - No signals detected with CV < 0.3"
+    },
+    {
+      "id": "SPORTS-010",
+      "name": "Multi-Outcome Pricing Inconsistency",
+      "edge": "N/A",
+      "verdict": "SKIPPED - Requires market metadata not available in trade data"
+    }
+  ],
+
+  "FINAL_RECOMMENDATIONS": {
+    "priority_1": {
+      "strategy": "SPORTS-007: Late-Arriving Large Money (Follow Late NO)",
+      "action": "IMPLEMENT IMMEDIATELY",
+      "expected_edge": "+15% improvement vs baseline",
+      "notes": "This is an excellent independent signal. Signal fires when final 25% of trades has 2x the large trade ratio as earlier trades, and late large trades favor NO. Bet NO."
+    },
+    "priority_2": {
+      "strategy": "SPORTS-007b: Late-Arriving Large Money (Follow Late YES)",
+      "action": "Deep validate with bucket-matched analysis",
+      "notes": "Same mechanism but betting YES. May be valid but needs proper baseline comparison."
+    },
+    "priority_3": {
+      "strategy": "SPORTS-012: NCAAF Totals",
+      "action": "Continue monitoring for more data",
+      "notes": "Known from Session 009, sample size increasing"
+    }
+  },
+
+  "KEY_LEARNINGS": {
+    "sports_betting_translation": "Most sports betting concepts did NOT translate well to Kalshi. Steam moves, public fades, and category contagion all failed.",
+    "what_worked": "Late money following (SPORTS-007) is the one clear winner - the sports betting principle that 'sharps bet late' does appear to work.",
+    "methodology_bugs": "SPORTS-015 had look-ahead bias (using final_price to determine bet direction). Always verify signals don't use future information.",
+    "lsd_mode_value": "Rapid screening correctly flagged SPORTS-015's 33% edge as suspicious, leading to bug discovery."
+  }
+}

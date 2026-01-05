@@ -596,8 +596,28 @@ Use this agent to discover novel trading strategy hypotheses from external sourc
 
 Output: Hypothesis briefs in `research/hypotheses/incoming/`
 
-### Quant LSD Mode (Lateral Strategy Discovery)
-When the user says "LSD mode", the quant enters rapid exploration mode:
+### Quant Agent
+
+The quant agent validates trading strategies and explores new hypotheses.
+
+**Primary Tool: Validation Framework**
+```bash
+cd backend
+
+# Validate a strategy (use this instead of writing ad-hoc scripts!)
+uv run python ../research/scripts/validate_strategy.py --config h123_rlm.yaml --mode full
+
+# Quick LSD screening
+uv run python ../research/scripts/validate_strategy.py --config h123_rlm.yaml --mode lsd
+
+# List available strategies
+uv run python ../research/scripts/validate_strategy.py --list
+```
+
+**Creating New Strategy Configs**: Add YAML files to `research/strategies/configs/`
+
+**LSD Mode (Lateral Strategy Discovery)**
+When the user says "LSD mode", enter rapid exploration mode:
 - **Speed over rigor**: Quick 10-min edge checks, skip full bucket analysis
 - **Lower threshold**: Flag anything with raw edge > 5%
 - **Absurdity encouraged**: Moon phases, fibonacci trade counts, 4+ signal mega-stacks
@@ -605,7 +625,18 @@ When the user says "LSD mode", the quant enters rapid exploration mode:
 
 User says "normal mode" to return to rigorous bucket-matched validation.
 
-See `research/LSD_MODE_INSTRUCTIONS.md` for full details.
+**Self-Improvement Mandate**
+The quant MUST continuously improve tooling:
+1. **Never write duplicate code** - if you've done it before, use/extend the framework
+2. **Automate repetitive tasks** - if it takes >10 min and you'll do it again, script it
+3. **Track improvements needed** - add ideas to `research/TOOLING_BACKLOG.md`
+4. **After each session**: Ask "What could be automated?" and either do it or log it
+
+See `research/LSD_MODE_INSTRUCTIONS.md` for full details including:
+- Validation framework usage
+- Signal field reference
+- Tooling self-improvement principles
+- Data management procedures
 
 ## Managing RL Session Data
 

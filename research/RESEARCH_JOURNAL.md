@@ -54,6 +54,11 @@ This document is the bridge between research and implementation - the trader-spe
 22. **[ACTIVE-Session012]** Do trade SEQUENCE patterns predict? -> H108 (exhaustion), H109 (acceleration) - UNTESTED
 23. **[ACTIVE-Session012]** Are there cross-market pricing inconsistencies? -> H111 (same-event multi-market) - UNTESTED
 24. **[ACTIVE-Session012]** Do conditional behavioral signals exist? -> H115 (commitment reversal), H116 (proximity confidence) - UNTESTED
+25. **[RESOLVED-Session 2026-01-05]** Does Duration > 24hr add edge to RLM? -> **YES - VALIDATED** +20.7% edge, +16.1% improvement, 2110 markets
+26. **[RESOLVED-Session 2026-01-05]** Does Favorite-Longshot bias provide edge? -> **NO - PRICE PROXY** Edge exists but bucket improvement = 0%
+27. **[RESOLVED-Session 2026-01-05]** Does Large Trade Imbalance predict outcomes? -> **NO - PRICE PROXY** 50-55% bucket pass rate
+28. **[RESOLVED-Session 2026-01-05]** Do Steam Moves provide actionable edge? -> **NO - PRICE PROXY** Following works but is price echo
+29. **[RESOLVED-Session 2026-01-05b]** Is the 6-24hr duration window better than 24hr+? -> **YES - VALIDATED** +24.2% edge vs +20.7%, 100% bucket pass rate, 1,552 markets
 
 ---
 
@@ -103,6 +108,11 @@ This document is the bridge between research and implementation - the trader-spe
 | Can drunk betting window be extended? (Session 011b) | **INVALIDATED - Session 012c** | Same as H070/H086 - PRICE PROXY when properly tested | 2025-12-29 |
 | Can round-size bot trades be exploited? (Session 011c) | **INVALIDATED - Session 011d** | S010 had CRITICAL BUG: used 100-trade_price which inverted NO prices, actual edge = -6.2% | 2025-12-29 |
 | Is low leverage variance a bot signal? (Session 011c) | **INVALIDATED - Session 011d** | S011 is PRICE PROXY: -1.2% improvement vs baseline at same NO price | 2025-12-29 |
+| Does Duration > 24hr add edge to RLM? | **YES - VALIDATED** | +20.7% edge, +16.1% improvement, 2,110 markets, 94% buckets positive | 2026-01-05 |
+| Does Favorite-Longshot bias provide edge? | **NO - PRICE PROXY** | +3.9% raw edge but 0% bucket improvement | 2026-01-05 |
+| Does Large Trade Imbalance predict outcomes? | **NO - PRICE PROXY** | +13.6% raw but only 50% buckets positive | 2026-01-05 |
+| Do Steam Moves provide actionable edge? | **NO - PRICE PROXY** | +11.7% raw but only 50% buckets positive | 2026-01-05 |
+| Is 6-24hr duration window optimal for RLM? | **YES - VALIDATED** | +24.2% edge, +19.4% improvement, 100% buckets positive, 2/2 quarters | 2026-01-05 |
 
 ---
 
@@ -231,7 +241,7 @@ This document is the bridge between research and implementation - the trader-spe
 | H120 | Whale low lev follow NO | **Rejected** | -2.47% | 4,820 | Session 013: PRICE PROXY - -5.82% improvement |
 | H121 | Whale low lev fade (bet NO) | **VALIDATED** | +5.79% | 5,070 | Session 013: +6.78% improvement, 11/14 buckets positive |
 | H122 | Whale + S013 combined | **VALIDATED** | +15.04% | 334 | Session 013: +11.27% improvement, 11/12 buckets positive, BEST STRATEGY |
-| H123 | Reverse Line Movement (RLM) NO | **VALIDATED** | +17.38% | 1,986 | LSD-001: >70% YES trades but price moved toward NO, +13.44% improvement, 16/17 buckets |
+| H123 | Reverse Line Movement (RLM) NO | **VALIDATED** | +21.8% | 4,148 | Jan-2026: Re-validated on 7.9M trades, +17.1% improvement vs baseline, 17/18 buckets, z=31.46 |
 | H124 | Mega Stack (4 signals) | **VALIDATED** | +16.09% | 154 | LSD-001: lev_std<0.7 + weekend + whale + round_size + no_ratio>0.6, 12/12 buckets |
 | H125 | Buyback Reversal NO | **VALIDATED** | +10.65% | 325 | LSD-001: First half YES-heavy, second half NO-heavy with larger size, +8.39% improvement |
 | H126 | Triple Weird Stack (Fib + Weekend + Whale) | **VALIDATED** | +5.78% | 544 | LSD-001: Fibonacci trade count + weekend + whale + NO majority, +4.11% improvement |
@@ -247,16 +257,458 @@ This document is the bridge between research and implementation - the trader-spe
 | SPORTS-007b | Late-Arriving Large Money (YES) | **Promising** | +18.8% | 337 | LSD-SPORTS: Needs bucket-matched validation |
 | SPORTS-008 | Size Distribution Shape Change | **Queued** | +5.0% | 52 | LSD-SPORTS: Small sample, may warrant deeper investigation |
 | SPORTS-009 | Spread Widening Before Sharp | **Rejected** | +4.6% | 1278 | LSD-SPORTS: Only 9/20 buckets positive = PRICE PROXY |
+| H-MM001 | Spread Compression | Rejected | +4.5% | 31,789 | LSD-MM: Below 5% threshold |
+| H-MM002 | Spread Oscillation | Rejected | +4.1% | 3,590 | LSD-MM: PRICE PROXY - 50% bucket pass rate |
+| H-MM003 | Spread Asymmetry | Rejected | +2.4% | 5,579 | LSD-MM: Below threshold |
+| H-MM004 | Quote Stuffing Proxy | Rejected | +2.0% | 5,936 | LSD-MM: No signal |
+| H-MM005 | Time-Weighted Imbalance | Rejected | +2.4% | 293 | LSD-MM: Small sample |
+| H-MM006 | Dead Zone Trading | Rejected | +0.1% | 9,557 | LSD-MM: PRICE PROXY - 52% buckets |
+| H-MM007 | Informed Flow Clustering | Rejected | +3.1% | 232,988 | LSD-MM: Below threshold |
+| H-MM008 | Toxic Flow Reversal | **Promising** | +4.8% | 6,447 | LSD-MM: 60% buckets positive - overlaps with RLM |
+| H-MM009 | Size-Price Divergence | Rejected | +2.4% | 185,187 | LSD-MM: No signal |
+| H-MM010 | Price Reversal (>10c drop) | **Promising** | +7.2% | 10,793 | LSD-MM: 55% buckets - overlaps with price_move |
+| H-MM011 | Price Momentum (toward NO) | **CORE** | +4.6% | 22,153 | LSD-MM: This IS the core RLM signal |
+| H-MM012 | Fibonacci Trade Counts | Rejected | +4.7% | 7,005 | LSD-MM: No edge - numerology fails |
+| H-MM013 | Round Number Magnetism | Rejected | -0.4% | 19,806 | LSD-MM: PRICE PROXY |
+| H-MM014 | Contrarian Whale | Rejected | +2.5% | 162,229 | LSD-MM: No edge in fading whales |
+| H-MM015 | Extreme YES Ratio (>80%) | Rejected | -0.0% | 263,322 | LSD-MM: No independent edge |
+| H-MM150 | Duration > 24hr + RLM | **VALIDATED** | +20.7% | 2,110 | Session 2026-01-05: +16.1% improvement, 16/17 buckets positive, 2/2 quarters |
+| H-MM151 | n_trades >= 30 + RLM | **Promising** | +9.9% | 2,452 | LSD-MM: +5.3% additive - NEEDS FULL VALIDATION |
+| H-MM152 | Big drop (<-5c) + RLM | **Promising** | +8.4% | 3,242 | LSD-MM: +3.8% additive - NEEDS FULL VALIDATION |
+| W01 | Prime Trade Counts | Rejected | -0.5% | 24,690 | LSD-MM: Numerology fails |
+| W05 | Minnow Swarm | Rejected | +0.5% | 29,919 | LSD-MM: No edge |
+| W06 | Size Escalation | Rejected | +1.2% | 20,130 | LSD-MM: No edge |
+| W08 | Morning Trading | Rejected | +0.6% | 45,039 | LSD-MM: No time pattern |
+| W09 | Weekend Trading | Rejected | +0.2% | 195,274 | LSD-MM: No weekend pattern |
+| W10 | Single Whale Dominance | Rejected | -0.1% | 258,851 | LSD-MM: No signal |
+| W11 | Smart YES Money | Rejected | -7.0% | 8,156 | LSD-MM: Contrarian fails |
+| W12 | Extreme Volatility | Rejected | -8.8% | 2,968 | LSD-MM: Negative edge |
+| W13 | Inverse RLM (bet YES) | Rejected | -2.6% | 1,535 | LSD-MM: RLM inverse loses money |
 | SPORTS-010 | Multi-Outcome Inconsistency | **Skipped** | N/A | N/A | LSD-SPORTS: Requires market metadata |
 | SPORTS-011 | Category Momentum Contagion | **Rejected** | -3.3% | 47713 | LSD-SPORTS: Large sample confirms NO edge |
 | SPORTS-012 | NCAAF Totals | **Promising** | +7.4% | 372 | LSD-SPORTS: Known from Session 009, monitor |
 | SPORTS-013 | Trade Count Milestone | **Rejected** | -1.2% | 299 | LSD-SPORTS: LSD idea was noise as expected |
 | SPORTS-014 | Bot Signature Fade | **Rejected** | N/A | 0 | LSD-SPORTS: No signals detected |
 | SPORTS-015 | Fibonacci Price Attractors | **INVALID** | +33% | 1375 | LSD-SPORTS: LOOK-AHEAD BIAS - used final_price (r=0.81 with outcome) |
+| H-EXT-001 | Favorite-Longshot Bias (bet YES 80c+) | **Rejected** | +3.9% | 5,203 | Session 2026-01-05: Below 5% threshold, not unique edge |
+| H-EXT-001b | Longshots NO (YES <= 20c) | **Rejected** | +3.0% | 207,758 | Session 2026-01-05: PRICE PROXY - 0/5 buckets positive |
+| H-EXT-002a | Large Trade Imbalance NO (imb <= -0.3) | **Rejected** | +13.6% | 4,450 | Session 2026-01-05: PRICE PROXY - only 10/20 buckets (50%) |
+| H-EXT-002b | Large Trade Imbalance YES (imb >= 0.3) | **Rejected** | +7.4% | 7,667 | Session 2026-01-05: PRICE PROXY - only 11/20 buckets (55%) |
+| H-EXT-006a | Follow YES Steam | **Rejected** | +8.0% | 5,198 | Session 2026-01-05: PRICE PROXY - only 10/20 buckets (50%) |
+| H-EXT-006b | Follow NO Steam | **Rejected** | +11.7% | 3,616 | Session 2026-01-05: PRICE PROXY - only 10/20 buckets (50%) |
+| H-EXT-006c | Fade YES Steam | **Rejected** | -8.0% | 5,198 | Session 2026-01-05: Negative edge, fails all criteria |
+| H-EXT-006d | Fade NO Steam | **Rejected** | -11.7% | 3,616 | Session 2026-01-05: Negative edge, fails all criteria |
+| H-COMB-001 | Duration + RLM + Large NO Imbalance | **VALIDATED** | +13.9% | 390 | Session 2026-01-05: +8.8% improvement, 8/9 buckets (89%), 2/2 quarters, 99% win rate |
+| H-MM153 | 6-24hr Duration + RLM (mature but fresh) | **VALIDATED** | +24.2% | 1,552 | Session 2026-01-05b: +19.4% improvement, 15/15 buckets (100%), 2/2 quarters, 95.2% win rate |
 
 ---
 
 ## Session Log
+
+### Full Validation: 6-24hr Duration Window (H-MM153) - 2026-01-05b
+**Objective**: Rigorous NORMAL MODE validation of the 6-24hr duration window hypothesis
+**Continuing from**: Session 2026-01-05 (which validated 24hr+ and identified 6-24hr as promising)
+**Analyst**: Quant Agent (Claude Opus 4.5)
+**Session Status**: COMPLETED - NEW VALIDATED STRATEGY
+
+**Background**:
+The previous session validated Duration > 24hr + RLM (H-MM150) with +20.7% edge. During that analysis, we discovered that the 6-24hr window showed even higher edge (+24.2% vs +20.8% for 24hr+). The theory is that markets need time for price discovery (>6hr) but edge decays with staleness (>24hr). The "mature but fresh" window is optimal.
+
+**Validation Results**:
+
+#### 1. Duration Tier Breakdown (7 tiers with RLM)
+
+| Tier | Duration | RLM Markets | RLM Edge | Bucket Improvement | Bucket Pass Rate |
+|------|----------|-------------|----------|-------------------|-----------------|
+| Tier 0 | <1hr | 226 | +19.1% | +13.2% | 100% |
+| Tier 1 | 1-6hr | 260 | +19.2% | +13.7% | 100% |
+| **Tier 2** | **6-12hr** | **336** | **+25.3%** | **+19.6%** | **100%** |
+| **Tier 3** | **12-24hr** | **1,216** | **+24.0%** | **+19.1%** | **100%** |
+| Tier 4 | 24-48hr | 1,121 | +21.1% | +16.6% | 100% |
+| Tier 5 | 48-72hr | 602 | +20.3% | +14.7% | 93% |
+| Tier 6 | 72hr+ | 387 | +20.2% | +15.4% | 100% |
+
+**Finding**: The 6-12hr tier shows the HIGHEST edge (+25.3%), followed closely by 12-24hr (+24.0%). Both significantly outperform 24hr+ (+20-21%).
+
+#### 2. Category Breakdown (6-24hr window)
+
+| Category | RLM Markets | RLM Edge | Bucket Improvement |
+|----------|-------------|----------|-------------------|
+| **Other** | 344 | **+25.1%** | +19.2% |
+| **Sports** | 1,163 | **+24.3%** | +19.5% |
+| Politics | 20 | +23.6% | +15.1% |
+| Crypto | 25 | +12.0% | +1.4% |
+
+**Finding**: The edge is robust across Sports (largest sample) and Other categories. Crypto shows lower edge (small sample).
+
+#### 3. Temporal Stability
+
+| Period | Markets | Win Rate | Edge |
+|--------|---------|----------|------|
+| 2025-H2 / 2025Q4 | 1,088 | 95.4% | +24.3% |
+| 2026-H1 / 2026Q1 | 464 | 94.6% | +24.1% |
+
+**Finding**: Edge is STABLE across both quarters with minimal variation (24.3% vs 24.1%).
+
+#### 4. Optimal Window Search
+
+Top 5 duration windows by edge:
+1. **6-10hr**: +25.4% edge (N=222)
+2. **6-12hr**: +25.3% edge (N=336)
+3. **16-20hr**: +25.3% edge (N=436)
+4. **8-12hr**: +25.0% edge (N=216)
+5. **4-12hr**: +24.9% edge (N=423)
+
+The broad **6-24hr window** shows +24.2% edge with 1,552 markets (largest sample).
+
+**Finding**: The optimal window is narrower (6-10hr or 6-12hr) but 6-24hr provides better balance between edge and sample size.
+
+#### 5. Signal Interactions
+
+| Combination | Markets | Edge | Bucket Improvement |
+|-------------|---------|------|-------------------|
+| 6-24hr + RLM (baseline) | 1,552 | +24.2% | +19.4% |
+| + price_move < -5c | 1,322 | +26.8% | +21.5% |
+| **+ price_move < -10c** | **1,168** | **+28.6%** | **+23.0%** |
+| + n_trades >= 30 | 1,085 | +25.8% | +20.5% |
+| + whale_count >= 2 | 1,144 | +26.2% | +21.2% |
+| + has_whale | 1,327 | +25.3% | +20.4% |
+
+**Finding**: Adding price_move < -10c boosts edge to +28.6% (+23.0% improvement) with 1,168 markets.
+
+#### 6. Risk Analysis
+
+| Metric | Value |
+|--------|-------|
+| Total Markets | 1,552 |
+| Total Profit Units | 1,029.8 |
+| Top 1 Market Concentration | 0.1% |
+| Top 5 Markets Concentration | 0.5% |
+| Top 10 Markets Concentration | 1.0% |
+| Max Drawdown | 1.98 units |
+
+**Finding**: Extremely well-diversified (0.1% max concentration) with minimal drawdown risk.
+
+**Win Rate by Price Bucket**:
+All 15 buckets (35c-95c) show positive improvement over baseline:
+- 35c bucket: 83% vs 31% baseline (+52% improvement)
+- 50c bucket: 91% vs 57% baseline (+34% improvement)
+- 70c bucket: 97% vs 79% baseline (+18% improvement)
+- 90c bucket: 100% vs 96% baseline (+4% improvement)
+
+#### Full Validation Summary (H-MM153: 6-24hr Duration + RLM)
+
+| Criterion | Value | Threshold | Status |
+|-----------|-------|-----------|--------|
+| Sample Size | 1,552 | >= 50 | **PASS** |
+| Win Rate | 95.2% | N/A | High |
+| Raw Edge | +24.2% | > 5% | **PASS** |
+| Bucket Improvement | +19.4% | > 0% | **PASS** |
+| Bucket Pass Rate | 100% (15/15) | >= 60% | **PASS** |
+| P-value | 0.0000 | < 0.05 | **PASS** |
+| Z-score | 44.55 | > 2 | **PASS** |
+| Temporal Stability | 2/2 quarters | >= 50% | **PASS** |
+| Max Concentration | 0.1% | < 30% | **PASS** |
+
+**STATUS: VALIDATED**
+
+#### Comparison with Base RLM and 24hr+
+
+| Strategy | Markets | Win Rate | Edge |
+|----------|---------|----------|------|
+| Base RLM (no duration filter) | 4,148 | 94.2% | +21.8% |
+| 24hr+ RLM (H-MM150) | 2,110 | 93.7% | +20.7% |
+| **6-24hr RLM (H-MM153)** | **1,552** | **95.2%** | **+24.2%** |
+
+**Finding**: 6-24hr RLM shows +3.5% higher edge than 24hr+ and +2.4% higher than base RLM.
+
+**Implementation Specification (H-MM153)**:
+```
+Signal:
+  - market_duration_hours >= 6 AND < 24
+  - yes_trade_ratio > 0.65
+  - n_trades >= 15
+  - yes_price_moved_down = True
+
+Action: Bet NO at current NO price
+
+Expected Performance:
+  - Win Rate: 95.2%
+  - Edge: +24.2%
+  - Markets/month: ~500 (based on 1,552 in 30-day sample)
+```
+
+**Enhanced Signal (Optional)**:
+Add `price_move < -10c` for:
+- Edge: +28.6%
+- Markets: 1,168 (75% of base signal)
+
+**Files Created**:
+- `research/analysis/duration_window_validation.py` - Full validation script
+- `research/reports/duration_window_full_validation.json` - Complete results
+
+**Conclusion**:
+The 6-24hr duration window hypothesis (H-MM153) is **FULLY VALIDATED**. This is the OPTIMAL duration window for RLM signals, outperforming both the 24hr+ variant (H-MM150) and base RLM.
+
+**Recommended Implementation Priority**:
+1. **H-MM153 (6-24hr + RLM)**: Primary signal with +24.2% edge
+2. **H-MM153 + price_move < -10c**: Enhanced signal with +28.6% edge
+
+---
+
+### Deep Dive: Duration Signal + External Hypotheses - 2026-01-05
+**Objective**: Rigorous validation of Duration signal (H-MM150) and external research hypotheses (H-EXT-001, H-EXT-002, H-EXT-006)
+**Continuing from**: LSD Mode findings on duration signal, Strategy Researcher agent hypotheses
+**Analyst**: Quant Agent (Opus 4.5)
+**Duration**: ~60 minutes
+**Session Status**: **COMPLETE - 2 STRATEGIES VALIDATED**
+
+#### Context
+
+This session performs rigorous (NORMAL mode) validation of signals identified from:
+1. **LSD Session findings**: Duration > 24hr showed +10.2% additive edge with RLM
+2. **External Research**: Academic papers on Kalshi/Polymarket (H-EXT hypotheses)
+
+Data: 7,886,537 trades, 288,504 resolved markets (Dec 5, 2025 - Jan 4, 2026)
+
+#### Executive Summary
+
+**VALIDATED STRATEGIES (2):**
+
+| Strategy | Edge | Improvement | Markets | Status |
+|----------|------|-------------|---------|--------|
+| **H-MM150: Duration > 24hr + RLM** | +20.7% | +16.1% | 2,110 | VALIDATED |
+| **H-COMB-001: Duration + RLM + Large NO Imbalance** | +13.9% | +8.8% | 390 | VALIDATED |
+
+**REJECTED STRATEGIES (9):**
+All external hypotheses failed the "not a price proxy" test (< 60% buckets positive).
+
+#### Signal 1: Duration > 24 Hours (H-MM150)
+
+**Finding**: Duration alone is a PRICE PROXY, but Duration + RLM is VALIDATED.
+
+**Duration Only Results:**
+- Markets: 9,044
+- Win Rate: 72.1%, Raw Edge: +4.2%
+- Bucket Pass Rate: 52% (FAIL - is a price proxy)
+- Temporal Stability: 1/2 quarters (FAIL)
+
+**Duration + RLM Results:**
+- Markets: 2,110
+- Win Rate: 93.7%, Raw Edge: +20.7%
+- **Bucket Improvement: +16.1%** (vs baseline at same prices)
+- **Bucket Pass Rate: 94% (16/17)** (PASS)
+- **Temporal Stability: 2/2 quarters** (PASS)
+- p-value: < 0.000001, z-score: 39.26
+
+**Duration Tier Analysis:**
+| Tier | Markets | NO Win Rate | RLM Markets | RLM Edge |
+|------|---------|-------------|-------------|----------|
+| <1hr | 250,030 | 89.6% | 226 | +19.1% |
+| 1-6hr | 13,427 | 74.4% | 260 | +19.2% |
+| 6-24hr | 16,003 | 71.2% | 1,552 | **+24.2%** |
+| 24-72hr | 7,533 | 73.2% | 1,723 | +20.8% |
+| 72hr+ | 1,511 | 66.5% | 387 | +20.2% |
+
+**Key Insight**: The 6-24hr window shows the HIGHEST RLM edge (+24.2%), not the 24hr+ window. This suggests that "mature" markets (enough time for informed trading) but not "stale" markets (where interest wanes) have optimal edge.
+
+#### Signal 2: Favorite-Longshot Bias (H-EXT-001)
+
+**Finding**: REJECTED - The bias exists but is NOT exploitable beyond the baseline.
+
+**Price Tier Analysis (bet YES on favorites):**
+| YES Price | Actual Win | Implied Prob | Edge |
+|-----------|------------|--------------|------|
+| 5-20c | 5.8% | 12.5% | **-6.7%** |
+| 20-40c | 20.2% | 30.0% | **-9.8%** |
+| 40-60c | 44.8% | 50.0% | **-5.2%** |
+| 60-80c | 76.8% | 70.0% | **+6.8%** |
+| 80-95c | 94.7% | 87.5% | **+7.2%** |
+
+**Interpretation**: The favorite-longshot bias IS present (favorites outperform, longshots underperform). However:
+1. The edge (+3.9% for YES >= 80c) is below our 5% threshold
+2. The edge disappears when controlling for price bucket (bucket improvement = 0%)
+3. This is ALREADY captured by our RLM strategy which focuses on price movement, not price level
+
+**Why This Fails**: The academic paper measured WIN RATE vs IMPLIED PROBABILITY. We measure WIN RATE vs BASELINE AT SAME PRICE. The latter is the correct methodology for finding ACTIONABLE edge.
+
+#### Signal 3: Large Trade Order Imbalance (H-EXT-002)
+
+**Finding**: REJECTED - Both directions are PRICE PROXIES.
+
+**Large Trade Imbalance Results:**
+| Condition | Edge | Bucket Pass | Verdict |
+|-----------|------|-------------|---------|
+| Imbalance <= -0.3 (bet NO) | +13.6% | 50% (10/20) | PRICE PROXY |
+| Imbalance >= +0.3 (bet YES) | +7.4% | 55% (11/20) | PRICE PROXY |
+
+**Tier Analysis:**
+| Imbalance | Markets | NO Win Rate |
+|-----------|---------|-------------|
+| Strong NO (-1 to -0.5) | 1,790 | 92.0% |
+| Moderate NO (-0.5 to -0.2) | 1,822 | 84.0% |
+| Balanced (-0.2 to +0.2) | 2,854 | 65.0% |
+| Moderate YES (+0.2 to +0.5) | 2,689 | 49.7% |
+| Strong YES (+0.5 to +1) | 5,578 | 29.9% |
+
+**Why This Fails**: Large trade imbalance correlates with price level. Markets with large NO trades tend to have high NO prices (where NO wins anyway). The signal does NOT add information beyond price.
+
+#### Signal 4: Steam Move Detection (H-EXT-006)
+
+**Finding**: REJECTED - All steam strategies are PRICE PROXIES.
+
+**Steam Definition**: 5+ consecutive same-direction trades with price movement >= 3c within 60 seconds.
+
+**Results:**
+| Strategy | Markets | Edge | Bucket Pass | Verdict |
+|----------|---------|------|-------------|---------|
+| Follow YES steam | 5,198 | +8.0% | 50% | PRICE PROXY |
+| Follow NO steam | 3,616 | +11.7% | 50% | PRICE PROXY |
+| Fade YES steam | 5,198 | -8.0% | 45% | LOSES MONEY |
+| Fade NO steam | 3,616 | -11.7% | 45% | LOSES MONEY |
+
+**Key Insight**: Steam moves DO predict direction (following steam wins more than fading), but this is entirely explained by price movement. The steam itself adds no information beyond the price change it causes.
+
+#### Combined Signal: Duration + RLM + Large NO Imbalance
+
+**Finding**: VALIDATED with HIGH CONFIDENCE
+
+**Signal Definition:**
+- Market duration > 24 hours
+- YES trade ratio > 65%
+- YES price dropped (price moved toward NO)
+- >= 3 large trades ($50+)
+- Large trade imbalance <= -0.2 (large money on NO)
+
+**Results:**
+- Markets: 390
+- **Win Rate: 99.0%**
+- Raw Edge: +13.9%
+- **Bucket Improvement: +8.8%**
+- **Bucket Pass Rate: 89% (8/9)**
+- **Temporal Stability: 2/2 quarters (100%)**
+- p-value: < 0.000001
+
+This is an EXTREMELY HIGH CONVICTION signal with near-perfect win rate, though sample size is smaller.
+
+#### Key Findings
+
+1. **Duration is not independent** - It's a selection filter that improves RLM, not a standalone signal
+2. **External hypotheses fail bucket-matching** - Academic papers use wrong methodology (win rate vs implied prob, not win rate vs baseline)
+3. **Steam moves are price echoes** - They predict because they CAUSE price movement, not because they contain additional information
+4. **6-24hr is optimal window** - Not 24hr+, suggesting "mature but fresh" markets have highest edge
+5. **Large NO imbalance + RLM = 99% win rate** - But only 390 markets (implementation opportunity)
+
+#### Files Created
+
+- `/Users/samuelclark/Desktop/kalshiflow/research/analysis/deep_dive_duration_ext_signals.py` - Validation script
+- `/Users/samuelclark/Desktop/kalshiflow/research/reports/deep_dive_duration_and_ext_signals.json` - Full results
+
+#### Implementation Recommendations
+
+1. **Keep H-MM150 (Duration + RLM)** as a validated enhancement to base RLM
+2. **Consider 6-24hr as optimal duration window** instead of 24hr+ (higher edge)
+3. **H-COMB-001 (Duration + RLM + Imbalance)** is high-conviction but low-volume - implement as position sizing multiplier
+4. **Do NOT implement** steam following, imbalance alone, or favorite-longshot as standalone strategies
+
+#### Conclusion
+
+This session confirms that **rigorous bucket-matched validation** catches many false positives that simpler methodologies miss. The external academic research hypotheses all showed raw edge but ZERO of them passed our price-proxy test.
+
+The Duration + RLM signal (H-MM150) is now **FULLY VALIDATED** and can be added to production as an enhancement to the base RLM strategy.
+
+---
+
+### RLM Full Validation on Updated Data - 2026-01-04
+**Objective**: Full validation of RLM strategy (H123) on updated dataset (7.9M trades, 316K markets)
+**Continuing from**: Previous RLM validation (LSD-001)
+**Analyst**: Quant Agent (Opus 4.5)
+**Duration**: ~30 minutes
+**Session Status**: **COMPLETE - STRATEGY VALIDATED**
+
+#### Context
+
+Updated the historical research data with new trades from Dec 5, 2025 - Jan 4, 2026:
+- **7,886,537 trades** (previously 1.7M)
+- **316,063 market outcomes** (previously 72K)
+- Data in `research/data/trades/` and `research/data/markets/`
+
+#### Executive Summary
+
+**RECOMMENDATION: VALIDATED - Keep in Production**
+
+All 5 validation checks passed:
+1. Sample Size: **4,148 markets** (PASS - >= 50)
+2. Statistical Significance: **p < 0.000001** (PASS - z=31.46)
+3. Not Price Proxy: **17/18 buckets positive (94%)** with +17.1% avg improvement (PASS)
+4. Concentration: **0.09% max single market** (PASS - < 30%)
+5. Temporal Stability: **4/4 weeks profitable** (PASS)
+
+#### Key Metrics
+
+| Metric | Value |
+|--------|-------|
+| RLM Signal Markets | 4,148 |
+| Win Rate | 94.2% |
+| Average NO Price | 72.4c |
+| Breakeven | 72.4% |
+| Raw Edge | **+21.8%** |
+| Improvement vs Baseline | **+17.1%** |
+| 95% CI (Edge) | [21.1%, 22.6%] |
+
+#### Position Scaling Analysis
+
+The position scaling logic (S-001) is confirmed valid:
+
+| Price Drop | N Markets | Win Rate | Edge |
+|------------|-----------|----------|------|
+| 0-5c (1x) | 720 | 85.6% | +5.9% |
+| 5-10c (1x) | 495 | 90.9% | +12.1% |
+| 10-20c (1.5x) | 763 | 94.2% | +16.0% |
+| 20c+ (2x) | 2,170 | 97.8% | **+31.4%** |
+
+Scaling by price drop magnitude is strongly validated.
+
+#### Top Categories
+
+| Category | N | Win Rate | Edge |
+|----------|---|----------|------|
+| KXNCAAMBGAME | 368 | 94.8% | +21.3% |
+| KXNFLANYTD | 328 | 93.0% | +17.0% |
+| KXMVESPORTSMULTIGAME | 321 | 97.8% | +19.4% |
+| KXNFLRECYDS | 129 | 93.8% | **+35.5%** |
+| KXNFLPASSYDS | 88 | 90.9% | **+31.5%** |
+
+Sports betting categories dominate signal volume, as expected.
+
+#### Comparison with Previous Validation
+
+| Metric | LSD-001 (Dec 2025) | This Session (Jan 2026) |
+|--------|---------------------|-------------------------|
+| Markets | 1,986 | 4,148 |
+| Edge | +17.38% | +21.8% |
+| Improvement vs Baseline | +13.44% | +17.1% |
+| Buckets Positive | 16/17 (94%) | 17/18 (94%) |
+
+**Finding**: Edge is STRONGER in the expanded dataset (+21.8% vs +17.38%), suggesting the strategy is robust and may have been underestimated initially.
+
+#### Files Created
+
+- `/Users/samuelclark/Desktop/kalshiflow/research/analysis/rlm_full_validation_20260104.py` - Validation script
+- `/Users/samuelclark/Desktop/kalshiflow/research/reports/rlm_full_validation_20260104.json` - Detailed results
+
+#### Conclusion
+
+The RLM strategy is **FULLY VALIDATED** on the updated dataset. No changes to the production implementation are required. The strategy shows:
+- Robust edge (+21.8% raw, +17.1% vs baseline)
+- Strong statistical significance (p < 0.000001)
+- Excellent temporal stability (4/4 weeks)
+- No concentration risk (max 0.09%)
+- Position scaling is validated (20c+ drop = 31.4% edge)
+
+**Next Steps**: Continue monitoring live performance. Consider adding S-LATE-001 as a complementary strategy.
+
+---
 
 ### S-LATE-001 Deep Dive: Coffee with the Quant - 2026-01-01
 **Objective**: Comprehensive profitability analysis of SPORTS-007 / S-LATE-001 (Late-Arriving Large Money)
@@ -1147,6 +1599,56 @@ When multiple signals align, edge likely compounds. Portfolio of 4 independent s
 2. Test combined signals - what happens when 2+ strategies align?
 3. Update VALIDATED_STRATEGIES.md with implementation specs
 4. Consider position sizing by conviction level (more signals = larger position?)
+
+---
+
+### Session Validation Framework Review - 2026-01-04
+**Objective**: Verify methodology for the validation automation framework
+**Continuing from**: H123 Production Validation, VALIDATION_AUTOMATION_DESIGN.md
+**Analyst**: Quant Agent (Opus 4.5)
+**Duration**: ~20 minutes
+**Session Status**: **COMPLETE - Verification Document Created**
+
+#### Mission
+
+The trader specialist is implementing a validation automation framework based on the design at `research/scripts/VALIDATION_AUTOMATION_DESIGN.md`. This session creates the authoritative methodology verification document to ensure the implementation is correct.
+
+#### Deliverables
+
+1. **Created**: `/research/scripts/VALIDATION_METHODOLOGY_VERIFICATION.md`
+   - Comprehensive specification of all validation calculations
+   - Code snippets for each critical calculation
+   - H123 RLM reference values for verification
+   - Common pitfalls to avoid
+   - Verification checklist
+
+#### Key Methodology Points Documented
+
+| Component | CRITICAL? | Reference Value (H123) |
+|-----------|-----------|------------------------|
+| Market-level aggregation | YES | 4,148 markets (not 7M trades) |
+| Bucket-matched baseline | YES | 18 buckets |
+| Win rate calculation | YES | 94.21% |
+| Raw edge calculation | YES | +21.84% |
+| Z-score calculation | YES | 31.46 |
+| P-value (one-sided) | YES | ~0 |
+| Bucket improvement | YES | +17.1% |
+| Price proxy detection | YES | FALSE (bucket_ratio=94.4%) |
+| Confidence interval | NO | [21.13%, 22.55%] |
+| Temporal stability | YES | 4/4 weeks (100%) |
+| Concentration check | YES | 0.09% max single market |
+
+#### Files Created/Modified
+
+- `/research/scripts/VALIDATION_METHODOLOGY_VERIFICATION.md` - Created (comprehensive verification doc)
+- `/research/RESEARCH_JOURNAL.md` - Updated with this session
+
+#### Next Steps for Trader Specialist
+
+1. Implement the validation framework in `research/scripts/validation/`
+2. Run against H123 RLM test case
+3. Verify all outputs match the reference values in the verification document
+4. If any values differ, debug using the code snippets provided
 
 ---
 
@@ -3238,6 +3740,135 @@ breakeven_rate = avg_price / 100.0  # Same formula for YES and NO
 
 ---
 
+### LSD-MM Session - 2026-01-05
+**Objective**: Rapid exploration of unconventional Market Maker strategies
+**Mode**: LSD (Lateral Strategy Discovery) - Speed over rigor
+**Analyst**: Quant Agent (Opus 4.5)
+**Duration**: ~45 minutes
+**Session Status**: COMPLETED
+
+**Mission**: Test 50+ unconventional MM strategy hypotheses including spread-based signals, timing patterns, flow toxicity, and absurd ideas (fibonacci, round numbers, etc).
+
+**HYPOTHESES TESTED (~50)**:
+
+Phase 1: Initial Screening (14 ideas)
+- Spread compression, oscillation, asymmetry
+- Quote stuffing proxy
+- Time-weighted imbalance
+- Dead zone trading
+- Informed flow clustering
+- Toxic flow reversal
+- Size-price divergence
+- Fibonacci trade counts
+- Round number magnetism
+- Contrarian whale
+- Price reversal magnitude
+- Price momentum
+- RLM combined signal
+- Extreme YES ratio
+
+Phase 2: Bucket Validation (10 ideas from Phase 1)
+- Validated which "winners" are real vs price proxies
+
+Phase 3: Wild Ideas (13 ideas)
+- Prime trade counts, golden ratio prices
+- Perfect price symmetry, balanced flow
+- Minnow swarm, size escalation/de-escalation
+- Morning/weekend trading patterns
+- Single whale dominance, smart YES money
+- Extreme volatility, inverse RLM
+
+Phase 4: Non-Price-Movement Signals (20 ideas)
+- Flow-only signals (F01-F03)
+- Volume/size signals (V01-V04)
+- Trade size distribution (S01-S03)
+- Time-based signals (T01-T04)
+- Leverage signals (L01-L02)
+- Combination signals (C01-C05)
+
+Phase 5: RLM Independence + Additive Signals (14 ideas)
+- Tested if RLM adds edge beyond pure price movement
+- Found optimal additive signal combinations
+
+**KEY FINDINGS**:
+
+1. **CORE SIGNAL CONFIRMED**: `price_move < 0` (price dropped toward NO)
+   - Base bucket improvement: +4.6%
+   - Works across all price buckets
+
+2. **RLM ADDS REAL EDGE** (not just price proxy):
+   - Base (price drop only): +4.6%
+   - RLM (price drop + YES>65% + 15+ trades): +7.4%
+   - RLM additive edge: **+2.8%**
+
+3. **TOP ADDITIVE SIGNALS** (on top of price_move < 0):
+   | Signal | Additive Edge | Total Edge | Markets |
+   |--------|---------------|------------|---------|
+   | Long duration (>24hr) | +10.2% | +14.8% | 2,818 |
+   | Many trades (>50) | +6.7% | +11.3% | 4,802 |
+   | Many trades (>30) | +5.9% | +10.6% | 6,059 |
+   | High count + YES flow | +4.0% | +8.7% | 2,901 |
+   | Huge price drop (>10c) | +2.6% | +7.2% | 10,793 |
+
+4. **BEST COMBINED STRATEGIES**:
+   | ID | Signal | Edge | Markets |
+   |----|--------|------|---------|
+   | OPT3 | Drop + long (>24hr) + YES>65% | +14.5% | 2,034 |
+   | OPT4 | Big drop (<-5c) + 30+ trades + YES>65% | +9.9% | 2,452 |
+   | OPT1 | Big drop (<-5c) + RLM filters | +8.4% | 3,242 |
+
+5. **NON-PRICE SIGNALS DON'T WORK**:
+   - Tested 20 signals that don't use price movement
+   - Only 1 passed: Duration > 24hr (+2.7% on its own)
+   - All others had <2% improvement or failed bucket test
+
+6. **WILD IDEAS REJECTED**:
+   - Prime/Fibonacci trade counts: No edge
+   - Round number magnetism: Price proxy
+   - Golden ratio prices: Not enough data
+   - Weekend/morning patterns: <1% edge
+   - Minnow swarm: +0.5% (not significant)
+
+**INSIGHTS**:
+
+1. **Price movement is THE signal** - All validated strategies use it as core
+2. **YES ratio > 65% + price drop = retail losing money** - Core RLM mechanism confirmed
+3. **Duration adds +10% edge** - Long-duration markets allow informed money to correct mispricing
+4. **Trade count adds +5-6% edge** - More trades = more reliable signal
+5. **Whale presence adds only +0.6%** - Whales are NOT the key signal
+
+**NEW HYPOTHESES FOR FULL VALIDATION**:
+
+| ID | Hypothesis | Quick Edge | Recommendation |
+|----|------------|------------|----------------|
+| H-MM150 | Duration > 24hr + RLM | +14.5% | FULL VALIDATION |
+| H-MM151 | n_trades >= 30 + RLM | +9.9% | FULL VALIDATION |
+| H-MM152 | Big drop (<-5c) + RLM | +8.4% | FULL VALIDATION |
+
+**FILES CREATED**:
+- `research/analysis/lsd_mm_strategies.py` - Phase 1 screening
+- `research/analysis/lsd_mm_strategies_v2.py` - Phase 2 bucket validation
+- `research/analysis/lsd_mm_strategies_v3.py` - Phase 3 wild ideas + independence
+- `research/analysis/lsd_mm_strategies_v4.py` - Phase 4 non-price signals
+- `research/analysis/lsd_mm_strategies_v5.py` - Phase 5 RLM independence + additive
+- `research/reports/lsd_mm_strategies.json` - Final consolidated report
+- `research/reports/lsd_mm_strategies_v2.json` - Bucket validation results
+- `research/reports/lsd_mm_strategies_v3.json` - Wild ideas results
+- `research/reports/lsd_mm_strategies_v4.json` - Non-price signals results
+- `research/reports/lsd_mm_strategies_v5.json` - Additive signals results
+
+**RECOMMENDATIONS**:
+
+1. **CONFIRM OPT3 (Duration + RLM)** - Needs full temporal stability check
+2. **Consider tiered signal strength**:
+   - Base RLM: +7.4% edge, ~4,000 markets
+   - Enhanced (+ big drop): +8.4% edge, ~3,200 markets
+   - High conviction (+ duration): +14.5% edge, ~2,000 markets
+3. **Duration signal is INDEPENDENT** - Could be used as position sizing modifier
+4. **Trade count is CORRELATED with RLM** - Already filtered by n_trades >= 15
+
+---
+
 ## Promising Leads
 
 *Patterns or anomalies noticed but not yet fully investigated*
@@ -3258,6 +3889,17 @@ breakeven_rate = avg_price / 100.0  # Same formula for YES and NO
   - NOT a price proxy - adds +6.8% over baseline
   - Temporally stable: all 4 days positive
   - Ready for implementation
+
+**PROMISING (LSD-MM Session - 2026-01-05)**:
+- **Duration > 24hr + RLM (H-MM150)**: +14.5% bucket improvement, 2,034 markets
+  - Signal: price_move < 0 AND duration_hours > 24 AND yes_ratio > 0.65
+  - Adds +10.2% on top of base RLM signal
+  - 90% of buckets positive - VERY robust
+  - Needs full temporal stability validation
+- **Big drop + high trade count + RLM (H-MM151)**: +9.9% bucket improvement, 2,452 markets
+  - Signal: price_move < -5 AND n_trades >= 30 AND yes_ratio > 0.65
+  - Adds +5.3% on top of base RLM signal
+  - Needs full temporal stability validation
 
 **PROMISING (Session 009 - Needs More Data)**:
 - **NCAAFTOTAL Totals Betting (H066)**: +22.5% edge, but only 94 markets

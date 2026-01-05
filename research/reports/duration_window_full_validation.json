@@ -1,0 +1,731 @@
+{
+  "timestamp": "2026-01-05T10:38:31.239555",
+  "hypothesis": "H-MM151: 6-24hr Duration Window",
+  "data_stats": {
+    "total_trades": 7186462,
+    "total_markets": 288504
+  },
+  "duration_tier_analysis": [
+    {
+      "tier": "Tier 0: <1hr",
+      "duration_range": "0-1hr",
+      "all_markets": 250030,
+      "all_win_rate": 0.8959164900211974,
+      "all_avg_price": 86.21744031401944,
+      "all_edge": 0.033742086881003,
+      "rlm_markets": 226,
+      "rlm_win_rate": 0.9380530973451328,
+      "rlm_edge": 0.1910374335416749,
+      "rlm_bucket_improvement": 0.13243774464176472,
+      "rlm_bucket_pass_rate": 1.0
+    },
+    {
+      "tier": "Tier 1: 1-6hr",
+      "duration_range": "1-6hr",
+      "all_markets": 13427,
+      "all_win_rate": 0.7439487599612721,
+      "all_avg_price": 71.53204539818861,
+      "all_edge": 0.028628305979385926,
+      "rlm_markets": 260,
+      "rlm_win_rate": 0.926923076923077,
+      "rlm_edge": 0.19193140456725377,
+      "rlm_bucket_improvement": 0.13680394615611655,
+      "rlm_bucket_pass_rate": 1.0
+    },
+    {
+      "tier": "Tier 2: 6-12hr",
+      "duration_range": "6-12hr",
+      "all_markets": 6676,
+      "all_win_rate": 0.7326243259436789,
+      "all_avg_price": 69.85949400657795,
+      "all_edge": 0.03402938587789939,
+      "rlm_markets": 336,
+      "rlm_win_rate": 0.9642857142857143,
+      "rlm_edge": 0.25303510814344166,
+      "rlm_bucket_improvement": 0.19563673498870948,
+      "rlm_bucket_pass_rate": 1.0
+    },
+    {
+      "tier": "Tier 3: 12-24hr",
+      "duration_range": "12-24hr",
+      "all_markets": 9327,
+      "all_win_rate": 0.6965798220220865,
+      "all_avg_price": 66.00386246027475,
+      "all_edge": 0.03654119741933903,
+      "rlm_markets": 1216,
+      "rlm_win_rate": 0.9481907894736842,
+      "rlm_edge": 0.2395733597903047,
+      "rlm_bucket_improvement": 0.19121526816859763,
+      "rlm_bucket_pass_rate": 1.0
+    },
+    {
+      "tier": "Tier 4: 24-48hr",
+      "duration_range": "24-48hr",
+      "all_markets": 5242,
+      "all_win_rate": 0.7403662724151088,
+      "all_avg_price": 69.37291693259671,
+      "all_edge": 0.04663710308914171,
+      "rlm_markets": 1121,
+      "rlm_win_rate": 0.9411239964317574,
+      "rlm_edge": 0.21068227393799366,
+      "rlm_bucket_improvement": 0.16615517069925465,
+      "rlm_bucket_pass_rate": 1.0
+    },
+    {
+      "tier": "Tier 5: 48-72hr",
+      "duration_range": "48-72hr",
+      "all_markets": 2291,
+      "all_win_rate": 0.7132256656481886,
+      "all_avg_price": 67.24137069281268,
+      "all_edge": 0.040811958720061714,
+      "rlm_markets": 602,
+      "rlm_win_rate": 0.9335548172757475,
+      "rlm_edge": 0.2034807882574916,
+      "rlm_bucket_improvement": 0.1474726090573339,
+      "rlm_bucket_pass_rate": 0.9285714285714286
+    },
+    {
+      "tier": "Tier 6: 72hr+",
+      "duration_range": "72hr+",
+      "all_markets": 1511,
+      "all_win_rate": 0.6651224354731966,
+      "all_avg_price": 64.01310250094784,
+      "all_edge": 0.024991410463718222,
+      "rlm_markets": 387,
+      "rlm_win_rate": 0.9328165374677002,
+      "rlm_edge": 0.2015862500670943,
+      "rlm_bucket_improvement": 0.15385718518572533,
+      "rlm_bucket_pass_rate": 1.0
+    }
+  ],
+  "category_analysis": [
+    {
+      "category": "Sports",
+      "all_markets": 13880,
+      "all_win_rate": 0.7223342939481268,
+      "all_edge": 0.03875071643886774,
+      "rlm_markets": 1163,
+      "rlm_win_rate": 0.944110060189166,
+      "rlm_edge": 0.24279129802842647,
+      "rlm_bucket_improvement": 0.1953273435445935
+    },
+    {
+      "category": "Crypto",
+      "all_markets": 273,
+      "all_win_rate": 0.5787545787545788,
+      "all_edge": -0.004627341061784529,
+      "rlm_markets": 25,
+      "rlm_win_rate": 0.96,
+      "rlm_edge": 0.11980432649673978,
+      "rlm_bucket_improvement": 0.013812659501284722
+    },
+    {
+      "category": "Politics",
+      "all_markets": 112,
+      "all_win_rate": 0.42857142857142855,
+      "all_edge": -0.0714134580885431,
+      "rlm_markets": 20,
+      "rlm_win_rate": 1.0,
+      "rlm_edge": 0.2357186622703321,
+      "rlm_bucket_improvement": 0.15140866043242596
+    },
+    {
+      "category": "Other",
+      "all_markets": 1736,
+      "all_win_rate": 0.6647465437788018,
+      "all_edge": 0.022343446061058092,
+      "rlm_markets": 344,
+      "rlm_win_rate": 0.9738372093023255,
+      "rlm_edge": 0.2507710489137267,
+      "rlm_bucket_improvement": 0.19245116663946094
+    }
+  ],
+  "temporal_stability": [
+    {
+      "period_type": "half_year",
+      "period": "2025-H2",
+      "n_markets": 1088,
+      "win_rate": 0.9540441176470589,
+      "edge": 0.24306887144784262
+    },
+    {
+      "period_type": "half_year",
+      "period": "2026-H1",
+      "n_markets": 464,
+      "win_rate": 0.9461206896551724,
+      "edge": 0.24112515022835002
+    },
+    {
+      "period_type": "quarter",
+      "period": "2025Q4",
+      "n_markets": 1088,
+      "win_rate": 0.9540441176470589,
+      "edge": 0.24306887144784262
+    },
+    {
+      "period_type": "quarter",
+      "period": "2026Q1",
+      "n_markets": 464,
+      "win_rate": 0.9461206896551724,
+      "edge": 0.24112515022835002
+    }
+  ],
+  "window_search": [
+    {
+      "window": "6-10hr",
+      "low_hr": 6,
+      "high_hr": 10,
+      "n_markets": 222,
+      "win_rate": 0.963963963963964,
+      "avg_price": 71.03680543275291,
+      "edge": 0.25359590963643486,
+      "bucket_improvement": 0.19965276530062026,
+      "bucket_pass_rate": 1.0
+    },
+    {
+      "window": "6-12hr",
+      "low_hr": 6,
+      "high_hr": 12,
+      "n_markets": 336,
+      "win_rate": 0.9642857142857143,
+      "avg_price": 71.12506061422727,
+      "edge": 0.25303510814344166,
+      "bucket_improvement": 0.19563673498870948,
+      "bucket_pass_rate": 1.0
+    },
+    {
+      "window": "16-20hr",
+      "low_hr": 16,
+      "high_hr": 20,
+      "n_markets": 436,
+      "win_rate": 0.9610091743119266,
+      "avg_price": 70.80874855324211,
+      "edge": 0.2529216887795055,
+      "bucket_improvement": 0.1995666019496003,
+      "bucket_pass_rate": 1.0
+    },
+    {
+      "window": "8-12hr",
+      "low_hr": 8,
+      "high_hr": 12,
+      "n_markets": 216,
+      "win_rate": 0.9675925925925926,
+      "avg_price": 71.73372998194883,
+      "edge": 0.2502552927731043,
+      "bucket_improvement": 0.18838776269264473,
+      "bucket_pass_rate": 1.0
+    },
+    {
+      "window": "4-12hr",
+      "low_hr": 4,
+      "high_hr": 12,
+      "n_markets": 423,
+      "win_rate": 0.9621749408983451,
+      "avg_price": 71.30969531409667,
+      "edge": 0.24907798775737833,
+      "bucket_improvement": 0.19213495182629453,
+      "bucket_pass_rate": 1.0
+    },
+    {
+      "window": "4-8hr",
+      "low_hr": 4,
+      "high_hr": 8,
+      "n_markets": 207,
+      "win_rate": 0.9565217391304348,
+      "avg_price": 70.8672243563379,
+      "edge": 0.24784949556705582,
+      "bucket_improvement": 0.19604909493124575,
+      "bucket_pass_rate": 1.0
+    },
+    {
+      "window": "18-24hr",
+      "low_hr": 18,
+      "high_hr": 24,
+      "n_markets": 570,
+      "win_rate": 0.9456140350877194,
+      "avg_price": 70.0082296107198,
+      "edge": 0.24553173898052139,
+      "bucket_improvement": 0.19772938831692097,
+      "bucket_pass_rate": 1.0
+    },
+    {
+      "window": "10-14hr",
+      "low_hr": 10,
+      "high_hr": 14,
+      "n_markets": 276,
+      "win_rate": 0.9528985507246377,
+      "avg_price": 70.8220043753138,
+      "edge": 0.24467850697149973,
+      "bucket_improvement": 0.19500835797062305,
+      "bucket_pass_rate": 1.0
+    },
+    {
+      "window": "6-24hr",
+      "low_hr": 6,
+      "high_hr": 24,
+      "n_markets": 1552,
+      "win_rate": 0.9516752577319587,
+      "avg_price": 70.91874988136553,
+      "edge": 0.24248775891830343,
+      "bucket_improvement": 0.19360634429581816,
+      "bucket_pass_rate": 1.0
+    },
+    {
+      "window": "4-24hr",
+      "low_hr": 4,
+      "high_hr": 24,
+      "n_markets": 1639,
+      "win_rate": 0.9517998779743746,
+      "avg_price": 70.97735239009263,
+      "edge": 0.2420263540734483,
+      "bucket_improvement": 0.1932240918092352,
+      "bucket_pass_rate": 1.0
+    },
+    {
+      "window": "6-18hr",
+      "low_hr": 6,
+      "high_hr": 18,
+      "n_markets": 982,
+      "win_rate": 0.955193482688391,
+      "avg_price": 71.44725961076274,
+      "edge": 0.24072088658076352,
+      "bucket_improvement": 0.18906748532735101,
+      "bucket_pass_rate": 1.0
+    },
+    {
+      "window": "4-18hr",
+      "low_hr": 4,
+      "high_hr": 18,
+      "n_markets": 1069,
+      "win_rate": 0.9550982226379794,
+      "avg_price": 71.49409699649348,
+      "edge": 0.24015725267304455,
+      "bucket_improvement": 0.1882251226851671,
+      "bucket_pass_rate": 1.0
+    },
+    {
+      "window": "12-24hr",
+      "low_hr": 12,
+      "high_hr": 24,
+      "n_markets": 1216,
+      "win_rate": 0.9481907894736842,
+      "avg_price": 70.86174296833795,
+      "edge": 0.2395733597903047,
+      "bucket_improvement": 0.19121526816859763,
+      "bucket_pass_rate": 1.0
+    },
+    {
+      "window": "10-18hr",
+      "low_hr": 10,
+      "high_hr": 18,
+      "n_markets": 760,
+      "win_rate": 0.9526315789473684,
+      "avg_price": 71.56715543644455,
+      "edge": 0.23696002458292287,
+      "bucket_improvement": 0.1853267262674968,
+      "bucket_pass_rate": 1.0
+    },
+    {
+      "window": "8-16hr",
+      "low_hr": 8,
+      "high_hr": 16,
+      "n_markets": 597,
+      "win_rate": 0.9514237855946399,
+      "avg_price": 71.68696104917416,
+      "edge": 0.23455417510289833,
+      "bucket_improvement": 0.1844084578764303,
+      "bucket_pass_rate": 1.0
+    },
+    {
+      "window": "14-18hr",
+      "low_hr": 14,
+      "high_hr": 18,
+      "n_markets": 484,
+      "win_rate": 0.9524793388429752,
+      "avg_price": 71.99207628948606,
+      "edge": 0.23255857594811458,
+      "bucket_improvement": 0.1755371062203204,
+      "bucket_pass_rate": 1.0
+    },
+    {
+      "window": "12-16hr",
+      "low_hr": 12,
+      "high_hr": 16,
+      "n_markets": 381,
+      "win_rate": 0.9422572178477691,
+      "avg_price": 71.66044637862474,
+      "edge": 0.22565275406152163,
+      "bucket_improvement": 0.17682818535276862,
+      "bucket_pass_rate": 1.0
+    },
+    {
+      "window": "2-6hr",
+      "low_hr": 2,
+      "high_hr": 6,
+      "n_markets": 216,
+      "win_rate": 0.9259259259259259,
+      "avg_price": 72.68161496421217,
+      "edge": 0.19910977628380422,
+      "bucket_improvement": 0.14129323902661411,
+      "bucket_pass_rate": 1.0
+    }
+  ],
+  "signal_interactions": [
+    {
+      "signal": "6-24hr + RLM (baseline)",
+      "description": "Base signal",
+      "n_markets": 1552,
+      "win_rate": 0.9516752577319587,
+      "edge": 0.24248775891830343,
+      "bucket_improvement": 0.19360634429581816,
+      "bucket_pass_rate": 1.0
+    },
+    {
+      "signal": "+ price_move < -5c",
+      "description": "Large price drop",
+      "n_markets": 1322,
+      "win_rate": 0.9644478063540091,
+      "edge": 0.26764529285390826,
+      "bucket_improvement": 0.21457891311588598,
+      "bucket_pass_rate": 1.0
+    },
+    {
+      "signal": "+ price_move < -10c",
+      "description": "Very large drop",
+      "n_markets": 1168,
+      "win_rate": 0.9717465753424658,
+      "edge": 0.286165100740404,
+      "bucket_improvement": 0.23015005520334467,
+      "bucket_pass_rate": 1.0
+    },
+    {
+      "signal": "+ n_trades >= 30",
+      "description": "More trades",
+      "n_markets": 1085,
+      "win_rate": 0.9695852534562212,
+      "edge": 0.2578633260893032,
+      "bucket_improvement": 0.20546420857316203,
+      "bucket_pass_rate": 1.0
+    },
+    {
+      "signal": "+ has_whale",
+      "description": "Has whale trade",
+      "n_markets": 1327,
+      "win_rate": 0.9510173323285607,
+      "edge": 0.2526712330104921,
+      "bucket_improvement": 0.2041583257849984,
+      "bucket_pass_rate": 1.0
+    },
+    {
+      "signal": "+ whale_count >= 2",
+      "description": "Multiple whales",
+      "n_markets": 1144,
+      "win_rate": 0.9536713286713286,
+      "edge": 0.26180344605214667,
+      "bucket_improvement": 0.21168642461393428,
+      "bucket_pass_rate": 1.0
+    },
+    {
+      "signal": "+ large NO imbalance",
+      "description": "Large trades favor NO",
+      "n_markets": 421,
+      "win_rate": 0.9904988123515439,
+      "edge": 0.17741273560916548,
+      "bucket_improvement": 0.1207336918755785,
+      "bucket_pass_rate": 1.0
+    },
+    {
+      "signal": "+ YES ratio > 70%",
+      "description": "Higher YES ratio",
+      "n_markets": 1321,
+      "win_rate": 0.9470098410295231,
+      "edge": 0.23632674798552733,
+      "bucket_improvement": 0.18763907606446442,
+      "bucket_pass_rate": 1.0
+    }
+  ],
+  "risk_analysis": {
+    "total_markets": 1552,
+    "total_profit": 1029.8000411558319,
+    "concentration": {
+      "top_1": 0.0009672859499918947,
+      "top_5": 0.004817613666275834,
+      "top_10": 0.009606652764751068
+    },
+    "max_drawdown": 1.983574510045628,
+    "bucket_analysis": [
+      {
+        "bucket": 35.0,
+        "n_markets": 18,
+        "win_rate": 0.8333333333333334,
+        "baseline_win_rate": 0.31295425395468146,
+        "improvement": 0.5203790793786519
+      },
+      {
+        "bucket": 40.0,
+        "n_markets": 53,
+        "win_rate": 0.8490566037735849,
+        "baseline_win_rate": 0.3611287254280279,
+        "improvement": 0.48792787834555706
+      },
+      {
+        "bucket": 45.0,
+        "n_markets": 82,
+        "win_rate": 0.8536585365853658,
+        "baseline_win_rate": 0.46781526681024166,
+        "improvement": 0.3858432697751242
+      },
+      {
+        "bucket": 50.0,
+        "n_markets": 127,
+        "win_rate": 0.905511811023622,
+        "baseline_win_rate": 0.5679539852095317,
+        "improvement": 0.33755782581409033
+      },
+      {
+        "bucket": 55.0,
+        "n_markets": 101,
+        "win_rate": 0.9504950495049505,
+        "baseline_win_rate": 0.65257273899957,
+        "improvement": 0.2979223105053804
+      },
+      {
+        "bucket": 60.0,
+        "n_markets": 131,
+        "win_rate": 0.9770992366412213,
+        "baseline_win_rate": 0.7053734616790545,
+        "improvement": 0.2717257749621669
+      },
+      {
+        "bucket": 65.0,
+        "n_markets": 145,
+        "win_rate": 0.9793103448275862,
+        "baseline_win_rate": 0.7591772463340223,
+        "improvement": 0.22013309849356388
+      },
+      {
+        "bucket": 70.0,
+        "n_markets": 153,
+        "win_rate": 0.9738562091503268,
+        "baseline_win_rate": 0.7924031590823618,
+        "improvement": 0.18145305006796497
+      },
+      {
+        "bucket": 75.0,
+        "n_markets": 184,
+        "win_rate": 0.9836956521739131,
+        "baseline_win_rate": 0.848591339567574,
+        "improvement": 0.13510431260633904
+      },
+      {
+        "bucket": 80.0,
+        "n_markets": 187,
+        "win_rate": 0.9946524064171123,
+        "baseline_win_rate": 0.8919310377049946,
+        "improvement": 0.10272136871211768
+      },
+      {
+        "bucket": 85.0,
+        "n_markets": 169,
+        "win_rate": 0.9822485207100592,
+        "baseline_win_rate": 0.9273215317182563,
+        "improvement": 0.05492698899180293
+      },
+      {
+        "bucket": 90.0,
+        "n_markets": 114,
+        "win_rate": 1.0,
+        "baseline_win_rate": 0.9628557755850785,
+        "improvement": 0.03714422441492149
+      },
+      {
+        "bucket": 95.0,
+        "n_markets": 62,
+        "win_rate": 1.0,
+        "baseline_win_rate": 0.9894736842105263,
+        "improvement": 0.010526315789473717
+      }
+    ],
+    "category_distribution": [
+      {
+        "category": "Sports",
+        "count": 1163,
+        "profit": 754.7999655915065
+      },
+      {
+        "category": "Other",
+        "count": 344,
+        "profit": 240.48046606305977
+      },
+      {
+        "category": "Crypto",
+        "count": 25,
+        "profit": 19.233982746672414
+      },
+      {
+        "category": "Politics",
+        "count": 20,
+        "profit": 15.285626754593356
+      }
+    ]
+  },
+  "full_validation": {
+    "strategy_name": "6-24hr Duration + RLM (NO bet)",
+    "n_markets": 1552,
+    "win_rate": 0.9516752577319587,
+    "avg_price": 70.91874988136553,
+    "breakeven": 0.7091874988136553,
+    "raw_edge": 0.24248775891830343,
+    "bucket_improvement": 0.1936063442958181,
+    "positive_buckets": 15,
+    "total_buckets": 15,
+    "bucket_pass_rate": 1.0,
+    "p_value": 0.0,
+    "z_score": 44.5457746595288,
+    "ci_low": 0.941005873012252,
+    "ci_high": 0.9623446424516654,
+    "quarters_positive": 2,
+    "total_quarters": 2,
+    "max_concentration": 0.0009672859499918947,
+    "criteria": {
+      "sample_size": true,
+      "significance": "True",
+      "not_price_proxy": true,
+      "concentration": "True",
+      "temporal_stable": "True",
+      "positive_edge": "True"
+    },
+    "is_validated": true,
+    "status": "VALIDATED",
+    "bucket_results": [
+      {
+        "bucket": 25.0,
+        "n_markets": 7,
+        "win_rate": 0.5714285714285714,
+        "baseline_win_rate": 0.15390070921985816,
+        "improvement": 0.41752786220871324
+      },
+      {
+        "bucket": 30.0,
+        "n_markets": 6,
+        "win_rate": 0.5,
+        "baseline_win_rate": 0.21736562315416422,
+        "improvement": 0.2826343768458358
+      },
+      {
+        "bucket": 35.0,
+        "n_markets": 18,
+        "win_rate": 0.8333333333333334,
+        "baseline_win_rate": 0.31295425395468146,
+        "improvement": 0.5203790793786519
+      },
+      {
+        "bucket": 40.0,
+        "n_markets": 53,
+        "win_rate": 0.8490566037735849,
+        "baseline_win_rate": 0.3611287254280279,
+        "improvement": 0.48792787834555706
+      },
+      {
+        "bucket": 45.0,
+        "n_markets": 82,
+        "win_rate": 0.8536585365853658,
+        "baseline_win_rate": 0.46781526681024166,
+        "improvement": 0.3858432697751242
+      },
+      {
+        "bucket": 50.0,
+        "n_markets": 127,
+        "win_rate": 0.905511811023622,
+        "baseline_win_rate": 0.5679539852095317,
+        "improvement": 0.33755782581409033
+      },
+      {
+        "bucket": 55.0,
+        "n_markets": 101,
+        "win_rate": 0.9504950495049505,
+        "baseline_win_rate": 0.65257273899957,
+        "improvement": 0.2979223105053804
+      },
+      {
+        "bucket": 60.0,
+        "n_markets": 131,
+        "win_rate": 0.9770992366412213,
+        "baseline_win_rate": 0.7053734616790545,
+        "improvement": 0.2717257749621669
+      },
+      {
+        "bucket": 65.0,
+        "n_markets": 145,
+        "win_rate": 0.9793103448275862,
+        "baseline_win_rate": 0.7591772463340223,
+        "improvement": 0.22013309849356388
+      },
+      {
+        "bucket": 70.0,
+        "n_markets": 153,
+        "win_rate": 0.9738562091503268,
+        "baseline_win_rate": 0.7924031590823618,
+        "improvement": 0.18145305006796497
+      },
+      {
+        "bucket": 75.0,
+        "n_markets": 184,
+        "win_rate": 0.9836956521739131,
+        "baseline_win_rate": 0.848591339567574,
+        "improvement": 0.13510431260633904
+      },
+      {
+        "bucket": 80.0,
+        "n_markets": 187,
+        "win_rate": 0.9946524064171123,
+        "baseline_win_rate": 0.8919310377049946,
+        "improvement": 0.10272136871211768
+      },
+      {
+        "bucket": 85.0,
+        "n_markets": 169,
+        "win_rate": 0.9822485207100592,
+        "baseline_win_rate": 0.9273215317182563,
+        "improvement": 0.05492698899180293
+      },
+      {
+        "bucket": 90.0,
+        "n_markets": 114,
+        "win_rate": 1.0,
+        "baseline_win_rate": 0.9628557755850785,
+        "improvement": 0.03714422441492149
+      },
+      {
+        "bucket": 95.0,
+        "n_markets": 62,
+        "win_rate": 1.0,
+        "baseline_win_rate": 0.9894736842105263,
+        "improvement": 0.010526315789473717
+      }
+    ]
+  },
+  "comparison": [
+    {
+      "strategy": "Base RLM",
+      "n_markets": 4148,
+      "win_rate": 0.9421407907425265,
+      "avg_price": 72.36977412245473,
+      "edge": 0.21844304951797922
+    },
+    {
+      "strategy": "24hr+ RLM",
+      "n_markets": 2110,
+      "win_rate": 0.9374407582938389,
+      "avg_price": 73.04814491035705,
+      "edge": 0.2069593091902684
+    },
+    {
+      "strategy": "6-24hr RLM",
+      "n_markets": 1552,
+      "win_rate": 0.9516752577319587,
+      "avg_price": 70.91874988136553,
+      "edge": 0.24248775891830343
+    }
+  ]
+}

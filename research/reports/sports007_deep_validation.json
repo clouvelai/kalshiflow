@@ -1,0 +1,23 @@
+{
+  "hypothesis": "SPORTS-007",
+  "name": "Late-Arriving Large Money",
+  "follow_no": {
+    "n": 331,
+    "win_rate": 0.9546827794561934,
+    "edge": 0.19764428316780425,
+    "p_value": 0.0,
+    "bucket_ratio": 1.0,
+    "weighted_improvement": 0.14956557701566708,
+    "pos_quarters": 4,
+    "top_5_concentration": 4.555361377969707,
+    "validation_passed": true,
+    "issues": []
+  },
+  "follow_yes": {
+    "n": 337,
+    "win_rate": 0.8130563798219584,
+    "edge": 0.18753152468208212,
+    "p_value": 5.6754601018838e-13,
+    "pos_quarters": 4
+  }
+}

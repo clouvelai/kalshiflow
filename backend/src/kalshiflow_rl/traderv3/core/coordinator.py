@@ -516,6 +516,10 @@ class V3Coordinator:
             self._state_container.set_tracked_markets(self._tracked_markets_state)
             self._status_reporter.set_tracked_markets_state(self._tracked_markets_state)
 
+            # 6b. Set trading client on StateContainer for settlement result lookups
+            if self._trading_client_integration:
+                self._state_container.set_trading_client(self._trading_client_integration)
+
             # 8. Start lifecycle integration
             await self._lifecycle_integration.start()
 

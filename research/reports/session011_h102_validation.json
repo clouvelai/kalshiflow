@@ -1,0 +1,16 @@
+{
+  "hypothesis": "H102",
+  "description": "Low Leverage Variance + NO Consensus",
+  "signal": "lev_std < 0.5 AND yes_ratio < 0.4 AND n_trades >= 3",
+  "markets": 592,
+  "win_rate": 0.8108108108108109,
+  "breakeven": 0.23800370501223206,
+  "edge_pct": 57.28071057985788,
+  "improvement_pct": 23.417004016020226,
+  "p_value": 8.28676100387159e-34,
+  "concentration": 0.04740358762390144,
+  "temporal_stability": {
+    "first_half_edge": 53.846582008464196,
+    "second_half_edge": 60.71483915125155
+  },
+  "is_validated": 

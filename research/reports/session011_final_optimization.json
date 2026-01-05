@@ -1,0 +1,494 @@
+{
+  "timestamp": "2025-12-29T15:36:42.570541",
+  "session": "Session 011 Part 3: Final Optimization",
+  "all_results": [
+    {
+      "name": "OPTIMAL_6PM_9PM_FriSat_Lev1.5",
+      "n_trades": 47420,
+      "n_markets": 908,
+      "win_rate": 83.38306697877738,
+      "breakeven": 78.81038037560822,
+      "edge": 4.572686603169163,
+      "p_value": 0.0003255389225530753,
+      "concentration": 8.773744090369306,
+      "avg_fade_price": 78.81038037560822,
+      "total_fade_profit": 97720.0,
+      "improvement": 1.2696542951040946,
+      "is_price_proxy": false,
+      "temporal_stability": {
+        "period_edges": [
+          0.7152329974350891,
+          2.7539756986010078,
+          2.607250347284884,
+          2.883008697616607
+        ],
+        "positive_periods": 4,
+        "passes": true
+      },
+      "temporal_passes": true,
+      "passes_all": true,
+      "description": "6PM-9PM Fri/Sat Lev>1.5"
+    },
+    {
+      "name": "OPTIMAL_6PM_9PM_FriSat_Lev2",
+      "n_trades": 39822,
+      "n_markets": 781,
+      "win_rate": 86.71815267924174,
+      "breakeven": 82.38243220202934,
+      "edge": 4.335720477212401,
+      "p_value": 0.0006683061360916571,
+      "concentration": 9.899918622634837,
+      "avg_fade_price": 82.38243220202934,
+      "total_fade_profit": 197944.0,
+      "improvement": 1.5279108281537335,
+      "is_price_proxy": false,
+      "temporal_stability": {
+        "period_edges": [
+          3.313635121984404,
+          4.565779701249573,
+          2.264554255484108,
+          2.6112769229558186
+        ],
+        "positive_periods": 4,
+        "passes": true
+      },
+      "temporal_passes": true,
+      "passes_all": true,
+      "description": "6PM-9PM Fri/Sat Lev>2"
+    },
+    {
+      "name": "OPTIMAL_6PM_11PM_FriSat_Lev1.5",
+      "n_trades": 113874,
+      "n_markets": 1366,
+      "win_rate": 85.4448208202481,
+      "breakeven": 80.84650982908653,
+      "edge": 4.598310991161558,
+      "p_value": 5.15610847252632e-06,
+      "concentration": 11.180898827389592,
+      "avg_fade_price": 80.84650982908653,
+      "total_fade_profit": 209226.0,
+      "improvement": 1.2952786830964897,
+      "is_price_proxy": false,
+      "temporal_stability": {
+        "period_edges": [
+          2.645239240646391,
+          2.059970533139499,
+          5.86781118994848,
+          0.2627379196958546
+        ],
+        "positive_periods": 4,
+        "passes": true
+      },
+      "temporal_passes": true,
+      "passes_all": true,
+      "description": "6PM-11PM Fri/Sat Lev>1.5"
+    },
+    {
+      "name": "OPTIMAL_6PM_11PM_FriSat_Lev2",
+      "n_trades": 97989,
+      "n_markets": 1217,
+      "win_rate": 88.24713682075861,
+      "breakeven": 84.2355732124528,
+      "edge": 4.011563608305801,
+      "p_value": 5.761374420342195e-05,
+      "concentration": 10.505059973674857,
+      "avg_fade_price": 84.2355732124528,
+      "total_fade_profit": 460182.0,
+      "improvement": 1.2037539592471331,
+      "is_price_proxy": false,
+      "temporal_stability": {
+        "period_edges": [
+          4.041223055348064,
+          3.1123620961440612,
+          4.323745826083991,
+          -0.011925041513549672
+        ],
+        "positive_periods": 3,
+        "passes": true
+      },
+      "temporal_passes": true,
+      "passes_all": true,
+      "description": "6PM-11PM Fri/Sat Lev>2"
+    },
+    {
+      "name": "EXTENDED_6PM_12AM_FriSat_Lev2",
+      "n_trades": 100233,
+      "n_markets": 1329,
+      "win_rate": 88.30643622961722,
+      "breakeven": 84.55054100469087,
+      "edge": 3.755895224926342,
+      "p_value": 6.377823635180216e-05,
+      "concentration": 10.197757865811292,
+      "avg_fade_price": 84.55054100469087,
+      "total_fade_profit": 476168.0,
+      "improvement": 0.9480855758676743,
+      "is_price_proxy": false,
+      "temporal_stability": {
+        "period_edges": [
+          4.159835622077734,
+          1.7670452121026692,
+          4.411005525835188,
+          0.2332549995491151
+        ],
+        "positive_periods": 4,
+        "passes": true
+      },
+      "temporal_passes": true,
+      "passes_all": true,
+      "description": "6PM-12AM Fri/Sat Lev>2"
+    },
+    {
+      "name": "OPTIMAL_6PM_11PM_ThuFriSat_Lev2",
+      "n_trades": 98689,
+      "n_markets": 1323,
+      "win_rate": 88.57069053316657,
+      "breakeven": 84.5402847059075,
+      "edge": 4.030405827259065,
+      "p_value": 2.038640341099035e-05,
+      "concentration": 10.391326395093328,
+      "avg_fade_price": 84.5402847059075,
+      "total_fade_profit": 467042.0,
+      "improvement": 1.222596178200397,
+      "is_price_proxy": false,
+      "temporal_stability": {
+        "period_edges": [
+          4.103420886272502,
+          3.1005488847172358,
+          4.405008755670292,
+          0.9315080735692094
+        ],
+        "positive_periods": 4,
+        "passes": true
+      },
+      "temporal_passes": true,
+      "passes_all": true,
+      "description": "6PM-11PM Thu/Fri/Sat Lev>2"
+    },
+    {
+      "name": "MONDAY_8PM_12AM_Lev2",
+      "n_trades": 1876,
+      "n_markets": 219,
+      "win_rate": 91.39135106097233,
+      "breakeven": 86.55729734432501,
+      "edge": 4.834053716647313,
+      "p_value": 0.020015277362603653,
+      "concentration": 10.25463151881172,
+      "avg_fade_price": 86.55729734432501,
+      "total_fade_profit": 12847.0,
+      "improvement": 2.026244067588645,
+      "is_price_proxy": false,
+      "temporal_stability": {
+        "period_edges": [
+          4.087611564680538,
+          7.265927740279931,
+          6.178826003878102,
+          3.319491617193482
+        ],
+        "positive_periods": 4,
+        "passes": true
+      },
+      "temporal_passes": true,
+      "passes_all": false,
+      "description": "8PM-12AM Mon Lev>2"
+    },
+    {
+      "name": "MONDAY_8PM_12AM_Lev3",
+      "n_trades": 1430,
+      "n_markets": 181,
+      "win_rate": 96.80579414086078,
+      "breakeven": 91.21557077819584,
+      "edge": 5.590223362664936,
+      "p_value": 0.0031548558268171753,
+      "concentration": 16.408668730650156,
+      "avg_fade_price": 91.21557077819584,
+      "total_fade_profit": 10353.0,
+      "improvement": 3.2156326788878915,
+      "is_price_proxy": false,
+      "temporal_stability": {
+        "period_edges": [
+          2.339097939097934,
+          9.97192172210134,
+          8.440758898367594,
+          5.905203522110547
+        ],
+        "positive_periods": 4,
+        "passes": true
+      },
+      "temporal_passes": true,
+      "passes_all": true,
+      "description": "8PM-12AM Mon Lev>3"
+    },
+    {
+      "name": "COMBINED_FriSatEve_MonNight_Lev2",
+      "n_trades": 99865,
+      "n_markets": 1393,
+      "win_rate": 88.66580860963113,
+      "breakeven": 84.60865074406445,
+      "edge": 4.0571578655666745,
+      "p_value": 8.189826672764809e-06,
+      "concentration": 10.259559688810649,
+      "avg_fade_price": 84.60865074406445,
+      "total_fade_profit": 473029.0,
+      "improvement": 1.2493482165080065,
+      "is_price_proxy": false,
+      "temporal_stability": {
+        "period_edges": [
+          4.165071178957547,
+          2.9159774746312372,
+          4.303334071147735,
+          1.721318516244541
+        ],
+        "positive_periods": 4,
+        "passes": true
+      },
+      "temporal_passes": true,
+      "passes_all": true,
+      "description": "Combined"
+    }
+  ],
+  "validated": [
+    {
+      "name": "OPTIMAL_6PM_9PM_FriSat_Lev1.5",
+      "n_trades": 47420,
+      "n_markets": 908,
+      "win_rate": 83.38306697877738,
+      "breakeven": 78.81038037560822,
+      "edge": 4.572686603169163,
+      "p_value": 0.0003255389225530753,
+      "concentration": 8.773744090369306,
+      "avg_fade_price": 78.81038037560822,
+      "total_fade_profit": 97720.0,
+      "improvement": 1.2696542951040946,
+      "is_price_proxy": false,
+      "temporal_stability": {
+        "period_edges": [
+          0.7152329974350891,
+          2.7539756986010078,
+          2.607250347284884,
+          2.883008697616607
+        ],
+        "positive_periods": 4,
+        "passes": true
+      },
+      "temporal_passes": true,
+      "passes_all": true,
+      "description": "6PM-9PM Fri/Sat Lev>1.5"
+    },
+    {
+      "name": "OPTIMAL_6PM_9PM_FriSat_Lev2",
+      "n_trades": 39822,
+      "n_markets": 781,
+      "win_rate": 86.71815267924174,
+      "breakeven": 82.38243220202934,
+      "edge": 4.335720477212401,
+      "p_value": 0.0006683061360916571,
+      "concentration": 9.899918622634837,
+      "avg_fade_price": 82.38243220202934,
+      "total_fade_profit": 197944.0,
+      "improvement": 1.5279108281537335,
+      "is_price_proxy": false,
+      "temporal_stability": {
+        "period_edges": [
+          3.313635121984404,
+          4.565779701249573,
+          2.264554255484108,
+          2.6112769229558186
+        ],
+        "positive_periods": 4,
+        "passes": true
+      },
+      "temporal_passes": true,
+      "passes_all": true,
+      "description": "6PM-9PM Fri/Sat Lev>2"
+    },
+    {
+      "name": "OPTIMAL_6PM_11PM_FriSat_Lev1.5",
+      "n_trades": 113874,
+      "n_markets": 1366,
+      "win_rate": 85.4448208202481,
+      "breakeven": 80.84650982908653,
+      "edge": 4.598310991161558,
+      "p_value": 5.15610847252632e-06,
+      "concentration": 11.180898827389592,
+      "avg_fade_price": 80.84650982908653,
+      "total_fade_profit": 209226.0,
+      "improvement": 1.2952786830964897,
+      "is_price_proxy": false,
+      "temporal_stability": {
+        "period_edges": [
+          2.645239240646391,
+          2.059970533139499,
+          5.86781118994848,
+          0.2627379196958546
+        ],
+        "positive_periods": 4,
+        "passes": true
+      },
+      "temporal_passes": true,
+      "passes_all": true,
+      "description": "6PM-11PM Fri/Sat Lev>1.5"
+    },
+    {
+      "name": "OPTIMAL_6PM_11PM_FriSat_Lev2",
+      "n_trades": 97989,
+      "n_markets": 1217,
+      "win_rate": 88.24713682075861,
+      "breakeven": 84.2355732124528,
+      "edge": 4.011563608305801,
+      "p_value": 5.761374420342195e-05,
+      "concentration": 10.505059973674857,
+      "avg_fade_price": 84.2355732124528,
+      "total_fade_profit": 460182.0,
+      "improvement": 1.2037539592471331,
+      "is_price_proxy": false,
+      "temporal_stability": {
+        "period_edges": [
+          4.041223055348064,
+          3.1123620961440612,
+          4.323745826083991,
+          -0.011925041513549672
+        ],
+        "positive_periods": 3,
+        "passes": true
+      },
+      "temporal_passes": true,
+      "passes_all": true,
+      "description": "6PM-11PM Fri/Sat Lev>2"
+    },
+    {
+      "name": "EXTENDED_6PM_12AM_FriSat_Lev2",
+      "n_trades": 100233,
+      "n_markets": 1329,
+      "win_rate": 88.30643622961722,
+      "breakeven": 84.55054100469087,
+      "edge": 3.755895224926342,
+      "p_value": 6.377823635180216e-05,
+      "concentration": 10.197757865811292,
+      "avg_fade_price": 84.55054100469087,
+      "total_fade_profit": 476168.0,
+      "improvement": 0.9480855758676743,
+      "is_price_proxy": false,
+      "temporal_stability": {
+        "period_edges": [
+          4.159835622077734,
+          1.7670452121026692,
+          4.411005525835188,
+          0.2332549995491151
+        ],
+        "positive_periods": 4,
+        "passes": true
+      },
+      "temporal_passes": true,
+      "passes_all": true,
+      "description": "6PM-12AM Fri/Sat Lev>2"
+    },
+    {
+      "name": "OPTIMAL_6PM_11PM_ThuFriSat_Lev2",
+      "n_trades": 98689,
+      "n_markets": 1323,
+      "win_rate": 88.57069053316657,
+      "breakeven": 84.5402847059075,
+      "edge": 4.030405827259065,
+      "p_value": 2.038640341099035e-05,
+      "concentration": 10.391326395093328,
+      "avg_fade_price": 84.5402847059075,
+      "total_fade_profit": 467042.0,
+      "improvement": 1.222596178200397,
+      "is_price_proxy": false,
+      "temporal_stability": {
+        "period_edges": [
+          4.103420886272502,
+          3.1005488847172358,
+          4.405008755670292,
+          0.9315080735692094
+        ],
+        "positive_periods": 4,
+        "passes": true
+      },
+      "temporal_passes": true,
+      "passes_all": true,
+      "description": "6PM-11PM Thu/Fri/Sat Lev>2"
+    },
+    {
+      "name": "MONDAY_8PM_12AM_Lev3",
+      "n_trades": 1430,
+      "n_markets": 181,
+      "win_rate": 96.80579414086078,
+      "breakeven": 91.21557077819584,
+      "edge": 5.590223362664936,
+      "p_value": 0.0031548558268171753,
+      "concentration": 16.408668730650156,
+      "avg_fade_price": 91.21557077819584,
+      "total_fade_profit": 10353.0,
+      "improvement": 3.2156326788878915,
+      "is_price_proxy": false,
+      "temporal_stability": {
+        "period_edges": [
+          2.339097939097934,
+          9.97192172210134,
+          8.440758898367594,
+          5.905203522110547
+        ],
+        "positive_periods": 4,
+        "passes": true
+      },
+      "temporal_passes": true,
+      "passes_all": true,
+      "description": "8PM-12AM Mon Lev>3"
+    },
+    {
+      "name": "COMBINED_FriSatEve_MonNight_Lev2",
+      "n_trades": 99865,
+      "n_markets": 1393,
+      "win_rate": 88.66580860963113,
+      "breakeven": 84.60865074406445,
+      "edge": 4.0571578655666745,
+      "p_value": 8.189826672764809e-06,
+      "concentration": 10.259559688810649,
+      "avg_fade_price": 84.60865074406445,
+      "total_fade_profit": 473029.0,
+      "improvement": 1.2493482165080065,
+      "is_price_proxy": false,
+      "temporal_stability": {
+        "period_edges": [
+          4.165071178957547,
+          2.9159774746312372,
+          4.303334071147735,
+          1.721318516244541
+        ],
+        "positive_periods": 4,
+        "passes": true
+      },
+      "temporal_passes": true,
+      "passes_all": true,
+      "description": "Combined"
+    }
+  ],
+  "best_strategy": {
+    "name": "MONDAY_8PM_12AM_Lev3",
+    "n_trades": 1430,
+    "n_markets": 181,
+    "win_rate": 96.80579414086078,
+    "breakeven": 91.21557077819584,
+    "edge": 5.590223362664936,
+    "p_value": 0.0031548558268171753,
+    "concentration": 16.408668730650156,
+    "avg_fade_price": 91.21557077819584,
+    "total_fade_profit": 10353.0,
+    "improvement": 3.2156326788878915,
+    "is_price_proxy": false,
+    "temporal_stability": {
+      "period_edges": [
+        2.339097939097934,
+        9.97192172210134,
+        8.440758898367594,
+        5.905203522110547
+      ],
+      "positive_periods": 4,
+      "passes": true
+    },
+    "temporal_passes": true,
+    "passes_all": true,
+    "description": "8PM-12AM Mon Lev>3"
+  }
+}

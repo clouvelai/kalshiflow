@@ -1,0 +1,62 @@
+# H123 - Reverse Line Movement (RLM) NO Strategy
+#
+# This strategy bets NO when:
+# 1. Majority of trades are YES bets (>65% of trade count)
+# 2. But price moved toward NO (YES price dropped from first to last trade)
+# 3. At least 15 trades in the market
+#
+# The theory: Smart money (informed traders) is betting NO with larger size,
+# moving the price despite retail flow going YES. The price movement reveals
+# the informed direction.
+#
+# Validated: 2026-01-04
+# Edge: +21.8% raw, +17.1% vs bucket-matched baseline
+# Win Rate: 94.2%
+# Markets: 4,148
+
+strategy:
+  name: "H123 - Reverse Line Movement (RLM) NO"
+  hypothesis_id: "H123"
+  action: "bet_no"
+  description: >
+    Bet NO when majority of trades are YES but price moved toward NO.
+    This indicates informed traders are betting NO with larger sizes,
+    overcoming the retail YES flow.
+
+signal:
+  # Signal conditions (ALL must be true)
+  conditions:
+    # More than 65% of trades are YES bets
+    - field: "yes_trade_ratio"
+      operator: ">"
+      value: 0.65
+
+    # Price moved toward NO (YES price dropped)
+    - field: "price_moved_toward_no"
+      operator: "=="
+      value: true
+
+    # Minimum 15 trades for reliable signal
+    - field: "n_trades"
+      operator: ">="
+      value: 15
+
+  # Entry price field for breakeven calculation
+  entry_price_field: "no_price"
+
+validation:
+  mode: "full"  # lsd | full
+  min_markets: 50  # Minimum markets for valid analysis
+  p_threshold: 0.001  # Statistical significance threshold
+  bucket_size: 5  # Price bucket size in cents
+  min_bucket_markets: 5  # Minimum markets per bucket
+  bootstrap_iterations: 1000  # Bootstrap CI iterations
+  temporal_splits: 4  # Number of temporal splits
+
+parameter_sensitivity:
+  enabled: true
+  parameters:
+    yes_trade_ratio:
+      values: [0.60, 0.65, 0.70, 0.75, 0.80]
+    n_trades:
+      values: [5, 10, 15, 20, 25]

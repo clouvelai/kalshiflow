@@ -233,6 +233,7 @@ class V3StateContainer:
         self._trading_attachments: Dict[str, TradingAttachment] = {}
         self._trading_attachments_version = 0
         self._tracked_markets = None  # Set by coordinator via set_tracked_markets()
+        self._trading_client = None  # Set by coordinator via set_trading_client()
 
         # Component health tracking
         self._component_health: Dict[str, ComponentHealth] = {}
@@ -1014,7 +1015,19 @@ class V3StateContainer:
             tracked_markets: TrackedMarketsState instance
         """
         self._tracked_markets = tracked_markets
-        logger.info("TrackedMarketsState reference set for trading attachments")
+
+    def set_trading_client(self, trading_client) -> None:
+        """
+        Set reference to trading client for market info lookups.
+
+        Called by coordinator during initialization to enable
+        fetching market results via REST when settlement linking.
+
+        Args:
+            trading_client: V3TradingClientIntegration instance
+        """
+        self._trading_client = trading_client
+        logger.info("Trading client reference set for settlement result lookups")
 
     async def _sync_trading_attachments(self, state: TraderState) -> None:
         """
@@ -1177,6 +1190,7 @@ class V3StateContainer:
         Capture settlement data when position closes.
 
         Called when sync shows position no longer exists for a tracked market.
+        If market result is unknown, schedules async REST lookup to fetch it.
         """
         if not attachment.position:
             return
@@ -1188,21 +1202,28 @@ class V3StateContainer:
             if market:
                 result = market.result or market.market_info.get("result") or "unknown"
 
+        # Store position info before clearing (needed for async update)
+        position_side = attachment.position.side
+        position_count = attachment.position.count
+        position_pnl = attachment.position.realized_pnl + attachment.position.unrealized_pnl
+        position_cost = attachment.position.total_cost
+        position_fees = attachment.position.fees_paid
+
         # Determine if position won: YES position wins on YES result, NO position wins on NO result
         # Settlement payout is 100 cents per contract if won, 0 if lost
         # For void/unknown results, use 0 revenue (conservative)
-        won = (result == attachment.position.side) and result in ("yes", "no")
-        revenue = attachment.position.count * 100 if won else 0
+        won = (result == position_side) and result in ("yes", "no")
+        revenue = position_count * 100 if won else 0
 
         attachment.settlement = TrackedMarketSettlement(
             result=result,
             determined_at=time.time(),
             settled_at=time.time(),
-            final_position=attachment.position.count,
-            final_pnl=attachment.position.realized_pnl + attachment.position.unrealized_pnl,
+            final_position=position_count,
+            final_pnl=position_pnl,
             revenue=revenue,
-            cost_basis=attachment.position.total_cost,
-            fees=attachment.position.fees_paid,
+            cost_basis=position_cost,
+            fees=position_fees,
         )
         attachment.position = None
         attachment.trading_state = TradingState.SETTLED
@@ -1214,17 +1235,112 @@ class V3StateContainer:
             f"result={result}, pnl={attachment.settlement.final_pnl}c"
         )
 
-        # Link settlement to order contexts for quant analysis
+        # If result is unknown but we have trading client, fetch via REST and re-link
+        if result == "unknown" and self._trading_client:
+            logger.info(f"Result unknown for {ticker}, scheduling REST lookup...")
+            task = asyncio.create_task(
+                self._fetch_and_update_settlement_result(
+                    ticker=ticker,
+                    attachment=attachment,
+                    position_side=position_side,
+                    position_count=position_count,
+                    position_pnl=position_pnl,
+                )
+            )
+            task.add_done_callback(
+                lambda t: _log_task_exception(t, f"fetch_settlement_result({ticker})")
+            )
+        else:
+            # Link settlement to order contexts for quant analysis (with current result)
+            self._link_settlement_to_order_contexts(ticker, attachment, result)
+
+    async def _fetch_and_update_settlement_result(
+        self,
+        ticker: str,
+        attachment: TradingAttachment,
+        position_side: str,
+        position_count: int,
+        position_pnl: int,
+    ) -> None:
+        """
+        Fetch market result via REST and update settlement.
+
+        Called when settlement is captured with unknown result, attempts
+        to fetch the actual result from the Kalshi API.
+        """
+        try:
+            if not self._trading_client:
+                logger.warning(f"No trading client available to fetch result for {ticker}")
+                return
+
+            # Fetch market info via REST
+            market_info = await self._trading_client.get_market(ticker)
+            if not market_info:
+                logger.warning(f"Failed to fetch market info for {ticker}")
+                return
+
+            # Extract result from API response
+            result = market_info.get("result", "")
+            if not result or result not in ("yes", "no", "void"):
+                logger.warning(f"Market {ticker} has no valid result yet: {result}")
+                # Link with unknown result anyway
+                self._link_settlement_to_order_contexts(ticker, attachment, "unknown")
+                return
+
+            # Update settlement with actual result
+            won = (result == position_side) and result in ("yes", "no")
+            revenue = position_count * 100 if won else 0
+
+            # Recalculate PnL: revenue - cost_basis
+            actual_pnl = revenue - attachment.settlement.cost_basis
+
+            attachment.settlement.result = result
+            attachment.settlement.revenue = revenue
+            attachment.settlement.final_pnl = actual_pnl
+            attachment.bump_version()
+            self._trading_attachments_version += 1
+
+            logger.info(
+                f"Settlement updated for {ticker}: "
+                f"result={result}, won={won}, pnl={actual_pnl}c (was {position_pnl}c)"
+            )
+
+            # Now link to order contexts with correct result
+            self._link_settlement_to_order_contexts(ticker, attachment, result, actual_pnl)
+
+        except Exception as e:
+            logger.error(f"Failed to fetch settlement result for {ticker}: {e}")
+            # Link with unknown result as fallback
+            self._link_settlement_to_order_contexts(ticker, attachment, "unknown")
+
+    def _link_settlement_to_order_contexts(
+        self,
+        ticker: str,
+        attachment: TradingAttachment,
+        result: str,
+        pnl_override: Optional[int] = None,
+    ) -> None:
+        """
+        Link settlement data to order contexts for quant analysis.
+
+        Args:
+            ticker: Market ticker
+            attachment: Trading attachment with orders
+            result: Market result ("yes", "no", "void", "unknown")
+            pnl_override: Optional PnL value to use instead of attachment.settlement.final_pnl
+        """
         try:
             order_context_service = get_order_context_service()
             settled_at = time.time()
+            pnl = pnl_override if pnl_override is not None else attachment.settlement.final_pnl
+
             for order_id, order in attachment.orders.items():
                 if order.status == "filled":
                     task = asyncio.create_task(
                         order_context_service.link_settlement(
                             order_id=order_id,
                             market_result=result,
-                            realized_pnl_cents=attachment.settlement.final_pnl,
+                            realized_pnl_cents=pnl,
                             settled_at=settled_at,
                         )
                     )
@@ -1233,7 +1349,7 @@ class V3StateContainer:
                         lambda t, oid=order_id: _log_task_exception(t, f"link_settlement({oid[:8]})")
                     )
         except Exception as e:
-            logger.warning(f"Failed to link settlement to order contexts: {e}")
+            logger.warning(f"Failed to link settlement to order contexts for {ticker}: {e}")
 
     def get_or_create_trading_attachment(self, ticker: str) -> TradingAttachment:
         """

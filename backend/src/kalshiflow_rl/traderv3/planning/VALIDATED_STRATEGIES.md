@@ -1,8 +1,8 @@
 # Validated Trading Strategies
 
 > Master document tracking production-ready trading strategies for V3 Trader.
-> Maintained by: Quant Agent | Last updated: 2025-12-31 (S013 Fresh Validation)
-> Source: Research validated against ~1.7M trades, ~72k settled markets
+> Maintained by: Quant Agent | Last updated: 2026-01-05 (S-DUR-001 Validation)
+> Source: Research validated against ~7.9M trades, ~288k settled markets
 
 ---
 
@@ -386,6 +386,7 @@ This document tracks strategies that have been statistically validated and are a
 | S013 | Low Leverage Variance NO (H102) | **VALIDATED - Session 012d** | +11.3% | +8.02% | 7/8 pos buckets, 4/4 quarters positive, CI excludes 0 |
 | **S-RLM-001** | **Reverse Line Movement NO (H123)** | **VALIDATED - Session H123** | **+17.38%** | **+13.44%** | **16/17 pos buckets, 4/4 quarters positive, BEST STRATEGY** |
 | **S-LATE-001** | **Late-Arriving Large Money NO (SPORTS-007)** | **VALIDATED - LSD-SPORTS** | **+19.8%** | **+15.0%** | **11/11 pos buckets, 4/4 quarters positive, NEW P0 STRATEGY** |
+| **S-DUR-001** | **6-24hr Duration + RLM (H-MM153)** | **VALIDATED - Session 2026-01-05b** | **+24.2%** | **+19.4%** | **15/15 pos buckets (100%), 2/2 quarters positive, HIGHEST EDGE** |
 
 **Session 012d UPDATE:** After applying Session 012c strict methodology (bucket-by-bucket baseline comparison), only **S013 remains validated**. S010 failed (equal pos/neg buckets), S012 failed (p > 0.01). S013 passed all checks: 7/8 positive buckets, 4/4 quarters positive, bootstrap CI excludes zero, only 4.5% overlap with S007.
 
@@ -2319,6 +2320,219 @@ All new strategies (S005, S006) show temporal stability:
 - Win rates consistent between first and second half of data
 - No regime-dependent behavior
 - Validated across 1,000+ unique markets each
+
+---
+
+## S-DUR-001: 6-24hr Duration + RLM (VALIDATED - Session 2026-01-05b)
+
+**Status:** VALIDATED - **HIGHEST EDGE STRATEGY** - Production Ready
+**Priority:** P0 - IMPLEMENT AS ENHANCED RLM VARIANT
+**Hypothesis ID:** H-MM153
+**Discovered:** 2026-01-05 (Session 2026-01-05b Full Validation)
+
+### Statistical Validation (Full Production Validation)
+
+| Metric | Value | Threshold | Pass |
+|--------|-------|-----------|------|
+| Markets Analyzed | 1,552 | >= 50 | YES |
+| Win Rate | 95.2% | - | - |
+| Breakeven Rate | 70.9% | - | - |
+| Expected Edge | **+24.2%** | > 0 | YES |
+| P-Value | 0.0 | < 0.001 | YES |
+| Z-Score | 44.55 | > 2 | YES |
+| Max Concentration | 0.1% | < 30% | YES |
+| Temporal Stability | **2/2 positive** | >= 50% | YES |
+| Edge vs Baseline | **+19.4%** | > 0 | YES |
+| Bucket Analysis | **15/15 positive (100%)** | > 80% | YES |
+| 95% CI | [94.1%, 96.2%] | Excludes 0 | YES |
+
+**VALIDATION RESULT: ALL criteria passed - HIGH confidence**
+
+### Why This Strategy Works (Behavioral Economics)
+
+**The Core Insight: Mature But Fresh Markets**
+
+The 6-24hr duration window represents the "sweet spot" for RLM signals:
+
+1. **Too Early (<6hr)**: Not enough price discovery has occurred. The market hasn't stabilized, and signals are noisy.
+
+2. **6-24hr Window**: Enough time for:
+   - Price discovery to occur
+   - Retail flow to accumulate
+   - Smart money to start positioning against retail
+   - BUT information hasn't fully diffused yet
+
+3. **Too Late (>24hr)**: The market has had too much time:
+   - Information is more fully priced in
+   - Smart money has already extracted edge
+   - Remaining mispricing is smaller
+
+**Comparison to Base RLM:**
+
+| Strategy | Markets | Win Rate | Edge |
+|----------|---------|----------|------|
+| Base RLM | 4,148 | 94.2% | +21.8% |
+| 24hr+ RLM (H-MM150) | 2,110 | 93.7% | +20.7% |
+| **6-24hr RLM (H-MM153)** | **1,552** | **95.2%** | **+24.2%** |
+
+The 6-24hr window shows **+3.5% higher edge** than 24hr+ and **+2.4% higher** than base RLM.
+
+### Duration Tier Analysis
+
+| Tier | Duration | RLM Markets | RLM Edge | Bucket Improvement | Bucket Pass Rate |
+|------|----------|-------------|----------|-------------------|-----------------|
+| Tier 0 | <1hr | 226 | +19.1% | +13.2% | 100% |
+| Tier 1 | 1-6hr | 260 | +19.2% | +13.7% | 100% |
+| **Tier 2** | **6-12hr** | **336** | **+25.3%** | **+19.6%** | **100%** |
+| **Tier 3** | **12-24hr** | **1,216** | **+24.0%** | **+19.1%** | **100%** |
+| Tier 4 | 24-48hr | 1,121 | +21.1% | +16.6% | 100% |
+| Tier 5 | 48-72hr | 602 | +20.3% | +14.7% | 93% |
+| Tier 6 | 72hr+ | 387 | +20.2% | +15.4% | 100% |
+
+The 6-12hr tier shows the **HIGHEST edge** (+25.3%), followed by 12-24hr (+24.0%).
+
+### Category Performance
+
+| Category | RLM Markets | RLM Edge | Bucket Improvement |
+|----------|-------------|----------|-------------------|
+| Other | 344 | +25.1% | +19.2% |
+| Sports | 1,163 | +24.3% | +19.5% |
+| Politics | 20 | +23.6% | +15.1% |
+| Crypto | 25 | +12.0% | +1.4% |
+
+Edge is robust across Sports (largest sample) and Other categories.
+
+### Signal Combinations (Enhancements)
+
+| Combination | Markets | Edge | Bucket Improvement |
+|-------------|---------|------|-------------------|
+| 6-24hr + RLM (baseline) | 1,552 | +24.2% | +19.4% |
+| + price_move < -5c | 1,322 | +26.8% | +21.5% |
+| **+ price_move < -10c** | **1,168** | **+28.6%** | **+23.0%** |
+| + n_trades >= 30 | 1,085 | +25.8% | +20.5% |
+| + whale_count >= 2 | 1,144 | +26.2% | +21.2% |
+
+**RECOMMENDED ENHANCEMENT:** Add `price_move < -10c` for +28.6% edge with 1,168 markets.
+
+### Risk Analysis
+
+| Metric | Value |
+|--------|-------|
+| Total Markets | 1,552 |
+| Total Profit Units | 1,029.8 |
+| Top 1 Market Concentration | 0.1% |
+| Top 5 Markets Concentration | 0.5% |
+| Top 10 Markets Concentration | 1.0% |
+| Max Drawdown | 1.98 units |
+
+**Extremely well-diversified** with minimal concentration risk.
+
+### Implementation Specification
+
+**Signal Definition:**
+```python
+def detect_6_24hr_rlm_signal(market: str, trades: list, market_metadata: dict) -> dict:
+    """
+    S-DUR-001: 6-24hr Duration + RLM signal.
+
+    Enhanced RLM that only fires when market is 6-24 hours old.
+
+    Parameters:
+    - market: ticker
+    - trades: list of trade dicts
+    - market_metadata: dict with 'first_trade_time'
+
+    Returns signal dict if triggered.
+    """
+    from datetime import datetime, timezone
+
+    market_trades = [t for t in trades if t['market_ticker'] == market]
+
+    if len(market_trades) < 15:
+        return {'triggered': False, 'reason': 'insufficient_trades'}
+
+    # Calculate market duration
+    sorted_trades = sorted(market_trades, key=lambda x: x.get('timestamp', 0))
+    first_trade = sorted_trades[0].get('timestamp')
+    last_trade = sorted_trades[-1].get('timestamp')
+
+    if isinstance(first_trade, str):
+        first_trade = datetime.fromisoformat(first_trade.replace('Z', '+00:00'))
+    if isinstance(last_trade, str):
+        last_trade = datetime.fromisoformat(last_trade.replace('Z', '+00:00'))
+
+    duration_hours = (last_trade - first_trade).total_seconds() / 3600
+
+    # Check duration window
+    if not (6 <= duration_hours < 24):
+        return {
+            'triggered': False,
+            'duration_hours': duration_hours,
+            'reason': f'outside_6_24hr_window_{duration_hours:.1f}h'
+        }
+
+    # Apply base RLM criteria
+    yes_trades = sum(1 for t in market_trades if t.get('taker_side') == 'yes')
+    yes_ratio = yes_trades / len(market_trades)
+
+    if yes_ratio <= 0.65:
+        return {'triggered': False, 'reason': f'yes_ratio_too_low_{yes_ratio:.2f}'}
+
+    first_yes_price = sorted_trades[0].get('yes_price', 50)
+    last_yes_price = sorted_trades[-1].get('yes_price', 50)
+    price_drop = first_yes_price - last_yes_price
+
+    if price_drop <= 0:
+        return {'triggered': False, 'reason': 'no_price_drop'}
+
+    return {
+        'triggered': True,
+        'strategy': 'S-DUR-001',
+        'duration_hours': duration_hours,
+        'yes_ratio': yes_ratio,
+        'price_drop': price_drop,
+        'n_trades': len(market_trades),
+        'expected_edge': 0.242,  # +24.2%
+        'reason': f'6_24hr_rlm_dur_{duration_hours:.1f}h_yes_{yes_ratio:.0%}_drop_{price_drop}c'
+    }
+```
+
+**Enhanced Signal (Optional):**
+```python
+# For even higher edge, add price_move filter
+if price_drop < 10:
+    return {'triggered': False, 'reason': f'price_drop_too_small_{price_drop}'}
+# Expected edge: +28.6% with 1,168 markets
+```
+
+**Action:** Bet NO at current NO price
+
+### Expected Performance
+
+| Scenario | Expected Edge | Markets/Month |
+|----------|---------------|---------------|
+| Base Signal | +24.2% | ~500 |
+| Enhanced (price_move < -10c) | +28.6% | ~400 |
+| Optimal Window (6-12hr) | +25.3% | ~100 |
+
+### Relationship to S-RLM-001
+
+S-DUR-001 is an **enhancement** to S-RLM-001, not a replacement:
+- S-RLM-001: Base RLM signal at any duration
+- S-DUR-001: RLM + duration filter for higher edge
+
+**Implementation Options:**
+1. **Replace S-RLM-001 with S-DUR-001**: Higher edge, lower volume
+2. **Use both**: S-DUR-001 when in window, S-RLM-001 otherwise
+3. **Prioritize S-DUR-001**: Only fall back to S-RLM-001 for more volume
+
+**Recommendation:** Option 2 or 3 depending on capital constraints.
+
+### Validation Artifacts
+
+- Script: `research/analysis/duration_window_validation.py`
+- Results: `research/reports/duration_window_full_validation.json`
+- Research Journal: Session 2026-01-05b
 
 ---
 

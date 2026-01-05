@@ -1,0 +1,213 @@
+{
+  "session": "LSD-MM-005",
+  "timestamp": "2026-01-05T09:48:56.168853",
+  "mode": "LSD RLM independence + additive",
+  "base_edge": 4.64,
+  "rlm_edge": 7.41,
+  "rlm_additive": 2.7700000000000005,
+  "results": {
+    "BASE": {
+      "name": "Price dropped only",
+      "markets": 22153,
+      "weighted_improvement": 4.64,
+      "positive_buckets": "11",
+      "total_buckets": 20,
+      "pass_rate": 55.0,
+      "IS_REAL": "True"
+    },
+    "RLM": {
+      "name": "RLM full signal",
+      "markets": 4006,
+      "weighted_improvement": 7.41,
+      "positive_buckets": "12",
+      "total_buckets": 20,
+      "pass_rate": 60.0,
+      "IS_REAL": "True"
+    },
+    "NOT_RLM": {
+      "name": "Price drop but NOT RLM",
+      "markets": 18147,
+      "weighted_improvement": 4.03,
+      "positive_buckets": "13",
+      "total_buckets": 20,
+      "pass_rate": 65.0,
+      "IS_REAL": "True"
+    },
+    "A01": {
+      "name": "High YES ratio (>70%)",
+      "markets": 12568,
+      "weighted_improvement": 3.57,
+      "positive_buckets": "14",
+      "total_buckets": 20,
+      "pass_rate": 70.0,
+      "IS_REAL": "True",
+      "additive_edge": -1.07
+    },
+    "A02": {
+      "name": "Super high YES ratio (>80%)",
+      "markets": 10689,
+      "weighted_improvement": 3.1,
+      "positive_buckets": "15",
+      "total_buckets": 20,
+      "pass_rate": 75.0,
+      "IS_REAL": "True",
+      "additive_edge": -1.54
+    },
+    "A03": {
+      "name": "Many trades (>30)",
+      "markets": 6059,
+      "weighted_improvement": 10.55,
+      "positive_buckets": "10",
+      "total_buckets": 20,
+      "pass_rate": 50.0,
+      "IS_REAL": "False",
+      "additive_edge": 5.91
+    },
+    "A04": {
+      "name": "Many trades (>50)",
+      "markets": 4802,
+      "weighted_improvement": 11.35,
+      "positive_buckets": "11",
+      "total_buckets": 20,
+      "pass_rate": 55.0,
+      "IS_REAL": "True",
+      "additive_edge": 6.71
+    },
+    "A05": {
+      "name": "Big price drop (>5c)",
+      "markets": 13365,
+      "weighted_improvement": 6.41,
+      "positive_buckets": "11",
+      "total_buckets": 20,
+      "pass_rate": 55.0,
+      "IS_REAL": "True",
+      "additive_edge": 1.77
+    },
+    "A06": {
+      "name": "Huge price drop (>10c)",
+      "markets": 10793,
+      "weighted_improvement": 7.24,
+      "positive_buckets": "11",
+      "total_buckets": 20,
+      "pass_rate": 55.0,
+      "IS_REAL": "True",
+      "additive_edge": 2.6
+    },
+    "A07": {
+      "name": "Long duration (>24hr)",
+      "markets": 2818,
+      "weighted_improvement": 14.85,
+      "positive_buckets": "17",
+      "total_buckets": 19,
+      "pass_rate": 89.5,
+      "IS_REAL": "True",
+      "additive_edge": 10.21
+    },
+    "A08": {
+      "name": "Low leverage std (<0.5)",
+      "markets": 5352,
+      "weighted_improvement": 3.61,
+      "positive_buckets": "15",
+      "total_buckets": 20,
+      "pass_rate": 75.0,
+      "IS_REAL": "True",
+      "additive_edge": -1.03
+    },
+    "A09": {
+      "name": "High trade count + YES flow",
+      "markets": 2901,
+      "weighted_improvement": 8.65,
+      "positive_buckets": "11",
+      "total_buckets": 20,
+      "pass_rate": 55.0,
+      "IS_REAL": "True",
+      "additive_edge": 4.01
+    },
+    "A10": {
+      "name": "Spread hours (std > 6)",
+      "markets": 3153,
+      "weighted_improvement": 5.09,
+      "positive_buckets": "15",
+      "total_buckets": 20,
+      "pass_rate": 75.0,
+      "IS_REAL": "True",
+      "additive_edge": 0.45
+    },
+    "A11": {
+      "name": "Whale present (max trade > 100)",
+      "markets": 17243,
+      "weighted_improvement": 5.24,
+      "positive_buckets": "11",
+      "total_buckets": 20,
+      "pass_rate": 55.0,
+      "IS_REAL": "True",
+      "additive_edge": 0.6
+    },
+    "A12": {
+      "name": "No whale (max trade <= 50)",
+      "markets": 2623,
+      "weighted_improvement": 2.93,
+      "positive_buckets": "14",
+      "total_buckets": 20,
+      "pass_rate": 70.0,
+      "IS_REAL": "True",
+      "additive_edge": -1.71
+    },
+    "A13": {
+      "name": "High volume (top 25%)",
+      "markets": 12606,
+      "weighted_improvement": 6.55,
+      "positive_buckets": "12",
+      "total_buckets": 20,
+      "pass_rate": 60.0,
+      "IS_REAL": "True",
+      "additive_edge": 1.91
+    },
+    "A14": {
+      "name": "Low size std (uniform)",
+      "markets": 5240,
+      "weighted_improvement": 2.16,
+      "positive_buckets": "15",
+      "total_buckets": 20,
+      "pass_rate": 75.0,
+      "IS_REAL": "True",
+      "additive_edge": -2.48
+    },
+    "OPT1": {
+      "name": "Big drop + RLM filters",
+      "markets": 3242,
+      "weighted_improvement": 8.4,
+      "positive_buckets": "12",
+      "total_buckets": 20,
+      "pass_rate": 60.0,
+      "IS_REAL": "True"
+    },
+    "OPT2": {
+      "name": "Huge drop + high YES",
+      "markets": 4870,
+      "weighted_improvement": 5.19,
+      "positive_buckets": "11",
+      "total_buckets": 20,
+      "pass_rate": 55.0,
+      "IS_REAL": "True"
+    },
+    "OPT3": {
+      "name": "Drop + long + YES",
+      "markets": 2034,
+      "weighted_improvement": 14.54,
+      "positive_buckets": "17",
+      "total_buckets": 17,
+      "pass_rate": 100.0,
+      "IS_REAL": "True"
+    },
+    "OPT4": {
+      "name": "Big drop + many trades + YES",
+      "markets": 2452,
+      "weighted_improvement": 9.86,
+      "positive_buckets": "12",
+      "total_buckets": 20,
+      "pass_rate": 60.0,
+      "IS_REAL": "True"
+    }
+  }
+}

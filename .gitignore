@@ -109,3 +109,7 @@ backups/
 
 # Claude Code session tracking (active session files only)
 .claude-sessions/active/*.json
+
+# Research cache and backups
+research/data/cache/
+*.bak.*.csv

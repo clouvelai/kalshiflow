@@ -1,0 +1,127 @@
+{
+  "timestamp": "2026-01-01T21:51:16.149386",
+  "winners": [
+    {
+      "id": "SPORTS-007",
+      "name": "Late-Arriving Large Money",
+      "edge": 0.19764428316780425,
+      "n": 331,
+      "p": 0.0
+    },
+    {
+      "id": "SPORTS-012",
+      "name": "NCAAF Totals Specialist",
+      "edge": 0.2247018168425594,
+      "n": 94,
+      "p": 4.942841454136371e-06
+    },
+    {
+      "id": "SPORTS-015",
+      "name": "Fibonacci Price Attractors",
+      "edge": 0.33080385191762074,
+      "n": 626,
+      "p": 0.0
+    }
+  ],
+  "promising": [
+    {
+      "id": "SPORTS-009",
+      "name": "Spread Widening Before Sharp Entry",
+      "edge": 0.04599741683728242,
+      "n": 1278,
+      "p": 0.0004456537057146992
+    },
+    {
+      "id": "SPORTS-002",
+      "name": "Opening Move Reversal",
+      "edge": 0.03226513639800754,
+      "n": 275,
+      "p": 0.13836336282178452
+    }
+  ],
+  "dead": [
+    {
+      "id": "SPORTS-001",
+      "name": "Steam Exhaustion Detection",
+      "edge": -0.09237790739257279,
+      "n": 105,
+      "reason": "Low edge"
+    },
+    {
+      "id": "SPORTS-005",
+      "name": "Size Velocity Divergence",
+      "edge": -0.004204506447475831,
+      "n": 197,
+      "reason": "Low edge"
+    },
+    {
+      "id": "SPORTS-008",
+      "name": "Size Distribution Shape Change",
+      "edge": 0.049557291152245386,
+      "n": 52,
+      "reason": "Low edge"
+    },
+    {
+      "id": "SPORTS-011",
+      "name": "Category Momentum Contagion",
+      "edge": -0.03302416518304488,
+      "n": 47713,
+      "reason": "Low edge"
+    },
+    {
+      "id": "SPORTS-003",
+      "name": "Momentum Velocity Stall",
+      "edge": -0.08457666746114001,
+      "n": 112,
+      "reason": "Low edge"
+    },
+    {
+      "id": "SPORTS-004",
+      "name": "Extreme Public Sentiment Fade",
+      "edge": -0.08946409796106397,
+      "n": 313,
+      "reason": "Low edge"
+    },
+    {
+      "id": "SPORTS-006",
+      "name": "Round Number Retail Clustering",
+      "edge": 0.029487566963875778,
+      "n": 381,
+      "reason": "Low edge"
+    },
+    {
+      "id": "SPORTS-013",
+      "name": "Trade Count Milestone Fading",
+      "edge": -0.011641834384991279,
+      "n": 192,
+      "reason": "Low edge"
+    },
+    {
+      "id": "SPORTS-014",
+      "name": "SPORTS-014",
+      "reason": "No signals found"
+    },
+    {
+      "id": "SPORTS-010",
+      "name": "Multi-Outcome Pricing Inconsistency",
+      "reason": "Insufficient data"
+    }
+  ],
+  "full_results": {
+    "SPORTS-001": "{'hypothesis': 'SPORTS-001', 'name': 'Steam Exhaustion Detection', 'fade_yes_steam': {'name': 'Fade YES Steam (bet NO)', 'n': 260, 'win_rate': 0.4, 'avg_price': 50.27255156034897, 'breakeven': 0.5027255156034898, 'edge': -0.10272551560348975, 'p_value': 0.9995382434890454, 'flag': 'FAIL', 'flag_reason': 'No edge'}, 'fade_no_steam': {'name': 'Fade NO Steam (bet YES)', 'n': 105, 'win_rate': 0.37142857142857144, 'avg_price': 46.380647882114424, 'breakeven': 0.46380647882114423, 'edge': -0.09237790739257279, 'p_value': 0.9711627162709247, 'flag': 'FAIL', 'flag_reason': 'No edge'}, 'best': {'name': 'Fade NO Steam (bet YES)', 'n': 105, 'win_rate': 0.37142857142857144, 'avg_price': 46.380647882114424, 'breakeven': 0.46380647882114423, 'edge': -0.09237790739257279, 'p_value': 0.9711627162709247, 'flag': 'FAIL', 'flag_reason': 'No edge'}}",
+    "SPORTS-005": "{'hypothesis': 'SPORTS-005', 'name': 'Size Velocity Divergence', 'fade_yes_pileon': {'name': 'Fade YES Pile-On (bet NO)', 'n': 197, 'win_rate': 0.5736040609137056, 'avg_price': 57.780856736118146, 'breakeven': 0.5778085673611815, 'edge': -0.004204506447475831, 'p_value': 0.5475531363023366, 'flag': 'FAIL', 'flag_reason': 'No edge'}, 'fade_no_pileon': {'name': 'Fade NO Pile-On (bet YES)', 'n': 55, 'win_rate': 0.23636363636363636, 'avg_price': 34.37508935571673, 'breakeven': 0.3437508935571673, 'edge': -0.10738725719353096, 'p_value': 0.9532078979665259, 'flag': 'FAIL', 'flag_reason': 'No edge'}, 'best': {'name': 'Fade YES Pile-On (bet NO)', 'n': 197, 'win_rate': 0.5736040609137056, 'avg_price': 57.780856736118146, 'breakeven': 0.5778085673611815, 'edge': -0.004204506447475831, 'p_value': 0.5475531363023366, 'flag': 'FAIL', 'flag_reason': 'No edge'}}",
+    "SPORTS-008": "{'hypothesis': 'SPORTS-008', 'name': 'Size Distribution Shape Change', 'follow_yes_regime': {'name': 'Follow YES Regime', 'n': 187, 'win_rate': 0.34759358288770054, 'avg_price': 39.21836468285174, 'breakeven': 0.3921836468285174, 'edge': -0.04459006394081688, 'p_value': 0.8941493331455297, 'flag': 'FAIL', 'flag_reason': 'No edge'}, 'follow_no_regime': {'name': 'Follow NO Regime', 'n': 52, 'win_rate': 0.7115384615384616, 'avg_price': 66.19811703862162, 'breakeven': 0.6619811703862162, 'edge': 0.049557291152245386, 'p_value': 0.22498416872976312, 'flag': 'FAIL', 'flag_reason': 'No edge'}, 'best': {'name': 'Follow NO Regime', 'n': 52, 'win_rate': 0.7115384615384616, 'avg_price': 66.19811703862162, 'breakeven': 0.6619811703862162, 'edge': 0.049557291152245386, 'p_value': 0.22498416872976312, 'flag': 'FAIL', 'flag_reason': 'No edge'}}",
+    "SPORTS-009": "{'hypothesis': 'SPORTS-009', 'name': 'Spread Widening Before Sharp Entry', 'follow_yes_entry': {'name': 'Follow Sharp YES Entry', 'n': 2095, 'win_rate': 0.4262529832935561, 'avg_price': 42.79335620297605, 'breakeven': 0.4279335620297605, 'edge': -0.0016805787362044189, 'p_value': 0.5617735925806627, 'flag': 'FAIL', 'flag_reason': 'No edge'}, 'follow_no_entry': {'name': 'Follow Sharp NO Entry', 'n': 1278, 'win_rate': 0.6173708920187794, 'avg_price': 57.137347518149696, 'breakeven': 0.571373475181497, 'edge': 0.04599741683728242, 'p_value': 0.0004456537057146992, 'flag': 'WEAK', 'flag_reason': 'Edge 3-5%'}, 'best': {'name': 'Follow Sharp NO Entry', 'n': 1278, 'win_rate': 0.6173708920187794, 'avg_price': 57.137347518149696, 'breakeven': 0.571373475181497, 'edge': 0.04599741683728242, 'p_value': 0.0004456537057146992, 'flag': 'WEAK', 'flag_reason': 'Edge 3-5%'}}",
+    "SPORTS-011": "{'hypothesis': 'SPORTS-011', 'name': 'Category Momentum Contagion', 'result': {'name': 'Bet Favorite After Underdog Streak', 'n': 47713, 'win_rate': 0.10370339320520613, 'avg_price': 13.672755838825102, 'breakeven': 0.136727558388251, 'edge': -0.03302416518304488, 'p_value': 1.0, 'flag': 'FAIL', 'flag_reason': 'No edge'}, 'best': {'name': 'Bet Favorite After Underdog Streak', 'n': 47713, 'win_rate': 0.10370339320520613, 'avg_price': 13.672755838825102, 'breakeven': 0.136727558388251, 'edge': -0.03302416518304488, 'p_value': 1.0, 'flag': 'FAIL', 'flag_reason': 'No edge'}}",
+    "SPORTS-002": "{'hypothesis': 'SPORTS-002', 'name': 'Opening Move Reversal', 'follow_reversal_no': {'name': 'Follow Reversal to NO', 'n': 275, 'win_rate': 0.6218181818181818, 'avg_price': 58.95530454201743, 'breakeven': 0.5895530454201743, 'edge': 0.03226513639800754, 'p_value': 0.13836336282178452, 'flag': 'WEAK', 'flag_reason': 'Edge 3-5%'}, 'follow_reversal_yes': {'name': 'Follow Reversal to YES', 'n': 187, 'win_rate': 0.43315508021390375, 'avg_price': 44.63846995632423, 'breakeven': 0.4463846995632423, 'edge': -0.013229619349338528, 'p_value': 0.6420422315750003, 'flag': 'FAIL', 'flag_reason': 'No edge'}, 'best': {'name': 'Follow Reversal to NO', 'n': 275, 'win_rate': 0.6218181818181818, 'avg_price': 58.95530454201743, 'breakeven': 0.5895530454201743, 'edge': 0.03226513639800754, 'p_value': 0.13836336282178452, 'flag': 'WEAK', 'flag_reason': 'Edge 3-5%'}}",
+    "SPORTS-003": "{'hypothesis': 'SPORTS-003', 'name': 'Momentum Velocity Stall', 'result': {'name': 'Bet NO on Velocity Stall', 'n': 112, 'win_rate': 0.0625, 'avg_price': 14.707666746114, 'breakeven': 0.14707666746114, 'edge': -0.08457666746114001, 'p_value': 0.9942505403958202, 'flag': 'FAIL', 'flag_reason': 'No edge'}, 'best': {'name': 'Bet NO on Velocity Stall', 'n': 112, 'win_rate': 0.0625, 'avg_price': 14.707666746114, 'breakeven': 0.14707666746114, 'edge': -0.08457666746114001, 'p_value': 0.9942505403958202, 'flag': 'FAIL', 'flag_reason': 'No edge'}}",
+    "SPORTS-007": "{'hypothesis': 'SPORTS-007', 'name': 'Late-Arriving Large Money', 'follow_yes': {'name': 'Follow Late Large YES', 'n': 337, 'win_rate': 0.8130563798219584, 'avg_price': 62.552485513987634, 'breakeven': 0.6255248551398763, 'edge': 0.18753152468208212, 'p_value': 5.6754601018838e-13, 'flag': 'PROMISING', 'flag_reason': 'POTENTIAL EDGE >5%'}, 'follow_no': {'name': 'Follow Late Large NO', 'n': 331, 'win_rate': 0.9546827794561934, 'avg_price': 75.70384962883891, 'breakeven': 0.7570384962883892, 'edge': 0.19764428316780425, 'p_value': 0.0, 'flag': 'PROMISING', 'flag_reason': 'POTENTIAL EDGE >5%'}, 'best': {'name': 'Follow Late Large NO', 'n': 331, 'win_rate': 0.9546827794561934, 'avg_price': 75.70384962883891, 'breakeven': 0.7570384962883892, 'edge': 0.19764428316780425, 'p_value': 0.0, 'flag': 'PROMISING', 'flag_reason': 'POTENTIAL EDGE >5%'}}",
+    "SPORTS-012": "{'hypothesis': 'SPORTS-012', 'name': 'NCAAF Totals Specialist', 'result': {'name': 'NCAAF Totals Bet NO', 'n': 94, 'win_rate': 0.8085106382978723, 'avg_price': 58.38088214553129, 'breakeven': 0.5838088214553129, 'edge': 0.2247018168425594, 'p_value': 4.942841454136371e-06, 'flag': 'PROMISING', 'flag_reason': 'POTENTIAL EDGE >5%'}, 'best': {'name': 'NCAAF Totals Bet NO', 'n': 94, 'win_rate': 0.8085106382978723, 'avg_price': 58.38088214553129, 'breakeven': 0.5838088214553129, 'edge': 0.2247018168425594, 'p_value': 4.942841454136371e-06, 'flag': 'PROMISING', 'flag_reason': 'POTENTIAL EDGE >5%'}}",
+    "SPORTS-004": "{'hypothesis': 'SPORTS-004', 'name': 'Extreme Public Sentiment Fade', 'result': {'name': 'Fade Extreme Public (bet NO)', 'n': 313, 'win_rate': 0.3450479233226837, 'avg_price': 43.45120212837477, 'breakeven': 0.43451202128374766, 'edge': -0.08946409796106397, 'p_value': 0.9992961546585662, 'flag': 'FAIL', 'flag_reason': 'No edge'}, 'best': {'name': 'Fade Extreme Public (bet NO)', 'n': 313, 'win_rate': 0.3450479233226837, 'avg_price': 43.45120212837477, 'breakeven': 0.43451202128374766, 'edge': -0.08946409796106397, 'p_value': 0.9992961546585662, 'flag': 'FAIL', 'flag_reason': 'No edge'}}",
+    "SPORTS-006": "{'hypothesis': 'SPORTS-006', 'name': 'Round Number Retail Clustering', 'result': {'name': 'Fade Round Number Retail (bet NO)', 'n': 381, 'win_rate': 0.5931758530183727, 'avg_price': 56.36882860544969, 'breakeven': 0.563688286054497, 'edge': 0.029487566963875778, 'p_value': 0.1229018023852253, 'flag': 'FAIL', 'flag_reason': 'No edge'}, 'best': {'name': 'Fade Round Number Retail (bet NO)', 'n': 381, 'win_rate': 0.5931758530183727, 'avg_price': 56.36882860544969, 'breakeven': 0.563688286054497, 'edge': 0.029487566963875778, 'p_value': 0.1229018023852253, 'flag': 'FAIL', 'flag_reason': 'No edge'}}",
+    "SPORTS-013": "{'hypothesis': 'SPORTS-013', 'name': 'Trade Count Milestone Fading', 'fade_no': {'name': 'Milestone Fade to NO', 'n': 107, 'win_rate': 0.5233644859813084, 'avg_price': 54.08677653735876, 'breakeven': 0.5408677653735876, 'edge': -0.017503279392279247, 'p_value': 0.6418194366374271, 'flag': 'FAIL', 'flag_reason': 'No edge'}, 'fade_yes': {'name': 'Milestone Fade to YES', 'n': 192, 'win_rate': 0.3958333333333333, 'avg_price': 40.74751677183246, 'breakeven': 0.4074751677183246, 'edge': -0.011641834384991279, 'p_value': 0.6286568054644428, 'flag': 'FAIL', 'flag_reason': 'No edge'}, 'best': {'name': 'Milestone Fade to YES', 'n': 192, 'win_rate': 0.3958333333333333, 'avg_price': 40.74751677183246, 'breakeven': 0.4074751677183246, 'edge': -0.011641834384991279, 'p_value': 0.6286568054644428, 'flag': 'FAIL', 'flag_reason': 'No edge'}}",
+    "SPORTS-014": "{'name': 'SPORTS-014', 'result': 'FAIL', 'reason': 'No signals found'}",
+    "SPORTS-015": "{'hypothesis': 'SPORTS-015', 'name': 'Fibonacci Price Attractors', 'bounce_up': {'name': 'Fib Bounce Up (bet YES)', 'n': 492, 'win_rate': 0.8658536585365854, 'avg_price': 56.190330594430336, 'breakeven': 0.5619033059443034, 'edge': 0.303950352592282, 'p_value': 0.0, 'flag': 'PROMISING', 'flag_reason': 'POTENTIAL EDGE >5%'}, 'bounce_down': {'name': 'Fib Bounce Down (bet NO)', 'n': 626, 'win_rate': 0.950479233226837, 'avg_price': 61.967538130921625, 'breakeven': 0.6196753813092163, 'edge': 0.33080385191762074, 'p_value': 0.0, 'flag': 'PROMISING', 'flag_reason': 'POTENTIAL EDGE >5%'}, 'best': {'name': 'Fib Bounce Down (bet NO)', 'n': 626, 'win_rate': 0.950479233226837, 'avg_price': 61.967538130921625, 'breakeven': 0.6196753813092163, 'edge': 0.33080385191762074, 'p_value': 0.0, 'flag': 'PROMISING', 'flag_reason': 'POTENTIAL EDGE >5%'}}",
+    "SPORTS-010": "{'hypothesis': 'SPORTS-010', 'name': 'Multi-Outcome Pricing Inconsistency', 'result': 'SKIPPED', 'reason': 'Requires market metadata', 'best': {'flag': 'SKIP', 'reason': 'Data issue'}}"
+  }
+}

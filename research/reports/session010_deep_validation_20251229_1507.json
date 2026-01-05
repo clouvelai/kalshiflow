@@ -1,0 +1,30 @@
+{
+  "timestamp": "2025-12-29T15:07:02.469193",
+  "results": {
+    "H072": {
+      "overall_fade_edge": 24.683641437042205,
+      "high_vol_edge": 33.00093023255815,
+      "improvement": 8.317288795515942,
+      "n_markets": 4300,
+      "concentration": 0.000555933040953734,
+      "p_value": 0.0,
+      "temporal_stable": true
+    },
+    "H070": {
+      "edge": 3.4746374003202907,
+      "n_markets": 617,
+      "concentration": 0.2298349994546507,
+      "temporal_positive": 4,
+      "p_value": 0.0026141324544109164,
+      "improvement": 1.074870558124097,
+      "passes_all": true,
+      "passes": {
+        "sample": true,
+        "concentration": true,
+        "temporal": true,
+        "significance": true,
+        "not_proxy": true
+      }
+    }
+  }
+}

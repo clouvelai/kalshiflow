@@ -1,0 +1,14 @@
+{
+  "strategy": "H054: Fade Long YES Runs (5+)",
+  "n_markets": 6577,
+  "no_win_rate": 0.6308347270792154,
+  "avg_entry_no_price": 60.20480462216816,
+  "breakeven": 0.6020480462216816,
+  "edge": 0.028786680857533775,
+  "p_value": 9.233298949862245e-07,
+  "weighted_improvement": -0.010081245182070458,
+  "max_concentration": 0.0008817478201234447,
+  "is_valid": false,
+  "early_signal_edge": 0.01845043310875849,
+  "late_signal_edge": 0.046530359355638096
+}

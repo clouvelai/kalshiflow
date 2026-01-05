@@ -1,0 +1,23 @@
+{
+  "hypothesis": "H087_follow",
+  "description": "Follow Round Size Bot NO Consensus (>60% NO)",
+  "markets": 1936,
+  "win_rate": 0.7045454545454546,
+  "breakeven": 0.3376101365114016,
+  "edge_pct": 36.6935318034053,
+  "p_value": 1.4778241305860773e-237,
+  "concentration": 0.06481641415110866,
+  "improvement_vs_baseline": 12.81594311050341,
+  "temporal_stability": {
+    "first_half_edge": 25.559305144066958,
+    "second_half_edge": 46.206683316939575
+  },
+  "validation_criteria": {
+    "markets >= 50": true,
+    "concentration < 30%": true,
+    "p_value < 0.01": true,
+    "improvement > 0": true,
+    "temporal_stability": true
+  },
+  "is_validated": true
+}

@@ -1,0 +1,16 @@
+{
+  "hypothesis_id": "EXT-006",
+  "source": "Academic In-Play Market Research (ScienceDirect)",
+  "source_url": "https://www.sciencedirect.com/science/article/abs/pii/S0169207021000996",
+  "title": "Surprise Event Mispricing",
+  "mechanism": "Research on betting exchanges found mispricing INCREASES when surprising news hits (e.g., goal by underdog late in match). The market overreacts to surprises. In Kalshi, can we detect 'surprise' price movements (large moves against the trend) and fade them?",
+  "proposed_signal": {
+    "condition": "Price moves >10c in <10 trades AGAINST the previous trend direction",
+    "action": "Fade the surprise move (bet it will revert)",
+    "expected_edge": "+4-8% if surprise overreaction is exploitable"
+  },
+  "data_requirements": ["yes_price", "timestamp", "taker_side"],
+  "price_proxy_risk": "MEDIUM - involves price moves but tests reversal dynamics",
+  "novelty_vs_tested": "H072 (fade recent move) was flagged as suspicious. This specifically targets AGAINST-TREND surprises",
+  "priority": "MEDIUM"
+}

@@ -1,0 +1,16 @@
+{
+  "hypothesis_id": "EXT-008",
+  "source": "Polymarket Strategy Research (DataWallet)",
+  "source_url": "https://www.datawallet.com/crypto/top-polymarket-trading-strategies",
+  "title": "Endgame Sweep (Near-Certainty Capture)",
+  "mechanism": "On Polymarket, the 'Endgame Sweep' strategy buys outcomes at 95-99c and holds to resolution for near-guaranteed profit. The edge comes from market friction and time value. In Kalshi, do trades at 95c+ still have edge after accounting for the rare upset?",
+  "proposed_signal": {
+    "condition": "YES price >= 95c AND market has <24 hours to resolution",
+    "action": "Buy YES (capture the last few cents)",
+    "expected_edge": "+1-3% if near-certainties are slightly underpriced"
+  },
+  "data_requirements": ["yes_price", "is_winner", "close_time (if available)"],
+  "price_proxy_risk": "HIGH - pure price-based, but time-conditional",
+  "novelty_vs_tested": "S003 (NO at 90-100c) was INVALIDATED. This tests the OPPOSITE - buying YES at extreme high prices",
+  "priority": "LOW"
+}

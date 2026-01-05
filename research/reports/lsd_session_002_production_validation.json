@@ -1,0 +1,728 @@
+{
+  "metadata": {
+    "session": "LSD_002_PRODUCTION_VALIDATION",
+    "timestamp": "2025-12-30T13:03:44.956487",
+    "validation_standard": "H123_PRODUCTION",
+    "thresholds": {
+      "p_value_base": 0.001,
+      "n_tests": 3,
+      "bucket_ratio_strict": 0.8,
+      "bucket_ratio_weak": 0.6,
+      "min_quarters_positive": 3,
+      "min_markets": 100,
+      "min_bucket_n": 5,
+      "bucket_size": 5
+    }
+  },
+  "strategies": {
+    "H207": {
+      "name": "H-LSD-207: Dollar-Weighted Direction",
+      "description": "Trades favor YES >20% more than dollars -> bet NO",
+      "stats": {
+        "valid": true,
+        "n": 2063,
+        "wins": 1858,
+        "win_rate": 0.900630150266602,
+        "avg_no_price": 78.0081965818165,
+        "breakeven": 0.780081965818165,
+        "raw_edge": 0.12054818444843696,
+        "p_value": 0.0,
+        "p_bonferroni": 0.0,
+        "z_score": 13.219339205163537,
+        "bucket_analysis": {
+          "positive_buckets": 13,
+          "total_buckets": 17,
+          "bucket_ratio": 0.7647058823529411,
+          "weighted_improvement": 0.07687617950261678,
+          "bucket_details": [
+            {
+              "bucket": 15,
+              "n": 7,
+              "signal_wr": 0.0,
+              "baseline_wr": 0.082010582010582,
+              "improvement": -0.082010582010582
+            },
+            {
+              "bucket": 20,
+              "n": 9,
+              "signal_wr": 0.1111111111111111,
+              "baseline_wr": 0.11561866125760649,
+              "improvement": -0.004507550146495384
+            },
+            {
+              "bucket": 25,
+              "n": 10,
+              "signal_wr": 0.2,
+              "baseline_wr": 0.15086206896551724,
+              "improvement": 0.049137931034482774
+            },
+            {
+              "bucket": 30,
+              "n": 15,
+              "signal_wr": 0.26666666666666666,
+              "baseline_wr": 0.22330097087378642,
+              "improvement": 0.04336569579288024
+            },
+            {
+              "bucket": 35,
+              "n": 15,
+              "signal_wr": 0.4,
+              "baseline_wr": 0.32262773722627736,
+              "improvement": 0.07737226277372267
+            },
+            {
+              "bucket": 40,
+              "n": 30,
+              "signal_wr": 0.3333333333333333,
+              "baseline_wr": 0.38215859030837,
+              "improvement": -0.0488252569750367
+            },
+            {
+              "bucket": 45,
+              "n": 31,
+              "signal_wr": 0.5483870967741935,
+              "baseline_wr": 0.46869565217391307,
+              "improvement": 0.07969144460028044
+            },
+            {
+              "bucket": 50,
+              "n": 67,
+              "signal_wr": 0.6417910447761194,
+              "baseline_wr": 0.5565862708719852,
+              "improvement": 0.08520477390413417
+            },
+            {
+              "bucket": 55,
+              "n": 79,
+              "signal_wr": 0.8607594936708861,
+              "baseline_wr": 0.6378845116028062,
+              "improvement": 0.22287498206807987
+            },
+            {
+              "bucket": 60,
+              "n": 112,
+              "signal_wr": 0.8482142857142857,
+              "baseline_wr": 0.7031984948259643,
+              "improvement": 0.1450157908883214
+            },
+            {
+              "bucket": 65,
+              "n": 146,
+              "signal_wr": 0.9315068493150684,
+              "baseline_wr": 0.7650231124807396,
+              "improvement": 0.16648373683432882
+            },
+            {
+              "bucket": 70,
+              "n": 164,
+              "signal_wr": 0.9146341463414634,
+              "baseline_wr": 0.7797779777977798,
+              "improvement": 0.13485616854368365
+            },
+            {
+              "bucket": 75,
+              "n": 255,
+              "signal_wr": 0.9411764705882353,
+              "baseline_wr": 0.8395813047711782,
+              "improvement": 0.10159516581705708
+            },
+            {
+              "bucket": 80,
+              "n": 290,
+              "signal_wr": 0.9551724137931035,
+              "baseline_wr": 0.8858041828613733,
+              "improvement": 0.06936823093173017
+            },
+            {
+              "bucket": 85,
+              "n": 303,
+              "signal_wr": 0.9735973597359736,
+              "baseline_wr": 0.9187398593834505,
+              "improvement": 0.054857500352523125
+            },
+            {
+              "bucket": 90,
+              "n": 300,
+              "signal_wr": 0.9866666666666667,
+              "baseline_wr": 0.9567770946131963,
+              "improvement": 0.029889572053470426
+            },
+            {
+              "bucket": 95,
+              "n": 223,
+              "signal_wr": 0.9775784753363229,
+              "baseline_wr": 0.98757379546753,
+              "improvement": -0.009995320131207075
+            }
+          ]
+        },
+        "bootstrap_ci": {
+          "ci_low": 0.10894450840590963,
+          "ci_high": 0.13165243187530387,
+          "ci_excludes_zero": "True"
+        },
+        "temporal_stability": {
+          "quarters": [
+            {
+              "quarter": 1,
+              "n": 516,
+              "edge": 0.1008755538147732
+            },
+            {
+              "quarter": 2,
+              "n": 516,
+              "edge": 0.14287646310744162
+            },
+            {
+              "quarter": 3,
+              "n": 516,
+              "edge": 0.1370188697474478
+            },
+            {
+              "quarter": 4,
+              "n": 515,
+              "edge": 0.10138471261277571
+            }
+          ],
+          "positive_quarters": 4
+        },
+        "out_of_sample": {
+          "train_n": 1650,
+          "train_edge": 0.12391675603284069,
+          "test_n": 413,
+          "test_edge": 0.10709021080614578,
+          "test_improvement": 0.06749783918562341,
+          "gap": 0.01682654522669491
+        },
+        "category_breakdown": {
+          "Other": {
+            "n": 528,
+            "edge": 0.10875947135366804,
+            "win_rate": 0.9242424242424242
+          },
+          "Media_Mentions": {
+            "n": 119,
+            "edge": 0.11981394184670491,
+            "win_rate": 0.865546218487395
+          },
+          "Politics": {
+            "n": 29,
+            "edge": 0.02271724389579932,
+            "win_rate": 0.8275862068965517
+          },
+          "Sports": {
+            "n": 955,
+            "edge": 0.14240609336769017,
+            "win_rate": 0.8910994764397906
+          },
+          "Crypto": {
+            "n": 304,
+            "edge": 0.10868613683493489,
+            "win_rate": 0.8947368421052632
+          },
+          "Weather": {
+            "n": 113,
+            "edge": 0.06436067722689598,
+            "win_rate": 0.9469026548672567
+          }
+        }
+      },
+      "verdict": "WEAK_EDGE",
+      "reason": "5/6 weak criteria passed. Failed strict: bucket_ratio (76% < 80%)",
+      "criteria": {
+        "p_significant": true,
+        "not_price_proxy_strict": false,
+        "not_price_proxy_weak": true,
+        "ci_excludes_zero": "True",
+        "temporal_stable": true,
+        "out_of_sample": true,
+        "sufficient_markets": true
+      }
+    },
+    "H211": {
+      "name": "H-LSD-211: Conviction Ratio NO",
+      "description": "NO trades are 2x bigger than YES trades -> bet NO",
+      "stats": {
+        "valid": true,
+        "n": 2719,
+        "wins": 2407,
+        "win_rate": 0.8852519308569327,
+        "avg_no_price": 76.77349506816088,
+        "breakeven": 0.7677349506816088,
+        "raw_edge": 0.11751698017532386,
+        "p_value": 0.0,
+        "p_bonferroni": 0.0,
+        "z_score": 14.51134405524328,
+        "bucket_analysis": {
+          "positive_buckets": 12,
+          "total_buckets": 20,
+          "bucket_ratio": 0.6,
+          "weighted_improvement": 0.07458127700368886,
+          "bucket_details": [
+            {
+              "bucket": 0,
+              "n": 5,
+              "signal_wr": 0.0,
+              "baseline_wr": 0.03902439024390244,
+              "improvement": -0.03902439024390244
+            },
+            {
+              "bucket": 5,
+              "n": 8,
+              "signal_wr": 0.0,
+              "baseline_wr": 0.02412280701754386,
+              "improvement": -0.02412280701754386
+            },
+            {
+              "bucket": 10,
+              "n": 10,
+              "signal_wr": 0.0,
+              "baseline_wr": 0.05555555555555555,
+              "improvement": -0.05555555555555555
+            },
+            {
+              "bucket": 15,
+              "n": 8,
+              "signal_wr": 0.0,
+              "baseline_wr": 0.082010582010582,
+              "improvement": -0.082010582010582
+            },
+            {
+              "bucket": 20,
+              "n": 11,
+              "signal_wr": 0.09090909090909091,
+              "baseline_wr": 0.11561866125760649,
+              "improvement": -0.024709570348515578
+            },
+            {
+              "bucket": 25,
+              "n": 17,
+              "signal_wr": 0.17647058823529413,
+              "baseline_wr": 0.15086206896551724,
+              "improvement": 0.02560851926977689
+            },
+            {
+              "bucket": 30,
+              "n": 22,
+              "signal_wr": 0.18181818181818182,
+              "baseline_wr": 0.22330097087378642,
+              "improvement": -0.041482789055604596
+            },
+            {
+              "bucket": 35,
+              "n": 21,
+              "signal_wr": 0.38095238095238093,
+              "baseline_wr": 0.32262773722627736,
+              "improvement": 0.058324643726103576
+            },
+            {
+              "bucket": 40,
+              "n": 47,
+              "signal_wr": 0.3191489361702128,
+              "baseline_wr": 0.38215859030837,
+              "improvement": -0.06300965413815723
+            },
+            {
+              "bucket": 45,
+              "n": 58,
+              "signal_wr": 0.5,
+              "baseline_wr": 0.46869565217391307,
+              "improvement": 0.03130434782608693
+            },
+            {
+              "bucket": 50,
+              "n": 95,
+              "signal_wr": 0.6526315789473685,
+              "baseline_wr": 0.5565862708719852,
+              "improvement": 0.09604530807538325
+            },
+            {
+              "bucket": 55,
+              "n": 108,
+              "signal_wr": 0.8333333333333334,
+              "baseline_wr": 0.6378845116028062,
+              "improvement": 0.19544882173052713
+            },
+            {
+              "bucket": 60,
+              "n": 168,
+              "signal_wr": 0.8571428571428571,
+              "baseline_wr": 0.7031984948259643,
+              "improvement": 0.1539443623168928
+            },
+            {
+              "bucket": 65,
+              "n": 201,
+              "signal_wr": 0.9104477611940298,
+              "baseline_wr": 0.7650231124807396,
+              "improvement": 0.1454246487132902
+            },
+            {
+              "bucket": 70,
+              "n": 234,
+              "signal_wr": 0.9145299145299145,
+              "baseline_wr": 0.7797779777977798,
+              "improvement": 0.1347519367321347
+            },
+            {
+              "bucket": 75,
+              "n": 310,
+              "signal_wr": 0.9387096774193548,
+              "baseline_wr": 0.8395813047711782,
+              "improvement": 0.09912837264817664
+            },
+            {
+              "bucket": 80,
+              "n": 349,
+              "signal_wr": 0.9570200573065902,
+              "baseline_wr": 0.8858041828613733,
+              "improvement": 0.07121587444521693
+            },
+            {
+              "bucket": 85,
+              "n": 383,
+              "signal_wr": 0.9765013054830287,
+              "baseline_wr": 0.9187398593834505,
+              "improvement": 0.05776144609957823
+            },
+            {
+              "bucket": 90,
+              "n": 365,
+              "signal_wr": 0.989041095890411,
+              "baseline_wr": 0.9567770946131963,
+              "improvement": 0.03226400127721474
+            },
+            {
+              "bucket": 95,
+              "n": 299,
+              "signal_wr": 0.9832775919732442,
+              "baseline_wr": 0.98757379546753,
+              "improvement": -0.004296203494285833
+            }
+          ]
+        },
+        "bootstrap_ci": {
+          "ci_low": 0.10708993105920635,
+          "ci_high": 0.12758736076402194,
+          "ci_excludes_zero": "True"
+        },
+        "temporal_stability": {
+          "quarters": [
+            {
+              "quarter": 1,
+              "n": 680,
+              "edge": 0.10811317968024392
+            },
+            {
+              "quarter": 2,
+              "n": 680,
+              "edge": 0.1372992501291772
+            },
+            {
+              "quarter": 3,
+              "n": 680,
+              "edge": 0.1254431859058095
+            },
+            {
+              "quarter": 4,
+              "n": 679,
+              "edge": 0.09918534670154433
+            }
+          ],
+          "positive_quarters": 4
+        },
+        "out_of_sample": {
+          "train_n": 2175,
+          "train_edge": 0.12145726763999698,
+          "test_n": 544,
+          "test_edge": 0.10176307349211733,
+          "test_improvement": 0.06112302635335258,
+          "gap": 0.01969419414787965
+        },
+        "category_breakdown": {
+          "Other": {
+            "n": 662,
+            "edge": 0.11108380515697636,
+            "win_rate": 0.9123867069486404
+          },
+          "Media_Mentions": {
+            "n": 135,
+            "edge": 0.11381135742438786,
+            "win_rate": 0.8444444444444444
+          },
+          "Politics": {
+            "n": 36,
+            "edge": -0.02632927687294062,
+            "win_rate": 0.7222222222222222
+          },
+          "Sports": {
+            "n": 1364,
+            "edge": 0.13487977349104308,
+            "win_rate": 0.8775659824046921
+          },
+          "Crypto": {
+            "n": 364,
+            "edge": 0.10662807791687257,
+            "win_rate": 0.8763736263736264
+          },
+          "Weather": {
+            "n": 139,
+            "edge": 0.060535286812839484,
+            "win_rate": 0.935251798561151
+          }
+        }
+      },
+      "verdict": "WEAK_EDGE",
+      "reason": "5/6 weak criteria passed. Failed strict: bucket_ratio (60% < 80%)",
+      "criteria": {
+        "p_significant": true,
+        "not_price_proxy_strict": false,
+        "not_price_proxy_weak": true,
+        "ci_excludes_zero": "True",
+        "temporal_stable": true,
+        "out_of_sample": true,
+        "sufficient_markets": true
+      }
+    },
+    "H209": {
+      "name": "H-LSD-209: Size Gradient",
+      "description": "Larger trades correlate (r>0.3) with NO direction -> bet NO",
+      "stats": {
+        "valid": true,
+        "n": 1859,
+        "wins": 1634,
+        "win_rate": 0.8789671866594944,
+        "avg_no_price": 77.68175549157955,
+        "breakeven": 0.7768175549157955,
+        "raw_edge": 0.10214963174369884,
+        "p_value": 0.0,
+        "p_bonferroni": 0.0,
+        "z_score": 10.577595836853817,
+        "bucket_analysis": {
+          "positive_buckets": 11,
+          "total_buckets": 18,
+          "bucket_ratio": 0.6111111111111112,
+          "weighted_improvement": 0.06223145179885528,
+          "bucket_details": [
+            {
+              "bucket": 10,
+              "n": 8,
+              "signal_wr": 0.125,
+              "baseline_wr": 0.05555555555555555,
+              "improvement": 0.06944444444444445
+            },
+            {
+              "bucket": 15,
+              "n": 8,
+              "signal_wr": 0.0,
+              "baseline_wr": 0.082010582010582,
+              "improvement": -0.082010582010582
+            },
+            {
+              "bucket": 20,
+              "n": 10,
+              "signal_wr": 0.1,
+              "baseline_wr": 0.11561866125760649,
+              "improvement": -0.015618661257606484
+            },
+            {
+              "bucket": 25,
+              "n": 17,
+              "signal_wr": 0.11764705882352941,
+              "baseline_wr": 0.15086206896551724,
+              "improvement": -0.03321501014198783
+            },
+            {
+              "bucket": 30,
+              "n": 19,
+              "signal_wr": 0.15789473684210525,
+              "baseline_wr": 0.22330097087378642,
+              "improvement": -0.06540623403168117
+            },
+            {
+              "bucket": 35,
+              "n": 16,
+              "signal_wr": 0.3125,
+              "baseline_wr": 0.32262773722627736,
+              "improvement": -0.010127737226277356
+            },
+            {
+              "bucket": 40,
+              "n": 33,
+              "signal_wr": 0.36363636363636365,
+              "baseline_wr": 0.38215859030837,
+              "improvement": -0.01852222667200637
+            },
+            {
+              "bucket": 45,
+              "n": 32,
+              "signal_wr": 0.46875,
+              "baseline_wr": 0.46869565217391307,
+              "improvement": 5.434782608693123e-05
+            },
+            {
+              "bucket": 50,
+              "n": 62,
+              "signal_wr": 0.6612903225806451,
+              "baseline_wr": 0.5565862708719852,
+              "improvement": 0.10470405170865993
+            },
+            {
+              "bucket": 55,
+              "n": 69,
+              "signal_wr": 0.7971014492753623,
+              "baseline_wr": 0.6378845116028062,
+              "improvement": 0.15921693767255607
+            },
+            {
+              "bucket": 60,
+              "n": 92,
+              "signal_wr": 0.8478260869565217,
+              "baseline_wr": 0.7031984948259643,
+              "improvement": 0.14462759213055743
+            },
+            {
+              "bucket": 65,
+              "n": 106,
+              "signal_wr": 0.8962264150943396,
+              "baseline_wr": 0.7650231124807396,
+              "improvement": 0.13120330261360003
+            },
+            {
+              "bucket": 70,
+              "n": 143,
+              "signal_wr": 0.8951048951048951,
+              "baseline_wr": 0.7797779777977798,
+              "improvement": 0.1153269173071153
+            },
+            {
+              "bucket": 75,
+              "n": 196,
+              "signal_wr": 0.9132653061224489,
+              "baseline_wr": 0.8395813047711782,
+              "improvement": 0.07368400135127073
+            },
+            {
+              "bucket": 80,
+              "n": 260,
+              "signal_wr": 0.9576923076923077,
+              "baseline_wr": 0.8858041828613733,
+              "improvement": 0.07188812483093443
+            },
+            {
+              "bucket": 85,
+              "n": 286,
+              "signal_wr": 0.9755244755244755,
+              "baseline_wr": 0.9187398593834505,
+              "improvement": 0.056784616141025035
+            },
+            {
+              "bucket": 90,
+              "n": 277,
+              "signal_wr": 0.9927797833935018,
+              "baseline_wr": 0.9567770946131963,
+              "improvement": 0.03600268878030555
+            },
+            {
+              "bucket": 95,
+              "n": 221,
+              "signal_wr": 0.9773755656108597,
+              "baseline_wr": 0.98757379546753,
+              "improvement": -0.010198229856670293
+            }
+          ]
+        },
+        "bootstrap_ci": {
+          "ci_low": 0.08833057241796388,
+          "ci_high": 0.11434569919287124,
+          "ci_excludes_zero": "True"
+        },
+        "temporal_stability": {
+          "quarters": [
+            {
+              "quarter": 1,
+              "n": 465,
+              "edge": 0.09744410539932069
+            },
+            {
+              "quarter": 2,
+              "n": 465,
+              "edge": 0.1153762946172796
+            },
+            {
+              "quarter": 3,
+              "n": 465,
+              "edge": 0.11094449502889936
+            },
+            {
+              "quarter": 4,
+              "n": 464,
+              "edge": 0.08479631296417789
+            }
+          ],
+          "positive_quarters": 4
+        },
+        "out_of_sample": {
+          "train_n": 1487,
+          "train_edge": 0.10515094426721527,
+          "test_n": 372,
+          "test_edge": 0.09015244969405056,
+          "test_improvement": 0.05316079490535145,
+          "gap": 0.014998494573164711
+        },
+        "category_breakdown": {
+          "Other": {
+            "n": 454,
+            "edge": 0.0951663437977075,
+            "win_rate": 0.9185022026431718
+          },
+          "Media_Mentions": {
+            "n": 111,
+            "edge": 0.11851320513985097,
+            "win_rate": 0.8648648648648649
+          },
+          "Politics": {
+            "n": 23,
+            "edge": -0.021210381844891657,
+            "win_rate": 0.7391304347826086
+          },
+          "Sports": {
+            "n": 917,
+            "edge": 0.11312938493068692,
+            "win_rate": 0.8516902944383861
+          },
+          "Crypto": {
+            "n": 269,
+            "edge": 0.09778010513390512,
+            "win_rate": 0.8996282527881041
+          },
+          "Weather": {
+            "n": 75,
+            "edge": 0.05272707591819015,
+            "win_rate": 0.96
+          }
+        }
+      },
+      "verdict": "WEAK_EDGE",
+      "reason": "5/6 weak criteria passed. Failed strict: bucket_ratio (61% < 80%)",
+      "criteria": {
+        "p_significant": true,
+        "not_price_proxy_strict": false,
+        "not_price_proxy_weak": true,
+        "ci_excludes_zero": "True",
+        "temporal_stable": true,
+        "out_of_sample": true,
+        "sufficient_markets": true
+      }
+    }
+  },
+  "summary": {
+    "validated": [],
+    "weak_edge": [
+      "H207",
+      "H211",
+      "H209"
+    ],
+    "invalidated": []
+  }
+}
