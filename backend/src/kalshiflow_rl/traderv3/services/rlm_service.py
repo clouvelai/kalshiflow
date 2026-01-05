@@ -823,6 +823,13 @@ class RLMService:
         Uses orderbook to determine order type (market vs limit).
         Signal state is always reset after execution (one-shot behavior).
 
+        Pricing Note:
+            entry_price is computed from NO-side orderbook data (no_best_bid,
+            no_best_ask). The signal detection uses YES-side prices to identify
+            opportunities, but order placement uses NO-side prices directly.
+            No YES-to-NO conversion is needed here since OrderbookContext
+            already provides the NO-side view.
+
         Args:
             signal: Detected RLM signal
         """
@@ -862,7 +869,11 @@ class RLMService:
                 snapshot = await orderbook_state.get_snapshot()
 
                 # Create enhanced OrderbookContext from snapshot
-                ob_context = OrderbookContext.from_orderbook_snapshot(snapshot)
+                ob_context = OrderbookContext.from_orderbook_snapshot(
+                    snapshot,
+                    tight_spread=self._tight_spread,
+                    normal_spread=self._normal_spread,
+                )
 
                 # REST fallback only if WS connection is degraded (not per-market staleness)
                 # Quiet markets with no updates are fine if connection is healthy
@@ -877,7 +888,11 @@ class RLMService:
                         if refreshed:
                             # Re-fetch snapshot and rebuild context
                             snapshot = await orderbook_state.get_snapshot()
-                            ob_context = OrderbookContext.from_orderbook_snapshot(snapshot)
+                            ob_context = OrderbookContext.from_orderbook_snapshot(
+                                snapshot,
+                                tight_spread=self._tight_spread,
+                                normal_spread=self._normal_spread,
+                            )
                             self._stats["rest_refresh_successes"] = self._stats.get("rest_refresh_successes", 0) + 1
 
                         # Only skip if connection is degraded AND data is stale after refresh attempt
@@ -926,6 +941,7 @@ class RLMService:
                 is_high_edge = signal.price_drop >= 10  # 1.5x or 2x positions
 
                 # Use enhanced OrderbookContext for pricing (with depth awareness)
+                # Note: entry_price is already a NO-side price from NO orderbook data
                 entry_price = ob_context.get_recommended_entry_price(
                     aggressive=is_high_edge,
                     max_spread=self._max_spread

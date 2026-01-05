@@ -56,8 +56,19 @@ class OrderbookSnapshot:
     spread_tier: SpreadTier = SpreadTier.UNKNOWN
 
     @classmethod
-    def from_orderbook_state(cls, snapshot: Dict[str, Any]) -> 'OrderbookSnapshot':
-        """Create from shared orderbook state snapshot."""
+    def from_orderbook_state(
+        cls,
+        snapshot: Dict[str, Any],
+        tight_spread: int = 2,
+        normal_spread: int = 4,
+    ) -> 'OrderbookSnapshot':
+        """Create from shared orderbook state snapshot.
+
+        Args:
+            snapshot: Dict from SharedOrderbookState.get_snapshot()
+            tight_spread: Spread threshold for TIGHT tier (default: 2)
+            normal_spread: Spread threshold for NORMAL tier (default: 4)
+        """
         if not snapshot:
             return cls()
 
@@ -72,9 +83,9 @@ class OrderbookSnapshot:
         spread_tier = SpreadTier.UNKNOWN
         if best_bid is not None and best_ask is not None:
             spread = best_ask - best_bid
-            if spread <= 2:
+            if spread <= tight_spread:
                 spread_tier = SpreadTier.TIGHT
-            elif spread <= 4:
+            elif spread <= normal_spread:
                 spread_tier = SpreadTier.NORMAL
             else:
                 spread_tier = SpreadTier.WIDE
@@ -140,13 +151,21 @@ class OrderbookContext:
     is_stale: bool = False  # True if orderbook data is >5s old
 
     @classmethod
-    def from_orderbook_snapshot(cls, snapshot: Dict[str, Any], stale_threshold_seconds: float = 5.0) -> 'OrderbookContext':
+    def from_orderbook_snapshot(
+        cls,
+        snapshot: Dict[str, Any],
+        stale_threshold_seconds: float = 5.0,
+        tight_spread: int = 2,
+        normal_spread: int = 4,
+    ) -> 'OrderbookContext':
         """
         Create OrderbookContext from SharedOrderbookState.get_snapshot() result.
 
         Args:
             snapshot: Dict from SharedOrderbookState.get_snapshot()
             stale_threshold_seconds: Max age before data is considered stale
+            tight_spread: Spread threshold for TIGHT tier (default: 2)
+            normal_spread: Spread threshold for NORMAL tier (default: 4)
 
         Returns:
             OrderbookContext with all fields populated
@@ -195,9 +214,9 @@ class OrderbookContext:
         # Spread tier (based on NO side for NO orders)
         spread_tier = SpreadTier.UNKNOWN
         if no_spread is not None:
-            if no_spread <= 2:
+            if no_spread <= tight_spread:
                 spread_tier = SpreadTier.TIGHT
-            elif no_spread <= 4:
+            elif no_spread <= normal_spread:
                 spread_tier = SpreadTier.NORMAL
             else:
                 spread_tier = SpreadTier.WIDE
