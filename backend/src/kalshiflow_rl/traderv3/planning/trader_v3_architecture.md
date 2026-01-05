@@ -1,7 +1,7 @@
 # TRADER V3 Architecture Documentation
 
 > Machine-readable architecture reference for coding agents.
-> Last updated: 2025-01-04 (orderbook signal aggregation system)
+> Last updated: 2025-01-05 (removed DB persistence for tracked markets)
 
 ---
 
@@ -57,7 +57,7 @@ TRADER V3 is an event-driven paper trading system for Kalshi prediction markets.
 
 **Key Architectural Features**:
 - **Lifecycle Discovery**: Real-time market discovery via Kalshi `market_lifecycle` WebSocket channel
-- **TrackedMarketsState**: Centralized state for discovered markets with DB persistence
+- **TrackedMarketsState**: Centralized in-memory state for discovered markets (no DB persistence)
 - **Trading Attachments**: Per-market trading state linking positions/orders to tracked markets
 - **Real-time Prices**: MarketTickerListener (WebSocket) + MarketPriceSyncer (REST fallback)
 
@@ -729,23 +729,22 @@ The Lifecycle Discovery System enables dynamic market discovery via Kalshi's rea
   1. Check capacity (fast fail)
   2. REST lookup GET /markets/{ticker}
   3. Category filter (configurable via `LIFECYCLE_CATEGORIES`)
-  4. Persist to TrackedMarketsState and DB
+  4. Add to TrackedMarketsState (in-memory only)
   5. Emit MARKET_TRACKED event
   6. Call orderbook subscribe callback
 - **Processing Flow (on 'determined' event)**:
-  1. Update TrackedMarketsState status
-  2. Update DB status
-  3. Emit MARKET_DETERMINED event
-  4. Call orderbook unsubscribe callback
+  1. Update TrackedMarketsState status (in-memory)
+  2. Emit MARKET_DETERMINED event
+  3. Call orderbook unsubscribe callback
 - **Configuration** (environment variables):
   - `LIFECYCLE_CATEGORIES`: Comma-separated list (default: "sports,media_mentions,entertainment,crypto")
 - **Emits Events**: `MARKET_TRACKED`, `MARKET_DETERMINED`, `SYSTEM_ACTIVITY` (lifecycle_event type)
 - **Subscribes To**: `MARKET_LIFECYCLE_EVENT`
-- **Dependencies**: EventBus, TrackedMarketsState, V3TradingClientIntegration, RLDatabase
+- **Dependencies**: EventBus, TrackedMarketsState, V3TradingClientIntegration
 
 #### TrackedMarketsState
 - **File**: `state/tracked_markets.py`
-- **Purpose**: Single source of truth for lifecycle-discovered markets with capacity management, version tracking, and DB persistence
+- **Purpose**: Single source of truth for lifecycle-discovered markets with capacity management and version tracking (purely in-memory, no DB persistence)
 - **Key Classes**:
   - `MarketStatus`: Enum with `ACTIVE`, `DETERMINED`, `SETTLED` states
   - `TrackedMarket`: Dataclass with full market metadata and real-time data
@@ -757,7 +756,7 @@ The Lifecycle Discovery System enables dynamic market discovery via Kalshi's rea
   - `tracked_at`: When we started tracking (epoch seconds)
   - `price`, `volume`, `volume_24h`, `open_interest`: Real-time market data
   - `yes_bid`, `yes_ask`: Best bid/ask prices (cents)
-  - `discovery_source`: "lifecycle_ws" | "api" | "db_recovery"
+  - `discovery_source`: "lifecycle_ws" | "api"
 - **Key Methods**:
   - `add_market(market)` - Add market with capacity check
   - `update_market(ticker, **kwargs)` - Update market fields
@@ -767,11 +766,11 @@ The Lifecycle Discovery System enables dynamic market discovery via Kalshi's rea
   - `at_capacity()`, `capacity_remaining()` - Capacity management
   - `get_stats()` - Statistics for frontend display
   - `get_snapshot()` - Full state snapshot for WebSocket broadcast
-  - `load_from_db(db_markets)` - Recovery on startup
 - **Key Properties**:
   - `capacity`: Maximum markets (default 50)
   - `active_count`, `total_count`: Current counts
   - `version`: Change detection tracking
+- **Startup Behavior**: Markets are discovered fresh on each startup via ApiDiscoverySyncer (REST) and LifecycleClient (WebSocket). No DB recovery needed.
 - **Emits Events**: None
 - **Subscribes To**: None
 - **Dependencies**: None (pure state container)
@@ -790,8 +789,9 @@ The Lifecycle Discovery System enables dynamic market discovery via Kalshi's rea
   - Detects closed/settled markets via API status
   - **Dormant Detection**: Unsubscribes markets with zero 24h volume after grace period
     - Configurable via `DORMANT_DETECTION_ENABLED`, `DORMANT_VOLUME_THRESHOLD`, `DORMANT_GRACE_PERIOD_HOURS`
-    - Skips markets with open positions or resting orders
+    - **Position Protection**: Skips markets with open positions or resting orders (checks state_container.trading_state.positions)
     - Removed markets can be re-discovered by ApiDiscoverySyncer when volume returns
+  - Updates TrackedMarketsState (in-memory only, no DB writes)
   - Triggers cleanup callback on market close
   - Emits lifecycle events for Activity Feed
 - **Emits Events**: `SYSTEM_ACTIVITY` (sync, lifecycle_event, and dormant event types)
@@ -1592,25 +1592,23 @@ Position data received from Kalshi WebSocket `market_positions` channel, convert
         | REST lookup GET /markets/{ticker}
         | Category filter (LIFECYCLE_CATEGORIES)
         |
-5. [TrackedMarketsState] add_market() if passes filters
+5. [TrackedMarketsState] add_market() if passes filters (in-memory only)
         |
-6. [RLDatabase] insert_tracked_market() for persistence
+6. [EventBus] emit_market_tracked()
         |
-7. [EventBus] emit_market_tracked()
+7. [EventLifecycleService] Call orderbook subscribe callback
         |
-8. [EventLifecycleService] Call orderbook subscribe callback
+8. [V3OrderbookIntegration] Subscribe to market orderbook
         |
-9. [V3OrderbookIntegration] Subscribe to market orderbook
+9. [V3WebSocketManager] broadcast_tracked_markets() + broadcast_lifecycle_event()
         |
-10. [V3WebSocketManager] broadcast_tracked_markets() + broadcast_lifecycle_event()
-         |
-11. [Frontend] useLifecycleWebSocket receives tracked_markets and lifecycle_event
+10. [Frontend] useLifecycleWebSocket receives tracked_markets and lifecycle_event
 ```
 
 **Key Design Decisions:**
 - **Category Filtering**: Only track markets in configured categories (sports, crypto, etc.)
 - **Capacity Management**: TrackedMarketsState enforces max market limit (default 50)
-- **DB Persistence**: Markets persisted for session recovery
+- **In-Memory Only**: TrackedMarketsState has no DB persistence - markets are discovered fresh on each startup
 - **Orderbook Subscription**: Dynamic orderbook subscription on market tracking
 - **Dual Broadcast**: Both full snapshot and activity event for frontend
 
@@ -1676,11 +1674,9 @@ Position data received from Kalshi WebSocket `market_positions` channel, convert
 4. [EventLifecycleService] track_market_from_api_data()
         - Bypasses REST lookup (already have market data)
         |
-5. [TrackedMarketsState] add_market()
+5. [TrackedMarketsState] add_market() (in-memory only)
         |
-6. [RLDatabase] insert_tracked_market()
-        |
-7. Continue lifecycle WebSocket monitoring for new markets
+6. Continue lifecycle WebSocket monitoring for new markets
 ```
 
 **Key Design Decisions:**
@@ -1689,6 +1685,7 @@ Position data received from Kalshi WebSocket `market_positions` channel, convert
 - **Capacity Respect**: Stops adding when TrackedMarketsState at capacity
 - **Periodic Refresh**: Re-runs every 5 minutes to catch missed markets
 - **Skip Expiring Soon**: Ignores markets closing within close_min_minutes
+- **No DB Persistence**: Markets are stored in-memory only and rediscovered on each startup
 
 ### 6.10 Orderbook Signal Aggregation Flow
 
@@ -2228,6 +2225,11 @@ The system supports **degraded mode** when the orderbook WebSocket is unavailabl
 | 2025-01-04 | Added OrderbookContext dataclass with SpreadTier/BBODepthTier enums for trade-time pricing | Claude |
 | 2025-01-04 | Added data flow traces: Section 6.10 (Signal Aggregation), Section 6.11 (RLM Entry Price with OrderbookContext) | Claude |
 | 2025-01-04 | **Section 3.9 Enhancement**: Added Signal Data Schema table, Storage Efficiency metrics, Database Schema, Signal Aggregation Data Flow, Spread/BBO Tier tables, UI Signal Display section | Claude |
+| 2025-01-05 | **Removed DB persistence for tracked markets**: TrackedMarketsState is now purely in-memory | Claude |
+| 2025-01-05 | Markets discovered fresh on each startup via ApiDiscoverySyncer (REST) and LifecycleClient (WebSocket) | Claude |
+| 2025-01-05 | Removed RLDatabase dependency from EventLifecycleService, removed load_from_db() from TrackedMarketsState | Claude |
+| 2025-01-05 | Dormant detection position protection still works via state_container.trading_state.positions | Claude |
+| 2025-01-05 | Database migration created to drop tracked_markets table | Claude |
 
 ## 10. Cleanup Recommendations
 

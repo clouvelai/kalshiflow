@@ -496,40 +496,6 @@ class TrackedMarketsState:
         """Check if state has changed since a given version."""
         return self._version > version
 
-    # ======== DB Persistence ========
-
-    async def load_from_db(self, db_markets: List[Dict[str, Any]]) -> int:
-        """
-        Load tracked markets from database on startup.
-
-        Args:
-            db_markets: List of market dicts from database
-
-        Returns:
-            Number of markets loaded
-        """
-        async with self._lock:
-            loaded = 0
-            for data in db_markets:
-                try:
-                    market = TrackedMarket.from_dict(data)
-                    # Only load non-settled markets for active tracking
-                    if market.status != MarketStatus.SETTLED:
-                        self._markets[market.ticker] = market
-                        loaded += 1
-                except Exception as e:
-                    logger.warning(f"Failed to load market from DB: {e}")
-
-            self._version += 1
-            self._last_update = time.time()
-
-            logger.info(f"Loaded {loaded} tracked markets from database")
-            return loaded
-
-    def get_for_persistence(self) -> List[Dict[str, Any]]:
-        """Get all markets in dict format for DB persistence."""
-        return [m.to_dict() for m in self._markets.values()]
-
     # ======== Serialization ========
 
     def get_snapshot(self) -> Dict[str, Any]:

@@ -472,15 +472,9 @@ class V3Coordinator:
             )
             logger.info("TrackedMarketsState callbacks wired to orderbook integration")
 
-            # 1a. Load tracked markets from database (startup recovery)
-            db_markets = await rl_db.get_tracked_markets(include_settled=False)
-            recovered_tickers = []
-            if db_markets:
-                loaded = await self._tracked_markets_state.load_from_db(db_markets)
-                # Track which ACTIVE markets were recovered for orderbook subscription
-                # Only subscribe to active markets, not determined/closed ones
-                recovered_tickers = [m['market_ticker'] for m in db_markets if m.get('status') == 'active']
-                logger.info(f"Recovered {loaded} tracked markets from database ({len(recovered_tickers)} active)")
+            # NOTE: DB persistence removed - markets discovered fresh each startup via
+            # lifecycle WebSocket and API discovery. All trading state comes from Kalshi API.
+            logger.info("TrackedMarketsState initialized (no DB persistence - fresh discovery mode)")
 
             # 2. Create KalshiAuth for lifecycle WebSocket
             auth = KalshiAuth.from_env()
@@ -544,16 +538,8 @@ class V3Coordinator:
             await self._event_bus.subscribe_to_market_determined(self._handle_market_determined_cleanup)
             logger.info("Subscribed to MARKET_DETERMINED for state cleanup")
 
-            # 10a. Subscribe to orderbooks for recovered markets
-            if recovered_tickers:
-                subscribed = 0
-                for ticker in recovered_tickers:
-                    try:
-                        await self._orderbook_integration.subscribe_market(ticker)
-                        subscribed += 1
-                    except Exception as e:
-                        logger.warning(f"Failed to subscribe recovered market {ticker}: {e}")
-                logger.info(f"Subscribed to {subscribed}/{len(recovered_tickers)} recovered market orderbooks")
+            # NOTE: No DB recovery - markets discovered fresh via lifecycle WS and API discovery
+            # Orderbook subscriptions happen through TrackedMarketsState subscription callbacks
 
             # 10b. Initialize RLMService (if strategy is RLM_NO and trading available)
             if self._trading_service and self._config.trading_strategy == TradingStrategy.RLM_NO:
@@ -604,7 +590,6 @@ class V3Coordinator:
                 on_market_closed=self._orderbook_integration.unsubscribe_market,
                 config=self._config,
                 state_container=self._state_container,
-                db=rl_db,
             )
             await self._lifecycle_syncer.start()
 

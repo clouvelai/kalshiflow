@@ -74,7 +74,7 @@ class V3Config:
 
     # Order TTL Configuration
     order_ttl_enabled: bool = True  # Enable automatic cancellation of stale orders
-    order_ttl_seconds: int = 300  # Cancel resting orders older than this (5 minutes default)
+    order_ttl_seconds: int = 90  # Cancel resting orders older than this (90s - orders either fill quickly or not at all)
 
     # Market selection mode: "config", "discovery", or "lifecycle" (default)
     # - config: Use static market_tickers list
@@ -208,7 +208,7 @@ class V3Config:
 
         # Order TTL configuration - cancel stale resting orders
         order_ttl_enabled = os.environ.get("V3_ORDER_TTL_ENABLED", "true").lower() == "true"
-        order_ttl_seconds = int(os.environ.get("V3_ORDER_TTL_SECONDS", "300"))
+        order_ttl_seconds = int(os.environ.get("V3_ORDER_TTL_SECONDS", "90"))
 
         # RLM (Reverse Line Movement) strategy configuration
         # High reliability config: YES>70%, min_trades=25 (2.2% false positive rate)

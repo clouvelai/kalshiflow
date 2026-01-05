@@ -18,6 +18,7 @@ Key Data Flow:
 """
 
 import time
+from datetime import datetime
 import logging
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any
@@ -85,6 +86,20 @@ class TrackedMarketOrder:
         # Get price from yes_price or no_price
         price = order_data.get("yes_price") or order_data.get("no_price") or 0
 
+        # Parse created_time properly - Kalshi returns ISO string, we need Unix timestamp
+        created_time = order_data.get("created_time")
+        if isinstance(created_time, str):
+            try:
+                # Handle ISO format: "2025-12-27T10:30:00Z" or "2025-12-27T10:30:00+00:00"
+                dt = datetime.fromisoformat(created_time.replace("Z", "+00:00"))
+                placed_at = dt.timestamp()
+            except (ValueError, TypeError):
+                placed_at = time.time()
+        elif isinstance(created_time, (int, float)):
+            placed_at = float(created_time)
+        else:
+            placed_at = time.time()
+
         return cls(
             order_id=order_data.get("order_id", ""),
             signal_id=signal_id or f"recovered:{order_data.get('ticker', 'unknown')}",
@@ -93,7 +108,7 @@ class TrackedMarketOrder:
             count=order_data.get("remaining_count", 0),
             price=price,
             status=status,
-            placed_at=order_data.get("created_time", time.time()),
+            placed_at=placed_at,
             fill_count=order_data.get("filled_count", 0),
         )
 

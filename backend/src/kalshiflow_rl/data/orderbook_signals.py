@@ -73,7 +73,8 @@ class BucketState:
         Args:
             snapshot: Dict from SharedOrderbookState.get_snapshot() with:
                 - no_spread, yes_spread (int, cents)
-                - no_bids, no_asks, yes_bids, yes_asks (Dict[str, int] price->size)
+                - no_bids, no_asks, yes_bids, yes_asks (Dict[int|str, int] price->size)
+                  NOTE: Keys may be int (from SortedDict) or str (from JSON/REST)
         """
         self.snapshot_count += 1
 
@@ -119,18 +120,24 @@ class BucketState:
         self.yes_ask_volumes.append(yes_ask_vol)
 
         # BBO sizes (best bid/ask)
+        # NOTE: Orderbook snapshot keys can be int or str depending on source.
+        # We normalize to int for consistent lookup.
+        def get_bbo_size(book: Dict, price: int) -> int:
+            """Get size at price, handling both int and str keys."""
+            return book.get(price) or book.get(str(price)) or 0
+
         if no_bids:
             best_no_bid_price = max(int(p) for p in no_bids.keys())
-            self.no_bid_bbo_sizes.append(no_bids.get(str(best_no_bid_price), 0))
+            self.no_bid_bbo_sizes.append(get_bbo_size(no_bids, best_no_bid_price))
         if no_asks:
             best_no_ask_price = min(int(p) for p in no_asks.keys())
-            self.no_ask_bbo_sizes.append(no_asks.get(str(best_no_ask_price), 0))
+            self.no_ask_bbo_sizes.append(get_bbo_size(no_asks, best_no_ask_price))
         if yes_bids:
             best_yes_bid_price = max(int(p) for p in yes_bids.keys())
-            self.yes_bid_bbo_sizes.append(yes_bids.get(str(best_yes_bid_price), 0))
+            self.yes_bid_bbo_sizes.append(get_bbo_size(yes_bids, best_yes_bid_price))
         if yes_asks:
             best_yes_ask_price = min(int(p) for p in yes_asks.keys())
-            self.yes_ask_bbo_sizes.append(yes_asks.get(str(best_yes_ask_price), 0))
+            self.yes_ask_bbo_sizes.append(get_bbo_size(yes_asks, best_yes_ask_price))
 
         # Detect large orders (any level > threshold)
         all_sizes = (

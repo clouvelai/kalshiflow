@@ -292,18 +292,7 @@ class EventLifecycleService:
             logger.warning(f"Failed to add {market_ticker} to state")
             return
 
-        # Persist to DB
-        await self._db.insert_tracked_market(
-            market_ticker=market_ticker,
-            event_ticker=tracked_market.event_ticker,
-            title=tracked_market.title,
-            category=tracked_market.category,
-            created_ts=tracked_market.created_ts,
-            open_ts=tracked_market.open_ts,
-            close_ts=tracked_market.close_ts,
-            market_info=market_info,
-            discovery_source="lifecycle_ws",
-        )
+        # NOTE: DB persistence removed - tracked markets are in-memory only
 
         self._markets_tracked += 1
 
@@ -362,21 +351,14 @@ class EventLifecycleService:
             determined_ts=determined_ts,
         )
 
-        # Step 2: Update DB
-        await self._db.update_tracked_market_status(
-            market_ticker=market_ticker,
-            status="determined",
-            determined_ts=determined_ts,
-        )
-
-        # Step 3: Emit MARKET_DETERMINED event
+        # Step 2: Emit MARKET_DETERMINED event
         await self._event_bus.emit_market_determined(
             market_ticker=market_ticker,
             result=result,
             determined_ts=determined_ts,
         )
 
-        # Step 4: Request orderbook unsubscription
+        # Step 3: Request orderbook unsubscription
         if self._on_unsubscribe:
             try:
                 success = await self._on_unsubscribe(market_ticker)
@@ -418,12 +400,7 @@ class EventLifecycleService:
             settled_ts=settled_ts,
         )
 
-        # Update DB
-        await self._db.update_tracked_market_status(
-            market_ticker=market_ticker,
-            status="settled",
-            settled_ts=settled_ts,
-        )
+        # NOTE: DB persistence removed - tracked markets are in-memory only
 
         logger.info(f"Market settled: {market_ticker}")
 
@@ -576,18 +553,7 @@ class EventLifecycleService:
             logger.warning(f"Failed to add {market_ticker} to state")
             return False
 
-        # Persist to DB
-        await self._db.insert_tracked_market(
-            market_ticker=market_ticker,
-            event_ticker=tracked_market.event_ticker,
-            title=tracked_market.title,
-            category=tracked_market.category,
-            created_ts=tracked_market.created_ts,
-            open_ts=tracked_market.open_ts,
-            close_ts=tracked_market.close_ts,
-            market_info=market_info,
-            discovery_source="api",
-        )
+        # NOTE: DB persistence removed - tracked markets are in-memory only
 
         self._markets_tracked += 1
         self._markets_from_api += 1

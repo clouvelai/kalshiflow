@@ -434,7 +434,8 @@ class SharedOrderbookState:
         Converts REST format to internal format and updates state.
 
         REST format: { "orderbook": { "yes": [[price, count], ...], "no": [[price, count], ...] } }
-        Internal format: { "yes_bids": {price_str: size}, "no_bids": {price_str: size} }
+        Internal format: { "yes_bids": {price: size}, "no_bids": {price: size} }
+        Note: Keys are converted to int internally via _apply_price_levels.
 
         Args:
             rest_data: REST API response from /markets/{ticker}/orderbook

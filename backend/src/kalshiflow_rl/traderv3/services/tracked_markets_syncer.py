@@ -20,7 +20,6 @@ if TYPE_CHECKING:
     from ..core.event_bus import EventBus
     from ..core.state_container import StateContainer
     from ..config.environment import V3Config
-    from ...data.database import RLDatabase
 
 logger = logging.getLogger("kalshiflow_rl.traderv3.services.tracked_markets_syncer")
 
@@ -47,7 +46,6 @@ class TrackedMarketsSyncer:
         on_market_closed: Optional[Callable[[str], Awaitable[None]]] = None,
         config: Optional['V3Config'] = None,
         state_container: Optional['StateContainer'] = None,
-        db: Optional['RLDatabase'] = None,
     ):
         """
         Initialize tracked markets syncer.
@@ -60,7 +58,6 @@ class TrackedMarketsSyncer:
             on_market_closed: Callback when a market is detected as closed/settled via API
             config: V3Config for dormant detection settings
             state_container: StateContainer for position checking (dormant detection)
-            db: RLDatabase for deleting dormant markets from DB
         """
         self._client = trading_client
         self._state = tracked_markets_state
@@ -69,7 +66,6 @@ class TrackedMarketsSyncer:
         self._on_market_closed = on_market_closed
         self._config = config
         self._state_container = state_container
-        self._db = db
 
         # Syncer state
         self._sync_task: Optional[asyncio.Task] = None
@@ -384,9 +380,7 @@ class TrackedMarketsSyncer:
         # Remove from tracked markets state
         await self._state.remove_market(ticker)
 
-        # Also delete from database for clean footprint
-        if self._db:
-            await self._db.delete_tracked_market(ticker)
+        # NOTE: DB persistence removed - dormant markets only removed from memory
 
         # Update metrics
         self._dormant_unsubscribed_count += 1
