@@ -917,16 +917,27 @@ class RLMService:
                     self._stats["signals_skipped"] += 1
                     return
 
-                # P1: Max spread rejection - protect from bad fills in illiquid markets
-                if ob_context.no_spread is not None and ob_context.no_spread > self._max_spread:
+                # P1: Tiered spread rejection - protect from bad fills based on signal edge
+                # Low-edge signals (smaller drops) are most susceptible to spread erosion
+                # 20c+ drop = 30.7% edge can afford 8c spread
+                # 10-20c drop = 17-19% edge, limit to 5c
+                # 5-10c drop = 11.9% edge, tight 3c limit
+                if signal.price_drop >= 20:
+                    effective_max_spread = 8
+                elif signal.price_drop >= 10:
+                    effective_max_spread = 5
+                else:
+                    effective_max_spread = 3
+
+                if ob_context.no_spread is not None and ob_context.no_spread > effective_max_spread:
                     logger.warning(
-                        f"Spread too wide for {signal.market_ticker}: {ob_context.no_spread}c > {self._max_spread}c max, skipping signal"
+                        f"Spread too wide for {signal.market_ticker}: {ob_context.no_spread}c > {effective_max_spread}c max (tiered by signal strength), skipping"
                     )
                     self._stats["signals_skipped"] += 1
                     self._record_decision(
                         signal_id=signal_id,
                         action="skipped",
-                        reason=f"Spread {ob_context.no_spread}c > max {self._max_spread}c",
+                        reason=f"Spread {ob_context.no_spread}c > tiered max {effective_max_spread}c (drop={signal.price_drop}c)",
                         signal_data=signal.to_dict()
                     )
                     return
@@ -970,17 +981,11 @@ class RLMService:
                 self._stats["signals_skipped"] += 1
                 return
 
-            # S-001: Scale position by signal strength (price drop magnitude)
-            # Research shows: 5-10c = +11.9% edge, 10-20c = +17-19.5% edge, 20c+ = +30.7% edge
-            if signal.price_drop >= 20:
-                scaled_quantity = self._contracts_per_trade * 2  # 2x for strongest signals
-                scale_label = "2x"
-            elif signal.price_drop >= 10:
-                scaled_quantity = int(self._contracts_per_trade * 1.5)  # 1.5x for strong signals
-                scale_label = "1.5x"
-            else:
-                scaled_quantity = self._contracts_per_trade  # 1x for baseline signals (5-10c)
-                scale_label = "1x"
+            # FLAT SIZING: Use consistent position size regardless of signal strength
+            # Research shows edge is consistent across all signals, scaling amplifies losses
+            # 2.7x avg loss/win ratio was caused by 2x sizing on failed "conviction" trades
+            scaled_quantity = self._contracts_per_trade
+            scale_label = "1x"
 
             # Create trading decision with signal params for quant analysis
             action_type = "reentry" if signal.is_reentry else "executed"

@@ -18,13 +18,11 @@ if TYPE_CHECKING:
     from ..clients.trading_client_integration import V3TradingClientIntegration
     from ..clients.orderbook_integration import V3OrderbookIntegration
     from ..services.trading_decision_service import TradingDecisionService, TradingDecision
-    from ..services.whale_tracker import WhaleTracker
     from ..core.state_container import V3StateContainer
     from ..core.event_bus import EventBus
     from ..core.state_machine import TraderStateMachine as V3StateMachine
     from ..config.environment import V3Config
 
-from ..services.trading_decision_service import TradingStrategy
 from ..services.order_context_service import get_order_context_service
 
 from ..core.state_machine import TraderState as V3State
@@ -98,7 +96,6 @@ class TradingFlowOrchestrator:
         state_container: 'V3StateContainer',
         event_bus: 'EventBus',
         state_machine: 'V3StateMachine',
-        whale_tracker: Optional['WhaleTracker'] = None
     ):
         """
         Initialize the trading flow orchestrator.
@@ -111,7 +108,6 @@ class TradingFlowOrchestrator:
             state_container: Shared state container
             event_bus: Event bus for system events
             state_machine: State machine for transitions
-            whale_tracker: Optional whale tracker for WHALE_FOLLOWER strategy
         """
         self._config = config
         self._trading_client = trading_client
@@ -120,7 +116,6 @@ class TradingFlowOrchestrator:
         self._state_container = state_container
         self._event_bus = event_bus
         self._state_machine = state_machine
-        self._whale_tracker = whale_tracker
         
         # Cycle tracking
         self._current_cycle: Optional[TradingCycle] = None
@@ -327,23 +322,9 @@ class TradingFlowOrchestrator:
     async def _decide_phase(self, cycle: TradingCycle) -> None:
         """
         Phase 3: Make trading decisions based on evaluated markets.
-
-        Note: WHALE_FOLLOWER strategy is now handled by WhaleExecutionService
-        which processes whales immediately via event-driven architecture.
-        This method only handles standard market-by-market strategies.
         """
         logger.debug(f"Cycle {cycle.cycle_id}: Starting DECIDE phase")
 
-        # WHALE_FOLLOWER is now event-driven via WhaleExecutionService
-        # No cycle-based processing needed - whales are followed immediately
-        if self._trading_service._strategy == TradingStrategy.WHALE_FOLLOWER:
-            logger.debug(
-                f"Cycle {cycle.cycle_id}: WHALE_FOLLOWER uses event-driven execution, "
-                "skipping cycle-based decision phase"
-            )
-            return
-
-        # Standard market-by-market decision making
         for market in cycle.markets_evaluated:
             try:
                 # Get orderbook again for decision
