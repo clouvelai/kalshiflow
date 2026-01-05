@@ -463,14 +463,24 @@ class V3Coordinator:
                 max_markets=self._config.lifecycle_max_markets
             )
 
+            # 1a-pre. Wire subscription callbacks on TrackedMarketsState
+            # This ensures orderbook subscriptions stay in sync with tracked markets
+            # When markets are added/removed from tracking, subscriptions follow automatically
+            self._tracked_markets_state.set_subscription_callbacks(
+                on_added=self._orderbook_integration.subscribe_market,
+                on_removed=self._orderbook_integration.unsubscribe_market,
+            )
+            logger.info("TrackedMarketsState callbacks wired to orderbook integration")
+
             # 1a. Load tracked markets from database (startup recovery)
             db_markets = await rl_db.get_tracked_markets(include_settled=False)
             recovered_tickers = []
             if db_markets:
                 loaded = await self._tracked_markets_state.load_from_db(db_markets)
-                # Track which markets were recovered for orderbook subscription
-                recovered_tickers = [m['market_ticker'] for m in db_markets if m.get('status') != 'settled']
-                logger.info(f"Recovered {loaded} tracked markets from database")
+                # Track which ACTIVE markets were recovered for orderbook subscription
+                # Only subscribe to active markets, not determined/closed ones
+                recovered_tickers = [m['market_ticker'] for m in db_markets if m.get('status') == 'active']
+                logger.info(f"Recovered {loaded} tracked markets from database ({len(recovered_tickers)} active)")
 
             # 2. Create KalshiAuth for lifecycle WebSocket
             auth = KalshiAuth.from_env()
@@ -497,17 +507,14 @@ class V3Coordinator:
                 categories=self._config.lifecycle_categories,
             )
 
-            # 6. Wire orderbook callbacks (for dynamic subscription)
-            self._event_lifecycle_service.set_subscribe_callback(
-                self._orderbook_integration.subscribe_market
-            )
-            self._event_lifecycle_service.set_unsubscribe_callback(
-                self._orderbook_integration.unsubscribe_market
-            )
+            # NOTE: EventLifecycleService callbacks removed - TrackedMarketsState now handles
+            # orderbook subscription sync via callbacks wired in step 1a-pre above.
+            # This prevents double-subscription when markets are added/removed.
 
-            # 7. Set TrackedMarketsState on WebSocketManager and StateContainer
+            # 6. Set TrackedMarketsState on WebSocketManager, StateContainer, and StatusReporter
             self._websocket_manager.set_tracked_markets_state(self._tracked_markets_state)
             self._state_container.set_tracked_markets(self._tracked_markets_state)
+            self._status_reporter.set_tracked_markets_state(self._tracked_markets_state)
 
             # 8. Start lifecycle integration
             await self._lifecycle_integration.start()
@@ -1457,18 +1464,38 @@ class V3Coordinator:
         # Get metrics from various sources
         orderbook_metrics = self._orderbook_integration.get_metrics()
         ws_stats = self._websocket_manager.get_stats()
-        
+        health_details = self._orderbook_integration.get_health_details()
+
+        # Get tracked markets count
+        tracked_markets_count = 0
+        if self._tracked_markets_state:
+            tracked_markets_count = self._tracked_markets_state.active_count
+
+        # Get actual OB subscription count from integration
+        # With proper sync callbacks, this should match tracked_markets_count
+        subscribed_markets = self._orderbook_integration.get_subscribed_market_count()
+
+        # Get signal aggregator stats
+        signal_aggregator_stats = orderbook_metrics.get("signal_aggregator")
+
         # Build metrics similar to status_reporter
         metrics = {
             "uptime": uptime,
             "state": self._state_machine.current_state.value,
+            "tracked_markets": tracked_markets_count,
+            "subscribed_markets": subscribed_markets,
             "markets_connected": orderbook_metrics["markets_connected"],
             "snapshots_received": orderbook_metrics["snapshots_received"],
             "deltas_received": orderbook_metrics["deltas_received"],
             "ws_clients": ws_stats["active_connections"],
             "ws_messages_sent": ws_stats.get("total_messages_sent", 0),
             "api_url": self._config.api_url,
-            "ws_url": self._config.ws_url
+            "ws_url": self._config.ws_url,
+            "ping_health": health_details.get("ping_health"),
+            "last_ping_age": health_details.get("last_ping_age_seconds"),
+            "health": "healthy" if self.is_healthy() else "unhealthy",
+            "api_connected": orderbook_metrics["markets_connected"] > 0,
+            "signal_aggregator": signal_aggregator_stats,
         }
         
         status = {

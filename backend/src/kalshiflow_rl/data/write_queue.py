@@ -168,13 +168,19 @@ class OrderbookWriteQueue:
     async def enqueue_delta(self, delta_data: Dict[str, Any]) -> bool:
         """
         Enqueue an orderbook delta for writing (with sampling).
-        
+
         Args:
             delta_data: Delta data dict with all required fields
-            
+
         Returns:
-            bool: True if enqueued successfully, False if sampled out or queue full
+            bool: True if enqueued successfully, False if sampled out, queue full,
+                  or delta persistence is disabled
         """
+        # Skip delta persistence if disabled (V3 signal trading mode)
+        # This reduces storage from ~8.6GB/month to ~60MB/month for 20 markets
+        if not config.V3_PERSIST_ORDERBOOK_DELTAS:
+            return True  # Return True to indicate "handled" (just not persisted)
+
         if not self._running or self._delta_queue is None:
             logger.warning("Cannot enqueue delta: write queue not started")
             return False

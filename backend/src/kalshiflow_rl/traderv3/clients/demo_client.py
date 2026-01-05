@@ -803,6 +803,40 @@ class KalshiDemoTradingClient:
         except Exception as e:
             raise KalshiDemoTradingClientError(f"Failed to get market {ticker}: {e}")
 
+    async def get_orderbook(self, ticker: str, depth: int = 5) -> Dict[str, Any]:
+        """
+        Fetch orderbook via REST API (fallback for stale WebSocket data).
+
+        GET /trade-api/v2/markets/{ticker}/orderbook
+
+        This is used as a fallback when the WebSocket orderbook data is stale
+        (>5 seconds old) at signal execution time. Rate limit: 10/s.
+
+        Args:
+            ticker: Market ticker (e.g., "INXD-25JAN03")
+            depth: Number of price levels to return (1-100, 0 for all). Default 5.
+
+        Returns:
+            Dict with "orderbook" containing:
+            - yes: Array of [price, count] pairs for YES bids
+            - no: Array of [price, count] pairs for NO bids
+            Note: A bid for YES at price X equals an ask for NO at price (100-X)
+
+        Raises:
+            KalshiDemoTradingClientError: If request fails
+        """
+        try:
+            path = f"/markets/{ticker}/orderbook"
+            if depth > 0:
+                path += f"?depth={depth}"
+
+            response = await self._make_request("GET", path)
+            logger.debug(f"Retrieved orderbook for {ticker} (depth={depth})")
+            return response
+
+        except Exception as e:
+            raise KalshiDemoTradingClientError(f"Failed to get orderbook for {ticker}: {e}")
+
     async def get_market_candlesticks(
         self,
         series_ticker: str,

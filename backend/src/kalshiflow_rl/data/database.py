@@ -102,6 +102,9 @@ class RLDatabase:
             await self._create_tracked_markets_table(conn)
             await self._create_lifecycle_events_table(conn)
 
+            # Orderbook signals table (aggregated metrics)
+            await self._create_orderbook_signals_table(conn)
+
             # Analyze tables for optimal query planning
             await conn.execute("ANALYZE rl_orderbook_sessions")
             await conn.execute("ANALYZE rl_orderbook_snapshots")
@@ -109,6 +112,7 @@ class RLDatabase:
             await conn.execute("ANALYZE rl_models")
             await conn.execute("ANALYZE rl_trading_episodes")
             await conn.execute("ANALYZE rl_trading_actions")
+            await conn.execute("ANALYZE orderbook_signals")
 
             logger.info("RL database schema created successfully")
     
@@ -621,6 +625,102 @@ class RLDatabase:
 
         await conn.execute('''
             COMMENT ON TABLE lifecycle_events IS 'Audit trail of all market lifecycle events from Kalshi WebSocket';
+        ''')
+
+    async def _create_orderbook_signals_table(self, conn: asyncpg.Connection):
+        """
+        Create orderbook_signals table for aggregated orderbook metrics.
+
+        Stores 10-second bucket aggregates of orderbook state for signal
+        generation without storing every raw delta. This provides:
+        - Spread OHLC for correlating spread conditions with fill rates
+        - Volume imbalance for order flow toxicity signals
+        - Activity metrics for detecting catalyst events
+
+        Storage reduction: ~1.7KB/market/day vs ~1MB/market/day for raw deltas
+        """
+        await conn.execute('''
+            CREATE TABLE IF NOT EXISTS orderbook_signals (
+                id BIGSERIAL PRIMARY KEY,
+                session_id BIGINT REFERENCES rl_orderbook_sessions(session_id),
+                market_ticker VARCHAR(100) NOT NULL,
+                bucket_timestamp TIMESTAMPTZ NOT NULL,  -- Start of 10-second bucket
+                bucket_seconds INTEGER DEFAULT 10,  -- Bucket duration (default 10s)
+
+                -- NO side spread OHLC (in cents, 1-99)
+                no_spread_open INTEGER,
+                no_spread_high INTEGER,
+                no_spread_low INTEGER,
+                no_spread_close INTEGER,
+
+                -- YES side spread OHLC (in cents, 1-99)
+                yes_spread_open INTEGER,
+                yes_spread_high INTEGER,
+                yes_spread_low INTEGER,
+                yes_spread_close INTEGER,
+
+                -- NO side volume metrics (levels 1-5)
+                no_bid_volume_avg INTEGER,
+                no_ask_volume_avg INTEGER,
+                no_imbalance_ratio NUMERIC(5,4),  -- bid_vol / (bid_vol + ask_vol), 0.0000-1.0000
+
+                -- YES side volume metrics (levels 1-5)
+                yes_bid_volume_avg INTEGER,
+                yes_ask_volume_avg INTEGER,
+                yes_imbalance_ratio NUMERIC(5,4),
+
+                -- BBO depth (raw sizes at best bid/ask)
+                no_bid_size_at_bbo_avg INTEGER,
+                no_ask_size_at_bbo_avg INTEGER,
+                yes_bid_size_at_bbo_avg INTEGER,
+                yes_ask_size_at_bbo_avg INTEGER,
+
+                -- Activity metrics
+                snapshot_count INTEGER DEFAULT 0,  -- Number of snapshots in bucket
+                delta_count INTEGER DEFAULT 0,  -- Number of deltas in bucket (if persisted)
+                large_order_count INTEGER DEFAULT 0,  -- Orders > 1000 contracts
+
+                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+
+                CONSTRAINT uq_signals_session_market_bucket
+                    UNIQUE (session_id, market_ticker, bucket_timestamp)
+            );
+        ''')
+
+        # Create indexes for common queries
+        await conn.execute('''
+            CREATE INDEX IF NOT EXISTS idx_signals_session_market_time
+                ON orderbook_signals(session_id, market_ticker, bucket_timestamp DESC);
+        ''')
+
+        await conn.execute('''
+            CREATE INDEX IF NOT EXISTS idx_signals_market_time
+                ON orderbook_signals(market_ticker, bucket_timestamp DESC);
+        ''')
+
+        await conn.execute('''
+            CREATE INDEX IF NOT EXISTS idx_signals_session_time
+                ON orderbook_signals(session_id, bucket_timestamp DESC);
+        ''')
+
+        # Add constraints
+        await self._add_constraint_if_not_exists(
+            conn,
+            'orderbook_signals',
+            'chk_signals_bucket_seconds',
+            'CHECK (bucket_seconds > 0 AND bucket_seconds <= 3600)'  # Max 1 hour buckets
+        )
+
+        await self._add_constraint_if_not_exists(
+            conn,
+            'orderbook_signals',
+            'chk_signals_imbalance_ratio',
+            'CHECK ((no_imbalance_ratio IS NULL OR (no_imbalance_ratio >= 0 AND no_imbalance_ratio <= 1)) AND '
+            '(yes_imbalance_ratio IS NULL OR (yes_imbalance_ratio >= 0 AND yes_imbalance_ratio <= 1)))'
+        )
+
+        await conn.execute('''
+            COMMENT ON TABLE orderbook_signals IS 'Aggregated orderbook metrics in 10-second buckets for signal generation';
         ''')
 
     async def close(self):
@@ -1762,6 +1862,328 @@ class RLDatabase:
                 events.append(event_dict)
 
             return events
+
+    # ============================================================
+    # Orderbook Signals CRUD Operations (Aggregated Metrics)
+    # ============================================================
+
+    async def insert_orderbook_signal(
+        self,
+        session_id: int,
+        market_ticker: str,
+        bucket_timestamp: datetime,
+        signal_data: Dict[str, Any],
+    ) -> Optional[int]:
+        """
+        Insert or update an orderbook signal bucket.
+
+        Uses upsert to handle duplicate bucket timestamps (updates existing).
+
+        Args:
+            session_id: Session ID for this signal
+            market_ticker: Market ticker
+            bucket_timestamp: Start of the bucket period
+            signal_data: Dict with spread, volume, imbalance, and activity metrics
+
+        Returns:
+            Row ID if inserted/updated, None on error
+        """
+        async with self.get_connection() as conn:
+            try:
+                row_id = await conn.fetchval('''
+                    INSERT INTO orderbook_signals (
+                        session_id, market_ticker, bucket_timestamp, bucket_seconds,
+                        no_spread_open, no_spread_high, no_spread_low, no_spread_close,
+                        yes_spread_open, yes_spread_high, yes_spread_low, yes_spread_close,
+                        no_bid_volume_avg, no_ask_volume_avg, no_imbalance_ratio,
+                        yes_bid_volume_avg, yes_ask_volume_avg, yes_imbalance_ratio,
+                        no_bid_size_at_bbo_avg, no_ask_size_at_bbo_avg,
+                        yes_bid_size_at_bbo_avg, yes_ask_size_at_bbo_avg,
+                        snapshot_count, delta_count, large_order_count
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25)
+                    ON CONFLICT (session_id, market_ticker, bucket_timestamp)
+                    DO UPDATE SET
+                        no_spread_open = EXCLUDED.no_spread_open,
+                        no_spread_high = EXCLUDED.no_spread_high,
+                        no_spread_low = EXCLUDED.no_spread_low,
+                        no_spread_close = EXCLUDED.no_spread_close,
+                        yes_spread_open = EXCLUDED.yes_spread_open,
+                        yes_spread_high = EXCLUDED.yes_spread_high,
+                        yes_spread_low = EXCLUDED.yes_spread_low,
+                        yes_spread_close = EXCLUDED.yes_spread_close,
+                        no_bid_volume_avg = EXCLUDED.no_bid_volume_avg,
+                        no_ask_volume_avg = EXCLUDED.no_ask_volume_avg,
+                        no_imbalance_ratio = EXCLUDED.no_imbalance_ratio,
+                        yes_bid_volume_avg = EXCLUDED.yes_bid_volume_avg,
+                        yes_ask_volume_avg = EXCLUDED.yes_ask_volume_avg,
+                        yes_imbalance_ratio = EXCLUDED.yes_imbalance_ratio,
+                        no_bid_size_at_bbo_avg = EXCLUDED.no_bid_size_at_bbo_avg,
+                        no_ask_size_at_bbo_avg = EXCLUDED.no_ask_size_at_bbo_avg,
+                        yes_bid_size_at_bbo_avg = EXCLUDED.yes_bid_size_at_bbo_avg,
+                        yes_ask_size_at_bbo_avg = EXCLUDED.yes_ask_size_at_bbo_avg,
+                        snapshot_count = EXCLUDED.snapshot_count,
+                        delta_count = EXCLUDED.delta_count,
+                        large_order_count = EXCLUDED.large_order_count
+                    RETURNING id
+                ''',
+                    session_id,
+                    market_ticker,
+                    bucket_timestamp,
+                    signal_data.get('bucket_seconds', 10),
+                    signal_data.get('no_spread_open'),
+                    signal_data.get('no_spread_high'),
+                    signal_data.get('no_spread_low'),
+                    signal_data.get('no_spread_close'),
+                    signal_data.get('yes_spread_open'),
+                    signal_data.get('yes_spread_high'),
+                    signal_data.get('yes_spread_low'),
+                    signal_data.get('yes_spread_close'),
+                    signal_data.get('no_bid_volume_avg'),
+                    signal_data.get('no_ask_volume_avg'),
+                    signal_data.get('no_imbalance_ratio'),
+                    signal_data.get('yes_bid_volume_avg'),
+                    signal_data.get('yes_ask_volume_avg'),
+                    signal_data.get('yes_imbalance_ratio'),
+                    signal_data.get('no_bid_size_at_bbo_avg'),
+                    signal_data.get('no_ask_size_at_bbo_avg'),
+                    signal_data.get('yes_bid_size_at_bbo_avg'),
+                    signal_data.get('yes_ask_size_at_bbo_avg'),
+                    signal_data.get('snapshot_count', 0),
+                    signal_data.get('delta_count', 0),
+                    signal_data.get('large_order_count', 0),
+                )
+
+                return row_id
+
+            except Exception as e:
+                logger.error(f"Failed to insert orderbook signal for {market_ticker}: {e}")
+                return None
+
+    async def batch_insert_orderbook_signals(
+        self,
+        signals: List[Dict[str, Any]],
+        session_id: int,
+    ) -> int:
+        """
+        Batch insert orderbook signals for efficiency.
+
+        Args:
+            signals: List of signal dicts with market_ticker, bucket_timestamp, and metrics
+            session_id: Session ID for all signals
+
+        Returns:
+            Number of signals inserted
+        """
+        if not signals:
+            return 0
+
+        async with self.get_connection() as conn:
+            try:
+                records = []
+                for signal in signals:
+                    records.append((
+                        session_id,
+                        signal['market_ticker'],
+                        signal['bucket_timestamp'],
+                        signal.get('bucket_seconds', 10),
+                        signal.get('no_spread_open'),
+                        signal.get('no_spread_high'),
+                        signal.get('no_spread_low'),
+                        signal.get('no_spread_close'),
+                        signal.get('yes_spread_open'),
+                        signal.get('yes_spread_high'),
+                        signal.get('yes_spread_low'),
+                        signal.get('yes_spread_close'),
+                        signal.get('no_bid_volume_avg'),
+                        signal.get('no_ask_volume_avg'),
+                        signal.get('no_imbalance_ratio'),
+                        signal.get('yes_bid_volume_avg'),
+                        signal.get('yes_ask_volume_avg'),
+                        signal.get('yes_imbalance_ratio'),
+                        signal.get('no_bid_size_at_bbo_avg'),
+                        signal.get('no_ask_size_at_bbo_avg'),
+                        signal.get('yes_bid_size_at_bbo_avg'),
+                        signal.get('yes_ask_size_at_bbo_avg'),
+                        signal.get('snapshot_count', 0),
+                        signal.get('delta_count', 0),
+                        signal.get('large_order_count', 0),
+                    ))
+
+                await conn.executemany('''
+                    INSERT INTO orderbook_signals (
+                        session_id, market_ticker, bucket_timestamp, bucket_seconds,
+                        no_spread_open, no_spread_high, no_spread_low, no_spread_close,
+                        yes_spread_open, yes_spread_high, yes_spread_low, yes_spread_close,
+                        no_bid_volume_avg, no_ask_volume_avg, no_imbalance_ratio,
+                        yes_bid_volume_avg, yes_ask_volume_avg, yes_imbalance_ratio,
+                        no_bid_size_at_bbo_avg, no_ask_size_at_bbo_avg,
+                        yes_bid_size_at_bbo_avg, yes_ask_size_at_bbo_avg,
+                        snapshot_count, delta_count, large_order_count
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25)
+                    ON CONFLICT (session_id, market_ticker, bucket_timestamp) DO NOTHING
+                ''', records)
+
+                return len(records)
+
+            except Exception as e:
+                logger.error(f"Failed to batch insert orderbook signals: {e}")
+                return 0
+
+    async def get_orderbook_signals(
+        self,
+        session_id: Optional[int] = None,
+        market_ticker: Optional[str] = None,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None,
+        limit: int = 1000,
+    ) -> List[Dict[str, Any]]:
+        """
+        Get orderbook signals with optional filtering.
+
+        Args:
+            session_id: Filter by session (None = all sessions)
+            market_ticker: Filter by market (None = all markets)
+            start_time: Filter signals after this time
+            end_time: Filter signals before this time
+            limit: Maximum signals to return
+
+        Returns:
+            List of orderbook signal dicts
+        """
+        async with self.get_connection() as conn:
+            conditions = []
+            params = []
+            param_idx = 1
+
+            if session_id:
+                conditions.append(f"session_id = ${param_idx}")
+                params.append(session_id)
+                param_idx += 1
+
+            if market_ticker:
+                conditions.append(f"market_ticker = ${param_idx}")
+                params.append(market_ticker)
+                param_idx += 1
+
+            if start_time:
+                conditions.append(f"bucket_timestamp >= ${param_idx}")
+                params.append(start_time)
+                param_idx += 1
+
+            if end_time:
+                conditions.append(f"bucket_timestamp <= ${param_idx}")
+                params.append(end_time)
+                param_idx += 1
+
+            where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+            params.append(limit)
+
+            query = f'''
+                SELECT * FROM orderbook_signals
+                {where_clause}
+                ORDER BY bucket_timestamp DESC
+                LIMIT ${param_idx}
+            '''
+
+            rows = await conn.fetch(query, *params)
+            return [dict(row) for row in rows]
+
+    async def get_latest_orderbook_signal(
+        self,
+        session_id: int,
+        market_ticker: str,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Get the most recent orderbook signal for a market in a session.
+
+        Args:
+            session_id: Session ID
+            market_ticker: Market ticker
+
+        Returns:
+            Latest signal dict or None if not found
+        """
+        async with self.get_connection() as conn:
+            row = await conn.fetchrow('''
+                SELECT * FROM orderbook_signals
+                WHERE session_id = $1 AND market_ticker = $2
+                ORDER BY bucket_timestamp DESC
+                LIMIT 1
+            ''', session_id, market_ticker)
+
+            return dict(row) if row else None
+
+    async def delete_old_orderbook_signals(
+        self,
+        older_than_days: int = 7,
+    ) -> int:
+        """
+        Delete orderbook signals older than specified days.
+
+        Used for periodic cleanup to prevent unbounded storage growth.
+
+        Args:
+            older_than_days: Delete signals older than this many days
+
+        Returns:
+            Number of signals deleted
+        """
+        async with self.get_connection() as conn:
+            try:
+                result = await conn.execute('''
+                    DELETE FROM orderbook_signals
+                    WHERE bucket_timestamp < CURRENT_TIMESTAMP - INTERVAL '%s days'
+                ''' % older_than_days)
+
+                deleted = int(result.split()[-1]) if result else 0
+                if deleted > 0:
+                    logger.info(f"Deleted {deleted} orderbook signals older than {older_than_days} days")
+                return deleted
+
+            except Exception as e:
+                logger.error(f"Failed to delete old orderbook signals: {e}")
+                return 0
+
+    async def get_orderbook_signal_stats(
+        self,
+        session_id: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """
+        Get statistics about stored orderbook signals.
+
+        Args:
+            session_id: Filter by session (None = all sessions)
+
+        Returns:
+            Dict with signal counts and date ranges
+        """
+        async with self.get_connection() as conn:
+            if session_id:
+                row = await conn.fetchrow('''
+                    SELECT
+                        COUNT(*) as total_signals,
+                        COUNT(DISTINCT market_ticker) as unique_markets,
+                        MIN(bucket_timestamp) as earliest_signal,
+                        MAX(bucket_timestamp) as latest_signal,
+                        AVG(snapshot_count) as avg_snapshots_per_bucket,
+                        AVG(delta_count) as avg_deltas_per_bucket
+                    FROM orderbook_signals
+                    WHERE session_id = $1
+                ''', session_id)
+            else:
+                row = await conn.fetchrow('''
+                    SELECT
+                        COUNT(*) as total_signals,
+                        COUNT(DISTINCT market_ticker) as unique_markets,
+                        COUNT(DISTINCT session_id) as unique_sessions,
+                        MIN(bucket_timestamp) as earliest_signal,
+                        MAX(bucket_timestamp) as latest_signal,
+                        AVG(snapshot_count) as avg_snapshots_per_bucket,
+                        AVG(delta_count) as avg_deltas_per_bucket
+                    FROM orderbook_signals
+                ''')
+
+            return dict(row) if row else {}
 
 
 # Global RL database instance

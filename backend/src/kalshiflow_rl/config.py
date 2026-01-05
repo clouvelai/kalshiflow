@@ -63,6 +63,11 @@ class RLConfig:
         self.ORDERBOOK_QUEUE_BATCH_SIZE: int = int(os.getenv("RL_ORDERBOOK_BATCH_SIZE", "100"))
         self.ORDERBOOK_QUEUE_FLUSH_INTERVAL: float = float(os.getenv("RL_ORDERBOOK_FLUSH_INTERVAL", "1.0"))
         self.ORDERBOOK_MAX_QUEUE_SIZE: int = int(os.getenv("RL_ORDERBOOK_MAX_QUEUE_SIZE", "10000"))
+
+        # Orderbook Delta Persistence (default: false for signal trading, true for RL data collection)
+        # When false, only snapshots are persisted (for debugging), deltas are in-memory only
+        # This reduces storage from ~8.6GB/month to ~60MB/month for 20 markets
+        self.V3_PERSIST_ORDERBOOK_DELTAS: bool = os.getenv("V3_PERSIST_ORDERBOOK_DELTAS", "false").lower() == "true"
         
         # WebSocket and Performance Settings
         # Aligned with Kalshi's 10-second ping interval - we ping at 20s

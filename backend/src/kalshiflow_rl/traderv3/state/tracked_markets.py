@@ -28,7 +28,7 @@ Architecture Position:
 import time
 import logging
 import asyncio
-from typing import Dict, Any, Optional, List, Set
+from typing import Dict, Any, Optional, List, Set, Callable, Awaitable
 from dataclasses import dataclass, field, asdict
 from enum import Enum
 
@@ -214,7 +214,31 @@ class TrackedMarketsState:
         self._created_at = time.time()
         self._last_update = time.time()
 
+        # Subscription callbacks for orderbook sync
+        # Called when markets are added/removed to keep subscriptions in sync
+        self._on_market_added: Optional[Callable[[str], Awaitable[bool]]] = None
+        self._on_market_removed: Optional[Callable[[str], Awaitable[bool]]] = None
+
         logger.info(f"TrackedMarketsState initialized (max_markets={max_markets})")
+
+    def set_subscription_callbacks(
+        self,
+        on_added: Optional[Callable[[str], Awaitable[bool]]] = None,
+        on_removed: Optional[Callable[[str], Awaitable[bool]]] = None,
+    ) -> None:
+        """
+        Register callbacks for orderbook subscription management.
+
+        These callbacks are invoked when markets are added/removed from tracking,
+        allowing automatic synchronization of orderbook subscriptions.
+
+        Args:
+            on_added: Async callback(ticker) called when a market is added
+            on_removed: Async callback(ticker) called when a market is removed
+        """
+        self._on_market_added = on_added
+        self._on_market_removed = on_removed
+        logger.info("Subscription callbacks registered on TrackedMarketsState")
 
     # ======== Market Management ========
 
@@ -228,31 +252,42 @@ class TrackedMarketsState:
         Returns:
             True if added successfully, False if at capacity or already tracked
         """
+        added = False
+        ticker = market.ticker
+
         async with self._lock:
             # Check if already tracked
-            if market.ticker in self._markets:
-                logger.debug(f"Market {market.ticker} already tracked")
+            if ticker in self._markets:
+                logger.debug(f"Market {ticker} already tracked")
                 return False
 
             # Check capacity
             active_count = sum(1 for m in self._markets.values() if m.status == MarketStatus.ACTIVE)
             if active_count >= self._max_markets:
-                logger.warning(f"At capacity ({active_count}/{self._max_markets}), rejecting {market.ticker}")
+                logger.warning(f"At capacity ({active_count}/{self._max_markets}), rejecting {ticker}")
                 self._markets_rejected_capacity += 1
                 return False
 
             # Add market
-            self._markets[market.ticker] = market
+            self._markets[ticker] = market
             self._version += 1
             self._last_update = time.time()
             self._markets_tracked_total += 1
+            added = True
 
             logger.info(
-                f"Market tracked: {market.ticker} ({market.category}) - "
+                f"Market tracked: {ticker} ({market.category}) - "
                 f"{len(self._markets)}/{self._max_markets}"
             )
 
-            return True
+        # Trigger subscription callback OUTSIDE lock to avoid deadlock
+        if added and self._on_market_added:
+            try:
+                await self._on_market_added(ticker)
+            except Exception as e:
+                logger.warning(f"Failed to subscribe to {ticker}: {e}")
+
+        return added
 
     async def update_market(self, ticker: str, **kwargs) -> bool:
         """
@@ -348,19 +383,31 @@ class TrackedMarketsState:
             The EventLifecycleService should update status to DETERMINED/SETTLED
             before calling this method.
         """
+        removed = False
+        status_value = None
+
         async with self._lock:
             if ticker not in self._markets:
                 return False
 
             market = self._markets[ticker]
-            status = market.status
+            status_value = market.status.value
 
             del self._markets[ticker]
             self._version += 1
             self._last_update = time.time()
+            removed = True
 
-            logger.info(f"Market removed from tracking: {ticker} (was {status.value})")
-            return True
+            logger.info(f"Market removed from tracking: {ticker} (was {status_value})")
+
+        # Trigger unsubscribe callback OUTSIDE lock to avoid deadlock
+        if removed and self._on_market_removed:
+            try:
+                await self._on_market_removed(ticker)
+            except Exception as e:
+                logger.warning(f"Failed to unsubscribe from {ticker}: {e}")
+
+        return removed
 
     def get_all(self) -> List[TrackedMarket]:
         """Get all tracked markets."""

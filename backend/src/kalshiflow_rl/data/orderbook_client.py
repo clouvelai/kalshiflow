@@ -56,9 +56,9 @@ class OrderbookClient:
             self.market_tickers = [market_tickers]
         elif market_tickers is None:
             # Use configured tickers (multi-market support)
-            self.market_tickers = config.RL_MARKET_TICKERS
+            self.market_tickers = list(config.RL_MARKET_TICKERS)  # Copy to avoid shared reference
         else:
-            self.market_tickers = market_tickers
+            self.market_tickers = list(market_tickers)  # Copy to avoid shared reference
             
         self.ws_url = config.KALSHI_WS_URL
         
@@ -255,6 +255,15 @@ class OrderbookClient:
     
     async def _subscribe_to_orderbook(self) -> None:
         """Subscribe to orderbook channels for all markets."""
+        # Skip subscription if no markets configured (lifecycle mode starts empty)
+        # Dynamic subscriptions will be added via subscribe_additional_markets()
+        if not self.market_tickers:
+            logger.info("No markets configured - skipping initial subscription (lifecycle mode)")
+            logger.info("Markets will be subscribed dynamically via TrackedMarketsState callbacks")
+            # Signal connection established - WebSocket is ready for dynamic subscriptions
+            self._connection_established.set()
+            return
+
         # Use same format as trades subscription but with orderbook_delta channel
         subscription_message = {
             "id": 1,
@@ -264,11 +273,11 @@ class OrderbookClient:
                 "market_tickers": self.market_tickers  # Array of market ticker strings
             }
         }
-        
+
         logger.info(f"Sending subscription: {json.dumps(subscription_message)}")
         await self._websocket.send(json.dumps(subscription_message))
         logger.info(f"Subscribed to orderbook_delta channel for {len(self.market_tickers)} markets: {', '.join(self.market_tickers)}")
-        
+
         # Signal that connection is established after successful subscription
         self._connection_established.set()
     

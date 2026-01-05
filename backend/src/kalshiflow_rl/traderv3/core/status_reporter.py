@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from ..clients.position_listener import PositionListener
     from ..clients.market_ticker_listener import MarketTickerListener
     from ..config.environment import V3Config
+    from ..state.tracked_markets import TrackedMarketsState
 
 logger = logging.getLogger("kalshiflow_rl.traderv3.core.status_reporter")
 
@@ -76,6 +77,9 @@ class V3StatusReporter:
 
         # Market price syncer (set after initialization via setter)
         self._market_price_syncer = None
+
+        # Tracked markets state (set after initialization via setter)
+        self._tracked_markets_state: Optional['TrackedMarketsState'] = None
 
         # Reporting state
         self._status_task: Optional[asyncio.Task] = None
@@ -141,6 +145,11 @@ class V3StatusReporter:
         self._market_price_syncer = market_price_syncer
         logger.debug("Market price syncer set on status reporter")
 
+    def set_tracked_markets_state(self, tracked_markets_state: 'TrackedMarketsState') -> None:
+        """Set the tracked markets state for metrics reporting."""
+        self._tracked_markets_state = tracked_markets_state
+        logger.debug("Tracked markets state set on status reporter")
+
     async def emit_status_update(self, context: str = "") -> None:
         """Emit status update event immediately."""
         try:
@@ -190,6 +199,18 @@ class V3StatusReporter:
             if self._trading_client_integration:
                 is_healthy = is_healthy and self._trading_client_integration.is_healthy()
             
+            # Get tracked markets count if available
+            tracked_markets_count = 0
+            if self._tracked_markets_state:
+                tracked_markets_count = self._tracked_markets_state.active_count
+
+            # Get actual OB subscription count from integration
+            # With proper sync callbacks, this should match tracked_markets_count
+            subscribed_markets = self._orderbook_integration.get_subscribed_market_count()
+
+            # Get signal aggregator stats
+            signal_aggregator_stats = orderbook_metrics.get("signal_aggregator")
+
             # Publish status event
             event = TraderStatusEvent(
                 event_type=EventType.TRADER_STATUS,
@@ -198,6 +219,8 @@ class V3StatusReporter:
                 metrics={
                     "uptime": uptime,
                     "state": self._state_machine.current_state.value,
+                    "tracked_markets": tracked_markets_count,
+                    "subscribed_markets": subscribed_markets,
                     "markets_connected": orderbook_metrics["markets_connected"],
                     "snapshots_received": orderbook_metrics["snapshots_received"],
                     "deltas_received": orderbook_metrics["deltas_received"],
@@ -214,7 +237,8 @@ class V3StatusReporter:
                     "first_snapshot_received": health_details.get("first_snapshot_received"),
                     "session_id": session_info.get("session_id"),
                     "session_state": session_info.get("session_state"),
-                    "health_state": session_info.get("health_state")
+                    "health_state": session_info.get("health_state"),
+                    "signal_aggregator": signal_aggregator_stats,
                 },
                 timestamp=time.time()
             )

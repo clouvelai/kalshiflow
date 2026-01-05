@@ -193,6 +193,91 @@ async def delete_sessions_with_confirmation(db: RLDatabase, session_ids: List[in
     print(f"\n📝 Deletion log saved to: {log_file}")
 
 
+async def delete_all_orderbook_data(db: RLDatabase, force: bool = False):
+    """
+    Delete ALL orderbook data - sessions, snapshots, and deltas.
+
+    This is a destructive operation for clean slate deployment.
+    Use with caution!
+    """
+    print("\n" + "=" * 80)
+    print("⚠️  WARNING: DELETE ALL ORDERBOOK DATA")
+    print("=" * 80)
+
+    # Get current statistics
+    stats = await db.get_session_statistics()
+
+    print(f"\n📊 DATA TO BE DELETED:")
+    print(f"   Total sessions:   {stats['total_sessions']}")
+    print(f"   Total snapshots:  {stats['total_snapshots']:,}")
+    print(f"   Total deltas:     {stats['total_deltas']:,}")
+
+    if stats['total_sessions'] == 0:
+        print("\n✅ No data to delete. Database is already clean.")
+        return
+
+    if not force:
+        print("\n⚠️  This will DELETE ALL orderbook data!")
+        print("   - All sessions will be removed")
+        print("   - All snapshots will be removed")
+        print("   - All deltas will be removed")
+        print("   - This action CANNOT be undone!")
+
+        if not await confirm_action("Are you SURE you want to delete ALL orderbook data?"):
+            print("❌ Deletion cancelled.")
+            return
+
+        # Double confirmation for destructive action
+        if not await confirm_action("Type 'yes' again to confirm COMPLETE DATA DELETION"):
+            print("❌ Deletion cancelled.")
+            return
+
+    print("\n🔄 Deleting all orderbook data...")
+
+    # Delete in order: deltas first (most data), then snapshots, then sessions
+    try:
+        # Execute direct SQL for bulk deletion (much faster than per-session)
+        pool = await db._ensure_pool()
+        async with pool.acquire() as conn:
+            # Delete deltas
+            deltas_result = await conn.execute("DELETE FROM rl_orderbook_deltas")
+            deltas_deleted = int(deltas_result.split()[-1]) if deltas_result else 0
+            print(f"   ✅ Deleted {deltas_deleted:,} deltas")
+
+            # Delete snapshots
+            snapshots_result = await conn.execute("DELETE FROM rl_orderbook_snapshots")
+            snapshots_deleted = int(snapshots_result.split()[-1]) if snapshots_result else 0
+            print(f"   ✅ Deleted {snapshots_deleted:,} snapshots")
+
+            # Delete sessions
+            sessions_result = await conn.execute("DELETE FROM rl_orderbook_sessions")
+            sessions_deleted = int(sessions_result.split()[-1]) if sessions_result else 0
+            print(f"   ✅ Deleted {sessions_deleted:,} sessions")
+
+        print(f"\n✅ ALL ORDERBOOK DATA DELETED")
+        print(f"   Sessions:  {sessions_deleted}")
+        print(f"   Snapshots: {snapshots_deleted:,}")
+        print(f"   Deltas:    {deltas_deleted:,}")
+
+        # Write deletion log
+        log_file = f"cleanup_all_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        with open(log_file, 'w') as f:
+            json.dump({
+                'timestamp': datetime.now().isoformat(),
+                'description': 'DELETE ALL ORDERBOOK DATA',
+                'sessions_deleted': sessions_deleted,
+                'snapshots_deleted': snapshots_deleted,
+                'deltas_deleted': deltas_deleted,
+                'previous_stats': stats
+            }, f, indent=2, default=str)
+
+        print(f"\n📝 Deletion log saved to: {log_file}")
+
+    except Exception as e:
+        print(f"\n❌ Error during deletion: {e}")
+        raise
+
+
 async def generate_report(db: RLDatabase):
     """Generate comprehensive cleanup report."""
     print("\n" + "=" * 80)
@@ -312,6 +397,8 @@ Examples:
                        help='Delete all empty sessions')
     parser.add_argument('--delete-test', action='store_true',
                        help='Delete all test sessions')
+    parser.add_argument('--delete-all-orderbook-data', action='store_true',
+                       help='⚠️ DELETE ALL orderbook data (sessions, snapshots, deltas) for clean slate')
     
     # Report operations
     parser.add_argument('--report', action='store_true',
@@ -354,7 +441,10 @@ Examples:
             test = await db.get_test_sessions()
             session_ids = [s['session_id'] for s in test]
             await delete_sessions_with_confirmation(db, session_ids, "test sessions")
-        
+
+        elif args.delete_all_orderbook_data:
+            await delete_all_orderbook_data(db, force=args.force)
+
         elif args.report:
             await generate_report(db)
         

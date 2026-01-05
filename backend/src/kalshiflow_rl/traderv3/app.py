@@ -99,16 +99,12 @@ async def lifespan(app):
         
         # 4. Select market tickers (discovery or config mode)
         if config.market_tickers == ["DISCOVERY"]:
-            # Discovery mode - fetch active markets
-            logger.info(f"Discovery mode: fetching up to {config.max_markets} active markets...")
-            from kalshiflow_rl.data.market_discovery import fetch_active_markets
-            discovered_tickers = await fetch_active_markets(limit=config.max_markets)
-            if discovered_tickers:
-                market_tickers = discovered_tickers
-                logger.info(f"Discovered {len(discovered_tickers)} active markets")
-            else:
-                logger.warning("No active markets discovered, using default")
-                market_tickers = ["INXD-25JAN03"]
+            # Discovery/Lifecycle mode - start with EMPTY tickers
+            # TrackedMarketsState will manage subscriptions via callbacks
+            # This prevents duplicate subscription tracking
+            logger.info("Discovery/Lifecycle mode: starting with empty orderbook subscriptions")
+            logger.info("TrackedMarketsState will control subscriptions via callbacks")
+            market_tickers = []
         else:
             # Config mode - use specified tickers
             market_tickers = config.market_tickers
@@ -150,7 +146,10 @@ async def lifespan(app):
             
             # Start the trading client integration
             await trading_client_integration.start()
-            
+
+            # Wire trading client to orderbook integration for REST fallback
+            orderbook_integration.set_trading_client(trading_client)
+
             logger.info(f"Trading client integration created (max_orders={config.trading_max_orders}, max_position={config.trading_max_position_size})")
         else:
             logger.info("Trading client disabled - orderbook only mode")
