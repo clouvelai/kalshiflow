@@ -5,6 +5,8 @@ import { useState, useEffect, useRef, useCallback } from 'react';
  */
 const INITIAL_METRICS = {
   markets_connected: 0,
+  tracked_markets: 0,
+  subscribed_markets: 0,
   snapshots_received: 0,
   deltas_received: 0,
   uptime: 0,
@@ -13,7 +15,8 @@ const INITIAL_METRICS = {
   last_ping_age: null,
   api_connected: false,
   api_url: null,
-  ws_url: null
+  ws_url: null,
+  signal_aggregator: null
 };
 
 /**
@@ -294,6 +297,8 @@ export const useV3WebSocket = ({ onMessage }) => {
         if (data.data.metrics) {
           setMetrics(prev => ({
             markets_connected: data.data.metrics.markets_connected || 0,
+            tracked_markets: data.data.metrics.tracked_markets || 0,
+            subscribed_markets: data.data.metrics.subscribed_markets || 0,
             snapshots_received: data.data.metrics.snapshots_received || 0,
             deltas_received: data.data.metrics.deltas_received || 0,
             uptime: data.data.metrics.uptime || 0,
@@ -302,7 +307,8 @@ export const useV3WebSocket = ({ onMessage }) => {
             last_ping_age: data.data.metrics.last_ping_age || null,
             api_connected: data.data.metrics.api_connected || prev.api_connected,
             api_url: data.data.metrics.api_url || prev.api_url,
-            ws_url: data.data.metrics.ws_url || prev.ws_url
+            ws_url: data.data.metrics.ws_url || prev.ws_url,
+            signal_aggregator: data.data.metrics.signal_aggregator || null
           }));
         }
         if (data.data.state) {

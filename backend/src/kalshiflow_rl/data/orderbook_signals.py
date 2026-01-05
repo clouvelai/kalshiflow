@@ -23,8 +23,8 @@ from .database import rl_db
 logger = logging.getLogger("kalshiflow_rl.orderbook_signals")
 
 
-# Threshold for "large order" detection
-LARGE_ORDER_THRESHOLD = 1000
+# Threshold for "large order" detection (whale = 10k+ contracts)
+LARGE_ORDER_THRESHOLD = 10000
 
 
 @dataclass
@@ -139,9 +139,8 @@ class BucketState:
             + list(yes_bids.values())
             + list(yes_asks.values())
         )
-        large_orders = sum(1 for size in all_sizes if size >= LARGE_ORDER_THRESHOLD)
-        if large_orders > 0:
-            self.large_order_count += large_orders
+        # Track current large order count (not cumulative)
+        self.large_order_count = sum(1 for size in all_sizes if size >= LARGE_ORDER_THRESHOLD)
 
     def increment_delta_count(self) -> None:
         """Increment delta count when a delta is processed."""
@@ -241,6 +240,10 @@ class OrderbookSignalAggregator:
         # Market ticker -> current bucket state
         self._buckets: Dict[str, BucketState] = {}
 
+        # Market ticker -> last completed bucket signals (for UI display)
+        # This ensures we always have data to show even right after bucket flush
+        self._last_completed: Dict[str, Dict[str, Any]] = {}
+
         # Completed buckets waiting to be flushed
         self._pending_flush: List[Dict[str, Any]] = []
 
@@ -301,6 +304,9 @@ class OrderbookSignalAggregator:
         signal_data = bucket.to_signal_data()
         signal_data["market_ticker"] = market_ticker
         signal_data["bucket_timestamp"] = bucket.bucket_start
+
+        # Save for UI display (so we always have recent data to show)
+        self._last_completed[market_ticker] = signal_data.copy()
 
         self._pending_flush.append(signal_data)
         logger.debug(
@@ -437,20 +443,25 @@ class OrderbookSignalAggregator:
 
     def get_current_bucket_signals(self, market_ticker: str) -> Optional[Dict[str, Any]]:
         """
-        Get the current (in-progress) bucket's signal data for a market.
+        Get the best available signal data for a market.
 
-        Returns the live aggregated data within the current 10-second window.
+        Returns current bucket if it has data, otherwise returns the last
+        completed bucket. This ensures we always have signals to display
+        even right after a bucket flush.
 
         Args:
             market_ticker: Market ticker to get signals for
 
         Returns:
-            Signal data dict or None if no bucket exists
+            Signal data dict or None if no data available
         """
+        # Try current bucket first
         bucket = self._buckets.get(market_ticker)
-        if bucket is None:
-            return None
-        return bucket.to_signal_data()
+        if bucket is not None and bucket.snapshot_count > 0:
+            return bucket.to_signal_data()
+
+        # Fall back to last completed bucket (always has data if it exists)
+        return self._last_completed.get(market_ticker)
 
 
 # Global aggregator instance (lazy initialized)

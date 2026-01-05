@@ -885,7 +885,7 @@ The Signal Aggregation System provides lightweight, time-bucketed orderbook metr
 - **Configuration**:
   - `bucket_seconds`: Size of each bucket (default: 10 seconds)
   - `flush_interval`: How often to flush to DB (default: 10 seconds)
-  - `LARGE_ORDER_THRESHOLD`: Contracts threshold for whale detection (default: 1000)
+  - `LARGE_ORDER_THRESHOLD`: Contracts threshold for whale detection (default: 10,000)
 - **Dependencies**: RLDatabase
 
 #### Signal Data Schema (Per 10-Second Bucket)
@@ -897,7 +897,7 @@ The Signal Aggregation System provides lightweight, time-bucketed orderbook metr
 | **NO Volume** | `no_bid_volume_avg`, `no_ask_volume_avg`, `no_imbalance_ratio` | Average NO bid/ask volume; imbalance = bid/(bid+ask) |
 | **YES Volume** | `yes_bid_volume_avg`, `yes_ask_volume_avg`, `yes_imbalance_ratio` | Average YES bid/ask volume; imbalance = bid/(bid+ask) |
 | **BBO Depth** | `no_bid_size_at_bbo_avg`, `no_ask_size_at_bbo_avg`, `yes_bid_size_at_bbo_avg`, `yes_ask_size_at_bbo_avg` | Average best bid/offer sizes (contracts) |
-| **Activity** | `snapshot_count`, `delta_count`, `large_order_count` | Snapshots processed, deltas received, orders >= 1000 contracts |
+| **Activity** | `snapshot_count`, `delta_count`, `large_order_count` | Snapshots processed, deltas received, whale orders >= 10,000 contracts |
 
 **Imbalance Ratio Formula**: `bid_vol / (bid_vol + ask_vol)`
 - Values > 0.5 indicate more buying pressure (bid-heavy)
@@ -1021,15 +1021,19 @@ Market cards display live orderbook signals via `rlm_market_state` WebSocket mes
 
 | UI Label | Signal Field | Description |
 |----------|--------------|-------------|
-| Imbalance | `no_imbalance_ratio` | Percentage (e.g., "45%") with color coding |
+| Imbalance | `no_imbalance_ratio` | Percentage (e.g., "55%") with color coding |
 | Activity | `delta_count` | Delta count within current 10s bucket |
-| Spread | `no_spread_close` | Current NO spread in cents |
-| Whales | `large_order_count` | Orders >= 1000 contracts in bucket |
+| Spread | `no_spread_close` vs `no_spread_open` | Spread trend with arrow indicator |
+| BBO Depth | `no_bid_size_at_bbo_avg` / `no_ask_size_at_bbo_avg` | Best bid/ask sizes (e.g., "1.2k/800 depth") |
+| Whales | `large_order_count` | Whale indicator when >= 10,000 contracts detected |
 
 **Color Coding**:
-- Imbalance < 0.4: Red (sell pressure)
-- Imbalance > 0.6: Green (buy pressure)
-- Imbalance 0.4-0.6: Neutral gray
+- Imbalance < 0.45: Red (sell pressure / bearish)
+- Imbalance > 0.55: Green (buy pressure / bullish)
+- Imbalance 0.45-0.55: Neutral gray
+- Spread narrowing: Green arrow down
+- Spread widening: Red arrow up
+- BBO Depth bid: Green text, ask: Red text
 
 ### 3.10 RLM Trading Strategy (`traderv3/services/`)
 
@@ -1069,6 +1073,127 @@ Market cards display live orderbook signals via `rlm_market_state` WebSocket mes
 - **Emits Events**: `SYSTEM_ACTIVITY` (rlm_signal, rlm_execute types), `RLM_MARKET_UPDATE`, `RLM_TRADE_ARRIVED`
 - **Subscribes To**: `PUBLIC_TRADE_RECEIVED`, `MARKET_TRACKED`, `MARKET_DETERMINED`
 - **Dependencies**: EventBus, TradingDecisionService, V3StateContainer, TrackedMarketsState, V3OrderbookIntegration (optional)
+
+### 3.11 Signal Broadcaster System
+
+The Signal Broadcaster solves the "quiet markets" problem: markets without trades still need orderbook signal updates for the frontend. Without it, markets with no trade activity would never receive signal data.
+
+#### Signal Broadcaster (in RLMService)
+- **File**: `services/rlm_service.py`
+- **Purpose**: Periodic background task that broadcasts orderbook signals for ALL tracked markets, regardless of trade activity
+- **Key Methods**:
+  - `_run_signal_broadcaster()` - Background asyncio task loop
+  - `_broadcast_orderbook_signals()` - Emit signals for all tracked markets
+  - `set_orderbook_integration(integration)` - Inject V3OrderbookIntegration for signal access
+- **Key Fields**:
+  - `_signal_broadcaster_task`: Background asyncio.Task
+  - `_signal_broadcast_interval`: 10.0 seconds (aligned with bucket flush)
+  - `_orderbook_integration`: Reference to V3OrderbookIntegration
+- **Broadcast Logic**:
+  1. Get all active tickers from TrackedMarketsState
+  2. For each ticker, call `get_orderbook_signals(ticker)` from OrderbookIntegration
+  3. If signals exist with `snapshot_count > 0`:
+     - Get existing RLM state (or create minimal state for markets without trades)
+     - Inject `orderbook_signals` into state dict
+     - Emit `RLM_MARKET_UPDATE` event
+- **Design Decisions**:
+  - Runs every 10 seconds (aligned with OrderbookSignalAggregator bucket flush)
+  - Uses `_last_completed` pattern from aggregator for continuous data availability
+  - Markets without any trades get minimal state with `yes_trades=0, no_trades=0`
+  - Errors are logged but don't stop the broadcaster (fault-tolerant)
+
+#### _last_completed Pattern (OrderbookSignalAggregator)
+
+The `_last_completed` dict ensures continuous signal availability:
+
+```python
+# In OrderbookSignalAggregator
+self._last_completed: Dict[str, Dict[str, Any]] = {}
+
+def get_current_bucket_signals(self, market_ticker: str) -> Optional[Dict[str, Any]]:
+    # Try current bucket first
+    bucket = self._buckets.get(market_ticker)
+    if bucket is not None and bucket.snapshot_count > 0:
+        return bucket.to_signal_data()
+
+    # Fall back to last completed bucket (always has data if it exists)
+    return self._last_completed.get(market_ticker)
+```
+
+**Why this matters**: Right after a bucket flush, the current bucket is empty (`snapshot_count=0`). Without `_last_completed`, the frontend would see no signals for up to 10 seconds. With this pattern, we always return the most recent completed bucket data.
+
+#### Signal Broadcaster Data Flow
+
+```
+1. [Background Task] Every 10 seconds: _run_signal_broadcaster()
+        |
+2. [RLMService] _broadcast_orderbook_signals()
+        | Get all active tickers from TrackedMarketsState
+        |
+3. [V3OrderbookIntegration] get_orderbook_signals(ticker)
+        | Calls aggregator.get_current_bucket_signals(ticker)
+        |
+4. [OrderbookSignalAggregator] Returns current bucket OR _last_completed
+        |
+5. [RLMService] Inject signals into rlm state dict
+        |
+6. [EventBus] emit_rlm_market_update()
+        |
+7. [V3WebSocketManager] Broadcast to frontend clients
+        |
+8. [Frontend] LifecycleMarketCard receives orderbook_signals
+```
+
+#### Frontend Display (OrderbookSignalsDisplay Component)
+- **File**: `frontend/src/components/lifecycle/LifecycleMarketCard.jsx`
+- **Purpose**: Displays live orderbook signals in market cards
+- **Signal Fields Displayed**:
+
+| UI Label | Signal Field | Format | Color Logic |
+|----------|--------------|--------|-------------|
+| Imbalance | `no_imbalance_ratio` | "55%" | Green if >55% (bullish), Red if <45% (bearish), Gray if neutral |
+| Activity | `delta_count` | "12 delta" | Always gray |
+| Spread | `no_spread_close` vs `no_spread_open` | Arrow + value | Green arrow if narrowing, Red if widening |
+| BBO Depth | `no_bid_size_at_bbo_avg` / `no_ask_size_at_bbo_avg` | "1.2k/800 depth" | Green for bid, Red for ask |
+| Whales | `large_order_count` | Whale emoji + count | Pulsing amber badge when > 0 |
+
+- **Whale Detection**: Orders with >= 10,000 contracts trigger the whale indicator
+- **Format Functions**:
+  - `formatVolume(size)`: Formats large numbers (e.g., 1234 -> "1.2k")
+- **Skip Logic**: Component returns null if `snapshot_count === 0` (no data yet)
+
+#### trader_status Signal Aggregator Stats
+
+The `trader_status` WebSocket message includes signal aggregator statistics:
+
+```json
+{
+  "type": "trader_status",
+  "data": {
+    "metrics": {
+      "signal_aggregator": {
+        "running": true,
+        "session_id": 42,
+        "bucket_seconds": 10,
+        "active_buckets": 15,
+        "pending_flush": 0,
+        "signals_flushed": 1250,
+        "snapshots_processed": 45000
+      }
+    }
+  }
+}
+```
+
+| Stat | Description |
+|------|-------------|
+| `running` | Whether aggregator is active |
+| `session_id` | Database session ID |
+| `bucket_seconds` | Bucket size (default 10) |
+| `active_buckets` | Markets currently being tracked |
+| `pending_flush` | Buckets waiting for DB insert |
+| `signals_flushed` | Total buckets persisted to DB |
+| `snapshots_processed` | Total snapshots aggregated |
 
 ## 4. State Machine
 
@@ -1846,10 +1971,24 @@ Sent on client connect and when tracked markets state changes.
     "price_drop": 6,
     "position_contracts": 0,
     "signal_trigger_count": 0,
+    "orderbook_signals": {
+      "no_spread_open": 3,
+      "no_spread_high": 4,
+      "no_spread_low": 2,
+      "no_spread_close": 3,
+      "no_imbalance_ratio": 0.55,
+      "no_bid_size_at_bbo_avg": 1200,
+      "no_ask_size_at_bbo_avg": 800,
+      "delta_count": 12,
+      "snapshot_count": 5,
+      "large_order_count": 1
+    },
     "timestamp": "12:34:56"
   }
 }
 ```
+
+**orderbook_signals Field**: Injected by Signal Broadcaster every 10 seconds for ALL tracked markets (even those without trades). See Section 3.11 for details.
 
 #### rlm_trade_arrived Message Format
 

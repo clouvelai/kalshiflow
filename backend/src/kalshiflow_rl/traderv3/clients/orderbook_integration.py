@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from ...data.orderbook_client import OrderbookClient
 from ...data.orderbook_state import get_shared_orderbook_state
 from ...data.orderbook_signals import OrderbookSignalAggregator
-from ..core.event_bus import EventBus, EventType, MarketEvent
+from ..core.event_bus import EventBus
 
 logger = logging.getLogger("kalshiflow_rl.traderv3.clients.orderbook_integration")
 
@@ -65,7 +65,7 @@ class V3OrderbookIntegration:
         """
         self._client = orderbook_client
         self._event_bus = event_bus  # V3's internal event bus
-        self._market_tickers = market_tickers
+        self._market_tickers = list(market_tickers)  # Copy to avoid shared reference with OrderbookClient
         self._signal_aggregator = signal_aggregator
         self._enable_signal_aggregation = enable_signal_aggregation
         self._aggregator_initialized = signal_aggregator is not None
@@ -239,10 +239,7 @@ class V3OrderbookIntegration:
             await self._signal_aggregator.stop()
             logger.info("✅ Signal aggregator stopped")
 
-        # Cleanup: Event bus clears all subscribers on stop, so explicit unsubscribe isn't needed
-        # If we needed to unsubscribe without stopping event bus, we would do:
-        # self._event_bus.unsubscribe(EventType.ORDERBOOK_SNAPSHOT, self._snapshot_callback)
-        # self._event_bus.unsubscribe(EventType.ORDERBOOK_DELTA, self._delta_callback)
+        # Note: Event bus clears all subscribers on stop, so explicit unsubscribe is not needed
 
         # Cancel the client task before stopping the client
         if self._client_task and not self._client_task.done():
@@ -444,9 +441,17 @@ class V3OrderbookIntegration:
             else:  # More than 5 minutes = unhealthy
                 ping_health = "unhealthy"
         
+        # Get signal aggregator stats
+        signal_stats = None
+        if self._signal_aggregator:
+            signal_stats = self._signal_aggregator.get_stats()
+
         return {
             "healthy": self.is_healthy(),
             "running": self._running,
+            # Orderbook subscriptions (actual subscribed markets, not universe)
+            "subscribed_markets": self._client.get_subscribed_market_count() if self._client else 0,
+            # Legacy fields (kept for backwards compatibility, may be removed later)
             "markets_connected": metrics["markets_connected"],
             "snapshots_received": metrics["snapshots_received"],
             "deltas_received": metrics["deltas_received"],
@@ -458,6 +463,12 @@ class V3OrderbookIntegration:
             # Ping/heartbeat health
             "ping_health": ping_health,
             "last_ping_age_seconds": last_ping_age,
+            # Signal aggregator stats
+            "signal_aggregator": {
+                "active_buckets": signal_stats["active_buckets"] if signal_stats else 0,
+                "signals_flushed": signal_stats["signals_flushed"] if signal_stats else 0,
+                "snapshots_processed": signal_stats["snapshots_processed"] if signal_stats else 0,
+            } if signal_stats else None,
             # Return timestamp strings for display in console
             "connection_established": time.strftime("%H:%M:%S", time.localtime(self._connection_established_time)) if self._connection_established_time else None,
             "first_snapshot_received": time.strftime("%H:%M:%S", time.localtime(self._first_snapshot_time)) if self._first_snapshot_time else None
@@ -671,7 +682,7 @@ class V3OrderbookIntegration:
         Returns:
             True if REST refresh happened, False otherwise
         """
-        from src.kalshiflow_rl.data.orderbook_state import get_shared_orderbook_state
+        from ...data.orderbook_state import get_shared_orderbook_state
 
         # Check if we have a trading client for REST fallback
         if self._trading_client is None:

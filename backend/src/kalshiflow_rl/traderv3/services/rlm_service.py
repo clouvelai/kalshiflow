@@ -30,7 +30,7 @@ from typing import Dict, Any, Optional, List, Set, TYPE_CHECKING
 from ..core.event_bus import EventBus, EventType, PublicTradeEvent, MarketDeterminedEvent, TMOFetchedEvent
 from ..core.state_machine import TraderState
 from ...data.orderbook_state import get_shared_orderbook_state
-from ..state.order_context import OrderbookContext, SpreadTier, BBODepthTier
+from ..state.order_context import OrderbookContext, BBODepthTier
 
 if TYPE_CHECKING:
     from ..services.trading_decision_service import TradingDecisionService, TradingDecision
@@ -367,6 +367,10 @@ class RLMService:
         # Orderbook integration for signal data (set via set_orderbook_integration)
         self._orderbook_integration: Optional['V3OrderbookIntegration'] = None
 
+        # Background task for periodic orderbook signal broadcast
+        self._signal_broadcaster_task: Optional[asyncio.Task] = None
+        self._signal_broadcast_interval = 10.0  # Broadcast every 10 seconds (aligned with bucket flush)
+
         logger.info(
             f"RLMService initialized: yes_threshold={yes_threshold:.0%}, "
             f"min_trades={min_trades}, min_price_drop={min_price_drop}c, "
@@ -396,6 +400,13 @@ class RLMService:
         await self._event_bus.subscribe_to_tmo_fetched(self._handle_tmo_fetched)
         logger.info("Subscribed to TMO_FETCHED events for price improvement")
 
+        # Start orderbook signal broadcaster task
+        self._signal_broadcaster_task = asyncio.create_task(
+            self._run_signal_broadcaster(),
+            name="rlm_signal_broadcaster"
+        )
+        logger.info("Started orderbook signal broadcaster task")
+
         # Emit startup event
         await self._event_bus.emit_system_activity(
             activity_type="strategy_start",
@@ -417,6 +428,16 @@ class RLMService:
 
         logger.info("Stopping RLMService...")
         self._running = False
+
+        # Cancel signal broadcaster task
+        if self._signal_broadcaster_task and not self._signal_broadcaster_task.done():
+            self._signal_broadcaster_task.cancel()
+            try:
+                await self._signal_broadcaster_task
+            except asyncio.CancelledError:
+                pass
+            logger.debug("Signal broadcaster task cancelled")
+        self._signal_broadcaster_task = None
 
         # Unsubscribe from EventBus to prevent stale handlers
         self._event_bus.unsubscribe(EventType.PUBLIC_TRADE_RECEIVED, self._handle_public_trade)
@@ -458,6 +479,70 @@ class RLMService:
         """
         self._orderbook_integration = integration
         logger.info("OrderbookIntegration set on RLMService for signal broadcasts")
+
+    async def _run_signal_broadcaster(self) -> None:
+        """
+        Periodically broadcast orderbook signals for all tracked markets.
+
+        This ensures markets receive orderbook signal updates even when no trades
+        occur. Runs every 10 seconds, aligned with signal aggregator bucket flush.
+        """
+        logger.info(f"Starting orderbook signal broadcaster (interval={self._signal_broadcast_interval}s)")
+
+        while self._running:
+            try:
+                await asyncio.sleep(self._signal_broadcast_interval)
+                if not self._running:
+                    break
+                await self._broadcast_orderbook_signals()
+            except asyncio.CancelledError:
+                logger.info("Signal broadcaster task cancelled")
+                break
+            except Exception as e:
+                logger.error(f"Error in signal broadcaster: {e}")
+                # Continue running despite errors
+
+        logger.info("Signal broadcaster stopped")
+
+    async def _broadcast_orderbook_signals(self) -> None:
+        """
+        Emit orderbook signals for all tracked markets with data.
+
+        Sends rlm_market_update for each market that has orderbook signals,
+        ensuring the frontend receives signal data regardless of trade activity.
+        """
+        if not self._orderbook_integration:
+            return
+
+        # Get ALL tracked markets, not just those with trades
+        tracked_tickers = self._tracked_markets_state.get_active_tickers()
+
+        broadcast_count = 0
+        for market_ticker in tracked_tickers:
+            signals = self._orderbook_integration.get_orderbook_signals(market_ticker)
+            if signals and signals.get("snapshot_count", 0) > 0:
+                # Get existing state or create minimal state for markets without trades
+                state = self._market_states.get(market_ticker)
+                if state:
+                    state_dict = state.to_dict()
+                else:
+                    # Create minimal state for markets without trades
+                    state_dict = {
+                        "market_ticker": market_ticker,
+                        "yes_trades": 0,
+                        "no_trades": 0,
+                        "total_trades": 0,
+                        "yes_ratio": 0.0,
+                    }
+                state_dict["orderbook_signals"] = signals
+                await self._event_bus.emit_rlm_market_update(
+                    market_ticker=market_ticker,
+                    state=state_dict,
+                )
+                broadcast_count += 1
+
+        if broadcast_count > 0:
+            logger.debug(f"Broadcast orderbook signals for {broadcast_count} markets")
 
     async def _handle_public_trade(self, trade_event: PublicTradeEvent) -> None:
         """

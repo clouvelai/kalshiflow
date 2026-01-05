@@ -508,6 +508,123 @@ const ProgressBar = memo(({ totalTrades, signalReady, progressPercent, threshold
 ProgressBar.displayName = 'ProgressBar';
 
 /**
+ * OrderbookSignalsDisplay - Shows live orderbook signals (imbalance, activity, spread, depth)
+ *
+ * Displays:
+ * - Imbalance ratio (bid/ask volume pressure, 0-100%)
+ * - Activity level (delta count in current 10-sec bucket)
+ * - Spread trend (widening/narrowing vs bucket open)
+ * - BBO depth (best bid/ask sizes - liquidity indicator)
+ */
+const OrderbookSignalsDisplay = memo(({ signals }) => {
+  if (!signals) return null;
+
+  // Extract key metrics from 10-second bucket data
+  const imbalance = signals.no_imbalance_ratio ?? 0.5;  // 0.5 = neutral
+  const activity = signals.delta_count ?? 0;
+  const spreadClose = signals.no_spread_close;
+  const spreadOpen = signals.no_spread_open;
+  const snapshotCount = signals.snapshot_count ?? 0;
+  const largeOrders = signals.large_order_count ?? 0;  // Whale orders (10k+ contracts)
+
+  // BBO depth (best bid/offer sizes)
+  const bboBidSize = signals.no_bid_size_at_bbo_avg;
+  const bboAskSize = signals.no_ask_size_at_bbo_avg;
+
+  // Skip if no meaningful data yet
+  if (snapshotCount === 0) return null;
+
+  // Determine imbalance direction (>0.55 = bullish bid pressure, <0.45 = bearish)
+  const imbalanceDirection = imbalance > 0.55 ? 'bullish' : imbalance < 0.45 ? 'bearish' : 'neutral';
+
+  // Spread trend (positive = widening, negative = narrowing)
+  const spreadTrend = spreadOpen != null && spreadClose != null ? spreadClose - spreadOpen : null;
+
+  // Format size for display (1.2k format for values >= 1000)
+  const formatSize = (size) => {
+    if (size == null) return '-';
+    if (size >= 1000) return `${(size / 1000).toFixed(1)}k`;
+    return size.toString();
+  };
+
+  // Check if we have BBO depth data
+  const hasBboDepth = bboBidSize != null || bboAskSize != null;
+
+  return (
+    <div className="mt-2 pt-2 border-t border-gray-700/30">
+      <div className="flex items-center gap-3 text-[11px] flex-wrap">
+        {/* Imbalance indicator - shows bid/ask volume pressure */}
+        <span className={`
+          flex items-center gap-1 px-1.5 py-0.5 rounded
+          ${imbalanceDirection === 'bullish'
+            ? 'text-emerald-400 bg-emerald-500/10'
+            : imbalanceDirection === 'bearish'
+              ? 'text-red-400 bg-red-500/10'
+              : 'text-gray-400 bg-gray-500/10'
+          }
+        `}>
+          <span className="font-mono font-medium">{(imbalance * 100).toFixed(0)}%</span>
+          <span className="text-gray-500 text-[10px]">imbal</span>
+        </span>
+
+        {/* Activity level - delta count shows orderbook changes */}
+        {activity > 0 && (
+          <span className="flex items-center gap-1 text-gray-400">
+            <span className="font-mono">{activity}</span>
+            <span className="text-gray-500 text-[10px]">delta</span>
+          </span>
+        )}
+
+        {/* Spread trend - widening (bad) vs narrowing (good) */}
+        {spreadTrend !== null && spreadTrend !== 0 && (
+          <span className={`
+            flex items-center gap-1 px-1.5 py-0.5 rounded
+            ${spreadTrend > 0
+              ? 'text-red-400 bg-red-500/10'      // Widening = bad
+              : 'text-emerald-400 bg-emerald-500/10'  // Narrowing = good
+            }
+          `}>
+            <span className="font-mono font-medium">
+              {spreadTrend > 0 ? '+' : ''}{spreadTrend}c
+            </span>
+            <span className="text-gray-500 text-[10px]">sprd</span>
+          </span>
+        )}
+
+        {/* BBO Depth - shows liquidity at best bid/ask */}
+        {hasBboDepth && (
+          <span className="
+            flex items-center gap-1 px-1.5 py-0.5 rounded
+            text-blue-400 bg-blue-500/10
+          ">
+            <span className="font-mono">
+              <span className="text-emerald-400">{formatSize(bboBidSize)}</span>
+              <span className="text-gray-500 mx-0.5">/</span>
+              <span className="text-red-400">{formatSize(bboAskSize)}</span>
+            </span>
+            <span className="text-gray-500 text-[10px]">depth</span>
+          </span>
+        )}
+
+        {/* Whale alert - orders >= 10k contracts */}
+        {largeOrders > 0 && (
+          <span className="
+            flex items-center gap-1 px-1.5 py-0.5 rounded
+            text-amber-400 bg-amber-500/15 border border-amber-500/30
+            animate-pulse
+          ">
+            <span className="text-sm">🐋</span>
+            <span className="font-mono font-bold">{largeOrders}</span>
+          </span>
+        )}
+      </div>
+    </div>
+  );
+});
+
+OrderbookSignalsDisplay.displayName = 'OrderbookSignalsDisplay';
+
+/**
  * ExpandedDetails - Additional details shown when card is expanded
  */
 const ExpandedDetails = memo(({ market, midPrice, priceDelta }) => (
@@ -819,6 +936,7 @@ const LifecycleMarketCard = ({ market, rlmState, tradePulse, rlmConfig }) => {
   const trueMarketOpen = rlmState?.true_market_open;  // TMO from candlestick API
   const priceDrop = rlmState?.price_drop || 0;
   const signalTriggerCount = rlmState?.signal_trigger_count || 0;
+  const orderbookSignals = rlmState?.orderbook_signals;
 
   // RLM strategy thresholds from backend config (with sensible fallbacks)
   const minTrades = rlmConfig?.min_trades || 25;
@@ -993,6 +1111,9 @@ const LifecycleMarketCard = ({ market, rlmState, tradePulse, rlmConfig }) => {
           threshold={minTrades}
           signalTriggerCount={signalTriggerCount}
         />
+
+        {/* Orderbook Signals */}
+        <OrderbookSignalsDisplay signals={orderbookSignals} />
       </div>
 
       {/* Trading State - Orders, Positions, P&L */}
