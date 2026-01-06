@@ -25,7 +25,7 @@ import asyncio
 import logging
 import os
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Set
 
@@ -313,12 +313,13 @@ class StrategyCoordinator:
                 # Instantiate strategy
                 strategy = strategy_cls()
 
-                # Start strategy with context
-                await strategy.start(self._context)
+                # Create strategy-specific context with config
+                strategy_context = replace(self._context, config=config)
+                await strategy.start(strategy_context)
 
                 self._strategies[name] = strategy
                 started += 1
-                logger.info(f"Started strategy: {name} ({config.display_name})")
+                logger.info(f"Started strategy: {name} (config: {config.name})")
 
             except Exception as e:
                 logger.error(f"Failed to start strategy '{name}': {e}", exc_info=True)
@@ -352,10 +353,13 @@ class StrategyCoordinator:
                 return False
 
             strategy = strategy_cls()
-            await strategy.start(self._context)
+
+            # Create strategy-specific context with config
+            strategy_context = replace(self._context, config=config)
+            await strategy.start(strategy_context)
 
             self._strategies[name] = strategy
-            logger.info(f"Started strategy: {name}")
+            logger.info(f"Started strategy: {name} (config loaded: {config.name})")
             return True
 
         except Exception as e:

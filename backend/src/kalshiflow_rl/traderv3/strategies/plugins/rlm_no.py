@@ -402,11 +402,36 @@ class RLMNoStrategy:
         if not self._context:
             return
 
-        # Try to get config from coordinator (if passed via context)
-        # The coordinator stores configs and we can access them
-        # For now, use YAML defaults defined in __init__
-        # TODO: Add coordinator reference to context for config lookup
-        logger.debug("Using default configuration (coordinator config lookup not yet implemented)")
+        if not self._context.config:
+            logger.warning(
+                "No config in context - using HARDCODED DEFAULTS! "
+                f"contracts={self._contracts_per_trade}, threshold={self._yes_threshold}"
+            )
+            return
+
+        config = self._context.config
+        params = config.params
+
+        # Load all parameters from YAML config
+        self._yes_threshold = params.get("yes_threshold", self._yes_threshold)
+        self._min_trades = params.get("min_trades", self._min_trades)
+        self._min_price_drop = params.get("min_price_drop", self._min_price_drop)
+        self._contracts_per_trade = params.get("contracts_per_trade", self._contracts_per_trade)
+        self._max_concurrent = params.get("max_concurrent", self._max_concurrent)
+        self._allow_reentry = params.get("allow_reentry", self._allow_reentry)
+        self._orderbook_timeout = params.get("orderbook_timeout", self._orderbook_timeout)
+        self._tight_spread = params.get("tight_spread", self._tight_spread)
+        self._normal_spread = params.get("normal_spread", self._normal_spread)
+        self._max_spread = params.get("max_spread", self._max_spread)
+        self._min_hours_to_settlement = params.get("min_hours_to_settlement", self._min_hours_to_settlement)
+        self._max_days_to_settlement = params.get("max_days_to_settlement", self._max_days_to_settlement)
+
+        logger.info(
+            f"Loaded config from YAML: {config.name} "
+            f"(contracts={self._contracts_per_trade}, threshold={self._yes_threshold}, "
+            f"min_trades={self._min_trades}, min_drop={self._min_price_drop}c, "
+            f"max_concurrent={self._max_concurrent})"
+        )
 
     async def stop(self) -> None:
         """
