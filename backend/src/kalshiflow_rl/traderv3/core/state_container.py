@@ -227,6 +227,11 @@ class V3StateContainer:
         # Cache persists across sync cycles to avoid repeated DB queries
         self._settlement_strategy_cache: dict[str, str | None] = {}
 
+        # Position strategy cache - maps ticker -> strategy_id from order_contexts DB
+        # Used when position display can't find strategy in memory (TradingAttachment)
+        # Cache persists across sync cycles to avoid repeated DB queries
+        self._position_strategy_cache: dict[str, str | None] = {}
+
         # Market prices state - real-time prices from ticker WebSocket
         # Separate from position data to avoid overwriting position values
         self._market_prices: Dict[str, MarketPriceData] = {}
@@ -407,6 +412,22 @@ class V3StateContainer:
         # This hooks into the existing sync cycle - no additional API calls
         # Uses lock to prevent race conditions with WebSocket events
         await self._sync_trading_attachments(state)
+
+        # Batch lookup strategies for positions not in cache or attachments
+        # This pre-populates _position_strategy_cache for _format_position_details()
+        if state.positions:
+            tickers_needing_lookup = [
+                ticker for ticker in state.positions.keys()
+                if ticker not in self._position_strategy_cache
+                and ticker not in self._trading_attachments
+            ]
+            if tickers_needing_lookup:
+                db_strategies = await self._batch_lookup_strategies_from_db(tickers_needing_lookup)
+                self._position_strategy_cache.update(db_strategies)
+                # Cache None for tickers not found (avoid re-querying)
+                for ticker in tickers_needing_lookup:
+                    if ticker not in self._position_strategy_cache:
+                        self._position_strategy_cache[ticker] = None
 
         # Log significant changes
         if changes:
@@ -905,9 +926,14 @@ class V3StateContainer:
             # Unrealized P&L = current value - cost basis
             unrealized_pnl = market_exposure - total_traded
 
-            # Lookup strategy_id from trading attachment's filled orders
+            # Lookup strategy_id: cache first (includes DB results), then in-memory attachment
             position_strategy_id = None
-            if ticker in self._trading_attachments:
+
+            # Check cache first (includes DB results from batch lookup)
+            if ticker in self._position_strategy_cache:
+                position_strategy_id = self._position_strategy_cache[ticker]
+            # Check in-memory attachment and cache if found
+            elif ticker in self._trading_attachments:
                 attachment = self._trading_attachments[ticker]
                 # Get strategy_id from filled orders (most common case)
                 strategy_ids = {
@@ -917,8 +943,10 @@ class V3StateContainer:
                 }
                 if len(strategy_ids) == 1:
                     position_strategy_id = strategy_ids.pop()
+                    self._position_strategy_cache[ticker] = position_strategy_id
                 elif len(strategy_ids) > 1:
                     position_strategy_id = "mixed"
+                    self._position_strategy_cache[ticker] = "mixed"
 
             # Build position dict
             position_data = {
@@ -2119,6 +2147,7 @@ class V3StateContainer:
         self._trading_attachments_version = 0
 
         self._settlement_strategy_cache.clear()
+        self._position_strategy_cache.clear()
 
         self._component_health.clear()
 
