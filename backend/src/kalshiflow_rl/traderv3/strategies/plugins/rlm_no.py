@@ -760,12 +760,21 @@ class RLMNoStrategy:
         if state.total_trades < self._min_trades:
             return None
 
+        # Log markets that pass min_trades threshold for debugging
+        logger.debug(
+            f"Signal check {state.market_ticker}: trades={state.total_trades} "
+            f"yes_ratio={state.yes_ratio:.2f} (need >{self._yes_threshold}) "
+            f"price_drop={state.price_drop}c (need >={self._min_price_drop}c)"
+        )
+
         # Check YES ratio
         if state.yes_ratio <= self._yes_threshold:
+            logger.debug(f"  -> BLOCKED: yes_ratio {state.yes_ratio:.2f} <= {self._yes_threshold}")
             return None
 
         # Check price drop
         if state.price_drop < self._min_price_drop:
+            logger.debug(f"  -> BLOCKED: price_drop {state.price_drop}c < {self._min_price_drop}c")
             return None
 
         # Belt-and-suspenders: validate time-to-settlement

@@ -27,7 +27,7 @@ params:
 
   # Entry behavior
   allow_reentry: true      # Allow adding to existing positions
-  max_concurrent: 5        # Max concurrent signals processing
+  max_concurrent: 1000     # Max concurrent positions (high to allow trading with existing positions)
 
   # Orderbook filters (spread tiers)
   tight_spread: 2          # Tight spread threshold (cents)
@@ -35,6 +35,6 @@ params:
   max_spread: 10           # Maximum acceptable spread (cents)
   orderbook_timeout: 5.0   # Seconds to wait for orderbook data
 
-  # Time filters
+  # Time filters (match old rlm_service defaults for parity)
   min_hours_to_settlement: 0.5   # Minimum hours until market closes
-  max_days_to_settlement: 7      # Maximum days until market closes
+  max_days_to_settlement: 30     # Maximum days until market closes (was 7, old service used 30)
