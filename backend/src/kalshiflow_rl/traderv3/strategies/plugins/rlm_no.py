@@ -208,6 +208,7 @@ class RLMDecision:
         reason: Human-readable explanation
         order_id: Kalshi order ID if executed
         signal_data: Original signal data for reference
+        decision_metrics: Metrics at decision time (spread_vol, queue_wait, etc.)
     """
     signal_id: str
     timestamp: float
@@ -215,6 +216,7 @@ class RLMDecision:
     reason: str
     order_id: Optional[str] = None
     signal_data: Optional[Dict[str, Any]] = None
+    decision_metrics: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for WebSocket transport."""
@@ -230,6 +232,8 @@ class RLMDecision:
             result["market_ticker"] = self.signal_data.get("market_ticker", "")
             result["yes_ratio"] = self.signal_data.get("yes_ratio", 0)
             result["price_drop"] = self.signal_data.get("price_drop", 0)
+        if self.decision_metrics:
+            result["decision_metrics"] = self.decision_metrics
         return result
 
 
@@ -282,6 +286,7 @@ class RLMNoStrategy:
         self._tight_spread: int = 2
         self._normal_spread: int = 4
         self._max_spread: int = 10
+        self._spread_vol_threshold: float = 0.5  # Spread volatility threshold for skipping
 
         # Time-to-settlement filter
         self._min_hours_to_settlement: float = 4.0
@@ -320,6 +325,13 @@ class RLMNoStrategy:
             "signals_skipped_maxed": 0,
             "reentries": 0,
             "orderbook_fallbacks": 0,
+            # Granular skip tracking (in-memory)
+            "skips_spread_volatility": 0,
+            "skips_spread_wide": 0,
+            "skips_stale_orderbook": 0,
+            "skips_rate_limited": 0,
+            "skips_position_maxed": 0,
+            "skips_no_ob_data": 0,
         }
         self._last_execution_time: Optional[float] = None
 
@@ -423,6 +435,7 @@ class RLMNoStrategy:
         self._tight_spread = params.get("tight_spread", self._tight_spread)
         self._normal_spread = params.get("normal_spread", self._normal_spread)
         self._max_spread = params.get("max_spread", self._max_spread)
+        self._spread_vol_threshold = params.get("spread_volatility_threshold", self._spread_vol_threshold)
         self._min_hours_to_settlement = params.get("min_hours_to_settlement", self._min_hours_to_settlement)
         self._max_days_to_settlement = params.get("max_days_to_settlement", self._max_days_to_settlement)
 
@@ -507,6 +520,7 @@ class RLMNoStrategy:
         - signals_skipped: Number of signals skipped (rate limited, maxed, etc)
         - rate_limited_count: Number of signals skipped due to rate limiting
         - reentries: Number of re-entry signals
+        - skip_breakdown: Granular breakdown of skip reasons
 
         Returns:
             Dictionary with strategy statistics
@@ -526,6 +540,15 @@ class RLMNoStrategy:
             "signals_skipped": self._stats["signals_skipped"],
             "rate_limited_count": self._rate_limited_count,
             "reentries": self._stats["reentries"],
+            # Granular skip breakdown (in-memory telemetry)
+            "skip_breakdown": {
+                "spread_volatility": self._stats.get("skips_spread_volatility", 0),
+                "spread_wide": self._stats.get("skips_spread_wide", 0),
+                "stale_orderbook": self._stats.get("skips_stale_orderbook", 0),
+                "rate_limited": self._stats.get("skips_rate_limited", 0),
+                "position_maxed": self._stats.get("skips_position_maxed", 0),
+                "no_ob_data": self._stats.get("skips_no_ob_data", 0),
+            },
             # Additional stats
             "last_signal_at": self._last_execution_time,
             "markets_tracking": len(self._market_states),
@@ -700,11 +723,25 @@ class RLMNoStrategy:
                 orderbook_signals = self._context.orderbook_integration.get_orderbook_signals(market_ticker)
                 if orderbook_signals:
                     spread_vol = orderbook_signals.get("no_spread_volatility")
-                    if spread_vol is not None and spread_vol > 0.5:
-                        logger.debug(
-                            f"Signal delayed for {market_ticker}: spread volatility {spread_vol:.2f} > 0.5 threshold"
-                        )
+                    if spread_vol is not None and spread_vol > self._spread_vol_threshold:
+                        # Record the skip decision for UX visibility
+                        signal_id = f"{market_ticker}:{int(signal.detected_at * 1000)}"
                         self._stats["signals_skipped"] += 1
+                        self._stats["skips_spread_volatility"] += 1
+                        self._record_decision(
+                            signal_id=signal_id,
+                            action="skipped_spread_volatility",
+                            reason=f"Spread volatility {spread_vol:.2f} > {self._spread_vol_threshold} threshold",
+                            signal_data=signal.to_dict(),
+                            decision_metrics={
+                                "spread_volatility": spread_vol,
+                                "threshold": self._spread_vol_threshold,
+                                "current_spread": orderbook_signals.get("no_spread"),
+                            },
+                        )
+                        logger.debug(
+                            f"Signal skipped for {market_ticker}: spread volatility {spread_vol:.2f} > {self._spread_vol_threshold} threshold"
+                        )
                         return
             await self._execute_signal(signal)
 
@@ -724,6 +761,7 @@ class RLMNoStrategy:
             if market_ticker not in self._maxed_markets:
                 self._maxed_markets.add(market_ticker)
                 self._stats["signals_skipped_maxed"] += 1
+                self._stats["skips_position_maxed"] += 1
 
                 attachment = self._context.state_container.get_trading_attachment(market_ticker)
                 if attachment:
@@ -862,6 +900,19 @@ class RLMNoStrategy:
             self._refill_tokens()
             if not self._consume_token():
                 self._rate_limited_count += 1
+                self._stats["signals_skipped"] += 1
+                self._stats["skips_rate_limited"] += 1
+                self._record_decision(
+                    signal_id=signal_id,
+                    action="skipped_rate_limited",
+                    reason=f"Rate limited (tokens={self._tokens:.1f}/{self._max_tokens})",
+                    signal_data=signal.to_dict(),
+                    decision_metrics={
+                        "tokens_available": self._tokens,
+                        "max_tokens": self._max_tokens,
+                        "refill_rate": self._token_refill_seconds,
+                    },
+                )
                 logger.debug(f"Rate limited signal {signal_id}")
                 return
 
@@ -915,18 +966,34 @@ class RLMNoStrategy:
                                 f"WS degraded, REST refresh failed, skipping signal"
                             )
                             self._stats["signals_skipped"] += 1
-                            self._stats["orderbook_stale_skips"] = self._stats.get("orderbook_stale_skips", 0) + 1
+                            self._stats["skips_stale_orderbook"] += 1
                             self._record_decision(
                                 signal_id=signal_id,
-                                action="skipped",
+                                action="skipped_stale_orderbook",
                                 reason="WS degraded, REST refresh failed",
-                                signal_data=signal.to_dict()
+                                signal_data=signal.to_dict(),
+                                decision_metrics={
+                                    "ws_healthy": False,
+                                    "rest_refresh_attempted": True,
+                                    "staleness_seconds": ob_context.staleness_seconds if hasattr(ob_context, 'staleness_seconds') else None,
+                                },
                             )
                             return
 
                 if ob_context.no_best_ask is None or ob_context.no_best_bid is None:
                     logger.warning(f"No orderbook data for {signal.market_ticker}, skipping signal")
                     self._stats["signals_skipped"] += 1
+                    self._stats["skips_no_ob_data"] += 1
+                    self._record_decision(
+                        signal_id=signal_id,
+                        action="skipped_no_ob_data",
+                        reason="No orderbook bid/ask data available",
+                        signal_data=signal.to_dict(),
+                        decision_metrics={
+                            "no_best_ask": ob_context.no_best_ask,
+                            "no_best_bid": ob_context.no_best_bid,
+                        },
+                    )
                     return
 
                 # Get current spread for metadata
@@ -940,11 +1007,19 @@ class RLMNoStrategy:
                         f"Spread too wide for {signal.market_ticker}: {current_spread}c > {effective_max_spread}c max, skipping"
                     )
                     self._stats["signals_skipped"] += 1
+                    self._stats["skips_spread_wide"] += 1
                     self._record_decision(
                         signal_id=signal_id,
-                        action="skipped",
+                        action="skipped_spread_wide",
                         reason=f"Spread {current_spread}c > tiered max {effective_max_spread}c (drop={signal.price_drop}c)",
-                        signal_data=signal.to_dict()
+                        signal_data=signal.to_dict(),
+                        decision_metrics={
+                            "current_spread": current_spread,
+                            "max_spread": effective_max_spread,
+                            "price_drop": signal.price_drop,
+                            "no_best_bid": ob_context.no_best_bid,
+                            "no_best_ask": ob_context.no_best_ask,
+                        },
                     )
                     # Emit signal event with spread failure info for frontend visibility
                     await self._context.event_bus.emit_system_activity(
@@ -981,20 +1056,23 @@ class RLMNoStrategy:
                 # Position-aware pricing
                 is_high_edge = signal.price_drop >= 10
 
-                # Get delta count per second from orderbook signals for queue awareness
-                delta_count_per_second: Optional[float] = None
-                if self._context and self._context.orderbook_integration:
-                    orderbook_signals = self._context.orderbook_integration.get_orderbook_signals(signal.market_ticker)
-                    if orderbook_signals:
-                        delta_count = orderbook_signals.get("delta_count", 0)
-                        bucket_seconds = orderbook_signals.get("bucket_seconds", 10)
-                        if bucket_seconds > 0:
-                            delta_count_per_second = delta_count / bucket_seconds
+                # Calculate trade rate from RLM's trade tracking for queue awareness
+                # Trade rate = trades per second based on observation window
+                trade_rate: Optional[float] = None
+                state = self._market_states.get(signal.market_ticker)
+                if state and state.first_trade_time and state.total_trades > 0:
+                    observation_window = time.time() - state.first_trade_time
+                    if observation_window > 0:
+                        trade_rate = state.total_trades / observation_window
+                        logger.debug(
+                            f"Trade rate for {signal.market_ticker}: {trade_rate:.3f} trades/sec "
+                            f"({state.total_trades} trades in {observation_window:.0f}s)"
+                        )
 
                 entry_price = ob_context.get_recommended_entry_price(
                     aggressive=is_high_edge,
                     max_spread=self._max_spread,
-                    delta_count_per_second=delta_count_per_second,
+                    trade_rate=trade_rate,
                 )
 
                 if entry_price is None:
@@ -1192,6 +1270,7 @@ class RLMNoStrategy:
         reason: str,
         order_id: Optional[str] = None,
         signal_data: Optional[Dict[str, Any]] = None,
+        decision_metrics: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Record a signal decision in history."""
         decision = RLMDecision(
@@ -1201,6 +1280,7 @@ class RLMNoStrategy:
             reason=reason,
             order_id=order_id,
             signal_data=signal_data,
+            decision_metrics=decision_metrics,
         )
         self._decision_history.append(decision)
 

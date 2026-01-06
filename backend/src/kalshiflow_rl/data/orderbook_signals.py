@@ -154,6 +154,29 @@ class BucketState:
         """Increment delta count when a delta is processed."""
         self.delta_count += 1
 
+    def _calc_spread_volatility(
+        self, spread_high: Optional[int], spread_low: Optional[int]
+    ) -> Optional[float]:
+        """
+        Calculate spread volatility as normalized range.
+
+        Uses (high - low) / avg_spread instead of (high - low) / close
+        to avoid inconsistent results based on close price.
+
+        Example: Spread 2->10->4 and 2->10->10 both have same instability
+        and should return the same volatility value.
+
+        Returns:
+            Normalized spread volatility in range [0, 2], or None if no data
+        """
+        if spread_high is None or spread_low is None:
+            return None
+        spread_range = spread_high - spread_low
+        avg_spread = (spread_high + spread_low) / 2
+        if avg_spread <= 0:
+            return None
+        return round(spread_range / avg_spread, 4)
+
     def to_signal_data(self) -> Dict[str, Any]:
         """
         Convert bucket state to signal data dict for database insertion.
@@ -213,17 +236,14 @@ class BucketState:
             "snapshot_count": self.snapshot_count,
             "delta_count": self.delta_count,
             "large_order_count": self.large_order_count,
-            # Spread volatility: (high - low) / close, indicates spread instability
+            # Spread volatility: normalized range (high - low) / avg_spread
+            # This measures spread instability independent of closing price
             # High volatility (>0.5) suggests spread is spiking, delay entry
-            "no_spread_volatility": (
-                round((self.no_spread_high - self.no_spread_low) / max(1, self.no_spread_last), 4)
-                if self.no_spread_high is not None and self.no_spread_low is not None and self.no_spread_last is not None
-                else None
+            "no_spread_volatility": self._calc_spread_volatility(
+                self.no_spread_high, self.no_spread_low
             ),
-            "yes_spread_volatility": (
-                round((self.yes_spread_high - self.yes_spread_low) / max(1, self.yes_spread_last), 4)
-                if self.yes_spread_high is not None and self.yes_spread_low is not None and self.yes_spread_last is not None
-                else None
+            "yes_spread_volatility": self._calc_spread_volatility(
+                self.yes_spread_high, self.yes_spread_low
             ),
         }
 
