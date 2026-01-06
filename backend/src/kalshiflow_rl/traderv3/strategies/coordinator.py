@@ -691,3 +691,120 @@ class StrategyCoordinator:
         # Sort by total_trades (most active first) and limit
         all_states.sort(key=lambda s: s.get("total_trades", 0), reverse=True)
         return all_states[:limit]
+
+    def get_strategy_panel_data(self, decision_limit: int = 15) -> Dict[str, Any]:
+        """
+        Get comprehensive data for the Trading Strategies Panel.
+
+        Aggregates coordinator status, per-strategy performance metrics,
+        skip breakdowns, and recent decision history for frontend display.
+
+        Args:
+            decision_limit: Maximum number of recent decisions to include
+
+        Returns:
+            Dict with structure:
+            {
+                "coordinator": {
+                    "running": bool,
+                    "uptime_seconds": float,
+                    "strategies_running": int,
+                    "rate_limiter": {
+                        "tokens_available": float,
+                        "capacity": int,
+                        "refill_rate_per_minute": float,
+                        "utilization_percent": float
+                    }
+                },
+                "strategies": {
+                    "rlm_no": {
+                        "status": {"running", "healthy", "uptime_seconds", "last_signal_at"},
+                        "config": {...},
+                        "performance": {"signals_detected", "signals_executed", "signals_skipped", "execution_rate", "reentries"},
+                        "skip_breakdown": {"spread_volatility", "spread_wide", "stale_orderbook", "rate_limited", "position_maxed", "no_ob_data"},
+                        "trade_processing": {"trades_processed", "trades_filtered", "markets_tracking"}
+                    }
+                },
+                "recent_decisions": [...last N decisions...]
+            }
+        """
+        uptime = time.time() - self._started_at if self._started_at else 0
+        tokens_available = self._rate_limiter.get_tokens()
+        refill_rate_per_minute = self._rate_limiter.refill_rate * 60
+
+        # Calculate utilization (inverse of available tokens ratio)
+        utilization = 0.0
+        if self._rate_limiter.capacity > 0:
+            utilization = (1 - (tokens_available / self._rate_limiter.capacity)) * 100
+
+        coordinator_data = {
+            "running": self._running,
+            "uptime_seconds": uptime,
+            "strategies_running": len(self._strategies),
+            "rate_limiter": {
+                "tokens_available": round(tokens_available, 1),
+                "capacity": self._rate_limiter.capacity,
+                "refill_rate_per_minute": round(refill_rate_per_minute, 1),
+                "utilization_percent": round(utilization, 1),
+            }
+        }
+
+        # Collect per-strategy data
+        strategies_data: Dict[str, Any] = {}
+
+        for name, strategy in self._strategies.items():
+            try:
+                stats = strategy.get_stats()
+                config = self._configs.get(name)
+
+                # Calculate execution rate
+                signals_detected = stats.get("signals_detected", 0)
+                signals_executed = stats.get("signals_executed", 0)
+                execution_rate = 0.0
+                if signals_detected > 0:
+                    execution_rate = (signals_executed / signals_detected) * 100
+
+                strategy_data = {
+                    "status": {
+                        "running": stats.get("running", False),
+                        "healthy": strategy.is_healthy(),
+                        "uptime_seconds": stats.get("uptime_seconds", 0),
+                        "last_signal_at": stats.get("last_signal_at"),
+                    },
+                    "config": stats.get("config", config.to_dict() if config else {}),
+                    "performance": {
+                        "signals_detected": signals_detected,
+                        "signals_executed": signals_executed,
+                        "signals_skipped": stats.get("signals_skipped", 0),
+                        "execution_rate": round(execution_rate, 1),
+                        "reentries": stats.get("reentries", 0),
+                    },
+                    "skip_breakdown": stats.get("skip_breakdown", {
+                        "spread_volatility": 0,
+                        "spread_wide": 0,
+                        "stale_orderbook": 0,
+                        "rate_limited": 0,
+                        "position_maxed": 0,
+                        "no_ob_data": 0,
+                    }),
+                    "trade_processing": {
+                        "trades_processed": stats.get("trades_processed", 0),
+                        "trades_filtered": stats.get("trades_filtered", 0),
+                        "markets_tracking": stats.get("markets_tracking", 0),
+                    },
+                }
+
+                strategies_data[name] = strategy_data
+
+            except Exception as e:
+                logger.error(f"Failed to get panel data from strategy '{name}': {e}")
+                strategies_data[name] = {"error": str(e)}
+
+        # Get recent decisions
+        recent_decisions = self.get_decision_history(limit=decision_limit)
+
+        return {
+            "coordinator": coordinator_data,
+            "strategies": strategies_data,
+            "recent_decisions": recent_decisions,
+        }

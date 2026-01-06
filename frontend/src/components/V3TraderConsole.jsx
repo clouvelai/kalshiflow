@@ -5,7 +5,8 @@ import TradingSessionPanel from './TradingSessionPanel';
 import {
   PositionListPanel,
   SettlementsPanel,
-  TradeProcessingPanel
+  TradeProcessingPanel,
+  TradingStrategiesPanel
 } from './v3-trader/panels';
 
 // UI components
@@ -43,6 +44,7 @@ const V3TraderConsole = () => {
     tradingState,
     lastUpdateTime,
     tradeProcessing,
+    strategyStatus,
     settlements,
     newSettlement,
     dismissSettlement,
@@ -100,6 +102,11 @@ const V3TraderConsole = () => {
         {/* Settlements Panel - Recently closed positions */}
         <div className="mb-6">
           <SettlementsPanel settlements={settlements} />
+        </div>
+
+        {/* Trading Strategies Panel - Strategy performance and skip breakdown */}
+        <div className="mb-6">
+          <TradingStrategiesPanel strategyStatus={strategyStatus} />
         </div>
 
         <div className="grid grid-cols-12 gap-6">

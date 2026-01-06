@@ -107,6 +107,10 @@ class V3WebSocketManager:
         self._trade_processing_task: Optional[asyncio.Task] = None
         self._trade_processing_interval = 1.5  # 1.5 seconds
 
+        # Strategy panel heartbeat
+        self._strategy_panel_task: Optional[asyncio.Task] = None
+        self._strategy_panel_interval = 5.0  # 5 seconds
+
         # State transition history buffer (last 20 transitions)
         # This ensures late-connecting clients can see the startup sequence
         self._state_transition_history: deque = deque(maxlen=20)
@@ -238,6 +242,11 @@ class V3WebSocketManager:
             self._trade_processing_task = asyncio.create_task(self._trade_processing_heartbeat())
             logger.info("Started trade processing heartbeat (1.5s interval)")
 
+        # Start strategy panel heartbeat if strategy coordinator is available
+        if self._strategy_coordinator:
+            self._strategy_panel_task = asyncio.create_task(self._strategy_panel_heartbeat())
+            logger.info("Started strategy panel heartbeat (5s interval)")
+
         logger.info("TRADER V3 WebSocket Manager started")
     
     async def stop(self) -> None:
@@ -269,6 +278,14 @@ class V3WebSocketManager:
             self._trade_processing_task.cancel()
             try:
                 await self._trade_processing_task
+            except asyncio.CancelledError:
+                pass
+
+        # Cancel strategy panel heartbeat task
+        if self._strategy_panel_task and not self._strategy_panel_task.done():
+            self._strategy_panel_task.cancel()
+            try:
+                await self._strategy_panel_task
             except asyncio.CancelledError:
                 pass
 
@@ -407,6 +424,10 @@ class V3WebSocketManager:
                 await self._send_rlm_states_snapshot(client_id)
                 # Also send initial trade_processing snapshot
                 await self._send_trade_processing_snapshot(client_id)
+
+            # Send trading strategies panel snapshot if strategy coordinator is available
+            if self._strategy_coordinator and client_id in self._clients:
+                await self._send_trading_strategies_snapshot(client_id)
 
             # Send upcoming markets snapshot if syncer is available
             if self._upcoming_markets_syncer and client_id in self._clients:
@@ -1053,6 +1074,81 @@ class V3WebSocketManager:
             logger.debug(f"Sent trade processing snapshot to client {client_id}")
         except Exception as e:
             logger.warning(f"Could not send trade processing snapshot to client {client_id}: {e}")
+
+    # ========== Trading Strategies Panel Heartbeat ==========
+
+    async def _strategy_panel_heartbeat(self) -> None:
+        """
+        Periodic broadcast of trading strategies panel data.
+
+        Runs every 5 seconds to provide strategy status, performance metrics,
+        and skip breakdown to the frontend Trading Strategies Panel.
+        """
+        while self._running:
+            try:
+                await asyncio.sleep(self._strategy_panel_interval)
+                await self._broadcast_trading_strategies()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Error in strategy panel heartbeat: {e}")
+
+    async def _broadcast_trading_strategies(self) -> None:
+        """
+        Broadcast trading strategies panel data to all connected clients.
+
+        Uses StrategyCoordinator.get_strategy_panel_data() to aggregate
+        comprehensive strategy information including performance metrics,
+        skip breakdowns, and recent decision history.
+        """
+        if not self._strategy_coordinator:
+            return
+
+        try:
+            panel_data = self._strategy_coordinator.get_strategy_panel_data(decision_limit=15)
+
+            await self.broadcast_message("trading_strategies", {
+                **panel_data,
+                "last_updated": time.time(),
+                "timestamp": time.strftime("%H:%M:%S"),
+            })
+        except Exception as e:
+            logger.error(f"Error broadcasting trading strategies: {e}")
+
+    async def _send_trading_strategies_snapshot(self, client_id: str) -> None:
+        """
+        Send trading strategies panel snapshot to a specific client.
+
+        Called when a new client connects to provide immediate visibility
+        into strategy status and performance metrics.
+
+        Args:
+            client_id: Client ID to send snapshot to
+        """
+        if not self._strategy_coordinator:
+            return
+
+        if client_id not in self._clients:
+            return
+
+        try:
+            panel_data = self._strategy_coordinator.get_strategy_panel_data(decision_limit=15)
+
+            await self._send_to_client(client_id, {
+                "type": "trading_strategies",
+                "data": {
+                    **panel_data,
+                    "last_updated": time.time(),
+                    "timestamp": time.strftime("%H:%M:%S"),
+                }
+            })
+            strategies_count = len(panel_data.get("strategies", {}))
+            logger.debug(
+                f"Sent trading strategies snapshot to client {client_id}: "
+                f"{strategies_count} strategies"
+            )
+        except Exception as e:
+            logger.warning(f"Could not send trading strategies snapshot to client {client_id}: {e}")
 
     async def _send_upcoming_markets_snapshot(self, client_id: str) -> None:
         """
