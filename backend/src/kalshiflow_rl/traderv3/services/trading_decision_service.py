@@ -185,14 +185,14 @@ class TradingDecisionService:
             )
 
         elif self._strategy == TradingStrategy.RLM_NO:
-            # RLM_NO is handled by RLMService via event-driven architecture
+            # RLM_NO is handled by RLMNoStrategy plugin via event-driven architecture
             # This is a fallback for direct market-based calls
             decision = TradingDecision(
                 action="hold",
                 market=market,
                 side="",
                 quantity=0,
-                reason="RLM_NO uses event-driven RLMService",
+                reason="RLM_NO uses event-driven strategy plugin",
                 strategy=self._strategy
             )
         

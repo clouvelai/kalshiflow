@@ -26,7 +26,6 @@ if TYPE_CHECKING:
     from ..clients.fill_listener import FillListener
     from ..services.market_price_syncer import MarketPriceSyncer
     from ..services.trading_state_syncer import TradingStateSyncer
-    from ..services.rlm_service import RLMService
     from ..strategies import StrategyCoordinator
     from ..config.environment import V3Config
 
@@ -50,7 +49,6 @@ NON_CRITICAL_COMPONENTS: Set[str] = {
     # Services
     "market_price_syncer",
     "trading_state_syncer",
-    "rlm_service",  # Legacy RLM service
     "strategy_coordinator",  # Plugin-based strategy management
 }
 
@@ -110,7 +108,6 @@ class V3HealthMonitor:
         self._fill_listener: Optional['FillListener'] = None  # Set via setter during startup
         self._market_price_syncer = market_price_syncer
         self._trading_state_syncer = None  # Set via setter during startup
-        self._rlm_service: Optional['RLMService'] = None  # Set via setter during lifecycle startup (legacy)
         self._strategy_coordinator: Optional['StrategyCoordinator'] = None  # Set via setter during lifecycle startup
 
         # Health monitoring state
@@ -140,10 +137,6 @@ class V3HealthMonitor:
     def set_trading_state_syncer(self, syncer: Optional['TradingStateSyncer']) -> None:
         """Set trading state syncer reference (created during startup)."""
         self._trading_state_syncer = syncer
-
-    def set_rlm_service(self, service: Optional['RLMService']) -> None:
-        """Set RLM service reference (created during lifecycle startup - legacy)."""
-        self._rlm_service = service
 
     def set_strategy_coordinator(self, coordinator: Optional['StrategyCoordinator']) -> None:
         """Set strategy coordinator reference (created during lifecycle startup)."""
@@ -260,10 +253,6 @@ class V3HealthMonitor:
         # Add trading state syncer health if configured
         if self._trading_state_syncer:
             components_health["trading_state_syncer"] = self._trading_state_syncer.is_healthy()
-
-        # Add RLM service health if configured (legacy)
-        if self._rlm_service:
-            components_health["rlm_service"] = self._rlm_service.is_healthy()
 
         # Add strategy coordinator health if configured
         if self._strategy_coordinator:
