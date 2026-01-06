@@ -222,6 +222,11 @@ class V3StateContainer:
         self._settled_positions: deque = deque(maxlen=500)
         self._total_settlements_count = 0
 
+        # Settlement strategy cache - maps ticker -> strategy_id from order_contexts DB
+        # Used when settlement sync can't find strategy in memory (TradingAttachment)
+        # Cache persists across sync cycles to avoid repeated DB queries
+        self._settlement_strategy_cache: dict[str, str | None] = {}
+
         # Market prices state - real-time prices from ticker WebSocket
         # Separate from position data to avoid overwriting position values
         self._market_prices: Dict[str, MarketPriceData] = {}
@@ -295,6 +300,31 @@ class V3StateContainer:
         # This ensures settlements stay in sync with Kalshi's ground truth
         if state.settlements:
             self._settled_positions.clear()
+
+            # Batch pre-lookup: collect tickers not in cache that need DB lookup
+            # This avoids N+1 queries by doing a single batch query for all unknown tickers
+            tickers_needing_db_lookup = []
+            for s in state.settlements:
+                ticker = s.get("ticker", "")
+                if ticker and ticker not in self._settlement_strategy_cache:
+                    # Only need DB lookup if not in memory either
+                    if ticker not in self._trading_attachments:
+                        tickers_needing_db_lookup.append(ticker)
+                    else:
+                        # Check if attachment has strategy - if so, cache it
+                        attachment = self._trading_attachments[ticker]
+                        if attachment.settlement and attachment.settlement.strategy_id:
+                            self._settlement_strategy_cache[ticker] = attachment.settlement.strategy_id
+
+            # Batch DB lookup (single query for all unknown tickers)
+            if tickers_needing_db_lookup:
+                db_strategies = await self._batch_lookup_strategies_from_db(tickers_needing_db_lookup)
+                self._settlement_strategy_cache.update(db_strategies)
+                # Cache None for tickers not found in DB (avoid re-querying on future syncs)
+                for ticker in tickers_needing_db_lookup:
+                    if ticker not in self._settlement_strategy_cache:
+                        self._settlement_strategy_cache[ticker] = None
+
             for s in state.settlements:  # All settlements (deque maxlen handles limit)
                 # Determine which side the position was on
                 is_yes_position = s.get("yes_count", 0) > 0
@@ -332,13 +362,20 @@ class V3StateContainer:
                 correct_prediction = side == s.get("market_result", "")
                 trade_roi = round((net_pnl / total_cost) * 100, 1) if total_cost > 0 else 0
 
-                # Lookup strategy_id from trading attachment if available
+                # Lookup strategy_id: cache first (includes DB results), then attachment
                 settlement_ticker = s.get("ticker", "")
                 strategy_id = None
-                if settlement_ticker and settlement_ticker in self._trading_attachments:
-                    attachment = self._trading_attachments[settlement_ticker]
-                    if attachment.settlement and attachment.settlement.strategy_id:
-                        strategy_id = attachment.settlement.strategy_id
+
+                if settlement_ticker:
+                    # Check cache first (includes DB results from batch lookup)
+                    if settlement_ticker in self._settlement_strategy_cache:
+                        strategy_id = self._settlement_strategy_cache[settlement_ticker]
+                    # Check in-memory attachment and add to cache if found
+                    elif settlement_ticker in self._trading_attachments:
+                        attachment = self._trading_attachments[settlement_ticker]
+                        if attachment.settlement and attachment.settlement.strategy_id:
+                            strategy_id = attachment.settlement.strategy_id
+                            self._settlement_strategy_cache[settlement_ticker] = strategy_id
 
                 settlement = {
                     "ticker": settlement_ticker,
@@ -397,6 +434,51 @@ class V3StateContainer:
             state1.positions == state2.positions and
             state1.orders == state2.orders
         )
+
+    async def _batch_lookup_strategies_from_db(self, tickers: list[str]) -> dict[str, str | None]:
+        """
+        Batch lookup strategies from order_contexts DB for uncached tickers.
+
+        Queries the order_contexts table to find the most recent strategy
+        used for each ticker. This is used when settlement sync can't find
+        the strategy in memory (TradingAttachment was cleared or never existed).
+
+        Args:
+            tickers: List of market tickers to lookup
+
+        Returns:
+            Dict mapping ticker -> strategy_id (or None if not found)
+        """
+        if not tickers:
+            return {}
+
+        # Get DB pool from order context service
+        order_context_service = get_order_context_service()
+        if not order_context_service.db_pool:
+            logger.debug("No DB pool available for strategy lookup")
+            return {}
+
+        try:
+            async with order_context_service.db_pool.acquire() as conn:
+                # Use ANY() for efficient batch query
+                # Get the most recent filled order's strategy for each ticker
+                rows = await conn.fetch(
+                    """
+                    SELECT DISTINCT ON (market_ticker) market_ticker, strategy
+                    FROM order_contexts
+                    WHERE market_ticker = ANY($1) AND strategy IS NOT NULL
+                    ORDER BY market_ticker, filled_at DESC
+                    """,
+                    tickers,
+                )
+                result = {row["market_ticker"]: row["strategy"] for row in rows}
+                if result:
+                    logger.debug(f"Batch strategy lookup found {len(result)} strategies for {len(tickers)} tickers")
+                return result
+
+        except Exception as e:
+            logger.warning(f"Failed to batch lookup strategies from DB: {e}")
+            return {}
 
     async def update_single_position(self, ticker: str, position_data: Dict[str, Any]) -> bool:
         """
@@ -2035,6 +2117,8 @@ class V3StateContainer:
 
         self._trading_attachments.clear()
         self._trading_attachments_version = 0
+
+        self._settlement_strategy_cache.clear()
 
         self._component_health.clear()
 

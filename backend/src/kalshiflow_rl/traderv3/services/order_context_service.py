@@ -66,6 +66,11 @@ class OrderContextService:
             self._initialized = True
             logger.info("OrderContextService initialized")
 
+    @property
+    def db_pool(self):
+        """Public accessor for database connection pool."""
+        return self._db_pool
+
     def stage_context(self, context: StagedOrderContext) -> None:
         """
         Stage order context in memory when order is placed.
