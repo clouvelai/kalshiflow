@@ -19,6 +19,11 @@ import { formatAge } from '../../../utils/v3-trader';
 
 /**
  * Strategy display configuration
+ *
+ * MULTI-STRATEGY SUPPORT: To add a new strategy (e.g., "s013"):
+ * 1. Add an entry here with unique colors (see SettlementsPanel.jsx for color options)
+ * 2. The backend already broadcasts all strategies - no backend changes needed
+ * 3. See "MULTI-STRATEGY REFACTOR" comment below for rendering changes
  */
 const STRATEGY_CONFIG = {
   rlm_no: {
@@ -29,6 +34,15 @@ const STRATEGY_CONFIG = {
     borderClass: 'border-violet-700/30',
     textClass: 'text-violet-400',
   },
+  // Example for future strategy:
+  // s013: {
+  //   label: 'S013',
+  //   description: 'Strategy 013',
+  //   accentColor: 'emerald',
+  //   bgClass: 'bg-emerald-900/20',
+  //   borderClass: 'border-emerald-700/30',
+  //   textClass: 'text-emerald-400',
+  // },
 };
 
 const getStrategyConfig = (strategyId) => {
@@ -355,7 +369,13 @@ const TradingStrategiesPanel = ({ strategyStatus }) => {
 
   const hasStrategies = Object.keys(strategies).length > 0;
 
-  // Get the first (and likely only) strategy for display
+  // MULTI-STRATEGY REFACTOR: Currently displays only the first strategy.
+  // To support multiple strategies:
+  // 1. Create a <StrategyCard> component that renders one strategy's metrics
+  // 2. Replace the single-strategy rendering below with:
+  //    {strategyEntries.map(([id, data]) => <StrategyCard key={id} id={id} data={data} />)}
+  // 3. Consider tabs or grid layout for 2+ strategies
+  // 4. The backend already sends all strategies in strategyStatus.strategies
   const strategyEntries = Object.entries(strategies);
   const primaryStrategy = strategyEntries[0];
   const [strategyId, strategyData] = primaryStrategy || ['', null];
