@@ -8,9 +8,83 @@ import {
   Percent,
   Calculator,
   XCircle,
-  Receipt
+  Receipt,
+  Filter
 } from 'lucide-react';
 import { formatSettlementCurrency, formatTime, formatCents, getPnLColor, formatAge } from '../../../utils/v3-trader';
+
+/**
+ * Strategy configuration for display and styling
+ */
+const STRATEGY_CONFIG = {
+  rlm_no: {
+    label: 'RLM NO',
+    bgClass: 'bg-blue-900/20',
+    borderClass: 'border-blue-700/30',
+    textClass: 'text-blue-400',
+    rowBgClass: 'hover:bg-blue-900/10',
+  },
+  s013: {
+    label: 'S013',
+    bgClass: 'bg-emerald-900/20',
+    borderClass: 'border-emerald-700/30',
+    textClass: 'text-emerald-400',
+    rowBgClass: 'hover:bg-emerald-900/10',
+  },
+  hold: {
+    label: 'HOLD',
+    bgClass: 'bg-gray-800/30',
+    borderClass: 'border-gray-700/30',
+    textClass: 'text-gray-500',
+    rowBgClass: 'hover:bg-gray-800/10',
+  },
+  mixed: {
+    label: 'MIXED',
+    bgClass: 'bg-amber-900/20',
+    borderClass: 'border-amber-700/30',
+    textClass: 'text-amber-400',
+    rowBgClass: 'hover:bg-amber-900/10',
+  },
+};
+
+/**
+ * Get strategy display config, with fallback for unknown strategies
+ */
+const getStrategyConfig = (strategyId) => {
+  if (!strategyId) {
+    return {
+      label: '-',
+      bgClass: 'bg-gray-800/20',
+      borderClass: 'border-gray-700/20',
+      textClass: 'text-gray-600',
+      rowBgClass: '',
+    };
+  }
+  return STRATEGY_CONFIG[strategyId] || {
+    label: strategyId.toUpperCase(),
+    bgClass: 'bg-purple-900/20',
+    borderClass: 'border-purple-700/30',
+    textClass: 'text-purple-400',
+    rowBgClass: 'hover:bg-purple-900/10',
+  };
+};
+
+/**
+ * StrategyBadge - Shows strategy identifier with color coding
+ */
+const StrategyBadge = memo(({ strategyId }) => {
+  const config = getStrategyConfig(strategyId);
+  return (
+    <span className={`
+      inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold
+      ${config.bgClass} ${config.textClass} border ${config.borderClass}
+    `}>
+      {config.label}
+    </span>
+  );
+});
+
+StrategyBadge.displayName = 'StrategyBadge';
 
 /**
  * StatBox - Enhanced stat display component with gradient and icon
@@ -103,17 +177,21 @@ const SettlementRow = memo(({ settlement }) => {
   const netPnl = settlement.net_pnl ?? settlement.realized_pnl ?? 0;
   const entryPrice = settlement.entry_price || 0;
   const tradeRoi = settlement.trade_roi || 0;
+  const strategyConfig = getStrategyConfig(settlement.strategy_id);
 
   return (
-    <tr className="
+    <tr className={`
       border-b border-gray-700/20
       transition-all duration-300 ease-out
-      hover:bg-gradient-to-r hover:from-gray-800/60 hover:via-gray-800/40 hover:to-transparent
-    ">
+      ${strategyConfig.rowBgClass || 'hover:bg-gradient-to-r hover:from-gray-800/60 hover:via-gray-800/40 hover:to-transparent'}
+    `}>
       <td className="px-3 py-2.5">
-        <span className="font-mono text-gray-200 text-xs truncate block max-w-[140px]" title={settlement.ticker}>
+        <span className="font-mono text-gray-200 text-xs truncate block max-w-[120px]" title={settlement.ticker}>
           {settlement.ticker}
         </span>
+      </td>
+      <td className="px-2 py-2.5 text-center">
+        <StrategyBadge strategyId={settlement.strategy_id} />
       </td>
       <td className="px-3 py-2.5 text-center">
         <ResultBadge result={settlement.market_result} />
@@ -130,22 +208,22 @@ const SettlementRow = memo(({ settlement }) => {
           {settlement.side}
         </span>
       </td>
-      <td className="px-3 py-2.5 text-right">
+      <td className="px-2 py-2.5 text-right">
         <span className="font-mono text-gray-300 text-sm">{entryPrice}<span className="text-gray-500">c</span></span>
       </td>
-      <td className="px-3 py-2.5 text-right">
+      <td className="px-2 py-2.5 text-right">
         <span className="font-mono text-gray-300 text-sm">{qty}</span>
       </td>
-      <td className="px-3 py-2.5 text-right">
+      <td className="px-2 py-2.5 text-right">
         <span className="font-mono text-gray-400 text-sm">{formatCents(totalCost)}</span>
       </td>
-      <td className={`px-3 py-2.5 text-right font-mono font-bold text-sm ${getPnLColor(netPnl)}`}>
+      <td className={`px-2 py-2.5 text-right font-mono font-bold text-sm ${getPnLColor(netPnl)}`}>
         {formatSettlementCurrency(netPnl)}
       </td>
-      <td className={`px-3 py-2.5 text-right font-mono text-sm ${tradeRoi >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+      <td className={`px-2 py-2.5 text-right font-mono text-sm ${tradeRoi >= 0 ? 'text-green-400' : 'text-red-400'}`}>
         {tradeRoi >= 0 ? '+' : ''}{tradeRoi}%
       </td>
-      <td className="px-3 py-2.5 text-right">
+      <td className="px-2 py-2.5 text-right">
         <span className="font-mono text-gray-500 text-xs">{formatAge(Math.floor(Date.now() / 1000 - settlement.closed_at))}</span>
       </td>
     </tr>
@@ -380,14 +458,15 @@ const SettlementsPanel = ({ settlements }) => {
                     <thead className="sticky top-0 z-10">
                       <tr className="bg-gray-900/80 border-b border-gray-700/40">
                         <th className="px-3 py-2.5 text-left text-[10px] text-gray-500 uppercase font-semibold tracking-wider">Ticker</th>
+                        <th className="px-2 py-2.5 text-center text-[10px] text-gray-500 uppercase font-semibold tracking-wider">Strategy</th>
                         <th className="px-3 py-2.5 text-center text-[10px] text-gray-500 uppercase font-semibold tracking-wider">Result</th>
                         <th className="px-3 py-2.5 text-center text-[10px] text-gray-500 uppercase font-semibold tracking-wider">Side</th>
-                        <th className="px-3 py-2.5 text-right text-[10px] text-gray-500 uppercase font-semibold tracking-wider">Entry</th>
-                        <th className="px-3 py-2.5 text-right text-[10px] text-gray-500 uppercase font-semibold tracking-wider">Qty</th>
-                        <th className="px-3 py-2.5 text-right text-[10px] text-gray-500 uppercase font-semibold tracking-wider">Cost</th>
-                        <th className="px-3 py-2.5 text-right text-[10px] text-gray-500 uppercase font-semibold tracking-wider">P&L</th>
-                        <th className="px-3 py-2.5 text-right text-[10px] text-gray-500 uppercase font-semibold tracking-wider">ROI</th>
-                        <th className="px-3 py-2.5 text-right text-[10px] text-gray-500 uppercase font-semibold tracking-wider">Age</th>
+                        <th className="px-2 py-2.5 text-right text-[10px] text-gray-500 uppercase font-semibold tracking-wider">Entry</th>
+                        <th className="px-2 py-2.5 text-right text-[10px] text-gray-500 uppercase font-semibold tracking-wider">Qty</th>
+                        <th className="px-2 py-2.5 text-right text-[10px] text-gray-500 uppercase font-semibold tracking-wider">Cost</th>
+                        <th className="px-2 py-2.5 text-right text-[10px] text-gray-500 uppercase font-semibold tracking-wider">P&L</th>
+                        <th className="px-2 py-2.5 text-right text-[10px] text-gray-500 uppercase font-semibold tracking-wider">ROI</th>
+                        <th className="px-2 py-2.5 text-right text-[10px] text-gray-500 uppercase font-semibold tracking-wider">Age</th>
                       </tr>
                     </thead>
                     <tbody>

@@ -53,7 +53,22 @@ class TradingStrategy(Enum):
 
 @dataclass
 class TradingDecision:
-    """Represents a trading decision."""
+    """
+    Represents a trading decision.
+
+    Attributes:
+        action: "buy", "sell", or "hold"
+        market: Market ticker
+        side: "yes" or "no"
+        quantity: Number of contracts
+        price: Limit price in cents (None for market order)
+        reason: Human-readable explanation
+        confidence: Confidence score (0.0 - 1.0)
+        strategy: DEPRECATED - Use strategy_id instead. Kept for backward compatibility.
+        strategy_id: String identifier for the strategy (e.g., "rlm_no", "s013").
+                    This is the preferred field for strategy attribution.
+        signal_params: Strategy-specific parameters for quant analysis
+    """
     action: str  # "buy", "sell", "hold"
     market: str
     side: str  # "yes" or "no"
@@ -61,8 +76,14 @@ class TradingDecision:
     price: Optional[int] = None  # If None, use market order
     reason: str = ""
     confidence: float = 0.0
-    strategy: TradingStrategy = TradingStrategy.HOLD
+    strategy: TradingStrategy = TradingStrategy.HOLD  # DEPRECATED: Use strategy_id
+    strategy_id: str = ""  # New: String identifier for plugin system
     signal_params: Dict[str, Any] = field(default_factory=dict)  # Strategy-specific params for quant analysis
+
+    def __post_init__(self):
+        """Set strategy_id from strategy enum if not provided."""
+        if not self.strategy_id and self.strategy != TradingStrategy.HOLD:
+            self.strategy_id = self.strategy.value
 
 
 class TradingDecisionService:
@@ -231,6 +252,8 @@ class TradingDecisionService:
 
         try:
             # Emit decision event
+            # Use strategy_id if available, fall back to strategy enum for backward compat
+            strategy_name = decision.strategy_id or decision.strategy.value
             await self._event_bus.emit_system_activity(
                 activity_type="trading_decision",
                 message=f"Executing {decision.action} {decision.quantity} {decision.side} on {decision.market}",
@@ -240,7 +263,8 @@ class TradingDecisionService:
                     "side": decision.side,
                     "quantity": decision.quantity,
                     "price": decision.price,
-                    "strategy": decision.strategy.value
+                    "strategy": strategy_name,
+                    "strategy_id": decision.strategy_id,  # New field
                 }
             )
             
@@ -345,11 +369,13 @@ class TradingDecisionService:
                 no_price_at_signal = 100 - last_yes_price
 
             # Create staged context
+            # Use strategy_id if available, fall back to strategy enum for backward compat
+            strategy_name = decision.strategy_id or decision.strategy.value
             context = StagedOrderContext(
                 order_id=order_id,
                 market_ticker=decision.market,
                 session_id=session_id,
-                strategy=decision.strategy.value,
+                strategy=strategy_name,
                 signal_id=signal_id,
                 signal_detected_at=decision.signal_params.get("signal_detected_at", time.time()),
                 signal_params=decision.signal_params,
@@ -419,6 +445,7 @@ class TradingDecisionService:
             # Track order in trading attachment for tracked markets
             # Status is "resting" since API confirmed the order is on the book
             signal_id = f"{decision.reason}:{decision.market}:{int(time.time() * 1000)}"
+            strategy_id = decision.strategy_id or decision.strategy.value
             await self._state_container.update_order_in_attachment(
                 ticker=decision.market,
                 order_id=order_id,
@@ -431,6 +458,7 @@ class TradingDecisionService:
                     price=decision.price or 0,
                     status="resting",  # Order confirmed on book
                     placed_at=time.time(),
+                    strategy_id=strategy_id,
                 )
             )
 
@@ -438,6 +466,7 @@ class TradingDecisionService:
             await self._stage_order_context(order_id, decision, signal_id)
 
             # Emit order_placed activity for frontend visibility
+            strategy_name = decision.strategy_id or decision.strategy.value
             await self._event_bus.emit_system_activity(
                 activity_type="order_placed",
                 message=f"Order placed: BUY {decision.quantity} {decision.side.upper()} @ {decision.price}c",
@@ -449,7 +478,8 @@ class TradingDecisionService:
                     "count": decision.quantity,
                     "price_cents": decision.price,
                     "cost_cents": order_cost_cents,
-                    "strategy": decision.strategy.value
+                    "strategy": strategy_name,
+                    "strategy_id": decision.strategy_id,
                 }
             )
 
@@ -505,6 +535,7 @@ class TradingDecisionService:
             # Track order in trading attachment for tracked markets
             # Status is "resting" since API confirmed the order is on the book
             signal_id = f"{decision.reason}:{decision.market}:{int(time.time() * 1000)}"
+            strategy_id = decision.strategy_id or decision.strategy.value
             await self._state_container.update_order_in_attachment(
                 ticker=decision.market,
                 order_id=order_id,
@@ -517,6 +548,7 @@ class TradingDecisionService:
                     price=decision.price or 0,
                     status="resting",  # Order confirmed on book
                     placed_at=time.time(),
+                    strategy_id=strategy_id,
                 )
             )
 
@@ -524,6 +556,7 @@ class TradingDecisionService:
             await self._stage_order_context(order_id, decision, signal_id)
 
             # Emit order_placed activity for frontend visibility
+            strategy_name = decision.strategy_id or decision.strategy.value
             await self._event_bus.emit_system_activity(
                 activity_type="order_placed",
                 message=f"Order placed: SELL {decision.quantity} {decision.side.upper()} @ {decision.price}c",
@@ -534,7 +567,8 @@ class TradingDecisionService:
                     "side": decision.side,
                     "count": decision.quantity,
                     "price_cents": decision.price,
-                    "strategy": decision.strategy.value
+                    "strategy": strategy_name,
+                    "strategy_id": decision.strategy_id,
                 }
             )
 

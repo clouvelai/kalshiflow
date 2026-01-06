@@ -40,6 +40,7 @@ from ..services.rlm_service import RLMService
 from ..services.tmo_fetcher import TrueMarketOpenFetcher
 from ..services.listener_bootstrap_service import ListenerBootstrapService
 from ..services.order_cleanup_service import OrderCleanupService
+from ..strategies import StrategyCoordinator, StrategyContext
 
 logger = logging.getLogger("kalshiflow_rl.traderv3.core.coordinator")
 
@@ -161,8 +162,13 @@ class V3Coordinator:
             else:
                 logger.info(f"Skipping orchestrator for event-driven {strategy.value} strategy")
 
-        # RLM service (initialized in _connect_lifecycle when TrackedMarketsState is available)
+        # RLM service (DEPRECATED - kept for backward compatibility during migration)
+        # Use _strategy_coordinator for new plugin-based architecture
         self._rlm_service: Optional[RLMService] = None
+
+        # Strategy coordinator (plugin-based strategy management)
+        # Replaces direct RLMService instantiation with multi-strategy architecture
+        self._strategy_coordinator: Optional[StrategyCoordinator] = None
 
         # TMO fetcher (initialized in _connect_lifecycle when TrackedMarketsState is available)
         self._tmo_fetcher: Optional[TrueMarketOpenFetcher] = None
@@ -541,8 +547,37 @@ class V3Coordinator:
             # NOTE: No DB recovery - markets discovered fresh via lifecycle WS and API discovery
             # Orderbook subscriptions happen through TrackedMarketsState subscription callbacks
 
-            # 10b. Initialize RLMService (if strategy is RLM_NO and trading available)
-            if self._trading_service and self._config.trading_strategy == TradingStrategy.RLM_NO:
+            # 10b. Initialize Strategy Coordinator (plugin-based strategy management)
+            # The StrategyCoordinator replaces direct RLMService instantiation,
+            # loading strategies from YAML configs in strategies/config/
+            if self._trading_service:
+                # Create strategy context with all required dependencies
+                strategy_context = StrategyContext(
+                    event_bus=self._event_bus,
+                    trading_service=self._trading_service,
+                    state_container=self._state_container,
+                    orderbook_integration=self._orderbook_integration,
+                    tracked_markets=self._tracked_markets_state,
+                )
+
+                # Create and initialize the strategy coordinator
+                self._strategy_coordinator = StrategyCoordinator(
+                    context=strategy_context,
+                    global_rate_limit=20,  # 20 trades per minute across all strategies
+                )
+
+                # Load strategy configs from YAML files
+                configs_loaded = await self._strategy_coordinator.load_configs()
+                logger.info(f"StrategyCoordinator loaded {configs_loaded} strategy configs")
+
+                # Register with health monitor for health tracking
+                self._health_monitor.set_strategy_coordinator(self._strategy_coordinator)
+                logger.info("StrategyCoordinator initialized for plugin-based strategy management")
+
+            # 10b-legacy. Initialize RLMService (DEPRECATED - for backward compatibility)
+            # Keep this as fallback until plugin system is fully validated
+            # TODO: Remove once plugin-based RLMNoStrategy is verified working
+            if self._trading_service and self._config.trading_strategy == TradingStrategy.RLM_NO and not self._strategy_coordinator:
                 self._rlm_service = RLMService(
                     event_bus=self._event_bus,
                     trading_service=self._trading_service,
@@ -567,7 +602,7 @@ class V3Coordinator:
                 self._health_monitor.set_rlm_service(self._rlm_service)
                 # Register with websocket manager for real-time RLM state broadcasting
                 self._websocket_manager.set_rlm_service(self._rlm_service)
-                logger.info("RLMService initialized for RLM_NO strategy in lifecycle mode")
+                logger.info("RLMService initialized for RLM_NO strategy in lifecycle mode (legacy fallback)")
 
             # 10c. Initialize TrueMarketOpenFetcher (for accurate price drop calculation)
             # This fetches true market open prices from candlestick API to improve RLM accuracy
@@ -1004,7 +1039,7 @@ class V3Coordinator:
                 )
 
                 if removed:
-                    await self._broadcast_trading_state()
+                    await self._status_reporter.emit_trading_state()
 
         except Exception as e:
             logger.error(f"Error handling order fill event: {e}")
@@ -1117,13 +1152,36 @@ class V3Coordinator:
         if self._trading_client_integration and self._state_container.trading_state:
             await self._status_reporter.emit_trading_state()
         
-        # Start RLM service if configured (requires lifecycle mode)
+        # Start strategy coordinator (plugin-based strategy management)
+        if self._strategy_coordinator:
+            started_count = await self._strategy_coordinator.start_all()
+            running_strategies = self._strategy_coordinator.list_running()
+            if started_count > 0:
+                logger.info(f"StrategyCoordinator started {started_count} strategies: {', '.join(running_strategies)}")
+                await self._event_bus.emit_system_activity(
+                    activity_type="strategy_active",
+                    message=f"Started {started_count} trading strategies: {', '.join(running_strategies)}",
+                    metadata={
+                        "strategies": running_strategies,
+                        "strategy_count": started_count,
+                        "severity": "info"
+                    }
+                )
+            else:
+                logger.info("StrategyCoordinator started with no enabled strategies")
+
+            # Wire StrategyCoordinator to WebSocket manager for trade processing broadcasts
+            # This enables multi-strategy aggregation of stats, trades, and decisions
+            self._websocket_manager.set_strategy_coordinator(self._strategy_coordinator)
+            logger.info("StrategyCoordinator wired to WebSocket manager for trade processing broadcasts")
+
+        # Start RLM service if configured (legacy fallback - requires lifecycle mode)
         if self._rlm_service:
             await self._rlm_service.start()
-            logger.info("RLMService started - monitoring public trades for RLM signals")
+            logger.info("RLMService started - monitoring public trades for RLM signals (legacy)")
             await self._event_bus.emit_system_activity(
                 activity_type="strategy_active",
-                message="RLM NO strategy active - monitoring for reverse line movement",
+                message="RLM NO strategy active - monitoring for reverse line movement (legacy)",
                 metadata={
                     "strategy": "RLM_NO",
                     "config": self._rlm_service.get_stats().get("config", {}),
@@ -1254,6 +1312,8 @@ class V3Coordinator:
                 total_steps += 1
             if self._fill_listener:
                 total_steps += 1
+            if self._strategy_coordinator:
+                total_steps += 1
             if self._rlm_service:
                 total_steps += 1
             if self._tmo_fetcher:
@@ -1275,9 +1335,15 @@ class V3Coordinator:
 
             step = 1
 
-            # Stop RLM service (trading strategy)
+            # Stop strategy coordinator (plugin-based strategies)
+            if self._strategy_coordinator:
+                logger.info(f"{step}/{total_steps} Stopping Strategy Coordinator...")
+                await self._strategy_coordinator.stop_all()
+                step += 1
+
+            # Stop RLM service (trading strategy) - legacy fallback
             if self._rlm_service:
-                logger.info(f"{step}/{total_steps} Stopping RLM Service...")
+                logger.info(f"{step}/{total_steps} Stopping RLM Service (legacy)...")
                 await self._rlm_service.stop()
                 step += 1
 
@@ -1414,7 +1480,11 @@ class V3Coordinator:
         if self._trades_integration:
             components["trades_integration"] = self._trades_integration.get_health_details()
 
-        # Add RLM service if configured
+        # Add strategy coordinator if configured
+        if self._strategy_coordinator:
+            components["strategy_coordinator"] = self._strategy_coordinator.get_all_stats()
+
+        # Add RLM service if configured (legacy fallback)
         if self._rlm_service:
             components["rlm_service"] = self._rlm_service.get_stats()
 

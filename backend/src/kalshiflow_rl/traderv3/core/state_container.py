@@ -332,8 +332,16 @@ class V3StateContainer:
                 correct_prediction = side == s.get("market_result", "")
                 trade_roi = round((net_pnl / total_cost) * 100, 1) if total_cost > 0 else 0
 
+                # Lookup strategy_id from trading attachment if available
+                settlement_ticker = s.get("ticker", "")
+                strategy_id = None
+                if settlement_ticker and settlement_ticker in self._trading_attachments:
+                    attachment = self._trading_attachments[settlement_ticker]
+                    if attachment.settlement and attachment.settlement.strategy_id:
+                        strategy_id = attachment.settlement.strategy_id
+
                 settlement = {
-                    "ticker": s.get("ticker", ""),
+                    "ticker": settlement_ticker,
                     "position": count,
                     "side": side,
                     "market_result": s.get("market_result", ""),
@@ -347,6 +355,8 @@ class V3StateContainer:
                     "is_win": is_win,                    # True if profitable
                     "correct_prediction": correct_prediction,  # True if side == result
                     "trade_roi": trade_roi,              # ROI percentage
+                    # Strategy attribution for multi-strategy visibility
+                    "strategy_id": strategy_id,          # e.g., "rlm_no", "s013", "mixed"
                     # Legacy fields for backwards compatibility
                     "total_traded": total_cost,
                     "realized_pnl": net_pnl,             # FIXED: was revenue, now actual P&L
@@ -443,6 +453,24 @@ class V3StateContainer:
                     is_win = realized_pnl > 0
                     trade_roi = round((realized_pnl / total_traded) * 100, 1) if total_traded > 0 else 0
 
+                    # Lookup strategy_id from trading attachment if available
+                    ws_strategy_id = None
+                    if ticker in self._trading_attachments:
+                        attachment = self._trading_attachments[ticker]
+                        if attachment.settlement and attachment.settlement.strategy_id:
+                            ws_strategy_id = attachment.settlement.strategy_id
+                        else:
+                            # Fallback: extract from filled orders
+                            strategy_ids = {
+                                order.strategy_id
+                                for order in attachment.orders.values()
+                                if order.status == "filled" and order.strategy_id
+                            }
+                            if len(strategy_ids) == 1:
+                                ws_strategy_id = strategy_ids.pop()
+                            elif len(strategy_ids) > 1:
+                                ws_strategy_id = "mixed"
+
                     settlement = {
                         "ticker": ticker,
                         "position": count,
@@ -461,6 +489,8 @@ class V3StateContainer:
                         "is_win": is_win,
                         "correct_prediction": False,  # Can't determine without market_result
                         "trade_roi": trade_roi,
+                        # Strategy attribution for multi-strategy visibility
+                        "strategy_id": ws_strategy_id,  # e.g., "rlm_no", "s013", "mixed"
                         "closed_at": time.time(),
                     }
                     self._settled_positions.appendleft(settlement)
@@ -793,6 +823,21 @@ class V3StateContainer:
             # Unrealized P&L = current value - cost basis
             unrealized_pnl = market_exposure - total_traded
 
+            # Lookup strategy_id from trading attachment's filled orders
+            position_strategy_id = None
+            if ticker in self._trading_attachments:
+                attachment = self._trading_attachments[ticker]
+                # Get strategy_id from filled orders (most common case)
+                strategy_ids = {
+                    order.strategy_id
+                    for order in attachment.orders.values()
+                    if order.status == "filled" and order.strategy_id
+                }
+                if len(strategy_ids) == 1:
+                    position_strategy_id = strategy_ids.pop()
+                elif len(strategy_ids) > 1:
+                    position_strategy_id = "mixed"
+
             # Build position dict
             position_data = {
                 "ticker": ticker,
@@ -805,6 +850,8 @@ class V3StateContainer:
                 "fees_paid": pos.get("fees_paid", 0),
                 "session_updated": ticker in self._session_updated_tickers,
                 "last_updated": pos.get("last_updated"),
+                # Strategy attribution for multi-strategy visibility
+                "strategy_id": position_strategy_id,  # e.g., "rlm_no", "s013", "mixed"
             }
 
             # Merge market data from _market_prices
@@ -1191,6 +1238,8 @@ class V3StateContainer:
 
         Called when sync shows position no longer exists for a tracked market.
         If market result is unknown, schedules async REST lookup to fetch it.
+
+        Also extracts strategy_id from filled orders for per-strategy P&L tracking.
         """
         if not attachment.position:
             return
@@ -1209,6 +1258,20 @@ class V3StateContainer:
         position_cost = attachment.position.total_cost
         position_fees = attachment.position.fees_paid
 
+        # Extract strategy_id from filled orders
+        # If all orders are from the same strategy, use that; otherwise "mixed"
+        strategy_ids = {
+            order.strategy_id
+            for order in attachment.orders.values()
+            if order.status == "filled" and order.strategy_id
+        }
+        if len(strategy_ids) == 1:
+            strategy_id = strategy_ids.pop()
+        elif len(strategy_ids) > 1:
+            strategy_id = "mixed"
+        else:
+            strategy_id = None
+
         # Determine if position won: YES position wins on YES result, NO position wins on NO result
         # Settlement payout is 100 cents per contract if won, 0 if lost
         # For void/unknown results, use 0 revenue (conservative)
@@ -1224,6 +1287,7 @@ class V3StateContainer:
             revenue=revenue,
             cost_basis=position_cost,
             fees=position_fees,
+            strategy_id=strategy_id,
         )
         attachment.position = None
         attachment.trading_state = TradingState.SETTLED
@@ -1232,7 +1296,7 @@ class V3StateContainer:
 
         logger.info(
             f"Settlement captured for {ticker}: "
-            f"result={result}, pnl={attachment.settlement.final_pnl}c"
+            f"result={result}, pnl={attachment.settlement.final_pnl}c, strategy={strategy_id}"
         )
 
         # If result is unknown but we have trading client, fetch via REST and re-link
@@ -1323,6 +1387,10 @@ class V3StateContainer:
         """
         Link settlement data to order contexts for quant analysis.
 
+        Allocates PnL proportionally to each filled order based on cost contribution.
+        This enables accurate per-strategy P&L tracking when multiple orders/strategies
+        contribute to a position.
+
         Args:
             ticker: Market ticker
             attachment: Trading attachment with orders
@@ -1332,22 +1400,62 @@ class V3StateContainer:
         try:
             order_context_service = get_order_context_service()
             settled_at = time.time()
-            pnl = pnl_override if pnl_override is not None else attachment.settlement.final_pnl
+            total_pnl = pnl_override if pnl_override is not None else attachment.settlement.final_pnl
 
-            for order_id, order in attachment.orders.items():
-                if order.status == "filled":
-                    task = asyncio.create_task(
-                        order_context_service.link_settlement(
-                            order_id=order_id,
-                            market_result=result,
-                            realized_pnl_cents=pnl,
-                            settled_at=settled_at,
-                        )
+            # Get all filled orders
+            filled_orders = [
+                (order_id, order)
+                for order_id, order in attachment.orders.items()
+                if order.status == "filled"
+            ]
+
+            if not filled_orders:
+                logger.debug(f"No filled orders to link settlement for {ticker}")
+                return
+
+            # Calculate total cost basis from all filled orders
+            # Cost = contracts * price (in cents)
+            total_cost = sum(
+                order.fill_count * (order.fill_avg_price if order.fill_avg_price > 0 else order.price)
+                for _, order in filled_orders
+            )
+
+            # Store per-order PnL breakdown for audit trail
+            per_order_pnl: Dict[str, int] = {}
+
+            for order_id, order in filled_orders:
+                # Calculate proportional PnL for this order
+                if total_cost > 0:
+                    order_cost = order.fill_count * (order.fill_avg_price if order.fill_avg_price > 0 else order.price)
+                    order_pnl = int(total_pnl * (order_cost / total_cost))
+                else:
+                    # Equal split if no cost (shouldn't happen but be safe)
+                    order_pnl = total_pnl // len(filled_orders) if filled_orders else 0
+
+                per_order_pnl[order_id] = order_pnl
+
+                task = asyncio.create_task(
+                    order_context_service.link_settlement(
+                        order_id=order_id,
+                        market_result=result,
+                        realized_pnl_cents=order_pnl,  # Per-order proportional PnL
+                        settled_at=settled_at,
                     )
-                    # Use default arg to capture order_id value in closure
-                    task.add_done_callback(
-                        lambda t, oid=order_id: _log_task_exception(t, f"link_settlement({oid[:8]})")
-                    )
+                )
+                # Use default arg to capture order_id value in closure
+                task.add_done_callback(
+                    lambda t, oid=order_id: _log_task_exception(t, f"link_settlement({oid[:8]})")
+                )
+
+            # Update settlement with per-order PnL breakdown
+            if attachment.settlement:
+                attachment.settlement.per_order_pnl = per_order_pnl
+
+            logger.debug(
+                f"Linked settlement for {ticker}: {len(filled_orders)} orders, "
+                f"total_pnl={total_pnl}c, per_order={per_order_pnl}"
+            )
+
         except Exception as e:
             logger.warning(f"Failed to link settlement to order contexts for {ticker}: {e}")
 

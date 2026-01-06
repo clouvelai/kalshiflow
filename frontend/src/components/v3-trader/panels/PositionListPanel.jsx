@@ -3,6 +3,70 @@ import { ChevronRight, ChevronDown, Briefcase, TrendingUp, TrendingDown, Radio, 
 import { formatPnLCurrency, formatCentsAsCurrency, formatRelativeTime, getSideClasses, getPnLColor } from '../../../utils/v3-trader';
 
 /**
+ * Strategy configuration for display and styling
+ */
+const STRATEGY_CONFIG = {
+  rlm_no: {
+    label: 'RLM',
+    bgClass: 'bg-blue-900/30',
+    borderClass: 'border-blue-700/40',
+    textClass: 'text-blue-400',
+  },
+  s013: {
+    label: 'S013',
+    bgClass: 'bg-emerald-900/30',
+    borderClass: 'border-emerald-700/40',
+    textClass: 'text-emerald-400',
+  },
+  hold: {
+    label: 'HOLD',
+    bgClass: 'bg-gray-800/40',
+    borderClass: 'border-gray-700/40',
+    textClass: 'text-gray-500',
+  },
+  mixed: {
+    label: 'MIX',
+    bgClass: 'bg-amber-900/30',
+    borderClass: 'border-amber-700/40',
+    textClass: 'text-amber-400',
+  },
+};
+
+/**
+ * Get strategy display config, with fallback for unknown strategies
+ */
+const getStrategyConfig = (strategyId) => {
+  if (!strategyId) {
+    return null;
+  }
+  return STRATEGY_CONFIG[strategyId] || {
+    label: strategyId.substring(0, 4).toUpperCase(),
+    bgClass: 'bg-purple-900/30',
+    borderClass: 'border-purple-700/40',
+    textClass: 'text-purple-400',
+  };
+};
+
+/**
+ * StrategyBadge - Small strategy identifier badge for positions
+ */
+const StrategyBadge = memo(({ strategyId }) => {
+  const config = getStrategyConfig(strategyId);
+  if (!config) return null;
+
+  return (
+    <span className={`
+      inline-flex items-center px-1 py-0.5 rounded text-[9px] font-bold
+      ${config.bgClass} ${config.textClass} border ${config.borderClass}
+    `} title={strategyId}>
+      {config.label}
+    </span>
+  );
+});
+
+StrategyBadge.displayName = 'StrategyBadge';
+
+/**
  * Check if a WebSocket update is recent (within threshold seconds)
  */
 const isRecentWsUpdate = (lastWsUpdateTime, thresholdSeconds = 3) => {
@@ -181,6 +245,8 @@ const PositionRow = memo(({ pos, index, isRecentlyChanged }) => {
           {!marketClosed && <LiveIndicator isLive={hasLiveData} lastUpdateTime={pos.last_ws_update_time} />}
           {marketClosed && <span className="w-2 h-2 rounded-full bg-amber-500/50" title="Pending settlement" />}
           <span className={marketClosed ? 'text-gray-500' : 'text-gray-300'}>{pos.ticker}</span>
+          {/* Strategy badge */}
+          <StrategyBadge strategyId={pos.strategy_id} />
         </div>
       </td>
       <td className="px-3 py-2 text-center">

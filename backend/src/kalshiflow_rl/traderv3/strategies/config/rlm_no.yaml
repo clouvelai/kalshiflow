@@ -1,0 +1,40 @@
+# RLM NO Strategy Configuration
+# Reverse Line Movement - Bet NO when YES trades dominate but price drops
+#
+# Validated edge: +17.38% on 1.7M+ trades across 72k+ unique markets
+# Reference: research/strategies/h014_rlm_validation.md
+
+name: rlm_no
+enabled: true
+display_name: "Reverse Line Movement NO"
+
+# Position limits
+max_positions: 60          # Maximum concurrent positions
+max_exposure_cents: 600000 # Maximum total exposure ($6,000)
+
+# Rate limiting
+max_trades_per_minute: 10  # Strategy-specific rate limit
+
+# Strategy-specific parameters
+params:
+  # Signal thresholds
+  yes_threshold: 0.70      # Minimum YES trade ratio to trigger
+  min_trades: 25           # Minimum trades before signal valid
+  min_price_drop: 5        # Minimum price drop from open (cents)
+
+  # Position sizing
+  contracts_per_trade: 10  # Contracts per signal execution
+
+  # Entry behavior
+  allow_reentry: true      # Allow adding to existing positions
+  max_concurrent: 5        # Max concurrent signals processing
+
+  # Orderbook filters (spread tiers)
+  tight_spread: 2          # Tight spread threshold (cents)
+  normal_spread: 5         # Normal spread threshold (cents)
+  max_spread: 10           # Maximum acceptable spread (cents)
+  orderbook_timeout: 5.0   # Seconds to wait for orderbook data
+
+  # Time filters
+  min_hours_to_settlement: 0.5   # Minimum hours until market closes
+  max_days_to_settlement: 7      # Maximum days until market closes

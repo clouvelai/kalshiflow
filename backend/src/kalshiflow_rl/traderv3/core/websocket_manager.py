@@ -36,6 +36,7 @@ if TYPE_CHECKING:
     from ..services.upcoming_markets_syncer import UpcomingMarketsSyncer
     from ..state.tracked_markets import TrackedMarketsState
     from .state_container import V3StateContainer
+    from ..strategies import StrategyCoordinator
 
 logger = logging.getLogger("kalshiflow_rl.traderv3.websocket_manager")
 
@@ -78,7 +79,8 @@ class V3WebSocketManager:
         self._state_machine = state_machine
         self._state_container: Optional['V3StateContainer'] = None
         self._trading_service: Optional['TradingDecisionService'] = None
-        self._rlm_service: Optional['RLMService'] = None  # Set via set_rlm_service()
+        self._rlm_service: Optional['RLMService'] = None  # Legacy: Set via set_rlm_service()
+        self._strategy_coordinator: Optional['StrategyCoordinator'] = None  # New: Set via set_strategy_coordinator()
         self._market_price_syncer = None  # Set via set_market_price_syncer()
         self._tracked_markets_state: Optional['TrackedMarketsState'] = None  # Set via set_tracked_markets_state()
         self._upcoming_markets_syncer: Optional['UpcomingMarketsSyncer'] = None  # Set via set_upcoming_markets_syncer()
@@ -161,14 +163,36 @@ class V3WebSocketManager:
         """
         Set the RLM service for sending RLM state snapshots.
 
+        DEPRECATED: Use set_strategy_coordinator() instead for multi-strategy support.
+        This method is kept for backward compatibility with single strategy setups.
+
         This enables sending RLM market states to new clients when they
         connect, providing immediate visibility into trade direction data.
 
         Args:
-            rlm_service: RLMService instance
+            rlm_service: RLMService instance (can also be a Strategy instance)
         """
         self._rlm_service = rlm_service
-        logger.info("RLMService set on WebSocket manager")
+        logger.info("RLMService set on WebSocket manager (legacy single-strategy mode)")
+
+        # Start trade processing heartbeat if manager is already running
+        if self._running and (not self._trade_processing_task or self._trade_processing_task.done()):
+            self._trade_processing_task = asyncio.create_task(self._trade_processing_heartbeat())
+            logger.info("Started trade processing heartbeat (1.5s interval)")
+
+    def set_strategy_coordinator(self, coordinator: 'StrategyCoordinator') -> None:
+        """
+        Set the strategy coordinator for multi-strategy trade processing.
+
+        When set, the WebSocketManager will use the coordinator's aggregation
+        methods to combine stats/trades/decisions from all running strategies.
+        This is the preferred method over set_rlm_service() for new deployments.
+
+        Args:
+            coordinator: StrategyCoordinator instance managing multiple strategies
+        """
+        self._strategy_coordinator = coordinator
+        logger.info("StrategyCoordinator set on WebSocket manager (multi-strategy mode)")
 
         # Start trade processing heartbeat if manager is already running
         if self._running and (not self._trade_processing_task or self._trade_processing_task.done()):
@@ -209,12 +233,12 @@ class V3WebSocketManager:
         # Start periodic tasks
         self._ping_task = asyncio.create_task(self._ping_clients())
 
-        # Start trade processing heartbeat if RLM service is available
-        if self._rlm_service:
+        # Start trade processing heartbeat if strategy coordinator or RLM service is available
+        if self._strategy_coordinator or self._rlm_service:
             self._trade_processing_task = asyncio.create_task(self._trade_processing_heartbeat())
             logger.info("Started trade processing heartbeat (1.5s interval)")
 
-        logger.info("✅ TRADER V3 WebSocket Manager started")
+        logger.info("TRADER V3 WebSocket Manager started")
     
     async def stop(self) -> None:
         """Stop the WebSocket manager and disconnect all clients."""
@@ -378,8 +402,8 @@ class V3WebSocketManager:
             if self._tracked_markets_state and client_id in self._clients:
                 await self._send_tracked_markets_snapshot(client_id)
 
-            # Send RLM market states snapshot if RLM service is available
-            if self._rlm_service and client_id in self._clients:
+            # Send RLM market states snapshot if strategy coordinator or RLM service is available
+            if (self._strategy_coordinator or self._rlm_service) and client_id in self._clients:
                 await self._send_rlm_states_snapshot(client_id)
                 # Also send initial trade_processing snapshot
                 await self._send_trade_processing_snapshot(client_id)
@@ -627,11 +651,24 @@ class V3WebSocketManager:
 
         Sends recent tracked trades, stats, and decision breakdown.
         Provides trade processing stats for RLM mode.
+
+        Uses StrategyCoordinator when available (multi-strategy aggregation),
+        falls back to legacy _rlm_service for backward compatibility.
         """
-        if not self._rlm_service:
+        # Prefer StrategyCoordinator for multi-strategy support
+        if self._strategy_coordinator:
+            stats = self._strategy_coordinator.get_trade_processing_stats()
+            recent_trades = self._strategy_coordinator.get_recent_tracked_trades(limit=20)
+            decision_history = self._strategy_coordinator.get_decision_history(limit=20)
+        elif self._rlm_service:
+            # Legacy fallback: single strategy mode
+            stats = self._rlm_service.get_stats()
+            recent_trades = self._rlm_service.get_recent_tracked_trades(limit=20)
+            decision_history = self._rlm_service.get_decision_history(limit=20)
+        else:
+            # No strategy configured - nothing to broadcast
             return
 
-        stats = self._rlm_service.get_stats()
         total = stats.get("trades_processed", 0) + stats.get("trades_filtered", 0)
 
         # Calculate filter rate
@@ -646,7 +683,7 @@ class V3WebSocketManager:
             low_balance = decision_stats.get("low_balance", 0)
 
         await self.broadcast_message("trade_processing", {
-            "recent_trades": self._rlm_service.get_recent_tracked_trades(limit=20),
+            "recent_trades": recent_trades,
             "stats": {
                 "trades_seen": total,
                 "trades_filtered": stats.get("trades_filtered", 0),
@@ -661,7 +698,7 @@ class V3WebSocketManager:
                 "reentries": stats.get("reentries", 0),
                 "low_balance": low_balance,
             },
-            "decision_history": self._rlm_service.get_decision_history(limit=20),
+            "decision_history": decision_history,
             "last_updated": time.time(),
             "timestamp": time.strftime("%H:%M:%S"),
         })
@@ -919,18 +956,22 @@ class V3WebSocketManager:
         Provides immediate visibility into trade direction data for all
         tracked markets.
 
+        Uses StrategyCoordinator when available, falls back to legacy _rlm_service.
+
         Args:
             client_id: Client ID to send snapshot to
         """
-        if not self._rlm_service:
-            return
-
         if client_id not in self._clients:
             return
 
         try:
-            # Get all market states from RLM service
-            market_states = self._rlm_service.get_market_states(limit=100)
+            # Get all market states (prefer coordinator, fallback to legacy)
+            if self._strategy_coordinator:
+                market_states = self._strategy_coordinator.get_market_states(limit=100)
+            elif self._rlm_service:
+                market_states = self._rlm_service.get_market_states(limit=100)
+            else:
+                return
 
             await self._send_to_client(client_id, {
                 "type": "rlm_states_snapshot",
@@ -953,17 +994,27 @@ class V3WebSocketManager:
         Called when a new client connects in RLM mode.
         Provides immediate visibility into trade processing stats.
 
+        Uses StrategyCoordinator when available, falls back to legacy _rlm_service.
+
         Args:
             client_id: Client ID to send snapshot to
         """
-        if not self._rlm_service:
-            return
-
         if client_id not in self._clients:
             return
 
         try:
-            stats = self._rlm_service.get_stats()
+            # Get stats and data (prefer coordinator, fallback to legacy)
+            if self._strategy_coordinator:
+                stats = self._strategy_coordinator.get_trade_processing_stats()
+                recent_trades = self._strategy_coordinator.get_recent_tracked_trades(limit=20)
+                decision_history = self._strategy_coordinator.get_decision_history(limit=20)
+            elif self._rlm_service:
+                stats = self._rlm_service.get_stats()
+                recent_trades = self._rlm_service.get_recent_tracked_trades(limit=20)
+                decision_history = self._rlm_service.get_decision_history(limit=20)
+            else:
+                return
+
             total = stats.get("trades_processed", 0) + stats.get("trades_filtered", 0)
 
             filter_rate = 0.0
@@ -979,7 +1030,7 @@ class V3WebSocketManager:
             await self._send_to_client(client_id, {
                 "type": "trade_processing",
                 "data": {
-                    "recent_trades": self._rlm_service.get_recent_tracked_trades(limit=20),
+                    "recent_trades": recent_trades,
                     "stats": {
                         "trades_seen": total,
                         "trades_filtered": stats.get("trades_filtered", 0),
@@ -994,7 +1045,7 @@ class V3WebSocketManager:
                         "reentries": stats.get("reentries", 0),
                         "low_balance": low_balance,
                     },
-                    "decision_history": self._rlm_service.get_decision_history(limit=20),
+                    "decision_history": decision_history,
                     "last_updated": time.time(),
                     "timestamp": time.strftime("%H:%M:%S"),
                 }

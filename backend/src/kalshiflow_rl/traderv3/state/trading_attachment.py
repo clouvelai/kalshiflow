@@ -44,6 +44,22 @@ class TrackedMarketOrder:
     An order we've placed in a tracked market.
 
     Kept in attachment for audit trail even after fill/cancel.
+
+    Attributes:
+        order_id: Kalshi order UUID
+        signal_id: Links to triggering signal (whale_id, rlm_signal, etc.)
+        action: "buy" or "sell"
+        side: "yes" or "no"
+        count: Contracts ordered
+        price: Price in cents
+        status: "pending", "resting", "partial", "filled", "cancelled"
+        placed_at: Timestamp when order was placed
+        fill_count: Contracts filled so far
+        fill_avg_price: Average fill price in cents
+        filled_at: Timestamp when fully filled
+        cancelled_at: Timestamp when cancelled (if cancelled)
+        strategy_id: String identifier for the strategy that placed this order
+                    (e.g., "rlm_no", "s013"). Used for per-strategy P&L tracking.
     """
     order_id: str
     signal_id: Optional[str]  # Links to triggering signal (whale_id, rlm_signal, etc.)
@@ -57,6 +73,7 @@ class TrackedMarketOrder:
     fill_avg_price: int = 0   # Average fill price in cents
     filled_at: Optional[float] = None      # Timestamp when fully filled
     cancelled_at: Optional[float] = None   # Timestamp when cancelled (if cancelled)
+    strategy_id: Optional[str] = None      # Strategy that placed this order
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize for WebSocket broadcast."""
@@ -73,6 +90,7 @@ class TrackedMarketOrder:
             "fill_avg_price": self.fill_avg_price,
             "filled_at": self.filled_at,
             "cancelled_at": self.cancelled_at,
+            "strategy_id": self.strategy_id,
         }
 
     @classmethod
@@ -177,6 +195,21 @@ class TrackedMarketSettlement:
     Final outcome when a market settles.
 
     Captured when position becomes 0 and market is determined.
+
+    Attributes:
+        result: "yes", "no", or "void"
+        determined_at: When market was determined (Unix timestamp)
+        settled_at: When position was settled (payout received)
+        final_position: Contracts we held at settlement
+        final_pnl: Net P&L in cents (revenue - cost_basis - fees)
+        revenue: Payout received in cents
+        cost_basis: Original cost in cents
+        fees: Fees paid in cents
+        strategy_id: Strategy that opened this position. May be "mixed" if
+                    multiple strategies contributed to the position.
+        per_order_pnl: Per-order P&L breakdown for multi-order positions.
+                      Maps order_id -> pnl_cents. Enables accurate per-strategy
+                      P&L calculation when multiple orders contributed to position.
     """
     result: str               # "yes", "no", "void"
     determined_at: float      # When market was determined
@@ -186,6 +219,8 @@ class TrackedMarketSettlement:
     revenue: int = 0          # Payout received in cents
     cost_basis: int = 0       # Original cost in cents
     fees: int = 0             # Fees paid in cents
+    strategy_id: Optional[str] = None   # Strategy that opened this position
+    per_order_pnl: Dict[str, int] = field(default_factory=dict)  # order_id -> pnl_cents
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize for WebSocket broadcast."""
@@ -198,6 +233,8 @@ class TrackedMarketSettlement:
             "revenue": self.revenue,
             "cost_basis": self.cost_basis,
             "fees": self.fees,
+            "strategy_id": self.strategy_id,
+            "per_order_pnl": self.per_order_pnl,
         }
 
 
