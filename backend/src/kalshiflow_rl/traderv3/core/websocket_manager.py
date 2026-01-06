@@ -203,6 +203,11 @@ class V3WebSocketManager:
             self._trade_processing_task = asyncio.create_task(self._trade_processing_heartbeat())
             logger.info("Started trade processing heartbeat (1.5s interval)")
 
+        # Start strategy panel heartbeat if manager is already running
+        if self._running and (not self._strategy_panel_task or self._strategy_panel_task.done()):
+            self._strategy_panel_task = asyncio.create_task(self._strategy_panel_heartbeat())
+            logger.info("Started strategy panel heartbeat (5s interval)")
+
     def set_upcoming_markets_syncer(self, syncer: 'UpcomingMarketsSyncer') -> None:
         """
         Set the upcoming markets syncer for sending snapshots on connect.
