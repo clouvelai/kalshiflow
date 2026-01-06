@@ -143,18 +143,19 @@ class OrderbookContext:
     # === DERIVED METRICS ===
     spread_tier: SpreadTier = SpreadTier.UNKNOWN
     bid_imbalance: Optional[float] = None  # (bid_vol - ask_vol) / (bid_vol + ask_vol)
-    bbo_depth_tier: BBODepthTier = BBODepthTier.UNKNOWN
+    bbo_depth_tier: BBODepthTier = BBODepthTier.UNKNOWN  # Ask side depth (entry liquidity for buying NO)
+    bid_depth_tier: BBODepthTier = BBODepthTier.UNKNOWN  # Bid side depth (exit liquidity for selling NO)
 
     # === FRESHNESS ===
     last_update_ms: Optional[int] = None  # Timestamp of last orderbook update
     captured_at: float = field(default_factory=time.time)  # When this context was built
-    is_stale: bool = False  # True if orderbook data is >5s old
+    is_stale: bool = False  # True if orderbook data is >60s old (per-market staleness)
 
     @classmethod
     def from_orderbook_snapshot(
         cls,
         snapshot: Dict[str, Any],
-        stale_threshold_seconds: float = 5.0,
+        stale_threshold_seconds: float = 60.0,
         tight_spread: int = 2,
         normal_spread: int = 4,
     ) -> 'OrderbookContext':
@@ -237,6 +238,16 @@ class OrderbookContext:
             else:
                 bbo_depth_tier = BBODepthTier.THIN
 
+        # Bid depth tier (based on bid side for exit liquidity when selling NO)
+        bid_depth_tier = BBODepthTier.UNKNOWN
+        if no_bid_size_at_bbo is not None:
+            if no_bid_size_at_bbo >= 100:
+                bid_depth_tier = BBODepthTier.THICK
+            elif no_bid_size_at_bbo >= 20:
+                bid_depth_tier = BBODepthTier.NORMAL
+            else:
+                bid_depth_tier = BBODepthTier.THIN
+
         return cls(
             # NO side
             no_best_bid=no_best_bid,
@@ -256,6 +267,7 @@ class OrderbookContext:
             spread_tier=spread_tier,
             bid_imbalance=bid_imbalance,
             bbo_depth_tier=bbo_depth_tier,
+            bid_depth_tier=bid_depth_tier,
             # Freshness
             last_update_ms=last_update_time,
             captured_at=time.time(),
@@ -283,6 +295,7 @@ class OrderbookContext:
             "spread_tier": self.spread_tier.value,
             "bid_imbalance": round(self.bid_imbalance, 4) if self.bid_imbalance is not None else None,
             "bbo_depth_tier": self.bbo_depth_tier.value,
+            "bid_depth_tier": self.bid_depth_tier.value,
             # Freshness
             "last_update_ms": self.last_update_ms,
             "captured_at": self.captured_at,
@@ -293,16 +306,22 @@ class OrderbookContext:
         """Check if order should be skipped due to stale orderbook data."""
         return self.is_stale
 
-    def get_recommended_entry_price(self, aggressive: bool = False, max_spread: int = 10) -> Optional[int]:
+    def get_recommended_entry_price(
+        self,
+        aggressive: bool = False,
+        max_spread: int = 10,
+        delta_count_per_second: Optional[float] = None,
+    ) -> Optional[int]:
         """
         Calculate recommended NO entry price based on orderbook context.
 
         Uses spread-aware pricing similar to existing RLM logic but with
-        additional depth considerations.
+        additional depth considerations and queue position awareness.
 
         Args:
             aggressive: If True, price closer to ask for faster fill
             max_spread: Maximum spread allowed (returns None if exceeded)
+            delta_count_per_second: Activity rate for queue depth estimation
 
         Returns:
             Recommended price in cents, or None if conditions not met
@@ -313,18 +332,43 @@ class OrderbookContext:
         if self.no_spread is None or self.no_spread > max_spread:
             return None
 
+        # Calculate depth-weighted midpoint if volume data is available
+        # If ask has more volume, shift mid toward bid for cheaper entry
+        bid_vol = self.no_bid_total_volume
+        ask_vol = self.no_ask_total_volume
+        total_vol = bid_vol + ask_vol
+
         # Base pricing on spread tier
         if self.spread_tier == SpreadTier.TIGHT:
             # Tight spread (<= 2c): price near ask
             base_price = self.no_best_ask - 1 if not aggressive else self.no_best_ask
         elif self.spread_tier == SpreadTier.NORMAL:
-            # Normal spread (<= 4c): midpoint or slightly above
-            midpoint = (self.no_best_bid + self.no_best_ask) // 2
-            base_price = midpoint if not aggressive else self.no_best_ask - 1
+            # Normal spread (<= 4c): use depth-weighted midpoint
+            if total_vol > 0:
+                # Weight: bid_vol / (bid_vol + ask_vol) shifts toward bid when ask is heavy
+                weight = bid_vol / total_vol
+                # Weighted mid: interpolate between bid and ask based on volume balance
+                # When ask > bid (negative pressure), weight < 0.5, mid shifts toward bid (cheaper)
+                weighted_mid = int(self.no_best_bid + weight * self.no_spread)
+                base_price = weighted_mid if not aggressive else self.no_best_ask - 1
+            else:
+                # Fallback to simple midpoint
+                midpoint = (self.no_best_bid + self.no_best_ask) // 2
+                base_price = midpoint if not aggressive else self.no_best_ask - 1
         else:
-            # Wide spread (> 4c): bid + 75-85% of spread
-            spread_pct = 0.85 if aggressive else 0.75
-            base_price = self.no_best_bid + int(self.no_spread * spread_pct)
+            # Wide spread (> 4c): bid + 75-85% of spread, adjusted by depth
+            if total_vol > 0:
+                # Adjust spread percentage based on volume imbalance
+                weight = bid_vol / total_vol
+                # When ask heavy (weight < 0.5), be less aggressive (lower %)
+                # When bid heavy (weight > 0.5), can be more aggressive (higher %)
+                base_pct = 0.85 if aggressive else 0.75
+                adjusted_pct = base_pct * (0.5 + weight)  # Range: base_pct * [0.5, 1.5]
+                adjusted_pct = min(0.95, max(0.50, adjusted_pct))  # Clamp to reasonable range
+                base_price = self.no_best_bid + int(self.no_spread * adjusted_pct)
+            else:
+                spread_pct = 0.85 if aggressive else 0.75
+                base_price = self.no_best_bid + int(self.no_spread * spread_pct)
 
         # Adjust for thin liquidity at BBO
         if self.bbo_depth_tier == BBODepthTier.THIN and not aggressive:
@@ -332,7 +376,23 @@ class OrderbookContext:
             if base_price < self.no_best_ask:
                 base_price = min(base_price + 1, self.no_best_ask)
 
-        return base_price
+        # Queue position awareness: estimate queue depth and adjust aggression
+        # If queue is deep relative to activity, be more aggressive (cross spread)
+        if delta_count_per_second is not None and self.no_ask_size_at_bbo is not None:
+            # Estimate how many seconds it would take to clear the queue
+            # activity_rate = delta_count_per_second (trades per second)
+            # queue_time = queue_size / activity_rate
+            if delta_count_per_second > 0:
+                queue_depth_ratio = self.no_ask_size_at_bbo / (delta_count_per_second * 10)
+                # If queue is deep (ratio > 50), be more aggressive
+                if queue_depth_ratio > 50 and base_price < self.no_best_ask:
+                    logger.debug(
+                        f"Queue depth ratio {queue_depth_ratio:.1f} > 50, increasing aggression"
+                    )
+                    base_price = min(base_price + 1, self.no_best_ask)
+
+        # Ensure price is within valid Kalshi bounds [1, 99]
+        return max(1, min(99, base_price))
 
 
 @dataclass

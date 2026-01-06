@@ -146,8 +146,9 @@ class BucketState:
             + list(yes_bids.values())
             + list(yes_asks.values())
         )
-        # Track current large order count (not cumulative)
-        self.large_order_count = sum(1 for size in all_sizes if size >= LARGE_ORDER_THRESHOLD)
+        # Track max large order count seen in bucket (not overwritten each snapshot)
+        current_large = sum(1 for size in all_sizes if size >= LARGE_ORDER_THRESHOLD)
+        self.large_order_count = max(self.large_order_count, current_large)
 
     def increment_delta_count(self) -> None:
         """Increment delta count when a delta is processed."""
@@ -165,15 +166,22 @@ class BucketState:
             return int(sum(values) / len(values)) if values else None
 
         def calc_imbalance(bid_vols: List[int], ask_vols: List[int]) -> Optional[float]:
-            """Calculate imbalance ratio: bid_vol / (bid_vol + ask_vol)."""
+            """
+            Calculate signed imbalance ratio: (bid_vol - ask_vol) / (bid_vol + ask_vol).
+
+            Returns value in range [-1, 1]:
+              - Positive = more bid pressure (bullish)
+              - Negative = more ask pressure (bearish)
+              - 0 = balanced
+            """
             if not bid_vols or not ask_vols:
                 return None
             total_bid = sum(bid_vols)
             total_ask = sum(ask_vols)
             total = total_bid + total_ask
             if total == 0:
-                return 0.5  # Neutral when no volume
-            return round(total_bid / total, 4)
+                return 0.0  # Neutral when no volume
+            return round((total_bid - total_ask) / total, 4)
 
         return {
             "bucket_seconds": self.bucket_seconds,
@@ -205,6 +213,18 @@ class BucketState:
             "snapshot_count": self.snapshot_count,
             "delta_count": self.delta_count,
             "large_order_count": self.large_order_count,
+            # Spread volatility: (high - low) / close, indicates spread instability
+            # High volatility (>0.5) suggests spread is spiking, delay entry
+            "no_spread_volatility": (
+                round((self.no_spread_high - self.no_spread_low) / max(1, self.no_spread_last), 4)
+                if self.no_spread_high is not None and self.no_spread_low is not None and self.no_spread_last is not None
+                else None
+            ),
+            "yes_spread_volatility": (
+                round((self.yes_spread_high - self.yes_spread_low) / max(1, self.yes_spread_last), 4)
+                if self.yes_spread_high is not None and self.yes_spread_low is not None and self.yes_spread_last is not None
+                else None
+            ),
         }
 
 

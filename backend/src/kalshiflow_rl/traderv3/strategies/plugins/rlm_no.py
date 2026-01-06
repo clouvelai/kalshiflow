@@ -695,6 +695,17 @@ class RLMNoStrategy:
         # Check for signal
         signal = self._detect_signal(state)
         if signal:
+            # Check spread volatility before executing - skip if spread is spiking
+            if self._context and self._context.orderbook_integration:
+                orderbook_signals = self._context.orderbook_integration.get_orderbook_signals(market_ticker)
+                if orderbook_signals:
+                    spread_vol = orderbook_signals.get("no_spread_volatility")
+                    if spread_vol is not None and spread_vol > 0.5:
+                        logger.debug(
+                            f"Signal delayed for {market_ticker}: spread volatility {spread_vol:.2f} > 0.5 threshold"
+                        )
+                        self._stats["signals_skipped"] += 1
+                        return
             await self._execute_signal(signal)
 
     async def _check_and_handle_maxed_position(self, market_ticker: str) -> bool:
@@ -970,9 +981,20 @@ class RLMNoStrategy:
                 # Position-aware pricing
                 is_high_edge = signal.price_drop >= 10
 
+                # Get delta count per second from orderbook signals for queue awareness
+                delta_count_per_second: Optional[float] = None
+                if self._context and self._context.orderbook_integration:
+                    orderbook_signals = self._context.orderbook_integration.get_orderbook_signals(signal.market_ticker)
+                    if orderbook_signals:
+                        delta_count = orderbook_signals.get("delta_count", 0)
+                        bucket_seconds = orderbook_signals.get("bucket_seconds", 10)
+                        if bucket_seconds > 0:
+                            delta_count_per_second = delta_count / bucket_seconds
+
                 entry_price = ob_context.get_recommended_entry_price(
                     aggressive=is_high_edge,
-                    max_spread=self._max_spread
+                    max_spread=self._max_spread,
+                    delta_count_per_second=delta_count_per_second,
                 )
 
                 if entry_price is None:
