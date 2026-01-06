@@ -1,43 +1,7 @@
 # TRADER V3 Architecture Documentation
 
 > Machine-readable architecture reference for coding agents.
-> Last updated: 2025-01-05 (removed DB persistence for tracked markets)
-
----
-
-## Cleanup Summary (2025-01-03)
-
-### Removed Components
-| Component | Type | Lines Removed |
-|-----------|------|---------------|
-| `whale_tracker.py` | Service | 436 |
-| `whale_execution_service.py` | Service | 700 |
-| `yes_80_90_service.py` | Service | 693 |
-| `WhaleQueuePanel.jsx` | Frontend Panel | 274 |
-| `FollowedTradesPanel.jsx` | Frontend Panel | 95 |
-| `DecisionAuditPanel.jsx` | Frontend Panel | 163 |
-
-### Removed Strategies
-- `WHALE_FOLLOWER` - Fade low-leverage YES whales
-- `YES_80_90` - Buy YES at 80-90c
-- `RL_MODEL` - Trained RL model placeholder
-- `PAPER_TEST` - Simple test trades
-- `CUSTOM` - Custom strategy implementation
-
-### Removed Configuration
-- `V3_ENABLE_WHALE_DETECTION` - Whale detection feature toggle
-- `WHALE_QUEUE_SIZE`, `WHALE_WINDOW_MINUTES`, `WHALE_MIN_SIZE_CENTS` - Whale tracker settings
-- `WHALE_MAX_TRADES_PER_MINUTE`, `WHALE_TOKEN_REFILL_SECONDS`, `WHALE_MAX_AGE_SECONDS` - Whale execution settings
-- `YES8090_*` - All YES 80-90c strategy configuration
-
-### Removed Events
-- `WHALE_QUEUE_UPDATED` - Whale queue state changes
-- `WhaleQueueEvent` - Event data class
-
-### Metrics
-- **Total lines removed**: ~3,500 (backend: 2,969, frontend: 535)
-- **Files deleted**: 6 (3 backend services, 3 frontend panels)
-- **Remaining strategies**: HOLD, RLM_NO
+> Last updated: 2025-01-06 (added strategy attribution system, updated state container caches)
 
 ---
 
@@ -45,7 +9,7 @@
 
 TRADER V3 is an event-driven paper trading system for Kalshi prediction markets. It uses WebSocket connections to receive real-time orderbook data and lifecycle events, maintains state through a centralized container with version tracking, and coordinates trading decisions through a clean component architecture. All trading data is in CENTS (Kalshi's native unit).
 
-**Current Status**: Production-ready with lifecycle-based market discovery, RLM trading strategy, real-time WebSocket broadcasting, and comprehensive state management.
+**Current Status**: Production-ready with lifecycle-based market discovery, RLM trading strategy, real-time WebSocket broadcasting, comprehensive state management, and strategy attribution for multi-strategy P&L tracking.
 
 **Trading Strategies**:
 - **HOLD**: Never trade (safe default)
@@ -60,6 +24,8 @@ TRADER V3 is an event-driven paper trading system for Kalshi prediction markets.
 - **TrackedMarketsState**: Centralized in-memory state for discovered markets (no DB persistence)
 - **Trading Attachments**: Per-market trading state linking positions/orders to tracked markets
 - **Real-time Prices**: MarketTickerListener (WebSocket) + MarketPriceSyncer (REST fallback)
+- **Strategy Attribution**: Per-order/position strategy tracking for multi-strategy P&L analysis
+- **Order Context Service**: Captures trade-time context for quant analysis
 
 ## 2. Architecture Diagram
 
@@ -116,7 +82,11 @@ TRADER V3 is an event-driven paper trading system for Kalshi prediction markets.
 |           |            |TradingFlowOrch    |          |TradingDecision    |-+   |TrackedMarketSync  |              |
 |           |            | (cycle mgmt)      |          | Service           |     | (REST sync 30s)   |              |
 |           |            +-------------------+          +-------------------+     +-------------------+              |
-|           |                     |                                                        |                         |
+|           |                     |                              |                         |                         |
+|           |                     |                     +--------+----------+              |                         |
+|           |                     |                     |OrderContextService|              |                         |
+|           |                     |                     | (quant capture)   |              |                         |
+|           |                     |                     +-------------------+              |                         |
 |           v                     v                                                        v                         |
 |  +-------------------+ +-------------------+     +--------------------+  +-------------------+ +------------------+|
 |  | OrderbookClient   | |KalshiDemoTrading  |     |V3TradesIntegration |  |ApiDiscoverySyncer | |UpcomingMktSyncer ||
@@ -148,61 +118,6 @@ TRADER V3 is an event-driven paper trading system for Kalshi prediction markets.
     +---------------+     +---------------+        +----------------+         +----------------+
 ```
 
-### 2.1 Orderbook Data Flow
-
-```
-Kalshi WS (orderbook)
-        |
-        v
-+------------------+
-| OrderbookClient  |  Receives snapshots and deltas
-+--------+---------+
-         |
-         | ORDERBOOK_SNAPSHOT / ORDERBOOK_DELTA events
-         v
-+------------------+                    +-------------------------+
-| SharedOrderbook  |<------------------>| V3OrderbookIntegration  |
-|     State        |  get_snapshot()    +------------+------------+
-| (in-memory,      |                                 |
-|  5 levels)       |                                 | Lazy init on first snapshot
-+------------------+                                 v
-         ^                              +-------------------------+
-         |                              | OrderbookSignalAggregator|
-         |                              | (10-second buckets)      |
-         |                              +------------+-------------+
-         |                                           |
-         |                                           | Flush every 10s
-         |                                           v
-         |                              +-------------------------+
-         |                              | PostgreSQL              |
-         |                              | (orderbook_signals)     |
-         |                              | ~1.7KB/market/day       |
-         |                              +-------------------------+
-         |
-         | get_orderbook_signals(ticker)
-         |
-+--------+----------+
-| RLMService        |  Entry pricing decisions
-+--------+----------+
-         |
-         | from_orderbook_snapshot()
-         v
-+------------------+
-| OrderbookContext |  spread_tier, bbo_depth_tier, imbalance
-+------------------+
-         |
-         | get_recommended_entry_price()
-         v
-+------------------+
-| Trade Execution  |  Spread-aware pricing
-+------------------+
-```
-
-**Storage Changes (2025-01-04):**
-- **REMOVED**: Raw snapshot persistence (~1MB/market/day)
-- **ADDED**: Signal aggregation to 10-second buckets (~1.7KB/market/day)
-- **REMOVED**: `_snapshot_persisted_markets` tracking in OrderbookClient
-
 ## 3. Component Index
 
 ### 3.1 Core Components (`traderv3/core/`)
@@ -216,9 +131,35 @@ Kalshi WS (orderbook)
   - `get_status()` - Get comprehensive system status
   - `get_health()` - Quick health check
   - `is_healthy()` - Boolean health status
+- **Managed Components**:
+  - `_state_machine`: V3StateMachine
+  - `_event_bus`: EventBus
+  - `_websocket_manager`: V3WebSocketManager
+  - `_orderbook_integration`: V3OrderbookIntegration
+  - `_trading_client_integration`: Optional V3TradingClientIntegration
+  - `_state_container`: V3StateContainer
+  - `_health_monitor`: V3HealthMonitor
+  - `_status_reporter`: V3StatusReporter
+  - `_listener_bootstrap`: ListenerBootstrapService
+  - `_trading_service`: Optional TradingDecisionService
+  - `_trading_orchestrator`: Optional TradingFlowOrchestrator
+  - `_strategy_coordinator`: Optional StrategyCoordinator
+  - `_rlm_service`: Optional RLMService (deprecated, use strategy_coordinator)
+  - `_tmo_fetcher`: Optional TrueMarketOpenFetcher
+  - `_position_listener`: Optional PositionListener
+  - `_market_ticker_listener`: Optional MarketTickerListener
+  - `_market_price_syncer`: Optional MarketPriceSyncer
+  - `_trading_state_syncer`: Optional TradingStateSyncer
+  - `_fill_listener`: Optional FillListener
+  - `_lifecycle_client`: Optional LifecycleClient
+  - `_lifecycle_integration`: Optional V3LifecycleIntegration
+  - `_tracked_markets_state`: Optional TrackedMarketsState
+  - `_event_lifecycle_service`: Optional EventLifecycleService
+  - `_lifecycle_syncer`: Optional TrackedMarketsSyncer
+  - `_upcoming_markets_syncer`: Optional UpcomingMarketsSyncer
+  - `_api_discovery_syncer`: Optional ApiDiscoverySyncer
 - **Emits Events**: None directly (delegates to StatusReporter)
 - **Subscribes To**: None directly
-- **Dependencies**: V3StateMachine, EventBus, V3WebSocketManager, V3OrderbookIntegration, V3TradingClientIntegration (optional), V3StateContainer, V3HealthMonitor, V3StatusReporter, TradingFlowOrchestrator, MarketTickerListener (optional), MarketPriceSyncer (optional), TradingStateSyncer (optional), FillListener (optional), RLMService (optional)
 
 #### V3StateMachine
 - **File**: `core/state_machine.py`
@@ -244,31 +185,55 @@ Kalshi WS (orderbook)
   - `emit_trader_status()` - Emit status update event
   - `emit_system_activity()` - Emit unified console message
   - `emit_orderbook_snapshot()` / `emit_orderbook_delta()` - Market data events
+  - `emit_public_trade()` - Public trade received
+  - `emit_market_lifecycle()` - Lifecycle event
+  - `emit_market_tracked()` / `emit_market_determined()` - Discovery events
+  - `emit_rlm_market_update()` / `emit_rlm_trade_arrived()` - RLM events
+  - `emit_order_fill()` - Order fill notification
+  - `emit_market_position_update()` / `emit_market_ticker_update()` - Position/price events
 - **Emits Events**: Distributes all event types
 - **Subscribes To**: N/A (is the event distributor)
 - **Dependencies**: None
 
 #### V3StateContainer
 - **File**: `core/state_container.py`
-- **Purpose**: Centralized state storage with versioning, change detection, and atomic updates
+- **Purpose**: Centralized state storage with versioning, change detection, atomic updates, and strategy attribution
 - **Key Methods**:
   - `update_trading_state(state, changes)` - Update trading data from Kalshi sync (returns bool if changed)
   - `update_single_position(ticker, position_data)` - Update single position from real-time WebSocket push
   - `update_component_health(name, healthy, details)` - Update component health
   - `update_machine_state(state, context, metadata)` - Update state machine reference
   - `get_full_state()` - Get complete state snapshot
-  - `get_trading_summary(order_group_id)` - Get trading state for WebSocket broadcast (includes settlements, P&L)
+  - `get_trading_summary(order_group_id)` - Get trading state for WebSocket broadcast (includes settlements, P&L, strategy attribution)
   - `initialize_session_pnl(balance, portfolio_value)` - Initialize session P&L tracking on first sync
+  - `record_order_fill(cost_cents, contracts)` - Record cash spent on fill
+  - `record_ttl_cancellation(count)` - Record TTL-cancelled orders
   - `set_component_degraded(component, is_degraded, reason)` - Track degraded components
   - `atomic_update(update_func)` - Thread-safe atomic state update
   - `compare_and_swap(expected_version, update_func)` - CAS operation
+  - `get_or_create_trading_attachment(ticker)` - Get/create trading attachment for market
+  - `update_order_in_attachment(ticker, order_id, order_data)` - Track order in attachment
+  - `mark_order_filled_in_attachment(ticker, order_id, fill_count, fill_price)` - Mark fill in attachment
+  - `remove_order(order_id)` - Remove filled order from state immediately
+  - `cleanup_market(ticker)` - Cleanup state for determined/settled market
 - **Key State Types**:
   - `_trading_state`: TraderState with positions, orders, balance, settlements
-  - `_session_pnl_state`: SessionPnLState for P&L tracking from session start
-  - `_settled_positions`: Deque of last 50 settlements (synced from REST API)
+  - `_session_pnl_tracker`: SessionPnLTracker for P&L tracking from session start
+  - `_settled_positions`: Deque of last 500 settlements (synced from REST API)
   - `_session_updated_tickers`: Set of tickers updated via WebSocket this session
   - `_market_prices`: Dict[str, MarketPriceData] for real-time market prices
-  - `_market_prices_version`: Version tracking for market price updates
+  - `_trading_attachments`: Dict[str, TradingAttachment] per-market trading state
+  - `_component_health`: Dict[str, ComponentHealth] for health tracking
+- **Strategy Attribution Caches** (new):
+  - `_settlement_strategy_cache`: Dict[str, str | None] - Maps ticker to strategy_id from order_contexts DB for settlements
+  - `_position_strategy_cache`: Dict[str, str | None] - Maps ticker to strategy_id from order_contexts DB for positions
+  - These caches prevent N+1 DB queries when formatting positions/settlements for display
+  - Cache persists across sync cycles; populated via `_batch_lookup_strategies_from_db()`
+- **Strategy Lookup Flow**:
+  1. Check cache first (includes DB results from previous lookups)
+  2. Check in-memory TradingAttachment (has strategy_id from filled orders)
+  3. Batch query order_contexts table for remaining unknown tickers
+  4. Cache results (including None for tickers not found)
 - **MarketPriceData Fields**:
   - `ticker`: Market ticker string
   - `last_price`: Last traded price (cents)
@@ -278,6 +243,8 @@ Kalshi WS (orderbook)
   - `open_interest`: Active contracts
   - `close_time`: Market close time (ISO timestamp, from REST only)
   - `timestamp`: Update timestamp
+  - `price_source`: "ws_ticker" or "rest_sync"
+  - `last_ws_update_time`: Unix timestamp of last WS update
 - **Market Price Methods**:
   - `update_market_price(ticker, price_data)` - Update single ticker price
   - `get_market_price(ticker)` - Get price for ticker
@@ -286,7 +253,7 @@ Kalshi WS (orderbook)
   - `get_market_prices_summary()` - Get summary for WebSocket broadcast
 - **Emits Events**: None
 - **Subscribes To**: `MARKET_POSITION_UPDATE` (via coordinator subscription)
-- **Dependencies**: TraderState, StateChange, SessionPnLState
+- **Dependencies**: TraderState, StateChange, SessionPnLTracker, TradingAttachment, OrderContextService
 
 #### V3HealthMonitor
 - **File**: `core/health_monitor.py`
@@ -310,9 +277,9 @@ Kalshi WS (orderbook)
   - `set_position_listener(position_listener)` - Set position listener for health reporting
 - **Broadcast Data** (via `emit_trading_state()`):
   - `balance`, `portfolio_value`, `position_count`, `order_count`
-  - `positions_details`: Per-position P&L with unrealized_pnl, realized_pnl, fees_paid
+  - `positions_details`: Per-position P&L with unrealized_pnl, realized_pnl, fees_paid, strategy_id
   - `pnl`: Session P&L breakdown (realized, unrealized, total)
-  - `settlements`: Last 50 settlements with net_pnl calculation
+  - `settlements`: Last 500 settlements with net_pnl calculation and strategy_id
   - `position_listener`: Health status of real-time position WebSocket
 - **Emits Events**: `TRADER_STATUS` (via EventBus)
 - **Subscribes To**: None (polls state directly)
@@ -330,15 +297,17 @@ Kalshi WS (orderbook)
   - `broadcast_console_message(level, message, context)` - Console-style message
   - `get_stats()` - Get connection statistics
   - `get_health_details()` - Get detailed health information
+  - `set_trading_service(service)` - Set trading service for order actions
+  - `set_state_container(container)` - Set state container for immediate state on connect
 - **Message Coalescing**:
   - 100ms batching window for frequent message types
   - **Immediate (critical)**: `state_transition`, `connection`, `system_activity`, `history_replay`
-  - **Coalesced (frequent)**: `trading_state`, `trader_status`
+  - **Coalesced (frequent)**: `trading_state`, `trader_status`, `tracked_markets`, `rlm_market_state`
   - Coalescing keeps only the latest message of each type, reducing frontend re-renders
 - **Key Fields**: `_pending_messages`, `_coalesce_task`, `_coalesce_interval`
 - **Emits Events**: None
 - **Subscribes To**: `SYSTEM_ACTIVITY`, `TRADER_STATUS`
-- **Dependencies**: EventBus, V3StateMachine (optional), Starlette WebSocket
+- **Dependencies**: EventBus, V3StateMachine (optional), TradingDecisionService (optional), V3StateContainer (optional), Starlette WebSocket
 
 #### TradingFlowOrchestrator
 - **File**: `core/trading_flow_orchestrator.py`
@@ -389,6 +358,7 @@ Kalshi WS (orderbook)
   - `cancel_orphaned_orders()` - Cancel orders without order_group_id
   - `create_or_get_order_group(contracts_limit)` - Setup portfolio limits
   - `reset_order_group()` - Reset order group session
+  - `get_market(ticker)` - Fetch market info via REST
 - **Emits Events**: `SYSTEM_ACTIVITY` (operation, cleanup types)
 - **Subscribes To**: None
 - **Dependencies**: KalshiDemoTradingClient, EventBus, KalshiDataSync
@@ -407,6 +377,7 @@ Kalshi WS (orderbook)
   - `batch_cancel_orders(order_ids)` - Cancel multiple orders with fallback
   - `get_fills(ticker)` - Get trade fills
   - `get_markets(limit)` - Get available markets
+  - `get_market(ticker)` - Get single market info
   - `create_order_group(contracts_limit)` - Create portfolio limit group
   - `get_order_group(order_group_id)` - Get order group status
   - `update_order_group(order_group_id, contracts_limit)` - Update order group limits
@@ -469,23 +440,6 @@ Kalshi WS (orderbook)
   - Throttled updates (configurable, default 500ms per ticker)
   - Dynamic subscription management as positions change
   - Automatic reconnection on disconnect
-- **Ticker Message Format** (from Kalshi):
-  ```json
-  {
-    "type": "ticker",
-    "msg": {
-      "market_ticker": "INXD-25JAN03",
-      "price": 52,           // last traded price (cents)
-      "yes_bid": 50,         // best yes bid (cents)
-      "yes_ask": 54,         // best yes ask (cents)
-      "no_bid": 46,          // best no bid (cents)
-      "no_ask": 50,          // best no ask (cents)
-      "volume": 1500,        // total volume traded
-      "open_interest": 12000,// active contracts
-      "ts": 1703808000       // unix timestamp (seconds)
-    }
-  }
-  ```
 - **Emits Events**: `MARKET_TICKER_UPDATE` (via EventBus.emit_market_ticker_update)
 - **Subscribes To**: Kalshi WebSocket `ticker` channel
 - **Dependencies**: EventBus, KalshiAuth
@@ -495,19 +449,18 @@ Kalshi WS (orderbook)
 - **Purpose**: WebSocket listener for real-time position updates from Kalshi
 - **Key Methods**:
   - `start()` / `stop()` - Lifecycle management
-  - `is_healthy()` - Check if listener is running and WebSocket connected (handles .closed attribute safely)
-  - `get_metrics()` - Get listener statistics (positions received/processed, connection count)
+  - `is_healthy()` - Check if listener is running and WebSocket connected
+  - `get_metrics()` - Get listener statistics
   - `get_status()` - Get full status for monitoring
-  - `get_health_details()` - Get detailed health information for initialization tracker
+  - `get_health_details()` - Get detailed health information
 - **Features**:
   - Subscribes to Kalshi `market_positions` WebSocket channel
   - Automatic reconnection with configurable delay
   - Heartbeat monitoring for connection health
   - Centi-cents to cents conversion (Kalshi API uses centi-cents)
-  - WebSocket closed state detection with fallback (handles different WS library attributes)
 - **Position Data Fields** (from WebSocket, after conversion):
   - `position`: Contract count (+ long, - short)
-  - `market_exposure`: Current market value in cents (was position_cost in centi-cents)
+  - `market_exposure`: Current market value in cents
   - `realized_pnl`: Realized P&L in cents
   - `fees_paid`: Fees in cents
   - `volume`: Total contracts traded
@@ -522,38 +475,17 @@ Kalshi WS (orderbook)
 - **Key Methods**:
   - `start()` / `stop()` - Lifecycle management
   - `is_healthy()` - Check if listener is running and WebSocket connected
-  - `get_metrics()` - Get listener statistics (fills received/processed, connection count)
+  - `get_metrics()` - Get listener statistics
   - `get_status()` - Get full status for monitoring
-  - `get_health_details()` - Get detailed health information for initialization tracker
+  - `get_health_details()` - Get detailed health information
 - **Features**:
   - Subscribes to Kalshi `fill` WebSocket channel (authenticated)
-  - Receives all fills for the account (ignores market_tickers filter)
+  - Receives all fills for the account
   - Automatic reconnection with configurable delay
-  - Heartbeat monitoring for connection health
   - Price values in cents (native Kalshi format)
-- **Fill Message Format** (from Kalshi):
-  ```json
-  {
-    "type": "fill",
-    "sid": 13,
-    "msg": {
-      "trade_id": "d91bc706-ee49-470d-82d8-11418bda6fed",
-      "order_id": "ee587a1c-8b87-4dcf-b721-9f6f790619fa",
-      "market_ticker": "HIGHNY-22DEC23-B53.5",
-      "is_taker": true,
-      "side": "yes",
-      "yes_price": 75,
-      "count": 278,
-      "action": "buy",
-      "ts": 1671899397,
-      "post_position": 500
-    }
-  }
-  ```
 - **Emits Events**: `ORDER_FILL` (via EventBus.emit_order_fill)
 - **Subscribes To**: None (listens to Kalshi WebSocket)
 - **Dependencies**: EventBus, KalshiAuth
-- **Architecture Note**: Provides instant feedback when orders are filled, complementing REST API sync for immediate console UX
 
 ### 3.3 Services (`traderv3/services/`)
 
@@ -569,10 +501,47 @@ Kalshi WS (orderbook)
   - `set_strategy(strategy)` - Change trading strategy
   - `get_stats()` - Get service statistics
 - **Key Classes**:
-  - `TradingDecision`: Represents a trading decision (action, market, side, quantity, price)
+  - `TradingDecision`: Represents a trading decision with strategy_id for attribution
+    - `action`: "buy", "sell", "hold"
+    - `market`: Market ticker
+    - `side`: "yes" or "no"
+    - `quantity`: Number of contracts
+    - `price`: Limit price in cents
+    - `strategy_id`: String identifier (e.g., "rlm_no", "s013") - preferred over deprecated `strategy` enum
+    - `signal_params`: Strategy-specific parameters for quant analysis
+- **Order Context Integration**:
+  - Creates `StagedOrderContext` with full trade-time context before placing order
+  - Stages context via `OrderContextService.stage_context()`
+  - Context persisted to DB on fill confirmation
 - **Emits Events**: `SYSTEM_ACTIVITY` (trading_decision, trading_error types)
 - **Subscribes To**: None
-- **Dependencies**: V3TradingClientIntegration, V3StateContainer, EventBus
+- **Dependencies**: V3TradingClientIntegration, V3StateContainer, EventBus, V3OrderbookIntegration, OrderContextService
+
+#### OrderContextService
+- **File**: `services/order_context_service.py`
+- **Purpose**: Manages order context capture and persistence for quant analysis
+- **Lifecycle**:
+  1. **STAGE**: Capture context in memory when order is placed (`stage_context()`)
+  2. **PERSIST**: Write to DB when fill is confirmed (`persist_on_fill()`)
+  3. **LINK**: Update settlement data when market settles (`link_settlement()`)
+  4. **EXPORT**: Provide CSV export for quant analysis (`get_contexts_for_export()`, `generate_csv()`)
+- **Key Methods**:
+  - `initialize(db_pool)` - Initialize with database connection pool
+  - `stage_context(context)` - Stage order context in memory
+  - `has_staged_context(order_id)` - Check if staged context exists
+  - `get_staged_context(order_id)` - Get staged context
+  - `persist_on_fill(order_id, fill_count, fill_avg_price_cents, filled_at)` - Persist to DB on fill
+  - `link_settlement(order_id, market_result, realized_pnl_cents, settled_at)` - Link settlement outcome
+  - `discard_staged_context(order_id)` - Discard for cancelled orders
+  - `get_contexts_for_export(...)` - Query contexts for export
+  - `generate_csv(contexts)` - Generate CSV string
+  - `get_metrics()` - Get service metrics
+- **Key Properties**:
+  - `db_pool` - Public accessor for database connection pool (used by StateContainer for batch strategy lookups)
+- **Global Access**: `get_order_context_service()` returns singleton instance
+- **Emits Events**: None
+- **Subscribes To**: None
+- **Dependencies**: RLDatabase (connection pool)
 
 #### MarketPriceSyncer
 - **File**: `services/market_price_syncer.py`
@@ -581,139 +550,58 @@ Kalshi WS (orderbook)
   - `start()` / `stop()` - Lifecycle management (initial sync on start)
   - `is_healthy()` - Check if running and last sync not stale
   - `get_health_details()` - Get detailed health information
-- **Key Properties**:
-  - `sync_count` - Number of syncs completed
-  - `tickers_synced` - Number of tickers in last sync
-  - `last_sync_time` - Timestamp of last successful sync
 - **Behavior**:
   - Performs initial sync immediately on `start()`
   - Runs periodic sync loop every 30 seconds (configurable)
-  - Updates StateContainer's `_market_prices` directly (batch update pattern)
-  - Fetches prices for all position tickers via REST API (batched in groups of 100)
+  - Updates StateContainer's `_market_prices` directly
+  - Fetches prices for all position tickers via REST API
 - **Emits Events**: `SYSTEM_ACTIVITY` (sync type with sync_type="market_prices")
 - **Subscribes To**: None
 - **Dependencies**: V3TradingClientIntegration, V3StateContainer, EventBus
-- **Architecture Note**: Works alongside MarketTickerListener WebSocket for redundancy
 
 #### TradingStateSyncer
 - **File**: `services/trading_state_syncer.py`
-- **Purpose**: Dedicated service for periodic trading state sync (balance, positions, orders, settlements) from Kalshi REST API
+- **Purpose**: Dedicated service for periodic trading state sync from Kalshi REST API
 - **Key Methods**:
   - `start()` / `stop()` - Lifecycle management (initial sync on start)
   - `is_healthy()` - Check if running and last sync not stale
   - `get_health_details()` - Get detailed health information
-- **Key Properties**:
-  - `sync_count` - Number of syncs completed
-  - `last_sync_time` - Timestamp of last successful sync
+- **Synced Data**: Balance, positions, orders, settlements
 - **Behavior**:
   - Performs initial sync immediately on `start()`
   - Runs periodic sync loop every 20 seconds (configurable)
   - Updates StateContainer with trading state and change detection
   - Broadcasts trading_state via StatusReporter after each sync
-  - Emits console-friendly system activity messages
-- **Console Message Format**: "Trading session synced: X positions, $Y balance, Z settlements"
 - **Emits Events**: `SYSTEM_ACTIVITY` (sync type with sync_type="trading_state")
 - **Subscribes To**: None
 - **Dependencies**: V3TradingClientIntegration, V3StateContainer, EventBus, StatusReporter
-- **Architecture Note**: Runs in dedicated asyncio task for reliability (same pattern as MarketPriceSyncer)
 
-### 3.4 State (`traderv3/state/`)
-
-#### TraderState
-- **File**: `state/trader_state.py`
-- **Purpose**: Data class representing complete trader state (ALL VALUES IN CENTS)
-- **Key Fields**:
-  - `balance: int` - Available cash in cents
-  - `portfolio_value: int` - Portfolio value in cents
-  - `positions: Dict[str, Any]` - Position data by ticker
-  - `orders: Dict[str, Any]` - Order data by order_id
-  - `order_group: Optional[OrderGroupState]` - Portfolio limit group
-  - `sync_timestamp: float` - When state was synced
-- **Factory Method**: `from_kalshi_data(balance_data, positions_data, orders_data, settlements_data)`
-
-#### StateChange
-- **File**: `state/trader_state.py`
-- **Purpose**: Tracks deltas between syncs
-- **Key Fields**:
-  - `balance_change: int` - Change in cents
-  - `portfolio_value_change: int` - Change in cents
-  - `position_count_change: int` - Change in position count
-  - `order_count_change: int` - Change in order count
-
-### 3.5 Sync (`traderv3/sync/`)
-
-#### KalshiDataSync
-- **File**: `sync/kalshi_data_sync.py`
-- **Purpose**: Fetches state from Kalshi API and tracks changes between syncs
-- **Key Methods**:
-  - `sync_with_kalshi()` - Full sync, returns (TraderState, StateChange)
-  - `refresh_state()` - Refresh without tracking changes
-  - `set_order_group_id(id)` - Set order group to track
-  - `has_state()` - Check if synced state exists
-  - `order_group_id` (property) - Get current order group ID being tracked
-- **Sync Data Fetched**:
-  1. Balance: `get_account_info()` - balance and portfolio_value in cents
-  2. Positions: `get_positions()` - market_positions array
-  3. Orders: `get_orders()` - orders array (open/resting only)
-  4. Settlements: `get_settlements()` - historical settlements (optional, may fail)
-  5. Order Group: `get_order_group(id)` - if order_group_id is set
-- **Emits Events**: None
-- **Subscribes To**: None
-- **Dependencies**: KalshiDemoTradingClient, TraderState, StateChange, OrderGroupState
-
-### 3.6 Configuration (`traderv3/config/`)
-
-#### V3Config
-- **File**: `config/environment.py`
-- **Purpose**: Environment-based configuration with validation
-- **Key Fields**:
-  - `api_url`, `ws_url` - Kalshi API endpoints
-  - `api_key_id`, `private_key_content` - Authentication
-  - `market_tickers` - Markets to subscribe
-  - `max_markets` - Market limit
-  - `enable_trading_client` - Enable trading integration
-  - `trading_mode` - "paper" or "production"
-  - `trading_strategy_str` - Strategy: "hold" or "rlm_no"
-  - `port` - Server port (default 8005)
-- **Factory Method**: `from_env()` - Load from environment variables
-- **Key Methods**: `is_demo_environment()`, `get_environment_name()`, `validate()`
-
-### 3.7 Lifecycle Discovery System (`traderv3/services/` and `traderv3/state/`)
-
-The Lifecycle Discovery System enables dynamic market discovery via Kalshi's real-time lifecycle events, with category filtering and capacity management.
-
-#### LifecycleClient
-- **File**: `clients/lifecycle_client.py`
-- **Purpose**: WebSocket client for Kalshi market lifecycle events stream
+#### RLMService
+- **File**: `services/rlm_service.py`
+- **Purpose**: Event-driven Reverse Line Movement strategy - bets NO when public bets YES but price drops
 - **Key Methods**:
   - `start()` / `stop()` - Lifecycle management
-  - `wait_for_connection(timeout)` - Wait for WebSocket connection
-  - `is_healthy()` - Check connection health
-  - `get_stats()` - Get client statistics
+  - `is_healthy()` - Check if service is running
+  - `get_stats()` - Get comprehensive service statistics
+  - `get_market_states()` - Get all RLM market states for WebSocket broadcast
+  - `get_decision_history(limit)` - Get recent signal decisions
   - `get_health_details()` - Get detailed health information
-- **Lifecycle Event Types** (from Kalshi):
-  - `created`: New market opened
-  - `activated`: Market trading enabled
-  - `deactivated`: Market trading paused
-  - `determined`: Market outcome resolved
-  - `settled`: Positions liquidated
-  - `close_date_updated`: Close time changed
-- **Emits Events**: None (uses callback pattern)
-- **Subscribes To**: Kalshi WebSocket `market_lifecycle` channel
-- **Dependencies**: KalshiAuth, websockets
-
-#### V3LifecycleIntegration
-- **File**: `clients/lifecycle_integration.py`
-- **Purpose**: Integration layer wrapping LifecycleClient for V3 EventBus
-- **Key Methods**:
-  - `start()` / `stop()` - Lifecycle management
-  - `wait_for_connection(timeout)` - Wait for lifecycle WebSocket connection
-  - `is_healthy()` - Check if integration is healthy
-  - `get_metrics()` - Get integration metrics
-  - `get_health_details()` - Get detailed health information
-- **Emits Events**: `MARKET_LIFECYCLE_EVENT` (via EventBus.emit_market_lifecycle)
-- **Subscribes To**: None (listens to LifecycleClient callbacks)
-- **Dependencies**: LifecycleClient, EventBus
+  - `set_orderbook_integration(integration)` - Inject orderbook integration for signal access
+- **Key Classes**:
+  - `MarketTradeState`: Tracks per-market trade accumulation
+  - `RLMSignal`: Detected signal with market_ticker, price_drop, yes_ratio
+  - `RLMDecision`: Records decisions (executed, skipped, failed)
+  - `TrackedTrade`: Trade record for display
+- **Signal Detection Criteria** (ALL must be true):
+  1. Market is in TrackedMarketsState (lifecycle-discovered)
+  2. `yes_ratio >= threshold` (default: 0.65)
+  3. `price_drop >= min_price_drop` (default: 2c)
+  4. `trade_count >= min_trades` (default: 15)
+  5. No existing position in this market
+- **Signal Broadcaster**: Background task that broadcasts orderbook signals for ALL tracked markets every 10 seconds
+- **Emits Events**: `SYSTEM_ACTIVITY`, `RLM_MARKET_UPDATE`, `RLM_TRADE_ARRIVED`
+- **Subscribes To**: `PUBLIC_TRADE_RECEIVED`, `MARKET_TRACKED`, `MARKET_DETERMINED`, `TMO_FETCHED`
+- **Dependencies**: EventBus, TradingDecisionService, V3StateContainer, TrackedMarketsState, V3OrderbookIntegration
 
 #### EventLifecycleService
 - **File**: `services/event_lifecycle_service.py`
@@ -736,67 +624,23 @@ The Lifecycle Discovery System enables dynamic market discovery via Kalshi's rea
   1. Update TrackedMarketsState status (in-memory)
   2. Emit MARKET_DETERMINED event
   3. Call orderbook unsubscribe callback
-- **Configuration** (environment variables):
-  - `LIFECYCLE_CATEGORIES`: Comma-separated list (default: "sports,media_mentions,entertainment,crypto")
-- **Emits Events**: `MARKET_TRACKED`, `MARKET_DETERMINED`, `SYSTEM_ACTIVITY` (lifecycle_event type)
+- **Emits Events**: `MARKET_TRACKED`, `MARKET_DETERMINED`, `SYSTEM_ACTIVITY`
 - **Subscribes To**: `MARKET_LIFECYCLE_EVENT`
 - **Dependencies**: EventBus, TrackedMarketsState, V3TradingClientIntegration
-
-#### TrackedMarketsState
-- **File**: `state/tracked_markets.py`
-- **Purpose**: Single source of truth for lifecycle-discovered markets with capacity management and version tracking (purely in-memory, no DB persistence)
-- **Key Classes**:
-  - `MarketStatus`: Enum with `ACTIVE`, `DETERMINED`, `SETTLED` states
-  - `TrackedMarket`: Dataclass with full market metadata and real-time data
-- **TrackedMarket Fields**:
-  - `ticker`, `event_ticker`, `title`, `category`: Market identification
-  - `status`: Current lifecycle status (MarketStatus enum)
-  - `created_ts`, `open_ts`, `close_ts`: Kalshi timestamps
-  - `determined_ts`, `settled_ts`: Optional outcome timestamps
-  - `tracked_at`: When we started tracking (epoch seconds)
-  - `price`, `volume`, `volume_24h`, `open_interest`: Real-time market data
-  - `yes_bid`, `yes_ask`: Best bid/ask prices (cents)
-  - `discovery_source`: "lifecycle_ws" | "api"
-- **Key Methods**:
-  - `add_market(market)` - Add market with capacity check
-  - `update_market(ticker, **kwargs)` - Update market fields
-  - `update_status(ticker, status)` - Status transition
-  - `remove_market(ticker)` - Remove after settlement cleanup
-  - `get_active()`, `get_active_tickers()` - Get tradeable markets
-  - `at_capacity()`, `capacity_remaining()` - Capacity management
-  - `get_stats()` - Statistics for frontend display
-  - `get_snapshot()` - Full state snapshot for WebSocket broadcast
-- **Key Properties**:
-  - `capacity`: Maximum markets (default 50)
-  - `active_count`, `total_count`: Current counts
-  - `version`: Change detection tracking
-- **Startup Behavior**: Markets are discovered fresh on each startup via ApiDiscoverySyncer (REST) and LifecycleClient (WebSocket). No DB recovery needed.
-- **Emits Events**: None
-- **Subscribes To**: None
-- **Dependencies**: None (pure state container)
 
 #### TrackedMarketsSyncer
 - **File**: `services/tracked_markets_syncer.py`
 - **Purpose**: REST API sync for tracked market info with periodic refresh (30s) and dormant market cleanup
 - **Key Methods**:
-  - `start()` / `stop()` - Lifecycle management (initial sync on start)
+  - `start()` / `stop()` - Lifecycle management
   - `sync_market_info()` - Manual sync trigger
-  - `_check_dormant_market()` - Check if market should be unsubscribed (zero volume_24h)
-  - `is_healthy()` - Check if running and last sync not stale
-  - `get_health_details()` - Get detailed health information (includes dormant metrics)
-- **Behavior**:
-  - Fetches prices for active tracked markets via REST API
-  - Detects closed/settled markets via API status
-  - **Dormant Detection**: Unsubscribes markets with zero 24h volume after grace period
-    - Configurable via `DORMANT_DETECTION_ENABLED`, `DORMANT_VOLUME_THRESHOLD`, `DORMANT_GRACE_PERIOD_HOURS`
-    - **Position Protection**: Skips markets with open positions or resting orders (checks state_container.trading_state.positions)
-    - Removed markets can be re-discovered by ApiDiscoverySyncer when volume returns
-  - Updates TrackedMarketsState (in-memory only, no DB writes)
-  - Triggers cleanup callback on market close
-  - Emits lifecycle events for Activity Feed
-- **Emits Events**: `SYSTEM_ACTIVITY` (sync, lifecycle_event, and dormant event types)
+  - `is_healthy()` - Check if running
+  - `get_health_details()` - Get detailed health information
+- **Dormant Detection**: Unsubscribes markets with zero 24h volume after grace period
+  - Position Protection: Skips markets with open positions or resting orders
+- **Emits Events**: `SYSTEM_ACTIVITY`
 - **Subscribes To**: None
-- **Dependencies**: V3TradingClientIntegration, TrackedMarketsState, EventBus, V3Config (optional), StateContainer (optional)
+- **Dependencies**: V3TradingClientIntegration, TrackedMarketsState, EventBus, V3StateContainer (optional)
 
 #### ApiDiscoverySyncer
 - **File**: `services/api_discovery_syncer.py`
@@ -807,41 +651,76 @@ The Lifecycle Discovery System enables dynamic market discovery via Kalshi's rea
   - `get_health_details()` - Get detailed health information
 - **Behavior**:
   - Bootstraps lifecycle mode by discovering already-open markets
-  - Filters by configured categories (same as EventLifecycleService)
+  - Filters by configured categories
   - Respects capacity limits from TrackedMarketsState
-  - Uses EventLifecycleService.track_market_from_api_data() for tracking
   - Periodic refresh every 5 minutes (configurable)
-- **Configuration** (constructor parameters):
-  - `sync_interval`: Seconds between periodic syncs (default 300)
-  - `batch_size`: Maximum markets per API call (default 200)
-  - `close_min_minutes`: Skip markets closing within N minutes (default 10)
 - **Emits Events**: `SYSTEM_ACTIVITY` (discovery type)
 - **Subscribes To**: None
 - **Dependencies**: V3TradingClientIntegration, EventLifecycleService, TrackedMarketsState, EventBus
 
-#### UpcomingMarketsSyncer
-- **File**: `services/upcoming_markets_syncer.py`
-- **Purpose**: Syncs markets that will open within configured window (default 4 hours)
+#### OrderCleanupService
+- **File**: `services/order_cleanup_service.py`
+- **Purpose**: Manages order TTL cleanup and orphaned order cancellation
+- **TTL Cleanup**: Automatically cancels resting orders after configurable timeout (default 5 minutes)
+- **Startup Cleanup**: Resets old order groups on restart
+- **Dependencies**: V3TradingClientIntegration, V3StateContainer
+
+#### ListenerBootstrapService
+- **File**: `services/listener_bootstrap_service.py`
+- **Purpose**: Bootstraps real-time WebSocket listeners (PositionListener, FillListener, MarketTickerListener)
+- **Dependencies**: V3Config, EventBus, V3StateContainer, V3HealthMonitor, V3StatusReporter
+
+### 3.4 State (`traderv3/state/`)
+
+#### TraderState
+- **File**: `state/trader_state.py`
+- **Purpose**: Data class representing complete trader state (ALL VALUES IN CENTS)
+- **Key Fields**:
+  - `balance: int` - Available cash in cents
+  - `portfolio_value: int` - Portfolio value in cents
+  - `positions: Dict[str, Any]` - Position data by ticker
+  - `orders: Dict[str, Any]` - Order data by order_id
+  - `settlements: List[Dict]` - Settlement history
+  - `order_group: Optional[OrderGroupState]` - Portfolio limit group
+  - `sync_timestamp: float` - When state was synced
+- **Factory Method**: `from_kalshi_data(balance_data, positions_data, orders_data, settlements_data)`
+
+#### StateChange
+- **File**: `state/trader_state.py`
+- **Purpose**: Tracks deltas between syncs
+- **Key Fields**:
+  - `balance_change: int` - Change in cents
+  - `portfolio_value_change: int` - Change in cents
+  - `position_count_change: int` - Change in position count
+  - `order_count_change: int` - Change in order count
+
+#### SessionPnLTracker
+- **File**: `state/session_pnl_tracker.py`
+- **Purpose**: Tracks session-level P&L and cash flow metrics
 - **Key Methods**:
-  - `start()` / `stop()` - Lifecycle management
-  - `get_snapshot_message()` - Get upcoming markets for WebSocket broadcast
-  - `get_health_details()` - Get detailed health information
-- **Emits Events**: `SYSTEM_ACTIVITY` (upcoming_markets type)
-- **Subscribes To**: None
-- **Dependencies**: V3TradingClientIntegration, EventBus
-
-### 3.8 Trading Attachment System (`traderv3/state/`)
-
-The Trading Attachment System links trading state (orders, positions, P&L) to lifecycle-discovered tracked markets for unified UI display.
+  - `initialize(balance, portfolio_value)` - Capture starting state
+  - `record_order_fill(cost_cents, contracts)` - Track cash spent
+  - `record_settlement(cash_received, fees)` - Track cash received
+  - `record_ttl_cancellation(count)` - Track TTL cancellations
+  - `get_pnl_summary(current_balance, current_portfolio_value, positions_details)` - Compute P&L
+  - `reset()` - Reset all state
+- **Tracked Metrics**:
+  - `_session_cash_invested` - Cents spent on orders this session
+  - `_session_cash_received` - Cents received from settlements
+  - `_session_orders_count` - Orders placed
+  - `_session_settlements_count` - Positions settled
+  - `_session_total_fees_paid` - Total fees in cents
+  - `_session_orders_cancelled_ttl` - TTL-cancelled orders
+- **Dependencies**: SessionPnLState
 
 #### TradingAttachment
 - **File**: `state/trading_attachment.py`
 - **Purpose**: Attach trading state to lifecycle-discovered tracked markets
 - **Key Classes**:
   - `TradingState`: Enum with `MONITORING`, `SIGNAL_READY`, `ORDER_PENDING`, `ORDER_RESTING`, `POSITION_OPEN`, `AWAITING_SETTLEMENT`, `SETTLED`
-  - `TrackedMarketOrder`: Order placed in a tracked market
+  - `TrackedMarketOrder`: Order placed in a tracked market (includes `strategy_id`)
   - `TrackedMarketPosition`: Position in a tracked market
-  - `TrackedMarketSettlement`: Final outcome when market settles
+  - `TrackedMarketSettlement`: Final outcome when market settles (includes `strategy_id`, `per_order_pnl`)
   - `TradingAttachment`: Unified view of trading activity per market
 - **TradingAttachment Fields**:
   - `ticker`: Market identifier
@@ -850,146 +729,49 @@ The Trading Attachment System links trading state (orders, positions, P&L) to li
   - `position`: Optional TrackedMarketPosition
   - `settlement`: Optional TrackedMarketSettlement
   - `version`: Change detection
+- **TrackedMarketOrder Fields**:
+  - `order_id`, `signal_id`, `action`, `side`, `count`, `price`, `status`
+  - `placed_at`, `fill_count`, `fill_avg_price`, `filled_at`, `cancelled_at`
+  - `strategy_id`: String identifier for the strategy that placed this order
+- **TrackedMarketSettlement Fields**:
+  - `result`, `determined_at`, `settled_at`
+  - `final_position`, `final_pnl`, `revenue`, `cost_basis`, `fees`
+  - `strategy_id`: Strategy that opened the position (or "mixed" if multiple)
+  - `per_order_pnl`: Dict mapping order_id to proportional P&L allocation
 - **Key Properties**:
   - `has_exposure`: True if active orders or position
   - `total_pnl`: Realized + unrealized P&L
   - `active_orders`: Orders still pending/resting
 - **Data Flow**:
-  1. TradingStateSyncer.sync_with_kalshi() -> StateContainer.update_trading_state()
+  1. TradingStateSyncer -> StateContainer.update_trading_state()
   2. update_trading_state() -> _sync_trading_attachments() (hooks into existing sync)
   3. For each position/order, if market is tracked, update attachment
   4. FillListener.ORDER_FILL -> mark_order_filled_in_attachment() (real-time)
-- **Emits Events**: None
-- **Subscribes To**: None
 - **Dependencies**: None (pure data structure)
 
-### 3.9 Orderbook Signal Aggregation (`data/`)
-
-The Signal Aggregation System provides lightweight, time-bucketed orderbook metrics for trading decisions and quant analysis, replacing raw delta storage with 99.8% storage reduction.
-
-#### OrderbookSignalAggregator
-- **File**: `data/orderbook_signals.py`
-- **Purpose**: Aggregates real-time orderbook snapshots into 10-second time-bucketed signals for lightweight storage and analysis
+#### StagedOrderContext
+- **File**: `state/order_context.py`
+- **Purpose**: Comprehensive order context captured at trade time for quant analysis
+- **Key Fields**:
+  - Market context: `market_ticker`, `market_category`, `market_close_ts`, `hours_to_settlement`
+  - Signal context: `signal_id`, `signal_detected_at`, `signal_params`
+  - Price context: `no_price_at_signal`, `bucket_5c`
+  - Orderbook context: `best_bid_cents`, `best_ask_cents`, `bid_ask_spread_cents`, `spread_tier`
+  - Position context: `existing_position_count`, `existing_position_side`, `is_reentry`
+  - Order details: `action`, `side`, `order_price_cents`, `order_quantity`
+  - Strategy: `strategy`, `strategy_version`
 - **Key Methods**:
-  - `start()` / `stop()` - Lifecycle management (starts background flush loop)
-  - `record_snapshot(ticker, snapshot)` - Record orderbook snapshot for aggregation
-  - `record_delta(ticker)` - Increment delta count for a market
-  - `get_stats()` - Get aggregator statistics
-  - `get_current_bucket_signals(ticker)` - Get live bucket data for a market
-- **Key Classes**:
-  - `BucketState`: Per-market state within a 10-second bucket
-    - Spread OHLC (open/high/low/close) for both YES and NO sides
-    - Volume accumulators for imbalance calculation
-    - BBO depth averages
-    - Activity counters (snapshot_count, delta_count, large_order_count)
-- **Configuration**:
-  - `bucket_seconds`: Size of each bucket (default: 10 seconds)
-  - `flush_interval`: How often to flush to DB (default: 10 seconds)
-  - `LARGE_ORDER_THRESHOLD`: Contracts threshold for whale detection (default: 10,000)
-- **Dependencies**: RLDatabase
-
-#### Signal Data Schema (Per 10-Second Bucket)
-
-| Metric Group | Fields | Description |
-|--------------|--------|-------------|
-| **NO Spread OHLC** | `no_spread_open`, `no_spread_high`, `no_spread_low`, `no_spread_close` | Open/High/Low/Close of NO side spread in cents |
-| **YES Spread OHLC** | `yes_spread_open`, `yes_spread_high`, `yes_spread_low`, `yes_spread_close` | Open/High/Low/Close of YES side spread in cents |
-| **NO Volume** | `no_bid_volume_avg`, `no_ask_volume_avg`, `no_imbalance_ratio` | Average NO bid/ask volume; imbalance = bid/(bid+ask) |
-| **YES Volume** | `yes_bid_volume_avg`, `yes_ask_volume_avg`, `yes_imbalance_ratio` | Average YES bid/ask volume; imbalance = bid/(bid+ask) |
-| **BBO Depth** | `no_bid_size_at_bbo_avg`, `no_ask_size_at_bbo_avg`, `yes_bid_size_at_bbo_avg`, `yes_ask_size_at_bbo_avg` | Average best bid/offer sizes (contracts) |
-| **Activity** | `snapshot_count`, `delta_count`, `large_order_count` | Snapshots processed, deltas received, whale orders >= 10,000 contracts |
-
-**Imbalance Ratio Formula**: `bid_vol / (bid_vol + ask_vol)`
-- Values > 0.5 indicate more buying pressure (bid-heavy)
-- Values < 0.5 indicate more selling pressure (ask-heavy)
-- Value 0.5 indicates balanced book
-
-#### Storage Efficiency
-
-| Metric | Raw Deltas | Aggregated Signals | Reduction |
-|--------|------------|-------------------|-----------|
-| Per Market/Day | ~1 MB | ~1.7 KB | **99.8%** |
-| Per Market/Hour | ~40 KB | ~70 bytes | **99.8%** |
-| 50 Markets/Day | ~50 MB | ~85 KB | **99.8%** |
-
-Storage reduction achieved by:
-1. Replacing individual deltas (~100/min) with 10-second aggregates (6/min)
-2. Computing derived metrics (OHLC, imbalance) server-side
-3. Storing only actionable signal data, not raw order book states
-
-#### Database Schema (`orderbook_signals` table)
-
-```sql
-CREATE TABLE IF NOT EXISTS orderbook_signals (
-    id BIGSERIAL PRIMARY KEY,
-    session_id BIGINT REFERENCES rl_orderbook_sessions(session_id),
-    market_ticker VARCHAR(100) NOT NULL,
-    bucket_timestamp TIMESTAMPTZ NOT NULL,
-    bucket_seconds INTEGER NOT NULL DEFAULT 10,
-
-    -- NO spread OHLC (cents)
-    no_spread_open INTEGER,
-    no_spread_high INTEGER,
-    no_spread_low INTEGER,
-    no_spread_close INTEGER,
-
-    -- YES spread OHLC (cents)
-    yes_spread_open INTEGER,
-    yes_spread_high INTEGER,
-    yes_spread_low INTEGER,
-    yes_spread_close INTEGER,
-
-    -- Volume averages and imbalance
-    no_bid_volume_avg INTEGER,
-    no_ask_volume_avg INTEGER,
-    no_imbalance_ratio REAL,     -- bid/(bid+ask), 0.0-1.0
-    yes_bid_volume_avg INTEGER,
-    yes_ask_volume_avg INTEGER,
-    yes_imbalance_ratio REAL,
-
-    -- BBO depth averages (contracts)
-    no_bid_size_at_bbo_avg INTEGER,
-    no_ask_size_at_bbo_avg INTEGER,
-    yes_bid_size_at_bbo_avg INTEGER,
-    yes_ask_size_at_bbo_avg INTEGER,
-
-    -- Activity metrics
-    snapshot_count INTEGER NOT NULL DEFAULT 0,
-    delta_count INTEGER NOT NULL DEFAULT 0,
-    large_order_count INTEGER NOT NULL DEFAULT 0,
-
-    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
-);
-
--- Indexes for common queries
-CREATE INDEX idx_signals_session_market_time ON orderbook_signals(session_id, market_ticker, bucket_timestamp DESC);
-CREATE INDEX idx_signals_market_time ON orderbook_signals(market_ticker, bucket_timestamp DESC);
-```
-
-#### Signal Aggregation Data Flow
-
-```
-1. [OrderbookClient] Receives WebSocket snapshot
-        |
-2. [V3OrderbookIntegration] record_snapshot() to aggregator
-        |
-3. [OrderbookSignalAggregator] Updates current BucketState
-        | (every 10 seconds at bucket boundary)
-4. [OrderbookSignalAggregator] _complete_bucket() -> to_signal_data()
-        |
-5. [OrderbookSignalAggregator] _flush_pending() -> batch_insert_orderbook_signals()
-        |
-6. [RLDatabase] Persists to orderbook_signals table
-```
+  - `compute_derived_fields()` - Calculate bucket, hour_of_day, etc.
+  - `to_db_dict(fill_count, fill_avg_price_cents, filled_at)` - Convert for DB insert
 
 #### OrderbookContext
 - **File**: `state/order_context.py`
 - **Purpose**: Comprehensive orderbook context for trade-time pricing decisions
 - **Key Fields**:
-  - **NO Side**: `no_best_bid`, `no_best_ask`, `no_spread`, `no_bid_size_at_bbo`, `no_ask_size_at_bbo`, `no_second_bid/ask`, `no_bid/ask_total_volume`
-  - **YES Side**: `yes_best_bid`, `yes_best_ask`, `yes_spread`
-  - **Derived**: `spread_tier` (SpreadTier enum), `bid_imbalance`, `bbo_depth_tier` (BBODepthTier enum)
-  - **Freshness**: `last_update_ms`, `captured_at`, `is_stale`
+  - NO Side: `no_best_bid`, `no_best_ask`, `no_spread`, `no_bid_size_at_bbo`, `no_ask_size_at_bbo`
+  - YES Side: `yes_best_bid`, `yes_best_ask`, `yes_spread`
+  - Derived: `spread_tier` (SpreadTier enum), `bid_imbalance`, `bbo_depth_tier` (BBODepthTier enum)
+  - Freshness: `last_update_ms`, `captured_at`, `is_stale`
 - **Enums**:
   - `SpreadTier`: TIGHT (<=2c), NORMAL (<=4c), WIDE (>4c), UNKNOWN
   - `BBODepthTier`: THICK (>=100), NORMAL (20-99), THIN (<20), UNKNOWN
@@ -997,203 +779,98 @@ CREATE INDEX idx_signals_market_time ON orderbook_signals(market_ticker, bucket_
   - `from_orderbook_snapshot(snapshot)` - Factory from SharedOrderbookState
   - `get_recommended_entry_price(aggressive, max_spread)` - Calculate optimal NO entry price
   - `should_skip_due_to_staleness()` - Check if data too old for trading
-- **Usage**: RLMService uses OrderbookContext to make spread-aware entry price decisions
 
-#### Spread Tier Classification (for Entry Pricing)
+#### TrackedMarketsState
+- **File**: `state/tracked_markets.py`
+- **Purpose**: Single source of truth for lifecycle-discovered markets (in-memory, no DB persistence)
+- **Key Classes**:
+  - `MarketStatus`: Enum with `ACTIVE`, `DETERMINED`, `SETTLED` states
+  - `TrackedMarket`: Dataclass with full market metadata
+- **Key Methods**:
+  - `add_market(market)` - Add market with capacity check
+  - `update_market(ticker, **kwargs)` - Update market fields
+  - `update_status(ticker, status)` - Status transition
+  - `remove_market(ticker)` - Remove after settlement cleanup
+  - `get_active()`, `get_active_tickers()` - Get tradeable markets
+  - `is_tracked(ticker)` - Check if market is tracked
+  - `get_market(ticker)` - Get market by ticker
+  - `at_capacity()`, `capacity_remaining()` - Capacity management
+  - `get_stats()` - Statistics for frontend display
+  - `get_snapshot()` - Full state snapshot for WebSocket broadcast
+- **Key Properties**:
+  - `capacity`: Maximum markets (default 50)
+  - `active_count`, `total_count`: Current counts
+  - `version`: Change detection tracking
+- **Dependencies**: None (pure state container)
 
-| Tier | Spread | Pricing Behavior |
-|------|--------|------------------|
-| `TIGHT` | <= 2c | Price near ask (ask - 1c) for fast fill |
-| `NORMAL` | <= 4c | Midpoint pricing for price improvement |
-| `WIDE` | > 4c | 75-85% toward ask, balance fill probability vs cost |
+### 3.5 Sync (`traderv3/sync/`)
 
-#### BBO Depth Tier Classification (for Liquidity Assessment)
+#### KalshiDataSync
+- **File**: `sync/kalshi_data_sync.py`
+- **Purpose**: Fetches state from Kalshi API and tracks changes between syncs
+- **Key Methods**:
+  - `sync_with_kalshi()` - Full sync, returns (TraderState, StateChange)
+  - `refresh_state()` - Refresh without tracking changes
+  - `set_order_group_id(id)` - Set order group to track
+  - `has_state()` - Check if synced state exists
+  - `order_group_id` (property) - Get current order group ID
+- **Sync Data Fetched**:
+  1. Balance: `get_account_info()` - balance and portfolio_value in cents
+  2. Positions: `get_positions()` - market_positions array
+  3. Orders: `get_orders()` - orders array (open/resting only)
+  4. Settlements: `get_settlements()` - historical settlements
+  5. Order Group: `get_order_group(id)` - if order_group_id is set
+- **Dependencies**: KalshiDemoTradingClient, TraderState, StateChange, OrderGroupState
 
-| Tier | Size | Description |
-|------|------|-------------|
-| `THICK` | >= 100 contracts | High liquidity, can size aggressively |
-| `NORMAL` | 20-99 contracts | Standard liquidity |
-| `THIN` | < 20 contracts | Low liquidity, be more aggressive to ensure fill |
+### 3.6 Strategy System (`traderv3/strategies/`)
 
-#### UI Signal Display (LifecycleMarketCard)
-
-Market cards display live orderbook signals via `rlm_market_state` WebSocket messages with `orderbook_signals` field:
-
-| UI Label | Signal Field | Description |
-|----------|--------------|-------------|
-| Imbalance | `no_imbalance_ratio` | Percentage (e.g., "55%") with color coding |
-| Activity | `delta_count` | Delta count within current 10s bucket |
-| Spread | `no_spread_close` vs `no_spread_open` | Spread trend with arrow indicator |
-| BBO Depth | `no_bid_size_at_bbo_avg` / `no_ask_size_at_bbo_avg` | Best bid/ask sizes (e.g., "1.2k/800 depth") |
-| Whales | `large_order_count` | Whale indicator when >= 10,000 contracts detected |
-
-**Color Coding**:
-- Imbalance < 0.45: Red (sell pressure / bearish)
-- Imbalance > 0.55: Green (buy pressure / bullish)
-- Imbalance 0.45-0.55: Neutral gray
-- Spread narrowing: Green arrow down
-- Spread widening: Red arrow up
-- BBO Depth bid: Green text, ask: Red text
-
-### 3.10 RLM Trading Strategy (`traderv3/services/`)
-
-#### RLMService
-- **File**: `services/rlm_service.py`
-- **Purpose**: Event-driven Reverse Line Movement strategy - bets NO when public bets YES but price drops
+#### StrategyCoordinator
+- **File**: `strategies/coordinator.py`
+- **Purpose**: Manages multiple concurrent trading strategies with shared rate limiting
 - **Key Methods**:
   - `start()` / `stop()` - Lifecycle management
-  - `is_healthy()` - Check if service is running
-  - `get_stats()` - Get comprehensive service statistics
-  - `get_market_states()` - Get all RLM market states for WebSocket broadcast
-  - `get_decision_history(limit)` - Get recent signal decisions
-  - `get_health_details()` - Get detailed health information
-  - `set_orderbook_integration(integration)` - Inject orderbook integration for signal access
+  - `load_config(config_dir)` - Load strategy configs from YAML
+  - `rate_limit_acquire(tokens)` - Shared rate limiting across strategies
+  - `get_stats()` - Aggregate statistics from all strategies
+  - `get_health_details()` - Health information
 - **Key Classes**:
-  - `MarketTradeState`: Tracks per-market trade accumulation (yes_trades, no_trades, first/last yes price)
-  - `RLMSignal`: Detected signal with market_ticker, price_drop, yes_ratio, timestamp
-  - `RLMDecision`: Records decisions (executed, skipped, failed) for audit
-- **Signal Detection Criteria** (ALL must be true):
-  1. Market is in TrackedMarketsState (lifecycle-discovered)
-  2. `yes_ratio >= threshold` (default: 0.65 = 65% of trades are YES)
-  3. `price_drop >= min_price_drop` (default: 2c = first YES price - last YES price)
-  4. `trade_count >= min_trades` (default: 15 trades accumulated)
-  5. No existing position in this market
-- **Features**:
-  - Token bucket rate limiting (configurable trades/minute)
-  - Deduplication (one entry per market per session)
-  - Trade-by-trade state accumulation from public trades stream
-  - Real-time WebSocket broadcasts for frontend visualization
-  - **Orderbook Context Integration**: Uses `OrderbookContext` for entry price decisions (spread tier, BBO depth, imbalance)
-- **Configuration** (environment variables):
-  - `RLM_YES_RATIO_THRESHOLD`: Minimum YES trade ratio (default: 0.65)
-  - `RLM_MIN_PRICE_DROP`: Minimum price drop in cents (default: 2)
-  - `RLM_MIN_TRADES`: Minimum trades before signal (default: 15)
-  - `RLM_CONTRACTS`: Contracts per trade (default: 5)
-  - `RLM_MAX_TRADES_PER_MINUTE`: RLM rate limit (default: 10)
-- **Emits Events**: `SYSTEM_ACTIVITY` (rlm_signal, rlm_execute types), `RLM_MARKET_UPDATE`, `RLM_TRADE_ARRIVED`
-- **Subscribes To**: `PUBLIC_TRADE_RECEIVED`, `MARKET_TRACKED`, `MARKET_DETERMINED`
-- **Dependencies**: EventBus, TradingDecisionService, V3StateContainer, TrackedMarketsState, V3OrderbookIntegration (optional)
+  - `StrategyConfig`: Configuration loaded from YAML
+  - `TokenBucket`: Shared rate limiter for all strategies
+- **Dependencies**: StrategyRegistry, Strategy protocol
 
-### 3.11 Signal Broadcaster System
+#### StrategyRegistry
+- **File**: `strategies/registry.py`
+- **Purpose**: Registry of available strategy implementations
+- **Registered Strategies**:
+  - `hold`: HoldStrategy (never trade)
+  - `rlm_no`: RLMNoStrategy (reverse line movement)
 
-The Signal Broadcaster solves the "quiet markets" problem: markets without trades still need orderbook signal updates for the frontend. Without it, markets with no trade activity would never receive signal data.
-
-#### Signal Broadcaster (in RLMService)
-- **File**: `services/rlm_service.py`
-- **Purpose**: Periodic background task that broadcasts orderbook signals for ALL tracked markets, regardless of trade activity
+#### Strategy Protocol
+- **File**: `strategies/protocol.py`
+- **Purpose**: Defines the strategy interface
 - **Key Methods**:
-  - `_run_signal_broadcaster()` - Background asyncio task loop
-  - `_broadcast_orderbook_signals()` - Emit signals for all tracked markets
-  - `set_orderbook_integration(integration)` - Inject V3OrderbookIntegration for signal access
+  - `start(context)` / `stop()` - Lifecycle
+  - `evaluate(market_data)` - Generate trading signal
+  - `get_stats()` - Strategy statistics
+
+### 3.7 Configuration (`traderv3/config/`)
+
+#### V3Config
+- **File**: `config/environment.py`
+- **Purpose**: Environment-based configuration with validation
 - **Key Fields**:
-  - `_signal_broadcaster_task`: Background asyncio.Task
-  - `_signal_broadcast_interval`: 10.0 seconds (aligned with bucket flush)
-  - `_orderbook_integration`: Reference to V3OrderbookIntegration
-- **Broadcast Logic**:
-  1. Get all active tickers from TrackedMarketsState
-  2. For each ticker, call `get_orderbook_signals(ticker)` from OrderbookIntegration
-  3. If signals exist with `snapshot_count > 0`:
-     - Get existing RLM state (or create minimal state for markets without trades)
-     - Inject `orderbook_signals` into state dict
-     - Emit `RLM_MARKET_UPDATE` event
-- **Design Decisions**:
-  - Runs every 10 seconds (aligned with OrderbookSignalAggregator bucket flush)
-  - Uses `_last_completed` pattern from aggregator for continuous data availability
-  - Markets without any trades get minimal state with `yes_trades=0, no_trades=0`
-  - Errors are logged but don't stop the broadcaster (fault-tolerant)
-
-#### _last_completed Pattern (OrderbookSignalAggregator)
-
-The `_last_completed` dict ensures continuous signal availability:
-
-```python
-# In OrderbookSignalAggregator
-self._last_completed: Dict[str, Dict[str, Any]] = {}
-
-def get_current_bucket_signals(self, market_ticker: str) -> Optional[Dict[str, Any]]:
-    # Try current bucket first
-    bucket = self._buckets.get(market_ticker)
-    if bucket is not None and bucket.snapshot_count > 0:
-        return bucket.to_signal_data()
-
-    # Fall back to last completed bucket (always has data if it exists)
-    return self._last_completed.get(market_ticker)
-```
-
-**Why this matters**: Right after a bucket flush, the current bucket is empty (`snapshot_count=0`). Without `_last_completed`, the frontend would see no signals for up to 10 seconds. With this pattern, we always return the most recent completed bucket data.
-
-#### Signal Broadcaster Data Flow
-
-```
-1. [Background Task] Every 10 seconds: _run_signal_broadcaster()
-        |
-2. [RLMService] _broadcast_orderbook_signals()
-        | Get all active tickers from TrackedMarketsState
-        |
-3. [V3OrderbookIntegration] get_orderbook_signals(ticker)
-        | Calls aggregator.get_current_bucket_signals(ticker)
-        |
-4. [OrderbookSignalAggregator] Returns current bucket OR _last_completed
-        |
-5. [RLMService] Inject signals into rlm state dict
-        |
-6. [EventBus] emit_rlm_market_update()
-        |
-7. [V3WebSocketManager] Broadcast to frontend clients
-        |
-8. [Frontend] LifecycleMarketCard receives orderbook_signals
-```
-
-#### Frontend Display (OrderbookSignalsDisplay Component)
-- **File**: `frontend/src/components/lifecycle/LifecycleMarketCard.jsx`
-- **Purpose**: Displays live orderbook signals in market cards
-- **Signal Fields Displayed**:
-
-| UI Label | Signal Field | Format | Color Logic |
-|----------|--------------|--------|-------------|
-| Imbalance | `no_imbalance_ratio` | "55%" | Green if >55% (bullish), Red if <45% (bearish), Gray if neutral |
-| Activity | `delta_count` | "12 delta" | Always gray |
-| Spread | `no_spread_close` vs `no_spread_open` | Arrow + value | Green arrow if narrowing, Red if widening |
-| BBO Depth | `no_bid_size_at_bbo_avg` / `no_ask_size_at_bbo_avg` | "1.2k/800 depth" | Green for bid, Red for ask |
-| Whales | `large_order_count` | Whale emoji + count | Pulsing amber badge when > 0 |
-
-- **Whale Detection**: Orders with >= 10,000 contracts trigger the whale indicator
-- **Format Functions**:
-  - `formatVolume(size)`: Formats large numbers (e.g., 1234 -> "1.2k")
-- **Skip Logic**: Component returns null if `snapshot_count === 0` (no data yet)
-
-#### trader_status Signal Aggregator Stats
-
-The `trader_status` WebSocket message includes signal aggregator statistics:
-
-```json
-{
-  "type": "trader_status",
-  "data": {
-    "metrics": {
-      "signal_aggregator": {
-        "running": true,
-        "session_id": 42,
-        "bucket_seconds": 10,
-        "active_buckets": 15,
-        "pending_flush": 0,
-        "signals_flushed": 1250,
-        "snapshots_processed": 45000
-      }
-    }
-  }
-}
-```
-
-| Stat | Description |
-|------|-------------|
-| `running` | Whether aggregator is active |
-| `session_id` | Database session ID |
-| `bucket_seconds` | Bucket size (default 10) |
-| `active_buckets` | Markets currently being tracked |
-| `pending_flush` | Buckets waiting for DB insert |
-| `signals_flushed` | Total buckets persisted to DB |
-| `snapshots_processed` | Total snapshots aggregated |
+  - `api_url`, `ws_url` - Kalshi API endpoints
+  - `api_key_id`, `private_key_content` - Authentication
+  - `market_tickers` - Markets to subscribe
+  - `max_markets` - Market limit
+  - `enable_trading_client` - Enable trading integration
+  - `trading_mode` - "paper" or "production"
+  - `trading_strategy_str` - Strategy: "hold" or "rlm_no"
+  - `trading_strategy` - TradingStrategy enum (parsed from string)
+  - `port` - Server port (default 8005)
+  - `min_trader_cash` - Balance protection threshold (cents)
+- **Factory Method**: `from_env()` - Load from environment variables
+- **Key Methods**: `is_demo_environment()`, `get_environment_name()`, `validate()`
 
 ## 4. State Machine
 
@@ -1211,54 +888,7 @@ The `trader_status` WebSocket message includes signal aggregator statistics:
 | `ERROR` | Error state with recovery capability | 300s |
 | `SHUTDOWN` | Terminal state for graceful shutdown | 30s |
 
-### 4.2 State Diagram
-
-```
-                     +----------+
-                     | STARTUP  |
-                     +----+-----+
-                          |
-                          v
-                  +---------------+
-                  | INITIALIZING  |
-                  +-------+-------+
-                          |
-                          v
-               +-------------------+
-               | ORDERBOOK_CONNECT |
-               +--------+----------+
-                        |
-          +-------------+-------------+
-          |                           |
-          v                           v
-+---------------------+          +--------+
-|TRADING_CLIENT_CONNECT|         | READY  |<----+
-+----------+----------+          +---+----+     |
-           |                         |          |
-           v                         |          |
-   +---------------+                 |          |
-   |KALSHI_DATA_SYNC|                |          |
-   +-------+-------+                 |          |
-           |                         |          |
-           +----------->+------------+          |
-                        |                       |
-                        v                       |
-                   +--------+                   |
-                   | ACTING |-------------------+
-                   +---+----+
-                       |
-                       |     (on error from any state)
-           +-----------+---------------------------+
-           |                                       |
-           v                                       v
-       +-------+                            +----------+
-       | ERROR |<-------------------------->| SHUTDOWN |
-       +---+---+                            +----------+
-           |
-           +-----> STARTUP (recovery)
-```
-
-### 4.3 Valid Transitions
+### 4.2 Valid Transitions
 
 ```python
 VALID_TRANSITIONS = {
@@ -1278,488 +908,131 @@ VALID_TRANSITIONS = {
 
 | Event Type | Publisher | Subscribers | Payload |
 |------------|-----------|-------------|---------|
-| `ORDERBOOK_SNAPSHOT` | OrderbookClient | V3OrderbookIntegration | `MarketEvent{market_ticker, sequence_number, timestamp_ms, metadata}` |
-| `ORDERBOOK_DELTA` | OrderbookClient | V3OrderbookIntegration | `MarketEvent{market_ticker, sequence_number, timestamp_ms, metadata}` |
-| `STATE_TRANSITION` | V3StateMachine | (legacy, kept for compat) | `StateTransitionEvent{from_state, to_state, context, metadata}` |
-| `TRADER_STATUS` | V3StatusReporter | V3WebSocketManager | `TraderStatusEvent{state, metrics, health, timestamp}` |
-| `SYSTEM_ACTIVITY` | V3StateMachine, V3HealthMonitor, TradingFlowOrchestrator, TradingDecisionService, MarketPriceSyncer, TradingStateSyncer, EventLifecycleService, RLMService, ApiDiscoverySyncer | V3WebSocketManager | `SystemActivityEvent{activity_type, message, metadata}` |
-| `PUBLIC_TRADE_RECEIVED` | V3TradesIntegration | RLMService | `PublicTradeEvent{market_ticker, timestamp_ms, side, price_cents, count}` |
-| `MARKET_POSITION_UPDATE` | PositionListener | V3StateContainer (via coordinator subscription) | `MarketPositionEvent{market_ticker, position_data, timestamp}` |
-| `MARKET_TICKER_UPDATE` | MarketTickerListener | V3Coordinator (updates StateContainer) | `MarketTickerEvent{market_ticker, price_data, timestamp}` |
-| `ORDER_FILL` | FillListener | (console UX, future: StateContainer) | `OrderFillEvent{trade_id, order_id, market_ticker, is_taker, side, action, price_cents, count, post_position, fill_timestamp}` |
-| `SETTLEMENT` | (via REST sync) | - | Settlements synced from Kalshi REST API, stored in StateContainer |
-| `MARKET_LIFECYCLE_EVENT` | V3LifecycleIntegration | EventLifecycleService | `MarketLifecycleEvent{event_type, market_ticker, timestamp}` |
-| `MARKET_TRACKED` | EventLifecycleService | RLMService, V3WebSocketManager | `MarketTrackedEvent{market_ticker, category, discovery_source, timestamp}` |
-| `MARKET_DETERMINED` | EventLifecycleService | RLMService, V3WebSocketManager | `MarketDeterminedEvent{market_ticker, result, timestamp}` |
-| `RLM_MARKET_UPDATE` | RLMService | V3WebSocketManager | `RLMMarketUpdateEvent{market_ticker, yes_trades, no_trades, price_drop, yes_ratio}` |
-| `RLM_TRADE_ARRIVED` | RLMService | V3WebSocketManager | `RLMTradeArrivedEvent{market_ticker, side, count, price_cents}` |
+| `ORDERBOOK_SNAPSHOT` | OrderbookClient | V3OrderbookIntegration | `MarketEvent` |
+| `ORDERBOOK_DELTA` | OrderbookClient | V3OrderbookIntegration | `MarketEvent` |
+| `STATE_TRANSITION` | V3StateMachine | (legacy) | `StateTransitionEvent` |
+| `TRADER_STATUS` | V3StatusReporter | V3WebSocketManager | `TraderStatusEvent` |
+| `SYSTEM_ACTIVITY` | Multiple | V3WebSocketManager | `SystemActivityEvent` |
+| `PUBLIC_TRADE_RECEIVED` | V3TradesIntegration | RLMService | `PublicTradeEvent` |
+| `MARKET_POSITION_UPDATE` | PositionListener | V3StateContainer | `MarketPositionEvent` |
+| `MARKET_TICKER_UPDATE` | MarketTickerListener | V3Coordinator | `MarketTickerEvent` |
+| `ORDER_FILL` | FillListener | V3StateContainer | `OrderFillEvent` |
+| `MARKET_LIFECYCLE_EVENT` | V3LifecycleIntegration | EventLifecycleService | `MarketLifecycleEvent` |
+| `MARKET_TRACKED` | EventLifecycleService | RLMService, V3WebSocketManager | `MarketTrackedEvent` |
+| `MARKET_DETERMINED` | EventLifecycleService | RLMService, V3WebSocketManager | `MarketDeterminedEvent` |
+| `RLM_MARKET_UPDATE` | RLMService | V3WebSocketManager | `RLMMarketUpdateEvent` |
+| `RLM_TRADE_ARRIVED` | RLMService | V3WebSocketManager | `RLMTradeArrivedEvent` |
+| `TMO_FETCHED` | TrueMarketOpenFetcher | RLMService | `TMOFetchedEvent` |
 
-### 5.1 SystemActivityEvent Types
+## 6. Strategy Attribution System
 
-| activity_type | Source | Description |
-|---------------|--------|-------------|
-| `state_transition` | V3StateMachine | State machine state changes |
-| `sync` | TradingStateSyncer, MarketPriceSyncer, TrackedMarketsSyncer | Kalshi API sync operations (sync_type: trading_state, market_prices, tracked_markets) |
-| `health_check` | V3HealthMonitor | Component health status |
-| `trading_cycle` | TradingFlowOrchestrator | Trading cycle start/complete |
-| `trading_decision` | TradingDecisionService | Trade execution |
-| `trading_error` | TradingDecisionService | Trade execution failures |
-| `operation` | V3TradingClientIntegration | Order group operations |
-| `cleanup` | V3TradingClientIntegration | Orphaned order cleanup |
-| `connection` | V3Coordinator | WebSocket connection events |
-| `lifecycle_event` | EventLifecycleService | Market lifecycle event (tracked, determined, settled) |
-| `discovery` | ApiDiscoverySyncer | API-based market discovery results |
-| `rlm_signal` | RLMService | RLM signal detected (price drop + YES bias) |
-| `rlm_execute` | RLMService | RLM signal execution result (success/failed) |
-| `upcoming_markets` | UpcomingMarketsSyncer | Upcoming markets sync results |
+The Strategy Attribution System provides per-strategy P&L tracking across positions and settlements, enabling multi-strategy analysis.
 
-### 5.2 MarketTickerEvent Payload
+### 6.1 Overview
 
-Price data received from Kalshi WebSocket `ticker` channel:
+When multiple strategies trade in the same account, we need to attribute each trade and its resulting P&L to the originating strategy. This is achieved through:
+
+1. **Order-time capture**: TradingDecision includes `strategy_id`
+2. **Order tracking**: TrackedMarketOrder stores `strategy_id`
+3. **DB persistence**: OrderContextService persists strategy to `order_contexts` table
+4. **Settlement attribution**: V3StateContainer looks up strategy for each settlement
+5. **Cache optimization**: Batch DB queries with in-memory caching
+
+### 6.2 Data Flow
+
+```
+1. [TradingDecisionService] Creates TradingDecision with strategy_id
+        |
+2. [TradingDecisionService] Creates StagedOrderContext with strategy
+        |
+3. [OrderContextService] stage_context() stores in memory
+        |
+4. [KalshiDemoTradingClient] Order placed, returns order_id
+        |
+5. [V3StateContainer] update_order_in_attachment() with strategy_id
+        |
+6. [FillListener] ORDER_FILL event received
+        |
+7. [OrderContextService] persist_on_fill() writes to DB with strategy
+        |
+8. [V3StateContainer] mark_order_filled_in_attachment()
+        |
+9. [Position Closes - REST sync detects position gone]
+        |
+10. [V3StateContainer] _capture_settlement_for_attachment()
+        | Extracts strategy_id from filled orders
+        | Single strategy -> use it; Multiple -> "mixed"
+        |
+11. [V3StateContainer] _link_settlement_to_order_contexts()
+        | Allocates P&L proportionally to each order
+        | Writes per-order realized_pnl to DB
+```
+
+### 6.3 Cache Architecture
+
+The V3StateContainer maintains two strategy caches to avoid N+1 DB queries:
+
+```python
+# Settlement strategy cache
+_settlement_strategy_cache: dict[str, str | None]
+# Maps ticker -> strategy_id for settlements display
+
+# Position strategy cache
+_position_strategy_cache: dict[str, str | None]
+# Maps ticker -> strategy_id for positions display
+```
+
+**Cache Population Flow**:
+
+1. On sync, collect tickers not in cache
+2. Check in-memory TradingAttachment first
+3. For remaining unknowns, call `_batch_lookup_strategies_from_db()`
+4. Cache all results (including None for not-found)
+5. Use cached values in `_format_position_details()` and settlement formatting
+
+**Batch DB Query**:
+```sql
+SELECT DISTINCT ON (market_ticker) market_ticker, strategy
+FROM order_contexts
+WHERE market_ticker = ANY($1) AND strategy IS NOT NULL
+ORDER BY market_ticker, filled_at DESC
+```
+
+### 6.4 Strategy ID Values
+
+| Strategy ID | Description |
+|-------------|-------------|
+| `hold` | HOLD strategy (no trades) |
+| `rlm_no` | RLM NO strategy |
+| `s001` - `s999` | Custom plugin strategies |
+| `mixed` | Position has orders from multiple strategies |
+| `null` | Unknown (no order context found) |
+
+### 6.5 Frontend Display
+
+The `positions_details` and `settlements` arrays in `trading_state` messages include `strategy_id`:
 
 ```json
 {
-  "event_type": "MARKET_TICKER_UPDATE",
-  "market_ticker": "INXD-25JAN03",
-  "price_data": {
-    "ticker": "INXD-25JAN03",
-    "last_price": 52,        // last traded price (cents)
-    "yes_bid": 50,           // best yes bid (cents)
-    "yes_ask": 54,           // best yes ask (cents)
-    "no_bid": 46,            // best no bid (cents)
-    "no_ask": 50,            // best no ask (cents)
-    "volume": 1500,          // total volume traded
-    "open_interest": 12000,  // active contracts
-    "timestamp": 1703808000  // unix timestamp (seconds)
-  },
-  "timestamp": 1703808000.5
+  "positions_details": [
+    {
+      "ticker": "INXD-25JAN03",
+      "position": 10,
+      "side": "yes",
+      "strategy_id": "rlm_no",
+      ...
+    }
+  ],
+  "settlements": [
+    {
+      "ticker": "INXD-25DEC31",
+      "net_pnl": 500,
+      "strategy_id": "rlm_no",
+      ...
+    }
+  ]
 }
 ```
-
-**Note**: MarketTickerListener applies throttling (default 500ms) per ticker to reduce event frequency.
-
-### 5.3 MarketPositionEvent Payload
-
-Position data received from Kalshi WebSocket `market_positions` channel, converted from centi-cents to cents:
-
-```json
-{
-  "event_type": "MARKET_POSITION_UPDATE",
-  "market_ticker": "INXD-25JAN03",
-  "position_data": {
-    "ticker": "INXD-25JAN03",
-    "position": 100,           // contracts (+ YES, - NO)
-    "market_exposure": 6500,   // current value in cents (from position_cost)
-    "realized_pnl": 0,         // realized P&L in cents
-    "fees_paid": 20,           // fees in cents
-    "volume": 100,             // total contracts traded
-    "last_updated": 1703700000.0
-  },
-  "timestamp": 1703700000.5
-}
-```
-
-**Note**: `total_traded` (cost basis) is NOT included in WebSocket updates. It's preserved from REST sync via merge in StateContainer.update_single_position().
-
-## 6. Data Flow Traces
-
-### 6.1 System Startup Sequence
-
-```
-1. app.py: lifespan() starts
-2. V3Config.from_env() loads configuration
-3. rl_db.initialize() initializes database
-4. EventBus created
-5. V3StateMachine created with EventBus
-6. V3WebSocketManager created with EventBus
-7. Market tickers selected (discovery or config mode)
-8. OrderbookClient created with market tickers
-9. V3OrderbookIntegration wraps OrderbookClient
-10. [if trading enabled] KalshiDemoTradingClient created
-11. [if trading enabled] V3TradingClientIntegration wraps trading client
-12. V3Coordinator created with all components
-13. coordinator.start() called:
-    a. _initialize_components():
-       - event_bus.start()
-       - websocket_manager.start()
-       - state_machine.start() -> STARTUP -> INITIALIZING
-    b. _establish_connections():
-       - _connect_orderbook():
-         * orderbook_integration.start()
-         * wait_for_connection(30s)
-         * wait_for_first_snapshot(10s)
-         * state_machine -> ORDERBOOK_CONNECT
-       - [if trading] _connect_trading_client():
-         * trading_client.wait_for_connection()
-         * create_order_group()
-         * state_machine -> TRADING_CLIENT_CONNECT
-       - [if trading] _sync_trading_state():
-         * sync_with_kalshi()
-         * state_container.update_trading_state()
-         * state_machine -> KALSHI_DATA_SYNC
-       - [if trading + cleanup_on_startup] _cleanup_orphaned_orders():
-         * cancel_orphaned_orders() for orders without order_group_id
-       - _transition_to_ready():
-         * state_machine -> READY
-    c. _run_event_loop() starts as background task
-    d. health_monitor.start()
-    e. status_reporter.start()
-    f. [if trading] market_ticker_listener.start():
-       * Subscribes to position tickers via Kalshi ticker channel
-       * Emits MARKET_TICKER_UPDATE events on price changes
-    g. [if trading] market_price_syncer.start():
-       * Performs initial REST sync of market prices
-       * Starts 30s periodic sync loop
-    h. [if trading] trading_state_syncer.start():
-       * Performs initial trading state sync (balance, positions, orders, settlements)
-       * Starts 20s periodic sync loop in dedicated asyncio task
-       * Emits console messages: "Trading session synced: X positions, $Y balance, Z settlements"
-    i. [if strategy=RLM_NO] rlm_service.start():
-       * Subscribes to PUBLIC_TRADE_RECEIVED, MARKET_TRACKED, MARKET_DETERMINED events
-       * Begins monitoring for RLM signals
-14. System is READY
-```
-
-### 6.2 Trading Cycle Flow
-
-```
-1. _run_event_loop() checks if in READY state
-2. trading_orchestrator.check_and_run_cycle()
-3. If interval elapsed (30s default):
-   a. TradingCycle created with unique cycle_id
-   b. SYNC phase:
-      - sync_with_kalshi() fetches balance, positions, orders
-      - state_container.update_trading_state()
-   c. EVALUATE phase:
-      - Select markets to evaluate (first 3)
-      - Get orderbook for each market
-   d. DECIDE phase:
-      - trading_service.evaluate_market() for each
-      - Returns TradingDecision (HOLD by default)
-   e. EXECUTE phase (if non-HOLD decisions):
-      - state_machine -> ACTING
-      - trading_service.execute_decision()
-      - Post-execution sync
-      - state_machine -> READY
-   f. COMPLETE phase:
-      - Cycle stored in history
-      - SYSTEM_ACTIVITY event emitted
-```
-
-### 6.3 Shutdown Sequence
-
-```
-1. SIGINT/SIGTERM received
-2. lifespan() finally block executes
-3. coordinator.stop() called:
-   a. _running = False
-   b. _event_loop_task cancelled
-   c. [if rlm_service] rlm_service.stop()
-      - Emits strategy_stop system activity
-   d. [if trading] trading_state_syncer.stop()
-      - Cancels periodic sync task
-   e. [if trading] market_price_syncer.stop()
-      - Cancels sync loop task
-   f. [if trading] market_ticker_listener.stop()
-      - Closes WebSocket, cancels listener task
-   g. health_monitor.stop()
-   h. status_reporter.stop()
-   i. [if trading] trading_client_integration.stop()
-      - reset_order_group()
-      - disconnect()
-   j. orderbook_integration.stop()
-      - orderbook_client.stop()
-   k. state_machine -> SHUTDOWN
-   l. state_machine.stop()
-   m. websocket_manager.stop()
-      - Disconnect all clients
-   n. event_bus.stop()
-      - Clear all subscribers
-4. write_queue.stop()
-5. rl_db.close()
-6. Application exits
-```
-
-### 6.4 Settlements Data Flow
-
-```
-1. KalshiDataSync.sync_with_kalshi() called (every 30s or on startup)
-2. Fetches settlements from Kalshi REST API:
-   - GET /portfolio/settlements
-   - Response: {settlements: [{ticker, yes_count, no_count, yes_total_cost,
-                              no_total_cost, revenue, fee_cost, market_result,
-                              settled_time}, ...]}
-   - Note: fee_cost is STRING in DOLLARS (e.g., "0.34"), others in CENTS
-3. TraderState.from_kalshi_data() stores raw settlements array
-4. StateContainer.update_trading_state() receives TraderState:
-   a. Clears existing _settled_positions deque
-   b. For each settlement (last 50):
-      i.   Determine side: is_yes_position = yes_count > 0
-      ii.  Get count and total_cost for the relevant side
-      iii. Parse settled_time ISO string to epoch seconds
-      iv.  Convert fee_cost string (dollars) to cents: int(float(fee) * 100)
-      v.   Calculate net_pnl = revenue - total_cost - fees_cents
-      vi.  Create settlement dict with: ticker, position, side, market_result,
-           total_cost, revenue, fees, net_pnl, closed_at
-      vii. Append to _settled_positions deque
-   c. Update _total_settlements_count
-5. StatusReporter.emit_trading_state() broadcasts via WebSocket:
-   - Includes: settlements: list(_settled_positions)
-   - Includes: settlements_count: total count
-6. Frontend receives trading_state message with settlements array
-```
-
-**Key Design Decisions:**
-- **REST API is Source of Truth**: Settlements synced from REST, not WebSocket events
-- **Fee Parsing Fix**: fee_cost is string in dollars, converted to cents
-- **Net P&L Calculation**: revenue - cost - fees (not just revenue)
-- **Deque Storage**: Last 50 settlements stored for UI display
-- **ISO Timestamp Parsing**: settled_time parsed from ISO 8601 to epoch seconds
-
-### 6.5 Real-Time Position Updates Flow
-
-```
-1. PositionListener connected to Kalshi WebSocket
-2. Subscribed to "market_positions" channel
-3. Kalshi sends position update message:
-   {type: "market_position", msg: {market_ticker, position, position_cost,
-                                   realized_pnl, fees_paid, volume}}
-   Note: All monetary values in CENTI-CENTS (1/10000 of dollar)
-4. PositionListener._handle_position_message():
-   a. Increment positions_received counter
-   b. Convert centi-cents to cents (divide by 100)
-   c. Create formatted_position dict with:
-      - market_exposure (NOT total_traded - this is current value)
-      - position, realized_pnl, fees_paid, volume, last_updated
-5. Emit MARKET_POSITION_UPDATE via EventBus
-6. Coordinator's event handler receives event:
-   a. Calls StateContainer.update_single_position(ticker, position_data)
-7. StateContainer.update_single_position():
-   a. If position == 0: Capture settlement, remove from positions dict
-   b. Else: MERGE with existing position (preserves total_traded from REST)
-   c. Track ticker in _session_updated_tickers
-   d. Recalculate position_count and portfolio_value
-   e. Increment trading_state_version
-8. StatusReporter detects version change, broadcasts trading_state
-9. Frontend receives updated positions with session_updated flag
-```
-
-**Key Design Decisions:**
-- **Merge, Not Replace**: WebSocket updates merged with existing position to preserve total_traded
-- **Session Tracking**: _session_updated_tickers tracks which positions updated via WebSocket
-- **Position Closure**: When position == 0, capture settlement data before deletion
-- **Immediate Updates**: No cycle delay - position updates broadcast within 1 second
-
-### 6.6 Market Ticker Price Updates Flow
-
-```
-1. MarketTickerListener connected to Kalshi WebSocket
-2. Subscribed to "ticker" channel for position tickers
-3. Kalshi sends ticker update:
-   {type: "ticker", msg: {market_ticker, price, yes_bid, yes_ask,
-                          no_bid, no_ask, volume, open_interest, ts}}
-4. MarketTickerListener._handle_ticker_message():
-   a. Increment updates_received counter
-   b. Check throttling (default 500ms per ticker)
-   c. If throttled: skip update, increment throttled counter
-   d. Extract price data from message
-5. Emit MARKET_TICKER_UPDATE via EventBus
-6. Coordinator._handle_market_ticker_update() receives event:
-   a. Calls StateContainer.update_market_price(ticker, price_data)
-7. StateContainer.update_market_price():
-   a. Create/update MarketPriceData for ticker
-   b. Increment _market_prices_version
-8. StatusReporter includes market prices in trading_state broadcast
-```
-
-**Key Design Decisions:**
-- **Filtered Subscription**: Only subscribes to position tickers (not all markets)
-- **Dynamic Subscriptions**: Tickers added/removed as positions change
-- **Throttled Updates**: Default 500ms per ticker reduces event volume
-- **Redundancy with REST**: MarketPriceSyncer provides fallback pricing
-
-### 6.7 Lifecycle Market Discovery Flow
-
-```
-1. [Kalshi WS] market_lifecycle event (created)
-        |
-2. [LifecycleClient] Receives event, calls callback
-        |
-3. [V3LifecycleIntegration] emit_market_lifecycle() to EventBus
-        |
-4. [EventLifecycleService] _handle_lifecycle_event()
-        | Check capacity (fast fail if at limit)
-        | REST lookup GET /markets/{ticker}
-        | Category filter (LIFECYCLE_CATEGORIES)
-        |
-5. [TrackedMarketsState] add_market() if passes filters (in-memory only)
-        |
-6. [EventBus] emit_market_tracked()
-        |
-7. [EventLifecycleService] Call orderbook subscribe callback
-        |
-8. [V3OrderbookIntegration] Subscribe to market orderbook
-        |
-9. [V3WebSocketManager] broadcast_tracked_markets() + broadcast_lifecycle_event()
-        |
-10. [Frontend] useLifecycleWebSocket receives tracked_markets and lifecycle_event
-```
-
-**Key Design Decisions:**
-- **Category Filtering**: Only track markets in configured categories (sports, crypto, etc.)
-- **Capacity Management**: TrackedMarketsState enforces max market limit (default 50)
-- **In-Memory Only**: TrackedMarketsState has no DB persistence - markets are discovered fresh on each startup
-- **Orderbook Subscription**: Dynamic orderbook subscription on market tracking
-- **Dual Broadcast**: Both full snapshot and activity event for frontend
-
-### 6.8 RLM Signal Detection Flow
-
-```
-1. [Kalshi WS] Public trade arrives
-        |
-2. [TradesClient] trade callback
-        |
-3. [V3TradesIntegration] emit_public_trade() to EventBus
-        |
-4. [RLMService] _handle_public_trade()
-        | Check if market is in TrackedMarketsState
-        | (Skip if not tracked - only lifecycle markets)
-        |
-5. [MarketTradeState] Accumulate trade
-        - Increment yes_trades or no_trades
-        - Track first_yes_price and last_yes_price
-        - Calculate price_drop = first - last
-        - Calculate yes_ratio = yes_trades / total_trades
-        |
-6. [EventBus] emit_rlm_trade_arrived() (for animation pulse)
-        |
-7. [EventBus] emit_rlm_market_update() (state change)
-        |
-8. [RLMService] Check signal criteria:
-        - yes_ratio >= threshold (default 0.65)
-        - price_drop >= min_price_drop (default 2c)
-        - trade_count >= min_trades (default 15)
-        - No existing position in market
-        |
-9. If signal detected: Create TradingDecision (action=BUY, side=NO)
-        |
-10. [TradingDecisionService] execute_decision()
-        |
-11. [V3WebSocketManager] broadcast rlm_market_state and rlm_trade_arrived
-         |
-12. [Frontend] Updates rlmStates and tradePulses in useLifecycleWebSocket
-```
-
-**Key Design Decisions:**
-- **Lifecycle-Only Markets**: RLM only monitors tracked markets (not all markets)
-- **Trade-by-Trade Accumulation**: State built from individual trades, not snapshots
-- **Contrarian Signal**: YES bias + price drop = bet NO (fade the crowd)
-- **Immediate Trade Pulses**: rlm_trade_arrived bypasses coalescing for animation
-- **Deduplication**: One signal per market per session
-
-### 6.9 API Discovery Bootstrap Flow
-
-```
-1. [System Startup] ApiDiscoverySyncer.start()
-        |
-2. [ApiDiscoverySyncer] Fetch open markets from Kalshi REST API
-        - GET /markets with status=active filter
-        - Batch size: 200 markets per call
-        |
-3. For each market in response:
-        | Category filter (LIFECYCLE_CATEGORIES)
-        | Skip if close_ts < now + close_min_minutes
-        | Check TrackedMarketsState capacity
-        |
-4. [EventLifecycleService] track_market_from_api_data()
-        - Bypasses REST lookup (already have market data)
-        |
-5. [TrackedMarketsState] add_market() (in-memory only)
-        |
-6. Continue lifecycle WebSocket monitoring for new markets
-```
-
-**Key Design Decisions:**
-- **Bootstrap Already-Open Markets**: Discovers markets that opened before system started
-- **Same Category Filter**: Uses LIFECYCLE_CATEGORIES for consistency
-- **Capacity Respect**: Stops adding when TrackedMarketsState at capacity
-- **Periodic Refresh**: Re-runs every 5 minutes to catch missed markets
-- **Skip Expiring Soon**: Ignores markets closing within close_min_minutes
-- **No DB Persistence**: Markets are stored in-memory only and rediscovered on each startup
-
-### 6.10 Orderbook Signal Aggregation Flow
-
-```
-1. [Kalshi WS] Orderbook snapshot arrives
-        |
-2. [OrderbookClient] Emits ORDERBOOK_SNAPSHOT event to V3 EventBus
-        |
-3. [V3OrderbookIntegration] _handle_snapshot_event()
-        | Lazy initialize signal aggregator on first snapshot
-        | (uses session_id from OrderbookClient)
-        |
-4. [SharedOrderbookState] get_snapshot() - retrieve current state
-        |
-5. [OrderbookSignalAggregator] record_snapshot(ticker, snapshot)
-        | Get or create 10-second bucket for market
-        | Update spread OHLC (NO and YES sides)
-        | Accumulate volumes for imbalance calculation
-        | Track BBO sizes for depth averaging
-        | Detect large orders (>= 1000 contracts)
-        |
-6. [Background Flush Task] Every 10 seconds:
-        | Complete stale buckets
-        | Convert BucketState -> signal data dict
-        | Batch insert to orderbook_signals table
-        |
-7. [RLMService] When building OrderbookContext for trade:
-        | Can call get_orderbook_signals(ticker) for live bucket data
-        | (Optional enhancement - primary data still from SharedOrderbookState)
-```
-
-**Key Design Decisions:**
-- **Raw Snapshots NOT Persisted**: Storage reduced from ~1MB/market/day to ~1.7KB/market/day
-- **Lazy Initialization**: Signal aggregator created on first snapshot (after session_id available)
-- **10-Second Buckets**: Balance between granularity and storage efficiency
-- **Background Flush**: Non-blocking batch inserts to database
-- **OHLC Tracking**: Capture spread volatility within each bucket
-- **Large Order Detection**: Flag significant liquidity events (>= 1000 contracts)
-
-### 6.11 RLM Entry Price with OrderbookContext Flow
-
-```
-1. [RLMService] Signal detected for market
-        |
-2. [SharedOrderbookState] get_snapshot() - get current orderbook
-        |
-3. [OrderbookContext] from_orderbook_snapshot(snapshot)
-        | Extract NO side: best_bid, best_ask, spread, BBO sizes, total volumes
-        | Extract YES side: best_bid, best_ask, spread (cross-reference)
-        | Calculate spread_tier: TIGHT (<=2c), NORMAL (<=4c), WIDE (>4c)
-        | Calculate bid_imbalance: (bid_vol - ask_vol) / total_vol
-        | Calculate bbo_depth_tier: THICK (>=100), NORMAL (20-99), THIN (<20)
-        | Check staleness: >5s since last update = stale
-        |
-4. [OrderbookContext] get_recommended_entry_price()
-        | TIGHT spread: price at ask - 1c (or ask if aggressive)
-        | NORMAL spread: midpoint (or ask - 1c if aggressive)
-        | WIDE spread: bid + 75-85% of spread
-        | Adjust up if BBO depth is THIN (better fill probability)
-        |
-5. [TradingDecisionService] Execute order with calculated price
-        |
-6. [StagedOrderContext] Capture full context for post-hoc analysis
-        | Store orderbook snapshot, spread tier, signal params
-        | Persisted to order_contexts table on fill confirmation
-```
-
-**Key Design Decisions:**
-- **REST Fallback Only on Connection Degradation**: If WS healthy, "quiet" markets don't trigger REST
-  - Connection-level health checked (last message from ANY market >30s = degraded)
-  - Per-market staleness NOT used to trigger REST (orderbooks can be legitimately quiet)
-- **Spread-Aware Pricing**: Entry price adapts to current market conditions
-- **Depth Awareness**: Thin liquidity triggers more aggressive pricing for fill probability
-- **Context Capture**: Full orderbook state preserved for strategy analysis
 
 ## 7. Configuration
 
@@ -1771,26 +1044,29 @@ Position data received from Kalshi WebSocket `market_positions` channel, convert
 | `KALSHI_WS_URL` | Yes | - | WebSocket URL |
 | `KALSHI_API_KEY_ID` | Yes | - | API key identifier |
 | `KALSHI_PRIVATE_KEY_CONTENT` | Yes | - | RSA private key |
-| `ENVIRONMENT` | No | `local` | Environment name (paper/local/production) |
+| `ENVIRONMENT` | No | `local` | Environment name |
 | `RL_MODE` | No | `discovery` | Market selection mode |
-| `RL_MARKET_TICKERS` | No | `INXD-25JAN03` | Comma-separated tickers (config mode) |
+| `RL_MARKET_TICKERS` | No | `INXD-25JAN03` | Comma-separated tickers |
 | `RL_ORDERBOOK_MARKET_LIMIT` | No | `10` | Max markets to subscribe |
 | `V3_ENABLE_TRADING_CLIENT` | No | `false` | Enable trading integration |
 | `V3_TRADING_MODE` | No | `paper` | Trading mode |
 | `V3_PORT` | No | `8005` | Server port |
 | `V3_LOG_LEVEL` | No | `INFO` | Logging level |
-| `V3_TRADING_STRATEGY` | No | `hold` | Trading strategy: `hold` or `rlm_no` |
-| `V3_CLEANUP_ON_STARTUP` | No | `true` | Cancel orphaned orders on startup |
-| `LIFECYCLE_CATEGORIES` | No | `sports,crypto,entertainment,media_mentions` | Comma-separated category filter for discovery |
+| `V3_TRADING_STRATEGY` | No | `hold` | Trading strategy |
+| `V3_CLEANUP_ON_STARTUP` | No | `true` | Cancel orphaned orders |
+| `V3_ORDER_TTL_ENABLED` | No | `true` | Enable TTL cleanup |
+| `V3_ORDER_TTL_SECONDS` | No | `300` | TTL threshold (5 min) |
+| `V3_MIN_TRADER_CASH` | No | `10000` | Balance protection (cents) |
+| `LIFECYCLE_CATEGORIES` | No | `sports,crypto,...` | Category filter |
 | `LIFECYCLE_CAPACITY` | No | `50` | Maximum tracked markets |
-| `DORMANT_DETECTION_ENABLED` | No | `true` | Enable dormant market cleanup (zero 24h volume) |
-| `DORMANT_VOLUME_THRESHOLD` | No | `0` | volume_24h <= this is considered dormant |
-| `DORMANT_GRACE_PERIOD_HOURS` | No | `1.0` | Minimum hours tracked before considering dormant |
-| `RLM_YES_RATIO_THRESHOLD` | No | `0.65` | Minimum YES trade ratio for RLM signal |
-| `RLM_MIN_PRICE_DROP` | No | `2` | Minimum price drop in cents for RLM signal |
-| `RLM_MIN_TRADES` | No | `15` | Minimum trades before RLM signal evaluation |
-| `RLM_CONTRACTS` | No | `5` | Contracts per RLM trade |
-| `RLM_MAX_TRADES_PER_MINUTE` | No | `10` | RLM rate limit (trades/minute) |
+| `DORMANT_DETECTION_ENABLED` | No | `true` | Enable dormant cleanup |
+| `DORMANT_VOLUME_THRESHOLD` | No | `0` | Dormant volume threshold |
+| `DORMANT_GRACE_PERIOD_HOURS` | No | `1.0` | Grace period |
+| `RLM_YES_RATIO_THRESHOLD` | No | `0.65` | YES trade ratio threshold |
+| `RLM_MIN_PRICE_DROP` | No | `2` | Minimum price drop (cents) |
+| `RLM_MIN_TRADES` | No | `15` | Minimum trades for signal |
+| `RLM_CONTRACTS` | No | `5` | Contracts per trade |
+| `RLM_MAX_TRADES_PER_MINUTE` | No | `10` | Rate limit |
 
 ### 7.2 API Endpoints
 
@@ -1798,469 +1074,112 @@ Position data received from Kalshi WebSocket `market_positions` channel, convert
 |----------|--------|-------------|
 | `/v3/health` | GET | Quick health check |
 | `/v3/status` | GET | Detailed system status |
-| `/v3/cleanup` | POST | Cancel orphaned orders (`?orphaned_only=true/false`) |
+| `/v3/cleanup` | POST | Cancel orphaned orders |
 | `/v3/ws` | WebSocket | Real-time updates |
 
-### 7.3 WebSocket Message Types (to frontend)
+### 7.3 WebSocket Message Types
 
 | Type | Description | Coalescing |
 |------|-------------|------------|
-| `connection` | Initial connection acknowledgment | Immediate |
-| `history_replay` | Historical state transitions for late joiners | Immediate |
-| `system_activity` | Unified console messages | Immediate |
-| `state_transition` | State machine state changes | Immediate |
-| `lifecycle_event` | Real-time lifecycle event (tracked, determined, etc.) | Immediate |
-| `trader_status` | Periodic status/metrics update | Coalesced (100ms) |
-| `trading_state` | Trading data (balance, positions, orders, P&L, settlements) | Coalesced (100ms) |
-| `tracked_markets` | Full snapshot of tracked markets with stats | Coalesced (100ms) |
-| `market_info_update` | Incremental market price/volume update | Coalesced (100ms) |
-| `rlm_states_snapshot` | Initial snapshot of all RLM market states (on connect) | Immediate |
-| `rlm_market_state` | Real-time RLM market state update | Coalesced (100ms) |
-| `rlm_trade_arrived` | Trade pulse for RLM animation | Immediate |
-| `trade_processing` | Trade processing stats (1.5s heartbeat) | Coalesced (100ms) |
-| `upcoming_markets` | Markets opening within 4 hours | Coalesced (100ms) |
-| `ping` | Keep-alive ping | Immediate |
+| `connection` | Connection acknowledgment | Immediate |
+| `history_replay` | Historical state transitions | Immediate |
+| `system_activity` | Console messages | Immediate |
+| `state_transition` | State machine changes | Immediate |
+| `lifecycle_event` | Real-time lifecycle event | Immediate |
+| `trader_status` | Periodic status/metrics | Coalesced (100ms) |
+| `trading_state` | Trading data with P&L | Coalesced (100ms) |
+| `tracked_markets` | Tracked markets snapshot | Coalesced (100ms) |
+| `rlm_states_snapshot` | Initial RLM states | Immediate |
+| `rlm_market_state` | RLM state update | Coalesced (100ms) |
+| `rlm_trade_arrived` | Trade pulse animation | Immediate |
+| `trade_processing` | Processing stats | Coalesced (100ms) |
+| `upcoming_markets` | Markets opening soon | Coalesced (100ms) |
+| `ping` | Keep-alive | Immediate |
 
-**Coalescing Behavior**: Messages marked "Coalesced" are batched in a 100ms window. Only the latest message of each type is sent, reducing frontend re-renders during high-frequency updates. Critical messages (Immediate) bypass coalescing for real-time responsiveness.
+## 8. Data Flow Traces
 
-#### trading_state Message Format
+### 8.1 System Startup Sequence
 
-Sent immediately when a client connects via `handle_websocket()` (before waiting for periodic broadcasts) and on every trading sync cycle via `emit_trading_state()`. The immediate send on connect uses `get_trading_summary()` from StateContainer to provide clients with current state without delay.
-
-```json
-{
-  "type": "trading_state",
-  "data": {
-    "timestamp": 1703700000.0,
-    "version": 42,
-    "balance": 100000,                    // cents
-    "portfolio_value": 25000,             // cents
-    "position_count": 3,
-    "order_count": 2,
-    "positions": ["INXD-25JAN03", "KXBTC-25JAN03"],  // ticker list
-    "open_orders": 2,
-    "order_list": [                       // formatted for display
-      {"order_id": "abc12345", "ticker": "INXD-25JAN03", "side": "yes",
-       "action": "buy", "price": 65, "count": 5, "status": "resting"}
-    ],
-    "sync_timestamp": 1703699970.5,
-    "changes": {                          // optional, from last sync
-      "balance": 0, "portfolio_value": 100, "positions": 0, "orders": 0
-    },
-    "order_group": {                      // optional
-      "id": "group123", "status": "active", "order_count": 2, "order_ids": ["abc1", "def2"]
-    },
-    "pnl": {                              // session P&L breakdown
-      "session_pnl": 1500,                // total session P&L (cents)
-      "realized_pnl": 500,                // closed positions (cents)
-      "unrealized_pnl": 1000,             // open positions (cents)
-      "starting_equity": 123500,          // session start equity (cents)
-      "current_equity": 125000,           // current equity (cents)
-      "session_duration_minutes": 45.5
-    },
-    "positions_details": [                // per-position P&L
-      {"ticker": "INXD-25JAN03", "position": 10, "side": "yes",
-       "total_traded": 6000, "market_exposure": 6500,
-       "realized_pnl": 0, "unrealized_pnl": 500, "fees_paid": 20,
-       "session_updated": true, "last_updated": 1703700000.0}
-    ],
-    "position_listener": {                // real-time updates health
-      "connected": true, "positions_received": 15, "positions_processed": 15,
-      "last_update": 1703700000.0, "connection_count": 1
-    },
-    "settlements": [                      // last 50 settlements
-      {"ticker": "INXD-25DEC31", "position": 5, "side": "yes",
-       "market_result": "yes", "total_cost": 3000, "revenue": 500,
-       "fees": 10, "net_pnl": -2510, "closed_at": 1703600000.0}
-    ],
-    "settlements_count": 12               // total settlements
-  }
-}
+```
+1. app.py: lifespan() starts
+2. V3Config.from_env() loads configuration
+3. rl_db.initialize() initializes database
+4. OrderContextService initialized with DB pool
+5. EventBus created
+6. V3StateMachine created with EventBus
+7. V3WebSocketManager created with EventBus
+8. Market tickers selected (discovery or config mode)
+9. OrderbookClient created
+10. V3OrderbookIntegration wraps OrderbookClient
+11. [if trading] KalshiDemoTradingClient created
+12. [if trading] V3TradingClientIntegration wraps trading client
+13. V3Coordinator created with all components
+14. coordinator.start() called
+15. System transitions: STARTUP -> INITIALIZING -> ORDERBOOK_CONNECT -> READY
+16. Background services started (health monitor, status reporter, syncers)
+17. [if RLM_NO] RLM service started
 ```
 
-#### tracked_markets Message Format
+### 8.2 Order Placement with Context Capture
 
-Sent on client connect and when tracked markets state changes.
-
-```json
-{
-  "type": "tracked_markets",
-  "data": {
-    "markets": [
-      {
-        "ticker": "KXNFL-25JAN05-DET",
-        "event_ticker": "KXNFL-25JAN05",
-        "title": "Will Detroit Lions win?",
-        "category": "Sports",
-        "status": "active",
-        "created_ts": 1704067200,
-        "open_ts": 1704067200,
-        "close_ts": 1704153600,
-        "tracked_at": 1704067500.5,
-        "price": 65,
-        "volume": 12500,
-        "volume_24h": 3200,
-        "open_interest": 5400,
-        "yes_bid": 64,
-        "yes_ask": 66,
-        "discovery_source": "lifecycle_ws",
-        "time_to_close_seconds": 86400,
-        "trading": {
-          "ticker": "KXNFL-25JAN05-DET",
-          "trading_state": "position_open",
-          "orders": [],
-          "position": {"contracts": 5, "side": "no", "entry_price": 35},
-          "settlement": null,
-          "version": 3
-        }
-      }
-    ],
-    "stats": {
-      "tracked": 15,
-      "capacity": 50,
-      "total": 18,
-      "by_category": {"Sports": 10, "Crypto": 5},
-      "by_status": {"active": 15, "determined": 2, "settled": 1},
-      "determined_today": 3,
-      "tracked_total": 25,
-      "rejected_capacity": 0,
-      "rejected_category": 12,
-      "version": 42
-    },
-    "version": 42,
-    "timestamp": 1704067500.5
-  }
-}
+```
+1. [RLMService] Signal detected, creates TradingDecision with strategy_id="rlm_no"
+        |
+2. [TradingDecisionService] execute_decision() called
+        | Creates StagedOrderContext with full trade-time context
+        | Calls OrderContextService.stage_context()
+        |
+3. [V3TradingClientIntegration] place_order()
+        |
+4. [KalshiDemoTradingClient] create_order() -> returns order_id
+        |
+5. [V3StateContainer] update_order_in_attachment()
+        | Stores TrackedMarketOrder with strategy_id
+        |
+6. [FillListener] ORDER_FILL event
+        |
+7. [V3StateContainer] mark_order_filled_in_attachment()
+        |
+8. [OrderContextService] persist_on_fill()
+        | Writes to order_contexts table with strategy
 ```
 
-#### lifecycle_event Message Format
+### 8.3 Settlement with Strategy Attribution
 
-```json
-{
-  "type": "lifecycle_event",
-  "data": {
-    "event_type": "created",
-    "market_ticker": "KXNFL-25JAN05-DET",
-    "action": "tracked",
-    "reason": "api_discovery",
-    "metadata": {
-      "category": "Sports",
-      "discovery_source": "api"
-    },
-    "timestamp": "12:34:56"
-  }
-}
+```
+1. [TradingStateSyncer] sync_with_kalshi() fetches settlements
+        |
+2. [V3StateContainer] update_trading_state()
+        | For each settlement:
+        |   a. Check _settlement_strategy_cache
+        |   b. Check TradingAttachment.orders for strategy_id
+        |   c. If not found, add to batch lookup list
+        |
+3. [V3StateContainer] _batch_lookup_strategies_from_db()
+        | Single query for all unknown tickers
+        | Updates _settlement_strategy_cache
+        |
+4. [V3StateContainer] Format settlement with strategy_id
+        |
+5. [V3StatusReporter] emit_trading_state()
+        | Broadcasts settlements with strategy attribution
 ```
 
-#### rlm_market_state Message Format
+### 8.4 Graceful Shutdown
 
-```json
-{
-  "type": "rlm_market_state",
-  "data": {
-    "market_ticker": "KXNFL-25JAN05-DET",
-    "yes_trades": 45,
-    "no_trades": 12,
-    "total_trades": 57,
-    "yes_ratio": 0.789,
-    "first_yes_price": 68,
-    "last_yes_price": 62,
-    "price_drop": 6,
-    "position_contracts": 0,
-    "signal_trigger_count": 0,
-    "orderbook_signals": {
-      "no_spread_open": 3,
-      "no_spread_high": 4,
-      "no_spread_low": 2,
-      "no_spread_close": 3,
-      "no_imbalance_ratio": 0.55,
-      "no_bid_size_at_bbo_avg": 1200,
-      "no_ask_size_at_bbo_avg": 800,
-      "delta_count": 12,
-      "snapshot_count": 5,
-      "large_order_count": 1
-    },
-    "timestamp": "12:34:56"
-  }
-}
 ```
-
-**orderbook_signals Field**: Injected by Signal Broadcaster every 10 seconds for ALL tracked markets (even those without trades). See Section 3.11 for details.
-
-#### rlm_trade_arrived Message Format
-
-```json
-{
-  "type": "rlm_trade_arrived",
-  "data": {
-    "market_ticker": "KXNFL-25JAN05-DET",
-    "side": "yes",
-    "count": 15,
-    "price_cents": 62,
-    "timestamp": "12:34:56"
-  }
-}
+1. SIGINT/SIGTERM received
+2. coordinator.stop() called
+3. RLM service stopped
+4. Syncers stopped (trading_state, market_price, lifecycle)
+5. Listeners stopped (position, fill, ticker)
+6. Health monitor and status reporter stopped
+7. Trading client integration stopped (resets order group)
+8. Orderbook integration stopped
+9. State machine -> SHUTDOWN
+10. WebSocket manager stopped (disconnects clients)
+11. Event bus stopped
+12. OrderContextService cleanup (discards staged contexts)
+13. Database pool closed
+14. Application exits
 ```
-
-#### trade_processing Message Format (1.5s heartbeat)
-
-```json
-{
-  "type": "trade_processing",
-  "data": {
-    "recent_trades": [
-      {
-        "trade_id": "abc123",
-        "market_ticker": "KXNFL-25JAN05-DET",
-        "side": "yes",
-        "price_cents": 62,
-        "count": 15,
-        "timestamp": 1704067500.5,
-        "age_seconds": 5
-      }
-    ],
-    "stats": {
-      "trades_seen": 1500,
-      "trades_filtered": 1400,
-      "trades_tracked": 100,
-      "filter_rate_percent": 93.3
-    },
-    "decisions": {
-      "detected": 5,
-      "executed": 3,
-      "rate_limited": 1,
-      "skipped": 1,
-      "reentries": 0,
-      "low_balance": 0
-    },
-    "decision_history": [],
-    "last_updated": 1704067500.5,
-    "timestamp": "12:34:56"
-  }
-}
-```
-
-### 7.4 Frontend Panels (V3TraderConsole.jsx)
-
-The frontend receives `trading_state` messages and displays data in specialized panels:
-
-#### PositionListPanel
-Displays open positions with per-contract P&L calculations.
-
-**Columns:**
-| Column | Source Field | Description |
-|--------|--------------|-------------|
-| Ticker | `positions_details[].ticker` | Market ticker |
-| Side | `positions_details[].side` | "YES" or "NO" badge |
-| Qty | `positions_details[].position` | Contract count (absolute) |
-| Cost/C | `total_traded / position` | Cost per contract in cents |
-| Value/C | `market_exposure / position` | Current value per contract |
-| Unreal/C | `unrealized_pnl / position` | Unrealized P&L per contract |
-| P&L | `positions_details[].unrealized_pnl` | Total unrealized P&L |
-| Updated | `positions_details[].last_updated` | Last update timestamp |
-
-**Features:**
-- Real-time update indicators (green dot for recently changed)
-- YES/NO section headers with aggregate totals
-- Position listener status badge (Live/Polling)
-- Session updates count
-
-#### SettlementsPanel
-Displays closed positions with final P&L economics.
-
-**Columns:**
-| Column | Source Field | Description |
-|--------|--------------|-------------|
-| Ticker | `settlements[].ticker` | Market ticker |
-| Side | `settlements[].side` | "YES" or "NO" badge |
-| Qty | `settlements[].position` | Contract count (absolute) |
-| Cost | `settlements[].total_cost` | Total cost in cents |
-| Payout | `settlements[].revenue` | Revenue received in cents |
-| Fees | `settlements[].fees` | Fees paid in cents |
-| Net P&L | `settlements[].net_pnl` | Net P&L (revenue - cost - fees) |
-| Closed | `settlements[].closed_at` | Close timestamp |
-
-**Features:**
-- Collapsible with expand/collapse toggle
-- Total Net P&L header showing aggregate across all settlements
-- Green/red styling for profit/loss
-- Toast notifications for new settlements
-
-### 7.5 Frontend WebSocket Hook (useLifecycleWebSocket.js)
-
-#### Purpose
-React hook for managing Lifecycle Discovery WebSocket connection, handling lifecycle-specific message types and RLM state updates.
-
-#### Location
-`frontend/src/hooks/useLifecycleWebSocket.js`
-
-#### Returned State
-```javascript
-{
-  // Connection state
-  wsStatus: 'disconnected' | 'connected' | 'error',
-  isConnected: boolean,
-  lastUpdateTime: number,
-
-  // Tracked markets
-  trackedMarkets: {
-    markets: TrackedMarket[],
-    stats: TrackedMarketsStats,
-    version: number
-  },
-  markets: TrackedMarket[],           // Convenience alias
-  stats: TrackedMarketsStats,          // Convenience alias
-  isAtCapacity: boolean,
-
-  // Lifecycle events (Activity Feed)
-  recentEvents: LifecycleEvent[],
-  clearEvents: () => void,
-
-  // RLM (Reverse Line Movement) state
-  rlmStates: Record<string, RLMMarketState>,
-  tradePulses: Record<string, { side: 'yes'|'no', ts: number }>,
-
-  // Upcoming markets
-  upcomingMarkets: UpcomingMarket[],
-
-  // Trading state
-  tradingState: { balance: number, min_trader_cash: number }
-}
-```
-
-#### Message Handlers
-| Message Type | Handler | State Updated |
-|--------------|---------|---------------|
-| `tracked_markets` | Full snapshot | `trackedMarkets`, creates startup event |
-| `lifecycle_event` | Add to feed | `recentEvents` (with deduplication) |
-| `market_info_update` | Incremental | `trackedMarkets.markets[].price/volume` |
-| `rlm_states_snapshot` | Initial load | `rlmStates` |
-| `rlm_market_state` | Real-time | `rlmStates[ticker]` |
-| `rlm_trade_arrived` | Animation | `tradePulses[ticker]` (auto-clears 1.5s) |
-| `upcoming_markets` | Schedule | `upcomingMarkets` |
-| `trading_state` | Balance | `tradingState` |
-| `ping` | Heartbeat | Responds with `pong` |
-
-#### Zombie Connection Detection
-- Server sends pings every 30s
-- Frontend monitors 60s timeout
-- Heartbeat check every 15s
-- Forces reconnection on stale connections
-
-## 8. Degraded Mode
-
-The system supports **degraded mode** when the orderbook WebSocket is unavailable but trading API is functional:
-
-1. `_connect_orderbook()` fails or times out
-2. System continues with `degraded: True` in state metadata
-3. `V3HealthMonitor` detects degraded mode and does NOT transition to ERROR
-4. Trading syncs continue every 30 seconds
-5. Frontend displays degraded status warning
-6. Trading decisions are HOLD only (no orderbook data)
-
-## 9. Key Design Patterns
-
-1. **Event-Driven Architecture**: All inter-component communication through EventBus
-2. **State Machine**: Predictable state transitions with timeout protection
-3. **Versioned State Container**: Change detection for efficient broadcasts
-4. **Degraded Mode**: System continues operating without orderbook
-5. **Health Monitoring**: Non-blocking health checks that report but don't control
-6. **Atomic Updates**: Thread-safe state mutations with version tracking
-7. **Message Coalescing**: Backend batches frequent WebSocket messages (100ms window) to reduce frontend re-renders. Critical messages (state transitions) bypass coalescing for responsiveness
-8. **Zombie Connection Detection**: Frontend monitors WebSocket heartbeats (60s timeout, 15s check interval) and forces reconnection on stale connections. Reconnect timeout cleanup prevents timer accumulation
-
----
-
-## Changelog
-
-| Date | Change | Author |
-|------|--------|--------|
-| 2024-12-27 | Initial architecture document created | Claude |
-| 2024-12-27 | Foundation cleanup: removed ~600 lines dead code, fixed async patterns | Claude |
-| 2024-12-27 | Final simplification: removed unused _coordinator ref, publish() wrapper (-57 lines) | Claude |
-| 2024-12-27 | Added "Follow the Whale" feature: TradesClient, V3TradesIntegration, WhaleTracker | Claude |
-| 2024-12-27 | Phase 1 complete: /v3/cleanup endpoint, whale queue snapshot, orphaned order cleanup on startup | Claude |
-| 2024-12-28 | Added WhaleExecutionService: event-driven whale execution with rate limiting, deduplication | Claude |
-| 2024-12-28 | Added whale_processing WebSocket message type, whale execution flow trace, environment vars | Claude |
-| 2024-12-28 | Removed dead code: evaluate_whale_queue() in TradingDecisionService (~120 lines) | Claude |
-| 2024-12-28 | Architecture review: Added PositionListener docs, MARKET_POSITION event, V3_TRADING_STRATEGY env var | Claude |
-| 2024-12-28 | Dead code cleanup: Removed empty _handle_orderbook_event(), stub get_orderbook(), commented code | Claude |
-| 2024-12-28 | Settlements panel fixes: fee_cost parsing (string dollars to cents), net P&L calculation (revenue-cost-fees) | Claude |
-| 2024-12-28 | PositionListener fix: Handle .closed attribute safely with fallback for different WS library versions | Claude |
-| 2024-12-28 | Immediate trading state on client connect: trading_state broadcast within 1 second via version monitoring | Claude |
-| 2024-12-28 | Comprehensive docs update: StateContainer (settlements, P&L), StatusReporter (broadcast data), KalshiDataSync (sync data), demo_client (all methods), trading_state message format, settlements/position data flows | Claude |
-| 2024-12-29 | Comprehensive architecture update: Added MarketTickerListener, MarketPriceSyncer | Claude |
-| 2024-12-29 | Added MARKET_TICKER_UPDATE event, MarketTickerEvent payload (Section 5.2) | Claude |
-| 2024-12-29 | Updated architecture diagram with new components (ticker WS, price syncer) | Claude |
-| 2024-12-29 | Added StateContainer market prices state (MarketPriceData fields and methods) | Claude |
-| 2024-12-29 | Added data flow traces: Section 6.6 Market Ticker Updates | Claude |
-| 2024-12-29 | Updated startup/shutdown sequences with new component lifecycle | Claude |
-| 2024-12-29 | Added TradingStateSyncer service for reliable periodic trading state sync (20s interval) | Claude |
-| 2024-12-29 | WebSocket performance: Added message coalescing (100ms batching), zombie connection detection (60s timeout) | Claude |
-| 2024-12-29 | Added FillListener component for real-time order fill notifications via Kalshi fill WebSocket channel | Claude |
-| 2025-01-01 | **Comprehensive lifecycle discovery update**: Added Section 3.7 (Lifecycle Discovery System), Section 3.8 (Trading Attachment System), Section 3.9 (RLM Service) | Claude |
-| 2025-01-01 | Added LifecycleClient, V3LifecycleIntegration, EventLifecycleService, TrackedMarketsState, TrackedMarketsSyncer, ApiDiscoverySyncer, UpcomingMarketsSyncer | Claude |
-| 2025-01-01 | Added TradingAttachment state for per-market trading data (orders, positions, settlements) | Claude |
-| 2025-01-01 | Added RLMService for Reverse Line Movement strategy (+17.38% validated edge) | Claude |
-| 2025-01-01 | Added 5 new events: MARKET_LIFECYCLE_EVENT, MARKET_TRACKED, MARKET_DETERMINED, RLM_MARKET_UPDATE, RLM_TRADE_ARRIVED | Claude |
-| 2025-01-01 | Added 8 new WebSocket message types: tracked_markets, lifecycle_event, market_info_update, rlm_states_snapshot, rlm_market_state, rlm_trade_arrived, trade_processing, upcoming_markets | Claude |
-| 2025-01-01 | Added data flow traces: Section 6.7 (Lifecycle Discovery), Section 6.8 (RLM Signal Detection), Section 6.9 (API Discovery Bootstrap) | Claude |
-| 2025-01-01 | Added Section 7.5: Frontend WebSocket Hook (useLifecycleWebSocket.js) documentation | Claude |
-| 2025-01-01 | Updated architecture diagram with lifecycle components (RLMService, EventLifecycleSvc, TrackedMarketsState, etc.) | Claude |
-| 2025-01-01 | Added LIFECYCLE_* and RLM_* environment variables | Claude |
-| 2025-01-03 | **Major cleanup: Removed deprecated trading strategies** | Claude |
-| 2025-01-03 | Removed WHALE_FOLLOWER, YES_80_90, RL_MODEL, PAPER_TEST, CUSTOM strategies | Claude |
-| 2025-01-03 | Deleted whale_tracker.py (436 lines), whale_execution_service.py (700 lines), yes_80_90_service.py (693 lines) | Claude |
-| 2025-01-03 | Deleted frontend panels: WhaleQueuePanel.jsx, FollowedTradesPanel.jsx, DecisionAuditPanel.jsx | Claude |
-| 2025-01-03 | Removed WHALE_QUEUE_UPDATED event and WhaleQueueEvent data class | Claude |
-| 2025-01-03 | Removed all WHALE_* and YES8090_* environment variables | Claude |
-| 2025-01-03 | Updated strategy enum: Only HOLD and RLM_NO remain | Claude |
-| 2025-01-04 | Added dormant market detection to TrackedMarketsSyncer - auto-unsubscribes markets with zero 24h volume | Claude |
-| 2025-01-04 | Added DORMANT_DETECTION_ENABLED, DORMANT_VOLUME_THRESHOLD, DORMANT_GRACE_PERIOD_HOURS env vars | Claude |
-| 2025-01-03 | Total cleanup: ~3,500 lines removed (backend: 2,969, frontend: 535), 6 files deleted | Claude |
-| 2025-01-04 | **Orderbook Signal Aggregation**: Added Section 3.9 (OrderbookSignalAggregator, OrderbookContext) | Claude |
-| 2025-01-04 | Raw snapshot storage REMOVED - replaced with aggregated signals (~1.7KB vs ~1MB/market/day) | Claude |
-| 2025-01-04 | V3OrderbookIntegration: Added lazy signal aggregator init, get_orderbook_signals(), REST fallback on connection degradation | Claude |
-| 2025-01-04 | RLMService: Added set_orderbook_integration() for orderbook context access in pricing decisions | Claude |
-| 2025-01-04 | Added OrderbookContext dataclass with SpreadTier/BBODepthTier enums for trade-time pricing | Claude |
-| 2025-01-04 | Added data flow traces: Section 6.10 (Signal Aggregation), Section 6.11 (RLM Entry Price with OrderbookContext) | Claude |
-| 2025-01-04 | **Section 3.9 Enhancement**: Added Signal Data Schema table, Storage Efficiency metrics, Database Schema, Signal Aggregation Data Flow, Spread/BBO Tier tables, UI Signal Display section | Claude |
-| 2025-01-05 | **Removed DB persistence for tracked markets**: TrackedMarketsState is now purely in-memory | Claude |
-| 2025-01-05 | Markets discovered fresh on each startup via ApiDiscoverySyncer (REST) and LifecycleClient (WebSocket) | Claude |
-| 2025-01-05 | Removed RLDatabase dependency from EventLifecycleService, removed load_from_db() from TrackedMarketsState | Claude |
-| 2025-01-05 | Dormant detection position protection still works via state_container.trading_state.positions | Claude |
-| 2025-01-05 | Database migration created to drop tracked_markets table | Claude |
-
-## 10. Cleanup Recommendations
-
-Identified architectural issues and cleanup opportunities:
-
-### 10.1 High Priority
-
-1. **MarketPriceSyncer Direct State Access** (`services/market_price_syncer.py:185-191`)
-   - **Issue**: Directly accesses `_market_prices` and `_market_prices_version` private attributes
-   - **Fix**: Use `update_market_price()` method or add `batch_update_market_prices()` method
-
-### 10.2 Medium Priority
-
-1. **Type Hint Inconsistency** (`core/websocket_manager.py:28`)
-   - **Issue**: Imports `StateContainer` but actual class is `V3StateContainer`
-   - **Fix**: Update import to `from .state_container import V3StateContainer`
-
-2. **Inconsistent Health Check Patterns**
-   - **Issue**: Services have different health reporting interfaces
-   - **Fix**: Standardize on both `is_healthy()` and `get_health_details()` for all components
-
-3. ~~**Test Files in Main Package**~~ RESOLVED 2025-01-01
-   - **Files**: Moved to `backend/tests/traderv3/`
-
-### 10.3 Low Priority
-
-1. **Empty `__init__.py` Files**
-   - All package `__init__.py` files are empty
-   - **Fix**: Consider adding `__all__` exports for better IDE support
-
-### 10.4 Documentation Notes
-
-1. **SYSTEM_ACTIVITY Event Sources**: Updated to include MarketPriceSyncer and RLMService
-2. **Event Catalog Accuracy**: SETTLEMENT is synced via REST, not real-time events (clarified in docs)
