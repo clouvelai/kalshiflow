@@ -854,16 +854,19 @@ class RLMNoStrategy:
                 logger.debug(f"Rate limited signal {signal_id}")
                 return
 
-            # Emit processing start
-            await self._context.event_bus.emit_system_activity(
-                activity_type="rlm_signal",
-                message=f"RLM Signal: {signal.market_ticker} YES={signal.yes_ratio:.0%} drop={signal.price_drop}c",
-                metadata={"signal_id": signal_id, "status": "processing", **signal.to_dict()}
-            )
-
-            # Get orderbook for execution price
+            # Get orderbook for execution price and spread info
             entry_price = None
             ob_context: Optional[OrderbookContext] = None
+            current_spread: Optional[int] = None
+            effective_max_spread: int = 3  # Default for small drops
+
+            # Calculate tiered max spread based on price drop
+            if signal.price_drop >= 20:
+                effective_max_spread = 8
+            elif signal.price_drop >= 10:
+                effective_max_spread = 5
+            else:
+                effective_max_spread = 3
 
             try:
                 orderbook_state = await asyncio.wait_for(
@@ -915,26 +918,51 @@ class RLMNoStrategy:
                     self._stats["signals_skipped"] += 1
                     return
 
-                # Tiered spread rejection
-                if signal.price_drop >= 20:
-                    effective_max_spread = 8
-                elif signal.price_drop >= 10:
-                    effective_max_spread = 5
-                else:
-                    effective_max_spread = 3
+                # Get current spread for metadata
+                current_spread = ob_context.no_spread
 
-                if ob_context.no_spread is not None and ob_context.no_spread > effective_max_spread:
+                # Tiered spread rejection - check if spread exceeds tier limit
+                spread_passed = current_spread is None or current_spread <= effective_max_spread
+
+                if not spread_passed:
                     logger.warning(
-                        f"Spread too wide for {signal.market_ticker}: {ob_context.no_spread}c > {effective_max_spread}c max, skipping"
+                        f"Spread too wide for {signal.market_ticker}: {current_spread}c > {effective_max_spread}c max, skipping"
                     )
                     self._stats["signals_skipped"] += 1
                     self._record_decision(
                         signal_id=signal_id,
                         action="skipped",
-                        reason=f"Spread {ob_context.no_spread}c > tiered max {effective_max_spread}c (drop={signal.price_drop}c)",
+                        reason=f"Spread {current_spread}c > tiered max {effective_max_spread}c (drop={signal.price_drop}c)",
                         signal_data=signal.to_dict()
                     )
+                    # Emit signal event with spread failure info for frontend visibility
+                    await self._context.event_bus.emit_system_activity(
+                        activity_type="rlm_signal",
+                        message=f"RLM Signal: {signal.market_ticker} YES={signal.yes_ratio:.0%} drop={signal.price_drop}c spread={current_spread}c/{effective_max_spread}c BLOCKED",
+                        metadata={
+                            "signal_id": signal_id,
+                            "status": "skipped_spread",
+                            "current_spread": current_spread,
+                            "max_spread": effective_max_spread,
+                            "spread_passed": False,
+                            **signal.to_dict()
+                        }
+                    )
                     return
+
+                # Emit signal event with spread info (spread check passed)
+                await self._context.event_bus.emit_system_activity(
+                    activity_type="rlm_signal",
+                    message=f"RLM Signal: {signal.market_ticker} YES={signal.yes_ratio:.0%} drop={signal.price_drop}c spread={current_spread}c/{effective_max_spread}c OK",
+                    metadata={
+                        "signal_id": signal_id,
+                        "status": "processing",
+                        "current_spread": current_spread,
+                        "max_spread": effective_max_spread,
+                        "spread_passed": True,
+                        **signal.to_dict()
+                    }
+                )
 
                 # Log orderbook state
                 self._log_orderbook_at_signal(signal, snapshot)

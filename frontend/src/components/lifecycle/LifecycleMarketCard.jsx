@@ -266,9 +266,68 @@ const StatusBadges = memo(({ isNew, isHot, closingSoon, signalReady, isDormant, 
 StatusBadges.displayName = 'StatusBadges';
 
 /**
+ * SpreadTierIndicator - Shows spread relative to tiered threshold for signal markets
+ *
+ * Displays current spread vs max allowed spread based on price drop tier:
+ * - drop >= 20c: max 8c spread
+ * - drop >= 10c: max 5c spread
+ * - drop < 10c: max 3c spread
+ *
+ * Color coding:
+ * - Green glow: spread within tier (tradeable)
+ * - Red/orange: spread exceeds tier (blocked)
+ */
+const SpreadTierIndicator = memo(({ spread, priceDrop, signalReady, progressPercent = 0 }) => {
+  if (spread === null || spread === undefined) return null;
+
+  // Calculate max allowed spread based on price drop (mirroring backend logic)
+  const getMaxSpread = (drop) => {
+    if (drop >= 20) return 8;
+    if (drop >= 10) return 5;
+    return 3;
+  };
+
+  const maxSpread = getMaxSpread(priceDrop || 0);
+  const spreadOk = spread <= maxSpread;
+
+  // Always show for signal-ready markets, or when approaching threshold (>70%)
+  const showTierInfo = signalReady || progressPercent >= 70;
+
+  if (!showTierInfo) {
+    // Simple spread display for non-signal markets
+    return (
+      <span className="text-xs text-gray-500 font-mono">
+        {spread}c spread
+      </span>
+    );
+  }
+
+  // Enhanced spread tier indicator for signal markets
+  return (
+    <span className={`
+      inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-xs font-mono
+      transition-all duration-300
+      ${spreadOk
+        ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 shadow-sm shadow-emerald-500/10'
+        : 'bg-red-500/15 text-red-400 border border-red-500/30 shadow-sm shadow-red-500/10'
+      }
+    `}>
+      <span className="font-semibold">{spread}c</span>
+      <span className="text-gray-500">/</span>
+      <span className={spreadOk ? 'text-emerald-500/70' : 'text-red-500/70'}>{maxSpread}c</span>
+      <span className={`text-sm ${spreadOk ? 'text-emerald-400' : 'text-red-400'}`}>
+        {spreadOk ? '\u2713' : '\u2717'}
+      </span>
+    </span>
+  );
+});
+
+SpreadTierIndicator.displayName = 'SpreadTierIndicator';
+
+/**
  * PriceDisplay - Price, spread, and delta with animations
  */
-const PriceDisplay = memo(({ midPrice, spread, priceDelta, animClass }) => (
+const PriceDisplay = memo(({ midPrice, spread, priceDelta, animClass, priceDrop, signalReady, progressPercent }) => (
   <div className="flex items-baseline justify-between gap-4">
     <div className="flex items-baseline gap-3">
       <span className={`
@@ -279,9 +338,12 @@ const PriceDisplay = memo(({ midPrice, spread, priceDelta, animClass }) => (
         {midPrice}<span className="text-gray-500 text-base">c</span>
       </span>
       {spread !== null && (
-        <span className="text-xs text-gray-500 font-mono">
-          {spread}c spread
-        </span>
+        <SpreadTierIndicator
+          spread={spread}
+          priceDrop={priceDrop}
+          signalReady={signalReady}
+          progressPercent={progressPercent}
+        />
       )}
     </div>
 
@@ -1007,6 +1069,39 @@ const LifecycleMarketCard = ({ market, rlmState, tradePulse, rlmConfig }) => {
   // Determine card border/glow state
   const isDetermined = market.status === 'determined';
 
+  // Calculate if spread is tradeable (within tiered limit)
+  const getMaxSpread = (drop) => {
+    if (drop >= 20) return 8;
+    if (drop >= 10) return 5;
+    return 3;
+  };
+  const maxSpreadForTier = getMaxSpread(priceDrop);
+  const spreadOk = spread === null || spread <= maxSpreadForTier;
+
+  // Determine card styling based on signal state and spread tradability
+  const getCardBorderClass = () => {
+    if (isDormant) {
+      return 'opacity-50 saturate-50 border-gray-700/40';
+    }
+    if (signalReady) {
+      // Signal ready - style based on spread tradability
+      if (spreadOk) {
+        // Tradeable: Vibrant amber glow
+        return 'border-amber-500/60 shadow-xl shadow-amber-500/20 animate-signal-glow';
+      } else {
+        // Spread too wide: Red-tinted, still shows signal but blocked
+        return 'border-red-500/50 shadow-lg shadow-red-500/15 ring-1 ring-red-500/20 animate-blocked-pulse';
+      }
+    }
+    if (isDetermined) {
+      return 'border-amber-500/40 bg-amber-900/10';
+    }
+    if (isNew) {
+      return 'border-blue-500/40 ring-1 ring-blue-500/30';
+    }
+    return 'border-gray-700/60';
+  };
+
   return (
     <div
       onClick={() => setExpanded(!expanded)}
@@ -1018,16 +1113,7 @@ const LifecycleMarketCard = ({ market, rlmState, tradePulse, rlmConfig }) => {
         transition-all duration-300 ease-out
         cursor-pointer
         p-4
-        ${isDormant
-          ? 'opacity-50 saturate-50 border-gray-700/40'
-          : signalReady
-            ? 'border-amber-500/60 shadow-xl shadow-amber-500/20 animate-signal-glow'
-            : isDetermined
-              ? 'border-amber-500/40 bg-amber-900/10'
-              : isNew
-                ? 'border-blue-500/40 ring-1 ring-blue-500/30'
-                : 'border-gray-700/60'
-        }
+        ${getCardBorderClass()}
         hover:scale-[1.02] hover:shadow-xl hover:border-gray-600/80
       `}
     >
@@ -1065,6 +1151,9 @@ const LifecycleMarketCard = ({ market, rlmState, tradePulse, rlmConfig }) => {
         spread={spread}
         priceDelta={priceDelta}
         animClass={priceAnimClass}
+        priceDrop={priceDrop}
+        signalReady={signalReady}
+        progressPercent={progressPercent}
       />
 
       {/* Secondary stats row */}
@@ -1153,6 +1242,17 @@ const LifecycleMarketCard = ({ market, rlmState, tradePulse, rlmConfig }) => {
           50% { box-shadow: 0 0 25px rgba(245, 158, 11, 0.5), 0 10px 15px -3px rgba(0, 0, 0, 0.1); }
         }
 
+        @keyframes blocked-pulse {
+          0%, 100% {
+            box-shadow: 0 0 12px rgba(239, 68, 68, 0.2), 0 8px 12px -3px rgba(0, 0, 0, 0.1);
+            border-color: rgba(239, 68, 68, 0.5);
+          }
+          50% {
+            box-shadow: 0 0 20px rgba(239, 68, 68, 0.35), 0 8px 12px -3px rgba(0, 0, 0, 0.1);
+            border-color: rgba(239, 68, 68, 0.7);
+          }
+        }
+
         @keyframes signal-pulse {
           0%, 100% { opacity: 1; transform: scale(1); }
           50% { opacity: 0.9; transform: scale(1.02); }
@@ -1194,6 +1294,10 @@ const LifecycleMarketCard = ({ market, rlmState, tradePulse, rlmConfig }) => {
 
         .animate-signal-glow {
           animation: signal-glow 2s ease-in-out infinite;
+        }
+
+        .animate-blocked-pulse {
+          animation: blocked-pulse 2.5s ease-in-out infinite;
         }
 
         .animate-signal-pulse {

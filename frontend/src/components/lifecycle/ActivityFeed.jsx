@@ -114,7 +114,7 @@ const ActivityFeed = ({ events, onClear, upcomingMarkets = [], rlmStates = {} })
  * [timestamp] [TYPE] message
  */
 const EventRow = ({ event }) => {
-  const { typeLabel, typeColor, bgColor } = getEventStyle(event.event_type);
+  const { typeLabel, typeColor, bgColor } = getEventStyle(event.event_type, event);
   const message = formatEventMessage(event);
 
   return (
@@ -148,8 +148,10 @@ const EventRow = ({ event }) => {
 
 /**
  * Get style config for event type
+ * @param {string} eventType - The event type string
+ * @param {object} event - The full event object (for metadata access)
  */
-function getEventStyle(eventType) {
+function getEventStyle(eventType, event = {}) {
   switch (eventType) {
     case 'startup':
       return {
@@ -189,13 +191,22 @@ function getEventStyle(eventType) {
         typeColor: 'bg-red-500/20 text-red-400',
         bgColor: 'bg-red-900/5'
       };
-    // Trading activity events
-    case 'rlm_signal':
+    // Trading activity events - RLM signal with spread awareness
+    case 'rlm_signal': {
+      const spreadPassed = event.metadata?.spread_passed ?? true;
+      const status = event.metadata?.status;
+      const isBlocked = status === 'skipped_spread' || spreadPassed === false;
+
       return {
-        typeLabel: 'SIGNAL',
-        typeColor: 'bg-amber-500/20 text-amber-400',
-        bgColor: 'bg-amber-900/5'
+        typeLabel: isBlocked ? 'BLOCKED' : 'SIGNAL',
+        typeColor: isBlocked
+          ? 'bg-red-500/25 text-red-400 border border-red-500/30'
+          : 'bg-amber-500/20 text-amber-400',
+        bgColor: isBlocked
+          ? 'bg-red-900/10'
+          : 'bg-amber-900/5'
       };
+    }
     case 'order_fill':
       return {
         typeLabel: 'FILL',
@@ -243,9 +254,36 @@ function formatEventMessage(event) {
       return event.action || 'Market tracked';
     case 'closed':
       return event.metadata?.reason || 'Market closed';
-    // Trading activity events
-    case 'rlm_signal':
-      return event.reason || event.metadata?.message || 'Signal detected';
+    // Trading activity events - RLM signal with spread info
+    case 'rlm_signal': {
+      const meta = event.metadata || {};
+      const yesRatio = meta.yes_ratio;
+      const priceDrop = meta.price_drop;
+      const currentSpread = meta.current_spread;
+      const maxSpread = meta.max_spread;
+      const spreadPassed = meta.spread_passed ?? true;
+      const ticker = meta.market_ticker || '';
+
+      // Build formatted message with spread tier info
+      let msg = '';
+
+      // Short ticker (last part after last dash)
+      const shortTicker = ticker.split('-').slice(-1)[0] || ticker.slice(-12);
+
+      if (yesRatio !== undefined && priceDrop !== undefined) {
+        msg = `${shortTicker} ${Math.round(yesRatio * 100)}% YES ${priceDrop}c drop`;
+      } else {
+        msg = shortTicker || 'Signal';
+      }
+
+      // Add spread tier info if available
+      if (currentSpread !== undefined && maxSpread !== undefined) {
+        const spreadIcon = spreadPassed ? '\u2713' : '\u2717';  // checkmark or X
+        msg += ` [${currentSpread}c/${maxSpread}c ${spreadIcon}]`;
+      }
+
+      return msg;
+    }
     case 'order_fill':
       return event.reason || event.metadata?.message || 'Order filled';
     case 'order_placed':
