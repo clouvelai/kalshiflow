@@ -518,10 +518,12 @@ class EventPositionTracker:
         """
         groups = self.get_event_groups()
 
-        # Only include groups with multi-market exposure or interesting risk levels
+        # Include groups with multiple markets (for badge counter) or interesting risk levels
         broadcast_groups = {}
         for event_ticker, group in groups.items():
-            if group.markets_with_positions >= 2 or group.risk_level != "NORMAL":
+            # Show event grouping for all multi-market events (enables "1/5" badge)
+            # Also show events with non-normal risk (ARB/RISK/LOSS badges)
+            if group.market_count > 1 or group.risk_level != "NORMAL":
                 broadcast_groups[event_ticker] = group.to_dict()
 
         return {

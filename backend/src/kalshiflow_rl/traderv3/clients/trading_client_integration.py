@@ -1071,6 +1071,7 @@ class V3TradingClientIntegration:
                             if close_ts and max_close_ts and close_ts > max_close_ts:
                                 continue  # Too far out, skip for capital efficiency
                             market["category"] = event.get("category", "")
+                            market["event_ticker"] = event.get("event_ticker", "")
                             all_markets.append(market)
 
                 if not cursor:
