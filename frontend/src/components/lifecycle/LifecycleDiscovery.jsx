@@ -41,7 +41,8 @@ const LifecycleDiscovery = () => {
     category: null, // null = all
     status: 'all', // all, active, determined
     spread: 'any', // any, lt2, lt5, lt10
-    sort: 'newest' // newest, volume_delta, spread, price_move
+    sort: 'newest', // newest, volume_delta, spread, price_move
+    groupBy: 'category' // 'category' or 'event'
   });
 
   // Dormant market toggle (markets with 0 volume_24h)
@@ -134,18 +135,32 @@ const LifecycleDiscovery = () => {
     return result;
   }, [activeMarkets, filters, rlmStates]);
 
-  // Group markets by category for display
-  const marketsByCategory = useMemo(() => {
+  // Group markets by category OR event for display
+  const groupedMarkets = useMemo(() => {
     const groups = {};
-    filteredMarkets.forEach(market => {
-      const category = market.category || 'other';
-      if (!groups[category]) {
-        groups[category] = [];
-      }
-      groups[category].push(market);
-    });
+
+    if (filters.groupBy === 'event') {
+      // Group by event_ticker
+      filteredMarkets.forEach(market => {
+        const eventKey = market.event_ticker || 'no-event';
+        if (!groups[eventKey]) {
+          groups[eventKey] = [];
+        }
+        groups[eventKey].push(market);
+      });
+    } else {
+      // Group by category (default)
+      filteredMarkets.forEach(market => {
+        const category = market.category || 'other';
+        if (!groups[category]) {
+          groups[category] = [];
+        }
+        groups[category].push(market);
+      });
+    }
+
     return groups;
-  }, [filteredMarkets]);
+  }, [filteredMarkets, filters.groupBy]);
 
   // Handle category click from CategoryHealthBar
   const handleCategoryClick = (category) => {
@@ -190,8 +205,9 @@ const LifecycleDiscovery = () => {
           {/* Market Grid - 70% */}
           <div className="flex-1 min-w-0">
             <MarketGrid
-              marketsByCategory={marketsByCategory}
-              showCategoryHeaders={!filters.category}
+              marketsByCategory={groupedMarkets}
+              showCategoryHeaders={!filters.category || filters.groupBy === 'event'}
+              groupBy={filters.groupBy}
               rlmStates={rlmStates}
               tradePulses={tradePulses}
               rlmConfig={tradingState?.rlm_config}

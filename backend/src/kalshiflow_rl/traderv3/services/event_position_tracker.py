@@ -64,6 +64,9 @@ class EventGroup:
 
     For RLM strategy, we primarily care about all-NO positions in
     mutually exclusive binary markets.
+
+    Note: Spread markets (e.g., "wins by 2.5+", "wins by 3.5+") can have
+    overlapping YES outcomes, so mutual-exclusion math doesn't apply.
     """
     event_ticker: str
     markets: Dict[str, MarketPositionSummary] = field(default_factory=dict)
@@ -73,6 +76,7 @@ class EventGroup:
     position_count: int = 0  # Total contracts across all markets
     has_mixed_sides: bool = False  # True if both YES and NO positions exist
     pnl_estimate: int = 0  # Estimated P&L in cents (YES_sum - 100 for binary)
+    is_spread_event: bool = False  # True if event contains spread markets (overlapping outcomes)
 
     @property
     def market_count(self) -> int:
@@ -86,18 +90,20 @@ class EventGroup:
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for serialization."""
+        # Sort markets alphabetically for stable badge ordering
+        sorted_tickers = sorted(self.markets.keys())
         return {
             "event_ticker": self.event_ticker,
             "markets": {
                 ticker: {
-                    "ticker": m.ticker,
-                    "yes_price": m.yes_price,
-                    "no_price": m.no_price,
-                    "position_count": m.position_count,
-                    "position_side": m.position_side,
-                    "has_position": m.has_position,
+                    "ticker": self.markets[ticker].ticker,
+                    "yes_price": self.markets[ticker].yes_price,
+                    "no_price": self.markets[ticker].no_price,
+                    "position_count": self.markets[ticker].position_count,
+                    "position_side": self.markets[ticker].position_side,
+                    "has_position": self.markets[ticker].has_position,
                 }
-                for ticker, m in self.markets.items()
+                for ticker in sorted_tickers
             },
             "yes_sum": self.yes_sum,
             "no_sum": self.no_sum,
@@ -107,6 +113,7 @@ class EventGroup:
             "pnl_estimate": self.pnl_estimate,
             "market_count": self.market_count,
             "markets_with_positions": self.markets_with_positions,
+            "is_spread_event": self.is_spread_event,
         }
 
 
@@ -169,6 +176,42 @@ class EventPositionTracker:
         tm_version = self._tracked_markets._version if self._tracked_markets else 0
         ts_version = self._state_container.trading_state_version
         return tm_version + ts_version
+
+    @staticmethod
+    def _is_spread_market(title: str) -> bool:
+        """
+        Detect if a market is a spread market (overlapping outcomes).
+
+        Spread markets like "Houston wins by 2.5+" and "Houston wins by 3.5+"
+        can BOTH resolve YES, so they are NOT mutually exclusive.
+        The mutual-exclusion risk math doesn't apply to these markets.
+
+        Args:
+            title: Market title to check
+
+        Returns:
+            True if this appears to be a spread market
+        """
+        if not title:
+            return False
+
+        title_lower = title.lower()
+
+        # Spread market patterns (point spread, over/under thresholds)
+        spread_patterns = [
+            "wins by",      # "Houston wins by 2.5+"
+            "by over",      # "Score by over 100"
+            "by at least",  # "Win by at least 3"
+            "by more than", # "Win by more than 5"
+            "or more",      # "Score 3 goals or more"
+            "under",        # Over/under markets
+            "over",         # Over/under markets
+            "+ points",     # Spread notation
+            ".5+",          # Half-point spreads like "2.5+"
+            ".5-",          # Half-point spreads like "2.5-"
+        ]
+
+        return any(pattern in title_lower for pattern in spread_patterns)
 
     def get_event_groups(self) -> Dict[str, EventGroup]:
         """
@@ -262,6 +305,10 @@ class EventPositionTracker:
                 }
                 group.has_mixed_sides = len(existing_sides) > 1
 
+            # Detect spread markets (overlapping outcomes - NOT mutually exclusive)
+            if self._is_spread_market(market.title):
+                group.is_spread_event = True
+
         # Calculate NO sum and risk level for each group
         for event_ticker, group in groups.items():
             n_markets = group.market_count
@@ -279,12 +326,13 @@ class EventPositionTracker:
                 # For N-ary events, P&L = YES_sum - 100 (same formula)
                 group.pnl_estimate = group.yes_sum - 100
 
-            # Classify risk (pass has_mixed_sides to skip all-NO math for mixed)
+            # Classify risk (skip mutual-exclusion math for mixed-side or spread events)
             group.risk_level = self._classify_risk(
                 group.yes_sum,
                 n_markets,
                 group.markets_with_positions,
                 group.has_mixed_sides,
+                group.is_spread_event,
             )
 
         return groups
@@ -295,6 +343,7 @@ class EventPositionTracker:
         n_markets: int,
         markets_with_positions: int,
         has_mixed_sides: bool = False,
+        is_spread_event: bool = False,
     ) -> RiskLevel:
         """
         Classify risk for positions in mutually exclusive markets.
@@ -310,11 +359,16 @@ class EventPositionTracker:
         math doesn't apply. Mixed positions create directional exposure where
         P&L varies by outcome (not guaranteed). We return NORMAL for mixed.
 
+        NOTE: For spread events (e.g., "wins by 2.5+", "wins by 3.5+"), multiple
+        markets can resolve YES simultaneously, so they are NOT mutually exclusive.
+        The mutual-exclusion math doesn't apply. We return NORMAL for spread events.
+
         Args:
             yes_sum: Sum of YES prices in cents
             n_markets: Number of markets in the event
             markets_with_positions: Number of markets with open positions
             has_mixed_sides: True if both YES and NO positions exist
+            is_spread_event: True if event contains spread markets
 
         Returns:
             Risk level classification
@@ -326,6 +380,11 @@ class EventPositionTracker:
         # Mixed-side positions have different math (directional, not guaranteed)
         # Skip all-NO risk classification - the formula doesn't apply
         if has_mixed_sides:
+            return "NORMAL"
+
+        # Spread events have overlapping outcomes (NOT mutually exclusive)
+        # Skip mutual-exclusion risk math - it doesn't apply
+        if is_spread_event:
             return "NORMAL"
 
         # For binary events (most common case) with ALL-NO positions

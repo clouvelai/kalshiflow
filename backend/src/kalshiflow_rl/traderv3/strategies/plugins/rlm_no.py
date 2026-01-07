@@ -289,6 +289,11 @@ class RLMNoStrategy:
         self._max_spread: int = 10
         self._spread_vol_threshold: float = 0.5  # Spread volatility threshold for skipping
 
+        # Dynamic spread limits by price drop (configurable via YAML)
+        self._spread_tier_20_plus: int = 8   # Max spread for 20c+ price drops
+        self._spread_tier_10_plus: int = 5   # Max spread for 10-20c price drops
+        self._spread_tier_default: int = 5   # Max spread for <10c price drops
+
         # Time-to-settlement filter
         self._min_hours_to_settlement: float = 4.0
         self._max_days_to_settlement: int = 30
@@ -347,6 +352,10 @@ class RLMNoStrategy:
         # State broadcast throttling
         self._last_state_emit: Dict[str, float] = {}
         self._state_emit_interval = 0.5
+
+        # Trade emit throttling (50ms between trade broadcasts per market)
+        self._trade_emit_interval: float = 0.05  # 50ms between trade broadcasts per market
+        self._last_trade_emit: Dict[str, float] = {}  # ticker -> last emit time
 
         # Trade counter for unique IDs
         self._trade_counter: int = 0
@@ -445,6 +454,17 @@ class RLMNoStrategy:
         self._spread_vol_threshold = params.get("spread_volatility_threshold", self._spread_vol_threshold)
         self._min_hours_to_settlement = params.get("min_hours_to_settlement", self._min_hours_to_settlement)
         self._max_days_to_settlement = params.get("max_days_to_settlement", self._max_days_to_settlement)
+
+        # Load dynamic spread tiers config
+        spread_tiers = params.get("spread_tiers", {})
+        if spread_tiers:
+            self._spread_tier_20_plus = spread_tiers.get("drop_20_plus", self._spread_tier_20_plus)
+            self._spread_tier_10_plus = spread_tiers.get("drop_10_plus", self._spread_tier_10_plus)
+            self._spread_tier_default = spread_tiers.get("default", self._spread_tier_default)
+            logger.info(
+                f"Spread tiers loaded: 20c+={self._spread_tier_20_plus}c, "
+                f"10c+={self._spread_tier_10_plus}c, default={self._spread_tier_default}c"
+            )
 
         # Load position scaling config
         position_scaling = params.get("position_scaling", {})
@@ -710,14 +730,15 @@ class RLMNoStrategy:
         state.last_yes_price = yes_price
         state.last_trade_time = time.time()
 
-        # Emit trade arrived event
-        if self._context and self._context.event_bus:
+        # Emit trade arrived event (throttled to 50ms per market)
+        if self._context and self._context.event_bus and self._should_emit_trade_arrived(market_ticker):
             await self._context.event_bus.emit_rlm_trade_arrived(
                 market_ticker=market_ticker,
                 side=trade_event.side,
                 count=trade_event.count,
                 price_cents=trade_event.price_cents,
             )
+            self._last_trade_emit[market_ticker] = time.time()
 
         # Emit state update (throttled)
         if self._should_emit_state_update(market_ticker):
@@ -950,15 +971,14 @@ class RLMNoStrategy:
             entry_price = None
             ob_context: Optional[OrderbookContext] = None
             current_spread: Optional[int] = None
-            effective_max_spread: int = 3  # Default for small drops
 
-            # Calculate tiered max spread based on price drop
+            # Calculate tiered max spread based on price drop (configurable via YAML)
             if signal.price_drop >= 20:
-                effective_max_spread = 8
+                effective_max_spread = self._spread_tier_20_plus
             elif signal.price_drop >= 10:
-                effective_max_spread = 5
+                effective_max_spread = self._spread_tier_10_plus
             else:
-                effective_max_spread = 3
+                effective_max_spread = self._spread_tier_default
 
             try:
                 orderbook_state = await asyncio.wait_for(
@@ -1389,6 +1409,11 @@ class RLMNoStrategy:
         """Check if we should emit a state update for this market."""
         last_emit = self._last_state_emit.get(market_ticker, 0.0)
         return (time.time() - last_emit) >= self._state_emit_interval
+
+    def _should_emit_trade_arrived(self, market_ticker: str) -> bool:
+        """Check if we should emit a trade_arrived for this market (50ms throttle)."""
+        last_emit = self._last_trade_emit.get(market_ticker, 0.0)
+        return (time.time() - last_emit) >= self._trade_emit_interval
 
     # ============================================================
     # Signal Broadcasting

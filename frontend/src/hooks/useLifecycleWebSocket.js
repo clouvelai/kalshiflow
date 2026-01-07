@@ -218,29 +218,15 @@ export const useLifecycleWebSocket = ({ onMessage } = {}) => {
         break;
 
       case 'rlm_trade_arrived':
-        // Trade pulse for animation - set pulse and auto-clear after 1.5s
+        // Trade pulse for animation - set pulse (batch cleanup via interval)
         if (data.data && data.data.market_ticker) {
           const ticker = data.data.market_ticker;
           const side = data.data.side;
           const ts = Date.now();
-
           setTradePulses(prev => ({
             ...prev,
             [ticker]: { side, ts }
           }));
-
-          // Auto-clear pulse after 1.5s
-          setTimeout(() => {
-            setTradePulses(prev => {
-              // Only clear if this is still the same pulse (not overwritten by newer trade)
-              if (prev[ticker] && prev[ticker].ts === ts) {
-                const next = { ...prev };
-                delete next[ticker];
-                return next;
-              }
-              return prev;
-            });
-          }, 1500);
         }
         break;
 
@@ -448,6 +434,26 @@ export const useLifecycleWebSocket = ({ onMessage } = {}) => {
       }
     };
   }, [wsStatus]);
+
+  // Batch pulse cleanup - single interval instead of per-trade timers
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setTradePulses(prev => {
+        const now = Date.now();
+        let changed = false;
+        const next = {};
+        for (const [ticker, pulse] of Object.entries(prev)) {
+          if (now - pulse.ts < 1500) {
+            next[ticker] = pulse;
+          } else {
+            changed = true;
+          }
+        }
+        return changed ? next : prev;
+      });
+    }, 500);
+    return () => clearInterval(interval);
+  }, []);
 
   // Clear events utility
   const clearEvents = useCallback(() => {

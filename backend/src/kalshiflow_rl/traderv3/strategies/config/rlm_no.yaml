@@ -52,6 +52,13 @@ params:
   max_spread: 10           # Maximum acceptable spread (cents)
   orderbook_timeout: 5.0   # Seconds to wait for orderbook data
 
+  # Dynamic spread limits by price drop (was hardcoded at 3/5/8c)
+  # Larger price drops warrant wider spread tolerance due to higher edge
+  spread_tiers:
+    drop_20_plus: 8        # 20c+ price drop -> allow up to 8c spread
+    drop_10_plus: 5        # 10-20c price drop -> allow up to 5c spread
+    default: 5             # <10c price drop -> allow up to 5c spread (was 3c)
+
   # Time filters (match old rlm_service defaults for parity)
   min_hours_to_settlement: 0.5   # Minimum hours until market closes
   max_days_to_settlement: 30     # Maximum days until market closes (was 7, old service used 30)

@@ -318,6 +318,51 @@ class V3TradingClientIntegration:
             return response
 
         except Exception as e:
+            error_str = str(e)
+
+            # Check for stale order group error - auto-recover by creating new group
+            if "order_group_not_found" in error_str and group_id:
+                logger.warning(f"⚠️ Order group {group_id[:8]}... not found - recreating...")
+
+                # Clear stale order group
+                self._order_group_id = None
+                self._kalshi_data_sync.set_order_group_id(None)
+
+                # Create new order group and retry
+                try:
+                    new_group_id = await self.create_order_group(contracts_limit=10000)
+                    logger.info(f"✅ Created replacement order group: {new_group_id[:8]}...")
+
+                    # Retry the order with new group
+                    response = await self._client.create_order(
+                        ticker=ticker,
+                        action=action,
+                        side=side,
+                        count=count,
+                        price=price,
+                        type=order_type,
+                        order_group_id=new_group_id
+                    )
+
+                    # Update metrics on success
+                    self._metrics.orders_placed += 1
+                    self._metrics.last_order_time = time.time()
+                    self._metrics.api_calls += 1
+
+                    if "order" in response:
+                        order = response["order"]
+                        order_id = order.get("order_id")
+                        if order_id:
+                            self._metrics.open_orders[order_id] = order
+
+                    logger.info(f"✅ Order placed after recovery: {action} {count} {side} {ticker} @ {price}¢")
+                    return response
+
+                except Exception as recovery_error:
+                    logger.error(f"❌ Order group recovery failed: {recovery_error}")
+                    # Fall through to original error handling
+
+            # Original error handling
             logger.error(f"❌ Order placement failed: {e}")
             self._metrics.api_errors += 1
             self._metrics.orders_rejected += 1
@@ -1193,6 +1238,11 @@ class V3TradingClientIntegration:
             if not open_ts:
                 # Default: look back 7 days for market open
                 open_ts = now - (7 * 24 * 3600)
+
+            # Skip TMO fetch for future markets (no candlestick data exists yet)
+            if open_ts > now:
+                logger.debug(f"Skipping TMO for {ticker}: market opens in the future")
+                return None
 
             # Search from market open to NOW to find earliest available candlestick
             # Markets may not have had trades in the first hour/day after opening

@@ -68,6 +68,19 @@ const FilterControls = ({ filters, onFilterChange, marketCount, totalCount }) =>
         </select>
       </div>
 
+      {/* Group By */}
+      <div className="flex items-center gap-2">
+        <label className="text-xs text-gray-500 uppercase tracking-wide">Group</label>
+        <select
+          value={filters.groupBy || 'category'}
+          onChange={(e) => updateFilter('groupBy', e.target.value)}
+          className="bg-gray-800 border border-gray-700 rounded-lg px-2 py-1.5 text-sm text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
+        >
+          <option value="category">Category</option>
+          <option value="event">Event</option>
+        </select>
+      </div>
+
       {/* Results count */}
       <div className="text-sm text-gray-400 ml-auto">
         {marketCount === totalCount ? (

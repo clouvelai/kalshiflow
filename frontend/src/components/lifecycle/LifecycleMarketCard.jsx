@@ -1170,11 +1170,14 @@ const LifecycleMarketCard = ({ market, rlmState, tradePulse, rlmConfig, eventExp
           {/* Category badge + ticker + event market index */}
           <div className="flex items-center gap-2 mb-1.5">
             <CategoryBadge category={market.category} />
-            {/* Badge counter for related markets (shows "1/2", "2/3", etc.) */}
+            {/* Badge counter for related markets (shows "NFL 1/2", "UCUP 2/3", etc.) */}
             {eventExposure && eventExposure.market_count > 1 && (
               <span className="text-[10px] text-gray-500 font-mono px-1.5 py-0.5
                                bg-gray-700/30 rounded border border-gray-600/30"
                     title={`Market ${eventExposure.market_index || 1} of ${eventExposure.market_count} in this event`}>
+                {eventExposure.event_abbrev && (
+                  <span className="text-blue-400 mr-1">{eventExposure.event_abbrev}</span>
+                )}
                 {eventExposure.market_index || 1}/{eventExposure.market_count}
               </span>
             )}

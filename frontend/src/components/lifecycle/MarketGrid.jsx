@@ -15,6 +15,28 @@ import LifecycleMarketCard from './LifecycleMarketCard';
  */
 
 /**
+ * Extract abbreviated category from event_ticker.
+ * @param {string} eventTicker - e.g., "KXNFL-25JAN05", "KXUNITEDCUP-26"
+ * @returns {string|null} - e.g., "NFL", "UCUP"
+ */
+function parseEventAbbrev(eventTicker) {
+  if (!eventTicker) return null;
+
+  // Format: KX{CATEGORY}-{DATE/ID}
+  // Extract category between "KX" and first "-"
+  const match = eventTicker.match(/^KX([A-Z]+)/i);
+  if (!match) return null;
+
+  const category = match[1].toUpperCase();
+
+  // Shorten long categories (max 4 chars)
+  if (category.length > 4) {
+    return category.slice(0, 4);
+  }
+  return category;
+}
+
+/**
  * Get event exposure data for a specific market.
  *
  * Looks up the market's event_ticker in the event_groups and adds
@@ -31,12 +53,17 @@ function getMarketEventExposure(market, eventExposure) {
   }
 
   // Calculate market index within the event (1-based for display)
-  const marketTickers = Object.keys(eventGroup.markets || {});
+  // Sort tickers alphabetically for stable ordering
+  const marketTickers = Object.keys(eventGroup.markets || {}).sort();
   const marketIndex = marketTickers.indexOf(market.ticker) + 1;
+
+  // Parse event abbreviation from event_ticker (e.g., "KXNFL-25JAN05" -> "NFL")
+  const eventAbbrev = parseEventAbbrev(market.event_ticker);
 
   return {
     ...eventGroup,
     market_index: marketIndex > 0 ? marketIndex : 1,
+    event_abbrev: eventAbbrev,
   };
 }
 
@@ -47,7 +74,7 @@ const cardVariants = {
   exit: { opacity: 0, scale: 0.9, transition: { duration: 0.2 } }
 };
 
-const MarketGrid = ({ marketsByCategory, showCategoryHeaders, rlmStates = {}, tradePulses = {}, rlmConfig, eventExposure }) => {
+const MarketGrid = ({ marketsByCategory, showCategoryHeaders, groupBy = 'category', rlmStates = {}, tradePulses = {}, rlmConfig, eventExposure }) => {
   const categories = Object.entries(marketsByCategory);
 
   if (categories.length === 0) {
@@ -100,13 +127,15 @@ const MarketGrid = ({ marketsByCategory, showCategoryHeaders, rlmStates = {}, tr
   // Multi-category view with headers
   return (
     <div className="space-y-6">
-      {categories.map(([category, markets]) => (
-        <div key={category}>
-          {/* Category header */}
+      {categories.map(([groupKey, markets]) => (
+        <div key={groupKey}>
+          {/* Group header (category or event) */}
           {showCategoryHeaders && (
             <div className="flex items-center gap-3 mb-3">
-              <h2 className="text-sm font-semibold text-gray-300 uppercase tracking-wide">
-                {formatCategoryName(category)}
+              <h2 className={`text-sm font-semibold uppercase tracking-wide ${
+                groupBy === 'event' ? 'text-blue-400' : 'text-gray-300'
+              }`}>
+                {formatGroupName(groupKey, groupBy)}
               </h2>
               <span className="text-xs text-gray-500 font-mono">
                 {markets.length} market{markets.length !== 1 ? 's' : ''}
@@ -145,7 +174,27 @@ const MarketGrid = ({ marketsByCategory, showCategoryHeaders, rlmStates = {}, tr
   );
 };
 
-function formatCategoryName(category) {
+/**
+ * Format group header name based on groupBy mode.
+ * @param {string} key - The group key (category slug or event_ticker)
+ * @param {string} groupBy - 'category' or 'event'
+ * @returns {string} Formatted display name
+ */
+function formatGroupName(key, groupBy = 'category') {
+  if (groupBy === 'event') {
+    // Format event_ticker: "KXNFL-26JAN05-HOUPIT" -> "NFL: 26JAN05-HOUPIT"
+    if (key === 'no-event') return 'No Event';
+
+    const abbrev = parseEventAbbrev(key);
+    if (abbrev) {
+      // Remove the "KX{CATEGORY}-" prefix for cleaner display
+      const suffix = key.replace(/^KX[A-Z]+-/i, '');
+      return `${abbrev}: ${suffix}`;
+    }
+    return key;
+  }
+
+  // Category names (default)
   const names = {
     sports: 'Sports',
     crypto: 'Crypto',
@@ -156,7 +205,7 @@ function formatCategoryName(category) {
     climate: 'Climate',
     other: 'Other'
   };
-  return names[category] || category;
+  return names[key] || key;
 }
 
 export default MarketGrid;

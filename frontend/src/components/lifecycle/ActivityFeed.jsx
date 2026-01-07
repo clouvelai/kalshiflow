@@ -21,13 +21,8 @@ const ActivityFeed = ({ events, onClear, upcomingMarkets = [], rlmStates = {} })
   // Process events into display format (no complex aggregation - just simple list)
   const processedEvents = useMemo(() => {
     if (!events || events.length === 0) return [];
-
-    // Sort by timestamp descending (newest first)
-    return [...events].sort((a, b) => {
-      const timeA = a.timestamp ? new Date(`1970-01-01 ${a.timestamp}`).getTime() : 0;
-      const timeB = b.timestamp ? new Date(`1970-01-01 ${b.timestamp}`).getTime() : 0;
-      return timeB - timeA;
-    });
+    // Events arrive in correct order from hook (newest first via prepend)
+    return events;
   }, [events]);
 
   // Deduplicate upcoming markets by ticker

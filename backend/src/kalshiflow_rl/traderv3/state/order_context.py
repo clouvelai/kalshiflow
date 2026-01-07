@@ -500,17 +500,13 @@ class StagedOrderContext:
         # Calculate timing fields
         time_to_fill_ms = int((filled_at - self.placed_at) * 1000)
 
-        # Calculate slippage (for NO side orders)
+        # Calculate slippage: difference between fill price and order price
+        # This measures execution quality (order-to-fill), not signal-to-fill
         slippage_cents = None
-        signal_price = self.signal_params.get("last_yes_price")
-        if signal_price is not None and fill_avg_price_cents is not None:
-            # For NO side: we want NO price to be low (good fill)
-            # Signal gave us YES price, we're buying NO at (100 - yes_price)
-            if self.side == "no":
-                expected_no_price = 100 - signal_price
-                slippage_cents = fill_avg_price_cents - expected_no_price
-            else:
-                slippage_cents = fill_avg_price_cents - signal_price
+        if self.order_price_cents is not None and fill_avg_price_cents is not None:
+            # Positive slippage = paid more than order price (bad)
+            # Negative slippage = paid less than order price (good, price improved)
+            slippage_cents = fill_avg_price_cents - self.order_price_cents
 
         return {
             "order_id": self.order_id,
