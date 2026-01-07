@@ -113,6 +113,11 @@ class V3WebSocketManager:
         # This ensures late-connecting clients can see the startup sequence
         self._state_transition_history: deque = deque(maxlen=20)
 
+        # Activity feed history buffer (lifecycle events + system activities)
+        # This ensures late-connecting clients can see recent activity feed events
+        # when switching between Trader/Discovery views
+        self._activity_feed_history: deque = deque(maxlen=100)
+
         logger.info("TRADER V3 WebSocket Manager initialized")
 
     def set_trading_service(self, trading_service: 'TradingDecisionService') -> None:
@@ -196,6 +201,25 @@ class V3WebSocketManager:
         """
         self._upcoming_markets_syncer = syncer
         logger.info("UpcomingMarketsSyncer set on WebSocket manager")
+
+    def _add_to_activity_feed_history(self, message_type: str, data: dict) -> None:
+        """
+        Track events for Activity Feed history replay.
+
+        Stores system_activity and lifecycle_event messages so they can be
+        replayed to clients when they reconnect (e.g., switching between
+        Trader and Discovery views).
+
+        Args:
+            message_type: Type of message (system_activity, lifecycle_event)
+            data: Message data
+        """
+        if message_type in ("system_activity", "lifecycle_event"):
+            self._activity_feed_history.append({
+                "type": message_type,
+                "data": data,
+                "timestamp": time.time()
+            })
 
     async def start(self) -> None:
         """Start the WebSocket manager."""
@@ -414,6 +438,11 @@ class V3WebSocketManager:
             if self._upcoming_markets_syncer and client_id in self._clients:
                 await self._send_upcoming_markets_snapshot(client_id)
 
+            # Send activity feed history for replay (system_activity + lifecycle_event)
+            # This ensures the Activity Feed is populated when switching views
+            if self._activity_feed_history and client_id in self._clients:
+                await self._send_activity_feed_history(client_id)
+
             # Now handle incoming messages
             # (Current state is already included in the historical transitions replay)
             async for message in websocket.iter_text():
@@ -574,7 +603,12 @@ class V3WebSocketManager:
         # Store state transitions in history for late-connecting clients
         if event.activity_type == "state_transition":
             self._state_transition_history.append(activity_message)
-        
+
+        # Store activity feed events for replay to reconnecting clients
+        # (excludes state transitions which have separate history)
+        if event.activity_type != "state_transition":
+            self._add_to_activity_feed_history("system_activity", activity_message["data"])
+
         # Broadcast to currently connected clients
         await self.broadcast_message("system_activity", activity_message["data"])
 
@@ -870,6 +904,8 @@ class V3WebSocketManager:
             "metadata": metadata or {},
             "timestamp": time.strftime("%H:%M:%S"),
         }
+        # Store for replay to reconnecting clients
+        self._add_to_activity_feed_history("lifecycle_event", event_data)
         await self.broadcast_message("lifecycle_event", event_data)
 
     async def broadcast_market_info_update(
@@ -1141,6 +1177,42 @@ class V3WebSocketManager:
             )
         except Exception as e:
             logger.warning(f"Could not send upcoming markets snapshot to client {client_id}: {e}")
+
+    async def _send_activity_feed_history(self, client_id: str) -> None:
+        """
+        Send activity feed history to a specific client.
+
+        Called when a new client connects to replay recent activity events
+        (system_activity and lifecycle_event messages). This ensures the
+        Activity Feed is populated when switching between Trader and Discovery views.
+
+        Args:
+            client_id: Client ID to send history to
+        """
+        if client_id not in self._clients:
+            return
+
+        if not self._activity_feed_history:
+            return
+
+        try:
+            # Convert deque to list for JSON serialization
+            history_list = list(self._activity_feed_history)
+
+            history_batch = {
+                "type": "activity_feed_history",
+                "data": {
+                    "events": history_list,
+                    "count": len(history_list)
+                }
+            }
+
+            await self._send_to_client(client_id, history_batch)
+            logger.info(
+                f"Replayed {len(history_list)} activity feed events to client {client_id}"
+            )
+        except Exception as e:
+            logger.warning(f"Could not send activity feed history to client {client_id}: {e}")
 
     def get_stats(self) -> Dict[str, Any]:
         """Get WebSocket manager statistics."""

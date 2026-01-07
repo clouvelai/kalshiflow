@@ -302,6 +302,52 @@ export const useLifecycleWebSocket = ({ onMessage } = {}) => {
         }
         break;
 
+      case 'activity_feed_history':
+        // Replay historical activity events on connect
+        // This restores the Activity Feed when switching between Trader/Discovery views
+        if (data.data?.events) {
+          const historicalEvents = data.data.events.map((item, idx) => {
+            const eventData = item.data;
+            const eventType = item.type;
+
+            if (eventType === 'system_activity') {
+              // Format system_activity (RLM signals, order fills, etc.)
+              return {
+                id: `history-activity-${idx}-${item.timestamp}`,
+                event_type: eventData.activity_type,
+                market_ticker: eventData.metadata?.market_ticker || eventData.metadata?.ticker || '',
+                action: eventData.activity_type,
+                reason: eventData.message,
+                metadata: eventData.metadata || {},
+                timestamp: eventData.timestamp || '--:--:--'
+              };
+            } else {
+              // Format lifecycle_event
+              return {
+                id: eventData.id || `history-lifecycle-${eventData.market_ticker}-${idx}`,
+                event_type: eventData.event_type,
+                market_ticker: eventData.market_ticker,
+                action: eventData.action,
+                reason: eventData.reason,
+                metadata: eventData.metadata || {},
+                timestamp: eventData.timestamp || '--:--:--'
+              };
+            }
+          });
+
+          setRecentEvents(prev => {
+            // Merge historical events, avoiding duplicates
+            const existingIds = new Set(prev.map(e => e.id));
+            const newEvents = historicalEvents.filter(e => !existingIds.has(e.id));
+            // Historical events should appear in chronological order (oldest first, newest last)
+            // But we want newest at top, so reverse them and prepend
+            return [...newEvents.reverse(), ...prev].slice(0, MAX_EVENTS);
+          });
+
+          onMessage?.('info', `Restored ${data.data.count} activity events`, {});
+        }
+        break;
+
       default:
         // Ignore other message types (they're for other V3 features)
         break;
