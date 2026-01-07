@@ -125,8 +125,7 @@ class TradingFlowOrchestrator:
         # Timing configuration
         self._cycle_interval = 30.0  # Seconds between cycles
         self._last_cycle_time = 0.0
-        self._sync_before_each_cycle = True  # Always sync before trading
-        
+
         # Metrics
         self._total_cycles = 0
         self._successful_cycles = 0
@@ -423,7 +422,6 @@ class TradingFlowOrchestrator:
             "cycle_interval": self._cycle_interval,
             "current_cycle": self._current_cycle.to_dict() if self._current_cycle else None,
             "recent_cycles": [c.to_dict() for c in self._cycle_history[-5:]],
-            "sync_before_each_cycle": self._sync_before_each_cycle
         }
     
     def set_cycle_interval(self, interval: float) -> None:

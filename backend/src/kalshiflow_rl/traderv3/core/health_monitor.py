@@ -110,6 +110,10 @@ class V3HealthMonitor:
         self._trading_state_syncer = None  # Set via setter during startup
         self._strategy_coordinator: Optional['StrategyCoordinator'] = None  # Set via setter during lifecycle startup
 
+        # Component registration for dynamic health monitoring
+        # Allows new components to be registered without modifying _check_components_health()
+        self._registered_components: Dict[str, Dict[str, Any]] = {}
+
         # Health monitoring state
         self._monitoring_task: Optional[asyncio.Task] = None
         self._running = False
@@ -117,30 +121,65 @@ class V3HealthMonitor:
 
         logger.info("Health monitor initialized")
 
+    # Component registration for dynamic health monitoring
+    def register_component(self, name: str, component: Any, critical: bool = False) -> None:
+        """
+        Register a component for health monitoring.
+
+        This method allows new components to be added for health monitoring
+        without modifying _check_components_health(). Components with an
+        is_healthy() method will have it called; others are assumed healthy
+        if they exist.
+
+        Args:
+            name: Component identifier for health reports (e.g., "market_price_syncer")
+            component: The component instance (should have is_healthy() method)
+            critical: If True, component failure marks overall health as unhealthy
+                      and may trigger ERROR state transition
+        """
+        if component is None:
+            # Unregister if component is None
+            self._registered_components.pop(name, None)
+            logger.debug(f"Unregistered component from health monitoring: {name}")
+            return
+
+        self._registered_components[name] = {
+            "component": component,
+            "critical": critical
+        }
+        logger.debug(f"Registered component for health monitoring: {name} (critical={critical})")
+
     # Setter methods for components created after health monitor initialization
+    # These use register_component() internally for health monitoring
     def set_market_ticker_listener(self, listener: Optional['MarketTickerListener']) -> None:
         """Set market ticker listener reference (created during startup)."""
         self._market_ticker_listener = listener
+        self.register_component("market_ticker_listener", listener, critical=False)
 
     def set_position_listener(self, listener: Optional['PositionListener']) -> None:
         """Set position listener reference (created during startup)."""
         self._position_listener = listener
+        self.register_component("position_listener", listener, critical=False)
 
     def set_fill_listener(self, listener: Optional['FillListener']) -> None:
         """Set fill listener reference (created during startup)."""
         self._fill_listener = listener
+        self.register_component("fill_listener", listener, critical=False)
 
     def set_market_price_syncer(self, syncer: Optional['MarketPriceSyncer']) -> None:
         """Set market price syncer reference (created during startup)."""
         self._market_price_syncer = syncer
+        self.register_component("market_price_syncer", syncer, critical=False)
 
     def set_trading_state_syncer(self, syncer: Optional['TradingStateSyncer']) -> None:
         """Set trading state syncer reference (created during startup)."""
         self._trading_state_syncer = syncer
+        self.register_component("trading_state_syncer", syncer, critical=False)
 
     def set_strategy_coordinator(self, coordinator: Optional['StrategyCoordinator']) -> None:
         """Set strategy coordinator reference (created during lifecycle startup)."""
         self._strategy_coordinator = coordinator
+        self.register_component("strategy_coordinator", coordinator, critical=False)
 
     async def start(self) -> None:
         """Start health monitoring."""
@@ -192,74 +231,82 @@ class V3HealthMonitor:
                 logger.error(f"Error in health monitoring: {e}")
     
     async def _check_components_health(self) -> Dict[str, bool]:
-        """Check health of all components."""
+        """
+        Check health of all components.
+
+        Core components (state_machine, event_bus, websocket_manager) are always
+        checked directly. Orderbook has special staleness detection logic.
+        Optional components use the registration pattern via _registered_components.
+        """
+        # Core components (always present, checked directly)
         components_health = {
-            "state_machine": self._state_machine.is_healthy(),
-            "event_bus": self._event_bus.is_healthy(),
-            "websocket_manager": self._websocket_manager.is_healthy()
+            "state_machine": self._state_machine.is_healthy() if self._state_machine else False,
+            "event_bus": self._event_bus.is_healthy() if self._event_bus else False,
+            "websocket_manager": self._websocket_manager.is_healthy() if self._websocket_manager else False
         }
-        
-        # Enhanced orderbook health check - check actual connection state
-        orderbook_healthy = False
-        if self._orderbook_integration:
-            # Get detailed health info to check connection state
-            health_details = self._orderbook_integration.get_health_details()
-            
-            # Check if we have recent data (within last 90 seconds)
-            time_since_snapshot = health_details.get("time_since_snapshot")
-            ping_health = health_details.get("ping_health", "unknown")
-            
-            if time_since_snapshot is not None:
-                # If we haven't received data in 90s, mark as unhealthy
-                if time_since_snapshot > 90:
-                    logger.debug(f"Orderbook unhealthy: No snapshot in {time_since_snapshot:.1f}s")
-                    orderbook_healthy = False
-                else:
-                    orderbook_healthy = True
-            elif ping_health == "unhealthy":
-                # No recent ping/pong messages
-                logger.debug(f"Orderbook unhealthy: Ping health is {ping_health}")
-                orderbook_healthy = False
-            else:
-                # Fallback to basic health check
-                orderbook_healthy = self._orderbook_integration.is_healthy()
-        
-        components_health["orderbook_integration"] = orderbook_healthy
-        
-        # Add trading client health if configured
+
+        # Orderbook has special staleness detection logic - keep it separate
+        components_health["orderbook_integration"] = self._check_orderbook_health()
+
+        # Add trading client health if configured (special case - not via setter)
         if self._trading_client_integration:
             components_health["trading_client"] = self._trading_client_integration.is_healthy()
 
-        # Add trades integration health if configured
+        # Add trades integration health if configured (special case - not via setter)
         if self._trades_integration:
             components_health["trades_integration"] = self._trades_integration.is_healthy()
 
-        # Add market ticker listener health if configured
-        if self._market_ticker_listener:
-            components_health["market_ticker_listener"] = self._market_ticker_listener.is_healthy()
-
-        # Add position listener health if configured
-        if self._position_listener:
-            components_health["position_listener"] = self._position_listener.is_healthy()
-
-        # Add fill listener health if configured
-        if self._fill_listener:
-            components_health["fill_listener"] = self._fill_listener.is_healthy()
-
-        # Add market price syncer health if configured
-        if self._market_price_syncer:
-            components_health["market_price_syncer"] = self._market_price_syncer.is_healthy()
-
-        # Add trading state syncer health if configured
-        if self._trading_state_syncer:
-            components_health["trading_state_syncer"] = self._trading_state_syncer.is_healthy()
-
-        # Add strategy coordinator health if configured
-        if self._strategy_coordinator:
-            components_health["strategy_coordinator"] = self._strategy_coordinator.is_healthy()
+        # Registered optional components (added via setter methods or register_component())
+        for name, info in self._registered_components.items():
+            component = info["component"]
+            if component and hasattr(component, "is_healthy"):
+                try:
+                    components_health[name] = component.is_healthy()
+                except Exception as e:
+                    logger.warning(f"Health check failed for {name}: {e}")
+                    components_health[name] = False
+            elif component:
+                # Component exists but no is_healthy method - assume healthy
+                components_health[name] = True
 
         return components_health
-    
+
+    def _check_orderbook_health(self) -> bool:
+        """
+        Check orderbook integration health with staleness detection.
+
+        Orderbook has special health check logic that considers:
+        - Time since last snapshot (stale if > 90 seconds)
+        - Ping/pong health status
+        - Fallback to basic is_healthy() check
+
+        Returns:
+            bool: True if orderbook is healthy, False otherwise
+        """
+        if not self._orderbook_integration:
+            return False
+
+        # Get detailed health info to check connection state
+        health_details = self._orderbook_integration.get_health_details()
+
+        # Check if we have recent data (within last 90 seconds)
+        time_since_snapshot = health_details.get("time_since_snapshot")
+        ping_health = health_details.get("ping_health", "unknown")
+
+        if time_since_snapshot is not None:
+            # If we haven't received data in 90s, mark as unhealthy
+            if time_since_snapshot > 90:
+                logger.debug(f"Orderbook unhealthy: No snapshot in {time_since_snapshot:.1f}s")
+                return False
+            return True
+        elif ping_health == "unhealthy":
+            # No recent ping/pong messages
+            logger.debug(f"Orderbook unhealthy: Ping health is {ping_health}")
+            return False
+
+        # Fallback to basic health check
+        return self._orderbook_integration.is_healthy()
+
     async def _handle_health_state(self, components_health: Dict[str, bool], all_healthy: bool) -> None:
         """
         Handle health state transitions based on component health.

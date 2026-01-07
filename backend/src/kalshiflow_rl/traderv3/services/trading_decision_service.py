@@ -192,19 +192,8 @@ class TradingDecisionService:
                 reason="HOLD strategy - no trading",
                 strategy=self._strategy
             )
+        # Note: RLM_NO strategy is handled by RLMNoStrategy plugin via event-driven architecture
 
-        elif self._strategy == TradingStrategy.RLM_NO:
-            # RLM_NO is handled by RLMNoStrategy plugin via event-driven architecture
-            # This is a fallback for direct market-based calls
-            decision = TradingDecision(
-                action="hold",
-                market=market,
-                side="",
-                quantity=0,
-                reason="RLM_NO uses event-driven strategy plugin",
-                strategy=self._strategy
-            )
-        
         # Store decision
         if decision and decision.action != "hold":
             self._last_decision = decision

@@ -66,6 +66,10 @@ from ..services.order_context_service import get_order_context_service
 
 logger = logging.getLogger("kalshiflow_rl.traderv3.core.state_container")
 
+# Configuration constants
+MAX_SETTLED_POSITIONS = 500
+HEALTH_CHECK_INTERVAL_SECONDS = 30.0
+
 T = TypeVar('T')
 
 
@@ -217,9 +221,9 @@ class V3StateContainer:
         # via real-time WebSocket (not from initial sync)
         self._session_updated_tickers: set = set()
 
-        # Settled positions history - stores last 500 closed positions for UI display
+        # Settled positions history - stores last MAX_SETTLED_POSITIONS closed positions for UI display
         # Positions are captured here before being removed from active positions
-        self._settled_positions: deque = deque(maxlen=500)
+        self._settled_positions: deque = deque(maxlen=MAX_SETTLED_POSITIONS)
         self._total_settlements_count = 0
 
         # Settlement strategy cache - maps ticker -> strategy_id from order_contexts DB
@@ -247,7 +251,7 @@ class V3StateContainer:
 
         # Component health tracking
         self._component_health: Dict[str, ComponentHealth] = {}
-        self._health_check_interval = 30.0  # Expected interval between health checks
+        self._health_check_interval = HEALTH_CHECK_INTERVAL_SECONDS
 
         # State machine reference (set by coordinator)
         self._machine_state: Optional[V3State] = None

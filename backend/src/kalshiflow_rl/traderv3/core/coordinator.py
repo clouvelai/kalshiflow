@@ -1235,13 +1235,13 @@ class V3Coordinator:
         """Stop the V3 trader system."""
         if not self._running:
             return
-        
+
         logger.info("=" * 60)
         logger.info("STOPPING TRADER V3")
         logger.info("=" * 60)
-        
+
         self._running = False
-        
+
         # Cancel event loop task
         if self._event_loop_task:
             self._event_loop_task.cancel()
@@ -1262,154 +1262,71 @@ class V3Coordinator:
                 except asyncio.CancelledError:
                     pass
 
-        # Stop health monitor
+        # Stop health monitor and status reporter first
         await self._health_monitor.stop()
-
-        # Stop status reporter
         await self._status_reporter.stop()
-        
-        # Stop components in reverse order
+
+        # Define shutdown sequence: (component, name, stop_callable)
+        # Order matters - stop in reverse of startup order
+        # Note: stop_all() for strategy coordinator, stop() for others
+        shutdown_sequence = [
+            (self._strategy_coordinator, "Strategy Coordinator", lambda c: c.stop_all()),
+            (self._tmo_fetcher, "TMO Fetcher", lambda c: c.stop()),
+            (self._trades_integration, "Trades Integration", lambda c: c.stop()),
+            (self._upcoming_markets_syncer, "Upcoming Markets Syncer", lambda c: c.stop()),
+            (self._lifecycle_syncer, "Lifecycle Syncer", lambda c: c.stop()),
+            (self._api_discovery_syncer, "API Discovery Syncer", lambda c: c.stop()),
+            (self._event_lifecycle_service, "Event Lifecycle Service", lambda c: c.stop()),
+            (self._lifecycle_integration, "Lifecycle Integration", lambda c: c.stop()),
+            (self._position_listener, "Position Listener", lambda c: c.stop()),
+            (self._market_ticker_listener, "Market Ticker Listener", lambda c: c.stop()),
+            (self._market_price_syncer, "Market Price Syncer", lambda c: c.stop()),
+            (self._fill_listener, "Fill Listener", lambda c: c.stop()),
+            (self._trading_state_syncer, "Trading State Syncer", lambda c: c.stop()),
+            (self._trading_client_integration, "Trading Client Integration", lambda c: c.stop()),
+            (self._orderbook_integration, "Orderbook Integration", lambda c: c.stop()),
+        ]
+
+        # Filter to only existing components
+        active_components = [(c, n, s) for c, n, s in shutdown_sequence if c is not None]
+        # Add core components (always exist)
+        core_steps = 3  # state transition, state machine, websocket, event bus counted together
+        total_steps = len(active_components) + core_steps
+
+        # Stop optional components
+        for step, (component, name, stop_func) in enumerate(active_components, 1):
+            try:
+                logger.info(f"[{step}/{total_steps}] Stopping {name}...")
+                result = stop_func(component)
+                if asyncio.iscoroutine(result):
+                    await result
+            except Exception as e:
+                logger.error(f"[{step}/{total_steps}] Error stopping {name}: {e}")
+
+        # Core shutdown steps (always run)
+        step = len(active_components) + 1
+
         try:
-            # Calculate total steps dynamically based on configured components
-            total_steps = 5  # Base steps: orderbook, state transition, state machine, websocket, event bus
-            if self._trading_client_integration:
-                total_steps += 1
-            if self._position_listener:
-                total_steps += 1
-            if self._market_ticker_listener:
-                total_steps += 1
-            if self._market_price_syncer:
-                total_steps += 1
-            if self._fill_listener:
-                total_steps += 1
-            if self._strategy_coordinator:
-                total_steps += 1
-            if self._tmo_fetcher:
-                total_steps += 1
-            if self._trades_integration:
-                total_steps += 1
-            if self._lifecycle_syncer:
-                total_steps += 1
-            if self._upcoming_markets_syncer:
-                total_steps += 1
-            if self._api_discovery_syncer:
-                total_steps += 1
-            if self._event_lifecycle_service:
-                total_steps += 1
-            if self._lifecycle_integration:
-                total_steps += 1
-            if self._trading_state_syncer:
-                total_steps += 1
-
-            step = 1
-
-            # Stop strategy coordinator (plugin-based strategies)
-            if self._strategy_coordinator:
-                logger.info(f"{step}/{total_steps} Stopping Strategy Coordinator...")
-                await self._strategy_coordinator.stop_all()
-                step += 1
-
-            # Stop TMO fetcher (used for price tracking)
-            if self._tmo_fetcher:
-                logger.info(f"{step}/{total_steps} Stopping TMO Fetcher...")
-                await self._tmo_fetcher.stop()
-                step += 1
-
-            # Stop trades integration
-            if self._trades_integration:
-                logger.info(f"{step}/{total_steps} Stopping Trades Integration...")
-                await self._trades_integration.stop()
-                step += 1
-
-            # Stop lifecycle components (in reverse order of startup)
-            if self._upcoming_markets_syncer:
-                logger.info(f"{step}/{total_steps} Stopping Upcoming Markets Syncer...")
-                await self._upcoming_markets_syncer.stop()
-                step += 1
-
-            if self._lifecycle_syncer:
-                logger.info(f"{step}/{total_steps} Stopping Lifecycle Syncer...")
-                await self._lifecycle_syncer.stop()
-                step += 1
-
-            if self._api_discovery_syncer:
-                logger.info(f"{step}/{total_steps} Stopping API Discovery Syncer...")
-                await self._api_discovery_syncer.stop()
-                step += 1
-
-            if self._event_lifecycle_service:
-                logger.info(f"{step}/{total_steps} Stopping Event Lifecycle Service...")
-                await self._event_lifecycle_service.stop()
-                step += 1
-
-            if self._lifecycle_integration:
-                logger.info(f"{step}/{total_steps} Stopping Lifecycle Integration...")
-                await self._lifecycle_integration.stop()
-                step += 1
-
-            # Stop position listener (before trading client)
-            if self._position_listener:
-                logger.info(f"{step}/{total_steps} Stopping Position Listener...")
-                await self._position_listener.stop()
-                step += 1
-
-            # Stop market ticker listener
-            if self._market_ticker_listener:
-                logger.info(f"{step}/{total_steps} Stopping Market Ticker Listener...")
-                await self._market_ticker_listener.stop()
-                step += 1
-
-            # Stop market price syncer
-            if self._market_price_syncer:
-                logger.info(f"{step}/{total_steps} Stopping Market Price Syncer...")
-                await self._market_price_syncer.stop()
-                step += 1
-
-            # Stop fill listener
-            if self._fill_listener:
-                logger.info(f"{step}/{total_steps} Stopping Fill Listener...")
-                await self._fill_listener.stop()
-                step += 1
-
-            # Stop trading state syncer
-            if self._trading_state_syncer:
-                logger.info(f"{step}/{total_steps} Stopping Trading State Syncer...")
-                await self._trading_state_syncer.stop()
-                step += 1
-
-            if self._trading_client_integration:
-                logger.info(f"{step}/{total_steps} Stopping Trading Client Integration...")
-                await self._trading_client_integration.stop()
-                step += 1
-
-            logger.info(f"{step}/{total_steps} Stopping Orderbook Integration...")
-            await self._orderbook_integration.stop()
-            step += 1
-
-            logger.info(f"{step}/{total_steps} Transitioning to SHUTDOWN state...")
+            logger.info(f"[{step}/{total_steps}] Transitioning to SHUTDOWN state...")
             await self._state_machine.transition_to(
                 V3State.SHUTDOWN,
                 context="Graceful shutdown initiated"
             )
-            step += 1
-
-            logger.info(f"{step}/{total_steps} Stopping State Machine...")
-            await self._state_machine.stop()
-            step += 1
-
-            logger.info(f"{step}/{total_steps} Stopping WebSocket Manager...")
-            await self._websocket_manager.stop()
-            step += 1
-
-            logger.info(f"{step}/{total_steps} Stopping Event Bus...")
-            await self._event_bus.stop()
-
         except Exception as e:
-            logger.error(f"Error during shutdown: {e}")
-        
+            logger.error(f"[{step}/{total_steps}] Error transitioning to SHUTDOWN: {e}")
+
+        step += 1
+        try:
+            logger.info(f"[{step}/{total_steps}] Stopping core components...")
+            await self._state_machine.stop()
+            await self._websocket_manager.stop()
+            await self._event_bus.stop()
+        except Exception as e:
+            logger.error(f"[{step}/{total_steps}] Error stopping core components: {e}")
+
         uptime = time.time() - self._started_at if self._started_at else 0
         logger.info("=" * 60)
-        logger.info(f"✅ TRADER V3 STOPPED (uptime: {uptime:.1f}s)")
+        logger.info(f"TRADER V3 STOPPED (uptime: {uptime:.1f}s)")
         logger.info("=" * 60)
 
     def get_status(self) -> Dict[str, Any]:

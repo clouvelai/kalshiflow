@@ -131,12 +131,12 @@ class StateMetrics:
 class TraderStateMachine:
     """
     Videogame bot-inspired state machine for TRADER V3.
-    
+
     This class manages the operational state of the entire trading system,
     ensuring predictable behavior and robust error recovery. It follows
     videogame bot design patterns where the system always knows its state
     and can recover from failures automatically.
-    
+
     Core Features:
         - **State Validation**: Only allows valid state transitions
         - **Timeout Protection**: Prevents hanging in any state too long
@@ -144,7 +144,7 @@ class TraderStateMachine:
         - **Callback System**: Allows components to register for state changes
         - **Error Recovery**: Automatic recovery from ERROR to operational states
         - **Transition History**: Maintains last 50 transitions for debugging
-    
+
     Attributes:
         _current_state: The current operational state
         _previous_state: The state before the last transition
@@ -157,12 +157,60 @@ class TraderStateMachine:
         _on_exit_callbacks: Callbacks to run when exiting states
         _valid_transitions: Map of allowed state transitions
         _state_timeouts: Maximum time allowed in each state
-    
+
     Thread Safety:
         All methods are designed for async operation in a single event loop.
         Not thread-safe for multi-threaded access.
     """
-    
+
+    # Valid state transitions (defines allowed flow)
+    VALID_TRANSITIONS: Dict[TraderState, Set[TraderState]] = {
+        TraderState.STARTUP: {
+            TraderState.INITIALIZING,
+            TraderState.ERROR,
+            TraderState.SHUTDOWN
+        },
+        TraderState.INITIALIZING: {
+            TraderState.ORDERBOOK_CONNECT,
+            TraderState.ERROR,
+            TraderState.SHUTDOWN
+        },
+        TraderState.ORDERBOOK_CONNECT: {
+            TraderState.TRADING_CLIENT_CONNECT,  # After orderbook, connect trading
+            TraderState.READY,  # Can skip trading if not enabled
+            TraderState.ERROR,
+            TraderState.SHUTDOWN
+        },
+        TraderState.TRADING_CLIENT_CONNECT: {
+            TraderState.KALSHI_DATA_SYNC,  # After connection, sync with Kalshi
+            TraderState.ERROR,
+            TraderState.SHUTDOWN
+        },
+        TraderState.KALSHI_DATA_SYNC: {
+            TraderState.READY,  # After sync, ready to trade
+            TraderState.ERROR,
+            TraderState.SHUTDOWN
+        },
+        TraderState.READY: {
+            TraderState.ACTING,  # Can transition to acting when executing trades
+            TraderState.ORDERBOOK_CONNECT,  # For reconnection
+            TraderState.ERROR,
+            TraderState.SHUTDOWN
+        },
+        TraderState.ACTING: {
+            TraderState.READY,  # Return to ready after trade execution
+            TraderState.ERROR,
+            TraderState.SHUTDOWN
+        },
+        TraderState.ERROR: {
+            TraderState.STARTUP,  # Recovery: restart from beginning
+            TraderState.SHUTDOWN,
+            TraderState.READY,  # Direct recovery when data is flowing
+            TraderState.ORDERBOOK_CONNECT,  # Reconnection recovery
+        },
+        TraderState.SHUTDOWN: set()  # Terminal state
+    }
+
     def __init__(self, event_bus=None):
         """
         Initialize the state machine.
@@ -184,55 +232,10 @@ class TraderStateMachine:
         # State callbacks - allows external components to register for state changes
         self._on_enter_callbacks: Dict[TraderState, list[Callable]] = {}
         self._on_exit_callbacks: Dict[TraderState, list[Callable]] = {}
-        
-        # Valid state transitions (defines allowed flow)
-        self._valid_transitions: Dict[TraderState, Set[TraderState]] = {
-            TraderState.STARTUP: {
-                TraderState.INITIALIZING,
-                TraderState.ERROR,
-                TraderState.SHUTDOWN
-            },
-            TraderState.INITIALIZING: {
-                TraderState.ORDERBOOK_CONNECT,
-                TraderState.ERROR,
-                TraderState.SHUTDOWN
-            },
-            TraderState.ORDERBOOK_CONNECT: {
-                TraderState.TRADING_CLIENT_CONNECT,  # NEW: After orderbook, connect trading
-                TraderState.READY,  # Can skip trading if not enabled
-                TraderState.ERROR,
-                TraderState.SHUTDOWN
-            },
-            TraderState.TRADING_CLIENT_CONNECT: {
-                TraderState.KALSHI_DATA_SYNC,  # After connection, sync with Kalshi
-                TraderState.ERROR,
-                TraderState.SHUTDOWN
-            },
-            TraderState.KALSHI_DATA_SYNC: {
-                TraderState.READY,  # After sync, ready to trade
-                TraderState.ERROR,
-                TraderState.SHUTDOWN
-            },
-            TraderState.READY: {
-                TraderState.ACTING,  # Can transition to acting when executing trades
-                TraderState.ORDERBOOK_CONNECT,  # For reconnection
-                TraderState.ERROR,
-                TraderState.SHUTDOWN
-            },
-            TraderState.ACTING: {
-                TraderState.READY,  # Return to ready after trade execution
-                TraderState.ERROR,
-                TraderState.SHUTDOWN
-            },
-            TraderState.ERROR: {
-                TraderState.STARTUP,  # Recovery: restart from beginning
-                TraderState.SHUTDOWN,
-                TraderState.READY,  # Direct recovery when data is flowing
-                TraderState.ORDERBOOK_CONNECT,  # Reconnection recovery
-            },
-            TraderState.SHUTDOWN: set()  # Terminal state
-        }
-        
+
+        # Reference class-level transitions constant
+        self._valid_transitions = self.VALID_TRANSITIONS
+
         # State timeouts (prevent hanging in states too long)
         self._state_timeouts: Dict[TraderState, float] = {
             TraderState.STARTUP: 30.0,  # 30s to start up

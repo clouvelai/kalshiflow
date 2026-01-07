@@ -689,48 +689,14 @@ class V3WebSocketManager:
         Provides trade processing stats for RLM mode.
 
         Uses StrategyCoordinator for multi-strategy aggregation.
+        Uses _build_trade_processing_data() to ensure consistency with snapshots.
         """
         if not self._strategy_coordinator:
             # No strategy configured - nothing to broadcast
             return
 
-        stats = self._strategy_coordinator.get_trade_processing_stats()
-        recent_trades = self._strategy_coordinator.get_recent_tracked_trades(limit=20)
-        decision_history = self._strategy_coordinator.get_decision_history(limit=20)
-
-        total = stats.get("trades_processed", 0) + stats.get("trades_filtered", 0)
-
-        # Calculate filter rate
-        filter_rate = 0.0
-        if total > 0:
-            filter_rate = round(stats.get("trades_filtered", 0) / total * 100, 1)
-
-        # Get low_balance counter from trading service if available
-        low_balance = 0
-        if self._trading_service:
-            decision_stats = self._trading_service.get_decision_stats()
-            low_balance = decision_stats.get("low_balance", 0)
-
-        await self.broadcast_message("trade_processing", {
-            "recent_trades": recent_trades,
-            "stats": {
-                "trades_seen": total,
-                "trades_filtered": stats.get("trades_filtered", 0),
-                "trades_tracked": stats.get("trades_processed", 0),
-                "filter_rate_percent": filter_rate,
-            },
-            "decisions": {
-                "detected": stats.get("signals_detected", 0),
-                "executed": stats.get("signals_executed", 0),
-                "rate_limited": stats.get("rate_limited_count", 0),
-                "skipped": stats.get("signals_skipped", 0),
-                "reentries": stats.get("reentries", 0),
-                "low_balance": low_balance,
-            },
-            "decision_history": decision_history,
-            "last_updated": time.time(),
-            "timestamp": time.strftime("%H:%M:%S"),
-        })
+        data = self._build_trade_processing_data()
+        await self.broadcast_message("trade_processing", data)
 
     async def _handle_client_message(self, client_id: str, message: str) -> None:
         """
@@ -942,140 +908,6 @@ class V3WebSocketManager:
         }
         await self.broadcast_message("market_info_update", update_data)
 
-    async def _send_tracked_markets_snapshot(self, client_id: str) -> None:
-        """
-        Send tracked markets snapshot to a specific client.
-
-        Called when a new client connects in lifecycle discovery mode.
-
-        Args:
-            client_id: Client ID to send snapshot to
-        """
-        if not self._tracked_markets_state:
-            return
-
-        if client_id not in self._clients:
-            return
-
-        try:
-            snapshot = self._tracked_markets_state.get_snapshot()
-
-            # Include trading attachments for each tracked market
-            if self._state_container:
-                for market in snapshot.get("markets", []):
-                    ticker = market.get("ticker")
-                    if ticker:
-                        trading = self._state_container.get_trading_attachment_for_market(ticker)
-                        market["trading"] = trading
-
-            await self._send_to_client(client_id, {
-                "type": "tracked_markets",
-                "data": snapshot
-            })
-            logger.debug(
-                f"Sent tracked markets snapshot to client {client_id}: "
-                f"{snapshot['stats']['tracked']}/{snapshot['stats']['capacity']} markets"
-            )
-        except Exception as e:
-            logger.warning(f"Could not send tracked markets snapshot to client {client_id}: {e}")
-
-    async def _send_rlm_states_snapshot(self, client_id: str) -> None:
-        """
-        Send RLM market states snapshot to a specific client.
-
-        Called when a new client connects in lifecycle discovery mode.
-        Provides immediate visibility into trade direction data for all
-        tracked markets.
-
-        Uses StrategyCoordinator when available, falls back to legacy _rlm_service.
-
-        Args:
-            client_id: Client ID to send snapshot to
-        """
-        if client_id not in self._clients:
-            return
-
-        try:
-            if not self._strategy_coordinator:
-                return
-
-            market_states = self._strategy_coordinator.get_market_states(limit=100)
-
-            await self._send_to_client(client_id, {
-                "type": "rlm_states_snapshot",
-                "data": {
-                    "markets": market_states,
-                    "count": len(market_states),
-                    "timestamp": time.strftime("%H:%M:%S"),
-                }
-            })
-            logger.debug(
-                f"Sent RLM states snapshot to client {client_id}: {len(market_states)} markets"
-            )
-        except Exception as e:
-            logger.warning(f"Could not send RLM states snapshot to client {client_id}: {e}")
-
-    async def _send_trade_processing_snapshot(self, client_id: str) -> None:
-        """
-        Send trade processing snapshot to a specific client.
-
-        Called when a new client connects in RLM mode.
-        Provides immediate visibility into trade processing stats.
-
-        Uses StrategyCoordinator for multi-strategy aggregation.
-
-        Args:
-            client_id: Client ID to send snapshot to
-        """
-        if client_id not in self._clients:
-            return
-
-        try:
-            if not self._strategy_coordinator:
-                return
-
-            stats = self._strategy_coordinator.get_trade_processing_stats()
-            recent_trades = self._strategy_coordinator.get_recent_tracked_trades(limit=20)
-            decision_history = self._strategy_coordinator.get_decision_history(limit=20)
-
-            total = stats.get("trades_processed", 0) + stats.get("trades_filtered", 0)
-
-            filter_rate = 0.0
-            if total > 0:
-                filter_rate = round(stats.get("trades_filtered", 0) / total * 100, 1)
-
-            # Get low_balance counter from trading service if available
-            low_balance = 0
-            if self._trading_service:
-                decision_stats = self._trading_service.get_decision_stats()
-                low_balance = decision_stats.get("low_balance", 0)
-
-            await self._send_to_client(client_id, {
-                "type": "trade_processing",
-                "data": {
-                    "recent_trades": recent_trades,
-                    "stats": {
-                        "trades_seen": total,
-                        "trades_filtered": stats.get("trades_filtered", 0),
-                        "trades_tracked": stats.get("trades_processed", 0),
-                        "filter_rate_percent": filter_rate,
-                    },
-                    "decisions": {
-                        "detected": stats.get("signals_detected", 0),
-                        "executed": stats.get("signals_executed", 0),
-                        "rate_limited": stats.get("rate_limited_count", 0),
-                        "skipped": stats.get("signals_skipped", 0),
-                        "reentries": stats.get("reentries", 0),
-                        "low_balance": low_balance,
-                    },
-                    "decision_history": decision_history,
-                    "last_updated": time.time(),
-                    "timestamp": time.strftime("%H:%M:%S"),
-                }
-            })
-            logger.debug(f"Sent trade processing snapshot to client {client_id}")
-        except Exception as e:
-            logger.warning(f"Could not send trade processing snapshot to client {client_id}: {e}")
 
     # ========== Trading Strategies Panel Heartbeat ==========
 
@@ -1117,102 +949,173 @@ class V3WebSocketManager:
         except Exception as e:
             logger.error(f"Error broadcasting trading strategies: {e}")
 
-    async def _send_trading_strategies_snapshot(self, client_id: str) -> None:
-        """
-        Send trading strategies panel snapshot to a specific client.
 
-        Called when a new client connects to provide immediate visibility
-        into strategy status and performance metrics.
+    async def _send_snapshot(
+        self,
+        client_id: str,
+        message_type: str,
+        data_source: Any,
+        get_data: Any,
+        log_name: Optional[str] = None
+    ) -> None:
+        """
+        Generic snapshot sender for client initialization.
+
+        Consolidates the common pattern used by all _send_*_snapshot methods:
+        check source exists, check client exists, try/except, log.
 
         Args:
-            client_id: Client ID to send snapshot to
+            client_id: Target client ID
+            message_type: WebSocket message type (e.g., "tracked_markets")
+            data_source: Object to check for existence (return early if None)
+            get_data: Callable that returns the snapshot data (can be sync or async)
+            log_name: Optional name for logging (defaults to message_type)
         """
-        if not self._strategy_coordinator:
-            return
-
-        if client_id not in self._clients:
+        if not data_source or client_id not in self._clients:
             return
 
         try:
-            panel_data = self._strategy_coordinator.get_strategy_panel_data(decision_limit=15)
-
-            await self._send_to_client(client_id, {
-                "type": "trading_strategies",
-                "data": {
-                    **panel_data,
-                    "last_updated": time.time(),
-                    "timestamp": time.strftime("%H:%M:%S"),
-                }
-            })
-            strategies_count = len(panel_data.get("strategies", {}))
-            logger.debug(
-                f"Sent trading strategies snapshot to client {client_id}: "
-                f"{strategies_count} strategies"
-            )
+            data = get_data()
+            if asyncio.iscoroutine(data):
+                data = await data
+            await self._send_to_client(client_id, {"type": message_type, "data": data})
+            logger.debug(f"Sent {log_name or message_type} snapshot to client {client_id}")
         except Exception as e:
-            logger.warning(f"Could not send trading strategies snapshot to client {client_id}: {e}")
+            logger.warning(f"Could not send {log_name or message_type} snapshot to {client_id}: {e}")
+
+    async def _send_tracked_markets_snapshot(self, client_id: str) -> None:
+        """Send tracked markets snapshot to a specific client."""
+        await self._send_snapshot(
+            client_id,
+            "tracked_markets",
+            self._tracked_markets_state,
+            lambda: self._build_tracked_markets_data(),
+            log_name="tracked_markets"
+        )
+
+    def _build_tracked_markets_data(self) -> dict:
+        """Build tracked markets snapshot data with trading attachments."""
+        snapshot = self._tracked_markets_state.get_snapshot()
+        # Include trading attachments for each tracked market
+        if self._state_container:
+            for market in snapshot.get("markets", []):
+                ticker = market.get("ticker")
+                if ticker:
+                    trading = self._state_container.get_trading_attachment_for_market(ticker)
+                    market["trading"] = trading
+        return snapshot
+
+    async def _send_rlm_states_snapshot(self, client_id: str) -> None:
+        """Send RLM market states snapshot to a specific client."""
+        await self._send_snapshot(
+            client_id,
+            "rlm_states_snapshot",
+            self._strategy_coordinator,
+            lambda: self._build_rlm_states_data(),
+            log_name="RLM states"
+        )
+
+    def _build_rlm_states_data(self) -> dict:
+        """Build RLM market states snapshot data."""
+        market_states = self._strategy_coordinator.get_market_states(limit=100)
+        return {
+            "markets": market_states,
+            "count": len(market_states),
+            "timestamp": time.strftime("%H:%M:%S"),
+        }
+
+    async def _send_trade_processing_snapshot(self, client_id: str) -> None:
+        """Send trade processing snapshot to a specific client."""
+        await self._send_snapshot(
+            client_id,
+            "trade_processing",
+            self._strategy_coordinator,
+            lambda: self._build_trade_processing_data(),
+            log_name="trade_processing"
+        )
+
+    def _build_trade_processing_data(self) -> dict:
+        """Build trade processing snapshot data."""
+        stats = self._strategy_coordinator.get_trade_processing_stats()
+        recent_trades = self._strategy_coordinator.get_recent_tracked_trades(limit=20)
+        decision_history = self._strategy_coordinator.get_decision_history(limit=20)
+
+        total = stats.get("trades_processed", 0) + stats.get("trades_filtered", 0)
+        filter_rate = round(stats.get("trades_filtered", 0) / total * 100, 1) if total > 0 else 0.0
+
+        # Get low_balance counter from trading service if available
+        low_balance = 0
+        if self._trading_service:
+            decision_stats = self._trading_service.get_decision_stats()
+            low_balance = decision_stats.get("low_balance", 0)
+
+        return {
+            "recent_trades": recent_trades,
+            "stats": {
+                "trades_seen": total,
+                "trades_filtered": stats.get("trades_filtered", 0),
+                "trades_tracked": stats.get("trades_processed", 0),
+                "filter_rate_percent": filter_rate,
+            },
+            "decisions": {
+                "detected": stats.get("signals_detected", 0),
+                "executed": stats.get("signals_executed", 0),
+                "rate_limited": stats.get("rate_limited_count", 0),
+                "skipped": stats.get("signals_skipped", 0),
+                "reentries": stats.get("reentries", 0),
+                "low_balance": low_balance,
+            },
+            "decision_history": decision_history,
+            "last_updated": time.time(),
+            "timestamp": time.strftime("%H:%M:%S"),
+        }
+
+    async def _send_trading_strategies_snapshot(self, client_id: str) -> None:
+        """Send trading strategies panel snapshot to a specific client."""
+        await self._send_snapshot(
+            client_id,
+            "trading_strategies",
+            self._strategy_coordinator,
+            lambda: self._build_trading_strategies_data(),
+            log_name="trading_strategies"
+        )
+
+    def _build_trading_strategies_data(self) -> dict:
+        """Build trading strategies panel snapshot data."""
+        panel_data = self._strategy_coordinator.get_strategy_panel_data(decision_limit=15)
+        return {
+            **panel_data,
+            "last_updated": time.time(),
+            "timestamp": time.strftime("%H:%M:%S"),
+        }
 
     async def _send_upcoming_markets_snapshot(self, client_id: str) -> None:
-        """
-        Send upcoming markets snapshot to a specific client.
-
-        Called when a new client connects in lifecycle discovery mode.
-        Provides visibility into markets opening within the configured window.
-
-        Args:
-            client_id: Client ID to send snapshot to
-        """
-        if not self._upcoming_markets_syncer:
-            return
-
-        if client_id not in self._clients:
-            return
-
-        try:
-            snapshot_msg = self._upcoming_markets_syncer.get_snapshot_message()
-            await self._send_to_client(client_id, snapshot_msg)
-            count = snapshot_msg["data"]["count"]
-            logger.debug(
-                f"Sent upcoming markets snapshot to client {client_id}: {count} markets"
-            )
-        except Exception as e:
-            logger.warning(f"Could not send upcoming markets snapshot to client {client_id}: {e}")
+        """Send upcoming markets snapshot to a specific client."""
+        await self._send_snapshot(
+            client_id,
+            "upcoming_markets",
+            self._upcoming_markets_syncer,
+            lambda: self._upcoming_markets_syncer.get_snapshot_message()["data"],
+            log_name="upcoming_markets"
+        )
 
     async def _send_activity_feed_history(self, client_id: str) -> None:
-        """
-        Send activity feed history to a specific client.
+        """Send activity feed history to a specific client."""
+        await self._send_snapshot(
+            client_id,
+            "activity_feed_history",
+            self._activity_feed_history,
+            lambda: self._build_activity_feed_data(),
+            log_name="activity_feed_history"
+        )
 
-        Called when a new client connects to replay recent activity events
-        (system_activity and lifecycle_event messages). This ensures the
-        Activity Feed is populated when switching between Trader and Discovery views.
-
-        Args:
-            client_id: Client ID to send history to
-        """
-        if client_id not in self._clients:
-            return
-
-        if not self._activity_feed_history:
-            return
-
-        try:
-            # Convert deque to list for JSON serialization
-            history_list = list(self._activity_feed_history)
-
-            history_batch = {
-                "type": "activity_feed_history",
-                "data": {
-                    "events": history_list,
-                    "count": len(history_list)
-                }
-            }
-
-            await self._send_to_client(client_id, history_batch)
-            logger.info(
-                f"Replayed {len(history_list)} activity feed events to client {client_id}"
-            )
-        except Exception as e:
-            logger.warning(f"Could not send activity feed history to client {client_id}: {e}")
+    def _build_activity_feed_data(self) -> dict:
+        """Build activity feed history data."""
+        history_list = list(self._activity_feed_history)
+        return {
+            "events": history_list,
+            "count": len(history_list)
+        }
 
     def get_stats(self) -> Dict[str, Any]:
         """Get WebSocket manager statistics."""
