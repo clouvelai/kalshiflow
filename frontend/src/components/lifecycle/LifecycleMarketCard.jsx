@@ -970,6 +970,46 @@ HourglassIcon.displayName = 'HourglassIcon';
 // ============================================================================
 
 /**
+ * EventExposureBadges - Risk level badges for correlated event positions
+ *
+ * Shows ARB (green), RISK (amber), or LOSS (red) badges based on
+ * the combined YES/NO price exposure across related markets.
+ */
+const EventExposureBadges = memo(({ eventExposure }) => {
+  if (!eventExposure || eventExposure.risk_level === 'NORMAL') return null;
+
+  const riskLevel = eventExposure.risk_level;
+
+  return (
+    <>
+      {/* ARBITRAGE: YES_sum > 105c means NO is cheap - safe! */}
+      {riskLevel === 'ARBITRAGE' && (
+        <span className="text-[10px] px-1.5 py-0.5 rounded font-medium
+                         bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+          ARB
+        </span>
+      )}
+      {/* HIGH_RISK: YES_sum < 95c means NO is getting expensive */}
+      {riskLevel === 'HIGH_RISK' && (
+        <span className="text-[10px] px-1.5 py-0.5 rounded font-medium
+                         bg-amber-500/20 text-amber-400 border border-amber-500/30">
+          RISK
+        </span>
+      )}
+      {/* GUARANTEED_LOSS: YES_sum < 100c means NO_sum > 100 = will lose money */}
+      {riskLevel === 'GUARANTEED_LOSS' && (
+        <span className="text-[10px] px-1.5 py-0.5 rounded font-medium
+                         bg-red-500/20 text-red-400 border border-red-500/30 animate-pulse">
+          LOSS
+        </span>
+      )}
+    </>
+  );
+});
+
+EventExposureBadges.displayName = 'EventExposureBadges';
+
+/**
  * LifecycleMarketCard - Card displaying market with deltas since tracking
  *
  * Features:
@@ -978,14 +1018,16 @@ HourglassIcon.displayName = 'HourglassIcon';
  * - Hover micro-interactions (scale, shadow)
  * - Signal-ready amber glow state
  * - Progress bar with animated fill
+ * - Event position tracking with ARB/RISK/LOSS badges
  *
  * Props:
  *   - market: Market data object
  *   - rlmState: RLM state { yes_trades, no_trades, yes_ratio, price_drop, etc. }
  *   - tradePulse: Trade pulse { side: 'yes'|'no', ts: timestamp } for animation
  *   - rlmConfig: RLM strategy config from backend { min_trades, yes_threshold, min_price_drop }
+ *   - eventExposure: Event exposure data { risk_level, yes_sum, no_sum, market_count }
  */
-const LifecycleMarketCard = ({ market, rlmState, tradePulse, rlmConfig }) => {
+const LifecycleMarketCard = ({ market, rlmState, tradePulse, rlmConfig, eventExposure }) => {
   const [expanded, setExpanded] = useState(false);
 
   // RLM stats from prop (or defaults if not available)
@@ -1004,10 +1046,15 @@ const LifecycleMarketCard = ({ market, rlmState, tradePulse, rlmConfig }) => {
   const minTrades = rlmConfig?.min_trades || 25;
   const yesThreshold = rlmConfig?.yes_threshold || 0.70;
   const minPriceDrop = rlmConfig?.min_price_drop || 2;
+  const minNoPrice = rlmConfig?.min_no_price || 35;
+
+  // Calculate NO price from YES price (for entry price filter)
+  const noPrice = lastYesPrice != null ? 100 - lastYesPrice : null;
+  const noPriceValid = noPrice == null || noPrice >= minNoPrice;
 
   // Progress bar toward signal threshold
   const progressPercent = Math.min(100, (totalTrades / minTrades) * 100);
-  const signalReady = totalTrades >= minTrades && yesRatio >= yesThreshold && priceDrop >= minPriceDrop;
+  const signalReady = totalTrades >= minTrades && yesRatio >= yesThreshold && priceDrop >= minPriceDrop && noPriceValid;
 
   // Animated values for trade counts
   const { animClass: yesAnimClass } = useAnimatedValue(
@@ -1120,9 +1167,17 @@ const LifecycleMarketCard = ({ market, rlmState, tradePulse, rlmConfig }) => {
       {/* Header row */}
       <div className="flex items-start justify-between gap-3 mb-3">
         <div className="flex-1 min-w-0">
-          {/* Category badge + ticker */}
+          {/* Category badge + ticker + event market index */}
           <div className="flex items-center gap-2 mb-1.5">
             <CategoryBadge category={market.category} />
+            {/* Badge counter for related markets (shows "1/2", "2/3", etc.) */}
+            {eventExposure && eventExposure.market_count > 1 && (
+              <span className="text-[10px] text-gray-500 font-mono px-1.5 py-0.5
+                               bg-gray-700/30 rounded border border-gray-600/30"
+                    title={`Market ${eventExposure.market_index || 1} of ${eventExposure.market_count} in this event`}>
+                {eventExposure.market_index || 1}/{eventExposure.market_count}
+              </span>
+            )}
             <span className="text-xs text-gray-500 font-mono truncate">
               {market.ticker}
             </span>
@@ -1135,14 +1190,17 @@ const LifecycleMarketCard = ({ market, rlmState, tradePulse, rlmConfig }) => {
         </div>
 
         {/* Status badges */}
-        <StatusBadges
-          isDormant={isDormant}
-          isNew={isNew}
-          isHot={isHot}
-          closingSoon={closingSoon}
-          signalReady={signalReady}
-          isPositionMaxed={market.trading?.is_position_maxed}
-        />
+        <div className="flex items-center gap-1.5">
+          <EventExposureBadges eventExposure={eventExposure} />
+          <StatusBadges
+            isDormant={isDormant}
+            isNew={isNew}
+            isHot={isHot}
+            closingSoon={closingSoon}
+            signalReady={signalReady}
+            isPositionMaxed={market.trading?.is_position_maxed}
+          />
+        </div>
       </div>
 
       {/* Main stats row */}
@@ -1191,6 +1249,30 @@ const LifecycleMarketCard = ({ market, rlmState, tradePulse, rlmConfig }) => {
           priceDrop={priceDrop}
           trueMarketOpen={trueMarketOpen}
         />
+
+        {/* NO Entry price filter indicator - show when approaching signal threshold */}
+        {noPrice != null && (signalReady || progressPercent >= 70) && (
+          <div className="flex items-center justify-between text-xs">
+            <span className="text-gray-400 font-medium">Entry:</span>
+            <span className={`
+              inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md font-mono
+              ${noPriceValid
+                ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
+                : 'bg-red-500/15 text-red-400 border border-red-500/30'
+              }
+            `}>
+              <span className="text-gray-500">NO</span>
+              <span className="font-semibold">{noPrice}c</span>
+              <span className="text-gray-600">/</span>
+              <span className={noPriceValid ? 'text-emerald-500/70' : 'text-red-500/70'}>
+                {minNoPrice}c
+              </span>
+              <span className={`text-sm ${noPriceValid ? 'text-emerald-400' : 'text-red-400'}`}>
+                {noPriceValid ? '\u2713' : '\u2717'}
+              </span>
+            </span>
+          </div>
+        )}
 
         {/* Progress bar */}
         <ProgressBar

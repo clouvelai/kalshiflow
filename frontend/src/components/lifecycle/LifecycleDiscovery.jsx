@@ -30,7 +30,9 @@ const LifecycleDiscovery = () => {
     // Upcoming markets (opening within 4 hours)
     upcomingMarkets,
     // Trading state (balance for low cash indicator)
-    tradingState
+    tradingState,
+    // Event exposure data (correlated positions across related markets)
+    eventExposure
   } = useLifecycleWebSocket();
 
   // Filter state
@@ -193,6 +195,7 @@ const LifecycleDiscovery = () => {
               rlmStates={rlmStates}
               tradePulses={tradePulses}
               rlmConfig={tradingState?.rlm_config}
+              eventExposure={eventExposure}
             />
           </div>
 

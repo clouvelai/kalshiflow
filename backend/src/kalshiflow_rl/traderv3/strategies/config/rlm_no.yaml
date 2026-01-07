@@ -21,9 +21,26 @@ params:
   yes_threshold: 0.70      # Minimum YES trade ratio to trigger
   min_trades: 25           # Minimum trades before signal valid
   min_price_drop: 5        # Minimum price drop from open (cents)
+  min_no_price: 35         # Minimum NO entry price (backtest: <35c has -32% edge)
 
   # Position sizing
-  contracts_per_trade: 10  # Contracts per signal execution
+  contracts_per_trade: 50  # Contracts per signal execution
+
+  # Position scaling by price drop (S-001 validated)
+  # Higher price drops have higher win rates and edge
+  # 5-10c: 91.8% win rate, +12.1% edge -> 1.0x base
+  # 10-20c: 95.6% win rate, +16.0% edge -> 1.5x
+  # 20c+: 98.4% win rate, +31.5% edge -> 2.0x
+  position_scaling:
+    enabled: true
+    base_contracts: 50
+    tiers:
+      - drop_min: 20  # 20c+ drop -> 2.0x
+        multiplier: 2.0
+      - drop_min: 10  # 10-20c drop -> 1.5x
+        multiplier: 1.5
+      - drop_min: 5   # 5-10c drop -> 1.0x (base)
+        multiplier: 1.0
 
   # Entry behavior
   allow_reentry: true      # Allow adding to existing positions

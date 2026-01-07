@@ -11,7 +11,34 @@ import LifecycleMarketCard from './LifecycleMarketCard';
  *   - rlmStates: Object mapping ticker -> RLM state
  *   - tradePulses: Object mapping ticker -> { side, ts } for pulse animation
  *   - rlmConfig: RLM strategy config from backend { min_trades, yes_threshold, min_price_drop }
+ *   - eventExposure: Event exposure data { event_groups: { event_ticker -> EventGroup } }
  */
+
+/**
+ * Get event exposure data for a specific market.
+ *
+ * Looks up the market's event_ticker in the event_groups and adds
+ * market_index based on position within the event.
+ */
+function getMarketEventExposure(market, eventExposure) {
+  if (!eventExposure?.event_groups || !market.event_ticker) {
+    return null;
+  }
+
+  const eventGroup = eventExposure.event_groups[market.event_ticker];
+  if (!eventGroup) {
+    return null;
+  }
+
+  // Calculate market index within the event (1-based for display)
+  const marketTickers = Object.keys(eventGroup.markets || {});
+  const marketIndex = marketTickers.indexOf(market.ticker) + 1;
+
+  return {
+    ...eventGroup,
+    market_index: marketIndex > 0 ? marketIndex : 1,
+  };
+}
 
 // Animation variants for market cards
 const cardVariants = {
@@ -20,7 +47,7 @@ const cardVariants = {
   exit: { opacity: 0, scale: 0.9, transition: { duration: 0.2 } }
 };
 
-const MarketGrid = ({ marketsByCategory, showCategoryHeaders, rlmStates = {}, tradePulses = {}, rlmConfig }) => {
+const MarketGrid = ({ marketsByCategory, showCategoryHeaders, rlmStates = {}, tradePulses = {}, rlmConfig, eventExposure }) => {
   const categories = Object.entries(marketsByCategory);
 
   if (categories.length === 0) {
@@ -61,6 +88,7 @@ const MarketGrid = ({ marketsByCategory, showCategoryHeaders, rlmStates = {}, tr
                 rlmState={rlmStates[market.ticker]}
                 tradePulse={tradePulses[market.ticker]}
                 rlmConfig={rlmConfig}
+                eventExposure={getMarketEventExposure(market, eventExposure)}
               />
             </motion.div>
           ))}
@@ -105,6 +133,7 @@ const MarketGrid = ({ marketsByCategory, showCategoryHeaders, rlmStates = {}, tr
                     rlmState={rlmStates[market.ticker]}
                     tradePulse={tradePulses[market.ticker]}
                     rlmConfig={rlmConfig}
+                    eventExposure={getMarketEventExposure(market, eventExposure)}
                   />
                 </motion.div>
               ))}

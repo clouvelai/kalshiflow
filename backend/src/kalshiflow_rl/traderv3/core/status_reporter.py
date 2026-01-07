@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from ..clients.market_ticker_listener import MarketTickerListener
     from ..config.environment import V3Config
     from ..state.tracked_markets import TrackedMarketsState
+    from ..services.event_position_tracker import EventPositionTracker
 
 logger = logging.getLogger("kalshiflow_rl.traderv3.core.status_reporter")
 
@@ -80,6 +81,9 @@ class V3StatusReporter:
 
         # Tracked markets state (set after initialization via setter)
         self._tracked_markets_state: Optional['TrackedMarketsState'] = None
+
+        # Event position tracker (set after initialization via setter)
+        self._event_position_tracker: Optional['EventPositionTracker'] = None
 
         # Reporting state
         self._status_task: Optional[asyncio.Task] = None
@@ -149,6 +153,11 @@ class V3StatusReporter:
         """Set the tracked markets state for metrics reporting."""
         self._tracked_markets_state = tracked_markets_state
         logger.debug("Tracked markets state set on status reporter")
+
+    def set_event_position_tracker(self, event_position_tracker: 'EventPositionTracker') -> None:
+        """Set the event position tracker for event-level exposure reporting."""
+        self._event_position_tracker = event_position_tracker
+        logger.debug("Event position tracker set on status reporter")
 
     async def emit_status_update(self, context: str = "") -> None:
         """Emit status update event immediately."""
@@ -323,6 +332,11 @@ class V3StatusReporter:
                     "sync_errors": health.get("sync_errors", 0),
                 }
 
+            # Build event position tracker data
+            event_exposure_data = None
+            if self._event_position_tracker:
+                event_exposure_data = self._event_position_tracker.get_event_groups_for_broadcast()
+
             # Broadcast trading state via websocket
             await self._websocket_manager.broadcast_message("trading_state", {
                 "timestamp": time.time(),
@@ -358,9 +372,12 @@ class V3StatusReporter:
                     "min_trades": self._config.rlm_min_trades,
                     "yes_threshold": self._config.rlm_yes_threshold,
                     "min_price_drop": self._config.rlm_min_price_drop,
+                    "min_no_price": self._config.rlm_min_no_price,
                     "contracts": self._config.rlm_contracts,
                     "max_concurrent": self._config.rlm_max_concurrent,
                 },
+                # Event position tracking (correlated exposure detection)
+                "event_exposure": event_exposure_data,
             })
 
             logger.debug(f"Broadcast trading state v{trading_summary['version']}")

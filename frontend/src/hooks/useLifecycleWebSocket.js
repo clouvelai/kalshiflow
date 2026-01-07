@@ -58,6 +58,9 @@ export const useLifecycleWebSocket = ({ onMessage } = {}) => {
   // Trading state (balance and min_trader_cash for low cash indicator)
   const [tradingState, setTradingState] = useState({ balance: 0, min_trader_cash: 0 });
 
+  // Event exposure data (correlated positions across related markets)
+  const [eventExposure, setEventExposure] = useState(null);
+
   const wsRef = useRef(null);
   const reconnectTimeoutRef = useRef(null);
   const lastPingRef = useRef(Date.now());
@@ -259,6 +262,10 @@ export const useLifecycleWebSocket = ({ onMessage } = {}) => {
             min_trader_cash: data.data.min_trader_cash || 0,
             rlm_config: data.data.rlm_config || null
           });
+          // Extract event exposure data for correlated position tracking
+          if (data.data.event_exposure) {
+            setEventExposure(data.data.event_exposure);
+          }
         }
         break;
 
@@ -418,7 +425,9 @@ export const useLifecycleWebSocket = ({ onMessage } = {}) => {
     // Upcoming markets (opening within 4 hours)
     upcomingMarkets, // List of upcoming market objects
     // Trading state (balance for low cash indicator)
-    tradingState     // { balance, min_trader_cash }
+    tradingState,    // { balance, min_trader_cash }
+    // Event exposure data (correlated positions across related markets)
+    eventExposure    // { event_groups: { event_ticker -> EventGroup }, stats }
   };
 };
 

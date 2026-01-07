@@ -219,6 +219,30 @@ function getEventStyle(eventType, event = {}) {
         typeColor: 'bg-blue-500/20 text-blue-400',
         bgColor: 'bg-blue-900/5'
       };
+    // Event exposure alerts (correlated positions across related markets)
+    case 'event_alert': {
+      const level = event.metadata?.level || 'info';
+      if (level === 'error') {
+        return {
+          typeLabel: 'LOSS',
+          typeColor: 'bg-red-500/25 text-red-400 border border-red-500/30',
+          bgColor: 'bg-red-900/10'
+        };
+      } else if (level === 'warning') {
+        return {
+          typeLabel: 'RISK',
+          typeColor: 'bg-amber-500/20 text-amber-400',
+          bgColor: 'bg-amber-900/5'
+        };
+      } else {
+        // info = arbitrage opportunity
+        return {
+          typeLabel: 'ARB',
+          typeColor: 'bg-emerald-500/20 text-emerald-400',
+          bgColor: 'bg-emerald-900/5'
+        };
+      }
+    }
     default:
       return {
         typeLabel: eventType?.toUpperCase()?.slice(0, 6) || 'EVENT',
@@ -288,6 +312,11 @@ function formatEventMessage(event) {
       return event.reason || event.metadata?.message || 'Order filled';
     case 'order_placed':
       return event.reason || event.metadata?.message || 'Order placed';
+    // Event exposure alerts (correlated positions across related markets)
+    case 'event_alert': {
+      // Use the reason/message field which contains the formatted alert message
+      return event.reason || event.metadata?.message || 'Event exposure alert';
+    }
     default:
       return event.action || event.metadata?.message || event.event_type || 'Event';
   }

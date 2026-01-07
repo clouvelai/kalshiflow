@@ -39,6 +39,7 @@ from ..services.trading_decision_service import TradingDecisionService, TradingS
 from ..services.tmo_fetcher import TrueMarketOpenFetcher
 from ..services.listener_bootstrap_service import ListenerBootstrapService
 from ..services.order_cleanup_service import OrderCleanupService
+from ..services.event_position_tracker import EventPositionTracker
 from ..strategies import StrategyCoordinator, StrategyContext
 
 logger = logging.getLogger("kalshiflow_rl.traderv3.core.coordinator")
@@ -164,6 +165,10 @@ class V3Coordinator:
         # Strategy coordinator (plugin-based strategy management)
         # Replaces direct RLMService instantiation with multi-strategy architecture
         self._strategy_coordinator: Optional[StrategyCoordinator] = None
+
+        # Event position tracker (initialized in _connect_lifecycle when TrackedMarketsState is available)
+        # Tracks positions grouped by event_ticker to detect correlated exposure
+        self._event_position_tracker: Optional[EventPositionTracker] = None
 
         # TMO fetcher (initialized in _connect_lifecycle when TrackedMarketsState is available)
         self._tmo_fetcher: Optional[TrueMarketOpenFetcher] = None
@@ -580,6 +585,20 @@ class V3Coordinator:
                     rate_limit=10.0,  # Kalshi API limit: 10 req/s
                 )
                 logger.info("TrueMarketOpenFetcher initialized for candlestick-based price tracking")
+
+            # 10d. Initialize EventPositionTracker (for event-level position tracking)
+            # Tracks positions grouped by event_ticker to detect correlated exposure
+            if self._config.event_tracking_enabled and self._trading_service:
+                self._event_position_tracker = EventPositionTracker(
+                    tracked_markets=self._tracked_markets_state,
+                    state_container=self._state_container,
+                    config=self._config,
+                )
+                # Inject tracker into trading service for pre-trade checks
+                self._trading_service.set_event_tracker(self._event_position_tracker)
+                # Set on status reporter for WebSocket broadcasts
+                self._status_reporter.set_event_position_tracker(self._event_position_tracker)
+                logger.info("EventPositionTracker initialized for event-level position tracking")
 
             # 11. Start TrackedMarketsSyncer (for REST price/volume updates + dormant detection)
             self._lifecycle_syncer = TrackedMarketsSyncer(

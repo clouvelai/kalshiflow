@@ -54,6 +54,7 @@ class V3Config:
     rlm_yes_threshold: float = 0.70  # Minimum YES trade ratio to trigger signal
     rlm_min_trades: int = 25  # Minimum trades before evaluating signal
     rlm_min_price_drop: int = 5  # Minimum YES price drop in cents (research: <5c has ~2% edge, skip)
+    rlm_min_no_price: int = 35  # Minimum NO entry price in cents (backtest: <35c NO has -32% edge)
     rlm_contracts: int = 10  # Base contracts per trade (scaled by signal strength)
     rlm_max_concurrent: int = 1000  # Maximum concurrent positions
     rlm_allow_reentry: bool = True  # Allow adding to position on stronger signal
@@ -75,6 +76,15 @@ class V3Config:
     # Order TTL Configuration
     order_ttl_enabled: bool = True  # Enable automatic cancellation of stale orders
     order_ttl_seconds: int = 90  # Cancel resting orders older than this (90s - orders either fill quickly or not at all)
+
+    # Event Position Tracking Configuration
+    # Tracks positions grouped by event_ticker to detect correlated exposure
+    # For all-NO positions on binary mutually exclusive markets:
+    #   P&L = YES_sum - 100 (positive = arbitrage, negative = loss)
+    event_tracking_enabled: bool = True  # Enable event-level position tracking
+    event_exposure_action: str = "alert"  # "alert" (warn but allow) or "block" (prevent trade)
+    event_loss_threshold_cents: int = 100  # NO_sum > this = GUARANTEED_LOSS (block)
+    event_risk_threshold_cents: int = 95   # NO_sum > this = HIGH_RISK (alert/warn)
 
     # Market selection mode: "config", "discovery", or "lifecycle" (default)
     # - config: Use static market_tickers list
@@ -210,12 +220,20 @@ class V3Config:
         order_ttl_enabled = os.environ.get("V3_ORDER_TTL_ENABLED", "true").lower() == "true"
         order_ttl_seconds = int(os.environ.get("V3_ORDER_TTL_SECONDS", "90"))
 
+        # Event Position Tracking configuration
+        # Tracks positions by event_ticker to prevent guaranteed losses from correlated exposure
+        event_tracking_enabled = os.environ.get("V3_EVENT_TRACKING_ENABLED", "true").lower() == "true"
+        event_exposure_action = os.environ.get("V3_EVENT_EXPOSURE_ACTION", "alert").lower()
+        event_loss_threshold_cents = int(os.environ.get("V3_EVENT_LOSS_THRESHOLD", "100"))
+        event_risk_threshold_cents = int(os.environ.get("V3_EVENT_RISK_THRESHOLD", "95"))
+
         # RLM (Reverse Line Movement) strategy configuration
         # High reliability config: YES>70%, min_trades=25 (2.2% false positive rate)
         # See RLM_IMPROVEMENTS.md Section 10 for full reliability analysis
         rlm_yes_threshold = float(os.environ.get("RLM_YES_THRESHOLD", "0.70"))
         rlm_min_trades = int(os.environ.get("RLM_MIN_TRADES", "25"))
         rlm_min_price_drop = int(os.environ.get("RLM_MIN_PRICE_DROP", "5"))
+        rlm_min_no_price = int(os.environ.get("RLM_MIN_NO_PRICE", "35"))
         rlm_contracts = int(os.environ.get("RLM_CONTRACTS", "3"))
         rlm_max_concurrent = int(os.environ.get("RLM_MAX_CONCURRENT", "1000"))
         rlm_allow_reentry = os.environ.get("RLM_ALLOW_REENTRY", "true").lower() == "true"
@@ -277,6 +295,7 @@ class V3Config:
             rlm_yes_threshold=rlm_yes_threshold,
             rlm_min_trades=rlm_min_trades,
             rlm_min_price_drop=rlm_min_price_drop,
+            rlm_min_no_price=rlm_min_no_price,
             rlm_contracts=rlm_contracts,
             rlm_max_concurrent=rlm_max_concurrent,
             rlm_allow_reentry=rlm_allow_reentry,
@@ -290,6 +309,10 @@ class V3Config:
             allow_multiple_orders_per_market=allow_multiple_orders_per_market,
             order_ttl_enabled=order_ttl_enabled,
             order_ttl_seconds=order_ttl_seconds,
+            event_tracking_enabled=event_tracking_enabled,
+            event_exposure_action=event_exposure_action,
+            event_loss_threshold_cents=event_loss_threshold_cents,
+            event_risk_threshold_cents=event_risk_threshold_cents,
             lifecycle_categories=lifecycle_categories,
             lifecycle_max_markets=lifecycle_max_markets,
             lifecycle_sync_interval=lifecycle_sync_interval,
@@ -353,6 +376,12 @@ class V3Config:
             logger.info(f"  - Order TTL: {order_ttl_seconds}s (auto-cancel stale resting orders)")
         else:
             logger.info(f"  - Order TTL: DISABLED")
+
+        # Log event tracking config
+        if event_tracking_enabled:
+            logger.info(f"  - Event tracking: ENABLED (action={event_exposure_action}, loss>{event_loss_threshold_cents}c, risk>{event_risk_threshold_cents}c)")
+        else:
+            logger.info(f"  - Event tracking: DISABLED")
 
         # Log RLM config if strategy is enabled
         if trading_strategy_str == "rlm_no":

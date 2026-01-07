@@ -26,7 +26,7 @@ import logging
 import time
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Dict, Any, Optional, List, Set, TYPE_CHECKING
+from typing import Dict, Any, Optional, List, Set, Tuple, TYPE_CHECKING
 
 from ..protocol import Strategy, StrategyContext
 from ..registry import StrategyRegistry
@@ -277,6 +277,7 @@ class RLMNoStrategy:
         self._yes_threshold: float = 0.65
         self._min_trades: int = 15
         self._min_price_drop: int = 0
+        self._min_no_price: int = 0  # Min NO entry price (backtest: <35c has -32% edge)
         self._contracts_per_trade: int = 100
         self._max_concurrent: int = 1000
         self._allow_reentry: bool = True
@@ -307,7 +308,12 @@ class RLMNoStrategy:
 
         # Track markets at per-market position max
         self._maxed_markets: Set[str] = set()
-        self._per_market_max: int = 100
+        self._per_market_max: int = 250
+
+        # Position scaling config (loaded from YAML)
+        self._position_scaling_enabled: bool = False
+        self._position_scaling_base: int = 10
+        self._position_scaling_tiers: List[Dict[str, Any]] = []
 
         # Decision history
         self._decision_history: deque[RLMDecision] = deque(maxlen=DECISION_HISTORY_SIZE)
@@ -405,8 +411,8 @@ class RLMNoStrategy:
         logger.info(
             f"RLMNoStrategy started: yes_threshold={self._yes_threshold:.0%}, "
             f"min_trades={self._min_trades}, min_price_drop={self._min_price_drop}c, "
-            f"contracts={self._contracts_per_trade}, max_concurrent={self._max_concurrent}, "
-            f"reentry={'ON' if self._allow_reentry else 'OFF'}"
+            f"min_no_price={self._min_no_price}c, contracts={self._contracts_per_trade}, "
+            f"max_concurrent={self._max_concurrent}, reentry={'ON' if self._allow_reentry else 'OFF'}"
         )
 
     def _load_config_from_coordinator(self) -> None:
@@ -428,6 +434,7 @@ class RLMNoStrategy:
         self._yes_threshold = params.get("yes_threshold", self._yes_threshold)
         self._min_trades = params.get("min_trades", self._min_trades)
         self._min_price_drop = params.get("min_price_drop", self._min_price_drop)
+        self._min_no_price = params.get("min_no_price", self._min_no_price)
         self._contracts_per_trade = params.get("contracts_per_trade", self._contracts_per_trade)
         self._max_concurrent = params.get("max_concurrent", self._max_concurrent)
         self._allow_reentry = params.get("allow_reentry", self._allow_reentry)
@@ -439,11 +446,26 @@ class RLMNoStrategy:
         self._min_hours_to_settlement = params.get("min_hours_to_settlement", self._min_hours_to_settlement)
         self._max_days_to_settlement = params.get("max_days_to_settlement", self._max_days_to_settlement)
 
+        # Load position scaling config
+        position_scaling = params.get("position_scaling", {})
+        if position_scaling:
+            self._position_scaling_enabled = position_scaling.get("enabled", False)
+            self._position_scaling_base = position_scaling.get("base_contracts", self._contracts_per_trade)
+            self._position_scaling_tiers = position_scaling.get("tiers", [])
+            # Sort tiers by drop_min descending so we match highest tier first
+            self._position_scaling_tiers.sort(key=lambda t: t.get("drop_min", 0), reverse=True)
+            if self._position_scaling_enabled:
+                tier_summary = ", ".join(
+                    f"{t.get('drop_min', 0)}c+:{t.get('multiplier', 1.0)}x"
+                    for t in self._position_scaling_tiers
+                )
+                logger.info(f"Position scaling enabled: base={self._position_scaling_base}, tiers=[{tier_summary}]")
+
         logger.info(
             f"Loaded config from YAML: {config.name} "
             f"(contracts={self._contracts_per_trade}, threshold={self._yes_threshold}, "
             f"min_trades={self._min_trades}, min_drop={self._min_price_drop}c, "
-            f"max_concurrent={self._max_concurrent})"
+            f"min_no_price={self._min_no_price}c, max_concurrent={self._max_concurrent})"
         )
 
     async def stop(self) -> None:
@@ -556,6 +578,7 @@ class RLMNoStrategy:
                 "yes_threshold": self._yes_threshold,
                 "min_trades": self._min_trades,
                 "min_price_drop": self._min_price_drop,
+                "min_no_price": self._min_no_price,
                 "contracts_per_trade": self._contracts_per_trade,
                 "max_concurrent": self._max_concurrent,
                 "allow_reentry": self._allow_reentry,
@@ -825,6 +848,13 @@ class RLMNoStrategy:
         if state.price_drop < self._min_price_drop:
             logger.debug(f"  -> BLOCKED: price_drop {state.price_drop}c < {self._min_price_drop}c")
             return None
+
+        # Check minimum NO entry price (backtest validated: <35c NO has -32% edge)
+        if state.last_yes_price is not None and self._min_no_price > 0:
+            no_price = 100 - state.last_yes_price
+            if no_price < self._min_no_price:
+                logger.debug(f"  -> BLOCKED: no_price {no_price}c < {self._min_no_price}c")
+                return None
 
         # Belt-and-suspenders: validate time-to-settlement
         if self._context.tracked_markets:
@@ -1096,9 +1126,8 @@ class RLMNoStrategy:
                 self._stats["signals_skipped"] += 1
                 return
 
-            # Flat sizing
-            scaled_quantity = self._contracts_per_trade
-            scale_label = "1x"
+            # Position scaling based on price drop (S-001 validated)
+            scaled_quantity, scale_label = self._calculate_scaled_quantity(signal.price_drop)
 
             # Create trading decision with strategy_id
             action_type = "reentry" if signal.is_reentry else "executed"
@@ -1221,6 +1250,57 @@ class RLMNoStrategy:
             if aggressive:
                 return best_no_bid + (spread * 85 // 100)
             return best_no_bid + (spread * 3 // 4)
+
+    def _calculate_scaled_quantity(self, price_drop: int) -> Tuple[int, str]:
+        """
+        Calculate scaled position size based on price drop tier.
+
+        Higher price drops have validated higher win rates and edge (S-001):
+        - 5-10c drop: 91.8% win rate, +12.1% edge -> 1.0x base
+        - 10-20c drop: 95.6% win rate, +16.0% edge -> 1.5x
+        - 20c+ drop: 98.4% win rate, +31.5% edge -> 2.0x
+
+        Args:
+            price_drop: Price drop from market open in cents
+
+        Returns:
+            Tuple of (scaled_quantity, scale_label) where:
+            - scaled_quantity: Number of contracts to trade (capped at per-market max)
+            - scale_label: Human-readable label like "1.5x" for logging
+        """
+        # Fallback to flat sizing if scaling is disabled
+        if not self._position_scaling_enabled or not self._position_scaling_tiers:
+            return self._contracts_per_trade, "1x"
+
+        # Find matching tier (tiers are sorted by drop_min descending)
+        multiplier = 1.0
+        for tier in self._position_scaling_tiers:
+            drop_min = tier.get("drop_min", 0)
+            if price_drop >= drop_min:
+                multiplier = tier.get("multiplier", 1.0)
+                break
+
+        # Calculate scaled quantity
+        base = self._position_scaling_base
+        raw_quantity = int(base * multiplier)
+
+        # Cap at per-market max
+        scaled_quantity = min(raw_quantity, self._per_market_max)
+
+        # Generate label
+        if multiplier == 1.0:
+            scale_label = "1x"
+        elif multiplier == int(multiplier):
+            scale_label = f"{int(multiplier)}x"
+        else:
+            scale_label = f"{multiplier}x"
+
+        logger.debug(
+            f"Position scaling: drop={price_drop}c -> {multiplier}x multiplier, "
+            f"{base} base * {multiplier} = {raw_quantity} -> {scaled_quantity} contracts ({scale_label})"
+        )
+
+        return scaled_quantity, scale_label
 
     def _log_orderbook_at_signal(self, signal: RLMSignal, orderbook: Dict[str, Any]) -> None:
         """Log orderbook state at signal time for analysis."""

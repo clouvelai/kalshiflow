@@ -40,6 +40,7 @@ if TYPE_CHECKING:
     from ..core.state_container import V3StateContainer
     from ..core.event_bus import EventBus
     from ..config.environment import V3Config
+    from .event_position_tracker import EventPositionTracker
     from kalshiflow_rl.data.models import OrderbookSnapshot
 
 logger = logging.getLogger("kalshiflow_rl.traderv3.services.trading_decision")
@@ -127,6 +128,12 @@ class TradingDecisionService:
         # Balance protection (from config or default $100.00)
         self._min_trader_cash = config.min_trader_cash if config else 10000
 
+        # Store config for event tracking settings
+        self._config = config
+
+        # Event position tracker (set via set_event_tracker)
+        self._event_tracker: Optional['EventPositionTracker'] = None
+
         # Decision tracking
         self._decision_count = 0
         self._trade_count = 0
@@ -134,7 +141,9 @@ class TradingDecisionService:
 
         # Stats tracking
         self._decision_stats = {
-            "low_balance": 0  # Trades skipped due to insufficient balance
+            "low_balance": 0,  # Trades skipped due to insufficient balance
+            "event_blocked": 0,  # Trades blocked due to event exposure
+            "event_alerted": 0,  # Trades with event exposure alerts (but allowed)
         }
 
         logger.info(f"Trading Decision Service initialized with strategy: {strategy.value}")
@@ -250,6 +259,59 @@ class TradingDecisionService:
                 )
                 return False
 
+        # Event exposure check (before executing buy trades)
+        if decision.action == "buy" and self._event_tracker:
+            try:
+                allowed, reason, risk_level = await self._event_tracker.check_before_trade(
+                    ticker=decision.market,
+                    side=decision.side,
+                    price=decision.price or 50,  # Default to 50c if no price
+                )
+
+                # Handle blocking behavior
+                if not allowed:
+                    self._decision_stats["event_blocked"] += 1
+                    logger.warning(
+                        f"Trade blocked by event exposure check: {reason} "
+                        f"({decision.market} {decision.side} {decision.quantity}x @ {decision.price}c)"
+                    )
+                    await self._event_bus.emit_system_activity(
+                        activity_type="event_exposure_blocked",
+                        message=f"Trade blocked: {reason}",
+                        metadata={
+                            "market": decision.market,
+                            "side": decision.side,
+                            "quantity": decision.quantity,
+                            "price": decision.price,
+                            "risk_level": risk_level,
+                            "reason": reason,
+                            "block_count": self._decision_stats["event_blocked"],
+                        }
+                    )
+                    return False
+
+                # Handle alert behavior (allowed but risky)
+                if risk_level in ("HIGH_RISK", "GUARANTEED_LOSS"):
+                    self._decision_stats["event_alerted"] += 1
+                    logger.warning(
+                        f"Event exposure alert ({risk_level}): {reason} - trade proceeding"
+                    )
+                    await self._event_bus.emit_system_activity(
+                        activity_type="event_exposure_alert",
+                        message=f"High-risk trade: {reason}",
+                        metadata={
+                            "market": decision.market,
+                            "side": decision.side,
+                            "quantity": decision.quantity,
+                            "price": decision.price,
+                            "risk_level": risk_level,
+                            "reason": reason,
+                            "alert_count": self._decision_stats["event_alerted"],
+                        }
+                    )
+            except Exception as e:
+                logger.warning(f"Event exposure check failed (allowing trade): {e}")
+
         try:
             # Emit decision event
             # Use strategy_id if available, fall back to strategy enum for backward compat
@@ -267,7 +329,7 @@ class TradingDecisionService:
                     "strategy_id": decision.strategy_id,  # New field
                 }
             )
-            
+
             # Execute based on action type
             if decision.action == "buy":
                 success = await self._execute_buy(decision)
@@ -593,7 +655,17 @@ class TradingDecisionService:
         """Change the trading strategy."""
         logger.info(f"Changing strategy from {self._strategy.value} to {strategy.value}")
         self._strategy = strategy
-    
+
+    def set_event_tracker(self, tracker: 'EventPositionTracker') -> None:
+        """
+        Set the event position tracker for pre-trade exposure checks.
+
+        Args:
+            tracker: EventPositionTracker instance
+        """
+        self._event_tracker = tracker
+        logger.info("Event position tracker set on trading decision service")
+
     def get_stats(self) -> Dict[str, Any]:
         """Get service statistics."""
         return {
@@ -601,7 +673,9 @@ class TradingDecisionService:
             "decision_count": self._decision_count,
             "trade_count": self._trade_count,
             "last_decision": self._last_decision.__dict__ if self._last_decision else None,
-            "low_balance_skips": self._decision_stats["low_balance"]
+            "low_balance_skips": self._decision_stats["low_balance"],
+            "event_blocked": self._decision_stats["event_blocked"],
+            "event_alerted": self._decision_stats["event_alerted"],
         }
 
     def get_decision_stats(self) -> Dict[str, int]:
