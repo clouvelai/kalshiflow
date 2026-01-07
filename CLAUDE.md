@@ -598,45 +598,152 @@ Output: Hypothesis briefs in `research/hypotheses/incoming/`
 
 ### Quant Agent
 
-The quant agent validates trading strategies and explores new hypotheses.
+The quant agent discovers and validates trading strategies using the **Point-in-Time Backtesting Framework**.
 
-**Primary Tool: Validation Framework**
+#### CRITICAL: Avoid Look-Ahead Bias
+
+**The #1 cause of strategy failure is look-ahead bias.** Our old backtest methodology used FINAL market statistics (all trades, final price) instead of point-in-time state. This caused:
+- RLM NO: +17% backtest → +5% reality (12pp look-ahead bias)
+- S-LATE: +20% backtest → 0% reality (complete failure)
+
+**ALWAYS use the point-in-time framework** at `research/backtest/`.
+
+#### Primary Tool: Point-in-Time Backtesting Framework
+
 ```bash
 cd backend
 
-# Validate a strategy (use this instead of writing ad-hoc scripts!)
-uv run python ../research/scripts/validate_strategy.py --config h123_rlm.yaml --mode full
+# Run backtest on a strategy
+uv run python ../research/backtest/run_backtest.py --strategy rlm
+uv run python ../research/backtest/run_backtest.py --strategy slate
+uv run python ../research/backtest/run_backtest.py --strategy all
 
-# Quick LSD screening
-uv run python ../research/scripts/validate_strategy.py --config h123_rlm.yaml --mode lsd
+# Limit markets for quick testing
+uv run python ../research/backtest/run_backtest.py --strategy rlm --limit 5000
 
-# List available strategies
-uv run python ../research/scripts/validate_strategy.py --list
+# Save results to JSON
+uv run python ../research/backtest/run_backtest.py --strategy rlm --save
 ```
 
-**Creating New Strategy Configs**: Add YAML files to `research/strategies/configs/`
+#### Creating New Strategies
 
-**LSD Mode (Lateral Strategy Discovery)**
-When the user says "LSD mode", enter rapid exploration mode:
-- **Speed over rigor**: Quick 10-min edge checks, skip full bucket analysis
+1. **Create strategy file** at `research/backtest/strategies/my_strategy.py`:
+
+```python
+from dataclasses import dataclass, field
+from typing import Optional, Dict, Any
+import sys, os
+
+# Setup imports
+_PARENT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _PARENT_DIR not in sys.path:
+    sys.path.insert(0, _PARENT_DIR)
+
+try:
+    from ..state import Trade, MarketState, SignalEntry
+except ImportError:
+    from state import Trade, MarketState, SignalEntry
+
+@dataclass
+class MyStrategy:
+    name: str = "my_strategy"
+
+    # Parameters
+    threshold: float = 0.70
+    min_trades: int = 25
+
+    # Internal state
+    _signaled_markets: Dict[str, bool] = field(default_factory=dict)
+
+    def on_trade(self, trade: Trade, state: MarketState) -> Optional[SignalEntry]:
+        """
+        Called AFTER state.update(trade). Return SignalEntry if signal fires.
+
+        CRITICAL: Only use information available at this moment!
+        - state.total_trades, state.yes_ratio, state.price_drop are OK
+        - Looking at future trades or final settlement is FORBIDDEN
+        """
+        # Already signaled this market?
+        if state.market_ticker in self._signaled_markets:
+            return None
+
+        # Check conditions
+        if state.total_trades < self.min_trades:
+            return None
+        if state.yes_ratio < self.threshold:
+            return None
+
+        # Signal fires!
+        self._signaled_markets[state.market_ticker] = True
+
+        return SignalEntry(
+            market_ticker=state.market_ticker,
+            signal_time=trade.timestamp,
+            entry_price_cents=100 - state.last_yes_price,  # NO price
+            side='no',
+            signal_strength=1.0,
+            metadata={'yes_ratio': state.yes_ratio}
+        )
+
+    def get_parameters(self) -> Dict[str, Any]:
+        return {'threshold': self.threshold, 'min_trades': self.min_trades}
+
+    def reset(self) -> None:
+        self._signaled_markets.clear()
+```
+
+2. **Register in `__init__.py`**:
+```python
+from .my_strategy import MyStrategy
+__all__ = [..., 'MyStrategy']
+```
+
+3. **Add to `run_backtest.py`** or create custom runner.
+
+#### Validation Criteria
+
+A strategy **passes validation** when:
+1. **Bucket-matched edge > 0%** - Edge after controlling for entry price distribution
+2. **Statistically significant** - p < 0.05
+3. **Low concentration** - No >30% of signals from single market
+4. **Positive edge across buckets** - Not just cheap/expensive contracts
+
+#### Available Signals (from `signals.py`)
+
+| Signal | Description | Usage |
+|--------|-------------|-------|
+| `yes_ratio(state)` | YES trades / total trades | `if yes_ratio(state) > 0.7` |
+| `price_drop(state)` | Open price - current (cents) | `if price_drop(state) > 5` |
+| `total_trades(state)` | Total trade count | `if total_trades(state) >= 25` |
+| `current_no_price(state)` | 100 - last YES price | Entry price for NO bets |
+| `trade_velocity(state, time)` | Trades per minute | Activity indicator |
+
+#### LSD Mode (Lateral Strategy Discovery)
+
+When user says "LSD mode", enter rapid exploration:
+- **Speed over rigor**: Quick edge checks, skip full validation
 - **Lower threshold**: Flag anything with raw edge > 5%
-- **Absurdity encouraged**: Moon phases, fibonacci trade counts, 4+ signal mega-stacks
-- **Volume over quality**: Test 10 ideas to find 1 good one
+- **Absurdity encouraged**: Test weird hypotheses
+- **Point-in-time required**: Even in LSD mode, use the framework!
 
-User says "normal mode" to return to rigorous bucket-matched validation.
+User says "normal mode" to return to rigorous validation.
 
-**Self-Improvement Mandate**
+#### Research → Production Path
+
+1. **Research strategy** validates in `research/backtest/strategies/`
+2. **Production plugin** implements at `backend/src/kalshiflow_rl/traderv3/strategies/plugins/`
+3. **Key differences**:
+   - Research: Pure signal logic, single `on_trade()` method
+   - Production: Adds orderbook filters, position management, rate limiting
+
+#### Self-Improvement Mandate
+
 The quant MUST continuously improve tooling:
-1. **Never write duplicate code** - if you've done it before, use/extend the framework
-2. **Automate repetitive tasks** - if it takes >10 min and you'll do it again, script it
-3. **Track improvements needed** - add ideas to `research/TOOLING_BACKLOG.md`
-4. **After each session**: Ask "What could be automated?" and either do it or log it
+1. **Never write ad-hoc analysis scripts** - Use/extend the framework
+2. **Add new signals to `signals.py`** - Reusable building blocks
+3. **Track improvements** - Add ideas to `research/TOOLING_BACKLOG.md`
 
-See `research/LSD_MODE_INSTRUCTIONS.md` for full details including:
-- Validation framework usage
-- Signal field reference
-- Tooling self-improvement principles
-- Data management procedures
+See `research/LSD_MODE_INSTRUCTIONS.md` for additional details.
 
 ## Managing RL Session Data
 
