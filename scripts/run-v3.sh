@@ -108,7 +108,7 @@ if [ "$ENVIRONMENT" = "paper" ]; then
     # Trading client settings
     export V3_ENABLE_TRADING_CLIENT="true"
     export V3_TRADING_MAX_ORDERS="1000"
-    export V3_TRADING_MAX_POSITION_SIZE="100"
+    export V3_TRADING_MAX_POSITION_SIZE="200"
 
     # RLM (Reverse Line Movement) strategy - validated edge
     # ALWAYS use RLM for paper trading - this is the primary strategy

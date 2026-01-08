@@ -185,30 +185,34 @@ DecisionBox.displayName = 'DecisionBox';
 /**
  * Calculate position metrics for a single position
  * Centralized to avoid code duplication
+ *
+ * CRITICAL: Uses backend-provided values (total_cost, current_value, unrealized_pnl)
+ * instead of recalculating. The backend computes these from:
+ * - total_cost: tracked filled orders (or market_exposure approximation)
+ * - current_value: current_price × quantity from live market data
+ * - unrealized_pnl: current_value - total_cost
  */
 const calcPositionMetrics = (pos) => {
   const qty = Math.abs(pos.position || 0);
   if (qty === 0) {
-    return { qty: 0, costPerContract: 0, valuePerContract: 0, totalCost: 0, totalValue: 0, unrealizedPnL: 0 };
+    return { qty: 0, costPerContract: 0, valuePerContract: 0, totalCost: 0, totalValue: 0, unrealizedPnL: 0, costBasisEstimated: true };
   }
 
-  const costPerContract = Math.round((pos.total_traded || 0) / qty);
-  const kalshiValuePerContract = Math.round((pos.market_exposure || 0) / qty);
+  // Use backend-provided cost basis (computed from tracked filled orders)
+  const totalCost = pos.total_cost ?? pos.market_exposure ?? 0;
+  const costPerContract = Math.round(totalCost / qty);
 
-  let valuePerContract;
-  if (pos.market_last > 0) {
-    valuePerContract = pos.side === 'no' ? (100 - pos.market_last) : pos.market_last;
-  } else if (pos.market_bid > 0) {
-    valuePerContract = pos.market_bid;
-  } else {
-    valuePerContract = kalshiValuePerContract;
-  }
+  // Use backend-provided current value (computed from market price × qty)
+  const totalValue = pos.current_value ?? pos.market_exposure ?? 0;
+  const valuePerContract = Math.round(totalValue / qty);
 
-  const totalCost = costPerContract * qty;
-  const totalValue = valuePerContract * qty;
-  const unrealizedPnL = totalValue - totalCost;
+  // Use backend-provided unrealized P&L (already computed correctly)
+  const unrealizedPnL = pos.unrealized_pnl ?? (totalValue - totalCost);
 
-  return { qty, costPerContract, valuePerContract, totalCost, totalValue, unrealizedPnL };
+  // Track if cost basis is estimated (for UI indicator)
+  const costBasisEstimated = pos.cost_basis_estimated ?? true;
+
+  return { qty, costPerContract, valuePerContract, totalCost, totalValue, unrealizedPnL, costBasisEstimated };
 };
 
 /**
