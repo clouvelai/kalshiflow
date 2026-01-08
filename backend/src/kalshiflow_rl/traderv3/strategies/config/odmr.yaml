@@ -1,0 +1,75 @@
+# ODMR Strategy Configuration
+# Orderbook-Driven Mean Reversion: Buy dips with optional whale/orderbook filters
+#
+# Base Strategy - Validated Backtest Results (85k journeys):
+#   - 85.1% win rate
+#   - +$4,492.88 total P&L
+#   - Profit factor: 2.26
+#   - Average +5.3c per journey
+#
+# ODMR Enhancements (toggle for A/B testing):
+#   - Tier 1 Whale Filter: Require recent whale YES trade (2x avg)
+#   - Tier 2 Orderbook Filter: Stricter spread (2c), bid imbalance
+
+name: odmr
+enabled: true
+display_name: "ODMR (Orderbook-Driven Mean Reversion)"
+
+# ============================================================
+# Position Limits
+# ============================================================
+max_positions: 5              # Max concurrent open positions
+max_exposure_cents: 25000     # $250 max total exposure (50 contracts * 5 positions)
+max_per_market: 50            # Max contracts per market
+max_trades_per_minute: 10     # Rate limit
+
+# ============================================================
+# Strategy Parameters
+# ============================================================
+params:
+  # ---------------------------------------------------------
+  # Dip Detection
+  # ---------------------------------------------------------
+  dip_threshold_cents: 10       # Minimum drop from rolling high to trigger
+  min_trades_before_dip: 5      # Ensure liquidity before considering dips
+  price_floor_cents: 15         # Minimum YES price to consider
+  price_ceiling_cents: 85       # Maximum YES price to consider
+
+  # ---------------------------------------------------------
+  # Entry
+  # ---------------------------------------------------------
+  entry_contracts: 50           # Contracts per entry (increased from 10)
+  entry_spread_max_cents: 8     # Max spread to allow entry (non-ODMR mode)
+
+  # ---------------------------------------------------------
+  # Exit
+  # ---------------------------------------------------------
+  recovery_target_cents: 5      # Exit when price recovers this much
+  timeout_seconds: 900          # 15 minutes timeout
+  stop_loss_cents: 40           # Wide stop - validated as optimal
+                                # NOTE: Tight stop (10c) HURTS performance!
+
+  # ---------------------------------------------------------
+  # Monitoring
+  # ---------------------------------------------------------
+  broadcast_throttle_ms: 500    # Throttle state broadcasts
+  decision_history_size: 100    # Keep last N decisions
+
+  # ---------------------------------------------------------
+  # ODMR Tier 1: Whale Filter (A/B Testing)
+  # ---------------------------------------------------------
+  # When enabled, only allows entries when a recent whale YES trade is detected
+  # A "whale" trade is >= whale_multiplier * average trade size
+  enable_whale_filter: false      # Toggle for A/B testing
+  whale_multiplier: 2.0           # Trade is "whale" if >= 2x average
+  whale_lookback: 5               # Check last N trades for whale
+  min_history_for_whale: 10       # Min trades before calculating avg
+
+  # ---------------------------------------------------------
+  # ODMR Tier 2: Orderbook Filter (A/B Testing)
+  # ---------------------------------------------------------
+  # When enabled, applies stricter spread requirements and requires
+  # bullish orderbook imbalance (bid_depth > ask_depth)
+  use_orderbook_filtering: true   # ENABLED - stricter spread + bid imbalance
+  odmr_spread_max_cents: 2        # Stricter spread (vs 8c default)
+  require_bid_imbalance: true     # Require bid_depth > ask_depth

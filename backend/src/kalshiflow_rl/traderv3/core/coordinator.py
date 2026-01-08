@@ -558,6 +558,7 @@ class V3Coordinator:
                     state_container=self._state_container,
                     orderbook_integration=self._orderbook_integration,
                     tracked_markets=self._tracked_markets_state,
+                    trading_client_integration=self._trading_client_integration,
                 )
 
                 # Create and initialize the strategy coordinator

@@ -1,4 +1,4 @@
-import React, { useState, memo, useMemo } from 'react';
+import React, { useState, useEffect, memo, useMemo } from 'react';
 import {
   ChevronRight,
   ChevronDown,
@@ -34,15 +34,14 @@ const STRATEGY_CONFIG = {
     borderClass: 'border-violet-700/30',
     textClass: 'text-violet-400',
   },
-  // Example for future strategy:
-  // s013: {
-  //   label: 'S013',
-  //   description: 'Strategy 013',
-  //   accentColor: 'emerald',
-  //   bgClass: 'bg-emerald-900/20',
-  //   borderClass: 'border-emerald-700/30',
-  //   textClass: 'text-emerald-400',
-  // },
+  odmr: {
+    label: 'ODMR',
+    description: 'Dip Buyer / Mean Reversion',
+    accentColor: 'amber',
+    bgClass: 'bg-amber-900/20',
+    borderClass: 'border-amber-700/30',
+    textClass: 'text-amber-400',
+  },
 };
 
 const getStrategyConfig = (strategyId) => {
@@ -82,6 +81,45 @@ const HealthBadge = memo(({ healthy, running }) => {
 });
 
 HealthBadge.displayName = 'HealthBadge';
+
+/**
+ * StrategyTabs - Tab bar for switching between strategies
+ * Only shown when 2+ strategies are available
+ */
+const StrategyTabs = memo(({ strategies, activeId, onSelect }) => {
+  if (strategies.length <= 1) return null;
+
+  return (
+    <div className="flex space-x-1 mb-4 bg-gray-800/30 rounded-lg p-1">
+      {strategies.map(([id, data]) => {
+        const config = getStrategyConfig(id);
+        const isActive = id === activeId;
+        const isRunning = data?.status?.running;
+
+        return (
+          <button
+            key={id}
+            onClick={() => onSelect(id)}
+            className={`
+              px-4 py-2 rounded-md text-xs font-medium transition-all
+              ${isActive
+                ? `${config.bgClass} ${config.textClass} ${config.borderClass} border`
+                : 'text-gray-400 hover:text-gray-300 hover:bg-gray-800/50'
+              }
+            `}
+          >
+            {config.label}
+            {isRunning && (
+              <span className="ml-2 w-1.5 h-1.5 rounded-full bg-green-500 inline-block" />
+            )}
+          </button>
+        );
+      })}
+    </div>
+  );
+});
+
+StrategyTabs.displayName = 'StrategyTabs';
 
 /**
  * StatBox - Primary metrics display
@@ -217,11 +255,61 @@ const ConfigSection = memo(({ config }) => {
 ConfigSection.displayName = 'ConfigSection';
 
 /**
- * DecisionRow - Row in the recent decisions table
+ * Format P&L with color coding - defined outside component for performance
  */
-const DecisionRow = memo(({ decision }) => {
-  const isExecuted = decision.action === 'executed' || decision.action === 'reentry';
+const formatPnl = (pnlCents) => {
+  if (pnlCents === null || pnlCents === undefined) return null;
+  const prefix = pnlCents > 0 ? '+' : '';
+  return {
+    text: `${prefix}${pnlCents}c`,
+    colorClass: pnlCents > 0 ? 'text-green-400' : pnlCents < 0 ? 'text-red-400' : 'text-gray-400'
+  };
+};
+
+/**
+ * DecisionRow - Row in the recent decisions table
+ * Renders strategy-specific columns based on strategyId
+ */
+const DecisionRow = memo(({ decision, strategyId }) => {
+  const isExecuted = decision.action === 'executed' || decision.action === 'reentry' ||
+                     decision.action === 'entry_placed' || decision.action?.startsWith('exit_');
   const isSkipped = decision.action?.startsWith('skipped');
+
+  // Render strategy-specific columns
+  const renderStrategyColumns = () => {
+    if (strategyId === 'odmr') {
+      const pnl = formatPnl(decision.pnl_cents);
+      return (
+        <>
+          <td className="px-2 py-2 text-right">
+            <span className="text-xs text-gray-400">
+              {decision.dip_depth != null ? `${decision.dip_depth}c` : '—'}
+            </span>
+          </td>
+          <td className="px-2 py-2 text-right">
+            <span className={`text-xs ${pnl?.colorClass || 'text-gray-400'}`}>
+              {pnl?.text || '—'}
+            </span>
+          </td>
+        </>
+      );
+    }
+    // Default: RLM_NO columns
+    return (
+      <>
+        <td className="px-2 py-2 text-right">
+          <span className="text-xs text-gray-400">
+            {decision.yes_ratio != null ? `${(decision.yes_ratio * 100).toFixed(0)}%` : '—'}
+          </span>
+        </td>
+        <td className="px-2 py-2 text-right">
+          <span className="text-xs text-gray-400">
+            {decision.price_drop != null ? `${decision.price_drop}c` : '—'}
+          </span>
+        </td>
+      </>
+    );
+  };
 
   return (
     <tr className="border-b border-gray-700/20 hover:bg-gray-800/30 transition-colors">
@@ -240,19 +328,10 @@ const DecisionRow = memo(({ decision }) => {
               : 'bg-red-900/30 text-red-400 border border-red-600/20'
           }
         `}>
-          {decision.action?.replace('skipped_', '').toUpperCase() || 'UNKNOWN'}
+          {decision.action?.replace('skipped_', '').replace('exit_', '').toUpperCase() || 'UNKNOWN'}
         </span>
       </td>
-      <td className="px-2 py-2 text-right">
-        <span className="text-xs text-gray-400">
-          {decision.yes_ratio ? `${(decision.yes_ratio * 100).toFixed(0)}%` : '—'}
-        </span>
-      </td>
-      <td className="px-2 py-2 text-right">
-        <span className="text-xs text-gray-400">
-          {decision.price_drop ? `${decision.price_drop}c` : '—'}
-        </span>
-      </td>
+      {renderStrategyColumns()}
       <td className="px-2 py-2 text-right">
         <span className="font-mono text-gray-500 text-[10px]">
           {formatAge(decision.age_seconds)}
@@ -266,13 +345,33 @@ DecisionRow.displayName = 'DecisionRow';
 
 /**
  * RecentDecisionsSection - Collapsible table of recent decisions
+ * Renders strategy-specific column headers based on strategyId
  */
-const RecentDecisionsSection = memo(({ decisions }) => {
+const RecentDecisionsSection = memo(({ decisions, strategyId }) => {
   const [isExpanded, setIsExpanded] = useState(false);
 
   if (!decisions || decisions.length === 0) {
     return null;
   }
+
+  // Render strategy-specific column headers
+  const renderColumnHeaders = () => {
+    if (strategyId === 'odmr') {
+      return (
+        <>
+          <th className="px-2 py-1.5 text-right text-[9px] text-gray-500 uppercase font-semibold">Dip</th>
+          <th className="px-2 py-1.5 text-right text-[9px] text-gray-500 uppercase font-semibold">P&L</th>
+        </>
+      );
+    }
+    // Default: RLM_NO column headers
+    return (
+      <>
+        <th className="px-2 py-1.5 text-right text-[9px] text-gray-500 uppercase font-semibold">YES%</th>
+        <th className="px-2 py-1.5 text-right text-[9px] text-gray-500 uppercase font-semibold">Drop</th>
+      </>
+    );
+  };
 
   return (
     <div className="border border-gray-700/30 rounded-lg overflow-hidden">
@@ -299,14 +398,13 @@ const RecentDecisionsSection = memo(({ decisions }) => {
               <tr className="border-b border-gray-700/40">
                 <th className="px-2 py-1.5 text-left text-[9px] text-gray-500 uppercase font-semibold">Market</th>
                 <th className="px-2 py-1.5 text-center text-[9px] text-gray-500 uppercase font-semibold">Action</th>
-                <th className="px-2 py-1.5 text-right text-[9px] text-gray-500 uppercase font-semibold">YES%</th>
-                <th className="px-2 py-1.5 text-right text-[9px] text-gray-500 uppercase font-semibold">Drop</th>
+                {renderColumnHeaders()}
                 <th className="px-2 py-1.5 text-right text-[9px] text-gray-500 uppercase font-semibold">Age</th>
               </tr>
             </thead>
             <tbody>
               {decisions.map((d, idx) => (
-                <DecisionRow key={d.signal_id || idx} decision={d} />
+                <DecisionRow key={d.signal_id || idx} decision={d} strategyId={strategyId} />
               ))}
             </tbody>
           </table>
@@ -362,23 +460,28 @@ const formatUptime = (seconds) => {
  */
 const TradingStrategiesPanel = ({ strategyStatus }) => {
   const [isExpanded, setIsExpanded] = useState(true);
+  const [activeStrategy, setActiveStrategy] = useState('rlm_no');
 
   const coordinator = strategyStatus?.coordinator || {};
   const strategies = strategyStatus?.strategies || {};
   const recentDecisions = strategyStatus?.recent_decisions || [];
 
   const hasStrategies = Object.keys(strategies).length > 0;
-
-  // MULTI-STRATEGY REFACTOR: Currently displays only the first strategy.
-  // To support multiple strategies:
-  // 1. Create a <StrategyCard> component that renders one strategy's metrics
-  // 2. Replace the single-strategy rendering below with:
-  //    {strategyEntries.map(([id, data]) => <StrategyCard key={id} id={id} data={data} />)}
-  // 3. Consider tabs or grid layout for 2+ strategies
-  // 4. The backend already sends all strategies in strategyStatus.strategies
   const strategyEntries = Object.entries(strategies);
-  const primaryStrategy = strategyEntries[0];
-  const [strategyId, strategyData] = primaryStrategy || ['', null];
+
+  // Auto-select first strategy if none selected or current selection is invalid
+  useEffect(() => {
+    if (strategyEntries.length > 0) {
+      const validIds = strategyEntries.map(([id]) => id);
+      if (!activeStrategy || !validIds.includes(activeStrategy)) {
+        setActiveStrategy(strategyEntries[0][0]);
+      }
+    }
+  }, [strategyEntries, activeStrategy]);
+
+  // Get active strategy data (tab-based selection)
+  const strategyId = activeStrategy || strategyEntries[0]?.[0] || '';
+  const strategyData = strategies[strategyId] || null;
   const strategyConfig = getStrategyConfig(strategyId);
 
   // Extract strategy data
@@ -394,6 +497,14 @@ const TradingStrategiesPanel = ({ strategyStatus }) => {
     if (total === 0) return 0;
     return (skipped / total * 100).toFixed(1);
   }, [strategyData?.performance?.signals_detected, strategyData?.performance?.signals_skipped]);
+
+  // Filter decisions by active strategy tab
+  const filteredDecisions = useMemo(() => {
+    if (!activeStrategy) return recentDecisions;
+    return recentDecisions.filter(d =>
+      !d.strategy_id || d.strategy_id === activeStrategy
+    );
+  }, [recentDecisions, activeStrategy]);
 
   return (
     <div className="
@@ -447,6 +558,13 @@ const TradingStrategiesPanel = ({ strategyStatus }) => {
 
       {isExpanded && (
         <>
+          {/* Strategy Tabs - only shown when 2+ strategies */}
+          <StrategyTabs
+            strategies={strategyEntries}
+            activeId={activeStrategy}
+            onSelect={setActiveStrategy}
+          />
+
           {hasStrategies && strategyData ? (
             <>
               {/* Primary Metrics Grid */}
@@ -509,7 +627,7 @@ const TradingStrategiesPanel = ({ strategyStatus }) => {
               {/* Collapsible Sections */}
               <div className="space-y-3">
                 <ConfigSection config={config} />
-                <RecentDecisionsSection decisions={recentDecisions} />
+                <RecentDecisionsSection decisions={filteredDecisions} strategyId={strategyId} />
               </div>
             </>
           ) : (

@@ -6,9 +6,12 @@ No dollar conversions, no derived calculations.
 Just raw data from Kalshi API.
 """
 
+import logging
 import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Any, Optional
+
+logger = logging.getLogger("kalshiflow_rl.traderv3.state.trader_state")
 
 
 @dataclass
@@ -94,6 +97,10 @@ class TraderState:
             ticker = pos.get("ticker")
             # Only include positions with actual holdings (non-zero position count)
             if ticker and pos.get("position", 0) != 0:
+                # NOTE: total_traded is CUMULATIVE volume, NOT cost basis!
+                # This is expected to be larger than position * 100 for markets with trading history.
+                # The TradingAttachment system computes correct cost basis from filled orders.
+
                 positions_by_ticker[ticker] = pos
         
         # Extract orders by order_id - only include RESTING (open) orders

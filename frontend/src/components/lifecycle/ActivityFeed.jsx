@@ -214,6 +214,37 @@ function getEventStyle(eventType, event = {}) {
         typeColor: 'bg-blue-500/20 text-blue-400',
         bgColor: 'bg-blue-900/5'
       };
+    // ODMR strategy events (dip buyer / mean reversion)
+    case 'odmr_entry':
+      return {
+        typeLabel: 'DIP',
+        typeColor: 'bg-amber-500/20 text-amber-400',
+        bgColor: 'bg-amber-900/5'
+      };
+    case 'odmr_exit_target':
+      return {
+        typeLabel: 'TARGET',
+        typeColor: 'bg-green-500/20 text-green-400',
+        bgColor: 'bg-green-900/5'
+      };
+    case 'odmr_exit_timeout':
+      return {
+        typeLabel: 'TIMEOUT',
+        typeColor: 'bg-yellow-500/20 text-yellow-400',
+        bgColor: 'bg-yellow-900/5'
+      };
+    case 'odmr_exit_stop_loss':
+      return {
+        typeLabel: 'STOP',
+        typeColor: 'bg-red-500/20 text-red-400',
+        bgColor: 'bg-red-900/5'
+      };
+    case 'odmr_sync_warning':
+      return {
+        typeLabel: 'SYNC',
+        typeColor: 'bg-yellow-500/20 text-yellow-400',
+        bgColor: 'bg-yellow-900/10'
+      };
     // Event exposure alerts (correlated positions across related markets)
     case 'event_alert': {
       const level = event.metadata?.level || 'info';
@@ -307,6 +338,54 @@ function formatEventMessage(event) {
       return event.reason || event.metadata?.message || 'Order filled';
     case 'order_placed':
       return event.reason || event.metadata?.message || 'Order placed';
+    // ODMR strategy events (dip buyer / mean reversion)
+    case 'odmr_entry': {
+      const meta = event.metadata || {};
+      const ticker = meta.market?.split('-').slice(-1)[0] || meta.market || '';
+      const dipDepth = meta.dip_depth;
+      const entryPrice = meta.entry_price;
+      if (dipDepth && entryPrice) {
+        return `${ticker} dip ${dipDepth}c, buying YES @ ${entryPrice}c`;
+      }
+      return event.reason || `Dip entry: ${ticker}`;
+    }
+    case 'odmr_exit_target': {
+      const meta = event.metadata || {};
+      const ticker = meta.market?.split('-').slice(-1)[0] || meta.market || '';
+      const pnl = meta.pnl_cents;
+      if (pnl !== undefined) {
+        return `${ticker} target hit +${pnl}c`;
+      }
+      return event.reason || `Target exit: ${ticker}`;
+    }
+    case 'odmr_exit_timeout': {
+      const meta = event.metadata || {};
+      const ticker = meta.market?.split('-').slice(-1)[0] || meta.market || '';
+      const pnl = meta.pnl_cents;
+      if (pnl !== undefined) {
+        const sign = pnl >= 0 ? '+' : '';
+        return `${ticker} timeout ${sign}${pnl}c`;
+      }
+      return event.reason || `Timeout exit: ${ticker}`;
+    }
+    case 'odmr_exit_stop_loss': {
+      const meta = event.metadata || {};
+      const ticker = meta.market?.split('-').slice(-1)[0] || meta.market || '';
+      const pnl = meta.pnl_cents;
+      if (pnl !== undefined) {
+        return `${ticker} stop loss ${pnl}c`;
+      }
+      return event.reason || `Stop loss: ${ticker}`;
+    }
+    case 'odmr_sync_warning': {
+      const meta = event.metadata || {};
+      const ticker = meta.market?.split('-').slice(-1)[0] || meta.market || '';
+      const warning = meta.warning || meta.message;
+      if (warning) {
+        return `${ticker}: ${warning}`;
+      }
+      return event.reason || `Sync warning: ${ticker}`;
+    }
     // Event exposure alerts (correlated positions across related markets)
     case 'event_alert': {
       // Use the reason/message field which contains the formatted alert message

@@ -164,17 +164,46 @@ class TrackedMarketPosition:
 
     @classmethod
     def from_kalshi_position(cls, position_data: Dict[str, Any]) -> 'TrackedMarketPosition':
-        """Create from Kalshi API position data (from sync)."""
+        """
+        Create from Kalshi API position data (from sync).
+
+        WARNING: The REST API's 'total_traded' field is CUMULATIVE volume across all
+        trades in the market, NOT the cost basis of the current position. This means
+        avg_entry_price computed here is INCORRECT for positions with trading history.
+
+        The StateContainer._sync_trading_attachments() method overrides these values
+        with correct cost basis computed from our tracked filled orders when available.
+
+        For positions without tracked orders (e.g., from before session start),
+        we use market_exposure as an approximation since total_traded is unreliable.
+        """
         position_count = position_data.get("position", 0)
         side = "yes" if position_count > 0 else "no"
         count = abs(position_count)
 
-        # Correct field names from TraderState.positions
-        total_cost = position_data.get("total_traded", 0)  # Entry cost (cost basis)
-        current_value = position_data.get("market_exposure", 0)  # Current market value
+        # REST API's total_traded is CUMULATIVE volume, NOT cost basis!
+        # Use market_exposure as a more reasonable approximation when we don't have our own order data
+        # The state_container will override this with correct values from filled orders when available
+        current_value = position_data.get("market_exposure", 0)
 
-        # Calculate avg entry price (no direct field available)
+        # For pre-existing positions without our order tracking, use market_exposure as approximation
+        # This gives a reasonable estimate (position value at current market price)
+        # It's not perfect but better than total_traded which includes all historical trades
+        total_cost = current_value  # Approximation - will be overridden if we have filled orders
+
+        # Calculate avg entry price from approximation
         avg_entry = round(total_cost / count) if count > 0 else 0
+
+        # Validate entry price is in valid range
+        if avg_entry > 100:
+            ticker = position_data.get("ticker", "unknown")
+            logger.warning(
+                f"Position {ticker}: entry price approximation {avg_entry}c > 100c - "
+                f"likely pre-session position without tracked orders. Using 0 as placeholder."
+            )
+            # Can't reliably determine entry price - set to 0 to indicate unknown
+            avg_entry = 0
+            total_cost = 0
 
         return cls(
             side=side,
@@ -182,7 +211,7 @@ class TrackedMarketPosition:
             avg_entry_price=avg_entry,
             total_cost=total_cost,
             current_value=current_value,
-            unrealized_pnl=current_value - total_cost,
+            unrealized_pnl=0 if total_cost == 0 else current_value - total_cost,
             realized_pnl=position_data.get("realized_pnl", 0),
             fees_paid=position_data.get("fees_paid", 0),
             last_updated=time.time(),

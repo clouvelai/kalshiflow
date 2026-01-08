@@ -209,6 +209,7 @@ class RLMDecision:
         order_id: Kalshi order ID if executed
         signal_data: Original signal data for reference
         decision_metrics: Metrics at decision time (spread_vol, queue_wait, etc.)
+        strategy_id: Strategy identifier for frontend filtering
     """
     signal_id: str
     timestamp: float
@@ -217,6 +218,7 @@ class RLMDecision:
     order_id: Optional[str] = None
     signal_data: Optional[Dict[str, Any]] = None
     decision_metrics: Optional[Dict[str, Any]] = None
+    strategy_id: str = "rlm_no"
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for WebSocket transport."""
@@ -227,6 +229,7 @@ class RLMDecision:
             "reason": self.reason,
             "order_id": self.order_id[:8] if self.order_id else None,
             "age_seconds": int(time.time() - self.timestamp),
+            "strategy_id": self.strategy_id,
         }
         if self.signal_data:
             result["market_ticker"] = self.signal_data.get("market_ticker", "")
@@ -335,6 +338,7 @@ class RLMNoStrategy:
             "signals_skipped": 0,
             "signals_skipped_maxed": 0,
             "reentries": 0,
+            "reentries_blocked_losing": 0,  # Reentries blocked because position was losing
             "orderbook_fallbacks": 0,
             # Granular skip tracking (in-memory)
             "skips_spread_volatility": 0,
@@ -582,6 +586,7 @@ class RLMNoStrategy:
             "signals_skipped": self._stats["signals_skipped"],
             "rate_limited_count": self._rate_limited_count,
             "reentries": self._stats["reentries"],
+            "reentries_blocked_losing": self._stats["reentries_blocked_losing"],
             # Granular skip breakdown (in-memory telemetry)
             "skip_breakdown": {
                 "spread_volatility": self._stats.get("skips_spread_volatility", 0),
@@ -910,11 +915,23 @@ class RLMNoStrategy:
         if current_position_count >= self._max_concurrent and not is_reentry:
             return None
 
-        # For re-entry, check if signal is stronger than entry
+        # For re-entry, only allow if existing position is winning
+        # Analysis shows: when 1st entry wins, reentries add value (+$119)
+        #                 when 1st entry loses, reentries compound losses (-$428)
+        #                 Zero mixed outcomes - all entries win or all lose together
         if is_reentry:
-            if state.entry_yes_ratio is not None and state.entry_price_drop is not None:
-                if state.yes_ratio <= state.entry_yes_ratio and state.price_drop <= state.entry_price_drop:
-                    return None
+            existing_position = positions.get(state.market_ticker, {})
+            market_exposure = existing_position.get("market_exposure", 0)
+            total_traded = existing_position.get("total_traded", 0)
+            unrealized_pnl = market_exposure - total_traded
+
+            if unrealized_pnl <= 0:
+                self._stats["reentries_blocked_losing"] += 1
+                logger.debug(
+                    f"Reentry blocked for {state.market_ticker}: "
+                    f"position losing (unrealized_pnl={unrealized_pnl}c)"
+                )
+                return None
 
         self._stats["signals_detected"] += 1
 

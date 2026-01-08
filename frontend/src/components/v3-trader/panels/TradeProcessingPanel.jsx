@@ -199,7 +199,7 @@ const TradeProcessingPanel = ({ tradeProcessing }) => {
   }, [tradeProcessing?.decisions]);
 
   const recentTrades = useMemo(() =>
-    tradeProcessing?.recent_trades || [],
+    (tradeProcessing?.recent_trades || []).slice(0, 100),
     [tradeProcessing?.recent_trades]
   );
 
@@ -310,7 +310,7 @@ const TradeProcessingPanel = ({ tradeProcessing }) => {
           <div className="
             bg-gradient-to-b from-gray-800/30 to-gray-900/30
             rounded-xl border border-gray-700/40
-            overflow-hidden
+            max-h-[280px] overflow-y-auto
           ">
             <table className="w-full text-sm">
               <thead>

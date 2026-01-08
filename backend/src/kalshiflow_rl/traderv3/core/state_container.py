@@ -1216,8 +1216,35 @@ class V3StateContainer:
                     if self._tracked_markets.is_tracked(ticker):
                         attachment = self.get_or_create_trading_attachment(ticker)
 
-                        # Create/update position from synced data
+                        # Create position from synced data (initial values from REST)
                         attachment.position = TrackedMarketPosition.from_kalshi_position(position_data)
+
+                        # CRITICAL FIX: Compute cost basis from our tracked filled orders
+                        # The REST API's total_traded is CUMULATIVE volume, not cost basis!
+                        # Our filled orders have the actual entry prices.
+                        filled_orders = [
+                            order for order in attachment.orders.values()
+                            if order.status == "filled" and order.fill_count > 0
+                        ]
+                        if filled_orders:
+                            # Compute cost basis from our tracked orders
+                            computed_cost = sum(
+                                order.fill_count * (order.fill_avg_price if order.fill_avg_price > 0 else order.price)
+                                for order in filled_orders
+                            )
+                            computed_count = sum(order.fill_count for order in filled_orders)
+                            if computed_count > 0:
+                                computed_avg_entry = round(computed_cost / computed_count)
+                                # Only use computed values if they're valid (0-100c range)
+                                if 0 < computed_avg_entry <= 100:
+                                    attachment.position.total_cost = computed_cost
+                                    attachment.position.avg_entry_price = computed_avg_entry
+                                    attachment.position.unrealized_pnl = attachment.position.current_value - computed_cost
+                                    logger.debug(
+                                        f"Cost basis for {ticker} computed from {len(filled_orders)} filled orders: "
+                                        f"{computed_avg_entry}c (count={computed_count}, cost={computed_cost}c)"
+                                    )
+
                         attachment.update_trading_state()
                         attachment.bump_version()
                         synced_count += 1

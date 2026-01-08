@@ -26,6 +26,7 @@ if TYPE_CHECKING:
     from ..services.trading_decision_service import TradingDecisionService
     from ..core.state_container import V3StateContainer
     from ..clients.orderbook_integration import V3OrderbookIntegration
+    from ..clients.trading_client_integration import V3TradingClientIntegration
     from ..state.tracked_markets import TrackedMarketsState
     from .coordinator import StrategyConfig
 
@@ -44,6 +45,7 @@ class StrategyContext:
         state_container: Container for trading state (positions, orders, etc.)
         orderbook_integration: Integration for orderbook data access
         tracked_markets: State container for lifecycle-discovered markets
+        trading_client_integration: Direct access to trading client for order management
         config: Strategy configuration loaded from YAML (optional)
     """
     event_bus: 'EventBus'
@@ -51,6 +53,7 @@ class StrategyContext:
     state_container: 'V3StateContainer'
     orderbook_integration: 'V3OrderbookIntegration'
     tracked_markets: Optional['TrackedMarketsState']
+    trading_client_integration: Optional['V3TradingClientIntegration'] = None
     config: Optional['StrategyConfig'] = None
 
     def to_dict(self) -> Dict[str, Any]:
@@ -61,6 +64,7 @@ class StrategyContext:
             "state_container": "connected" if self.state_container else "not available",
             "orderbook_integration": "connected" if self.orderbook_integration else "not available",
             "tracked_markets": "connected" if self.tracked_markets else "not available",
+            "trading_client_integration": "connected" if self.trading_client_integration else "not available",
             "config": self.config.name if self.config else "not loaded",
         }
 
