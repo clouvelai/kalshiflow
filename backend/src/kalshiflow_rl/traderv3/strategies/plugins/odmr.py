@@ -92,6 +92,8 @@ class DipMarketState:
 
     # Position state (when we have an open position)
     position_open: bool = False
+    pending_entry: bool = False     # Blocks duplicate signals while order is pending
+    pending_entry_time: Optional[float] = None  # When pending_entry was set (for timeout)
     entry_price: int = 0            # YES entry price in cents
     entry_time: Optional[datetime] = None
     contracts_held: int = 0
@@ -101,6 +103,9 @@ class DipMarketState:
     # Exit retry tracking
     exit_retry_count: int = 0                       # Number of exit retries attempted
     last_exit_attempt_time: Optional[datetime] = None  # When we last tried to exit
+
+    # Fill timestamp tracking (for position cache freshness)
+    last_fill_time: Optional[float] = None  # Unix timestamp of last fill event
 
     # Signal tracking
     dip_detected_at: Optional[float] = None
@@ -118,6 +123,7 @@ class DipMarketState:
             "current_price": self.current_price,
             "trade_count": self.trade_count,
             "position_open": self.position_open,
+            "pending_entry": self.pending_entry,
             "entry_price": self.entry_price,
             "entry_time": self.entry_time.isoformat() if self.entry_time else None,
             "contracts_held": self.contracts_held,
@@ -314,7 +320,7 @@ class ODMRStrategy:
 
         # ODMR Tier 2: Orderbook Filter (off by default for A/B testing)
         self._use_orderbook_filtering: bool = False
-        self._odmr_spread_max_cents: int = 2      # Stricter spread for ODMR
+        self._odmr_spread_max_cents: int = 4      # Relaxed from 2c (was too aggressive)
         self._require_bid_imbalance: bool = True  # Require bid_depth > ask_depth
 
         # Per-market state tracking
@@ -676,11 +682,14 @@ class ODMRStrategy:
 
         # Check if this is our entry fill (buying YES)
         if event.action == "buy" and event.side == "yes" and not state.position_open:
-            # Entry filled
+            # Entry filled - clear pending_entry flag since we have confirmed fill
+            state.pending_entry = False
+            state.pending_entry_time = None
             state.position_open = True
             state.entry_price = event.price_cents
             state.entry_time = datetime.now(timezone.utc)
             state.contracts_held = event.count
+            state.last_fill_time = time.time()  # Track fill timestamp for cache freshness
             state.target_exit_price = state.entry_price + self._recovery_target_cents
 
             self._open_positions.add(ticker)
@@ -878,8 +887,20 @@ class ODMRStrategy:
         if not self._context:
             return None
 
-        # Already have a position in this market
+        # Already have a position in this market (ODMR internal tracking)
         if state.position_open or state.market_ticker in self._open_positions:
+            return None
+
+        # Check for pre-existing position from any source (other strategies, previous sessions)
+        if self._has_existing_position(state.market_ticker):
+            logger.debug(
+                f"ODMR: Skipping dip signal for {state.market_ticker} - "
+                f"pre-existing position from another source"
+            )
+            return None
+
+        # Block if entry order is already pending (prevents duplicate orders)
+        if state.pending_entry:
             return None
 
         # Check minimum trades
@@ -1027,6 +1048,11 @@ class ODMRStrategy:
         if not state:
             return
 
+        # OPTIMISTIC LOCK: Set pending_entry immediately to block duplicate signals
+        # This prevents the race condition where fill event arrives after second signal
+        state.pending_entry = True
+        state.pending_entry_time = time.time()
+
         self._stats["entries_attempted"] += 1
 
         try:
@@ -1069,6 +1095,9 @@ class ODMRStrategy:
                         reason=f"Spread {current_spread}c > {spread_max}c max",
                         signal_data=signal.to_dict(),
                     )
+                    # ROLLBACK: Clear pending_entry since we're not placing an order
+                    state.pending_entry = False
+                    state.pending_entry_time = None
                     return
 
                 # ODMR Tier 2: Check bid imbalance (optional)
@@ -1091,6 +1120,9 @@ class ODMRStrategy:
                             reason="Bearish orderbook imbalance",
                             signal_data=signal.to_dict(),
                         )
+                        # ROLLBACK: Clear pending_entry since we're not placing an order
+                        state.pending_entry = False
+                        state.pending_entry_time = None
                         return
                     else:
                         self._stats["orderbook_filter_passed"] += 1
@@ -1167,6 +1199,9 @@ class ODMRStrategy:
                     reason="Order execution failed",
                     signal_data=signal.to_dict(),
                 )
+                # ROLLBACK: Clear pending_entry since order failed
+                state.pending_entry = False
+                state.pending_entry_time = None
 
         except Exception as e:
             logger.error(f"Error executing ODMR entry: {e}")
@@ -1176,6 +1211,9 @@ class ODMRStrategy:
                 reason=f"Exception: {str(e)}",
                 signal_data=signal.to_dict(),
             )
+            # ROLLBACK: Clear pending_entry since order failed with exception
+            state.pending_entry = False
+            state.pending_entry_time = None
 
     async def _place_target_exit(self, state: DipMarketState) -> None:
         """Place target exit order (limit sell YES at target price)."""
@@ -1482,6 +1520,7 @@ class ODMRStrategy:
         state.entry_price = 0
         state.entry_time = None
         state.contracts_held = 0
+        state.last_fill_time = None  # Reset fill timestamp
         state.exit_order_id = None
         state.target_exit_price = 0
         state.dip_detected_at = None
@@ -1524,6 +1563,22 @@ class ODMRStrategy:
                     break
 
                 now = datetime.now(timezone.utc)
+                current_time = time.time()
+
+                # Check for stale pending entries (fill event never arrived)
+                # Timeout after 60 seconds to prevent permanent blocking
+                PENDING_ENTRY_TIMEOUT = 60.0
+                for ticker, state in self._market_states.items():
+                    if state.pending_entry and state.pending_entry_time:
+                        elapsed = current_time - state.pending_entry_time
+                        if elapsed > PENDING_ENTRY_TIMEOUT:
+                            logger.warning(
+                                f"ODMR: Clearing stale pending_entry for {ticker} "
+                                f"(elapsed={elapsed:.1f}s > {PENDING_ENTRY_TIMEOUT}s)"
+                            )
+                            state.pending_entry = False
+                            state.pending_entry_time = None
+                            self._stats["pending_entry_timeouts"] = self._stats.get("pending_entry_timeouts", 0) + 1
 
                 for ticker in list(self._open_positions):
                     state = self._market_states.get(ticker)
@@ -1664,23 +1719,32 @@ class ODMRStrategy:
     # Position Verification Helpers
     # ============================================================
 
+    # Fill freshness threshold - trust ODMR's fill data within this window
+    FILL_FRESHNESS_THRESHOLD_SECONDS: float = 30.0
+
     async def _verify_position_for_exit(self, state: DipMarketState) -> int:
         """
         Verify actual position from trading state before placing sell orders.
 
-        Prevents trading errors when ODMR's tracked state becomes desynchronized
-        from the actual position (e.g., after manual interventions, order rejections,
-        or sync delays).
+        PRIORITY ORDER (to handle REST sync lag):
+        1. If ODMR has a recent fill (< 30s), trust contracts_held from fill event
+        2. Verify against attachment.position for sanity check
+        3. Log divergence but don't block exit when ODMR data is fresh
+
+        This prevents the race condition where:
+        - Entry fills → ODMR sets contracts_held = 25 (immediate)
+        - _verify_position_for_exit() reads stale attachment (from last REST sync)
+        - Exit order skipped due to "no position" from stale cache
 
         Args:
             state: DipMarketState containing tracked contracts_held
 
         Returns:
-            Actual contract count from trading attachment (0 if no position)
+            Contract count to use for exit order (ODMR's value if fresh, else attachment)
 
         Side Effects:
-            - Emits odmr_sync_warning activity event if mismatch detected
-            - Syncs state.contracts_held with actual position
+            - Emits odmr_sync_warning activity event if cache divergence detected
+            - May update state.contracts_held if attachment has fresher data
         """
         if not self._context or not self._context.state_container:
             logger.warning(
@@ -1688,14 +1752,58 @@ class ODMRStrategy:
             )
             return 0
 
+        # Check if ODMR has fresh position data from recent fill event
+        # This is the FIX: trust ODMR's fill event data over potentially stale REST sync
+        fill_age = time.time() - (state.last_fill_time or 0)
+        has_fresh_odmr_data = (
+            state.position_open and
+            state.contracts_held > 0 and
+            state.last_fill_time is not None and
+            fill_age < self.FILL_FRESHNESS_THRESHOLD_SECONDS
+        )
+
         attachment = self._context.state_container.get_trading_attachment(state.market_ticker)
+
+        if has_fresh_odmr_data:
+            # ODMR has recent fill data - trust it over potentially stale attachment
+            # Log divergence for observability but don't block the exit
+            if attachment and attachment.position:
+                actual_from_attachment = attachment.position.count
+                if actual_from_attachment != state.contracts_held:
+                    logger.info(
+                        f"ODMR: Position cache divergence {state.market_ticker}: "
+                        f"odmr_tracked={state.contracts_held}, attachment={actual_from_attachment}. "
+                        f"Using ODMR value (fill_age={fill_age:.1f}s < {self.FILL_FRESHNESS_THRESHOLD_SECONDS}s threshold)"
+                    )
+                    await self._context.event_bus.emit_system_activity(
+                        activity_type="odmr_cache_divergence",
+                        message=f"ODMR: Using fresh fill data for {state.market_ticker}: {state.contracts_held} contracts",
+                        metadata={
+                            "market": state.market_ticker,
+                            "odmr_contracts": state.contracts_held,
+                            "attachment_contracts": actual_from_attachment,
+                            "fill_age_seconds": round(fill_age, 1),
+                            "action": "trusting_odmr_fill"
+                        }
+                    )
+            else:
+                # No attachment yet (REST sync hasn't caught up) - this is expected
+                logger.debug(
+                    f"ODMR: Fresh fill data for {state.market_ticker}: {state.contracts_held} contracts "
+                    f"(no attachment yet, fill_age={fill_age:.1f}s)"
+                )
+
+            return state.contracts_held
+
+        # No fresh ODMR data - fall back to attachment verification (original logic)
+        # This handles cases like: manual intervention, order rejection, stale ODMR state
 
         # No trading attachment means no position
         if not attachment:
             if state.contracts_held > 0:
                 logger.warning(
                     f"ODMR: Position mismatch {state.market_ticker}: "
-                    f"tracked={state.contracts_held}, actual=0 (no attachment)"
+                    f"tracked={state.contracts_held}, actual=0 (no attachment, no recent fill)"
                 )
                 await self._context.event_bus.emit_system_activity(
                     activity_type="odmr_sync_warning",
@@ -1704,7 +1812,7 @@ class ODMRStrategy:
                         "market": state.market_ticker,
                         "tracked_contracts": state.contracts_held,
                         "actual_contracts": 0,
-                        "issue": "no_position"
+                        "issue": "no_attachment_stale_odmr"
                     }
                 )
                 state.contracts_held = 0
@@ -1715,7 +1823,7 @@ class ODMRStrategy:
             if state.contracts_held > 0:
                 logger.warning(
                     f"ODMR: Position mismatch {state.market_ticker}: "
-                    f"tracked={state.contracts_held}, actual=0 (no position in attachment)"
+                    f"tracked={state.contracts_held}, actual=0 (no position in attachment, no recent fill)"
                 )
                 await self._context.event_bus.emit_system_activity(
                     activity_type="odmr_sync_warning",
@@ -1724,7 +1832,7 @@ class ODMRStrategy:
                         "market": state.market_ticker,
                         "tracked_contracts": state.contracts_held,
                         "actual_contracts": 0,
-                        "issue": "no_position"
+                        "issue": "no_position_stale_odmr"
                     }
                 )
                 state.contracts_held = 0
@@ -1803,6 +1911,28 @@ class ODMRStrategy:
                 return True
 
         return False
+
+    def _has_existing_position(self, ticker: str) -> bool:
+        """
+        Check if there's already a position in this market from any source.
+
+        Used to prevent ODMR from entering markets where there's already a
+        position from other strategies (RLM), previous sessions, or manual trades.
+
+        Args:
+            ticker: Market ticker to check
+
+        Returns:
+            True if any position exists, False otherwise
+        """
+        if not self._context or not self._context.state_container:
+            return False
+
+        attachment = self._context.state_container.get_trading_attachment(ticker)
+        if not attachment or not attachment.position:
+            return False
+
+        return attachment.position.count > 0
 
     # ============================================================
     # Utility Methods

@@ -366,9 +366,13 @@ class V3StateContainer:
 
                 # Computed fields for UI stats
                 side = "yes" if is_yes_position else "no"
+                market_result = s.get("market_result", "").lower()
                 entry_price = round(total_cost / count) if count > 0 else 0
                 is_win = net_pnl > 0
-                correct_prediction = side == s.get("market_result", "")
+                correct_prediction = side == market_result
+
+                # Flag suspicious settlements: revenue=0 but appears to be a winner
+                revenue_anomaly = (revenue == 0 and market_result == side and market_result in ("yes", "no"))
                 trade_roi = round((net_pnl / total_cost) * 100, 1) if total_cost > 0 else 0
 
                 # Lookup strategy_id: cache first (includes DB results), then attachment
@@ -401,6 +405,7 @@ class V3StateContainer:
                     "is_win": is_win,                    # True if profitable
                     "correct_prediction": correct_prediction,  # True if side == result
                     "trade_roi": trade_roi,              # ROI percentage
+                    "revenue_anomaly": revenue_anomaly,  # Flag: revenue=0 but side==result (suspicious)
                     # Strategy attribution for multi-strategy visibility
                     "strategy_id": strategy_id,          # e.g., "rlm_no", "s013", "mixed"
                     # Legacy fields for backwards compatibility
@@ -925,10 +930,42 @@ class V3StateContainer:
         details = []
         for ticker, pos in self._trading_state.positions.items():
             position_count = pos.get("position", 0)
-            total_traded = pos.get("total_traded", 0)
             market_exposure = pos.get("market_exposure", 0)
-            # Unrealized P&L = current value - cost basis
-            unrealized_pnl = market_exposure - total_traded
+            qty = abs(position_count)
+            side = "yes" if position_count > 0 else "no"
+
+            # CRITICAL FIX: Use trading attachment's corrected cost basis when available
+            # The REST API's total_traded is CUMULATIVE volume, NOT cost basis!
+            # The attachment computes correct cost from our tracked filled orders.
+            attachment = self._trading_attachments.get(ticker)
+            cost_basis_estimated = True  # Track if we're using an approximation
+
+            if attachment and attachment.position and attachment.position.total_cost > 0:
+                # Use tracked cost basis from filled orders (correct)
+                total_cost = attachment.position.total_cost
+                cost_basis_estimated = False
+            else:
+                # Fallback: Use market_exposure as approximation (better than total_traded)
+                # This happens for pre-session positions without tracked orders
+                total_cost = market_exposure
+
+            # Compute current value from market price (NOT market_exposure which is cost basis!)
+            # market_exposure from Kalshi is actually position cost, not current value
+            market_data = self._market_prices.get(ticker)
+            if market_data and qty > 0:
+                # Use appropriate price for position side
+                if side == "yes":
+                    # YES position: value = yes_price × quantity
+                    current_price = market_data.last_price or market_data.yes_bid or 0
+                else:
+                    # NO position: value = (100 - yes_price) × quantity
+                    current_price = 100 - (market_data.last_price or market_data.yes_ask or 100)
+                current_value = current_price * qty
+                unrealized_pnl = current_value - total_cost
+            else:
+                # No market price data - can't compute current value
+                current_value = market_exposure  # Fallback to Kalshi's value
+                unrealized_pnl = 0  # Unknown
 
             # Lookup strategy_id: cache first (includes DB results), then in-memory attachment
             position_strategy_id = None
@@ -956,16 +993,20 @@ class V3StateContainer:
             position_data = {
                 "ticker": ticker,
                 "position": position_count,
-                "side": "yes" if position_count > 0 else "no",
-                "total_traded": total_traded,        # Entry cost (cents)
-                "market_exposure": market_exposure,  # Current value (cents)
+                "side": side,
+                "total_cost": total_cost,            # Cost basis (cents) - from tracked orders or approximated
+                "current_value": current_value,      # Current market value (price × qty)
+                "total_traded": pos.get("total_traded", 0),  # DEPRECATED: Raw Kalshi value, don't use for P&L
+                "market_exposure": market_exposure,  # DEPRECATED: Kalshi's cost field, use total_cost instead
                 "realized_pnl": pos.get("realized_pnl", 0),
-                "unrealized_pnl": unrealized_pnl,
+                "unrealized_pnl": unrealized_pnl,    # current_value - total_cost
                 "fees_paid": pos.get("fees_paid", 0),
                 "session_updated": ticker in self._session_updated_tickers,
                 "last_updated": pos.get("last_updated"),
                 # Strategy attribution for multi-strategy visibility
                 "strategy_id": position_strategy_id,  # e.g., "rlm_no", "s013", "mixed"
+                # Cost basis tracking
+                "cost_basis_estimated": cost_basis_estimated,  # True if cost is approximated
             }
 
             # Merge market data from _market_prices

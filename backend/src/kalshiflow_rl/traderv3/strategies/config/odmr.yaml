@@ -38,7 +38,7 @@ params:
   # ---------------------------------------------------------
   # Entry
   # ---------------------------------------------------------
-  entry_contracts: 50           # Contracts per entry (increased from 10)
+  entry_contracts: 25           # Contracts per entry (reduced to stay within position limits)
   entry_spread_max_cents: 8     # Max spread to allow entry (non-ODMR mode)
 
   # ---------------------------------------------------------
@@ -68,8 +68,8 @@ params:
   # ---------------------------------------------------------
   # ODMR Tier 2: Orderbook Filter (A/B Testing)
   # ---------------------------------------------------------
-  # When enabled, applies stricter spread requirements and requires
+  # When enabled, applies spread requirements and requires
   # bullish orderbook imbalance (bid_depth > ask_depth)
-  use_orderbook_filtering: true   # ENABLED - stricter spread + bid imbalance
-  odmr_spread_max_cents: 2        # Stricter spread (vs 8c default)
+  use_orderbook_filtering: true   # ENABLED - spread check + bid imbalance
+  odmr_spread_max_cents: 4        # Relaxed from 2c (was rejecting ~60% of signals)
   require_bid_imbalance: true     # Require bid_depth > ask_depth

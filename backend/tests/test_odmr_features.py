@@ -237,7 +237,7 @@ class TestODMRConfiguration:
 
     def test_default_orderbook_filter_params(self):
         """Default orderbook filter parameters should be set."""
-        assert self.strategy._odmr_spread_max_cents == 2
+        assert self.strategy._odmr_spread_max_cents == 4  # Relaxed from 2c
         assert self.strategy._require_bid_imbalance is True
 
 

@@ -9,8 +9,10 @@ enabled: true
 display_name: "Reverse Line Movement NO"
 
 # Position limits
+# REDUCED 2026-01-07: Investigation showed -$1,531 P&L, 27pp win rate gap vs backtest
+# Running at minimal size while monitoring - see research/reports/rlm_first_principles_investigation.md
 max_positions: 60          # Maximum concurrent positions
-max_exposure_cents: 600000 # Maximum total exposure ($6,000)
+max_exposure_cents: 30000  # Maximum total exposure ($300) - REDUCED from $6,000
 
 # Rate limiting
 max_trades_per_minute: 10  # Strategy-specific rate limit
@@ -23,23 +25,22 @@ params:
   min_price_drop: 5        # Minimum price drop from open (cents)
   min_no_price: 35         # Minimum NO entry price (backtest: <35c has -32% edge)
 
-  # Position sizing
-  contracts_per_trade: 50  # Contracts per signal execution
+  # Position sizing - REDUCED to ~$3 per trade
+  # Investigation showed 4.9x loss asymmetry - minimize losses while monitoring
+  contracts_per_trade: 3   # REDUCED from 50 to ~$3 max exposure per trade
 
-  # Position scaling by price drop (S-001 validated)
-  # Higher price drops have higher win rates and edge
-  # 5-10c: 91.8% win rate, +12.1% edge -> 1.0x base
-  # 10-20c: 95.6% win rate, +16.0% edge -> 1.5x
-  # 20c+: 98.4% win rate, +31.5% edge -> 2.0x
+  # Position scaling DISABLED - running minimal size
+  # Original tiers based on S-001 validation showed +31.5% edge at 20c+ drops
+  # But live trading showed 20c+ tier had WORST performance (52.2% vs 97.3% expected)
   position_scaling:
-    enabled: true
-    base_contracts: 50
+    enabled: false         # DISABLED - scaling up on "strong signals" was losing more
+    base_contracts: 3
     tiers:
-      - drop_min: 20  # 20c+ drop -> 2.0x
-        multiplier: 2.0
-      - drop_min: 10  # 10-20c drop -> 1.5x
-        multiplier: 1.5
-      - drop_min: 5   # 5-10c drop -> 1.0x (base)
+      - drop_min: 20  # 20c+ drop -> 1.0x (no scaling)
+        multiplier: 1.0
+      - drop_min: 10  # 10-20c drop -> 1.0x
+        multiplier: 1.0
+      - drop_min: 5   # 5-10c drop -> 1.0x
         multiplier: 1.0
 
   # Entry behavior
