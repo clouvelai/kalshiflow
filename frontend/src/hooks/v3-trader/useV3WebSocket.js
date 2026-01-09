@@ -53,6 +53,12 @@ const INITIAL_STRATEGY_STATUS = {
 };
 
 /**
+ * Initial state for event research (Agentic Research results)
+ * Maps event_ticker -> research result
+ */
+const INITIAL_EVENT_RESEARCH = {};
+
+/**
  * useV3WebSocket - Hook for managing V3 Trader WebSocket connection
  */
 export const useV3WebSocket = ({ onMessage }) => {
@@ -62,6 +68,8 @@ export const useV3WebSocket = ({ onMessage }) => {
   const [lastUpdateTime, setLastUpdateTime] = useState(null);
   const [tradeProcessing, setTradeProcessing] = useState(INITIAL_TRADE_PROCESSING);
   const [strategyStatus, setStrategyStatus] = useState(INITIAL_STRATEGY_STATUS);
+  const [eventResearch, setEventResearch] = useState(INITIAL_EVENT_RESEARCH);
+  const [newResearchAlert, setNewResearchAlert] = useState(null);
   const [settlements, setSettlements] = useState([]);
   const [newSettlement, setNewSettlement] = useState(null);
   const [newOrderFill, setNewOrderFill] = useState(null);
@@ -78,6 +86,7 @@ export const useV3WebSocket = ({ onMessage }) => {
   const orderFillTimeoutRef = useRef(null);
   const ttlCancellationTimeoutRef = useRef(null);
   const settlementTimeoutRef = useRef(null);
+  const researchAlertTimeoutRef = useRef(null);
 
   // Keep currentStateRef in sync
   useEffect(() => {
@@ -363,6 +372,65 @@ export const useV3WebSocket = ({ onMessage }) => {
         }
         break;
 
+      case 'event_research':
+        if (data.data) {
+          const researchData = data.data;
+          const eventTicker = researchData.event_ticker;
+
+          // Store research results indexed by event_ticker
+          // Also build a market-level index for quick lookup
+          setEventResearch(prev => {
+            const marketIndex = { ...(prev._marketIndex || {}) };
+
+            // Index each market assessment by ticker
+            (researchData.markets || []).forEach(market => {
+              marketIndex[market.ticker] = {
+                eventTicker,
+                ...market,
+                eventTitle: researchData.event_title,
+                eventCategory: researchData.event_category,
+                primaryDriver: researchData.primary_driver,
+                evidenceSummary: researchData.evidence_summary,
+                researchedAt: researchData.researched_at,
+              };
+            });
+
+            return {
+              ...prev,
+              [eventTicker]: researchData,
+              _marketIndex: marketIndex,
+            };
+          });
+
+          // Check for high-confidence mispricing to show toast alert
+          const highConfidenceMarkets = (researchData.markets || []).filter(
+            m => m.confidence === 'high' && Math.abs(m.mispricing_magnitude) > 0.15
+          );
+
+          if (highConfidenceMarkets.length > 0) {
+            const topMarket = highConfidenceMarkets[0];
+            setNewResearchAlert({
+              eventTicker,
+              eventTitle: researchData.event_title,
+              market: topMarket,
+              marketsWithEdge: researchData.markets_with_edge,
+            });
+
+            // Auto-dismiss after 8 seconds
+            if (researchAlertTimeoutRef.current) {
+              clearTimeout(researchAlertTimeoutRef.current);
+            }
+            researchAlertTimeoutRef.current = setTimeout(() => setNewResearchAlert(null), 8000);
+          }
+
+          // Log for debugging
+          console.log(
+            `[useV3WebSocket] Event research received: ${eventTicker}`,
+            `${researchData.markets_evaluated} markets, ${researchData.markets_with_edge} with edge`
+          );
+        }
+        break;
+
       case 'ping':
         // Track last ping time for heartbeat monitoring
         lastPingRef.current = Date.now();
@@ -393,6 +461,9 @@ export const useV3WebSocket = ({ onMessage }) => {
       }
       if (settlementTimeoutRef.current) {
         clearTimeout(settlementTimeoutRef.current);
+      }
+      if (researchAlertTimeoutRef.current) {
+        clearTimeout(researchAlertTimeoutRef.current);
       }
       if (wsRef.current) {
         wsRef.current.close();
@@ -436,6 +507,16 @@ export const useV3WebSocket = ({ onMessage }) => {
     setNewTtlCancellation(null);
   }, []);
 
+  // Clear new research alert notification
+  const dismissResearchAlert = useCallback(() => {
+    setNewResearchAlert(null);
+  }, []);
+
+  // Helper to get research assessment for a specific market
+  const getMarketResearch = useCallback((marketTicker) => {
+    return eventResearch._marketIndex?.[marketTicker] || null;
+  }, [eventResearch]);
+
   return {
     wsStatus,
     currentState,
@@ -443,6 +524,10 @@ export const useV3WebSocket = ({ onMessage }) => {
     lastUpdateTime,
     tradeProcessing,
     strategyStatus,
+    eventResearch,
+    newResearchAlert,
+    dismissResearchAlert,
+    getMarketResearch,
     settlements,
     newSettlement,
     dismissSettlement,

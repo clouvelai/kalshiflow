@@ -32,7 +32,9 @@ const LifecycleDiscovery = () => {
     // Trading state (balance for low cash indicator)
     tradingState,
     // Event exposure data (correlated positions across related markets)
-    eventExposure
+    eventExposure,
+    // Event research (AI-generated assessments)
+    getMarketResearch
   } = useLifecycleWebSocket();
 
   // Filter state
@@ -212,6 +214,7 @@ const LifecycleDiscovery = () => {
               tradePulses={tradePulses}
               rlmConfig={tradingState?.rlm_config}
               eventExposure={eventExposure}
+              getMarketResearch={getMarketResearch}
             />
           </div>
 

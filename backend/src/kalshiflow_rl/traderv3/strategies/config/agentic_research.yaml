@@ -1,0 +1,57 @@
+# Agentic Research Strategy Configuration
+# Uses event-first AI research to find mispricing opportunities
+#
+# Research Flow:
+#   1. EVENT DISCOVERY - Group markets by event_ticker
+#   2. EVENT RESEARCH - "What is this event about?"
+#   3. KEY DRIVER IDENTIFICATION - "What single factor determines YES vs NO?"
+#   4. EVIDENCE GATHERING - Targeted search for key driver data
+#   5. MARKET EVALUATION - Batch assess all markets with shared event context
+#   6. TRADE DECISIONS - Execute on mispriced markets
+
+name: agentic_research
+enabled: true  # Let it rip!
+display_name: "Agentic Research"
+
+# Position limits
+max_positions: 300         # Maximum concurrent positions (paper mode: allow alongside existing positions)
+max_exposure_cents: 100000 # Maximum total exposure ($1,000)
+
+# Rate limiting
+max_trades_per_minute: 5   # Strategy-specific rate limit
+
+# Strategy-specific parameters
+params:
+  # Trading thresholds
+  min_mispricing: 0.10     # 10% mispricing required to trade
+  min_confidence: 0.70     # 70% confidence required
+
+  # Position sizing
+  contracts_per_trade: 25  # Contracts per signal execution
+  max_positions: 300       # Must be in params for code to read it
+
+  # Evaluation interval
+  evaluation_interval_seconds: 30.0  # Check markets every 30 seconds
+
+  # === EVENT-FIRST RESEARCH SETTINGS ===
+  # When enabled, groups markets by event and researches holistically
+  # Identifies key drivers and evaluates all markets with shared context
+  use_event_first: true              # Use event-first research (recommended)
+  event_cache_ttl_seconds: 600       # Cache event research for 10 minutes
+  min_markets_for_event_research: 1  # Min markets in event to use event-first
+
+  # === RESEARCH SERVICE SETTINGS ===
+  openai_model: "gpt-4o"   # OpenAI model to use
+  openai_temperature: 0.3  # Lower temperature for consistent reasoning
+  web_search_enabled: true # Enable web search for evidence gathering
+  cache_ttl_seconds: 300   # Cache market assessments for 5 minutes
+  max_concurrent_research: 3  # Max parallel research tasks
+
+  # === MARKET FILTERS ===
+  min_hours_to_settlement: 1.0   # Minimum hours until market closes
+  max_days_to_settlement: 30     # Maximum days until market closes
+
+  # Researchable categories (empty = all categories)
+  researchable_categories:
+    - "Entertainment"
+    - "Mentions"

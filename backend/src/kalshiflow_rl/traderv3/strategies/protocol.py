@@ -23,6 +23,7 @@ from typing import Dict, Any, Set, Optional, Protocol, TYPE_CHECKING, runtime_ch
 if TYPE_CHECKING:
     from ..core.event_bus import EventBus
     from ..core.events import EventType
+    from ..core.websocket_manager import V3WebSocketManager
     from ..services.trading_decision_service import TradingDecisionService
     from ..core.state_container import V3StateContainer
     from ..clients.orderbook_integration import V3OrderbookIntegration
@@ -46,6 +47,7 @@ class StrategyContext:
         orderbook_integration: Integration for orderbook data access
         tracked_markets: State container for lifecycle-discovered markets
         trading_client_integration: Direct access to trading client for order management
+        websocket_manager: WebSocket manager for broadcasting to frontend (optional)
         config: Strategy configuration loaded from YAML (optional)
     """
     event_bus: 'EventBus'
@@ -54,6 +56,7 @@ class StrategyContext:
     orderbook_integration: 'V3OrderbookIntegration'
     tracked_markets: Optional['TrackedMarketsState']
     trading_client_integration: Optional['V3TradingClientIntegration'] = None
+    websocket_manager: Optional['V3WebSocketManager'] = None
     config: Optional['StrategyConfig'] = None
 
     def to_dict(self) -> Dict[str, Any]:
@@ -65,6 +68,7 @@ class StrategyContext:
             "orderbook_integration": "connected" if self.orderbook_integration else "not available",
             "tracked_markets": "connected" if self.tracked_markets else "not available",
             "trading_client_integration": "connected" if self.trading_client_integration else "not available",
+            "websocket_manager": "connected" if self.websocket_manager else "not available",
             "config": self.config.name if self.config else "not loaded",
         }
 

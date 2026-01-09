@@ -1,4 +1,5 @@
 import React, { memo, useRef, useEffect, useState } from 'react';
+import MarketResearchBadge from './MarketResearchBadge';
 
 // ============================================================================
 // HOOKS
@@ -1019,6 +1020,7 @@ EventExposureBadges.displayName = 'EventExposureBadges';
  * - Signal-ready amber glow state
  * - Progress bar with animated fill
  * - Event position tracking with ARB/RISK/LOSS badges
+ * - AI research badge showing probability assessment and recommendations
  *
  * Props:
  *   - market: Market data object
@@ -1026,8 +1028,9 @@ EventExposureBadges.displayName = 'EventExposureBadges';
  *   - tradePulse: Trade pulse { side: 'yes'|'no', ts: timestamp } for animation
  *   - rlmConfig: RLM strategy config from backend { min_trades, yes_threshold, min_price_drop }
  *   - eventExposure: Event exposure data { risk_level, yes_sum, no_sum, market_count }
+ *   - research: AI research assessment { evidence_probability, market_probability, recommendation, etc. }
  */
-const LifecycleMarketCard = ({ market, rlmState, tradePulse, rlmConfig, eventExposure }) => {
+const LifecycleMarketCard = ({ market, rlmState, tradePulse, rlmConfig, eventExposure, research }) => {
   const [expanded, setExpanded] = useState(false);
 
   // RLM stats from prop (or defaults if not available)
@@ -1292,6 +1295,11 @@ const LifecycleMarketCard = ({ market, rlmState, tradePulse, rlmConfig, eventExp
 
       {/* Trading State - Orders, Positions, P&L */}
       <TradingStateDisplay trading={market.trading} market={market} />
+
+      {/* AI Research Assessment Badge */}
+      {research && (
+        <MarketResearchBadge research={research} />
+      )}
 
       {/* Expanded details */}
       {expanded && (

@@ -153,7 +153,9 @@ class OrderContextService:
                         action, side, order_price_cents, order_quantity, order_type,
                         placed_at, hour_of_day_utc, day_of_week, calendar_week,
                         fill_count, fill_avg_price_cents, filled_at, time_to_fill_ms, slippage_cents,
-                        strategy_version
+                        strategy_version,
+                        ai_probability, ai_confidence, event_ticker,
+                        price_guess_cents, price_guess_error_cents
                     ) VALUES (
                         $1, $2, $3,
                         $4, $5, $6, $7,
@@ -166,7 +168,9 @@ class OrderContextService:
                         $26, $27, $28, $29, $30,
                         $31, $32, $33, $34,
                         $35, $36, $37, $38, $39,
-                        $40
+                        $40,
+                        $41, $42, $43,
+                        $44, $45
                     )
                     ON CONFLICT (order_id) DO NOTHING
                     """,
@@ -210,6 +214,12 @@ class OrderContextService:
                     db_dict["time_to_fill_ms"],
                     db_dict["slippage_cents"],
                     db_dict["strategy_version"],
+                    # AI Research specific columns (for direct calibration queries)
+                    db_dict.get("ai_probability"),
+                    db_dict.get("ai_confidence"),
+                    db_dict.get("event_ticker"),
+                    db_dict.get("price_guess_cents"),
+                    db_dict.get("price_guess_error_cents"),
                 )
 
             # Remove from staging after successful persistence
@@ -385,6 +395,9 @@ class OrderContextService:
             "fill_count", "fill_avg_price_cents", "filled_at",
             "slippage_cents", "time_to_fill_ms",
             "market_result", "settled_at", "realized_pnl_cents",
+            # AI Research specific columns
+            "ai_probability", "ai_confidence", "event_ticker",
+            "price_guess_cents", "price_guess_error_cents",
             "signal_params", "calendar_week", "session_id",
         ]
 

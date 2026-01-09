@@ -34,6 +34,7 @@ if TYPE_CHECKING:
     from ..services.trading_decision_service import TradingDecisionService
     from ..services.upcoming_markets_syncer import UpcomingMarketsSyncer
     from ..state.tracked_markets import TrackedMarketsState
+    from ..state.event_research_context import EventResearchResult
     from .state_container import V3StateContainer
     from ..strategies import StrategyCoordinator
 
@@ -908,6 +909,66 @@ class V3WebSocketManager:
         }
         await self.broadcast_message("market_info_update", update_data)
 
+    async def broadcast_event_research(
+        self,
+        event_ticker: str,
+        result: 'EventResearchResult'
+    ) -> None:
+        """
+        Broadcast event research results to all connected clients.
+
+        Called by AgenticResearchStrategy after completing event-first research.
+        Provides AI-generated probability assessments and recommendations
+        for all markets in an event.
+
+        Args:
+            event_ticker: Event ticker that was researched
+            result: EventResearchResult containing event context and market assessments
+        """
+        if not result.success:
+            logger.debug(f"Skipping broadcast for failed research: {event_ticker}")
+            return
+
+        # Build market assessments data
+        markets_data = []
+        for assessment in result.assessments:
+            markets_data.append({
+                "ticker": assessment.market_ticker,
+                "title": assessment.market_title,
+                "evidence_probability": assessment.evidence_probability,
+                "market_probability": assessment.market_probability,
+                "mispricing_magnitude": assessment.mispricing_magnitude,
+                "recommendation": assessment.recommendation,
+                "confidence": assessment.confidence.value if hasattr(assessment.confidence, 'value') else assessment.confidence,
+                "edge_explanation": assessment.edge_explanation,
+            })
+
+        # Build event context data
+        event_context = result.event_context
+
+        research_data = {
+            "event_ticker": event_ticker,
+            "event_title": event_context.event_title,
+            "event_category": event_context.event_category,
+            "event_description": event_context.context.event_description if event_context.context else "",
+            "primary_driver": event_context.driver_analysis.primary_driver if event_context.driver_analysis else "",
+            "primary_driver_reasoning": event_context.driver_analysis.primary_driver_reasoning if event_context.driver_analysis else "",
+            "base_rate": event_context.driver_analysis.base_rate if event_context.driver_analysis else 0.5,
+            "evidence_summary": event_context.evidence.evidence_summary if event_context.evidence else "",
+            "evidence_reliability": event_context.evidence.reliability.value if event_context.evidence and hasattr(event_context.evidence.reliability, 'value') else "medium",
+            "markets": markets_data,
+            "researched_at": event_context.researched_at,
+            "research_duration_seconds": result.total_research_seconds,
+            "markets_evaluated": result.markets_evaluated,
+            "markets_with_edge": result.markets_with_edge,
+        }
+
+        await self.broadcast_message("event_research", research_data)
+
+        logger.info(
+            f"Broadcast event_research for {event_ticker}: "
+            f"{len(markets_data)} markets, {result.markets_with_edge} with edge"
+        )
 
     # ========== Trading Strategies Panel Heartbeat ==========
 

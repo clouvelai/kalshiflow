@@ -559,6 +559,7 @@ class V3Coordinator:
                     orderbook_integration=self._orderbook_integration,
                     tracked_markets=self._tracked_markets_state,
                     trading_client_integration=self._trading_client_integration,
+                    websocket_manager=self._websocket_manager,
                 )
 
                 # Create and initialize the strategy coordinator

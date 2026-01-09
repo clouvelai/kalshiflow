@@ -10,7 +10,7 @@ import {
 } from './v3-trader/panels';
 
 // UI components
-import { SettlementToast, OrderFillToast, OrderCancelledToast } from './v3-trader/ui';
+import { SettlementToast, OrderFillToast, OrderCancelledToast, ResearchAlertToast } from './v3-trader/ui';
 
 // Layout components
 import { V3Header, V3MetricsPanel, V3ConsoleOutput } from './v3-trader/layout';
@@ -52,6 +52,8 @@ const V3TraderConsole = () => {
     dismissOrderFill,
     newTtlCancellation,
     dismissTtlCancellation,
+    newResearchAlert,
+    dismissResearchAlert,
     metrics
   } = useV3WebSocket({ onMessage: addMessage });
 
@@ -73,6 +75,12 @@ const V3TraderConsole = () => {
       <OrderCancelledToast
         cancellation={newTtlCancellation}
         onDismiss={dismissTtlCancellation}
+      />
+
+      {/* Research Alert Toast - Shows when AI finds high-confidence mispricing */}
+      <ResearchAlertToast
+        alert={newResearchAlert}
+        onDismiss={dismissResearchAlert}
       />
 
       {/* Header */}

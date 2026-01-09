@@ -42,6 +42,14 @@ const STRATEGY_CONFIG = {
     borderClass: 'border-amber-700/30',
     textClass: 'text-amber-400',
   },
+  agentic_research: {
+    label: 'AI Research',
+    description: 'Agentic Event Research',
+    accentColor: 'emerald',
+    bgClass: 'bg-emerald-900/20',
+    borderClass: 'border-emerald-700/30',
+    textClass: 'text-emerald-400',
+  },
 };
 
 const getStrategyConfig = (strategyId) => {
@@ -277,6 +285,24 @@ const DecisionRow = memo(({ decision, strategyId }) => {
 
   // Render strategy-specific columns
   const renderStrategyColumns = () => {
+    if (strategyId === 'agentic_research') {
+      const aiProb = decision.ai_probability;
+      const edge = decision.edge;
+      return (
+        <>
+          <td className="px-2 py-2 text-right">
+            <span className="text-xs text-emerald-400">
+              {aiProb != null ? `${(aiProb * 100).toFixed(0)}%` : '-'}
+            </span>
+          </td>
+          <td className="px-2 py-2 text-right">
+            <span className={`text-xs ${edge != null && edge > 0 ? 'text-green-400' : edge != null && edge < 0 ? 'text-red-400' : 'text-gray-400'}`}>
+              {edge != null ? `${(edge * 100).toFixed(1)}%` : '-'}
+            </span>
+          </td>
+        </>
+      );
+    }
     if (strategyId === 'odmr') {
       const pnl = formatPnl(decision.pnl_cents);
       return (
@@ -356,6 +382,14 @@ const RecentDecisionsSection = memo(({ decisions, strategyId }) => {
 
   // Render strategy-specific column headers
   const renderColumnHeaders = () => {
+    if (strategyId === 'agentic_research') {
+      return (
+        <>
+          <th className="px-2 py-1.5 text-right text-[9px] text-gray-500 uppercase font-semibold">AI Prob</th>
+          <th className="px-2 py-1.5 text-right text-[9px] text-gray-500 uppercase font-semibold">Edge</th>
+        </>
+      );
+    }
     if (strategyId === 'odmr') {
       return (
         <>
@@ -570,9 +604,11 @@ const TradingStrategiesPanel = ({ strategyStatus }) => {
               {/* Primary Metrics Grid */}
               <div className="grid grid-cols-4 gap-3 mb-4">
                 <StatBox
-                  label="Execution Rate"
+                  label={strategyId === 'agentic_research' ? 'Order Rate' : 'Execution Rate'}
                   value={`${performance.execution_rate || 0}%`}
-                  subtitle={`${performance.signals_executed || 0}/${performance.signals_detected || 0}`}
+                  subtitle={strategyId === 'agentic_research'
+                    ? `${performance.signals_executed || 0}/${performance.signals_detected || 0} orders`
+                    : `${performance.signals_executed || 0}/${performance.signals_detected || 0}`}
                   icon={Target}
                   accentColor={performance.execution_rate >= 50 ? 'green' : 'yellow'}
                   valueClass={performance.execution_rate >= 50 ? 'text-green-400' : 'text-yellow-400'}

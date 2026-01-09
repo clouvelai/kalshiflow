@@ -508,6 +508,23 @@ class StagedOrderContext:
             # Negative slippage = paid less than order price (good, price improved)
             slippage_cents = fill_avg_price_cents - self.order_price_cents
 
+        # Extract AI Research specific fields from signal_params
+        # These enable direct calibration queries without JSONB extraction
+        ai_probability = None
+        ai_confidence = None
+        event_ticker = None
+        price_guess_cents = None
+        price_guess_error_cents = None
+
+        if self.signal_params:
+            ai_probability = self.signal_params.get('evidence_probability')
+            ai_confidence = self.signal_params.get('confidence')
+            if isinstance(ai_confidence, str):
+                ai_confidence = ai_confidence.lower()  # Normalize to lowercase
+            event_ticker = self.signal_params.get('event_ticker')
+            price_guess_cents = self.signal_params.get('price_guess_cents')
+            price_guess_error_cents = self.signal_params.get('price_guess_error_cents')
+
         return {
             "order_id": self.order_id,
             "market_ticker": self.market_ticker,
@@ -556,6 +573,12 @@ class StagedOrderContext:
             "filled_at": filled_dt,
             "time_to_fill_ms": time_to_fill_ms,
             "slippage_cents": slippage_cents,
+            # AI Research specific columns (for direct calibration queries)
+            "ai_probability": ai_probability,
+            "ai_confidence": ai_confidence,
+            "event_ticker": event_ticker,
+            "price_guess_cents": price_guess_cents,
+            "price_guess_error_cents": price_guess_error_cents,
             # Metadata
             "strategy_version": self.strategy_version,
         }

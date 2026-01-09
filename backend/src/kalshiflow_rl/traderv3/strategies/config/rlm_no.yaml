@@ -25,9 +25,9 @@ params:
   min_price_drop: 5        # Minimum price drop from open (cents)
   min_no_price: 35         # Minimum NO entry price (backtest: <35c has -32% edge)
 
-  # Position sizing - REDUCED to ~$3 per trade
-  # Investigation showed 4.9x loss asymmetry - minimize losses while monitoring
-  contracts_per_trade: 3   # REDUCED from 50 to ~$3 max exposure per trade
+  # Position sizing - conservative while monitoring
+  # Investigation showed 4.9x loss asymmetry - keeping size moderate
+  contracts_per_trade: 10  # Increased from 3 for more meaningful trades
 
   # Position scaling DISABLED - running minimal size
   # Original tiers based on S-001 validation showed +31.5% edge at 20c+ drops
@@ -49,7 +49,7 @@ params:
 
   # Orderbook filters (spread tiers)
   tight_spread: 2          # Tight spread threshold (cents)
-  normal_spread: 5         # Normal spread threshold (cents)
+  normal_spread: 3         # Normal spread threshold (cents)
   max_spread: 10           # Maximum acceptable spread (cents)
   orderbook_timeout: 5.0   # Seconds to wait for orderbook data
 
@@ -58,7 +58,7 @@ params:
   spread_tiers:
     drop_20_plus: 8        # 20c+ price drop -> allow up to 8c spread
     drop_10_plus: 5        # 10-20c price drop -> allow up to 5c spread
-    default: 5             # <10c price drop -> allow up to 5c spread (was 3c)
+    default: 3             # <10c price drop -> allow up to 3c spread
 
   # Time filters (match old rlm_service defaults for parity)
   min_hours_to_settlement: 0.5   # Minimum hours until market closes

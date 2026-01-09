@@ -222,6 +222,26 @@ class TradingDecisionService:
         if decision.action == "hold":
             return True  # No action needed
 
+        # Validate price - NEVER default to 50c (coin flip with no edge)
+        if decision.price is None or decision.price <= 0:
+            self._decision_stats["invalid_price"] = self._decision_stats.get("invalid_price", 0) + 1
+            logger.warning(
+                f"Rejecting order with invalid price: {decision.price} "
+                f"({decision.market} {decision.side} {decision.quantity}x)"
+            )
+            await self._event_bus.emit_system_activity(
+                activity_type="invalid_price_skip",
+                message=f"Order skipped: invalid price {decision.price}c",
+                metadata={
+                    "market": decision.market,
+                    "side": decision.side,
+                    "quantity": decision.quantity,
+                    "price": decision.price,
+                    "skip_count": self._decision_stats.get("invalid_price", 1)
+                }
+            )
+            return False
+
         # Check minimum balance protection (only for buy actions)
         if decision.action == "buy" and self._min_trader_cash > 0:
             trading_state = self._state_container.trading_state
@@ -254,7 +274,7 @@ class TradingDecisionService:
                 allowed, reason, risk_level = await self._event_tracker.check_before_trade(
                     ticker=decision.market,
                     side=decision.side,
-                    price=decision.price or 50,  # Default to 50c if no price
+                    price=decision.price,  # Price validated above - never default to 50c
                 )
 
                 # Handle blocking behavior

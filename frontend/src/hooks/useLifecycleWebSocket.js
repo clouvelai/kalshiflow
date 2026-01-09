@@ -61,6 +61,10 @@ export const useLifecycleWebSocket = ({ onMessage } = {}) => {
   // Event exposure data (correlated positions across related markets)
   const [eventExposure, setEventExposure] = useState(null);
 
+  // Event research data (AI-generated assessments from Agentic Research strategy)
+  // Maps event_ticker -> research result, with _marketIndex for per-market lookups
+  const [eventResearch, setEventResearch] = useState({});
+
   const wsRef = useRef(null);
   const reconnectTimeoutRef = useRef(null);
   const lastPingRef = useRef(Date.now());
@@ -334,6 +338,54 @@ export const useLifecycleWebSocket = ({ onMessage } = {}) => {
         }
         break;
 
+      case 'event_research':
+        // AI-generated event research from Agentic Research strategy
+        if (data.data) {
+          const researchData = data.data;
+          const eventTicker = researchData.event_ticker;
+
+          // Store research results indexed by event_ticker
+          // Also build a market-level index for quick lookup
+          setEventResearch(prev => {
+            const marketIndex = { ...(prev._marketIndex || {}) };
+
+            // Index each market assessment by ticker
+            (researchData.markets || []).forEach(market => {
+              marketIndex[market.ticker] = {
+                eventTicker,
+                ...market,
+                eventTitle: researchData.event_title,
+                eventCategory: researchData.event_category,
+                primaryDriver: researchData.primary_driver,
+                evidenceSummary: researchData.evidence_summary,
+                researchedAt: researchData.researched_at,
+              };
+            });
+
+            return {
+              ...prev,
+              [eventTicker]: researchData,
+              _marketIndex: marketIndex,
+            };
+          });
+
+          // Log for debugging
+          console.log(
+            `[useLifecycleWebSocket] Event research received: ${eventTicker}`,
+            `${researchData.markets_evaluated} markets, ${researchData.markets_with_edge} with edge`
+          );
+
+          // Notify parent component for potential activity event
+          const marketsWithEdge = researchData.markets_with_edge || 0;
+          if (marketsWithEdge > 0) {
+            onMessage?.('research', `AI research: ${marketsWithEdge} market(s) with edge`, {
+              event_ticker: eventTicker,
+              markets_with_edge: marketsWithEdge,
+            });
+          }
+        }
+        break;
+
       default:
         // Ignore other message types (they're for other V3 features)
         break;
@@ -460,6 +512,11 @@ export const useLifecycleWebSocket = ({ onMessage } = {}) => {
     setRecentEvents([]);
   }, []);
 
+  // Helper to get research assessment for a specific market
+  const getMarketResearch = useCallback((marketTicker) => {
+    return eventResearch._marketIndex?.[marketTicker] || null;
+  }, [eventResearch]);
+
   return {
     wsStatus,
     trackedMarkets,
@@ -479,7 +536,10 @@ export const useLifecycleWebSocket = ({ onMessage } = {}) => {
     // Trading state (balance for low cash indicator)
     tradingState,    // { balance, min_trader_cash }
     // Event exposure data (correlated positions across related markets)
-    eventExposure    // { event_groups: { event_ticker -> EventGroup }, stats }
+    eventExposure,   // { event_groups: { event_ticker -> EventGroup }, stats }
+    // Event research (AI-generated assessments from Agentic Research strategy)
+    eventResearch,   // { [event_ticker]: researchResult, _marketIndex: { [ticker]: assessment } }
+    getMarketResearch // Helper: (marketTicker) => assessment | null
   };
 };
 

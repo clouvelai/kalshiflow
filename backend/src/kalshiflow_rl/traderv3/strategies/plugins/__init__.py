@@ -5,5 +5,6 @@
 from .hold import HoldStrategy
 from .rlm_no import RLMNoStrategy
 from .odmr import ODMRStrategy
+from .agentic_research import AgenticResearchStrategy
 
-__all__ = ['HoldStrategy', 'RLMNoStrategy', 'ODMRStrategy']
+__all__ = ['HoldStrategy', 'RLMNoStrategy', 'ODMRStrategy', 'AgenticResearchStrategy']

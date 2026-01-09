@@ -12,6 +12,7 @@ import LifecycleMarketCard from './LifecycleMarketCard';
  *   - tradePulses: Object mapping ticker -> { side, ts } for pulse animation
  *   - rlmConfig: RLM strategy config from backend { min_trades, yes_threshold, min_price_drop }
  *   - eventExposure: Event exposure data { event_groups: { event_ticker -> EventGroup } }
+ *   - getMarketResearch: Function (ticker) => research assessment | null
  */
 
 /**
@@ -74,7 +75,7 @@ const cardVariants = {
   exit: { opacity: 0, scale: 0.9, transition: { duration: 0.2 } }
 };
 
-const MarketGrid = ({ marketsByCategory, showCategoryHeaders, groupBy = 'category', rlmStates = {}, tradePulses = {}, rlmConfig, eventExposure }) => {
+const MarketGrid = ({ marketsByCategory, showCategoryHeaders, groupBy = 'category', rlmStates = {}, tradePulses = {}, rlmConfig, eventExposure, getMarketResearch }) => {
   const categories = Object.entries(marketsByCategory);
 
   if (categories.length === 0) {
@@ -116,6 +117,7 @@ const MarketGrid = ({ marketsByCategory, showCategoryHeaders, groupBy = 'categor
                 tradePulse={tradePulses[market.ticker]}
                 rlmConfig={rlmConfig}
                 eventExposure={getMarketEventExposure(market, eventExposure)}
+                research={getMarketResearch?.(market.ticker)}
               />
             </motion.div>
           ))}
@@ -163,6 +165,7 @@ const MarketGrid = ({ marketsByCategory, showCategoryHeaders, groupBy = 'categor
                     tradePulse={tradePulses[market.ticker]}
                     rlmConfig={rlmConfig}
                     eventExposure={getMarketEventExposure(market, eventExposure)}
+                    research={getMarketResearch?.(market.ticker)}
                   />
                 </motion.div>
               ))}
