@@ -11,6 +11,9 @@ import logging
 import time
 from typing import Dict, Any, Optional, TYPE_CHECKING
 
+from ..config.environment import V3Config
+from .order_context_service import get_order_context_service
+
 if TYPE_CHECKING:
     from ..clients.trading_client_integration import V3TradingClientIntegration
     from ..core.state_container import V3StateContainer
@@ -69,6 +72,9 @@ class TradingStateSyncer:
         self._sync_count: int = 0
         self._sync_errors: int = 0
         self._last_error: Optional[str] = None
+
+        # Configuration for TTL cleanup
+        self._config: Optional[V3Config] = None
 
         logger.info(f"TradingStateSyncer initialized (sync_interval={sync_interval}s)")
 
@@ -187,6 +193,11 @@ class TradingStateSyncer:
             # Broadcast state update
             await self._status_reporter.emit_trading_state()
 
+            # TTL cleanup after sync
+            cancelled = await self._cleanup_expired_orders()
+            if cancelled > 0:
+                logger.info(f"TTL cleanup completed: {cancelled} orders cancelled")
+
         except Exception as e:
             logger.error(f"Trading state sync failed: {e}")
             self._sync_errors += 1
@@ -245,3 +256,116 @@ class TradingStateSyncer:
     def last_sync_time(self) -> Optional[float]:
         """Get timestamp of last successful sync."""
         return self._last_sync_time
+
+    def set_config(self, config: V3Config) -> None:
+        """
+        Set the V3Config for TTL cleanup.
+
+        Args:
+            config: V3Config instance with order_ttl_enabled and order_ttl_seconds
+        """
+        self._config = config
+        logger.info(f"TradingStateSyncer config set (TTL enabled={config.order_ttl_enabled}, TTL={config.order_ttl_seconds}s)")
+
+    async def _cleanup_expired_orders(self) -> int:
+        """
+        Cancel orders that have exceeded the TTL (Time-to-Live).
+
+        This method iterates through all tracked markets and identifies
+        resting orders that are older than the configured TTL. These
+        stale orders are cancelled in batch to prevent capital lock-up.
+
+        Returns:
+            Number of orders cancelled
+
+        Side Effects:
+            - Calls trading client to cancel expired orders
+            - Emits system_activity event for UI notification
+            - Records TTL cancellation count in state container
+        """
+        # Skip if no config or TTL disabled
+        if not self._config or not self._config.order_ttl_enabled:
+            return 0
+
+        now = time.time()
+        ttl_seconds = self._config.order_ttl_seconds
+        orders_to_cancel = []
+        expired_tickers = []
+
+        # Find all expired orders from trading attachments
+        tracked_tickers = list(self._state.tracked_tickers) if hasattr(self._state, 'tracked_tickers') else []
+
+        # If no tracked tickers attribute, try to get from trading attachments directly
+        if not tracked_tickers:
+            tracked_tickers = list(self._state._trading_attachments.keys())
+
+        for ticker in tracked_tickers:
+            attachment = self._state.get_trading_attachment(ticker)
+            if not attachment:
+                continue
+
+            for order_id, order in list(attachment.orders.items()):
+                # Only cancel resting orders (not pending, filled, or cancelled)
+                if order.status != "resting":
+                    continue
+
+                # Check if order has exceeded TTL
+                order_age = now - order.placed_at
+                if order_age > ttl_seconds:
+                    orders_to_cancel.append(order_id)
+                    if ticker not in expired_tickers:
+                        expired_tickers.append(ticker)
+                    logger.info(
+                        f"Order {order_id[:8]}... on {ticker} expired "
+                        f"(age={order_age:.0f}s > TTL={ttl_seconds}s)"
+                    )
+
+        if not orders_to_cancel:
+            return 0
+
+        # Cancel expired orders in batch
+        try:
+            result = await self._client._client.batch_cancel_orders(orders_to_cancel)
+            cancelled_count = len(result.get("cancelled", []))
+
+            # Update trading attachments to mark orders as cancelled
+            for ticker in expired_tickers:
+                attachment = self._state.get_trading_attachment(ticker)
+                if attachment:
+                    for order_id in result.get("cancelled", []):
+                        if order_id in attachment.orders:
+                            attachment.orders[order_id].status = "cancelled"
+                            attachment.orders[order_id].cancelled_at = time.time()
+                    attachment.update_trading_state()
+                    attachment.bump_version()
+
+            # Discard staged contexts to prevent memory leak
+            order_context_service = get_order_context_service()
+            for order_id in result.get("cancelled", []):
+                order_context_service.discard_staged_context(order_id)
+
+            # Record TTL cancellation in state container
+            self._state.record_ttl_cancellation(cancelled_count)
+
+            # Emit activity event for frontend toast notification
+            await self._event_bus.emit_system_activity(
+                activity_type="orders_cancelled_ttl",
+                message=f"TTL expired: {cancelled_count} orders cancelled",
+                metadata={
+                    "count": cancelled_count,
+                    "tickers": expired_tickers[:5],  # First 5 tickers for display
+                    "ttl_seconds": ttl_seconds,
+                    "severity": "warning"
+                }
+            )
+
+            logger.info(
+                f"TTL cleanup: cancelled {cancelled_count} orders "
+                f"from {len(expired_tickers)} markets (TTL={ttl_seconds}s)"
+            )
+
+            return cancelled_count
+
+        except Exception as e:
+            logger.error(f"Failed to cancel expired orders: {e}")
+            return 0

@@ -10,7 +10,7 @@
 #   6. TRADE DECISIONS - Execute on mispriced markets
 
 name: agentic_research
-enabled: true  # Let it rip!
+enabled: true  # Proper filtering restored - only trades on BUY_YES/BUY_NO with >= min_mispricing edge
 display_name: "Agentic Research"
 
 # Position limits
@@ -29,6 +29,7 @@ params:
   # Position sizing
   contracts_per_trade: 25  # Contracts per signal execution
   max_positions: 300       # Must be in params for code to read it
+  max_positions_per_event: 100  # Max positions per event (high limit for paper trading)
 
   # Evaluation interval
   evaluation_interval_seconds: 30.0  # Check markets every 30 seconds

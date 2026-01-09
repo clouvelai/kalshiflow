@@ -147,10 +147,21 @@ const DecisionBox = memo(({ label, value, valueClass = 'text-gray-400', icon: Ic
 DecisionBox.displayName = 'DecisionBox';
 
 /**
- * ResultBadge - Shows market result (YES/NO)
+ * ResultBadge - Shows market result (YES/NO/PENDING)
  */
 const ResultBadge = memo(({ result }) => {
-  if (!result) return <span className="text-gray-600">—</span>;
+  // Empty string or falsy result means result is pending (not yet fetched from REST)
+  if (!result || result === '' || result.toLowerCase() === 'unknown') {
+    return (
+      <span className="
+        inline-flex items-center px-2 py-0.5 rounded text-xs font-bold
+        bg-amber-900/30 text-amber-400 border border-amber-600/30
+        animate-pulse
+      ">
+        PENDING
+      </span>
+    );
+  }
 
   const isYes = result.toLowerCase() === 'yes';
   return (

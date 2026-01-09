@@ -337,6 +337,9 @@ class V3StatusReporter:
             if self._event_position_tracker:
                 event_exposure_data = self._event_position_tracker.get_event_groups_for_broadcast()
 
+            # Get cached event research results for initial snapshot
+            event_research_results = self._state_container.get_event_research_results()
+
             # Broadcast trading state via websocket
             await self._websocket_manager.broadcast_message("trading_state", {
                 "timestamp": time.time(),
@@ -378,6 +381,9 @@ class V3StatusReporter:
                 },
                 # Event position tracking (correlated exposure detection)
                 "event_exposure": event_exposure_data,
+                # Event research results for initial snapshot (Events tab)
+                # New clients see research that was broadcast before they connected
+                "event_research": event_research_results if event_research_results else None,
             })
 
             logger.debug(f"Broadcast trading state v{trading_summary['version']}")

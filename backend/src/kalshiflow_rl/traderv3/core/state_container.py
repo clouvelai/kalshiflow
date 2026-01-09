@@ -68,6 +68,7 @@ logger = logging.getLogger("kalshiflow_rl.traderv3.core.state_container")
 
 # Configuration constants
 MAX_SETTLED_POSITIONS = 500
+MAX_EVENT_RESEARCH_RESULTS = 50
 HEALTH_CHECK_INTERVAL_SECONDS = 30.0
 
 T = TypeVar('T')
@@ -252,6 +253,11 @@ class V3StateContainer:
         # Component health tracking
         self._component_health: Dict[str, ComponentHealth] = {}
         self._health_check_interval = HEALTH_CHECK_INTERVAL_SECONDS
+
+        # Event research results cache - persists research for initial snapshot
+        # Maps event_ticker -> research_data dict (same format as WebSocket broadcast)
+        # Limited to MAX_EVENT_RESEARCH_RESULTS, evicting oldest by researched_at
+        self._event_research_results: Dict[str, dict] = {}
 
         # State machine reference (set by coordinator)
         self._machine_state: Optional[V3State] = None
@@ -1551,6 +1557,16 @@ class V3StateContainer:
                 f"result={result}, won={won}, pnl={actual_pnl}c (was {position_pnl}c)"
             )
 
+            # Also update the _settled_positions entry for this ticker
+            # This is critical: WebSocket creates settlements with empty market_result,
+            # and the frontend reads from _settled_positions (not attachments)
+            self._update_settled_position_result(
+                ticker=ticker,
+                market_result=result,
+                position_side=position_side,
+                position_count=position_count,
+            )
+
             # Now link to order contexts with correct result
             self._link_settlement_to_order_contexts(ticker, attachment, result, actual_pnl)
 
@@ -1558,6 +1574,62 @@ class V3StateContainer:
             logger.error(f"Failed to fetch settlement result for {ticker}: {e}")
             # Link with unknown result as fallback
             self._link_settlement_to_order_contexts(ticker, attachment, "unknown")
+
+    def _update_settled_position_result(
+        self,
+        ticker: str,
+        market_result: str,
+        position_side: str,
+        position_count: int,
+    ) -> None:
+        """
+        Update a settled position entry with the fetched market result.
+
+        When positions close via WebSocket, settlements are created with empty
+        market_result. This method updates the _settled_positions deque entry
+        after the market result is fetched via REST API.
+
+        Args:
+            ticker: Market ticker to update
+            market_result: The actual market result ("yes", "no", "void")
+            position_side: The side we held ("yes" or "no")
+            position_count: Number of contracts in the position
+        """
+        # Find the settlement entry in _settled_positions by ticker
+        # Note: deque doesn't support index assignment, so we iterate and modify in-place
+        for settlement in self._settled_positions:
+            if settlement.get("ticker") == ticker and settlement.get("market_result") == "":
+                # Calculate correct P&L based on actual result
+                won = (market_result == position_side) and market_result in ("yes", "no")
+                revenue = abs(position_count) * 100 if won else 0
+                total_cost = settlement.get("total_cost", 0)
+                fees = settlement.get("fees", 0)
+
+                # Net P&L = revenue - cost - fees
+                actual_net_pnl = revenue - total_cost - fees
+
+                # Calculate ROI
+                trade_roi = round((actual_net_pnl / total_cost) * 100) if total_cost > 0 else 0
+
+                # Update the settlement dict in-place
+                settlement["market_result"] = market_result
+                settlement["is_win"] = won
+                settlement["correct_prediction"] = won
+                settlement["net_pnl"] = actual_net_pnl
+                settlement["realized_pnl"] = actual_net_pnl
+                settlement["revenue"] = revenue
+                settlement["trade_roi"] = trade_roi
+
+                logger.info(
+                    f"Updated _settled_positions for {ticker}: "
+                    f"result={market_result}, won={won}, net_pnl={actual_net_pnl}c, roi={trade_roi}%"
+                )
+                return
+
+        logger.warning(
+            f"Could not find settlement entry for {ticker} in _settled_positions "
+            f"(may have already been updated or evicted)"
+        )
 
     def _link_settlement_to_order_contexts(
         self,
@@ -1798,6 +1870,92 @@ class V3StateContainer:
     def trading_attachments_version(self) -> int:
         """Get trading attachments version (increments on change)."""
         return self._trading_attachments_version
+
+    # ======== Event Research Results Cache ========
+
+    def store_event_research(self, event_ticker: str, research_data: dict) -> None:
+        """
+        Store event research results for initial WebSocket snapshot.
+
+        Called by AgenticResearchStrategy after broadcasting to WebSocket.
+        Results are cached so new clients connecting after research was
+        broadcast can see results in the Events tab.
+
+        Args:
+            event_ticker: Event ticker (e.g., "NASDAQ-25JAN09")
+            research_data: Research data dict matching WebSocket broadcast format
+                          (event_ticker, event_title, markets, researched_at, etc.)
+
+        Side Effects:
+            - Stores research in _event_research_results cache
+            - Evicts oldest results if cache exceeds MAX_EVENT_RESEARCH_RESULTS
+            - Increments _global_version for change detection
+        """
+        # Store the new result
+        self._event_research_results[event_ticker] = research_data
+
+        # Evict oldest if over limit
+        if len(self._event_research_results) > MAX_EVENT_RESEARCH_RESULTS:
+            # Find oldest by researched_at timestamp
+            oldest_ticker = None
+            oldest_time = float('inf')
+            for ticker, data in self._event_research_results.items():
+                researched_at = data.get("researched_at", 0)
+                if researched_at < oldest_time:
+                    oldest_time = researched_at
+                    oldest_ticker = ticker
+
+            if oldest_ticker and oldest_ticker != event_ticker:
+                del self._event_research_results[oldest_ticker]
+                logger.debug(f"Evicted oldest event research: {oldest_ticker}")
+
+        self._global_version += 1
+        self._last_update = time.time()
+
+        logger.debug(
+            f"Stored event research: {event_ticker}, "
+            f"cache size: {len(self._event_research_results)}"
+        )
+
+    def get_event_research_results(self) -> Dict[str, dict]:
+        """
+        Get all cached event research results.
+
+        Returns:
+            Dict mapping event_ticker -> research_data for all cached results.
+            Used by StatusReporter to include in trading_state snapshot.
+        """
+        return self._event_research_results.copy()
+
+    def get_event_research(self, event_ticker: str) -> Optional[dict]:
+        """
+        Get event research result for a specific event.
+
+        Args:
+            event_ticker: Event ticker to look up
+
+        Returns:
+            Research data dict if found, None otherwise
+        """
+        return self._event_research_results.get(event_ticker)
+
+    def clear_event_research(self, event_ticker: str) -> bool:
+        """
+        Remove event research from cache.
+
+        Args:
+            event_ticker: Event ticker to remove
+
+        Returns:
+            True if removed, False if not found
+        """
+        if event_ticker in self._event_research_results:
+            del self._event_research_results[event_ticker]
+            self._global_version += 1
+            self._last_update = time.time()
+            logger.debug(f"Cleared event research: {event_ticker}")
+            return True
+        return False
 
     # ======== Component Health Management ========
 
@@ -2220,6 +2378,8 @@ class V3StateContainer:
 
         self._settlement_strategy_cache.clear()
         self._position_strategy_cache.clear()
+
+        self._event_research_results.clear()
 
         self._component_health.clear()
 

@@ -266,6 +266,53 @@ export const useV3WebSocket = ({ onMessage }) => {
               return newSettlements;
             });
           }
+
+          // Handle event_research from initial snapshot (Events tab persistence)
+          // This merges cached research results so new clients see research
+          // that was broadcast before they connected
+          if (data.data.event_research) {
+            setEventResearch(prev => {
+              const marketIndex = { ...(prev._marketIndex || {}) };
+              let hasNewData = false;
+
+              // Merge each event's research into state
+              Object.entries(data.data.event_research).forEach(([eventTicker, researchData]) => {
+                // Skip if we already have this event (real-time takes precedence)
+                if (prev[eventTicker]) {
+                  return;
+                }
+                hasNewData = true;
+
+                // Index each market assessment by ticker
+                (researchData.markets || []).forEach(market => {
+                  marketIndex[market.ticker] = {
+                    eventTicker,
+                    ...market,
+                    eventTitle: researchData.event_title,
+                    eventCategory: researchData.event_category,
+                    primaryDriver: researchData.primary_driver,
+                    evidenceSummary: researchData.evidence_summary,
+                    researchedAt: researchData.researched_at,
+                  };
+                });
+              });
+
+              // Only update if we have new data to avoid unnecessary re-renders
+              if (!hasNewData) {
+                return prev;
+              }
+
+              return {
+                ...prev,
+                ...data.data.event_research,
+                _marketIndex: marketIndex,
+              };
+            });
+
+            console.log(
+              `[useV3WebSocket] Loaded ${Object.keys(data.data.event_research).length} cached event research results from snapshot`
+            );
+          }
         }
         break;
 

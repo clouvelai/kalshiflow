@@ -94,6 +94,7 @@ class AgenticResearchStrategy:
         self._research_service: Optional[AgenticResearchService] = None
         self._event_research_service: Optional[EventResearchService] = None
         self._running = False
+        self._started_at: Optional[float] = None  # For uptime tracking
         self._evaluation_task: Optional[asyncio.Task] = None
 
         # Async lock for trade flow processing
@@ -115,7 +116,8 @@ class AgenticResearchStrategy:
         # Config (will be loaded from YAML)
         self._min_mispricing = 0.10  # 10% mispricing required
         self._min_confidence = 0.70  # 70% confidence required
-        self._max_positions = 10  # Max concurrent positions
+        self._max_positions = 300  # Max concurrent positions (match YAML default)
+        self._max_positions_per_event = 10  # Max positions per event (concentration limit)
         self._contracts_per_trade = 25  # Position size
         self._evaluation_interval = 30.0  # Check every 30 seconds
 
@@ -151,6 +153,7 @@ class AgenticResearchStrategy:
             "orders_placed": 0,
             "trades_skipped_threshold": 0,
             "trades_skipped_position_limit": 0,
+            "trades_skipped_event_limit": 0,
             "trades_processed": 0,
             "trades_filtered": 0,
             "markets_with_trade_flow": 0,
@@ -169,6 +172,7 @@ class AgenticResearchStrategy:
             self._min_mispricing = params.get("min_mispricing", self._min_mispricing)
             self._min_confidence = params.get("min_confidence", self._min_confidence)
             self._max_positions = params.get("max_positions", self._max_positions)
+            self._max_positions_per_event = params.get("max_positions_per_event", self._max_positions_per_event)
             self._contracts_per_trade = params.get("contracts_per_trade", self._contracts_per_trade)
             self._evaluation_interval = params.get("evaluation_interval_seconds", self._evaluation_interval)
 
@@ -206,6 +210,7 @@ class AgenticResearchStrategy:
                     openai_temperature=self._openai_temperature,
                     web_search_enabled=self._web_search_enabled,
                     min_mispricing_threshold=self._min_mispricing,
+                    cache_ttl_seconds=self._cache_ttl_seconds,  # Semantic frame cache TTL
                 )
                 logger.info("EventResearchService initialized for event-first research")
             except Exception as e:
@@ -245,6 +250,7 @@ class AgenticResearchStrategy:
 
         # Start periodic evaluation loop
         self._running = True
+        self._started_at = time.time()
         self._evaluation_task = asyncio.create_task(self._evaluation_loop())
 
         logger.info(
@@ -300,7 +306,13 @@ class AgenticResearchStrategy:
         )
     
     def get_stats(self) -> Dict[str, Any]:
-        """Get strategy statistics."""
+        """Get strategy statistics.
+
+        Returns stats in the format expected by StrategyCoordinator.get_panel_data():
+        - Standard fields: running, signals_detected, signals_executed, signals_skipped, etc.
+        - skip_breakdown: Strategy-specific skip reasons for UI display
+        - Additional agentic-research-specific metrics
+        """
         research_stats = (
             self._research_service.get_stats()
             if self._research_service
@@ -327,14 +339,61 @@ class AgenticResearchStrategy:
             if self._stats["calibration_count"] > 0 else 0.0
         )
 
+        # Calculate uptime
+        uptime_seconds = 0
+        if hasattr(self, '_started_at') and self._started_at:
+            uptime_seconds = time.time() - self._started_at
+
+        # Calculate signals_skipped (sum of all skip reasons)
+        signals_skipped = (
+            self._stats["trades_skipped_threshold"] +
+            self._stats["trades_skipped_position_limit"] +
+            self._stats["trades_skipped_event_limit"]
+        )
+
+        # Cache stats from event research service
+        cache_hits = event_research_stats.get("cache_hits", 0)
+        cache_misses = event_research_stats.get("cache_misses", 0)
+        cache_hit_rate = event_research_stats.get("cache_hit_rate", 0.0)
+
         return {
+            # Standard fields expected by coordinator
             "name": self.name,
             "display_name": self.display_name,
             "running": self._running,
-            "use_event_first": self._use_event_first,
-            "signals_detected": self._signals_detected,
-            "orders_placed": self._orders_placed,
+            "uptime_seconds": uptime_seconds,
+            "signals_detected": self._stats["assessments_completed"],  # All assessments evaluated
+            "signals_executed": self._orders_placed,
+            "signals_skipped": signals_skipped,
             "last_signal_at": self._last_signal_at,
+
+            # Agentic research skip breakdown (different from RLM/ODMR)
+            # These are the reasons trades were NOT executed
+            "skip_breakdown": {
+                "threshold": self._stats["trades_skipped_threshold"],  # Edge below min_mispricing or low confidence
+                "position_limit": self._stats["trades_skipped_position_limit"],  # Global position limit reached
+                "event_limit": self._stats["trades_skipped_event_limit"],  # Per-event concentration limit
+                "hold_recommendation": 0,  # Counted in threshold for now
+            },
+
+            # Agentic-research-specific metrics for extended UI display
+            "agentic_metrics": {
+                "events_researched": len(self._events_researched),
+                "markets_researched": len(self._markets_researched),
+                "assessments_completed": self._stats["assessments_completed"],
+                "orders_placed": self._orders_placed,
+                # Cache performance
+                "cache_hits": cache_hits,
+                "cache_misses": cache_misses,
+                "cache_hit_rate": cache_hit_rate,
+                # LLM calibration (price estimation accuracy)
+                "calibration_samples": self._stats["calibration_count"],
+                "calibration_avg_error_cents": round(calibration_avg_error, 1),
+            },
+
+            # Keep legacy fields for backwards compatibility
+            "use_event_first": self._use_event_first,
+            "orders_placed": self._orders_placed,
             "markets_researched": len(self._markets_researched),
             "events_researched": len(self._events_researched),
             "research_stats": research_stats,
@@ -794,21 +853,24 @@ class AgenticResearchStrategy:
             if len(self._decision_log) > 100:
                 self._decision_log = self._decision_log[-100:]
 
-        # Log what WOULD have been filtered (but we're letting it rip for now)
-        abs_mispricing = abs(assessment.mispricing_magnitude)
-
-        # Log if this would have been a HOLD (but still trade)
+        # Filter: Skip HOLD recommendations (not enough edge)
         if assessment.recommendation == "HOLD":
-            logger.info(f"[NOTE] Would have been HOLD, but trading anyway (edge={assessment.mispricing_magnitude:+.1%})")
+            self._stats["trades_skipped_threshold"] += 1
+            logger.info(f"[DECISION] SKIP: HOLD recommendation (edge={assessment.mispricing_magnitude:+.1%})")
+            log_decision("SKIP", "HOLD recommendation - insufficient edge")
+            return
 
-        # Log if below threshold (but still trade)
+        # Filter: Skip if below mispricing threshold
+        abs_mispricing = abs(assessment.mispricing_magnitude)
         if abs_mispricing < self._min_mispricing:
+            self._stats["trades_skipped_threshold"] += 1
             logger.info(
-                f"[NOTE] Below threshold: {abs_mispricing:.1%} < {self._min_mispricing:.1%} "
-                f"(trading anyway)"
+                f"[DECISION] SKIP: Below threshold ({abs_mispricing:.1%} < {self._min_mispricing:.1%})"
             )
+            log_decision("SKIP", f"Below mispricing threshold: {abs_mispricing:.1%}")
+            return
 
-        # Still skip LOW confidence - that's a real quality filter
+        # Filter: Skip LOW confidence
         if assessment.confidence == Confidence.LOW:
             self._stats["trades_skipped_threshold"] += 1
             logger.info(f"[DECISION] SKIP: Low confidence")
@@ -825,17 +887,25 @@ class AgenticResearchStrategy:
             log_decision("SKIP", "Position limit reached")
             return
 
-        # Determine side
+        # Check per-event position limit (concentration control)
+        if event_ticker:
+            event_positions = self._count_event_positions(event_ticker)
+            if event_positions >= self._max_positions_per_event:
+                self._stats["trades_skipped_event_limit"] += 1
+                logger.info(
+                    f"[DECISION] SKIP: Event limit reached "
+                    f"({event_positions}/{self._max_positions_per_event} in {event_ticker})"
+                )
+                log_decision("SKIP_EVENT_LIMIT", f"Already {event_positions} positions in {event_ticker}")
+                return
+
+        # Determine side (HOLD is already filtered above)
         if assessment.recommendation == "BUY_YES":
             side = "yes"
         elif assessment.recommendation == "BUY_NO":
             side = "no"
-        elif assessment.recommendation == "HOLD":
-            # HOLD means small edge - pick side based on mispricing direction
-            side = "yes" if assessment.mispricing_magnitude > 0 else "no"
-            logger.info(f"[NOTE] HOLD → trading {side.upper()} (edge={assessment.mispricing_magnitude:+.1%})")
         else:
-            log_decision("SKIP", "Invalid recommendation")
+            log_decision("SKIP", f"Invalid recommendation: {assessment.recommendation}")
             return
 
         # Get current orderbook price
@@ -1092,14 +1162,14 @@ class AgenticResearchStrategy:
             # No positions exist, we can open one
             return True
 
-        # Check if already in this specific market (any strategy)
+        # For paper trading: allow adding to existing positions
+        # (In production, would want to limit max position per market)
         if market_ticker in trading_state.positions:
             position = trading_state.positions[market_ticker]
-            # Has actual position (not just zero)
             pos_value = position.get("position", 0)
             if pos_value != 0:
-                logger.debug(f"Already have position in {market_ticker}: {pos_value}")
-                return False
+                logger.debug(f"Already have position in {market_ticker}: {pos_value} (allowing add)")
+                # Allow adding to position - no longer blocking
 
         # Count ALL active positions (multi-strategy isolation not yet supported)
         active_position_count = 0
@@ -1112,6 +1182,40 @@ class AgenticResearchStrategy:
         if not can_open:
             logger.debug(f"Position limit reached: {active_position_count}/{self._max_positions}")
         return can_open
+
+    def _count_event_positions(self, event_ticker: str) -> int:
+        """Count current positions in markets from this event.
+
+        Used to enforce per-event concentration limits and avoid
+        over-exposure to a single event's correlated markets.
+
+        Args:
+            event_ticker: Event ticker to check positions for
+
+        Returns:
+            Number of active positions in markets from this event
+        """
+        if not self._context or not self._context.state_container:
+            return 0
+
+        trading_state = self._context.state_container.trading_state
+        if not trading_state or not trading_state.positions:
+            return 0
+
+        # Get tracked markets for event ticker lookup
+        tracked = self._context.tracked_markets
+        if not tracked:
+            return 0
+
+        # Count positions in markets with matching event_ticker
+        count = 0
+        for market_ticker, position in trading_state.positions.items():
+            market = tracked.get_market(market_ticker)
+            if market and market.event_ticker == event_ticker:
+                if position.get("position", 0) != 0:
+                    count += 1
+
+        return count
 
     def _has_active_position(self, market_ticker: str) -> bool:
         """Check if we have an active position in a market."""

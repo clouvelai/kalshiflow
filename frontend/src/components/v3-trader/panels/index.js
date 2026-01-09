@@ -6,3 +6,5 @@ export { default as PositionListPanel } from './PositionListPanel';
 export { default as SettlementsPanel } from './SettlementsPanel';
 export { default as TradeProcessingPanel } from './TradeProcessingPanel';
 export { default as TradingStrategiesPanel } from './TradingStrategiesPanel';
+export { default as EventsPanel } from './EventsPanel';
+export { default as EventCard } from './EventCard';

@@ -13,7 +13,11 @@ import {
   History,
   CheckCircle,
   XCircle,
-  Filter
+  Filter,
+  Brain,
+  Database,
+  FileSearch,
+  TrendingUp
 } from 'lucide-react';
 import { formatAge } from '../../../utils/v3-trader';
 
@@ -168,22 +172,39 @@ StatBox.displayName = 'StatBox';
 /**
  * SkipBox - Mini stat box for skip breakdown
  */
-const SkipBox = memo(({ label, value }) => {
+const SkipBox = memo(({ label, value, accentColor = 'yellow' }) => {
   const hasValue = value > 0;
+
+  const colorStyles = {
+    yellow: {
+      active: 'bg-yellow-900/20 border-yellow-700/30',
+      text: 'text-yellow-400',
+    },
+    emerald: {
+      active: 'bg-emerald-900/20 border-emerald-700/30',
+      text: 'text-emerald-400',
+    },
+    violet: {
+      active: 'bg-violet-900/20 border-violet-700/30',
+      text: 'text-violet-400',
+    },
+  };
+
+  const colors = colorStyles[accentColor] || colorStyles.yellow;
 
   return (
     <div className={`
       rounded-lg p-2 border text-center
       transition-all duration-200 ease-out
       ${hasValue
-        ? 'bg-yellow-900/20 border-yellow-700/30'
+        ? colors.active
         : 'bg-gray-800/30 border-gray-700/30'
       }
     `}>
       <div className="text-[9px] text-gray-500 uppercase tracking-wider font-medium mb-0.5 truncate">
         {label}
       </div>
-      <div className={`text-sm font-mono font-bold ${hasValue ? 'text-yellow-400' : 'text-gray-600'}`}>
+      <div className={`text-sm font-mono font-bold ${hasValue ? colors.text : 'text-gray-600'}`}>
         {value}
       </div>
     </div>
@@ -191,6 +212,119 @@ const SkipBox = memo(({ label, value }) => {
 });
 
 SkipBox.displayName = 'SkipBox';
+
+/**
+ * SkipBreakdownSection - Renders strategy-specific skip breakdown
+ */
+const SkipBreakdownSection = memo(({ strategyId, skipBreakdown }) => {
+  // Agentic Research uses different skip categories
+  if (strategyId === 'agentic_research') {
+    return (
+      <div className="mb-4">
+        <div className="flex items-center space-x-2 mb-2">
+          <AlertCircle className="w-3 h-3 text-gray-600" />
+          <span className="text-[10px] text-gray-500 uppercase tracking-wider font-medium">Skip Breakdown</span>
+        </div>
+        <div className="grid grid-cols-4 gap-2">
+          <SkipBox label="Threshold" value={skipBreakdown.threshold || 0} accentColor="emerald" />
+          <SkipBox label="Position Lim" value={skipBreakdown.position_limit || 0} accentColor="emerald" />
+          <SkipBox label="Event Lim" value={skipBreakdown.event_limit || 0} accentColor="emerald" />
+          <SkipBox label="Hold Rec" value={skipBreakdown.hold_recommendation || 0} accentColor="emerald" />
+        </div>
+      </div>
+    );
+  }
+
+  // Default: RLM/ODMR skip breakdown
+  return (
+    <div className="mb-4">
+      <div className="flex items-center space-x-2 mb-2">
+        <AlertCircle className="w-3 h-3 text-gray-600" />
+        <span className="text-[10px] text-gray-500 uppercase tracking-wider font-medium">Skip Breakdown</span>
+      </div>
+      <div className="grid grid-cols-6 gap-2">
+        <SkipBox label="Spread Vol" value={skipBreakdown.spread_volatility || 0} />
+        <SkipBox label="Spread Wide" value={skipBreakdown.spread_wide || 0} />
+        <SkipBox label="Stale OB" value={skipBreakdown.stale_orderbook || 0} />
+        <SkipBox label="Rate Lim" value={skipBreakdown.rate_limited || 0} />
+        <SkipBox label="Pos Max" value={skipBreakdown.position_maxed || 0} />
+        <SkipBox label="No OB Data" value={skipBreakdown.no_ob_data || 0} />
+      </div>
+    </div>
+  );
+});
+
+SkipBreakdownSection.displayName = 'SkipBreakdownSection';
+
+/**
+ * AgenticMetricsSection - Extended metrics for Agentic Research strategy
+ */
+const AgenticMetricsSection = memo(({ strategyData }) => {
+  const agenticMetrics = strategyData?.agentic_metrics || {};
+
+  // Only show for agentic_research strategy
+  if (!agenticMetrics || Object.keys(agenticMetrics).length === 0) {
+    return null;
+  }
+
+  const eventsResearched = agenticMetrics.events_researched || 0;
+  const marketsResearched = agenticMetrics.markets_researched || 0;
+  const cacheHitRate = (agenticMetrics.cache_hit_rate || 0) * 100;
+  const calibrationSamples = agenticMetrics.calibration_samples || 0;
+  const calibrationError = agenticMetrics.calibration_avg_error_cents || 0;
+
+  return (
+    <div className="mb-4">
+      <div className="flex items-center space-x-2 mb-2">
+        <Brain className="w-3 h-3 text-emerald-500" />
+        <span className="text-[10px] text-gray-500 uppercase tracking-wider font-medium">Research Metrics</span>
+      </div>
+      <div className="grid grid-cols-4 gap-2">
+        {/* Events Researched */}
+        <div className="rounded-lg p-2 border text-center bg-emerald-900/20 border-emerald-700/30">
+          <div className="text-[9px] text-gray-500 uppercase tracking-wider font-medium mb-0.5">
+            Events
+          </div>
+          <div className="text-sm font-mono font-bold text-emerald-400">
+            {eventsResearched}
+          </div>
+        </div>
+
+        {/* Markets Researched */}
+        <div className="rounded-lg p-2 border text-center bg-emerald-900/20 border-emerald-700/30">
+          <div className="text-[9px] text-gray-500 uppercase tracking-wider font-medium mb-0.5">
+            Markets
+          </div>
+          <div className="text-sm font-mono font-bold text-emerald-400">
+            {marketsResearched}
+          </div>
+        </div>
+
+        {/* Cache Hit Rate */}
+        <div className="rounded-lg p-2 border text-center bg-cyan-900/20 border-cyan-700/30">
+          <div className="text-[9px] text-gray-500 uppercase tracking-wider font-medium mb-0.5">
+            Cache Hit
+          </div>
+          <div className="text-sm font-mono font-bold text-cyan-400">
+            {cacheHitRate.toFixed(0)}%
+          </div>
+        </div>
+
+        {/* LLM Calibration */}
+        <div className="rounded-lg p-2 border text-center bg-violet-900/20 border-violet-700/30">
+          <div className="text-[9px] text-gray-500 uppercase tracking-wider font-medium mb-0.5">
+            Calib Err
+          </div>
+          <div className="text-sm font-mono font-bold text-violet-400">
+            {calibrationSamples > 0 ? `${calibrationError}c` : '-'}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+});
+
+AgenticMetricsSection.displayName = 'AgenticMetricsSection';
 
 /**
  * RateLimiterBar - Progress bar showing rate limiter utilization
@@ -644,21 +778,16 @@ const TradingStrategiesPanel = ({ strategyStatus }) => {
                 />
               </div>
 
-              {/* Skip Breakdown Grid */}
-              <div className="mb-4">
-                <div className="flex items-center space-x-2 mb-2">
-                  <AlertCircle className="w-3 h-3 text-gray-600" />
-                  <span className="text-[10px] text-gray-500 uppercase tracking-wider font-medium">Skip Breakdown</span>
-                </div>
-                <div className="grid grid-cols-6 gap-2">
-                  <SkipBox label="Spread Vol" value={skipBreakdown.spread_volatility || 0} />
-                  <SkipBox label="Spread Wide" value={skipBreakdown.spread_wide || 0} />
-                  <SkipBox label="Stale OB" value={skipBreakdown.stale_orderbook || 0} />
-                  <SkipBox label="Rate Lim" value={skipBreakdown.rate_limited || 0} />
-                  <SkipBox label="Pos Max" value={skipBreakdown.position_maxed || 0} />
-                  <SkipBox label="No OB Data" value={skipBreakdown.no_ob_data || 0} />
-                </div>
-              </div>
+              {/* Skip Breakdown Grid - Strategy-specific */}
+              <SkipBreakdownSection
+                strategyId={strategyId}
+                skipBreakdown={skipBreakdown}
+              />
+
+              {/* Agentic Research Extended Metrics */}
+              {strategyId === 'agentic_research' && (
+                <AgenticMetricsSection strategyData={strategyData} />
+              )}
 
               {/* Collapsible Sections */}
               <div className="space-y-3">

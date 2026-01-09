@@ -878,6 +878,9 @@ class V3Coordinator:
                 sync_interval=20.0,
             )
 
+            # Pass config for TTL cleanup (needed for event-driven strategies)
+            self._trading_state_syncer.set_config(self._config)
+
             # Start the syncer (performs initial sync immediately)
             await self._trading_state_syncer.start()
 

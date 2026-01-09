@@ -946,6 +946,19 @@ class V3WebSocketManager:
         # Build event context data
         event_context = result.event_context
 
+        # Build semantic frame data if available
+        semantic_frame_data = None
+        if event_context.semantic_frame:
+            sf = event_context.semantic_frame
+            semantic_frame_data = {
+                "frame_type": sf.frame_type.value if hasattr(sf.frame_type, 'value') else sf.frame_type,
+                "question_template": sf.question_template or "",
+                "actors": [a.to_dict() for a in sf.actors] if sf.actors else [],
+                "objects": [o.to_dict() for o in sf.objects] if sf.objects else [],
+                "candidates": [c.to_dict() for c in sf.candidates] if sf.candidates else [],
+                "resolution_trigger": sf.resolution_trigger or "",
+            }
+
         research_data = {
             "event_ticker": event_ticker,
             "event_title": event_context.event_title,
@@ -961,9 +974,24 @@ class V3WebSocketManager:
             "research_duration_seconds": result.total_research_seconds,
             "markets_evaluated": result.markets_evaluated,
             "markets_with_edge": result.markets_with_edge,
+            # Additional fields for Events tab
+            "semantic_frame": semantic_frame_data,
+            "resolution_criteria": event_context.context.resolution_criteria if event_context.context else "",
+            "time_horizon": event_context.context.time_horizon if event_context.context else "",
+            "secondary_factors": event_context.driver_analysis.secondary_factors if event_context.driver_analysis else [],
+            "tail_risks": event_context.driver_analysis.tail_risks if event_context.driver_analysis else [],
+            "causal_chain": event_context.driver_analysis.causal_chain if event_context.driver_analysis else "",
+            "key_evidence": (event_context.evidence.key_evidence[:5]
+                           if event_context.evidence and event_context.evidence.key_evidence
+                           else []),
         }
 
         await self.broadcast_message("event_research", research_data)
+
+        # Store in state_container for initial snapshot (Events tab persistence)
+        # This ensures new clients see research that was broadcast before they connected
+        if self._state_container:
+            self._state_container.store_event_research(event_ticker, research_data)
 
         logger.info(
             f"Broadcast event_research for {event_ticker}: "
