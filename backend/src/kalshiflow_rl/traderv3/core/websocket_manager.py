@@ -439,6 +439,10 @@ class V3WebSocketManager:
             if self._upcoming_markets_syncer and client_id in self._clients:
                 await self._send_upcoming_markets_snapshot(client_id)
 
+            # Send event research snapshot (Events tab persistence)
+            if self._state_container and client_id in self._clients:
+                await self._send_event_research_snapshot(client_id)
+
             # Send activity feed history for replay (system_activity + lifecycle_event)
             # This ensures the Activity Feed is populated when switching views
             if self._activity_feed_history and client_id in self._clients:
@@ -929,10 +933,10 @@ class V3WebSocketManager:
             logger.debug(f"Skipping broadcast for failed research: {event_ticker}")
             return
 
-        # Build market assessments data
+        # Build market assessments data (with backward-compatible v2 field handling)
         markets_data = []
         for assessment in result.assessments:
-            markets_data.append({
+            market_data = {
                 "ticker": assessment.market_ticker,
                 "title": assessment.market_title,
                 "evidence_probability": assessment.evidence_probability,
@@ -941,7 +945,17 @@ class V3WebSocketManager:
                 "recommendation": assessment.recommendation,
                 "confidence": assessment.confidence.value if hasattr(assessment.confidence, 'value') else assessment.confidence,
                 "edge_explanation": assessment.edge_explanation,
-            })
+                # v2 calibration fields (with hasattr checks for backward compatibility)
+                "evidence_cited": getattr(assessment, 'evidence_cited', []),
+                "what_would_change_mind": getattr(assessment, 'what_would_change_mind', ""),
+                "assumption_flags": getattr(assessment, 'assumption_flags', []),
+                "calibration_notes": getattr(assessment, 'calibration_notes', ""),
+                "evidence_quality": getattr(assessment, 'evidence_quality', "medium"),
+                # Additional useful fields
+                "specific_question": getattr(assessment, 'specific_question', ""),
+                "driver_application": getattr(assessment, 'driver_application', ""),
+            }
+            markets_data.append(market_data)
 
         # Build event context data
         event_context = result.event_context
@@ -1186,6 +1200,31 @@ class V3WebSocketManager:
             self._upcoming_markets_syncer,
             lambda: self._upcoming_markets_syncer.get_snapshot_message()["data"],
             log_name="upcoming_markets"
+        )
+
+    async def _send_event_research_snapshot(self, client_id: str) -> None:
+        """
+        Send cached event research results to a specific client.
+
+        This enables the Events tab to show research that was broadcast
+        before the client connected. The snapshot wraps the cached results
+        in a trading_state message format that the frontend expects.
+        """
+        if not self._state_container:
+            return
+
+        event_research = self._state_container.get_event_research_results()
+        if not event_research:
+            return
+
+        # Send as a trading_state snapshot with event_research included
+        # This matches the format the frontend expects in useV3WebSocket.js
+        await self._send_snapshot(
+            client_id,
+            "trading_state",
+            event_research,
+            lambda: {"event_research": event_research},
+            log_name="event_research"
         )
 
     async def _send_activity_feed_history(self, client_id: str) -> None:

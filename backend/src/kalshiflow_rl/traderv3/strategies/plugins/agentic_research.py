@@ -895,6 +895,12 @@ class AgenticResearchStrategy:
                     key_evidence=key_evidence,
                     entry_price_cents=price if traded else None,
                     order_id=order_id,
+                    # v2 calibration fields
+                    evidence_cited=getattr(assessment, 'evidence_cited', None),
+                    what_would_change_mind=getattr(assessment, 'what_would_change_mind', None),
+                    assumption_flags=getattr(assessment, 'assumption_flags', None),
+                    calibration_notes=getattr(assessment, 'calibration_notes', None),
+                    evidence_quality=getattr(assessment, 'evidence_quality', None),
                 )
 
             # Schedule persistence task (non-blocking)
@@ -1415,6 +1421,12 @@ class AgenticResearchStrategy:
         key_evidence: Optional[List[str]],
         entry_price_cents: Optional[int],
         order_id: Optional[str],
+        # v2 calibration fields
+        evidence_cited: Optional[List[str]] = None,
+        what_would_change_mind: Optional[str] = None,
+        assumption_flags: Optional[List[str]] = None,
+        calibration_notes: Optional[str] = None,
+        evidence_quality: Optional[str] = None,
     ) -> None:
         """
         Persist decision to research_decisions table for offline analysis.
@@ -1444,6 +1456,11 @@ class AgenticResearchStrategy:
             key_evidence: Top evidence points
             entry_price_cents: Trade entry price (if traded)
             order_id: Order ID (if traded)
+            evidence_cited: Which evidence points support this estimate
+            what_would_change_mind: What would most change this estimate
+            assumption_flags: Assumptions made due to missing info
+            calibration_notes: Notes on confidence calibration
+            evidence_quality: Quality rating: high, medium, low
         """
         order_context_service = get_order_context_service()
         db_pool = order_context_service.db_pool
@@ -1462,9 +1479,12 @@ class AgenticResearchStrategy:
                         ai_probability, market_probability, edge, confidence, recommendation,
                         price_guess_cents, price_guess_error_cents,
                         edge_explanation, key_driver, key_evidence,
-                        entry_price_cents, order_id
+                        entry_price_cents, order_id,
+                        evidence_cited, what_would_change_mind, assumption_flags,
+                        calibration_notes, evidence_quality
                     ) VALUES (
-                        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19
+                        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19,
+                        $20, $21, $22, $23, $24
                     )
                     """,
                     self._session_id,
@@ -1486,6 +1506,11 @@ class AgenticResearchStrategy:
                     json.dumps(key_evidence) if key_evidence else None,
                     entry_price_cents,
                     order_id,
+                    json.dumps(evidence_cited) if evidence_cited else None,
+                    what_would_change_mind,
+                    json.dumps(assumption_flags) if assumption_flags else None,
+                    calibration_notes,
+                    evidence_quality,
                 )
                 logger.debug(f"Persisted decision for {market_ticker}: {action}")
         except Exception as e:

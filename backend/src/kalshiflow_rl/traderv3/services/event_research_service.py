@@ -32,7 +32,8 @@ import logging
 import os
 import re
 import time
-from typing import Dict, Any, Optional, List, TYPE_CHECKING
+from typing import Dict, Any, Optional, List, Tuple, TYPE_CHECKING
+from urllib.parse import urlparse
 
 from langchain_openai import ChatOpenAI
 from langchain_community.tools import DuckDuckGoSearchRun
@@ -53,6 +54,20 @@ from ..state.event_research_context import (
     SemanticFrame,
 )
 
+# Import versioned prompts and schemas
+from ..prompts import (
+    get_event_context_prompt,
+    get_market_eval_prompt,
+    ACTIVE_EVENT_CONTEXT_VERSION,
+    ACTIVE_MARKET_EVAL_VERSION,
+)
+from ..prompts.schemas import (
+    FullContextOutput,
+    SemanticRoleOutput,
+    SingleMarketAssessment,
+    BatchMarketAssessmentOutput,
+)
+
 if TYPE_CHECKING:
     from ..state.tracked_markets import TrackedMarket
     from ..state.microstructure_context import MicrostructureContext
@@ -60,172 +75,184 @@ if TYPE_CHECKING:
 logger = logging.getLogger("kalshiflow_rl.traderv3.services.event_research")
 
 
-# === Pydantic models for structured LLM output ===
-# Note: EventContextOutput and KeyDriverOutput were removed - they are now part of
-# the combined FullContextOutput model which extracts context, driver, and semantic
-# frame in a single LLM call for efficiency.
+# === Source Quality Heuristics ===
+# Trusted domains for evidence quality assessment
 
-class SingleMarketAssessment(BaseModel):
-    """Assessment for a single market within an event."""
-    market_ticker: str = Field(description="The market ticker being assessed")
-    specific_question: str = Field(
-        description="What specific question does this market ask?"
-    )
-    driver_application: str = Field(
-        description="How does the primary driver apply to THIS specific market?"
-    )
-    evidence_probability: float = Field(
-        description="Your probability estimate for YES based on evidence (0.0 to 1.0)",
-        ge=0.0, le=1.0
-    )
-    estimated_market_price: int = Field(
-        description="What price (in cents, 0-100) do you think this market is CURRENTLY trading at? This is your guess of what the market believes.",
-        ge=0, le=100
-    )
-    confidence: str = Field(
-        description="Confidence in this assessment: high, medium, or low"
-    )
-    reasoning: str = Field(
-        description="Brief reasoning for your probability estimate (2-3 sentences max)"
-    )
+TRUSTED_DOMAINS = {
+    # Major news agencies
+    "reuters.com", "apnews.com", "bbc.com", "bbc.co.uk",
+    # Business/financial news
+    "bloomberg.com", "wsj.com", "ft.com", "cnbc.com", "marketwatch.com",
+    "finance.yahoo.com", "seekingalpha.com",
+    # Sports
+    "espn.com", "sports.yahoo.com", "nfl.com", "nba.com", "mlb.com",
+    "theathleticdiscover.com", "theathletic.com",
+    # Politics/policy
+    "politico.com", "thehill.com", "rollcall.com", "c-span.org",
+    # Government/official
+    "whitehouse.gov", "federalreserve.gov", "sec.gov", "bls.gov",
+    "congress.gov", "state.gov",
+    # Data sources
+    "tradingview.com", "coinmarketcap.com", "coingecko.com",
+    # Wire services
+    "prnewswire.com", "businesswire.com",
+}
 
-
-class BatchMarketAssessmentOutput(BaseModel):
-    """Structured output for Phase 5: Batch market evaluation."""
-    assessments: List[SingleMarketAssessment] = Field(
-        description="Assessment for each market in the event"
-    )
-
-
-# === NEW: Combined extraction for semantic frame caching ===
-
-class SemanticRoleOutput(BaseModel):
-    """Output for a semantic role (actor, object, or candidate)."""
-    entity_id: str = Field(
-        description="Unique identifier for this entity (e.g., 'PERSON:TRUMP', 'TEAM:CELTICS')"
-    )
-    canonical_name: str = Field(
-        description="The standard/official name for this entity"
-    )
-    entity_type: str = Field(
-        description="Type of entity: PERSON, ORGANIZATION, TEAM, POSITION, METRIC, etc."
-    )
-    role: str = Field(
-        description="Role in the semantic frame: 'actor', 'nominator', 'candidate', 'position', etc."
-    )
-    role_description: str = Field(
-        default="",
-        description="Brief description of this entity's role in the event"
-    )
-    market_ticker: Optional[str] = Field(
-        default=None,
-        description="If this entity corresponds to a specific market, its ticker (e.g., 'KXFEDCHAIRNOM-WARSH')"
-    )
-    aliases: List[str] = Field(
-        default_factory=list,
-        description="Alternative names/references for this entity (for news matching)"
-    )
-    search_queries: List[str] = Field(
-        default_factory=list,
-        description="Targeted search queries to find news about this entity"
-    )
+MEDIUM_TRUST_DOMAINS = {
+    # General news
+    "cnn.com", "nytimes.com", "washingtonpost.com", "theguardian.com",
+    "usatoday.com", "latimes.com", "foxnews.com", "nbcnews.com",
+    # Tech/business
+    "techcrunch.com", "wired.com", "arstechnica.com", "venturebeat.com",
+    # Crypto-specific
+    "coindesk.com", "cointelegraph.com", "theblock.co",
+    # Wikipedia (good for background, not breaking news)
+    "wikipedia.org",
+}
 
 
-class FullContextOutput(BaseModel):
+def assess_source_quality(url: str, text: str = "") -> Tuple[str, float]:
     """
-    Combined output for context + driver + semantic frame.
+    Assess the quality of a source based on domain and content heuristics.
 
-    This model is used for efficient single-LLM-call extraction that combines:
-    - Phase 2: Event Context understanding
-    - Phase 3: Key Driver identification
-    - NEW: Semantic Frame extraction
+    Args:
+        url: Source URL
+        text: Optional text content for additional heuristics
 
-    On cache hit, we skip the LLM call entirely and use cached values.
+    Returns:
+        Tuple of (quality_level, confidence_score)
+        quality_level: "high", "medium", or "low"
+        confidence_score: 0.0 to 1.0
     """
+    try:
+        parsed = urlparse(url)
+        domain = parsed.netloc.lower()
 
-    # === Event Context (Phase 2) ===
-    event_description: str = Field(
-        description="2-3 sentence description of what this event is about"
-    )
-    core_question: str = Field(
-        description="The fundamental question being asked (what outcome is being predicted?)"
-    )
-    resolution_criteria: str = Field(
-        description="How will YES vs NO be determined? What specific criteria?"
-    )
-    resolution_objectivity: str = Field(
-        description="Is resolution objective (clear data), subjective (judgment), or mixed? One of: objective, subjective, mixed"
-    )
-    time_horizon: str = Field(
-        description="When will we know the outcome? Include key dates if relevant"
-    )
+        # Remove www. prefix
+        if domain.startswith("www."):
+            domain = domain[4:]
 
-    # === Key Driver (Phase 3) ===
-    primary_driver: str = Field(
-        description="The single most important factor determining YES vs NO. Be specific and measurable."
-    )
-    primary_driver_reasoning: str = Field(
-        description="Why is this the key driver? What's the causal chain from driver to outcome?"
-    )
-    causal_chain: str = Field(
-        description="The step-by-step mechanism: how does the driver lead to the outcome?"
-    )
-    secondary_factors: List[str] = Field(
-        description="2-3 other factors that matter, in order of importance"
-    )
-    tail_risks: List[str] = Field(
-        description="Low-probability events that could dramatically change the outcome"
-    )
-    base_rate: float = Field(
-        description="Historical frequency of YES for similar events (0.0 to 1.0)",
-        ge=0.0, le=1.0
-    )
-    base_rate_reasoning: str = Field(
-        description="How did you determine the base rate? What counts as 'similar events'?"
-    )
+        # Check trusted domains
+        if domain in TRUSTED_DOMAINS:
+            return ("high", 0.9)
 
-    # === Semantic Frame (NEW) ===
-    frame_type: str = Field(
-        description="Type of semantic frame: NOMINATION, COMPETITION, ACHIEVEMENT, OCCURRENCE, MEASUREMENT, or MENTION"
-    )
-    question_template: str = Field(
-        description="Template showing semantic structure, e.g., '{actor} nominates {candidate} for {position}'"
-    )
-    primary_relation: str = Field(
-        description="The main verb/relation in the frame: 'nominates', 'defeats', 'exceeds', 'occurs', etc."
-    )
-    actors: List[SemanticRoleOutput] = Field(
-        default_factory=list,
-        description="Entities with agency/decision power (e.g., Trump nominates, Team competes)"
-    )
-    objects: List[SemanticRoleOutput] = Field(
-        default_factory=list,
-        description="Things being acted upon (e.g., Fed Chair position, championship title)"
-    )
-    candidates: List[SemanticRoleOutput] = Field(
-        default_factory=list,
-        description="Possible outcomes/choices linked to markets (e.g., Warsh, Hassett for Fed Chair)"
-    )
-    mutual_exclusivity: bool = Field(
-        default=True,
-        description="Can only ONE outcome happen? (True for most prediction markets)"
-    )
-    actor_controls_outcome: bool = Field(
-        default=False,
-        description="Does a specific actor (like Trump) directly decide the outcome?"
-    )
-    resolution_trigger: str = Field(
-        default="",
-        description="What specific event triggers resolution? e.g., 'First formal nomination announcement'"
-    )
-    primary_search_queries: List[str] = Field(
-        default_factory=list,
-        description="3-5 targeted search queries to find news about this event"
-    )
-    signal_keywords: List[str] = Field(
-        default_factory=list,
-        description="Keywords that signal important news: 'frontrunner', 'shortlist', 'reportedly', etc."
-    )
+        # Check medium trust domains
+        if domain in MEDIUM_TRUST_DOMAINS:
+            return ("medium", 0.7)
+
+        # Check for .gov or .edu domains
+        if domain.endswith(".gov") or domain.endswith(".edu"):
+            return ("high", 0.85)
+
+        # Check for known low-quality indicators
+        low_quality_indicators = [
+            "blog", "forum", "reddit", "twitter", "x.com",
+            "facebook", "tiktok", "youtube",
+        ]
+        for indicator in low_quality_indicators:
+            if indicator in domain:
+                return ("low", 0.3)
+
+        # Default to medium for unknown sources
+        return ("medium", 0.5)
+
+    except Exception:
+        return ("low", 0.3)
+
+
+def generate_semantic_frame_queries(
+    frame_type: FrameType,
+    event_title: str,
+    primary_driver: str,
+    candidates: List[SemanticRole] = None,
+    actors: List[SemanticRole] = None,
+) -> List[str]:
+    """
+    Generate targeted search queries based on semantic frame type.
+
+    Different frame types benefit from different query structures:
+    - NOMINATION: Focus on actor intentions, candidate news, shortlist reports
+    - COMPETITION: Focus on matchup, performance, odds, predictions
+    - MEASUREMENT: Focus on data sources, forecasts, current values
+    - OCCURRENCE: Focus on news about the event happening or not
+
+    Args:
+        frame_type: Type of semantic frame
+        event_title: Event title for context
+        primary_driver: Key driver from analysis
+        candidates: List of candidate roles (for NOMINATION/COMPETITION)
+        actors: List of actor roles (for NOMINATION)
+
+    Returns:
+        List of targeted search queries
+    """
+    queries = []
+
+    if frame_type == FrameType.NOMINATION:
+        # NOMINATION: Actor decides who gets position
+        # Focus on: actor statements, shortlist reports, candidate news
+        if actors:
+            for actor in actors[:2]:  # Top 2 actors
+                queries.append(f"{actor.canonical_name} {event_title} announcement")
+                queries.append(f"{actor.canonical_name} nominee decision latest")
+        if candidates:
+            for candidate in candidates[:3]:  # Top 3 candidates
+                queries.append(f"{candidate.canonical_name} frontrunner {event_title}")
+        queries.append(f"{event_title} shortlist candidates")
+        queries.append(f"{event_title} nomination timeline")
+
+    elif frame_type == FrameType.COMPETITION:
+        # COMPETITION: Entities compete, rules determine winner
+        # Focus on: matchup analysis, recent performance, expert predictions
+        if candidates:
+            # Get matchup queries
+            if len(candidates) >= 2:
+                queries.append(
+                    f"{candidates[0].canonical_name} vs {candidates[1].canonical_name} prediction"
+                )
+            for candidate in candidates[:3]:
+                queries.append(f"{candidate.canonical_name} recent performance stats")
+        queries.append(f"{event_title} odds prediction")
+        queries.append(f"{event_title} expert analysis")
+
+    elif frame_type == FrameType.MEASUREMENT:
+        # MEASUREMENT: Numeric value vs threshold
+        # Focus on: data sources, forecasts, current readings
+        queries.append(f"{primary_driver} forecast prediction")
+        queries.append(f"{primary_driver} latest data reading")
+        queries.append(f"{event_title} consensus estimate")
+        queries.append(f"{primary_driver} analyst expectations")
+
+    elif frame_type == FrameType.OCCURRENCE:
+        # OCCURRENCE: Event happens or doesn't
+        # Focus on: likelihood, conditions, news
+        queries.append(f"{event_title} likelihood")
+        queries.append(f"{primary_driver} latest news")
+        queries.append(f"{event_title} will it happen")
+
+    elif frame_type == FrameType.ACHIEVEMENT:
+        # ACHIEVEMENT: Subject reaches milestone
+        queries.append(f"{event_title} progress toward")
+        queries.append(f"{primary_driver} current status")
+
+    elif frame_type == FrameType.MENTION:
+        # MENTION: Someone says/references something
+        queries.append(f"{event_title} speech transcript")
+        queries.append(f"{event_title} expected remarks")
+
+    # Always add a general query
+    queries.append(f"{event_title} news today")
+
+    # Deduplicate and limit
+    seen = set()
+    unique_queries = []
+    for q in queries:
+        q_lower = q.lower()
+        if q_lower not in seen:
+            seen.add(q_lower)
+            unique_queries.append(q)
+
+    return unique_queries[:5]  # Return top 5 queries
 
 
 class EventResearchService:
@@ -289,6 +316,12 @@ class EventResearchService:
         self._events_researched = 0
         self._total_llm_calls = 0
         self._total_research_seconds = 0.0
+
+        # Parse failure tracking (for prompt quality monitoring)
+        self._parse_failures = 0
+        self._parse_repairs = 0
+        self._prompt_version_event_context = ACTIVE_EVENT_CONTEXT_VERSION
+        self._prompt_version_market_eval = ACTIVE_MARKET_EVAL_VERSION
 
         # Semantic frame cache
         self._frame_cache: Dict[str, EventResearchContext] = {}
@@ -1085,8 +1118,13 @@ Analyze:
         """
         Phase 4: Use web search to gather evidence about the key driver.
 
-        When a semantic frame is available, uses its targeted search queries
-        instead of generic event + driver search.
+        Uses semantic frame-aware query generation when frame is available:
+        - NOMINATION: Actor intentions, candidate news, shortlist reports
+        - COMPETITION: Matchup analysis, performance stats, predictions
+        - MEASUREMENT: Data sources, forecasts, current readings
+        - OCCURRENCE: Event likelihood, conditions, news
+
+        Also applies source quality heuristics to assess evidence reliability.
 
         Args:
             driver_analysis: Phase 3 output with key driver
@@ -1103,13 +1141,34 @@ Analyze:
             )
 
         try:
-            # Use semantic frame queries if available (more targeted)
+            # Use semantic frame-aware query generation (improved over v1)
             if semantic_frame and semantic_frame.primary_search_queries:
-                search_queries = semantic_frame.primary_search_queries[:3]  # Top 3 queries
+                # Primary: Use cached semantic frame queries
+                search_queries = semantic_frame.primary_search_queries[:3]
                 logger.info(f"[PHASE 4] Using semantic frame queries: {search_queries}")
+
+                # Secondary: Generate frame-type-specific queries if needed
+                if len(search_queries) < 3:
+                    frame_queries = generate_semantic_frame_queries(
+                        frame_type=semantic_frame.frame_type,
+                        event_title=event_title,
+                        primary_driver=driver_analysis.primary_driver,
+                        candidates=semantic_frame.candidates,
+                        actors=semantic_frame.actors,
+                    )
+                    # Add unique queries
+                    existing = set(q.lower() for q in search_queries)
+                    for q in frame_queries:
+                        if q.lower() not in existing:
+                            search_queries.append(q)
+                            existing.add(q.lower())
+                        if len(search_queries) >= 5:
+                            break
+                    logger.info(f"[PHASE 4] Enhanced with frame-type queries: {search_queries}")
             else:
                 # Fallback to generic query
                 search_queries = [f"{event_title} {driver_analysis.primary_driver}"]
+                search_queries.append(f"{event_title} news today")
 
             # Run searches for all queries in parallel
             loop = asyncio.get_running_loop()
@@ -1157,12 +1216,37 @@ Analyze:
             )
             sources.extend(urls[:5])
 
-            # Assess reliability (simple heuristic)
+            # === Source Quality Assessment (v2 improvement) ===
+            high_quality_sources = 0
+            medium_quality_sources = 0
+            low_quality_sources = 0
+            source_quality_details = []
+
+            for url in sources:
+                quality, score = assess_source_quality(url)
+                source_quality_details.append((url, quality, score))
+                if quality == "high":
+                    high_quality_sources += 1
+                elif quality == "medium":
+                    medium_quality_sources += 1
+                else:
+                    low_quality_sources += 1
+
+            # Assess reliability based on evidence quantity AND source quality
             reliability = EvidenceReliability.MEDIUM
-            if len(key_evidence) >= 5 and len(sources) >= 2:
+            if len(key_evidence) >= 5 and high_quality_sources >= 1:
                 reliability = EvidenceReliability.HIGH
-            elif len(key_evidence) < 2:
+            elif len(key_evidence) >= 3 and (high_quality_sources + medium_quality_sources) >= 2:
+                reliability = EvidenceReliability.HIGH
+            elif len(key_evidence) < 2 or (high_quality_sources == 0 and medium_quality_sources == 0):
                 reliability = EvidenceReliability.LOW
+
+            # Build detailed reliability reasoning
+            quality_breakdown = f"Sources: {high_quality_sources} high, {medium_quality_sources} medium, {low_quality_sources} low quality"
+            reliability_reasoning = (
+                f"Found {len(key_evidence)} evidence points from {len(sources)} sources "
+                f"({len(all_results)} queries). {quality_breakdown}"
+            )
 
             return Evidence(
                 key_evidence=key_evidence[:5],
@@ -1170,7 +1254,7 @@ Analyze:
                 sources=sources,
                 sources_checked=len(all_results),
                 reliability=reliability,
-                reliability_reasoning=f"Found {len(key_evidence)} evidence points from {len(sources)} sources ({len(all_results)} queries)",
+                reliability_reasoning=reliability_reasoning,
             )
 
         except asyncio.TimeoutError:
@@ -1344,6 +1428,13 @@ For EACH market, complete these steps IN ORDER:
                     Confidence.MEDIUM
                 )
 
+                # Extract v2 calibration fields with safe defaults
+                evidence_cited = getattr(llm_assessment, 'evidence_cited', []) or []
+                what_would_change_mind = getattr(llm_assessment, 'what_would_change_mind', "") or ""
+                assumption_flags = getattr(llm_assessment, 'assumption_flags', []) or []
+                calibration_notes = getattr(llm_assessment, 'calibration_notes', "") or ""
+                evidence_quality = getattr(llm_assessment, 'evidence_quality', "medium") or "medium"
+
                 assessment = MarketAssessment(
                     market_ticker=market.ticker,
                     market_title=market.title,
@@ -1358,6 +1449,12 @@ For EACH market, complete these steps IN ORDER:
                     confidence=confidence,
                     edge_explanation=llm_assessment.reasoning,
                     microstructure_summary="",  # Simplified for MVP
+                    # v2 calibration fields
+                    evidence_cited=evidence_cited,
+                    what_would_change_mind=what_would_change_mind,
+                    assumption_flags=assumption_flags,
+                    calibration_notes=calibration_notes,
+                    evidence_quality=evidence_quality,
                 )
                 assessments.append(assessment)
 
@@ -1370,6 +1467,7 @@ For EACH market, complete these steps IN ORDER:
     def get_stats(self) -> Dict[str, Any]:
         """Get service statistics."""
         total_cache_requests = self._cache_hits + self._cache_misses
+        total_parse_attempts = self._parse_failures + self._parse_repairs + self._total_llm_calls
         return {
             "events_researched": self._events_researched,
             "total_llm_calls": self._total_llm_calls,
@@ -1390,4 +1488,14 @@ For EACH market, complete these steps IN ORDER:
             ),
             "frames_cached": len(self._frame_cache),
             "cache_ttl_seconds": self._cache_ttl_seconds,
+            # Parse failure tracking (for prompt quality monitoring)
+            "parse_failures": self._parse_failures,
+            "parse_repairs": self._parse_repairs,
+            "parse_failure_rate": (
+                round(self._parse_failures / total_parse_attempts, 3)
+                if total_parse_attempts > 0 else 0.0
+            ),
+            # Prompt version tracking
+            "prompt_version_event_context": self._prompt_version_event_context,
+            "prompt_version_market_eval": self._prompt_version_market_eval,
         }
