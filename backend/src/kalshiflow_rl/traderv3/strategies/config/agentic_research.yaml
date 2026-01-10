@@ -27,7 +27,7 @@ params:
   min_confidence: 0.70     # 70% confidence required
 
   # Position sizing
-  contracts_per_trade: 25  # Contracts per signal execution
+  contracts_per_trade: 10  # Contracts per signal execution (reduced to avoid hitting position limits)
   max_positions: 300       # Must be in params for code to read it
   max_positions_per_event: 100  # Max positions per event (high limit for paper trading)
 

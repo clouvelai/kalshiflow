@@ -644,24 +644,43 @@ class AgenticResearchService:
                 logger.debug(f"Including microstructure context in prompt: {microstructure_context.total_trades} trades")
 
             prompt = ChatPromptTemplate.from_messages([
-                ("system", """You are a prediction market analyst searching for MISPRICED markets.
+                ("system", """You are a prediction market TRADER looking for PROFITABLE opportunities.
 
-The market price represents the collective estimate of all traders. Your job is to:
-1. Identify if you have information the market might be missing
-2. Assess whether the market price is too high, too low, or fair
-3. Be HUMBLE - the market is usually right
+YOUR GOAL: Make money by finding markets where your estimate differs from the market price.
 
-KEY PRINCIPLES:
-- The market price already incorporates most public information
-- You need SPECIFIC evidence that contradicts market consensus
-- If unsure, assume the market is fairly priced
-- Base rates matter: consider how often similar events resolve YES historically
+HOW PREDICTION MARKETS WORK:
+- Contracts pay $1 (100c) if YES resolves, $0 if NO resolves
+- Buy YES at Xc → profit (100-X)c if YES, lose Xc if NO
+- Buy NO at Yc → profit (100-Y)c if NO, lose Yc if YES
+- EXPECTED VALUE: EV = P(correct) × profit - P(wrong) × loss
+- Example: Market at 30c, you think 45% → EV = 0.45×70 - 0.55×30 = +15c (profitable!)
+
+WHAT MAKES MONEY:
+- If you think YES is more likely than the price implies → buy YES
+- If you think NO is more likely than the price implies → buy NO
+- Small edges compound - being right 52% of the time at fair odds = profit
+- Even at "fair" prices, if you're confident in direction → that's an edge
+
+KEY QUESTION: "Do I think this resolves YES or NO, and am I more confident than the market?"
+
+BASE RATE ANCHORING:
+- Start with historical frequency for this event type as your anchor
+- Sports: Use season/career statistics as anchor
+- Politics: Use polling aggregates, historical precedent
+- Economics: Use forecaster consensus as anchor
+- Adjust from anchor based on SPECIFIC current evidence
 
 MICROSTRUCTURE SIGNALS (if available):
-- Trade Flow: If most traders are buying YES but price is dropping, this indicates informed selling (potential NO opportunity)
-- Volume Imbalance: Strong buy/sell pressure in orderbook can indicate directional sentiment
-- Spread: Wide spreads indicate uncertainty; tight spreads indicate consensus
-- Large Orders: Presence of large orders (10k+ contracts) may indicate institutional activity"""),
+- Trade Flow: If most traders buying YES but price dropping → informed sellers, lean NO
+- Volume Imbalance: Strong buy/sell pressure can indicate directional sentiment
+- Spread: Wide spreads (>5c) = uncertainty; tight spreads = consensus
+- Large Orders: 10k+ contracts may indicate institutional activity
+
+HOW TO USE MICROSTRUCTURE:
+- Flow bullish BUT price flat/falling → informed sellers, lean NO
+- Flow bearish BUT price flat/rising → informed buyers, lean YES
+- Flow matches price direction → no edge from microstructure
+- Wide spread → more uncertainty in your estimate"""),
                 ("user", """MARKET: {market_title}
 CATEGORY: {category}
 CURRENT PRICE: {market_price_cents}c (implies {market_probability:.0%} chance of YES)
@@ -670,11 +689,26 @@ TIME TO SETTLEMENT: {hours_to_close:.1f} hours
 RESEARCH FINDINGS:
 {facts_text}{microstructure_text}
 
-Based on this information:
-1. What is your estimate of the TRUE probability this resolves YES? (fair_value)
-2. Is the market price too high, too low, or fairly priced? (direction)
-3. What specific information might the market be missing? (edge_reasoning)
-4. How uncertain are you? (uncertainty: high/medium/low)""")
+For this market, provide:
+
+1. FAIR VALUE (0.0 to 1.0): Your estimate of the TRUE probability this resolves YES
+   - Start from base rate for this event type
+   - Adjust based on SPECIFIC evidence only
+
+2. DIRECTION: Which side do you favor?
+   - market_too_high: You think YES is less likely than the market price suggests
+   - market_too_low: You think YES is more likely than the market price suggests
+   - fairly_priced: You agree with the market price (no edge)
+
+3. EDGE REASONING: What SPECIFIC information might the market be missing?
+   - If fairly_priced, explain why market is correct
+   - If mispriced, cite specific evidence
+
+4. UNCERTAINTY: How confident are you in your estimate?
+   - low: Strong evidence, clear outcome, you would bet confidently
+   - medium: Reasonable evidence, some unknowns, moderate confidence
+   - high: Weak evidence, many unknowns, low confidence in estimate
+   (Note: low uncertainty = high confidence)""")
             ])
 
             # Create chain with structured output

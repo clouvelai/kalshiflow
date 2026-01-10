@@ -892,18 +892,22 @@ class KalshiDemoTradingClient:
 
     async def get_event(self, event_ticker: str) -> Dict[str, Any]:
         """
-        Get event details by event_ticker.
+        Get event details by event_ticker, including nested markets.
 
         GET /trade-api/v2/events/{event_ticker}
 
         Events contain the category field that is often empty in market responses.
-        Use this to enrich market data with category information.
+        The response also includes a "markets" array with full market data including
+        yes_sub_title, no_sub_title, subtitle, and rules_primary fields.
+
+        Note: The market "title" field is DEPRECATED in Kalshi API. Use yes_sub_title
+        as the primary source for market/candidate names.
 
         Args:
             event_ticker: Event ticker (e.g., "KXNFL-25JAN05")
 
         Returns:
-            Event data including category field
+            Event data including category field and markets array attached
 
         Raises:
             KalshiDemoTradingClientError: If request fails
@@ -911,7 +915,12 @@ class KalshiDemoTradingClient:
         try:
             response = await self._make_request("GET", f"/events/{event_ticker}")
             logger.debug(f"Retrieved event {event_ticker}")
-            return response.get("event", {})
+
+            # Return event with markets array attached
+            # The API returns "event" object + "markets" array at top level
+            event = response.get("event", {})
+            event["markets"] = response.get("markets", [])
+            return event
 
         except Exception as e:
             logger.error(f"Failed to get event {event_ticker}: {e}")

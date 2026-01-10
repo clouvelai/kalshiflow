@@ -609,6 +609,8 @@ class EventResearchService:
             for m in markets
         ])
 
+        num_markets = len(markets)
+
         prompt = ChatPromptTemplate.from_messages([
             ("system", f"""You are a prediction market analyst. Today is {current_date}.
 
@@ -618,18 +620,25 @@ Analyze this event deeply. Extract THREE things:
 3. SEMANTIC FRAME - The structural understanding (WHO has agency, WHAT they're deciding, WHICH choices exist)
 
 For SEMANTIC FRAME, identify the type:
-- NOMINATION: Actor nominates Candidate for Position (e.g., Trump nominates Fed Chair)
-- COMPETITION: Competitor A vs Competitor B (e.g., NFL games, elections)
-- ACHIEVEMENT: Subject achieves/exceeds Threshold (e.g., "BTC hits $100k")
-- OCCURRENCE: Event happens or doesn't (e.g., "Rain in NYC")
-- MEASUREMENT: Metric above/below Value (e.g., "CPI over 3%")
-- MENTION: Subject mentions/references Target (e.g., "Will X mention Y?")
+- NOMINATION: Actor DECIDES who gets position (e.g., "Trump nominates Fed Chair")
+- COMPETITION: Entities compete, rules determine winner (e.g., "Chiefs vs Bills", elections)
+- ACHIEVEMENT: Binary yes/no on reaching milestone (e.g., "Team wins championship")
+- OCCURRENCE: Event happens or doesn't, no threshold (e.g., "Rain in NYC", "Government shutdown")
+- MEASUREMENT: Numeric value compared to threshold (e.g., "CPI over 3%", "BTC above $100k")
+- MENTION: Speech act - someone says/references something (e.g., "Will X mention Y?")
+
+DISAMBIGUATION - when multiple seem to fit, choose MOST SPECIFIC:
+- "BTC above $100k" = MEASUREMENT (numeric threshold), NOT ACHIEVEMENT
+- "Team wins championship" = COMPETITION (vs other teams), NOT ACHIEVEMENT
+- "Fed cuts rates" = OCCURRENCE (yes/no event), NOT MEASUREMENT
+- "Trump picks Warsh" = NOMINATION (decision by actor), NOT OCCURRENCE
 
 For CANDIDATES, link each possible outcome to its market ticker if applicable."""),
 
             ("user", """EVENT: {event_title}
 CATEGORY: {category}
-MARKETS:
+
+MARKETS ({num_markets} total - each market represents one possible outcome):
 {market_list}
 
 Analyze:
@@ -651,12 +660,28 @@ Analyze:
 3. SEMANTIC FRAME:
    - Frame type: NOMINATION / COMPETITION / ACHIEVEMENT / OCCURRENCE / MEASUREMENT / MENTION
    - Question template (e.g., "{{actor}} nominates {{candidate}} for {{position}}")
-   - Primary relation (the verb: nominates, defeats, exceeds, etc.)
+   - Primary relation (the verb: nominates, defeats, exceeds, says, etc.)
    - ACTORS: Who has agency? (name, entity_type, role, aliases)
-   - OBJECTS: What's being acted upon? (name, entity_type)
-   - CANDIDATES: What are the possible outcomes? (name, aliases, which market_ticker they map to)
+   - OBJECTS: What's being acted upon? (name, entity_type) - leave empty if candidates ARE the objects
+
+   - CANDIDATES: **You MUST create exactly {num_markets} candidate entries - one for each market above.**
+     For each market ticker, provide:
+     - canonical_name: The specific outcome this market represents (extract from market title)
+     - market_ticker: MUST match the ticker exactly (copy from MARKETS list above)
+     - aliases: Alternative names, abbreviations, variations for news matching
+     - search_queries: 2-3 targeted news search queries for this specific outcome
+
+   CANDIDATE EXAMPLES:
+   For NOMINATION event "Trump's Fed Chair Nominee" with markets:
+   - KXFEDCHAIRNOM-WARSH -> canonical_name: "Kevin Warsh", market_ticker: "KXFEDCHAIRNOM-WARSH", aliases: ["Warsh", "K. Warsh"]
+   - KXFEDCHAIRNOM-HASSETT -> canonical_name: "Kevin Hassett", market_ticker: "KXFEDCHAIRNOM-HASSETT", aliases: ["Hassett"]
+
+   For COMPETITION event "NFL Week 15: Chiefs vs Bills" with markets:
+   - KXNFL-CHIEFS-WIN -> canonical_name: "Kansas City Chiefs win", market_ticker: "KXNFL-CHIEFS-WIN", aliases: ["KC Chiefs", "Chiefs"]
+   - KXNFL-BILLS-WIN -> canonical_name: "Buffalo Bills win", market_ticker: "KXNFL-BILLS-WIN", aliases: ["Buffalo", "Bills"]
+
    - Does one actor control the outcome? (true/false)
-   - Are outcomes mutually exclusive? (true/false)
+   - Are outcomes mutually exclusive? (true if only one can win, false if multiple can resolve YES)
    - Resolution trigger (what event determines outcome)
    - 3-5 targeted search queries for finding news
    - Signal keywords (words that indicate important news)""")
@@ -668,6 +693,7 @@ Analyze:
                 "event_title": event_title,
                 "category": event_category,
                 "market_list": market_list,
+                "num_markets": num_markets,
             })
 
             # Build EventContext from result
@@ -737,6 +763,29 @@ Analyze:
                 )
                 for c in (result.candidates or [])
             ]
+
+            # Fallback: Ensure every market has a candidate entry
+            extracted_tickers = {c.market_ticker for c in candidates if c.market_ticker}
+            missing_count = 0
+            for market in markets:
+                if market.ticker not in extracted_tickers:
+                    missing_count += 1
+                    candidates.append(SemanticRole(
+                        entity_id=f"MARKET:{market.ticker}",
+                        canonical_name=market.title,
+                        entity_type="OUTCOME",
+                        role="candidate",
+                        role_description=f"Outcome for market {market.ticker}",
+                        market_ticker=market.ticker,
+                        aliases=[],
+                        search_queries=[],
+                    ))
+
+            if missing_count > 0:
+                logger.info(
+                    f"[CANDIDATE FALLBACK] Added {missing_count} missing candidates for {event_ticker} "
+                    f"(LLM extracted {len(candidates) - missing_count}/{num_markets})"
+                )
 
             semantic_frame = SemanticFrame(
                 event_ticker=event_ticker,
@@ -842,6 +891,39 @@ Analyze:
             event_category = event_details.get("category") or "Unknown"
 
             logger.info(f"[PHASE 1] Fetched event details: {event_title}")
+
+            # Enrich TrackedMarket titles from event's nested market data
+            # Note: market "title" field is DEPRECATED in Kalshi API - use yes_sub_title instead
+            event_markets = event_details.get("markets", [])
+            if event_markets:
+                market_lookup = {m.get("ticker"): m for m in event_markets}
+
+                enriched_count = 0
+                for tracked_market in markets:
+                    if tracked_market.ticker in market_lookup:
+                        api_market = market_lookup[tracked_market.ticker]
+
+                        # Use yes_sub_title as primary name (title is DEPRECATED in Kalshi API)
+                        if not tracked_market.title:
+                            tracked_market.title = (
+                                api_market.get("yes_sub_title") or
+                                api_market.get("title") or  # Fallback to deprecated field
+                                api_market.get("subtitle") or
+                                ""
+                            )
+
+                        # Populate additional rich market fields
+                        tracked_market.yes_sub_title = api_market.get("yes_sub_title", "")
+                        tracked_market.no_sub_title = api_market.get("no_sub_title", "")
+                        tracked_market.subtitle = api_market.get("subtitle", "")
+                        tracked_market.rules_primary = api_market.get("rules_primary", "")
+                        tracked_market.primary_participant_key = api_market.get("primary_participant_key", "")
+
+                        if tracked_market.title:
+                            enriched_count += 1
+
+                if enriched_count > 0:
+                    logger.info(f"[TITLE ENRICHMENT] Enriched {enriched_count}/{len(markets)} markets from event data")
 
             # Check cache before Phase 2+3 (memory + database)
             cached_context = await self._get_cached_context_async(event_ticker)
@@ -1139,17 +1221,35 @@ Analyze:
         current_date = datetime.now().strftime("%B %d, %Y")
 
         prompt = ChatPromptTemplate.from_messages([
-            ("system", f"""You are a prediction market analyst. Today is {current_date}.
+            ("system", f"""You are a prediction market TRADER looking for PROFITABLE opportunities. Today is {current_date}.
 
-Your task: For each market, provide TWO estimates:
-1. YOUR PROBABILITY - What do YOU think the true probability is based on the evidence?
-2. MARKET'S PRICE - What do you think the market is CURRENTLY trading at? (blind guess)
+YOUR GOAL: Make money by finding markets where you have an edge over the market price.
 
-IMPORTANT: You will NOT be told the actual market prices. You must:
-- Form your own view based on evidence and reasoning
-- Then guess what the market believes (this tests your calibration)
+HOW PREDICTION MARKETS WORK:
+- Contracts pay $1 (100c) if YES resolves, $0 if NO resolves
+- Buy YES at Xc → profit (100-X)c if YES, lose Xc if NO
+- Buy NO at Yc → profit (100-Y)c if NO, lose Yc if YES
+- EXPECTED VALUE: EV = P(correct) × profit - P(wrong) × loss
+- Only bet when EV > 0 AND you have sufficient confidence
 
-Think independently. Use the key driver analysis but also your own judgment."""),
+For each market, you will complete TWO SEPARATE tasks:
+
+TASK 1 - YOUR PROBABILITY ESTIMATE:
+Based ONLY on the evidence and reasoning, estimate the TRUE probability.
+This is YOUR view - what you would bet your own money on.
+Do NOT anchor on what the market might believe.
+
+TASK 2 - MARKET PRICE GUESS:
+AFTER forming your probability, separately guess what price the market is trading at.
+This tests calibration - we compare your guess to actual price.
+You will NOT be told actual prices.
+
+WHAT MAKES MONEY:
+- If you think YES is more likely than the price implies → buy YES
+- If you think NO is more likely than the price implies → buy NO
+- You don't need a huge edge - being right slightly more often = profit over time
+
+KEY QUESTION: "Do I think this resolves YES or NO, and am I more confident than the market?" """),
             ("user", """EVENT RESEARCH:
 {event_context}
 
@@ -1158,12 +1258,25 @@ KEY DRIVER: {primary_driver}
 MARKETS TO EVALUATE:
 {markets_text}
 
-For EACH market, provide:
-1. The specific question being asked
-2. How the key driver applies
-3. YOUR probability estimate (0.0-1.0) with brief reasoning
-4. Your GUESS of the current market price (0-100 cents)
-5. Your confidence (high/medium/low)""")
+For EACH market, complete these steps IN ORDER:
+
+1. UNDERSTAND: What specific question does this market ask?
+
+2. APPLY: How does the key driver apply to THIS specific market?
+
+3. YOUR ESTIMATE (Task 1): What is YOUR probability estimate for YES?
+   - Range: 0.0 to 1.0
+   - Base this ONLY on evidence and reasoning
+   - Include 2-3 sentences of reasoning
+
+4. MARKET GUESS (Task 2): What price (0-100 cents) do you think this market is trading at?
+   - This is your guess of what OTHER traders believe
+   - May differ from your estimate if you think market is mispriced
+
+5. CONFIDENCE: How confident are you in your estimate?
+   - high: Strong evidence, clear reasoning, 80%+ certainty
+   - medium: Reasonable evidence, some uncertainty, 60-80% certainty
+   - low: Weak or conflicting evidence, <60% certainty""")
         ])
 
         try:

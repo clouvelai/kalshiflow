@@ -1199,6 +1199,42 @@ class V3TradingClientIntegration:
             self._consecutive_api_errors += 1
             raise
 
+    async def get_event(self, event_ticker: str) -> Dict[str, Any]:
+        """
+        Fetch event details by event_ticker, including nested markets.
+
+        GET /trade-api/v2/events/{event_ticker}
+
+        The response includes a "markets" array with full market data including
+        yes_sub_title, no_sub_title, subtitle, and rules_primary fields.
+
+        Note: The market "title" field is DEPRECATED in Kalshi API. Use yes_sub_title
+        as the primary source for market/candidate names.
+
+        Args:
+            event_ticker: Event ticker (e.g., "KXNFL-25JAN05")
+
+        Returns:
+            Event data including category field and markets array attached
+
+        Raises:
+            RuntimeError: If trading client not connected
+        """
+        if not self._connected:
+            raise RuntimeError(f"Cannot fetch event {event_ticker} - not connected")
+
+        try:
+            event = await self._client.get_event(event_ticker)
+            self._metrics.api_calls += 1
+            self._consecutive_api_errors = 0
+            return event
+
+        except Exception as e:
+            logger.error(f"Failed to get event {event_ticker}: {e}")
+            self._metrics.api_errors += 1
+            self._consecutive_api_errors += 1
+            raise
+
     async def get_true_market_open(
         self,
         ticker: str,

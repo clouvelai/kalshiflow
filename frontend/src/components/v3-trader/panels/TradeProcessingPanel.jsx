@@ -198,10 +198,16 @@ const TradeProcessingPanel = ({ tradeProcessing }) => {
     reentries: 0
   }, [tradeProcessing?.decisions]);
 
-  const recentTrades = useMemo(() =>
-    (tradeProcessing?.recent_trades || []).slice(0, 100),
-    [tradeProcessing?.recent_trades]
-  );
+  const recentTrades = useMemo(() => {
+    const trades = tradeProcessing?.recent_trades || [];
+    // Deduplicate by trade_id to prevent React key warnings
+    const seen = new Set();
+    return trades.filter(trade => {
+      if (seen.has(trade.trade_id)) return false;
+      seen.add(trade.trade_id);
+      return true;
+    }).slice(0, 100);
+  }, [tradeProcessing?.recent_trades]);
 
   const isLive = lastSyncAge !== null && lastSyncAge < 10;
 

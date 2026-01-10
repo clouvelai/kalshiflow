@@ -94,8 +94,8 @@ npm run dev
 
 *Order TTL (Time-to-Live)*: Resting orders are automatically cancelled after a configurable timeout to prevent capital lock-up.
 - `V3_ORDER_TTL_ENABLED`: Enable/disable TTL cleanup (default: `true`)
-- `V3_ORDER_TTL_SECONDS`: TTL threshold in seconds (default: `300` = 5 minutes)
-- Runs after each sync cycle (~30 seconds), only cancels "resting" orders (not partial fills)
+- `V3_ORDER_TTL_SECONDS`: TTL threshold in seconds (default: `90` = 1.5 minutes)
+- Runs after each sync cycle (~20 seconds), only cancels "resting" orders (not partial fills)
 - Emits toast notification to frontend, tracks count in "TTL Cancelled" metric
 
 *Startup Cleanup*: On restart, old order groups are automatically cleaned up:
@@ -506,11 +506,54 @@ cd frontend && railway up --service kalshi-flowboard
 - **Health**: Continuous monitoring with automatic restarts
 - **WebSocket**: Connection stability monitoring
 
-- use the planning agent for all planning
-- use the fullstack websocket agent for all implementation/coding
-- use the deployment agent for Railway.app deployments and production infrastructure
-- use the strategy-researcher agent to find novel hypothesis ideas from external sources (academic papers, sports betting, crypto/DeFi)
-- use the quant agent with "LSD mode" for rapid lateral hypothesis exploration (user says "LSD mode" to enable)
+## Agent Selection Guide
+
+| Task Type | Primary Agent | When to Use |
+|-----------|--------------|-------------|
+| **External hypothesis sourcing** | strategy-researcher | Find ideas from academic papers, sports betting, crypto/DeFi, social media |
+| **Microstructure strategy validation** | quant | Validate hypotheses with historical trade data, backtesting, statistical rigor |
+| **AI research calibration analysis** | agentic-trading-scientist | Analyze LLM calibration, semantic frame quality, research pipeline efficiency |
+| **Prompt design & implementation** | prompt-engineer | Design/implement prompts, enforce simplicity, LangChain architecture |
+| **P&L maximization** | v3-profit-optimizer | Orchestrate strategies, diagnose profit leaks, climb leaderboard |
+| **V3 trader implementation** | kalshi-flow-trader-specialist | Implement strategies, debug state machine, fix trader issues |
+| **Real-time features, WebSocket** | fullstack-websocket-engineer | WebSocket functionality, performance optimization, test fixes |
+| **Deployment** | deployment-engineer | Railway.app deployments, production infrastructure |
+| **Implementation planning** | Plan agent | Design implementation approach for complex tasks |
+
+### Agent Collaboration Flow
+
+```
+Strategy Researcher ─────→ Quant Agent ←───── Agentic Trading Scientist
+        ↓                       ↓                        ↓
+ (hypothesis briefs)    (validated strategies)    (calibration issues)
+        ↓                       ↓                        ↓
+        │                       │                  Prompt Engineer
+        │                       │              (prompt implementation)
+        │                       │                        ↓
+        └───────────────→ V3 Profit Optimizer ←──────────┘
+                                ↓
+                    Kalshi Flow Trader Specialist
+                                ↓
+                           V3 Trader
+```
+
+### Quick Reference
+
+- **"Find me new strategy ideas"** → strategy-researcher
+- **"Validate this hypothesis with data"** → quant
+- **"Analyze AI research calibration"** → agentic-trading-scientist
+- **"Fix/improve a prompt"** → prompt-engineer
+- **"Maximize P&L / climb leaderboard"** → v3-profit-optimizer
+- **"Fix V3 trader state machine"** → kalshi-flow-trader-specialist
+- **"Implement WebSocket feature"** → fullstack-websocket-engineer
+- **"Deploy to production"** → deployment-engineer
+
+### Special Modes
+
+- **LSD Mode** (quant agent): Rapid lateral hypothesis exploration. User says "LSD mode" to enable, "normal mode" to return to rigorous validation.
+
+### Important Constraints
+
 - IMPORTANT: Only deploy to production when explicitly requested by the user. Never deploy autonomously.
 
 ## Multi-Session Coordination

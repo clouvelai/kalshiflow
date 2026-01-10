@@ -77,6 +77,14 @@ class TrackedMarket:
     event_ticker: str = ""
     title: str = ""
     category: str = ""
+
+    # Rich market data from Kalshi API (note: "title" field is DEPRECATED, use yes_sub_title)
+    yes_sub_title: str = ""     # Actual outcome/candidate name (e.g., "Joe Biden")
+    no_sub_title: str = ""      # Alternative outcome (e.g., "Someone else")
+    subtitle: str = ""          # Additional context about the market
+    rules_primary: str = ""     # Resolution rules text
+    primary_participant_key: str = ""  # Entity identifier for linking
+
     status: MarketStatus = MarketStatus.ACTIVE
     created_ts: int = 0
     open_ts: int = 0
@@ -113,6 +121,12 @@ class TrackedMarket:
             "event_ticker": self.event_ticker,
             "title": self.title,
             "category": self.category,
+            # Rich market data from Kalshi API
+            "yes_sub_title": self.yes_sub_title,
+            "no_sub_title": self.no_sub_title,
+            "subtitle": self.subtitle,
+            "rules_primary": self.rules_primary,
+            "primary_participant_key": self.primary_participant_key,
             "status": self.status.value,
             "created_ts": self.created_ts,
             "open_ts": self.open_ts,
@@ -151,6 +165,12 @@ class TrackedMarket:
             event_ticker=data.get("event_ticker", ""),
             title=data.get("title", ""),
             category=data.get("category", ""),
+            # Rich market data from Kalshi API
+            yes_sub_title=data.get("yes_sub_title", ""),
+            no_sub_title=data.get("no_sub_title", ""),
+            subtitle=data.get("subtitle", ""),
+            rules_primary=data.get("rules_primary", ""),
+            primary_participant_key=data.get("primary_participant_key", ""),
             status=status,
             created_ts=data.get("created_ts", 0),
             open_ts=data.get("open_ts", 0),

@@ -49,6 +49,7 @@ Dependencies:
 """
 
 import asyncio
+import json
 import logging
 import time
 from typing import Dict, Any, Optional, Set, List
@@ -63,6 +64,7 @@ from ...services.agentic_research_service import (
     ResearchAssessment,
 )
 from ...services.event_research_service import EventResearchService
+from ...services.order_context_service import get_order_context_service
 from ...state.microstructure_context import MicrostructureContext, TradeFlowState
 from ...state.event_research_context import (
     EventResearchContext,
@@ -144,6 +146,9 @@ class AgenticResearchStrategy:
         self._decision_log: List[Dict] = []  # Track all decisions with reasoning
         self._calibration_log: List[Dict] = []  # Track price estimation accuracy
 
+        # Session tracking for decision persistence
+        self._session_id = f"agentic_{int(time.time())}"
+
         # Stats
         self._stats = {
             "markets_researched": 0,
@@ -199,9 +204,8 @@ class AgenticResearchStrategy:
         if self._use_event_first:
             try:
                 # Get trading client from context for event fetching
-                trading_client = None
-                if context.trading_service and hasattr(context.trading_service, '_client'):
-                    trading_client = context.trading_service._client
+                # Use trading_client_integration which has get_event() for fetching nested markets
+                trading_client = context.trading_client_integration
 
                 self._event_research_service = EventResearchService(
                     trading_client=trading_client,
@@ -831,8 +835,25 @@ class AgenticResearchStrategy:
             f"Recommendation: {assessment.recommendation}"
         )
 
-        # Helper to log decision
-        def log_decision(action: str, reason: str, traded: bool = False, price: int = 0):
+        # Extract research metadata for ALL decisions (not just trades)
+        # This enables full decision tracking even for SKIPs
+        key_driver = None
+        key_evidence = None
+        if event_ticker:
+            cached_result = self._event_research_cache.get(event_ticker)
+            if cached_result and cached_result.success:
+                key_driver = cached_result.event_context.driver_analysis.primary_driver
+                key_evidence = cached_result.event_context.evidence.key_evidence[:3]  # Top 3
+
+        # Helper to log decision (in-memory AND to database)
+        def log_decision(
+            action: str,
+            reason: str,
+            traded: bool = False,
+            price: int = 0,
+            order_id: Optional[str] = None,
+        ):
+            # 1. In-memory log (existing behavior - for real-time stats)
             decision_entry = {
                 "timestamp": time.time(),
                 "market_ticker": assessment.market_ticker,
@@ -852,6 +873,37 @@ class AgenticResearchStrategy:
             # Keep only last 100 decisions
             if len(self._decision_log) > 100:
                 self._decision_log = self._decision_log[-100:]
+
+            # 2. Database persistence (fire-and-forget background task)
+            # Persists full reasoning and all context for offline analysis
+            async def _persist():
+                await self._persist_decision(
+                    market_ticker=assessment.market_ticker,
+                    event_ticker=event_ticker,
+                    action=action,
+                    reason=reason,
+                    traded=traded,
+                    ai_probability=assessment.evidence_probability,
+                    market_probability=assessment.market_probability,
+                    edge=assessment.mispricing_magnitude,
+                    confidence=assessment.confidence.value,
+                    recommendation=assessment.recommendation,
+                    price_guess_cents=getattr(assessment, 'price_guess_cents', None),
+                    price_guess_error_cents=getattr(assessment, 'price_guess_error_cents', None),
+                    edge_explanation=assessment.edge_explanation,  # FULL text (not truncated)
+                    key_driver=key_driver,
+                    key_evidence=key_evidence,
+                    entry_price_cents=price if traded else None,
+                    order_id=order_id,
+                )
+
+            # Schedule persistence task (non-blocking)
+            task = asyncio.create_task(_persist())
+            # Log exceptions but don't block
+            task.add_done_callback(
+                lambda t: logger.warning(f"Decision persistence failed: {t.exception()}")
+                if t.exception() else None
+            )
 
         # Filter: Skip HOLD recommendations (not enough edge)
         if assessment.recommendation == "HOLD":
@@ -1343,3 +1395,98 @@ class AgenticResearchStrategy:
                 entry["market_ticker"] = entry["market"]
             result.append(entry)
         return result
+
+    async def _persist_decision(
+        self,
+        market_ticker: str,
+        event_ticker: Optional[str],
+        action: str,
+        reason: str,
+        traded: bool,
+        ai_probability: Optional[float],
+        market_probability: Optional[float],
+        edge: Optional[float],
+        confidence: Optional[str],
+        recommendation: Optional[str],
+        price_guess_cents: Optional[int],
+        price_guess_error_cents: Optional[int],
+        edge_explanation: Optional[str],
+        key_driver: Optional[str],
+        key_evidence: Optional[List[str]],
+        entry_price_cents: Optional[int],
+        order_id: Optional[str],
+    ) -> None:
+        """
+        Persist decision to research_decisions table for offline analysis.
+
+        This enables post-hoc analysis of ALL decisions (traded AND skipped),
+        allowing us to:
+        - Understand why edges weren't taken
+        - Optimize thresholds based on outcome data
+        - Attribute performance to decision quality
+        - Reconstruct the agent's reasoning chain
+
+        Args:
+            market_ticker: Market being evaluated
+            event_ticker: Event grouping (for concentration analysis)
+            action: Decision action (TRADE_YES, TRADE_NO, SKIP, etc.)
+            reason: Full reason for decision (not truncated)
+            traded: Whether a trade was executed
+            ai_probability: LLM's YES probability estimate
+            market_probability: Actual market price
+            edge: Mispricing magnitude
+            confidence: high/medium/low
+            recommendation: BUY_YES/BUY_NO/HOLD
+            price_guess_cents: LLM's blind price estimate
+            price_guess_error_cents: Guess error (guess - actual)
+            edge_explanation: Full LLM reasoning text
+            key_driver: Primary driver from event research
+            key_evidence: Top evidence points
+            entry_price_cents: Trade entry price (if traded)
+            order_id: Order ID (if traded)
+        """
+        order_context_service = get_order_context_service()
+        db_pool = order_context_service.db_pool
+
+        if not db_pool:
+            logger.debug("No DB pool available for decision persistence")
+            return
+
+        try:
+            async with db_pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO research_decisions (
+                        session_id, strategy_id, market_ticker, event_ticker,
+                        action, reason, traded,
+                        ai_probability, market_probability, edge, confidence, recommendation,
+                        price_guess_cents, price_guess_error_cents,
+                        edge_explanation, key_driver, key_evidence,
+                        entry_price_cents, order_id
+                    ) VALUES (
+                        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19
+                    )
+                    """,
+                    self._session_id,
+                    self.name,
+                    market_ticker,
+                    event_ticker,
+                    action,
+                    reason,
+                    traded,
+                    ai_probability,
+                    market_probability,
+                    edge,
+                    confidence,
+                    recommendation,
+                    price_guess_cents,
+                    price_guess_error_cents,
+                    edge_explanation,
+                    key_driver,
+                    json.dumps(key_evidence) if key_evidence else None,
+                    entry_price_cents,
+                    order_id,
+                )
+                logger.debug(f"Persisted decision for {market_ticker}: {action}")
+        except Exception as e:
+            logger.warning(f"Failed to persist decision to DB: {e}")

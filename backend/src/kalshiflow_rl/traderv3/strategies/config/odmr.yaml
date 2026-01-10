@@ -38,7 +38,7 @@ params:
   # ---------------------------------------------------------
   # Entry
   # ---------------------------------------------------------
-  entry_contracts: 25           # Contracts per entry (reduced to stay within position limits)
+  entry_contracts: 5            # Contracts per entry (reduced for testing)
   entry_spread_max_cents: 8     # Max spread to allow entry (non-ODMR mode)
 
   # ---------------------------------------------------------
