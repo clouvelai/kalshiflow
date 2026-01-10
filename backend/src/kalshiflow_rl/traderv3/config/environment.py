@@ -93,7 +93,9 @@ class V3Config:
     market_mode: str = "lifecycle"
 
     # Lifecycle Mode Configuration (RL_MODE=lifecycle)
-    lifecycle_categories: List[str] = field(default_factory=lambda: ["sports", "media_mentions", "entertainment", "crypto"])
+    # Categories: politics, media_mentions, entertainment, crypto (sports removed for now)
+    # To re-add sports: LIFECYCLE_CATEGORIES=politics,media_mentions,entertainment,crypto,sports
+    lifecycle_categories: List[str] = field(default_factory=lambda: ["politics", "media_mentions", "entertainment", "crypto"])
     lifecycle_max_markets: int = 1000  # Maximum tracked markets (orderbook WS limit)
     lifecycle_sync_interval: int = 30  # Seconds between market info syncs
 
@@ -243,7 +245,9 @@ class V3Config:
         rlm_max_spread = int(os.environ.get("RLM_MAX_SPREAD", "10"))
 
         # Lifecycle discovery mode configuration
-        lifecycle_categories_str = os.environ.get("LIFECYCLE_CATEGORIES", "sports,media_mentions,entertainment,crypto")
+        # Default: politics, media_mentions, entertainment, crypto (sports removed for now)
+        # To re-add sports: export LIFECYCLE_CATEGORIES=politics,media_mentions,entertainment,crypto,sports
+        lifecycle_categories_str = os.environ.get("LIFECYCLE_CATEGORIES", "politics,media_mentions,entertainment,crypto")
         lifecycle_categories = [c.strip() for c in lifecycle_categories_str.split(",") if c.strip()]
         lifecycle_max_markets = int(os.environ.get("LIFECYCLE_MAX_MARKETS", "1000"))
         lifecycle_sync_interval = int(os.environ.get("LIFECYCLE_SYNC_INTERVAL", "30"))
