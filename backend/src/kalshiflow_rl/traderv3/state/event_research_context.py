@@ -304,6 +304,9 @@ class KeyDriverAnalysis:
     base_rate_reasoning: str = ""       # How base rate was determined
     comparable_events: str = ""         # What "similar events" means
 
+    # Edge hypothesis (v2 profit-focused)
+    edge_hypothesis: str = ""           # Where might the market be wrong?
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for serialization."""
         return {
@@ -317,6 +320,7 @@ class KeyDriverAnalysis:
             "base_rate": self.base_rate,
             "base_rate_reasoning": self.base_rate_reasoning,
             "comparable_events": self.comparable_events,
+            "edge_hypothesis": self.edge_hypothesis,
         }
 
 

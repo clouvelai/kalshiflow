@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import EventContextSection from './sections/EventContextSection';
 import KeyDriverSection from './sections/KeyDriverSection';
+import EdgeHypothesisSection from './sections/EdgeHypothesisSection';
 import SemanticFrameSection from './sections/SemanticFrameSection';
 import EvidenceSection from './sections/EvidenceSection';
 import MarketAssessmentsSection from './sections/MarketAssessmentsSection';
@@ -177,6 +178,7 @@ const EventCard = ({ event, isNew = false }) => {
     tail_risks,
     causal_chain,
     key_evidence,
+    edge_hypothesis,
     markets,
     researched_at,
     research_duration_seconds,
@@ -268,6 +270,9 @@ const EventCard = ({ event, isNew = false }) => {
                 causalChain={causal_chain}
               />
             </div>
+
+            {/* Edge Hypothesis (profit-focused) */}
+            <EdgeHypothesisSection edgeHypothesis={edge_hypothesis} />
 
             {/* Semantic Frame (if available) */}
             {semantic_frame && (

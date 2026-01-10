@@ -1,5 +1,5 @@
 import React, { memo, useState } from 'react';
-import { TrendingUp, ChevronDown, ChevronRight, Target, Activity } from 'lucide-react';
+import { TrendingUp, ChevronDown, ChevronRight, Target, Activity, Check } from 'lucide-react';
 
 /**
  * SectionHeader - Reusable section header component
@@ -152,6 +152,26 @@ const MarketAssessmentCard = memo(({ market }) => {
   const absEdge = Math.abs(edgePercent);
   const hasSignificantEdge = absEdge >= 5;
 
+  // Check if market meets actionable trading criteria
+  // Rule: Edge >= 5% + Confidence >= medium + Evidence >= medium = SHOULD trade
+  const isActionable = (() => {
+    const hasEdge = Math.abs(mispricing_magnitude || 0) >= 0.05;
+    const hasConfidence = ['high', 'medium'].includes((confidence || '').toLowerCase());
+    const hasEvidence = ['high', 'medium'].includes((market.evidence_quality || 'medium').toLowerCase());
+    return hasEdge && hasConfidence && hasEvidence;
+  })();
+
+  // Calculate EV per contract in cents
+  // EV = edge * potential_profit, where potential_profit = 100 - entry_price
+  const evCents = (() => {
+    const edge = mispricing_magnitude || 0;
+    const entryPrice = recommendation === 'BUY_YES'
+      ? (market_probability || 0) * 100
+      : (1 - (market_probability || 0)) * 100;
+    const potentialProfit = 100 - entryPrice;
+    return edge * potentialProfit;
+  })();
+
   // Determine card highlight based on recommendation
   const getCardStyle = () => {
     switch (recommendation) {
@@ -180,6 +200,12 @@ const MarketAssessmentCard = memo(({ market }) => {
           </span>
         </div>
         <div className="flex items-center space-x-2 flex-shrink-0 ml-3">
+          {isActionable && (
+            <span className="inline-flex items-center space-x-1 px-1.5 py-0.5 rounded-full text-[9px] font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/40">
+              <Check className="w-2.5 h-2.5" />
+              <span>TRADE</span>
+            </span>
+          )}
           <RecommendationBadge recommendation={recommendation} />
           <ConfidenceBadge confidence={confidence} />
         </div>
@@ -194,12 +220,20 @@ const MarketAssessmentCard = memo(({ market }) => {
       {/* Edge Display */}
       <div className="flex items-center justify-between mt-3">
         <span className="text-[10px] text-slate-500 uppercase tracking-wider">Edge</span>
-        <span className={`
-          text-sm font-mono font-bold
-          ${edgePercent > 0 ? 'text-emerald-400' : edgePercent < 0 ? 'text-red-400' : 'text-slate-400'}
-        `}>
-          {edgePercent > 0 ? '+' : ''}{edgePercent}%
-        </span>
+        <div className="text-right">
+          <span className={`
+            text-sm font-mono font-bold
+            ${edgePercent > 0 ? 'text-emerald-400' : edgePercent < 0 ? 'text-red-400' : 'text-slate-400'}
+          `}>
+            {edgePercent > 0 ? '+' : ''}{edgePercent}%
+          </span>
+          <div className={`
+            text-[10px] font-mono
+            ${evCents > 0.5 ? 'text-emerald-400' : evCents < -0.5 ? 'text-red-400' : 'text-slate-500'}
+          `}>
+            EV: {evCents > 0 ? '+' : ''}{Math.round(evCents)}c
+          </div>
+        </div>
       </div>
 
       {/* Expandable Edge Explanation */}

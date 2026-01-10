@@ -178,3 +178,9 @@ class FullContextOutput(BaseModel):
         default_factory=list,
         description="What information would most improve this analysis if available?"
     )
+
+    # === Edge Hypothesis (v2 profit-focused) ===
+    edge_hypothesis: str = Field(
+        default="",
+        description="Where might the market be wrong? What information asymmetry could exist?"
+    )

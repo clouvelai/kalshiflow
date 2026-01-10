@@ -998,6 +998,8 @@ class V3WebSocketManager:
             "key_evidence": (event_context.evidence.key_evidence[:5]
                            if event_context.evidence and event_context.evidence.key_evidence
                            else []),
+            # Edge hypothesis (v2 profit-focused)
+            "edge_hypothesis": event_context.driver_analysis.edge_hypothesis if event_context.driver_analysis else "",
         }
 
         await self.broadcast_message("event_research", research_data)

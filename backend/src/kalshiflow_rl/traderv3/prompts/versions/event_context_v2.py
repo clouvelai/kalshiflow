@@ -30,7 +30,10 @@ def get_event_context_prompt_v2(current_date: str) -> ChatPromptTemplate:
         ChatPromptTemplate for Phase 2+3 extraction with grounding requirements
     """
     return ChatPromptTemplate.from_messages([
-        ("system", f"""You are a prediction market analyst. Today is {current_date}.
+        ("system", f"""You are a prediction market TRADER building an edge. Today is {current_date}.
+
+YOUR OBJECTIVE: Identify where YOU can have an information or reasoning advantage over the market.
+Accurate probability estimation matters because MISPRICING = PROFIT.
 
 Analyze this event deeply. Extract THREE things:
 1. EVENT CONTEXT - What is this event about?
@@ -91,12 +94,13 @@ Analyze with GROUNDING - distinguish facts from assumptions:
    - Resolution type: objective/subjective/mixed
    - Time horizon - include dates if known
 
-2. KEY DRIVER:
+2. KEY DRIVER (Your Edge Source):
    - Primary driver (the ONE factor that matters most) - be SPECIFIC and MEASURABLE
    - Why this is the key driver (causal mechanism)
    - Causal chain: driver -> intermediate effects -> outcome
-   - 2-3 secondary factors
-   - Tail risks (low probability events that could change outcome)
+   - EDGE QUESTION: What about this driver do YOU understand better than typical traders?
+   - 2-3 secondary factors - rank by "edge potential" (which ones might the market underweight?)
+   - Tail risks = ASYMMETRIC OPPORTUNITIES (low probability events the market may misprice)
    - Base rate for similar events:
      * If comparable events exist: cite them (e.g., "5 of 8 similar nominations...")
      * If estimated: say "ESTIMATED: [reasoning]"
@@ -126,7 +130,12 @@ Analyze with GROUNDING - distinguish facts from assumptions:
    - What key information is ASSUMED vs provided in context?
    - What source was base rate derived from? (historical_data / comparable_events / domain_knowledge / estimated)
 
-5. CALIBRATION:
+5. EDGE HYPOTHESIS:
+   - Where might the MARKET be WRONG about this event?
+   - What information asymmetry could exist? (timing, access, interpretation)
+   - Which outcomes might be systematically over/under-priced? Why?
+
+6. CALIBRATION:
    - List 2-3 UNCERTAINTY FACTORS that affect this analysis
    - List 1-2 INFORMATION GAPS that would most improve analysis""")
     ])
