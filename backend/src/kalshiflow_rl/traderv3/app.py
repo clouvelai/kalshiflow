@@ -154,14 +154,16 @@ async def lifespan(app):
         else:
             logger.info("Trading client disabled - orderbook only mode")
 
-        # 8. Create trades client (required for RLM strategy)
+        # 8. Create trades client (required for strategies that need PUBLIC_TRADE_RECEIVED events)
         trades_integration = None
 
-        # RLM strategy requires trades stream for PUBLIC_TRADE_RECEIVED events
-        needs_trades_stream = config.trading_strategy_str == "rlm_no"
+        # Enable trades stream for:
+        # 1. RLM strategy (legacy - needs trade data for signal detection)
+        # 2. Lifecycle mode (strategies like agentic_research need PUBLIC_TRADE_RECEIVED events)
+        needs_trades_stream = config.trading_strategy_str == "rlm_no" or config.market_mode == "lifecycle"
 
         if needs_trades_stream:
-            logger.info("Creating trades client for RLM strategy...")
+            logger.info(f"Creating trades client (strategy={config.trading_strategy_str}, mode={config.market_mode})...")
 
             # Create KalshiAuth for trades WebSocket
             auth = KalshiAuth.from_env()
@@ -178,9 +180,9 @@ async def lifespan(app):
                 event_bus=event_bus,
             )
 
-            logger.info("Trades stream ENABLED - RLM will receive trade data")
+            logger.info("Trades stream ENABLED - strategies will receive PUBLIC_TRADE_RECEIVED events")
         else:
-            logger.info("Trades stream disabled (not required for current strategy)")
+            logger.info(f"Trades stream disabled (strategy={config.trading_strategy_str}, mode={config.market_mode})")
 
         # 9. Create coordinator with discovered/configured markets
         # Update config with the actual markets being used

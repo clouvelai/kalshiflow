@@ -18,42 +18,20 @@ import os
 import re
 import time
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Set, Any
-from datetime import datetime, timedelta
+from typing import Any, Dict, List, Optional, Set, Tuple
+from datetime import datetime
+
+from .truth_social_distiller import PostForDistillation, get_truth_social_distiller
+from .truth_social_signal_store import TruthPostMeta, get_truth_social_signal_store
 
 logger = logging.getLogger("kalshiflow_rl.traderv3.services.truth_social_cache")
-
-
-@dataclass
-class TruthPost:
-    """Represents a Truth Social post with metadata."""
-    post_id: str
-    author_handle: str
-    content: str
-    created_at: float  # Unix timestamp
-    url: Optional[str] = None
-    likes: int = 0
-    reblogs: int = 0
-    replies: int = 0
-    is_verified: bool = False
-    metadata: Dict[str, Any] = field(default_factory=dict)
-
-    @property
-    def engagement_score(self) -> float:
-        """Calculate a simple engagement score (likes + 2*reblogs + replies)."""
-        return float(self.likes + 2 * self.reblogs + self.replies)
-
-    def matches_query(self, keywords: List[str]) -> bool:
-        """Check if post content matches any keyword (case-insensitive)."""
-        content_lower = self.content.lower()
-        return any(kw.lower() in content_lower for kw in keywords if kw.strip())
 
 
 @dataclass
 class TrendingData:
     """Trending hashtags and posts."""
     trending_tags: List[Dict[str, Any]] = field(default_factory=list)
-    trending_posts: List[TruthPost] = field(default_factory=list)
+    trending_posts: List[TruthPostMeta] = field(default_factory=list)
     refreshed_at: float = field(default_factory=time.time)
 
 
@@ -93,7 +71,8 @@ class TruthSocialCacheService:
         self._max_posts_per_user = max_posts_per_user
 
         # Cache state
-        self._posts: Dict[str, TruthPost] = {}  # post_id -> TruthPost
+        # NOTE: We intentionally do NOT store raw content text in memory.
+        self._posts: Dict[str, TruthPostMeta] = {}  # post_id -> TruthPostMeta (no content)
         self._posts_by_user: Dict[str, List[str]] = {}  # handle -> [post_ids]
         self._followed_handles: Set[str] = set()
         self._trending: TrendingData = TrendingData()
@@ -139,8 +118,11 @@ class TruthSocialCacheService:
         """
         Start the cache service (discover following + start refresh loops).
 
+        This method is NON-BLOCKING - it starts background tasks and returns immediately.
+        Initial data population happens asynchronously to avoid blocking trader startup.
+
         Returns:
-            True if started successfully, False if following discovery failed (hard-disable)
+            True if started successfully, False if credentials missing (hard-disable)
         """
         if self._running:
             logger.warning("TruthSocialCacheService already running")
@@ -153,40 +135,71 @@ class TruthSocialCacheService:
             )
             return False
 
-        logger.info("Starting TruthSocialCacheService...")
+        logger.info("Starting TruthSocialCacheService (non-blocking)...")
 
-        # Try to discover following list (hard requirement)
+        # Start the service immediately - data population happens in background
+        self._running = True
+
+        # Start background initialization task (following discovery + initial refresh)
+        # This runs asynchronously so it doesn't block trader startup
+        self._refresh_task = asyncio.create_task(self._background_init_and_refresh_loop())
+        self._trending_task = asyncio.create_task(self._trending_refresh_loop())
+
+        logger.info("TruthSocialCacheService started (background init in progress)")
+        return True
+
+    async def _background_init_and_refresh_loop(self) -> None:
+        """Background task that discovers following list and then refreshes posts periodically."""
+        # First, try to discover following list
         try:
             followed = await self._discover_following()
             if not followed:
-                logger.error(
+                logger.warning(
                     "TruthSocialCacheService: Following discovery failed - "
-                    "cannot determine 'Trump circle'. Truth Social evidence DISABLED."
+                    "Truth Social evidence will be limited. Retrying in 5 minutes."
                 )
                 self._following_discovery_failed = True
-                return False
+            else:
+                self._followed_handles = set(followed)
+                self._following_discovery_failed = False
+                logger.info(f"TruthSocialCacheService: Discovered {len(self._followed_handles)} followed users")
 
-            self._followed_handles = set(followed)
-            logger.info(f"TruthSocialCacheService: Discovered {len(self._followed_handles)} followed users")
+                # Do initial refresh after successful discovery
+                await self._refresh_posts()
+        except asyncio.CancelledError:
+            return
         except Exception as e:
-            logger.error(
+            logger.warning(
                 f"TruthSocialCacheService: Following discovery error: {e} - "
-                "Truth Social evidence DISABLED."
+                "Truth Social evidence will be limited. Retrying in 5 minutes."
             )
             self._following_discovery_failed = True
-            return False
 
-        # Initial refresh
-        await self._refresh_posts()
-        await self._refresh_trending()
+        # Continue with periodic refresh loop
+        while self._running:
+            try:
+                await asyncio.sleep(self._cache_refresh_seconds)
+                if not self._running:
+                    break
 
-        # Start background refresh loops
-        self._running = True
-        self._refresh_task = asyncio.create_task(self._refresh_loop())
-        self._trending_task = asyncio.create_task(self._trending_refresh_loop())
+                # Retry following discovery if it failed previously
+                if self._following_discovery_failed:
+                    try:
+                        followed = await self._discover_following()
+                        if followed:
+                            self._followed_handles = set(followed)
+                            self._following_discovery_failed = False
+                            logger.info(f"TruthSocialCacheService: Following discovery recovered - {len(followed)} users")
+                    except Exception as e:
+                        logger.debug(f"TruthSocialCacheService: Following discovery retry failed: {e}")
 
-        logger.info("TruthSocialCacheService started successfully")
-        return True
+                # Refresh posts if we have followed handles
+                if self._followed_handles:
+                    await self._refresh_posts()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"TruthSocialCacheService: Refresh loop error: {e}")
 
     async def stop(self) -> None:
         """Stop the cache service and cancel background tasks."""
@@ -258,8 +271,9 @@ class TruthSocialCacheService:
 
         cutoff_time = time.time() - (self._hours_back * 3600)
         cutoff_datetime = datetime.fromtimestamp(cutoff_time)
-        new_posts = {}
+        new_posts: Dict[str, TruthPostMeta] = {}
         posts_by_user = {}
+        distill_inputs: List[PostForDistillation] = []
 
         try:
             api = self._get_api()
@@ -285,10 +299,12 @@ class TruthSocialCacheService:
                     user_posts = []
                     for status in statuses:
                         try:
-                            post = self._parse_status(status)
-                            if post and post.created_at >= cutoff_time:
-                                new_posts[post.post_id] = post
-                                user_posts.append(post.post_id)
+                            meta, content = self._parse_status_meta_and_content(status)
+                            if meta and meta.created_at >= cutoff_time:
+                                new_posts[meta.post_id] = meta
+                                user_posts.append(meta.post_id)
+                                if content:
+                                    distill_inputs.append(PostForDistillation(meta=meta, content=content))
                         except Exception as e:
                             logger.debug(f"Error parsing status from {handle}: {e}")
                             continue
@@ -307,22 +323,43 @@ class TruthSocialCacheService:
             self._last_refresh = time.time()
             self._refresh_count += 1
 
+            # Distill and ingest signals (best-effort)
+            signals_emitted = 0
+            try:
+                if distill_inputs:
+                    distiller = get_truth_social_distiller()
+                    store = get_truth_social_signal_store()
+                    signals = await distiller.distill(posts=distill_inputs, semantic_frame=None, max_signals_per_post=1)
+                    signals_emitted = len(signals)
+                    ingest_stats = store.ingest(posts=list(new_posts.values()), signals=signals)
+                    logger.info(
+                        "TruthSocialCacheService: Distilled and ingested signals "
+                        f"(posts_seen={ingest_stats.get('posts_seen')}, signals_emitted={ingest_stats.get('signals_emitted')}, "
+                        f"authors={ingest_stats.get('unique_authors')}, verified={ingest_stats.get('verified_count')})"
+                    )
+            except Exception as e:
+                logger.warning(f"TruthSocialCacheService: Distillation ingest failed (continuing): {e}")
+
             logger.info(
                 f"TruthSocialCacheService: Refreshed {len(new_posts)} posts "
-                f"from {len(posts_by_user)} users"
+                f"from {len(posts_by_user)} users (signals_emitted={signals_emitted})"
             )
 
         except Exception as e:
             logger.error(f"TruthSocialCacheService: Post refresh failed: {e}", exc_info=True)
             self._refresh_errors += 1
 
-    def _parse_status(self, status: Dict[str, Any]) -> Optional[TruthPost]:
-        """Parse a status dict from Truth Social API into TruthPost."""
+    def _parse_status_meta_and_content(self, status: Dict[str, Any]) -> Tuple[Optional[TruthPostMeta], str]:
+        """
+        Parse a status dict into minimal post metadata + transient content.
+
+        The returned content is used only for distillation and must NOT be persisted.
+        """
         try:
             # Extract fields
             post_id = str(status.get("id") or status.get("status_id") or "")
             if not post_id:
-                return None
+                return (None, "")
 
             content = str(status.get("content") or status.get("text") or status.get("full_text") or "")
             # Strip HTML tags from content
@@ -347,9 +384,10 @@ class TruthSocialCacheService:
             likes = int(status.get("favourites_count") or status.get("likes_count") or status.get("likes") or 0)
             reblogs = int(status.get("reblogs_count") or status.get("reposts_count") or status.get("reblogs") or 0)
             replies = int(status.get("replies_count") or status.get("reply_count") or status.get("replies") or 0)
+            engagement_score = float(likes + 2 * reblogs + replies)
 
             # URL construction (if we have post ID and author)
-            url = None
+            url = ""
             if post_id and author:
                 url = f"https://truthsocial.com/@{(author.lstrip('@'))}/posts/{post_id}"
 
@@ -357,24 +395,21 @@ class TruthSocialCacheService:
             user_obj = status.get("user", {})
             is_verified = bool(user_obj.get("verified") or user_obj.get("is_verified") or False)
 
-            return TruthPost(
-                post_id=post_id,
-                author_handle=author,
-                content=content,
-                created_at=created_at_ts,
-                url=url,
-                likes=likes,
-                reblogs=reblogs,
-                replies=replies,
-                is_verified=is_verified,
-                metadata={
-                    "raw_status": status,  # Keep raw for debugging
-                }
+            return (
+                TruthPostMeta(
+                    post_id=post_id,
+                    author_handle=author,
+                    created_at=created_at_ts,
+                    source_url=url,
+                    is_verified=is_verified,
+                    engagement_score=engagement_score,
+                ),
+                content.strip(),
             )
 
         except Exception as e:
             logger.debug(f"Error parsing status: {e}")
-            return None
+            return (None, "")
 
     async def _refresh_trending(self) -> None:
         """Refresh trending hashtags and posts."""
@@ -395,19 +430,24 @@ class TruthSocialCacheService:
 
             # Fetch trending posts
             trending_posts = []
+            distill_inputs: List[PostForDistillation] = []
             try:
                 trends_result = await loop.run_in_executor(None, api.trending)
                 if isinstance(trends_result, list):
                     for trend_item in trends_result[:30]:  # Top 30
-                        post = self._parse_status(trend_item)
-                        if post:
-                            trending_posts.append(post)
+                        meta, content = self._parse_status_meta_and_content(trend_item)
+                        if meta:
+                            trending_posts.append(meta)
+                            if content:
+                                distill_inputs.append(PostForDistillation(meta=meta, content=content))
                 elif isinstance(trends_result, dict):
                     status_list = trends_result.get("statuses", trends_result.get("posts", []))
                     for status in status_list[:30]:
-                        post = self._parse_status(status)
-                        if post:
-                            trending_posts.append(post)
+                        meta, content = self._parse_status_meta_and_content(status)
+                        if meta:
+                            trending_posts.append(meta)
+                            if content:
+                                distill_inputs.append(PostForDistillation(meta=meta, content=content))
             except Exception as e:
                 logger.debug(f"Error fetching trending posts: {e}")
 
@@ -418,6 +458,16 @@ class TruthSocialCacheService:
             )
             self._last_trending_refresh = time.time()
 
+            # Best-effort distill trending posts too (helps recall even if follow list is sparse)
+            try:
+                if distill_inputs:
+                    distiller = get_truth_social_distiller()
+                    store = get_truth_social_signal_store()
+                    signals = await distiller.distill(posts=distill_inputs, semantic_frame=None, max_signals_per_post=1)
+                    store.ingest(posts=trending_posts, signals=signals)
+            except Exception as e:
+                logger.debug(f"TruthSocialCacheService: Trending distillation failed: {e}")
+
             logger.debug(
                 f"TruthSocialCacheService: Refreshed {len(trending_tags)} trending tags "
                 f"and {len(trending_posts)} trending posts"
@@ -425,18 +475,6 @@ class TruthSocialCacheService:
 
         except Exception as e:
             logger.warning(f"TruthSocialCacheService: Trending refresh failed: {e}")
-
-    async def _refresh_loop(self) -> None:
-        """Background loop to refresh posts periodically."""
-        while self._running:
-            try:
-                await asyncio.sleep(self._cache_refresh_seconds)
-                if self._running:
-                    await self._refresh_posts()
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.error(f"TruthSocialCacheService: Refresh loop error: {e}")
 
     async def _trending_refresh_loop(self) -> None:
         """Background loop to refresh trending data periodically."""
@@ -456,49 +494,21 @@ class TruthSocialCacheService:
         hours_back: Optional[float] = None,
         max_items: int = 25,
         include_trending: bool = True,
-    ) -> List[TruthPost]:
+    ) -> List[TruthPostMeta]:
         """
-        Query cached posts matching keywords.
+        Deprecated: raw post keyword search is no longer supported.
 
-        Args:
-            keywords: List of keywords to match (case-insensitive)
-            hours_back: Optional time window (defaults to service's hours_back)
-            max_items: Maximum number of posts to return
-            include_trending: Whether to include trending posts in results
-
-        Returns:
-            List of TruthPost objects matching keywords, sorted by engagement score (desc)
+        We intentionally do not retain raw post content in memory. Use the distilled
+        signal router + store instead.
         """
-        if not keywords:
-            return []
-
-        cutoff_time = time.time() - ((hours_back or self._hours_back) * 3600)
-        matches = []
-
-        # Search cached posts
-        for post in self._posts.values():
-            if post.created_at < cutoff_time:
-                continue
-            if post.matches_query(keywords):
-                matches.append(post)
-
-        # Include trending posts if requested
-        if include_trending:
-            for post in self._trending.trending_posts:
-                if post.created_at >= cutoff_time and post.matches_query(keywords):
-                    # Avoid duplicates
-                    if post.post_id not in {p.post_id for p in matches}:
-                        matches.append(post)
-
-        # Sort by engagement score (descending) and limit
-        matches.sort(key=lambda p: p.engagement_score, reverse=True)
-        return matches[:max_items]
+        _ = (keywords, hours_back, max_items, include_trending)
+        return []
 
     def get_trending_tags(self) -> List[Dict[str, Any]]:
         """Get cached trending hashtags."""
         return self._trending.trending_tags
 
-    def get_trending_posts(self, max_items: int = 10) -> List[TruthPost]:
+    def get_trending_posts(self, max_items: int = 10) -> List[TruthPostMeta]:
         """Get cached trending posts."""
         return self._trending.trending_posts[:max_items]
 

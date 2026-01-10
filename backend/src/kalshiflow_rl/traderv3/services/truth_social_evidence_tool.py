@@ -10,7 +10,9 @@ import time
 from typing import List, Optional, Dict, Any
 
 from ..state.event_research_context import Evidence, EvidenceReliability
-from .truth_social_cache import TruthSocialCacheService, TruthPost
+from .truth_social_cache import TruthSocialCacheService
+from .truth_social_signal_router import TruthSocialSignalRouter, get_truth_social_signal_router
+from .truth_social_signal_store import DistilledTruthSignal
 
 logger = logging.getLogger("kalshiflow_rl.traderv3.services.truth_social_evidence")
 
@@ -23,7 +25,11 @@ class TruthSocialEvidenceTool:
     while enriching it with Truth Social-specific metadata (engagement metrics, etc.).
     """
 
-    def __init__(self, cache_service: Optional[TruthSocialCacheService] = None):
+    def __init__(
+        self,
+        cache_service: Optional[TruthSocialCacheService] = None,
+        router: Optional[TruthSocialSignalRouter] = None,
+    ):
         """
         Initialize Truth Social evidence tool.
 
@@ -31,6 +37,7 @@ class TruthSocialEvidenceTool:
             cache_service: TruthSocialCacheService instance (if None, uses global singleton)
         """
         self._cache = cache_service
+        self._router = router or get_truth_social_signal_router()
 
     def gather(
         self,
@@ -81,147 +88,98 @@ class TruthSocialEvidenceTool:
                 seen.add(kw_lower)
                 unique_keywords.append(kw)
 
-        # Query cache
-        matching_posts = self._cache.query_posts(
-            keywords=unique_keywords,
-            hours_back=hours_back,
-            max_items=max_items,
-            include_trending=True,
+        window_hours = float(hours_back or self._cache.hours_back)
+        routed = self._router.route(
+            event_title=event_title,
+            primary_driver=primary_driver or "",
+            semantic_frame=(context or {}).get("semantic_frame"),
+            window_hours=window_hours,
+            limit=min(10, int(max_items)),
+            extra_keywords=unique_keywords,
         )
 
-        if not matching_posts:
+        top_signals: List[DistilledTruthSignal] = routed.top_signals or []
+        if not top_signals:
+            router_stats = routed.stats or {}
+            posts_seen = int(router_stats.get("posts_seen", 0))
+            unique_authors = int(router_stats.get("unique_authors", 0))
+            verified_count = int(router_stats.get("verified_count", 0))
             return Evidence(
-                evidence_summary=f"No Truth Social posts found matching: {', '.join(unique_keywords[:5])}",
+                evidence_summary=f"No Truth Social narrative signals found (keywords: {', '.join(unique_keywords[:5])})",
                 reliability=EvidenceReliability.LOW,
                 metadata={
                     "truth_social": {
                         "status": "no_matches",
-                        "keywords_searched": unique_keywords,
-                        "queries": queries,
+                        "posts_seen": posts_seen,
+                        "signals_emitted": 0,
+                        "unique_authors": unique_authors,
+                        "verified_count": verified_count,
+                        "window_hours": float(router_stats.get("window_hours", window_hours)),
+                        "gathered_at": time.time(),
+                        "top_signals": [],
                     }
                 },
             )
 
-        # Convert posts to evidence
-        key_evidence = []
-        sources = []
-        top_posts_metadata = []
+        # Convert signals to evidence
+        key_evidence: List[str] = []
+        sources: List[str] = []
 
-        # Sort by engagement score (already sorted by cache, but ensure)
-        matching_posts.sort(key=lambda p: p.engagement_score, reverse=True)
+        # Conservative: treat Truth Social as narrative signal, not verified fact
+        verified_count = sum(1 for s in top_signals if s.is_verified)
+        avg_conf = sum(float(s.confidence or 0.0) for s in top_signals) / max(1, len(top_signals))
 
-        # Take top posts and extract evidence
-        for post in matching_posts[:max_items]:
-            # Extract key excerpts (first 200 chars or first sentence)
-            excerpt = post.content[:200].strip()
-            if len(post.content) > 200:
-                excerpt += "..."
-            
-            # Format evidence line with author and engagement
-            evidence_line = f"@{post.author_handle}: {excerpt}"
-            if post.engagement_score > 0:
-                evidence_line += f" [likes: {post.likes}, reblogs: {post.reblogs}, replies: {post.replies}]"
-            
-            key_evidence.append(evidence_line)
+        for s in top_signals[: max_items]:
+            claim = (s.claim or "").strip()
+            if not claim:
+                continue
+            line = f"{claim} (@{s.author_handle}, {s.claim_type}, conf={int((s.confidence or 0.0)*100)}%)"
+            key_evidence.append(line)
+            if s.source_url:
+                sources.append(s.source_url)
 
-            # Add source URL if available
-            if post.url:
-                sources.append(post.url)
-            else:
-                # Fallback: construct from handle and post_id
-                sources.append(f"truthsocial.com/@{post.author_handle}/posts/{post.post_id}")
-
-            # Collect metadata for top posts
-            top_posts_metadata.append({
-                "post_id": post.post_id,
-                "author": post.author_handle,
-                "created_at": post.created_at,
-                "url": post.url,
-                "likes": post.likes,
-                "reblogs": post.reblogs,
-                "replies": post.replies,
-                "engagement_score": post.engagement_score,
-                "is_verified": post.is_verified,
-            })
-
-        # Assess reliability based on source quality and engagement
-        # High reliability: verified accounts, high engagement
-        # Medium: verified or high engagement
-        # Low: unverified, low engagement
-        verified_count = sum(1 for p in matching_posts if p.is_verified)
-        high_engagement_count = sum(1 for p in matching_posts if p.engagement_score >= 100)
-
-        if verified_count >= 2 and high_engagement_count >= 1:
-            reliability = EvidenceReliability.HIGH
-            reliability_reasoning = (
-                f"Found {len(matching_posts)} Truth Social posts from verified accounts "
-                f"with high engagement (verified: {verified_count}, high engagement: {high_engagement_count})"
-            )
-        elif verified_count >= 1 or high_engagement_count >= 2:
+        # Reliability is capped at MEDIUM because these are narrative/intent signals.
+        if verified_count >= 1 and len(top_signals) >= 2 and avg_conf >= 0.6:
             reliability = EvidenceReliability.MEDIUM
-            reliability_reasoning = (
-                f"Found {len(matching_posts)} Truth Social posts "
-                f"(verified: {verified_count}, high engagement: {high_engagement_count})"
-            )
         else:
             reliability = EvidenceReliability.LOW
-            reliability_reasoning = (
-                f"Found {len(matching_posts)} Truth Social posts with low engagement "
-                f"or unverified sources"
-            )
+
+        reliability_reasoning = (
+            f"Distilled {len(top_signals)} narrative signals "
+            f"(verified_authors={verified_count}, avg_confidence={avg_conf:.2f}). "
+            "Treat as intent/narrative, not independently verified fact."
+        )
 
         # Build evidence summary
         evidence_summary = (
-            f"Found {len(matching_posts)} Truth Social posts matching keywords: "
-            f"{', '.join(unique_keywords[:5])}. "
-            f"From {len(set(p.author_handle for p in matching_posts))} unique accounts. "
-            f"Top post engagement: {matching_posts[0].engagement_score:.0f} "
-            f"(@{matching_posts[0].author_handle})."
+            f"Found {len(top_signals)} distilled Truth Social narrative signals "
+            f"(keywords: {', '.join(unique_keywords[:5])})."
         )
 
-        # Get trending data for metadata
-        trending_tags = self._cache.get_trending_tags()[:10]
-        trending_posts = self._cache.get_trending_posts(max_items=5)
-
-        cache_stats = self._cache.get_stats()
+        router_stats = routed.stats or {}
+        window_stats = {
+            "posts_seen": int(router_stats.get("posts_seen", 0)),
+            "unique_authors": int(router_stats.get("unique_authors", 0)),
+            "verified_count": int(router_stats.get("verified_count", verified_count)),
+            "window_hours": float(router_stats.get("window_hours", window_hours)),
+        }
 
         return Evidence(
             key_evidence=key_evidence,
             evidence_summary=evidence_summary,
             sources=sources,
-            sources_checked=len(matching_posts),
+            sources_checked=len(sources),
             reliability=reliability,
             reliability_reasoning=reliability_reasoning,
             metadata={
                 "truth_social": {
                     "status": "success",
-                    "posts_found": len(matching_posts),
-                    "unique_authors": len(set(p.author_handle for p in matching_posts)),
-                    "top_posts": top_posts_metadata,
-                    "keywords_searched": unique_keywords,
-                    "queries": queries,
-                    "verified_count": verified_count,
-                    "high_engagement_count": high_engagement_count,
-                    "trending_tags": [
-                        {
-                            "tag": tag.get("name") or tag.get("tag") or str(tag),
-                            "count": tag.get("count") or 0,
-                        }
-                        for tag in trending_tags
-                    ],
-                    "trending_posts_sample": [
-                        {
-                            "author": p.author_handle,
-                            "engagement": p.engagement_score,
-                            "url": p.url,
-                        }
-                        for p in trending_posts
-                    ],
-                    "cache_stats": {
-                        "cached_posts_count": cache_stats.get("cached_posts_count", 0),
-                        "followed_handles_count": cache_stats.get("followed_handles_count", 0),
-                        "last_refresh": cache_stats.get("last_refresh"),
-                    },
+                    "posts_seen": window_stats["posts_seen"],
+                    "signals_emitted": len(top_signals),
+                    "unique_authors": window_stats["unique_authors"],
+                    "verified_count": window_stats["verified_count"],
+                    "window_hours": window_stats["window_hours"],
+                    "top_signals": [s.to_dict() for s in top_signals[:10]],
                     "gathered_at": time.time(),
                 }
             },

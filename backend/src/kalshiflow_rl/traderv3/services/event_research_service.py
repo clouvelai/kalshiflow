@@ -1347,16 +1347,17 @@ class EventResearchService:
                 queries=queries,
                 hours_back=self._truth_social_cache.hours_back if self._truth_social_cache else None,
                 max_items=25,
+                context={"semantic_frame": semantic_frame} if semantic_frame else None,
             )
 
             # Log Truth Social evidence results for diagnostics
             ts_meta = evidence.metadata.get("truth_social", {})
             ts_status = ts_meta.get("status", "unknown")
-            ts_posts = ts_meta.get("posts_found", 0)
+            ts_signals = ts_meta.get("signals_emitted", 0)
             ts_authors = ts_meta.get("unique_authors", 0)
             logger.info(
                 f"[TRUTH SOCIAL] {event_title[:40]}: "
-                f"status={ts_status}, posts={ts_posts}, authors={ts_authors}, "
+                f"status={ts_status}, signals={ts_signals}, authors={ts_authors}, "
                 f"queries={queries[:3]}"
             )
 
