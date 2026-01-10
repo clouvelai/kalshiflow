@@ -1019,6 +1019,7 @@ class V3TradingClientIntegration:
     async def get_open_markets(
         self,
         categories: Optional[List[str]] = None,
+        sports_prefixes: Optional[List[str]] = None,
         max_markets: int = 1000,
         min_hours_to_settlement: float = 4.0,
         max_days_to_settlement: int = 30,
@@ -1037,6 +1038,9 @@ class V3TradingClientIntegration:
 
         Args:
             categories: Optional list of category substrings to filter by
+            sports_prefixes: Optional list of event_ticker prefixes for sports filtering
+                            (e.g., ["KXNFL"] for NFL only). If provided, sports markets
+                            must have event_ticker starting with one of these prefixes.
             max_markets: Maximum number of markets to return (default 1000)
             min_hours_to_settlement: Skip markets closing <N hours (default 4.0)
             max_days_to_settlement: Skip markets settling >N days out (default 30)
@@ -1098,13 +1102,29 @@ class V3TradingClientIntegration:
 
                 for event in events:
                     event_category = event.get("category", "").lower()
+                    event_ticker = event.get("event_ticker", "")
+
+                    # Category filtering
                     if categories_lower:
+                        # Skip events with empty category (fixes "" in "string" bug)
+                        if not event_category:
+                            continue
+
                         category_match = any(
                             allowed in event_category or event_category in allowed
                             for allowed in categories_lower
                         )
                         if not category_match:
                             continue
+
+                        # Sports prefix filtering: if this is sports, require allowed prefix
+                        if "sports" in event_category and sports_prefixes:
+                            prefix_match = any(
+                                event_ticker.startswith(prefix)
+                                for prefix in sports_prefixes
+                            )
+                            if not prefix_match:
+                                continue  # Sports but wrong prefix - skip
 
                     for market in event.get("markets", []):
                         if market.get("status") in ("open", "active"):

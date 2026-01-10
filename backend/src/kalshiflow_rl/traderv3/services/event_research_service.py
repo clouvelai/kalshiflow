@@ -67,6 +67,10 @@ from ..prompts.schemas import (
     SingleMarketAssessment,
     BatchMarketAssessmentOutput,
 )
+from ..prompts.schemas.market_assessment_v4_schema import (
+    SingleMarketAssessmentV4,
+    BatchMarketAssessmentV4Output,
+)
 
 if TYPE_CHECKING:
     from ..state.tracked_markets import TrackedMarket
@@ -255,6 +259,23 @@ def generate_semantic_frame_queries(
     return unique_queries[:5]  # Return top 5 queries
 
 
+def _dedupe_preserve_order(items: List[str]) -> List[str]:
+    """Deduplicate a list while preserving order."""
+    seen = set()
+    out: List[str] = []
+    for item in items:
+        if not item:
+            continue
+        key = item.strip()
+        if not key:
+            continue
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(key)
+    return out
+
+
 class EventResearchService:
     """
     Orchestrates event-first research pipeline.
@@ -295,6 +316,11 @@ class EventResearchService:
         self._temperature = openai_temperature
         self._web_search_enabled = web_search_enabled
         self._min_mispricing = min_mispricing_threshold
+
+        # Truth Social evidence (cache-backed; optional)
+        # Cache service is initialized globally and accessed lazily via get_truth_social_cache()
+        # We check availability lazily in _gather_truth_social_evidence() since cache may start after EventResearchService is created
+        self._truth_social_cache = None  # Will be fetched lazily
 
         # Initialize LLM
         self._llm = ChatOpenAI(
@@ -1063,10 +1089,79 @@ class EventResearchService:
         Returns:
             Evidence with key facts and reliability assessment
         """
+        # Run evidence tools in parallel (web + truth social). Each tool is best-effort.
+        web_task = asyncio.create_task(
+            self._gather_web_evidence(driver_analysis, event_title, semantic_frame)
+        )
+        truth_task = asyncio.create_task(
+            self._gather_truth_social_evidence(driver_analysis, event_title, semantic_frame)
+        )
+
+        web_ev, truth_ev = await asyncio.gather(web_task, truth_task)
+
+        # Merge into a single Evidence object (keep the existing downstream contract)
+        merged = Evidence()
+        merged.key_evidence = _dedupe_preserve_order((web_ev.key_evidence or []) + (truth_ev.key_evidence or []))[:10]
+        merged.sources = _dedupe_preserve_order((web_ev.sources or []) + (truth_ev.sources or []))[:10]
+        merged.sources_checked = int(web_ev.sources_checked or 0) + int(truth_ev.sources_checked or 0)
+
+        # Tag evidence by source so LLM can distinguish provenance
+        summary_parts = []
+        if web_ev.evidence_summary:
+            summary_parts.append(f"[WEB] {web_ev.evidence_summary.strip()}")
+        if truth_ev.evidence_summary:
+            summary_parts.append(f"[TRUTH SOCIAL] {truth_ev.evidence_summary.strip()}")
+        merged.evidence_summary = "\n\n".join(summary_parts)[:900]
+
+        # Reliability: take max of component reliabilities
+        reliability_order = {
+            EvidenceReliability.LOW: 1,
+            EvidenceReliability.MEDIUM: 2,
+            EvidenceReliability.HIGH: 3,
+        }
+        best = EvidenceReliability.LOW
+        for r in (web_ev.reliability, truth_ev.reliability):
+            if reliability_order.get(r, 0) > reliability_order.get(best, 0):
+                best = r
+        merged.reliability = best
+
+        reasons = []
+        if web_ev.reliability_reasoning:
+            reasons.append(f"web: {web_ev.reliability_reasoning}")
+        if truth_ev.reliability_reasoning:
+            reasons.append(f"truth: {truth_ev.reliability_reasoning}")
+        merged.reliability_reasoning = " | ".join([r.strip() for r in reasons if r.strip()])[:800]
+
+        # Leave evidence_probability as default for now (not used in current Phase 5 prompt)
+        
+        # Merge metadata: combine truth_social metadata from both sources
+        merged_metadata = {}
+        if web_ev.metadata:
+            merged_metadata.update(web_ev.metadata)
+        if truth_ev.metadata:
+            # Merge truth_social metadata specially
+            if "truth_social" in merged_metadata and "truth_social" in truth_ev.metadata:
+                # Merge nested truth_social dicts
+                merged_truth = {**merged_metadata.get("truth_social", {}), **truth_ev.metadata["truth_social"]}
+                merged_metadata["truth_social"] = merged_truth
+            else:
+                merged_metadata.update(truth_ev.metadata)
+        
+        merged.metadata = merged_metadata
+        return merged
+
+    async def _gather_web_evidence(
+        self,
+        driver_analysis: KeyDriverAnalysis,
+        event_title: str,
+        semantic_frame: Optional[SemanticFrame] = None,
+    ) -> Evidence:
+        """Web evidence gatherer (existing implementation extracted for composition)."""
         if not self._web_search_enabled or not self._search_tool:
             return Evidence(
                 evidence_summary="Web search not available",
                 reliability=EvidenceReliability.LOW,
+                reliability_reasoning="web search disabled/unavailable",
             )
 
         try:
@@ -1197,6 +1292,83 @@ class EventResearchService:
             return Evidence(
                 evidence_summary=f"Search failed: {e}",
                 reliability=EvidenceReliability.LOW,
+                reliability_reasoning="web search failed",
+            )
+
+    async def _gather_truth_social_evidence(
+        self,
+        driver_analysis: KeyDriverAnalysis,
+        event_title: str,
+        semantic_frame: Optional[SemanticFrame] = None,
+    ) -> Evidence:
+        """
+        Evidence gatherer from Truth Social cache (following-based "Trump circle").
+
+        Uses the global TruthSocialCacheService which maintains a cache of posts from
+        the authenticated user's following list (auto-discovered) plus trending data.
+
+        This is intentionally conservative:
+        - Treat as an "intent / narrative" signal, not independently verified fact.
+        - Always returns an Evidence object; never raises.
+        """
+        # Lazy-load cache (may be None if not initialized or unavailable)
+        if self._truth_social_cache is None:
+            from .truth_social_cache import get_truth_social_cache
+            self._truth_social_cache = get_truth_social_cache()
+
+        if not self._truth_social_cache or not self._truth_social_cache.is_available():
+            logger.debug(f"[TRUTH SOCIAL] {event_title[:40]}: cache unavailable or disabled")
+            return Evidence(
+                evidence_summary="Truth Social evidence disabled or unavailable",
+                reliability=EvidenceReliability.LOW,
+                reliability_reasoning="truth social cache not available",
+                metadata={"truth_social": {"status": "unavailable"}},
+            )
+
+        try:
+            from .truth_social_evidence_tool import TruthSocialEvidenceTool
+
+            # Build search queries from semantic frame and event context
+            queries = []
+            if semantic_frame and semantic_frame.primary_search_queries:
+                queries.extend(semantic_frame.primary_search_queries[:3])
+            
+            # Add driver and event title as additional keywords
+            if driver_analysis.primary_driver:
+                queries.append(driver_analysis.primary_driver)
+            if event_title:
+                queries.append(event_title)
+
+            # Use the evidence tool to query cache
+            evidence_tool = TruthSocialEvidenceTool(cache_service=self._truth_social_cache)
+            evidence = evidence_tool.gather(
+                event_title=event_title,
+                primary_driver=driver_analysis.primary_driver or "",
+                queries=queries,
+                hours_back=self._truth_social_cache.hours_back if self._truth_social_cache else None,
+                max_items=25,
+            )
+
+            # Log Truth Social evidence results for diagnostics
+            ts_meta = evidence.metadata.get("truth_social", {})
+            ts_status = ts_meta.get("status", "unknown")
+            ts_posts = ts_meta.get("posts_found", 0)
+            ts_authors = ts_meta.get("unique_authors", 0)
+            logger.info(
+                f"[TRUTH SOCIAL] {event_title[:40]}: "
+                f"status={ts_status}, posts={ts_posts}, authors={ts_authors}, "
+                f"queries={queries[:3]}"
+            )
+
+            return evidence
+
+        except Exception as e:
+            logger.warning(f"Truth Social evidence gathering failed: {e}", exc_info=True)
+            return Evidence(
+                evidence_summary=f"Truth Social evidence error: {str(e)[:100]}",
+                reliability=EvidenceReliability.LOW,
+                reliability_reasoning=f"truth social evidence tool error: {type(e).__name__}",
+                metadata={"truth_social": {"status": "error", "error": str(e)[:200]}},
             )
 
     async def _evaluate_markets_batch(
@@ -1219,22 +1391,38 @@ class EventResearchService:
         Returns:
             List of MarketAssessment for each market
         """
+        # Import classifier for clean signal formatting (v3 prompt)
+        from .microstructure_classifier import MicrostructureClassifier
+        classifier = MicrostructureClassifier()
+
         # Build market descriptions - NO PRICES (blind estimation)
         # NOTE: We deliberately DO NOT include market prices here
         # The LLM must estimate probabilities blind, then guess market price
         market_descriptions = []
+        microstructure_summaries = []  # Collect for batch-level summary
+
         for market in markets:
             desc = f"MARKET: {market.ticker}\n"
             desc += f"TITLE: {market.title}\n"
 
             # Include microstructure context if available
+            # Use classifier for clean, factual signal formatting (v3)
             if microstructure and market.ticker in microstructure:
                 micro_ctx = microstructure[market.ticker]
-                desc += f"\nMARKET SIGNALS:\n{micro_ctx.to_prompt_string()}\n"
+                # Use classifier for cleaner, categorized output
+                classified_signals = classifier.classify_to_prompt_string(micro_ctx)
+                desc += f"\nMARKET SIGNALS:\n{classified_signals}\n"
+                microstructure_summaries.append(f"{market.ticker}:\n{classified_signals}")
 
             market_descriptions.append(desc)
 
         markets_text = "\n---\n".join(market_descriptions)
+
+        # Build batch-level microstructure signals summary for v3 prompt
+        if microstructure_summaries:
+            microstructure_signals = "\n\n".join(microstructure_summaries)
+        else:
+            microstructure_signals = "No microstructure signals available"
 
         from datetime import datetime
         current_date = datetime.now().strftime("%B %d, %Y")
@@ -1253,7 +1441,13 @@ class EventResearchService:
         )
 
         try:
-            chain = prompt | self._llm.with_structured_output(BatchMarketAssessmentOutput)
+            # Select schema based on active prompt version
+            if ACTIVE_MARKET_EVAL_VERSION == "v4":
+                output_schema = BatchMarketAssessmentV4Output
+            else:
+                output_schema = BatchMarketAssessmentOutput
+
+            chain = prompt | self._llm.with_structured_output(output_schema)
             # Defensive access for driver_analysis in case of error fallback
             primary_driver = (
                 research_context.driver_analysis.primary_driver
@@ -1263,8 +1457,14 @@ class EventResearchService:
                 "event_context": research_context.to_prompt_string(),
                 "markets_text": markets_text,
                 "primary_driver": primary_driver,
-                "base_rate": base_rate,  # CRITICAL: Pass base rate for v2 prompt anchoring
+                "base_rate": base_rate,  # CRITICAL: Pass base rate for v2/v3/v4 prompt anchoring
+                "microstructure_signals": microstructure_signals,  # v3/v4.1: Batch-level classified signals
             })
+
+            # Log mutual exclusivity warning if present (V4.1)
+            mutual_warning = getattr(result, 'mutual_exclusivity_warning', None)
+            if mutual_warning:
+                logger.warning(f"[BATCH CONSISTENCY] {research_context.event_ticker}: {mutual_warning}")
 
             # Convert to MarketAssessment objects
             assessments = []
@@ -1278,14 +1478,44 @@ class EventResearchService:
                     continue
 
                 # Get ACTUAL market price (mid-price)
-                yes_bid = market.yes_bid or 0
-                yes_ask = market.yes_ask or 100
-                actual_mid_price = (yes_bid + yes_ask) / 2
+                # Note: yes_bid=0 and yes_ask=0 means no orderbook data (not "price is 0")
+                # In this case, fall back to market.price (last traded price) or 50c default
+                yes_bid = market.yes_bid
+                yes_ask = market.yes_ask
+
+                # Calculate mid-price with proper fallback logic
+                if yes_bid > 0 and yes_ask > 0:
+                    # Both bid and ask available - use mid
+                    actual_mid_price = (yes_bid + yes_ask) / 2
+                elif yes_bid > 0:
+                    # Only bid available - use bid
+                    actual_mid_price = yes_bid
+                elif yes_ask > 0:
+                    # Only ask available - use ask
+                    actual_mid_price = yes_ask
+                elif market.price > 0:
+                    # No bid/ask but have last traded price
+                    actual_mid_price = market.price
+                    logger.warning(
+                        f"[PRICE] {market.ticker}: No bid/ask data, using last price {market.price}c"
+                    )
+                else:
+                    # No price data at all - skip this market for now
+                    logger.warning(
+                        f"[PRICE] {market.ticker}: No price data available (bid={yes_bid}, ask={yes_ask}, price={market.price}), skipping"
+                    )
+                    continue
+
                 market_prob = actual_mid_price / 100.0
 
                 # LLM's estimates (blind)
-                evidence_prob = llm_assessment.evidence_probability
-                estimated_price = llm_assessment.estimated_market_price
+                # V4 uses different field names - handle both
+                if ACTIVE_MARKET_EVAL_VERSION == "v4":
+                    evidence_prob = llm_assessment.probability
+                    estimated_price = llm_assessment.market_price_guess
+                else:
+                    evidence_prob = llm_assessment.evidence_probability
+                    estimated_price = llm_assessment.estimated_market_price
 
                 # CALIBRATION: How well did LLM guess the market price?
                 price_guess_error = estimated_price - actual_mid_price
@@ -1323,18 +1553,58 @@ class EventResearchService:
                     Confidence.MEDIUM
                 )
 
-                # Extract v2 calibration fields with safe defaults
-                evidence_cited = getattr(llm_assessment, 'evidence_cited', []) or []
-                what_would_change_mind = getattr(llm_assessment, 'what_would_change_mind', "") or ""
-                assumption_flags = getattr(llm_assessment, 'assumption_flags', []) or []
-                calibration_notes = getattr(llm_assessment, 'calibration_notes', "") or ""
-                evidence_quality = getattr(llm_assessment, 'evidence_quality', "medium") or "medium"
+                # Extract calibration fields with safe defaults (V4 uses different names)
+                if ACTIVE_MARKET_EVAL_VERSION == "v4":
+                    evidence_cited = getattr(llm_assessment, 'key_evidence', []) or []
+                    what_would_change_mind = getattr(llm_assessment, 'what_would_change_mind', "") or ""
+                    assumption_flags = []  # V4 doesn't have this
+                    calibration_notes = ""  # V4 doesn't have this
+                    # V4 derives evidence_quality from confidence
+                    confidence_str = getattr(llm_assessment, 'confidence', "medium") or "medium"
+                    evidence_quality = confidence_str
+                else:
+                    evidence_cited = getattr(llm_assessment, 'evidence_cited', []) or []
+                    what_would_change_mind = getattr(llm_assessment, 'what_would_change_mind', "") or ""
+                    assumption_flags = getattr(llm_assessment, 'assumption_flags', []) or []
+                    calibration_notes = getattr(llm_assessment, 'calibration_notes', "") or ""
+                    evidence_quality = getattr(llm_assessment, 'evidence_quality', "medium") or "medium"
+
+                # Extract v3 base rate anchoring fields with safe defaults
+                base_rate_used = getattr(llm_assessment, 'base_rate_used', base_rate) or base_rate
+                adjustment_up = getattr(llm_assessment, 'adjustment_up', 0.0) or 0.0
+                adjustment_up_reasoning = getattr(llm_assessment, 'adjustment_up_reasoning', "") or ""
+                adjustment_down = getattr(llm_assessment, 'adjustment_down', 0.0) or 0.0
+                adjustment_down_reasoning = getattr(llm_assessment, 'adjustment_down_reasoning', "") or ""
+
+                # Log base rate anchoring for tracking
+                if adjustment_up > 0 or adjustment_down > 0:
+                    expected = base_rate_used + adjustment_up - adjustment_down
+                    logger.info(
+                        f"[BASE_RATE] {market.ticker}: "
+                        f"base={base_rate_used:.0%} +{adjustment_up:.0%} -{adjustment_down:.0%} "
+                        f"= expected {expected:.0%} vs actual {evidence_prob:.0%}"
+                    )
+
+                # V4.1 restored specific_question, driver_application still not present
+                if ACTIVE_MARKET_EVAL_VERSION == "v4":
+                    specific_question = getattr(llm_assessment, 'specific_question', "") or ""
+                    driver_application = ""  # V4 doesn't have driver_application, derive from reasoning if needed
+                else:
+                    specific_question = getattr(llm_assessment, 'specific_question', "") or ""
+                    driver_application = getattr(llm_assessment, 'driver_application', "") or ""
+
+                # Log extreme probability flags for monitoring (V4.1)
+                extreme_flag = getattr(llm_assessment, 'extreme_probability_flag', None)
+                if extreme_flag:
+                    logger.warning(
+                        f"[EXTREME PROBABILITY] {market.ticker}: {extreme_flag}"
+                    )
 
                 assessment = MarketAssessment(
                     market_ticker=market.ticker,
                     market_title=market.title,
-                    specific_question=llm_assessment.specific_question,
-                    driver_application=llm_assessment.driver_application,
+                    specific_question=specific_question,
+                    driver_application=driver_application,
                     evidence_probability=evidence_prob,
                     market_probability=market_prob,
                     mispricing_magnitude=mispricing,
@@ -1350,6 +1620,14 @@ class EventResearchService:
                     assumption_flags=assumption_flags,
                     calibration_notes=calibration_notes,
                     evidence_quality=evidence_quality,
+                    # v3 base rate anchoring fields
+                    base_rate_used=base_rate_used,
+                    adjustment_up=adjustment_up,
+                    adjustment_up_reasoning=adjustment_up_reasoning,
+                    adjustment_down=adjustment_down,
+                    adjustment_down_reasoning=adjustment_down_reasoning,
+                    # v4.1 extreme probability monitoring
+                    extreme_probability_flag=extreme_flag,
                 )
                 assessments.append(assessment)
 

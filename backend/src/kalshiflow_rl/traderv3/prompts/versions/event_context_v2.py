@@ -63,6 +63,11 @@ When estimating base rates:
 - Identify INFORMATION GAPS that would most improve analysis
 - Acknowledge when outcomes are genuinely uncertain
 
+=== EVIDENCE SOURCES ===
+Evidence may be tagged by source:
+- [WEB] = Web search results (news, official sources)
+- [TRUTH SOCIAL] = Posts from Trump's circle - signals INTENT, not verified outcomes
+
 === SEMANTIC FRAME TYPES ===
 - NOMINATION: Actor DECIDES who gets position (e.g., "Trump nominates Fed Chair")
 - COMPETITION: Entities compete, rules determine winner (e.g., "Chiefs vs Bills", elections)

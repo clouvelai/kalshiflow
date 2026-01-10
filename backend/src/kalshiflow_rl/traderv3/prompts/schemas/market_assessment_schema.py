@@ -7,6 +7,7 @@ where all markets in an event are evaluated with shared context.
 Version History:
     v1 (2025-01): Initial schema with basic fields
     v2 (2025-01): Added evidence_cited, what_would_change_mind, assumption_flags, calibration_notes
+    v3 (2026-01): Added base_rate_anchoring fields with math validation
 """
 
 from typing import List, Optional
@@ -25,6 +26,10 @@ class SingleMarketAssessment(BaseModel):
     - Confidence must reflect evidence quality and agreement
     - what_would_change_mind must be specific and measurable
     - If assumptions are made, they must be flagged
+
+    BASE RATE ANCHORING (v3):
+    - LLM must explicitly show adjustments from base rate
+    - Math validation ensures: evidence_probability ≈ base_rate + adjustment_up - adjustment_down
     """
     market_ticker: str = Field(
         description="The market ticker being assessed"
@@ -73,6 +78,64 @@ class SingleMarketAssessment(BaseModel):
         default="medium",
         description="Quality of evidence supporting this assessment: high (official/primary sources), medium (credible secondary), low (unverified/speculative)"
     )
+
+    # === Base Rate Anchoring Fields (v3 additions) ===
+    base_rate_used: float = Field(
+        default=0.5,
+        ge=0.0, le=1.0,
+        description="The base rate you started from (copy from event research context)"
+    )
+    adjustment_up: float = Field(
+        default=0.0,
+        ge=0.0, le=0.5,
+        description="Total probability points to ADD due to evidence pushing UP (0.0 to 0.5)"
+    )
+    adjustment_up_reasoning: str = Field(
+        default="",
+        description="What specific evidence justified increasing from base rate? Be specific."
+    )
+    adjustment_down: float = Field(
+        default=0.0,
+        ge=0.0, le=0.5,
+        description="Total probability points to SUBTRACT due to evidence pushing DOWN (0.0 to 0.5)"
+    )
+    adjustment_down_reasoning: str = Field(
+        default="",
+        description="What specific evidence justified decreasing from base rate? Be specific."
+    )
+
+    @model_validator(mode='after')
+    def validate_base_rate_math(self) -> 'SingleMarketAssessment':
+        """
+        Validate that evidence_probability ≈ base_rate + adjustment_up - adjustment_down.
+
+        This catches when the LLM ignores the base rate and generates probabilities from intuition.
+        Tolerance: 5% deviation allowed for rounding.
+
+        Note: Only validates if v3 fields are actively used (non-default values).
+        """
+        # Skip validation if v3 fields aren't being used (backward compatibility)
+        if self.adjustment_up == 0.0 and self.adjustment_down == 0.0 and self.base_rate_used == 0.5:
+            return self
+
+        expected = self.base_rate_used + self.adjustment_up - self.adjustment_down
+        actual = self.evidence_probability
+
+        # Clamp expected to valid range [0.0, 1.0]
+        expected = max(0.0, min(1.0, expected))
+
+        # 5% tolerance for rounding
+        if abs(expected - actual) > 0.05:
+            # Add warning to assumption_flags instead of raising error (softer enforcement)
+            warning = (
+                f"BASE_RATE_MATH_WARNING: Expected {self.base_rate_used:.0%} + {self.adjustment_up:.0%} - "
+                f"{self.adjustment_down:.0%} = {expected:.0%}, but got {actual:.0%}. "
+                f"Difference: {abs(expected - actual):.0%}"
+            )
+            if warning not in self.assumption_flags:
+                self.assumption_flags.append(warning)
+
+        return self
 
 
 class BatchMarketAssessmentOutput(BaseModel):

@@ -951,6 +951,8 @@ class V3WebSocketManager:
                 "assumption_flags": getattr(assessment, 'assumption_flags', []),
                 "calibration_notes": getattr(assessment, 'calibration_notes', ""),
                 "evidence_quality": getattr(assessment, 'evidence_quality', "medium"),
+                # V4 calibration field
+                "base_rate_used": getattr(assessment, 'base_rate_used', 0.5),
                 # Additional useful fields
                 "specific_question": getattr(assessment, 'specific_question', ""),
                 "driver_application": getattr(assessment, 'driver_application', ""),
@@ -1000,6 +1002,8 @@ class V3WebSocketManager:
                            else []),
             # Edge hypothesis (v2 profit-focused)
             "edge_hypothesis": event_context.driver_analysis.edge_hypothesis if event_context.driver_analysis else "",
+            # Evidence metadata (includes Truth Social posts, engagement metrics)
+            "evidence_metadata": event_context.evidence.metadata if event_context.evidence else {},
         }
 
         await self.broadcast_message("event_research", research_data)

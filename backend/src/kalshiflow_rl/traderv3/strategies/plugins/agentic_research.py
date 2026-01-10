@@ -165,6 +165,10 @@ class AgenticResearchStrategy:
             "tmo_updates_received": 0,
             "calibration_total_error": 0.0,  # Sum of |estimated - actual| prices
             "calibration_count": 0,  # Number of price guesses
+            # Granular threshold skip tracking (all count toward trades_skipped_threshold)
+            "skip_hold_recommendation": 0,  # Edge < 5% - HOLD recommendation
+            "skip_below_threshold": 0,  # Edge < min_mispricing threshold
+            "skip_low_confidence": 0,  # LLM confidence = LOW
         }
     
     async def start(self, context: StrategyContext) -> None:
@@ -374,10 +378,13 @@ class AgenticResearchStrategy:
             # Agentic research skip breakdown (different from RLM/ODMR)
             # These are the reasons trades were NOT executed
             "skip_breakdown": {
-                "threshold": self._stats["trades_skipped_threshold"],  # Edge below min_mispricing or low confidence
+                "threshold": self._stats["trades_skipped_threshold"],  # Total: edge threshold + low confidence
                 "position_limit": self._stats["trades_skipped_position_limit"],  # Global position limit reached
                 "event_limit": self._stats["trades_skipped_event_limit"],  # Per-event concentration limit
-                "hold_recommendation": 0,  # Counted in threshold for now
+                # Granular threshold breakdown (helps diagnose why trades are being skipped)
+                "hold_recommendation": self._stats["skip_hold_recommendation"],  # Edge < 5%
+                "below_edge_threshold": self._stats["skip_below_threshold"],  # Edge < min_mispricing
+                "low_confidence": self._stats["skip_low_confidence"],  # LLM confidence = LOW
             },
 
             # Agentic-research-specific metrics for extended UI display
@@ -914,25 +921,30 @@ class AgenticResearchStrategy:
         # Filter: Skip HOLD recommendations (not enough edge)
         if assessment.recommendation == "HOLD":
             self._stats["trades_skipped_threshold"] += 1
+            self._stats["skip_hold_recommendation"] += 1
             logger.info(f"[DECISION] SKIP: HOLD recommendation (edge={assessment.mispricing_magnitude:+.1%})")
-            log_decision("SKIP", "HOLD recommendation - insufficient edge")
+            log_decision("SKIP_HOLD", "HOLD recommendation - insufficient edge")
             return
 
         # Filter: Skip if below mispricing threshold
         abs_mispricing = abs(assessment.mispricing_magnitude)
         if abs_mispricing < self._min_mispricing:
             self._stats["trades_skipped_threshold"] += 1
+            self._stats["skip_below_threshold"] += 1
             logger.info(
                 f"[DECISION] SKIP: Below threshold ({abs_mispricing:.1%} < {self._min_mispricing:.1%})"
             )
-            log_decision("SKIP", f"Below mispricing threshold: {abs_mispricing:.1%}")
+            log_decision("SKIP_EDGE", f"Below mispricing threshold: {abs_mispricing:.1%}")
             return
 
         # Filter: Skip LOW confidence
         if assessment.confidence == Confidence.LOW:
             self._stats["trades_skipped_threshold"] += 1
-            logger.info(f"[DECISION] SKIP: Low confidence")
-            log_decision("SKIP", "Low confidence")
+            self._stats["skip_low_confidence"] += 1
+            logger.info(
+                f"[DECISION] SKIP: Low confidence (edge={assessment.mispricing_magnitude:+.1%}, conf={assessment.confidence.value})"
+            )
+            log_decision("SKIP_CONFIDENCE", f"Low confidence: edge={assessment.mispricing_magnitude:+.1%}")
             return
 
         # For trading decision, use confidence level directly

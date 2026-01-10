@@ -337,3 +337,102 @@ class MarketState:
             close_time=self.close_time,
             metadata=self.metadata.copy()
         )
+
+
+@dataclass
+class JourneySignalEntry:
+    """
+    Signal entry for journey-style strategies (profit from price movement, not settlement).
+
+    Unlike SignalEntry which calculates P&L from settlement, JourneySignalEntry
+    tracks entry and exit within the market's lifetime based on price movement.
+
+    Journey P&L = exit_price - entry_price (for YES positions)
+    Journey P&L = entry_price - exit_price (for NO positions, since NO price moves inversely)
+
+    Key Differences from SignalEntry:
+        - P&L is calculated from price movement, NOT settlement outcome
+        - Exit is triggered by target, timeout, or stop loss
+        - Must track position state through subsequent trades
+
+    Attributes:
+        market_ticker: Which market the signal is for
+        signal_time: When the signal fired (entry time)
+        entry_price_cents: YES price at entry (what we'd pay to enter YES)
+        side: Which side we're betting on: 'yes' or 'no'
+        signal_strength: Confidence metric from strategy (0.0 to 1.0)
+
+        # Exit tracking (populated when position closes)
+        exit_time: When the position was closed
+        exit_price_cents: YES price at exit
+        exit_reason: Why we exited ('target', 'timeout', 'stop_loss')
+        trades_held: Number of trades we held the position through
+        pnl_cents: Profit/loss in cents (exit_price - entry_price for YES)
+
+        metadata: Strategy-specific data (for analysis/debugging)
+    """
+    market_ticker: str
+    signal_time: datetime
+    entry_price_cents: int      # YES price at entry
+    side: str                   # 'yes' or 'no'
+    signal_strength: float      # Confidence metric (0.0 to 1.0)
+
+    # Exit tracking (None until position is closed)
+    exit_time: Optional[datetime] = None
+    exit_price_cents: Optional[int] = None
+    exit_reason: Optional[str] = None  # 'target', 'timeout', 'stop_loss', 'market_end'
+    trades_held: int = 0
+    pnl_cents: Optional[int] = None
+
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self):
+        """Validate signal data."""
+        if self.entry_price_cents < 1 or self.entry_price_cents > 99:
+            raise ValueError(f"entry_price_cents must be 1-99, got {self.entry_price_cents}")
+        if self.side not in ('yes', 'no'):
+            raise ValueError(f"side must be 'yes' or 'no', got {self.side}")
+        if self.signal_strength < 0.0 or self.signal_strength > 1.0:
+            raise ValueError(f"signal_strength must be 0.0-1.0, got {self.signal_strength}")
+
+    @property
+    def is_closed(self) -> bool:
+        """Check if the position has been closed."""
+        return self.exit_time is not None
+
+    @property
+    def is_winner(self) -> bool:
+        """Check if the position was profitable."""
+        if self.pnl_cents is None:
+            return False
+        return self.pnl_cents > 0
+
+    def close(
+        self,
+        exit_time: datetime,
+        exit_price_cents: int,
+        exit_reason: str,
+        trades_held: int
+    ) -> None:
+        """
+        Close the position and calculate P&L.
+
+        For YES positions: P&L = exit_price - entry_price
+            (We bought at entry, sell at exit)
+
+        For NO positions: P&L = (100 - exit_price) - (100 - entry_price) = entry_price - exit_price
+            (NO price is inverse of YES price)
+        """
+        self.exit_time = exit_time
+        self.exit_price_cents = exit_price_cents
+        self.exit_reason = exit_reason
+        self.trades_held = trades_held
+
+        # Calculate P&L based on position side
+        if self.side == 'yes':
+            # Bought YES at entry_price, sold at exit_price
+            self.pnl_cents = exit_price_cents - self.entry_price_cents
+        else:
+            # Bought NO at (100 - entry_price), sold at (100 - exit_price)
+            # P&L = (100 - exit_price) - (100 - entry_price) = entry_price - exit_price
+            self.pnl_cents = self.entry_price_cents - exit_price_cents

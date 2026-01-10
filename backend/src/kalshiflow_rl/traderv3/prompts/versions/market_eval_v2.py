@@ -104,6 +104,10 @@ Rate the evidence supporting each estimate:
 - MEDIUM: Credible secondary sources, recent but single source
 - LOW: Speculative, unverified, or outdated information
 
+Evidence is tagged by source:
+- [WEB] = Web search (news, official sources) - primary evidence
+- [TRUTH SOCIAL] = Trump circle posts - intent signals only, not verified outcomes. Weight as supporting context, not primary driver. Posts ≠ policy execution.
+
 === ASSUMPTION FLAGGING ===
 If you make assumptions due to missing information, FLAG them:
 - "Assumed no major news since last search"

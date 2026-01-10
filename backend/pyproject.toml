@@ -19,6 +19,8 @@ dependencies = [
     "uvicorn>=0.38.0",
     "websockets>=15.0.1",
     "sortedcontainers>=2.4.0",
+    # Evidence ingestion (Truth Social)
+    "truthbrush>=0.2.3",
     # RL Dependencies
     "numpy>=1.24.0",
     "pandas>=2.0.0",

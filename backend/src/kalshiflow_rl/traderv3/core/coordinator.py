@@ -505,6 +505,7 @@ class V3Coordinator:
                 trading_client=self._trading_client_integration,
                 db=rl_db,
                 categories=self._config.lifecycle_categories,
+                sports_prefixes=self._config.sports_allowed_prefixes,
             )
 
             # NOTE: EventLifecycleService callbacks removed - TrackedMarketsState now handles
@@ -546,6 +547,18 @@ class V3Coordinator:
 
             # NOTE: No DB recovery - markets discovered fresh via lifecycle WS and API discovery
             # Orderbook subscriptions happen through TrackedMarketsState subscription callbacks
+
+            # 10a. Initialize Truth Social cache service (for evidence gathering)
+            # This must happen before Strategy Coordinator because strategies may use EventResearchService
+            try:
+                from ..services.truth_social_cache import initialize_truth_social_cache
+                truth_cache = await initialize_truth_social_cache()
+                if truth_cache:
+                    logger.info("TruthSocialCacheService initialized successfully")
+                else:
+                    logger.info("TruthSocialCacheService not available (disabled or following discovery failed)")
+            except Exception as e:
+                logger.warning(f"Failed to initialize TruthSocialCacheService: {e} - continuing without Truth Social evidence")
 
             # 10b. Initialize Strategy Coordinator (plugin-based strategy management)
             # The StrategyCoordinator replaces direct RLMService instantiation,
@@ -936,6 +949,7 @@ class V3Coordinator:
                 tracked_markets_state=self._tracked_markets_state,
                 event_bus=self._event_bus,
                 categories=self._config.lifecycle_categories,
+                sports_prefixes=self._config.sports_allowed_prefixes,
                 sync_interval=float(self._config.api_discovery_interval),
                 batch_size=self._config.api_discovery_batch_size,
                 min_hours_to_settlement=self._config.discovery_min_hours_to_settlement,
@@ -943,9 +957,12 @@ class V3Coordinator:
             )
             await self._api_discovery_syncer.start()
 
+            sports_filter_msg = ""
+            if "sports" in [c.lower() for c in self._config.lifecycle_categories] and self._config.sports_allowed_prefixes:
+                sports_filter_msg = f", sports={self._config.sports_allowed_prefixes}"
             logger.info(
                 f"API discovery syncer active - "
-                f"categories: {', '.join(self._config.lifecycle_categories)}, "
+                f"categories: {', '.join(self._config.lifecycle_categories)}{sports_filter_msg}, "
                 f"interval: {self._config.api_discovery_interval}s"
             )
 
@@ -1271,6 +1288,16 @@ class V3Coordinator:
         await self._health_monitor.stop()
         await self._status_reporter.stop()
 
+        # Stop Truth Social cache service (non-critical, graceful degradation)
+        try:
+            from ..services.truth_social_cache import get_truth_social_cache
+            cache = get_truth_social_cache()
+            if cache:
+                logger.info("Stopping TruthSocialCacheService...")
+                await cache.stop()
+        except Exception as e:
+            logger.warning(f"Error stopping TruthSocialCacheService: {e}")
+
         # Define shutdown sequence: (component, name, stop_callable)
         # Order matters - stop in reverse of startup order
         # Note: stop_all() for strategy coordinator, stop() for others
@@ -1399,6 +1426,17 @@ class V3Coordinator:
         # Add event lifecycle service if configured
         if self._event_lifecycle_service:
             components["event_lifecycle_service"] = self._event_lifecycle_service.get_stats()
+
+        # Add Truth Social cache service if available (for evidence gathering)
+        try:
+            from ..services.truth_social_cache import get_truth_social_cache
+            truth_cache = get_truth_social_cache()
+            if truth_cache:
+                components["truth_social_cache"] = truth_cache.get_health_details()
+            else:
+                logger.debug("Truth Social cache: get_truth_social_cache() returned None")
+        except Exception as e:
+            logger.warning(f"Truth Social cache status error: {e}")
 
         # Get metrics from various sources
         orderbook_metrics = self._orderbook_integration.get_metrics()

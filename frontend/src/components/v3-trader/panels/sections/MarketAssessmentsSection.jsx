@@ -145,6 +145,10 @@ const MarketAssessmentCard = memo(({ market }) => {
     recommendation,
     confidence,
     edge_explanation,
+    // V4 calibration fields
+    base_rate_used,
+    evidence_cited,
+    what_would_change_mind,
   } = market;
 
   // Calculate edge percentage
@@ -236,8 +240,8 @@ const MarketAssessmentCard = memo(({ market }) => {
         </div>
       </div>
 
-      {/* Expandable Edge Explanation */}
-      {edge_explanation && (
+      {/* Expandable Reasoning Section */}
+      {(edge_explanation || evidence_cited?.length > 0) && (
         <div className="mt-3">
           <button
             onClick={() => setIsExpanded(!isExpanded)}
@@ -252,10 +256,45 @@ const MarketAssessmentCard = memo(({ market }) => {
           </button>
 
           {isExpanded && (
-            <div className="mt-2 p-3 bg-slate-900/50 rounded-lg border border-slate-700/20">
-              <p className="text-xs text-slate-400 leading-relaxed">
-                {edge_explanation}
-              </p>
+            <div className="mt-2 p-3 bg-slate-900/50 rounded-lg border border-slate-700/20 space-y-3">
+              {/* Base rate anchor (V4) */}
+              {base_rate_used != null && base_rate_used !== 0.5 && (
+                <div className="text-[10px] text-slate-500">
+                  <span className="font-medium">Anchor:</span>{' '}
+                  <span className="font-mono">{Math.round(base_rate_used * 100)}%</span>{' '}
+                  <span className="text-slate-600">base rate</span>
+                </div>
+              )}
+
+              {/* Reasoning */}
+              {edge_explanation && (
+                <p className="text-xs text-slate-400 leading-relaxed">
+                  {edge_explanation}
+                </p>
+              )}
+
+              {/* Key Evidence (V4) */}
+              {evidence_cited && evidence_cited.length > 0 && (
+                <div className="space-y-1">
+                  <div className="text-[10px] text-slate-500 font-medium">Key Evidence:</div>
+                  <ul className="space-y-1">
+                    {evidence_cited.slice(0, 3).map((evidence, idx) => (
+                      <li key={idx} className="flex items-start space-x-2 text-xs text-slate-400">
+                        <span className="text-cyan-500 mt-1">-</span>
+                        <span>{evidence}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {/* What would change mind (V4) */}
+              {what_would_change_mind && (
+                <div className="text-[10px] text-slate-500 italic border-t border-slate-700/30 pt-2">
+                  <span className="font-medium not-italic">Would change mind:</span>{' '}
+                  {what_would_change_mind}
+                </div>
+              )}
             </div>
           )}
         </div>

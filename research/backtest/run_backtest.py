@@ -35,7 +35,7 @@ import pandas as pd
 from state import Trade
 from engine import PointInTimeBacktester
 from validation import validate_results, ValidationReport
-from strategies import RLMNoStrategy, SLateTimingStrategy
+from strategies import RLMNoStrategy, RLMFilteredStrategy, SLateTimingStrategy
 
 
 # Data paths
@@ -187,6 +187,54 @@ def run_slate_backtest(trades: list[Trade], settlements: dict[str, str]) -> tupl
     return results, report
 
 
+def run_rlm_filtered_backtest(trades: list[Trade], settlements: dict[str, str]) -> tuple:
+    """Run RLM FILTERED strategy backtest."""
+    print("\n" + "=" * 60)
+    print("RLM FILTERED STRATEGY - POINT-IN-TIME BACKTEST")
+    print("=" * 60)
+
+    strategy = RLMFilteredStrategy()
+    print(f"\nParameters: {strategy.get_parameters()}")
+
+    backtester = PointInTimeBacktester(strategy)
+
+    def progress(n, total):
+        print(f"  Processed {n:,}/{total:,} trades ({100*n/total:.1f}%)")
+
+    results = backtester.run(trades, settlements, progress_callback=progress)
+
+    print(f"\n--- RAW RESULTS ---")
+    print(f"Signals: {results.n_signals}")
+    print(f"Wins: {results.n_wins}")
+    print(f"Losses: {results.n_losses}")
+    print(f"Win Rate: {results.win_rate:.2%}")
+    print(f"Raw Edge: {results.raw_edge:.2%}")
+    print(f"Total P&L: ${results.total_pnl_cents / 100:.2f}")
+
+    # Validate
+    report = validate_results(results, settlements)
+
+    print(f"\n--- VALIDATION ---")
+    print(f"Bucket-Matched Edge: {report.bucket_matched_edge:.2%}")
+    print(f"P-Value: {report.p_value:.6f}")
+    print(f"Statistically Significant: {report.is_significant}")
+    print(f"Max Market Concentration: {report.max_market_concentration:.2%}")
+    print(f"Passes Validation: {report.passes_validation}")
+
+    if report.failure_reasons:
+        print(f"\nFailure Reasons:")
+        for reason in report.failure_reasons:
+            print(f"  - {reason}")
+
+    # Bucket breakdown
+    print(f"\n--- BUCKET ANALYSIS ---")
+    for bucket_key in sorted(report.bucket_stats.keys(), key=lambda x: int(x.split('-')[0])):
+        stats = report.bucket_stats[bucket_key]
+        print(f"  {bucket_key}c: N={stats.n_signals:4}, WR={stats.win_rate:.1%}, Expected={stats.expected_win_rate:.1%}, Edge={stats.edge:+.1%}")
+
+    return results, report
+
+
 def compare_strategies(rlm_results, slate_results, settlements: dict[str, str]):
     """Compare RLM and S-LATE strategies."""
     print("\n" + "=" * 60)
@@ -270,7 +318,7 @@ def save_results(strategy_name: str, results, report: ValidationReport):
 
 def main():
     parser = argparse.ArgumentParser(description='Run point-in-time backtests')
-    parser.add_argument('--strategy', choices=['rlm', 'slate', 'all'], default='all',
+    parser.add_argument('--strategy', choices=['rlm', 'rlm_filtered', 'slate', 'all'], default='all',
                        help='Strategy to backtest')
     parser.add_argument('--limit', type=int, default=None,
                        help='Limit to N markets for testing')
@@ -283,6 +331,7 @@ def main():
     trades, settlements = load_trades_and_settlements(limit=args.limit)
 
     rlm_results = None
+    rlm_filtered_results = None
     slate_results = None
 
     # Run backtests
@@ -291,12 +340,33 @@ def main():
         if args.save:
             save_results('rlm_no', rlm_results, rlm_report)
 
+    if args.strategy in ('rlm_filtered', 'all'):
+        rlm_filtered_results, rlm_filtered_report = run_rlm_filtered_backtest(trades, settlements)
+        if args.save:
+            save_results('rlm_filtered', rlm_filtered_results, rlm_filtered_report)
+
     if args.strategy in ('slate', 'all'):
         slate_results, slate_report = run_slate_backtest(trades, settlements)
         if args.save:
             save_results('s_late_timing', slate_results, slate_report)
 
-    # Compare if both ran
+    # Compare if both RLM strategies ran
+    if rlm_results and rlm_filtered_results:
+        print("\n" + "=" * 60)
+        print("RLM vs RLM_FILTERED COMPARISON")
+        print("=" * 60)
+        print(f"\n{'Metric':<25} {'RLM_NO':<20} {'RLM_FILTERED':<20}")
+        print("-" * 65)
+        print(f"{'Signals':<25} {rlm_results.n_signals:<20} {rlm_filtered_results.n_signals:<20}")
+        print(f"{'Wins':<25} {rlm_results.n_wins:<20} {rlm_filtered_results.n_wins:<20}")
+        print(f"{'Win Rate':<25} {rlm_results.win_rate:.2%}{'':<14} {rlm_filtered_results.win_rate:.2%}")
+        print(f"{'Raw Edge':<25} {rlm_results.raw_edge:+.2%}{'':<13} {rlm_filtered_results.raw_edge:+.2%}")
+        print(f"{'Bucket-Matched Edge':<25} {rlm_report.bucket_matched_edge:+.2%}{'':<13} {rlm_filtered_report.bucket_matched_edge:+.2%}")
+        print(f"{'P-Value':<25} {rlm_report.p_value:.6f}{'':<8} {rlm_filtered_report.p_value:.6f}")
+        print(f"{'Significant (p<0.05)':<25} {str(rlm_report.is_significant):<20} {str(rlm_filtered_report.is_significant):<20}")
+        print(f"{'Total P&L':<25} ${rlm_results.total_pnl_cents/100:>8.2f}{'':<9} ${rlm_filtered_results.total_pnl_cents/100:>8.2f}")
+
+    # Compare RLM and S-LATE if both ran
     if rlm_results and slate_results:
         compare_strategies(rlm_results, slate_results, settlements)
 
@@ -308,6 +378,8 @@ def main():
     print("\n--- KEY TAKEAWAYS ---")
     if rlm_results:
         print(f"RLM NO: {rlm_results.n_signals} signals, {rlm_results.raw_edge:+.1%} raw edge")
+    if rlm_filtered_results:
+        print(f"RLM FILTERED: {rlm_filtered_results.n_signals} signals, {rlm_filtered_results.raw_edge:+.1%} raw edge")
     if slate_results:
         print(f"S-LATE: {slate_results.n_signals} signals, {slate_results.raw_edge:+.1%} raw edge")
 

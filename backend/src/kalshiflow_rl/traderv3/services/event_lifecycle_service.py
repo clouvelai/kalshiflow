@@ -47,11 +47,16 @@ logger = logging.getLogger("kalshiflow_rl.traderv3.services.event_lifecycle_serv
 
 
 # Configuration from environment
-DEFAULT_LIFECYCLE_CATEGORIES = ["sports", "media_mentions", "entertainment", "crypto"]
+DEFAULT_LIFECYCLE_CATEGORIES = ["politics", "media_mentions", "entertainment", "crypto", "sports"]
+DEFAULT_SPORTS_PREFIXES = ["KXNFL"]
 LIFECYCLE_CATEGORIES = os.getenv(
     "LIFECYCLE_CATEGORIES",
     ",".join(DEFAULT_LIFECYCLE_CATEGORIES)
 ).lower().split(",")
+SPORTS_ALLOWED_PREFIXES = [p.strip() for p in os.getenv(
+    "SPORTS_ALLOWED_PREFIXES",
+    ",".join(DEFAULT_SPORTS_PREFIXES)
+).split(",") if p.strip()]
 
 
 class EventLifecycleService:
@@ -88,6 +93,7 @@ class EventLifecycleService:
         trading_client: "V3TradingClientIntegration",
         db: RLDatabase,
         categories: Optional[List[str]] = None,
+        sports_prefixes: Optional[List[str]] = None,
     ):
         """
         Initialize event lifecycle service.
@@ -98,12 +104,15 @@ class EventLifecycleService:
             trading_client: Trading client integration for REST API calls
             db: Database instance for audit trail persistence
             categories: List of allowed categories (default from env)
+            sports_prefixes: List of allowed event_ticker prefixes for sports markets
+                            (e.g., ["KXNFL"] for NFL only). If empty, all sports allowed.
         """
         self._event_bus = event_bus
         self._tracked_markets = tracked_markets
         self._trading_client = trading_client
         self._db = db
         self._categories = [c.strip().lower() for c in (categories or LIFECYCLE_CATEGORIES)]
+        self._sports_prefixes = sports_prefixes if sports_prefixes is not None else SPORTS_ALLOWED_PREFIXES
 
         # Callbacks for orderbook subscription management
         # Set by coordinator after initialization
@@ -263,12 +272,13 @@ class EventLifecycleService:
             logger.warning(f"REST lookup failed for {market_ticker}, skipping")
             return
 
-        # Step 3: Category filter
-        category = market_info.get("category", "").lower()
-        if not self._is_allowed_category(category):
+        # Step 3: Category and sports prefix filter
+        category = market_info.get("category", "")
+        event_ticker = market_info.get("event_ticker", "")
+        if not self._is_allowed_market(category, event_ticker):
             self._markets_rejected_category += 1
             self._tracked_markets.record_category_rejection()
-            logger.debug(f"Rejected {market_ticker}: category '{category}' not allowed")
+            logger.debug(f"Rejected {market_ticker}: category '{category}' or sports prefix not allowed")
             return
 
         # Step 4: Create tracked market and persist
@@ -433,26 +443,50 @@ class EventLifecycleService:
             logger.error(f"REST lookup error for {market_ticker}: {e}")
             return None
 
-    def _is_allowed_category(self, category: str) -> bool:
+    def _is_allowed_market(self, category: str, event_ticker: str = "") -> bool:
         """
-        Check if category is in allowed list.
+        Check if market passes category and sports prefix filters.
 
-        Uses case-insensitive substring matching to handle
-        category variations (e.g., "Sports" vs "sports").
+        Uses case-insensitive substring matching for categories and
+        prefix matching for sports markets.
 
         Args:
             category: Category string from market info
+            event_ticker: Event ticker for sports prefix filtering
 
         Returns:
-            True if category is allowed, False otherwise
+            True if market is allowed, False otherwise
         """
         category_lower = category.lower()
 
+        # Skip empty categories (fixes "" in "string" bug)
+        if not category_lower:
+            return False
+
+        # Check category is allowed
+        category_match = False
         for allowed in self._categories:
             if allowed in category_lower or category_lower in allowed:
-                return True
+                category_match = True
+                break
 
-        return False
+        if not category_match:
+            return False
+
+        # Sports prefix filtering: if this is sports, require allowed prefix
+        if "sports" in category_lower and self._sports_prefixes:
+            prefix_match = any(
+                event_ticker.startswith(prefix)
+                for prefix in self._sports_prefixes
+            )
+            if not prefix_match:
+                return False  # Sports but wrong prefix
+
+        return True
+
+    def _is_allowed_category(self, category: str) -> bool:
+        """Backward compatibility wrapper for _is_allowed_market."""
+        return self._is_allowed_market(category, "")
 
     async def track_market_from_api_data(
         self,
@@ -496,12 +530,13 @@ class EventLifecycleService:
             logger.debug(f"Already tracking {market_ticker}")
             return False
 
-        # Step 3: Category filter
-        category = market_info.get("category", "").lower()
-        if not self._is_allowed_category(category):
+        # Step 3: Category and sports prefix filter
+        category = market_info.get("category", "")
+        event_ticker = market_info.get("event_ticker", "")
+        if not self._is_allowed_market(category, event_ticker):
             self._markets_rejected_category += 1
             self._tracked_markets.record_category_rejection()
-            logger.debug(f"Rejected {market_ticker}: category '{category}' not allowed")
+            logger.debug(f"Rejected {market_ticker}: category '{category}' or sports prefix not allowed")
             return False
 
         # Step 4: Create tracked market with discovery_source="api"

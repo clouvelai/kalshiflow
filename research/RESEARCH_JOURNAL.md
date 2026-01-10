@@ -59,6 +59,13 @@ This document is the bridge between research and implementation - the trader-spe
 27. **[RESOLVED-Session 2026-01-05]** Does Large Trade Imbalance predict outcomes? -> **NO - PRICE PROXY** 50-55% bucket pass rate
 28. **[RESOLVED-Session 2026-01-05]** Do Steam Moves provide actionable edge? -> **NO - PRICE PROXY** Following works but is price echo
 29. **[RESOLVED-Session 2026-01-05b]** Is the 6-24hr duration window better than 24hr+? -> **YES - VALIDATED** +24.2% edge vs +20.7%, 100% bucket pass rate, 1,552 markets
+30. **[RESOLVED-Session 2026-01-07b]** Does CLV (Closing Line Value) provide edge on Kalshi? -> **NO - PRICE PROXY** 5/10 buckets positive = same as price
+31. **[RESOLVED-Session 2026-01-07b]** Do iceberg/sliced whale orders provide actionable signals? -> **NO - PRICE PROXY** 5/10 buckets positive = same as price
+32. **[RESOLVED-Session 2026-01-07b]** Does whale absorption rate predict outcomes? -> **NO - PRICE PROXY** 5/10 buckets positive = same as price
+33. **[ACTIVE]** Why do external research hypotheses fail on Kalshi? -> Market structure differences (binary settlement, no inventory risk)
+34. **[RESOLVED-2026-01-07]** Is journey trading viable on Kalshi? -> **YES for liquid markets** (75.77% of 5+ trade markets have 10c+ range)
+35. **[ACTIVE]** What price path patterns enable profitable journey trading? -> Phase 1 of profitability roadmap
+36. **[RESOLVED-2026-01-07]** Do prices mean-revert after dips? -> **YES - 95.7% recovery rate** (10c dip / 5c recovery, median 1.4 minutes)
 
 ---
 
@@ -113,6 +120,12 @@ This document is the bridge between research and implementation - the trader-spe
 | Does Large Trade Imbalance predict outcomes? | **NO - PRICE PROXY** | +13.6% raw but only 50% buckets positive | 2026-01-05 |
 | Do Steam Moves provide actionable edge? | **NO - PRICE PROXY** | +11.7% raw but only 50% buckets positive | 2026-01-05 |
 | Is 6-24hr duration window optimal for RLM? | **YES - VALIDATED** | +24.2% edge, +19.4% improvement, 100% buckets positive, 2/2 quarters | 2026-01-05 |
+| Does CLV provide edge on Kalshi? | **NO - PRICE PROXY** | +4.49% bucket edge but 5/10 buckets (50%), same as price signal | 2026-01-07 |
+| Do iceberg/sliced orders predict outcomes? | **NO - PRICE PROXY** | +7.10% bucket edge but 5/10 buckets (50%), same as price signal | 2026-01-07 |
+| Does whale absorption rate predict? | **NO - PRICE PROXY** | +11.37% bucket edge but 5/10 buckets (50%), same as price signal | 2026-01-07 |
+| Do external research hypotheses transfer? | **NO** | Sports betting/equity research doesn't apply - different market structure | 2026-01-07 |
+| Is journey trading viable (price range)? | **YES** | 75.77% of liquid markets have 10c+ range | 2026-01-07 |
+| Do prices mean-revert after dips? | **YES - STRONG** | 95.7% recovery rate for 10c dip/5c recovery, median 1.4 min | 2026-01-07 |
 
 ---
 
@@ -300,10 +313,535 @@ This document is the bridge between research and implementation - the trader-spe
 | H-EXT-006d | Fade NO Steam | **Rejected** | -11.7% | 3,616 | Session 2026-01-05: Negative edge, fails all criteria |
 | H-COMB-001 | Duration + RLM + Large NO Imbalance | **VALIDATED** | +13.9% | 390 | Session 2026-01-05: +8.8% improvement, 8/9 buckets (89%), 2/2 quarters, 99% win rate |
 | H-MM153 | 6-24hr Duration + RLM (mature but fresh) | **VALIDATED** | +24.2% | 1,552 | Session 2026-01-05b: +19.4% improvement, 15/15 buckets (100%), 2/2 quarters, 95.2% win rate |
+| H200 | RLM Volume-Weighted (yes_volume_ratio) | **Marginal** | +1.66% | 7,937 | Session 2026-01-06b: Technically passes but below practical threshold. High raw edge (43%) explained by trading cheaper NO contracts |
+| H201 | Momentum Flip (price drop + flow reversal) | **Rejected** | +0.83% | 1,489 | Session 2026-01-06b: p=0.34 NOT SIGNIFICANT. Exhaustion detection doesn't predict YES wins |
+| H202 | Late Whale (follow contrarian whales) | **PRICE PROXY** | +5.52% | 9,202 | Session 2026-01-06b: Bucket analysis shows extreme +40% edge at 20-29c, extreme -39% edge at 70-79c = SAME AS PRICE SIGNAL |
+| H203 | Fade Contrarian Whale | **Rejected** | +1.27% | 1,279 | Session 2026-01-07 LSD: p=0.49, NOT SIGNIFICANT |
+| H204 | Aligned Whale (NO in bearish market) | **Rejected** | +2.08% | 815 | Session 2026-01-07 LSD: Edge disappeared at 100k markets (p=0.20) |
+| H205 | First Whale Advantage | **Rejected** | -0.24% | 2,029 | Session 2026-01-07 LSD: First whales have NO edge over subsequent |
+| H206 | Whale Cluster NO (3+ whales, 67% NO) | **VALIDATED (UNSTABLE)** | +1.19% | 6,595 | Session 2026-01-07 LSD: p=0.019, 5/5 buckets, BUT temporal instability (Q4 +2.7%, Q1 +0.1%) |
+| H207 | Whale Cluster NO (100+ contracts) | **VALIDATED (UNSTABLE)** | +2.74% | 2,047 | Session 2026-01-07 LSD: Best config on 100k markets, requires monitoring |
+| H-EXT-CLV | CLV Whale Filter (100+ contracts) | **PRICE PROXY** | +4.49% | 25,577 | Session 2026-01-07b: 5/10 buckets positive = PRICE PROXY pattern |
+| H-EXT-ICEBERG | Iceberg Hunter (order slicing detection) | **PRICE PROXY** | +7.10% | 2,131 | Session 2026-01-07b: 5/10 buckets positive = PRICE PROXY pattern |
+| H-EXT-ABSORB-FADE | Whale Absorption Fade (fade rejected whales) | **PRICE PROXY** | +11.37% | 17,895 | Session 2026-01-07b: 5/10 buckets positive = PRICE PROXY pattern |
+| H-EXT-ABSORB-FOLLOW | Whale Absorption Follow (follow absorbed whales) | **PRICE PROXY** | +1.14% | 19,638 | Session 2026-01-07b: 5/10 buckets positive = PRICE PROXY pattern |
+| JOURNEY-001 | Journey trading viable on Kalshi | **VALIDATED** | N/A | 30,968 | Session 2026-01-07: 75.77% of 5+ trade markets have 10c+ range, exceeds 50% threshold |
+| JOURNEY-002 | Mean reversion after price dips | **VALIDATED** | 95.7% | 15,652 | Session 2026-01-07: 10c dip / 5c recovery, median 1.4 min, 90% within 1 hour |
+| ODMR-WHALE | Whale YES filter for ODMR | **REJECTED** | -2.94% | 89,495 | Session 2026-01-07d: Filter HURTS performance, win rate dropped 2.94%, target rate dropped 5.03% |
 
 ---
 
 ## Session Log
+
+### ODMR Whale Filter Validation - 2026-01-07d
+**Objective**: Validate whether whale YES filter improves ODMR mean reversion strategy
+**Analyst**: Quant Agent (Claude Opus 4.5)
+**Session Status**: COMPLETED - WHALE FILTER REJECTED
+
+**Core Question**: Does requiring a whale YES trade (>=2x avg size) before entering a dip improve ODMR's win rate, target rate, and profitability?
+
+**Data**: 10,137,366 trades processed chronologically (point-in-time)
+
+#### A/B Comparison Results
+
+| Metric | ODMR Base (A) | ODMR + Whale Filter (B) | Delta |
+|--------|---------------|-------------------------|-------|
+| Total Journeys | 134,367 | 89,495 | -44,872 |
+| Win Rate | 74.57% | 71.63% | **-2.94%** |
+| Target Rate | 65.67% | 60.64% | **-5.03%** |
+| Profit Factor | 1.58 | 1.52 | **-0.06** |
+| Avg P&L (cents) | +2.8c | +2.2c | **-0.6c** |
+| Total P&L ($) | $3,734 | $1,990 | -$1,744 |
+
+#### Validation Criteria Assessment
+
+| Criterion | Threshold | Actual | Result |
+|-----------|-----------|--------|--------|
+| Win Rate Improvement | >= +2% | -2.94% | **FAIL** |
+| Target Rate Improvement | >= +3% | -5.03% | **FAIL** |
+| Profit Factor Improvement | >= +0.1 | -0.06 | **FAIL** |
+| Sample Size | >= 500 | 89,495 | PASS |
+| Filter Rate | <= 60% | 33.4% | PASS |
+
+**Overall: 2/5 criteria passed - WHALE FILTER REJECTED**
+
+#### Key Insights
+
+1. **Whale YES trades into dips are NOT informed buying** - The data clearly shows that requiring whale YES trades HURTS performance
+2. **Whales may be "catching falling knives"** - Large buyers into dips appear to be value hunters who are WRONG, not informed traders
+3. **Base ODMR is superior** - The simple dip-buying strategy without any whale filter performs better
+4. **Market efficiency** - On Kalshi, trade size doesn't provide additional predictive power beyond price
+
+#### Recommendation
+
+**KEEP WHALE FILTER DISABLED IN PRODUCTION ODMR**
+
+The whale filter (Tier 1) should remain disabled. The hypothesis that whale YES = informed buying is FALSE on Kalshi.
+
+#### Files Created
+- Strategy: `/Users/samuelclark/Desktop/kalshiflow/research/backtest/strategies/odmr_whale_comparison.py`
+- Report: `/Users/samuelclark/Desktop/kalshiflow/research/reports/odmr_whale_filter_validation_20260107.md`
+
+---
+
+### Journey Mean Reversion Analysis - 2026-01-07c
+**Objective**: Phase 0 Part 2 - Test if prices mean-revert after dips
+**Analyst**: Quant Agent (Claude Opus 4.5)
+**Session Status**: COMPLETED - MEAN REVERSION CONFIRMED
+
+**Core Question**: When price drops 10c from a recent high, how often does it recover 5c+ before settlement?
+
+**Data**: 10.18M trades across 384,933 markets (40,602 with 5+ trades)
+
+#### Parameter Sweep Results
+
+| Dip | Rec 3c | Rec 5c | Rec 7c | Rec 10c |
+|-----|--------|--------|--------|---------|
+| 5c  | 97.3%  | 95.1%  | N/A    | N/A     |
+| 10c | 97.4%  | 95.7%  | 93.7%  | 90.2%   |
+| 15c | 97.4%  | 95.8%  | 94.0%  | 90.9%   |
+| 20c | 97.4%  | 95.8%  | 94.0%  | 91.1%   |
+
+#### Key Finding: 10c Dip / 5c Recovery
+
+| Metric | Value |
+|--------|-------|
+| Total Dips | 104,264 |
+| Recovered Dips | 99,755 |
+| **Recovery Rate** | **95.7%** |
+| Markets with Dips | 15,652 |
+| Success Threshold | >= 60% |
+| **STATUS** | **PASS** |
+
+#### Recovery Timing Distribution
+
+| Time Bucket | Count | Percentage |
+|-------------|-------|------------|
+| < 1 hour    | 80,485 | 90.1% |
+| 1-6 hours   | 5,902 | 6.6% |
+| 6-24 hours  | 2,103 | 2.4% |
+| 1-3 days    | 543 | 0.6% |
+| 3-7 days    | 116 | 0.1% |
+| > 7 days    | 131 | 0.1% |
+
+**Timing Stats (recovered dips)**:
+- Median: 1.4 minutes
+- P25: 17 seconds
+- P75: 8.5 minutes
+- P90: 58 minutes
+
+#### Interpretation
+
+Mean reversion is EXTREMELY strong on Kalshi:
+- **95.7%** of 10c dips recover at least 5c before settlement
+- **90%** of recoveries happen within 1 hour
+- **Median recovery time is only 1.4 minutes**
+
+This confirms journey trading (buying dips, selling recoveries) is viable because:
+1. Price range exists (Phase 0 Part 1: 75.77% have 10c+ range)
+2. Mean reversion occurs (Phase 0 Part 2: 95.7% recovery rate)
+3. Recovery is fast (90% within 1 hour, median 1.4 minutes)
+
+#### Next Steps
+
+Phase 1: Dip Detection Strategy
+- Build a strategy that detects tradeable dips in real-time
+- Use rolling high / current price to identify entry points
+- Target 5c+ profit per round-trip
+
+Phase 2: Edge Calculation
+- Calculate actual profit after fees (1.5c per side)
+- For 10c dip / 5c recovery: gross = 5c, net = 2c (40% fee drag)
+- For 10c dip / 10c recovery: gross = 10c, net = 7c (30% fee drag)
+
+Phase 3: Orderbook Integration
+- Use orderbook to minimize entry slippage
+- Use limit orders at dip levels
+- Optimize exit timing
+
+#### Files Created
+- `/Users/samuelclark/Desktop/kalshiflow/research/analysis/journey_mean_reversion.py`
+- `/Users/samuelclark/Desktop/kalshiflow/research/reports/journey_mean_reversion.json`
+
+---
+
+### External Research Hypotheses Test - 2026-01-07b
+**Objective**: Test 3 external research hypotheses using point-in-time backtesting
+**Analyst**: Quant Agent (Claude Opus 4.5)
+**Session Status**: COMPLETED - ALL THREE FAILED (PRICE PROXIES)
+
+**Source**: Academic finance (sports betting, market microstructure)
+
+**Executive Summary**: All three external hypotheses (CLV, Iceberg Hunter, Whale Absorption) FAILED despite technically passing p-value tests. The bucket analysis revealed they are all PRICE PROXIES - betting patterns that simply mimic the "bet NO at cheap prices" signal.
+
+---
+
+#### Hypothesis 1: CLV (Closing Line Value) as Whale Quality Filter
+
+**Source**: Sports Betting Analytics - CLV is the #1 predictor of long-term profitability in sports betting.
+
+**Concept**: Track whale CLV over time. Follow only whales whose historical entries beat the closing line.
+
+**Results** (best config: whale >= 100 contracts):
+
+| Metric | Value | Status |
+|--------|-------|--------|
+| Signals | 25,577 | High |
+| Win Rate | 44.95% | - |
+| Raw Edge | -2.16% | Negative |
+| Bucket-Matched Edge | +4.49% | PASS |
+| P-Value | 0.0 | PASS |
+| Buckets Positive | 5/10 (50%) | **FAIL** |
+
+**Bucket Analysis**:
+- 0-9c: +34.6% edge (N=3,318) - EXTREME positive
+- 10-19c: +18.5% edge (N=2,272)
+- 20-29c: +11.6% edge (N=2,302)
+- 30-39c: +5.5% edge (N=2,122)
+- 40-49c: +2.4% edge (N=2,584)
+- 50-59c: -5.4% edge (N=2,269) - NEGATIVE begins
+- 60-69c: -12.1% edge (N=1,333)
+- 70-79c: -17.8% edge (N=1,014)
+- 80-89c: -28.1% edge (N=909)
+- 90-99c: -28.4% edge (N=1,460) - EXTREME negative
+
+**VERDICT: PRICE PROXY**. The bucket pattern is diagnostic: positive edge at low YES prices (expensive NO), negative edge at high YES prices (cheap NO). This is EXACTLY the same pattern as "bet NO at high NO prices." The CLV filtering adds no unique information.
+
+**Why CLV Failed on Kalshi**: Unlike sports betting where closing line converges to true probability, Kalshi markets settle YES/NO regardless of final price. CLV measures price movement, not outcome prediction. A whale can achieve positive CLV (bought YES at 50c, closed at 60c) but still lose if market settles NO.
+
+---
+
+#### Hypothesis 2: Whale Order Slicing Detection (Iceberg Hunter)
+
+**Source**: Market Microstructure (TWAP/VWAP execution research, Bookmap)
+
+**Concept**: Sophisticated whales split orders into uniform-sized chunks. Detect these "icebergs" by finding clusters of same-direction trades with suspiciously uniform sizes.
+
+**Results** (best config: CV<0.3, aggregate>=50):
+
+| Metric | Value | Status |
+|--------|-------|--------|
+| Signals | 2,131 | Moderate |
+| Win Rate | 50.90% | Near 50% |
+| Raw Edge | +0.56% | Low |
+| Bucket-Matched Edge | +7.10% | PASS |
+| P-Value | 0.0 | PASS |
+| Buckets Positive | 5/10 (50%) | **FAIL** |
+
+**Bucket Analysis**:
+- 0-9c: +52.8% edge (N=232) - EXTREME positive
+- 10-19c: +32.7% edge (N=178)
+- 20-29c: +21.4% edge (N=148)
+- 30-39c: +13.7% edge (N=199)
+- 40-49c: +11.3% edge (N=181)
+- 50-59c: -7.9% edge (N=206) - NEGATIVE begins
+- 60-69c: -6.9% edge (N=144)
+- 70-79c: -28.2% edge (N=108)
+- 80-89c: -33.4% edge (N=90)
+- 90-99c: -44.1% edge (N=133) - EXTREME negative
+
+**VERDICT: PRICE PROXY**. Same diagnostic pattern - edge only at low YES prices. The uniform-size detection is capturing algorithmic market makers who tend to trade at certain price levels, not informed whales.
+
+**Why Iceberg Failed on Kalshi**: Kalshi's market structure is simpler than equity markets. The "icebergs" we detect are likely automated market makers, not informed traders hiding large positions. Their uniform sizes reflect bot trading patterns, not sophisticated execution.
+
+---
+
+#### Hypothesis 3: Whale Absorption Rate (Market Response)
+
+**Source**: Hendershott & Menkveld - Market Maker Inventory Risk
+
+**Concept**: The market's REACTION to a whale trade is more informative than the trade itself. Follow whales whose trades are "absorbed" (price continues moving). Fade whales whose trades are "rejected" (price reverts).
+
+**Results - FADE variant** (best performer):
+
+| Metric | Value | Status |
+|--------|-------|--------|
+| Signals | 17,895 | High |
+| Win Rate | 54.38% | Good |
+| Raw Edge | +2.08% | Positive |
+| Bucket-Matched Edge | +11.37% | HIGH |
+| P-Value | 0.0 | PASS |
+| Buckets Positive | 5/10 (50%) | **FAIL** |
+
+**Bucket Analysis (FADE)**:
+- 0-9c: +58.1% edge (N=1,427) - EXTREME positive
+- 10-19c: +52.4% edge (N=1,636)
+- 20-29c: +39.2% edge (N=1,709)
+- 30-39c: +20.9% edge (N=1,723)
+- 40-49c: +7.6% edge (N=2,023)
+- 50-59c: -4.3% edge (N=1,864) - NEGATIVE begins
+- 60-69c: -17.3% edge (N=1,102)
+- 70-79c: -29.1% edge (N=844)
+- 80-89c: -42.1% edge (N=750)
+- 90-99c: -55.9% edge (N=816) - EXTREME negative
+
+**VERDICT: PRICE PROXY**. The +11.37% bucket edge is impressive but the 5/10 bucket pattern reveals this is NOT unique edge. The "fade rejected whales" signal is actually just "bet NO at cheap NO prices" with extra steps.
+
+**Why Absorption Failed on Kalshi**: In equity markets, market makers maintain inventory. In prediction markets, the "absorption" vs "rejection" is just price volatility. A whale getting "rejected" (price reverting) often happens at extreme prices where mean reversion is expected anyway.
+
+---
+
+#### Summary: Why All Three External Hypotheses Failed
+
+| Hypothesis | Bucket Edge | Buckets Positive | Verdict |
+|------------|-------------|------------------|---------|
+| CLV Filter | +4.49% | 5/10 (50%) | PRICE PROXY |
+| Iceberg Hunter | +7.10% | 5/10 (50%) | PRICE PROXY |
+| Absorption Fade | +11.37% | 5/10 (50%) | PRICE PROXY |
+| Absorption Follow | +1.14% | 5/10 (50%) | PRICE PROXY |
+
+**Key Learning**: The 5/10 bucket pattern (exactly 50% positive) is a diagnostic signature of PRICE PROXY strategies. Real edge shows as consistent positive buckets across the price spectrum (like RLM_NO which has 17/18 buckets positive).
+
+**Why External Research Doesn't Transfer to Kalshi**:
+
+1. **CLV**: Works in sports betting because closing line converges to true probability. Kalshi markets settle YES/NO, not to "fair price."
+
+2. **Iceberg Detection**: Works in equity markets with hidden liquidity. Kalshi's order book is simpler, and uniform sizes indicate bots, not informed traders.
+
+3. **Market Maker Response**: Works when market makers have inventory risk. Kalshi's binary markets have different dynamics - price reversion at extremes is mechanical, not informational.
+
+**Recommendation**: Stop importing external research hypotheses without first checking if the underlying market structure assumptions hold for prediction markets. Kalshi is fundamentally different from equity markets and sports books.
+
+---
+
+#### Files Created
+- `/Users/samuelclark/Desktop/kalshiflow/research/backtest/strategies/clv_whale_filter.py`
+- `/Users/samuelclark/Desktop/kalshiflow/research/backtest/strategies/iceberg_hunter.py`
+- `/Users/samuelclark/Desktop/kalshiflow/research/backtest/strategies/whale_absorption.py`
+- `/Users/samuelclark/Desktop/kalshiflow/research/backtest/run_external_hypotheses.py`
+- `/Users/samuelclark/Desktop/kalshiflow/research/reports/external_hypotheses_20260107_020103.json`
+
+---
+
+### Whale LSD Mode Session - 2026-01-07
+**Objective**: Find profitable whale-based trading strategies using point-in-time backtesting
+**Analyst**: Quant Agent (Claude Opus 4.5)
+**Session Status**: COMPLETED
+
+**Executive Summary**: Tested 10+ whale hypotheses. One strategy passed full validation but shows concerning temporal instability.
+
+#### Strategies Tested
+
+| Strategy | Result | Bucket Edge | P-Value | Signals | Verdict |
+|----------|--------|-------------|---------|---------|---------|
+| Late Whale (follow contrarian) | FAILED | -2.15% | - | 1,046 | Contrarian whales are WRONG |
+| Fade Contrarian Whale | FAILED | +1.27% | 0.49 | 1,279 | Not significant |
+| Aligned Whale | FAILED | +2.08% | 0.20 | 815 | Edge disappeared at scale |
+| First Whale | FAILED | -0.24% | - | 2,029 | No timing advantage |
+| Whale Cluster NO (100+) | **PASSES** | +1.19% | 0.019 | 6,595 | **TEMPORAL CONCERN** |
+
+#### Key Finding: Whale Cluster NO
+
+**Full Data Results (10.1M trades, 346k markets)**:
+- Signals: 6,595
+- Win Rate: 55.53%
+- Bucket-Matched Edge: +1.19%
+- P-Value: 0.019
+- 5/5 buckets positive
+- Max concentration: 0.02%
+
+**CRITICAL CONCERN - Temporal Instability**:
+| Period | Signals | Bucket Edge | P-Value |
+|--------|---------|-------------|---------|
+| 2025 Q4 | 2,365 | +2.7% | 0.0037 |
+| 2026 Q1 | 4,288 | +0.1% | 0.56 |
+
+The edge is concentrated in 2025 Q4 and nearly disappears in 2026 Q1. This suggests market adaptation or regime dependence.
+
+**Recommendation**: DO NOT deploy without live paper trading validation for at least 2 weeks.
+
+#### Files Created
+- `/Users/samuelclark/Desktop/kalshiflow/research/backtest/strategies/fade_contrarian_whale.py`
+- `/Users/samuelclark/Desktop/kalshiflow/research/backtest/strategies/aligned_whale.py`
+- `/Users/samuelclark/Desktop/kalshiflow/research/backtest/strategies/whale_cluster.py`
+- `/Users/samuelclark/Desktop/kalshiflow/research/backtest/strategies/whale_cluster_no.py`
+- `/Users/samuelclark/Desktop/kalshiflow/research/reports/whale_lsd_session_20260107.md`
+
+---
+
+### Point-in-Time Strategy Backtest Session - 2026-01-06b
+**Objective**: Test 3 new strategy hypotheses using point-in-time backtesting framework
+**Analyst**: Quant Agent (Claude Opus 4.5)
+**Session Status**: COMPLETED
+
+**Strategies Tested:**
+
+#### 1. RLM_VOLUME_WEIGHTED (H200)
+Uses contract volume ratio instead of trade count ratio for RLM signal.
+
+**Hypothesis**: Large trades carry more information. Volume-weighting naturally emphasizes informed money.
+
+| Metric | Value | Status |
+|--------|-------|--------|
+| Signals | 7,937 | - |
+| Unresolved | 1,604 | - |
+| Win Rate | 72.13% | - |
+| Raw Edge | +43.02% | High (but misleading) |
+| Bucket-Matched Edge | +1.66% | MARGINAL |
+| P-Value | 0.0295 | PASS (<0.05) |
+| Concentration | 0.01% | PASS |
+| **PASSES VALIDATION** | **YES** | Marginally |
+
+**Bucket Analysis:**
+- 30-39c: +4.9% edge (N=442)
+- 40-49c: +6.5% edge (N=686)
+- 50-59c: +3.1% edge (N=880)
+- 60-69c: +0.6% edge (N=906)
+- 70-79c: +0.5% edge (N=936)
+- 80-89c: +0.2% edge (N=1,027)
+- 90-99c: -0.1% edge (N=1,456)
+
+**Verdict**: MARGINAL. Technically passes but bucket-matched edge (+1.66%) is below practical threshold. Volume-weighting does not provide meaningful improvement over trade count. The high raw edge is explained by trading cheaper NO contracts (more signals in 30-50c range where base rates are lower).
+
+---
+
+#### 2. MOMENTUM_FLIP (H201)
+Buy YES when price has dropped 10%+ but recent flow is turning bullish.
+
+**Hypothesis**: When selling pressure exhausts after a drop, price may recover. This is a mean-reversion / exhaustion detection strategy.
+
+| Metric | Value | Status |
+|--------|-------|--------|
+| Signals | 1,489 | - |
+| Unresolved | 221 | - |
+| Win Rate | 39.20% | - |
+| Raw Edge | +1.30% | Low |
+| Bucket-Matched Edge | +0.83% | MARGINAL |
+| P-Value | 0.3389 | **FAIL** (>0.05) |
+| Concentration | 0.07% | PASS |
+| **PASSES VALIDATION** | **NO** | Not significant |
+
+**Bucket Analysis:**
+- 20-29c: +0.5% edge (N=412)
+- 30-39c: +2.5% edge (N=346)
+- 40-49c: +2.0% edge (N=241)
+- 50-59c: -1.0% edge (N=159)
+- 60-69c: -1.6% edge (N=97)
+- 70-79c: -13.0% edge (N=13) - Small sample
+
+**Verdict**: REJECTED. Not statistically significant (p=0.34). The momentum flip hypothesis does not hold - exhaustion detection does not predict YES wins in Kalshi markets. Markets that drop and show flow reversal are no more likely to recover than baseline.
+
+---
+
+#### 3. LATE_WHALE (H202)
+Follow large trades (50+ contracts) that go against established crowd consensus (60%+ one direction).
+
+**Hypothesis**: Whales betting against the crowd may have superior information.
+
+| Metric | Value | Status |
+|--------|-------|--------|
+| Signals | 9,202 | High volume |
+| Unresolved | 1,598 | - |
+| Win Rate | 52.42% | Near 50% |
+| Raw Edge | +0.80% | Low |
+| Bucket-Matched Edge | +5.52% | **HIGH** |
+| P-Value | 0.0000 | PASS |
+| Concentration | 0.01% | PASS |
+| **PASSES VALIDATION** | **YES** | Strong |
+
+**Bucket Analysis:**
+- 20-29c: **+40.8%** edge (N=1,044) - EXTREME
+- 30-39c: **+22.6%** edge (N=1,582) - Very high
+- 40-49c: **+9.6%** edge (N=1,778) - Good
+- 50-59c: **-5.5%** edge (N=1,585) - Negative
+- 60-69c: **-19.2%** edge (N=936) - Strong negative
+- 70-79c: **-39.4%** edge (N=679) - Extreme negative
+
+**CRITICAL OBSERVATION**: The bucket analysis reveals this strategy is a **PRICE PROXY**. It shows strong positive edge at low prices and strong negative edge at high prices. This is the same pattern as the base NO strategy - contrarian whales at cheap YES prices (expensive NO prices) win, but contrarian whales at expensive YES prices (cheap NO prices) lose badly.
+
+**Verdict**: REJECTED as independent signal. While it technically passes validation, the bucket analysis reveals it's picking up the same signal as simply "bet NO at high NO prices." The whale behavior is not adding information beyond what price alone tells us. When whales go contrarian at cheap YES prices, they're essentially buying expensive NO - which is the known edge.
+
+---
+
+**Summary Comparison:**
+
+| Strategy | Signals | Raw Edge | Bucket Edge | Pass | Analysis |
+|----------|---------|----------|-------------|------|----------|
+| RLM_VOLUME_WEIGHTED | 7,937 | +43.0% | **+1.7%** | YES | Marginal - not practical |
+| MOMENTUM_FLIP | 1,489 | +1.3% | +0.8% | **NO** | p=0.34, not significant |
+| LATE_WHALE | 9,202 | +0.8% | +5.5% | YES | **PRICE PROXY** - bucket analysis reveals structure |
+
+**Key Findings:**
+1. **Volume-weighting provides no meaningful improvement** over trade count for RLM
+2. **Momentum exhaustion is not predictive** in Kalshi markets
+3. **Contrarian whale trades are a price proxy** - the bucket structure (extreme positive at low YES prices, extreme negative at high YES prices) reveals this is just the same "bet NO at high prices" signal
+
+**Files Created:**
+- `/Users/samuelclark/Desktop/kalshiflow/research/backtest/strategies/rlm_volume_weighted.py`
+- `/Users/samuelclark/Desktop/kalshiflow/research/backtest/strategies/momentum_flip.py`
+- `/Users/samuelclark/Desktop/kalshiflow/research/backtest/strategies/late_whale.py`
+- `/Users/samuelclark/Desktop/kalshiflow/research/backtest/run_new_strategies.py`
+
+---
+
+### RLM_NO Strategy Soup-to-Nuts Evaluation - 2026-01-06
+**Objective**: Complete evaluation of RLM_NO strategy before implementing second strategy
+**Analyst**: Quant Agent (Claude Opus 4.5)
+**Session Status**: COMPLETED - STRATEGY CONFIRMED HEALTHY
+
+**Phase 1: Data Freshness**
+- Updated trade data from production database
+- Fetched 2.3M new trades (7.9M -> 10.2M total)
+- Data now current through 2026-01-06 12:19:06
+- 68K+ new market outcomes being fetched (background process)
+
+**Phase 2: Full Validation Results**
+
+| Metric | Value | Status |
+|--------|-------|--------|
+| Markets | 4,148 | PASS (>50) |
+| Win Rate | 94.21% | High |
+| Avg Entry Price | 72.4c | - |
+| Breakeven | 72.4% | - |
+| Raw Edge | +21.84% | PASS (>5%) |
+| Bucket-Matched Improvement | +17.09% | PASS (>0%) |
+| Bucket Pass Rate | 94.4% (17/18) | PASS (>60%) |
+| Z-Score | 31.46 | Very High |
+| P-Value | 0.0 | PASS (<0.05) |
+| Temporal Stability | 4/4 weeks (100%) | PASS |
+| Max Concentration | 0.09% | PASS (<30%) |
+
+**Phase 3: Config Gap Analysis**
+
+| Config | Signals | Win Rate | Edge |
+|--------|---------|----------|------|
+| Research (>65% YES, >=15 trades, any drop) | 4,148 | 94.2% | +21.8% |
+| Production (>=70% YES, >=25 trades, >=5c drop) | 2,365 | 96.9% | +25.5% |
+
+The production config is STRICTER but BETTER - it filters 43% of signals but increases edge from +21.8% to +25.5%.
+
+**Filter Impact Analysis:**
+1. YES 65-70% filtered: 566 signals with +26.0% edge (kept, good filter)
+2. Trades 15-24 filtered: 764 signals with +17.5% edge (conservative)
+3. Drop 0-5c filtered: 453 signals with +4.9% edge (correctly filtered)
+
+**Phase 4: Price Drop Tier Analysis (Fresh Data)**
+
+| Price Drop | Signals | Win Rate | Edge | S-001 Recommendation |
+|------------|---------|----------|------|---------------------|
+| 0-5c | 453 | 84.3% | +4.9% | SKIP (config filters) |
+| 5-10c | 330 | 91.8% | +12.1% | 1.0x scale |
+| 10-20c | 503 | 95.6% | +16.0% | 1.5x scale |
+| 20c+ | 1,532 | 98.4% | +31.5% | 2.0x scale |
+
+The S-001 research findings are CONFIRMED with fresh data. Position scaling by price drop is the clear next optimization.
+
+**Key Findings:**
+1. **RLM_NO is validated and production-ready** - All validation checks pass
+2. **Production config is well-optimized** - Stricter thresholds improve edge
+3. **S-001 position scaling is the priority enhancement** - Edge stratifies clearly by price drop
+4. **No config changes needed** - Current production thresholds are correct
+
+**Recommendations for Second Strategy:**
+1. Do NOT modify RLM_NO config - it's working well
+2. Implement S-001 position scaling (price_drop tiers) as enhancement
+3. Consider 6-24hr duration window variant (H-MM153) as separate strategy
+4. NCAAFTOTAL specialization needs more data (94 markets)
+
+**Files Created:**
+- `research/reports/rlm_full_evaluation_20260106.json` - Full validation results
+
+---
 
 ### Full Validation: 6-24hr Duration Window (H-MM153) - 2026-01-05b
 **Objective**: Rigorous NORMAL MODE validation of the 6-24hr duration window hypothesis
@@ -1599,6 +2137,99 @@ When multiple signals align, edge likely compounds. Portfolio of 4 independent s
 2. Test combined signals - what happens when 2+ strategies align?
 3. Update VALIDATED_STRATEGIES.md with implementation specs
 4. Consider position sizing by conviction level (more signals = larger position?)
+
+---
+
+### Session Journey Trading Viability - 2026-01-07
+**Objective**: Analyze price range within market lifetimes to determine if journey trading is viable
+**Continuing from**: Profitability Roadmap Phase 0
+**Analyst**: Quant Agent (Opus 4.5)
+**Duration**: ~30 minutes
+**Session Status**: **COMPLETE - JOURNEY TRADING VIABLE FOR LIQUID MARKETS**
+
+#### Mission
+
+Before investing in journey trading infrastructure, answer the core question:
+"How much do prices move within a market's lifetime?"
+
+Success threshold: >50% of markets having 10c+ price range indicates sufficient opportunity.
+
+#### Data Summary
+
+| Metric | Value |
+|--------|-------|
+| Total Trades | 8,059,503 |
+| Total Markets | 346,631 |
+| Markets with 1 trade | 277,444 (80.04%) |
+| Tradeable markets (2+ trades) | 69,187 (19.96%) |
+
+#### Key Findings
+
+**CRITICAL INSIGHT**: 80% of markets have only 1 trade and are by definition untradeable.
+
+**All Markets (misleading)**:
+- Median range: 0c
+- Mean range: 4.13c
+- 10c+ range: 8.7% (FAILS 50% threshold)
+
+**Tradeable Markets (2+ trades)**:
+- Median range: 6.0c
+- Mean range: 20.72c
+- 10c+ range: 43.58%
+- 20c+ range: 33.67%
+
+**Liquid Markets (5+ trades) - THE REAL OPPORTUNITY**:
+| Min Trades | Markets | Median Range | 10c+ | 20c+ | 30c+ |
+|------------|---------|--------------|------|------|------|
+| 5+ | 30,968 | 34c | 75.77% | 64.11% | 54.4% |
+| 10+ | 21,954 | 47c | 85.98% | 75.95% | 66.28% |
+| 25+ | 14,708 | 56c | 91.85% | 84.44% | 76.01% |
+| 50+ | 10,745 | 61c | 94.84% | 88.96% | 81.69% |
+| 100+ | 7,661 | 66c | 96.46% | 92.29% | 86.18% |
+
+**Duration Segmentation**:
+| Duration | Markets | 10c+ | 20c+ |
+|----------|---------|------|------|
+| <1hr | 303,491 | 2.38% | 1.68% |
+| 1-6hr | 16,375 | 44.9% | 32.35% |
+| 6-24hr | 17,528 | 56.51% | 46.7% |
+| 24hr+ | 9,237 | 61.55% | 51.15% |
+
+#### Viability Assessment
+
+**JOURNEY TRADING IS VIABLE** - but requires market selection:
+
+1. **Target markets with 5+ trades**: 75.77% have 10c+ range (exceeds 50% threshold)
+2. **Target markets with 6+ hour duration**: 56.51% have 10c+ range
+3. **Liquid markets (10+ trades) show 47c median swing** - substantial trading opportunity
+
+#### Strategic Implications for V3 Trader
+
+1. **Market Selection Filter**: Only enter markets with:
+   - 5+ existing trades (proves liquidity)
+   - 6+ hour time to expiry (time for price movement)
+   - Active orderbook (real-time verification)
+
+2. **Addressable Market**: ~31,000 markets (8.9% of total) with 64.11% showing 20c+ opportunity
+
+3. **Journey Trading Thesis Validated**: Prices DO move significantly within liquid markets
+
+#### Files Created
+
+- `/research/analysis/journey_price_ranges.py` - Analysis script
+- `/research/reports/journey_price_ranges.json` - Full results
+
+#### Hypothesis Updates
+
+| ID | Hypothesis | Status | Notes |
+|----|------------|--------|-------|
+| JOURNEY-001 | Journey trading viable on Kalshi | **VALIDATED** | 75.77% of 5+ trade markets have 10c+ range |
+
+#### Next Steps for Phase 1
+
+1. **Price Path Analysis**: Categorize how prices reach their range (trending vs mean-reverting)
+2. **Entry Timing**: When during market lifetime does most price movement occur?
+3. **Orderbook Depth Analysis**: Confirm real-time orderbook supports the historical trade volumes
 
 ---
 

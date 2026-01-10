@@ -179,6 +179,7 @@ const EventCard = ({ event, isNew = false }) => {
     causal_chain,
     key_evidence,
     edge_hypothesis,
+    evidence_metadata,
     markets,
     researched_at,
     research_duration_seconds,
@@ -286,6 +287,7 @@ const EventCard = ({ event, isNew = false }) => {
               evidenceSummary={evidence_summary}
               reliability={evidence_reliability}
               keyEvidence={key_evidence}
+              evidenceMetadata={evidence_metadata}
             />
 
             {/* Market Assessments */}

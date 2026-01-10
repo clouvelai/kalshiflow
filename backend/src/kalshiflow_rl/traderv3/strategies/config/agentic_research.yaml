@@ -14,7 +14,7 @@ enabled: true  # Proper filtering restored - only trades on BUY_YES/BUY_NO with 
 display_name: "Agentic Research"
 
 # Position limits
-max_positions: 300         # Maximum concurrent positions (paper mode: allow alongside existing positions)
+max_positions: 1000        # Maximum concurrent positions (paper mode: allow alongside existing positions)
 max_exposure_cents: 100000 # Maximum total exposure ($1,000)
 
 # Rate limiting
@@ -28,7 +28,7 @@ params:
 
   # Position sizing
   contracts_per_trade: 10  # Contracts per signal execution (reduced to avoid hitting position limits)
-  max_positions: 300       # Must be in params for code to read it
+  max_positions: 1000      # Must be in params for code to read it
   max_positions_per_event: 100  # Max positions per event (high limit for paper trading)
 
   # Evaluation interval
@@ -56,3 +56,4 @@ params:
   researchable_categories:
     - "Entertainment"
     - "Mentions"
+    - "Politics"

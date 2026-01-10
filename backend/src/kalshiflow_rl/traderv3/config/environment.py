@@ -93,9 +93,12 @@ class V3Config:
     market_mode: str = "lifecycle"
 
     # Lifecycle Mode Configuration (RL_MODE=lifecycle)
-    # Categories: politics, media_mentions, entertainment, crypto (sports removed for now)
-    # To re-add sports: LIFECYCLE_CATEGORIES=politics,media_mentions,entertainment,crypto,sports
-    lifecycle_categories: List[str] = field(default_factory=lambda: ["politics", "media_mentions", "entertainment", "crypto"])
+    # Categories: politics, media_mentions, entertainment, crypto, sports
+    # Sports markets are filtered by prefix (default: KXNFL only)
+    lifecycle_categories: List[str] = field(default_factory=lambda: ["politics", "media_mentions", "entertainment", "crypto", "sports"])
+    # Sports prefix filter - only allow sports markets with these event_ticker prefixes
+    # Set to empty list to allow ALL sports markets
+    sports_allowed_prefixes: List[str] = field(default_factory=lambda: ["KXNFL"])
     lifecycle_max_markets: int = 1000  # Maximum tracked markets (orderbook WS limit)
     lifecycle_sync_interval: int = 30  # Seconds between market info syncs
 
@@ -245,10 +248,13 @@ class V3Config:
         rlm_max_spread = int(os.environ.get("RLM_MAX_SPREAD", "10"))
 
         # Lifecycle discovery mode configuration
-        # Default: politics, media_mentions, entertainment, crypto (sports removed for now)
-        # To re-add sports: export LIFECYCLE_CATEGORIES=politics,media_mentions,entertainment,crypto,sports
-        lifecycle_categories_str = os.environ.get("LIFECYCLE_CATEGORIES", "politics,media_mentions,entertainment,crypto")
+        # Default: politics, media_mentions, entertainment, crypto, sports (NFL only via prefix filter)
+        lifecycle_categories_str = os.environ.get("LIFECYCLE_CATEGORIES", "politics,media_mentions,entertainment,crypto,sports")
         lifecycle_categories = [c.strip() for c in lifecycle_categories_str.split(",") if c.strip()]
+        # Sports prefix filter - only allow sports markets with these event_ticker prefixes
+        # Default: KXNFL (NFL markets only). Set empty to allow all sports.
+        sports_prefixes_str = os.environ.get("SPORTS_ALLOWED_PREFIXES", "KXNFL")
+        sports_allowed_prefixes = [p.strip() for p in sports_prefixes_str.split(",") if p.strip()]
         lifecycle_max_markets = int(os.environ.get("LIFECYCLE_MAX_MARKETS", "1000"))
         lifecycle_sync_interval = int(os.environ.get("LIFECYCLE_SYNC_INTERVAL", "30"))
 
@@ -318,6 +324,7 @@ class V3Config:
             event_loss_threshold_cents=event_loss_threshold_cents,
             event_risk_threshold_cents=event_risk_threshold_cents,
             lifecycle_categories=lifecycle_categories,
+            sports_allowed_prefixes=sports_allowed_prefixes,
             lifecycle_max_markets=lifecycle_max_markets,
             lifecycle_sync_interval=lifecycle_sync_interval,
             api_discovery_enabled=api_discovery_enabled,
@@ -345,6 +352,8 @@ class V3Config:
         logger.info(f"  - Market mode: {market_mode.upper()}")
         if market_mode == "lifecycle":
             logger.info(f"    - Categories: {', '.join(lifecycle_categories)}")
+            if "sports" in [c.lower() for c in lifecycle_categories] and sports_allowed_prefixes:
+                logger.info(f"    - Sports filter: {', '.join(sports_allowed_prefixes)} prefixes only")
             logger.info(f"    - Max tracked: {lifecycle_max_markets}")
             if api_discovery_enabled:
                 logger.info(f"    - API discovery: ENABLED (interval={api_discovery_interval}s, batch={api_discovery_batch_size})")

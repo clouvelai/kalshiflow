@@ -521,6 +521,38 @@ class TruthSocialCacheService:
         """Check if cache is available and operational."""
         return self._running and not self._following_discovery_failed
 
+    def get_health_details(self) -> Dict[str, Any]:
+        """
+        Get health details for status reporting (matches syncer pattern).
+
+        Returns comprehensive health info including:
+        - Running/available status
+        - Cache statistics (posts, authors)
+        - Refresh timing and errors
+        - Overall healthy flag
+        """
+        now = time.time()
+        return {
+            "running": self._running,
+            "available": self.is_available(),
+            "following_discovery_failed": self._following_discovery_failed,
+            "followed_handles_count": len(self._followed_handles),
+            "followed_handles_sample": list(self._followed_handles)[:5],  # First 5 for debugging
+            "cached_posts_count": len(self._posts),
+            "trending_tags_count": len(self._trending.trending_tags),
+            "trending_posts_count": len(self._trending.trending_posts),
+            "last_refresh": self._last_refresh,
+            "last_refresh_age_seconds": round(now - self._last_refresh, 1) if self._last_refresh else None,
+            "last_trending_refresh": self._last_trending_refresh,
+            "last_trending_refresh_age_seconds": round(now - self._last_trending_refresh, 1) if self._last_trending_refresh else None,
+            "refresh_count": self._refresh_count,
+            "refresh_errors": self._refresh_errors,
+            "cache_refresh_seconds": self._cache_refresh_seconds,
+            "trending_refresh_seconds": self._trending_refresh_seconds,
+            "hours_back": self._hours_back,
+            "healthy": self.is_available() and self._refresh_count > 0 and self._refresh_errors == 0,
+        }
+
 
 # Global singleton instance
 _global_cache: Optional[TruthSocialCacheService] = None

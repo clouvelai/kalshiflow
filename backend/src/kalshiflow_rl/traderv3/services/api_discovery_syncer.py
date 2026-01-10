@@ -46,6 +46,7 @@ class ApiDiscoverySyncer:
         tracked_markets_state: 'TrackedMarketsState',
         event_bus: 'EventBus',
         categories: List[str],
+        sports_prefixes: Optional[List[str]] = None,
         sync_interval: float = 300.0,
         batch_size: int = 200,
         min_hours_to_settlement: float = 4.0,
@@ -60,6 +61,8 @@ class ApiDiscoverySyncer:
             tracked_markets_state: State to check capacity and existing markets
             event_bus: Event bus for system activity events
             categories: Category list to filter markets (same as lifecycle)
+            sports_prefixes: Optional list of event_ticker prefixes for sports filtering
+                            (e.g., ["KXNFL"] for NFL only)
             sync_interval: Seconds between periodic syncs (default 300 = 5 min)
             batch_size: Maximum markets to fetch per API call (default 200)
             min_hours_to_settlement: Skip markets closing <N hours (default 4.0)
@@ -70,6 +73,7 @@ class ApiDiscoverySyncer:
         self._tracked_state = tracked_markets_state
         self._event_bus = event_bus
         self._categories = categories
+        self._sports_prefixes = sports_prefixes
         self._sync_interval = sync_interval
         self._batch_size = batch_size
         self._min_hours_to_settlement = min_hours_to_settlement
@@ -88,10 +92,11 @@ class ApiDiscoverySyncer:
         self._sync_errors: int = 0
         self._last_error: Optional[str] = None
 
+        sports_info = f", sports_prefixes={sports_prefixes}" if sports_prefixes else ""
         logger.info(
             f"ApiDiscoverySyncer initialized "
             f"(sync_interval={sync_interval}s, batch_size={batch_size}, "
-            f"categories={categories}, "
+            f"categories={categories}{sports_info}, "
             f"time_filter={min_hours_to_settlement}h-{max_days_to_settlement}d)"
         )
 
@@ -184,6 +189,7 @@ class ApiDiscoverySyncer:
             # Time filter: 4h-30d window for capital efficiency (from quant research)
             markets = await self._client.get_open_markets(
                 categories=self._categories,
+                sports_prefixes=self._sports_prefixes,
                 max_markets=remaining,
                 min_hours_to_settlement=self._min_hours_to_settlement,
                 max_days_to_settlement=self._max_days_to_settlement,
