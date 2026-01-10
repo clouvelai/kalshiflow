@@ -10,7 +10,7 @@ Version History:
 """
 
 from typing import List, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class SingleMarketAssessment(BaseModel):
@@ -90,3 +90,42 @@ class BatchMarketAssessmentOutput(BaseModel):
         default="",
         description="For mutually exclusive markets: Do probabilities sum to ~100%? Any inconsistencies noted?"
     )
+
+    @model_validator(mode='after')
+    def validate_mutual_exclusivity(self) -> 'BatchMarketAssessmentOutput':
+        """
+        Check if probabilities sum to ~100% for what appears to be mutually exclusive markets.
+
+        This is a post-validation hook that flags when probabilities are inconsistent.
+        It does NOT prevent invalid outputs - it flags them for downstream handling.
+
+        Tolerance: 15% deviation from 100% is acceptable (85-115% sum).
+        """
+        if not self.assessments or len(self.assessments) < 2:
+            return self
+
+        # Sum all probabilities
+        total_prob = sum(a.evidence_probability for a in self.assessments)
+
+        # Check if outside tolerance (15%)
+        if abs(total_prob - 1.0) > 0.15:
+            # Determine if over or under
+            if total_prob > 1.15:
+                direction = "over-allocated"
+                instruction = "reduce some probabilities"
+            else:
+                direction = "under-allocated"
+                instruction = "some outcomes may be missing or under-weighted"
+
+            warning = f"MUTUAL EXCLUSIVITY WARNING: Probabilities sum to {total_prob:.0%} ({direction}). If these are mutually exclusive outcomes, {instruction}."
+
+            # Add warning to each assessment's assumption_flags
+            for assessment in self.assessments:
+                if warning not in assessment.assumption_flags:
+                    assessment.assumption_flags.append(warning)
+
+            # Also update the batch-level check if it wasn't set
+            if not self.cross_market_consistency_check:
+                self.cross_market_consistency_check = warning
+
+        return self

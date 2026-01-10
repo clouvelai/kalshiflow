@@ -644,81 +644,9 @@ class EventResearchService:
 
         num_markets = len(markets)
 
-        prompt = ChatPromptTemplate.from_messages([
-            ("system", f"""You are a prediction market analyst. Today is {current_date}.
-
-Analyze this event deeply. Extract THREE things:
-1. EVENT CONTEXT - What is this event about?
-2. KEY DRIVER - What single factor determines the outcome?
-3. SEMANTIC FRAME - The structural understanding (WHO has agency, WHAT they're deciding, WHICH choices exist)
-
-For SEMANTIC FRAME, identify the type:
-- NOMINATION: Actor DECIDES who gets position (e.g., "Trump nominates Fed Chair")
-- COMPETITION: Entities compete, rules determine winner (e.g., "Chiefs vs Bills", elections)
-- ACHIEVEMENT: Binary yes/no on reaching milestone (e.g., "Team wins championship")
-- OCCURRENCE: Event happens or doesn't, no threshold (e.g., "Rain in NYC", "Government shutdown")
-- MEASUREMENT: Numeric value compared to threshold (e.g., "CPI over 3%", "BTC above $100k")
-- MENTION: Speech act - someone says/references something (e.g., "Will X mention Y?")
-
-DISAMBIGUATION - when multiple seem to fit, choose MOST SPECIFIC:
-- "BTC above $100k" = MEASUREMENT (numeric threshold), NOT ACHIEVEMENT
-- "Team wins championship" = COMPETITION (vs other teams), NOT ACHIEVEMENT
-- "Fed cuts rates" = OCCURRENCE (yes/no event), NOT MEASUREMENT
-- "Trump picks Warsh" = NOMINATION (decision by actor), NOT OCCURRENCE
-
-For CANDIDATES, link each possible outcome to its market ticker if applicable."""),
-
-            ("user", """EVENT: {event_title}
-CATEGORY: {category}
-
-MARKETS ({num_markets} total - each market represents one possible outcome):
-{market_list}
-
-Analyze:
-
-1. EVENT CONTEXT:
-   - Brief description (1-2 sentences)
-   - Core question being predicted
-   - Resolution criteria (how YES/NO determined)
-   - Resolution type: objective/subjective/mixed
-   - Time horizon
-
-2. KEY DRIVER:
-   - Primary driver (the ONE factor that matters most)
-   - Why this is the key driver (causal mechanism)
-   - 2-3 secondary factors
-   - Tail risks
-   - Base rate for similar events (with reasoning)
-
-3. SEMANTIC FRAME:
-   - Frame type: NOMINATION / COMPETITION / ACHIEVEMENT / OCCURRENCE / MEASUREMENT / MENTION
-   - Question template (e.g., "{{actor}} nominates {{candidate}} for {{position}}")
-   - Primary relation (the verb: nominates, defeats, exceeds, says, etc.)
-   - ACTORS: Who has agency? (name, entity_type, role, aliases)
-   - OBJECTS: What's being acted upon? (name, entity_type) - leave empty if candidates ARE the objects
-
-   - CANDIDATES: **You MUST create exactly {num_markets} candidate entries - one for each market above.**
-     For each market ticker, provide:
-     - canonical_name: The specific outcome this market represents (extract from market title)
-     - market_ticker: MUST match the ticker exactly (copy from MARKETS list above)
-     - aliases: Alternative names, abbreviations, variations for news matching
-     - search_queries: 2-3 targeted news search queries for this specific outcome
-
-   CANDIDATE EXAMPLES:
-   For NOMINATION event "Trump's Fed Chair Nominee" with markets:
-   - KXFEDCHAIRNOM-WARSH -> canonical_name: "Kevin Warsh", market_ticker: "KXFEDCHAIRNOM-WARSH", aliases: ["Warsh", "K. Warsh"]
-   - KXFEDCHAIRNOM-HASSETT -> canonical_name: "Kevin Hassett", market_ticker: "KXFEDCHAIRNOM-HASSETT", aliases: ["Hassett"]
-
-   For COMPETITION event "NFL Week 15: Chiefs vs Bills" with markets:
-   - KXNFL-CHIEFS-WIN -> canonical_name: "Kansas City Chiefs win", market_ticker: "KXNFL-CHIEFS-WIN", aliases: ["KC Chiefs", "Chiefs"]
-   - KXNFL-BILLS-WIN -> canonical_name: "Buffalo Bills win", market_ticker: "KXNFL-BILLS-WIN", aliases: ["Buffalo", "Bills"]
-
-   - Does one actor control the outcome? (true/false)
-   - Are outcomes mutually exclusive? (true if only one can win, false if multiple can resolve YES)
-   - Resolution trigger (what event determines outcome)
-   - 3-5 targeted search queries for finding news
-   - Signal keywords (words that indicate important news)""")
-        ])
+        # Use versioned prompt (v2 includes GROUNDING REQUIREMENTS, BASE RATE ANCHORING, CALIBRATION)
+        prompt = get_event_context_prompt(current_date)
+        logger.info(f"[PROMPT] Using event_context prompt version: {ACTIVE_EVENT_CONTEXT_VERSION}")
 
         try:
             chain = prompt | self._llm.with_structured_output(FullContextOutput)
@@ -747,6 +675,7 @@ Analyze:
                 tail_risks=result.tail_risks,
                 base_rate=result.base_rate,
                 base_rate_reasoning=result.base_rate_reasoning,
+                edge_hypothesis=getattr(result, 'edge_hypothesis', "") or "",
             )
 
             # Build SemanticFrame from result
@@ -1291,12 +1220,18 @@ Analyze:
             List of MarketAssessment for each market
         """
         # Build market descriptions - NO PRICES (blind estimation)
+        # NOTE: We deliberately DO NOT include market prices here
+        # The LLM must estimate probabilities blind, then guess market price
         market_descriptions = []
         for market in markets:
             desc = f"MARKET: {market.ticker}\n"
             desc += f"TITLE: {market.title}\n"
-            # NOTE: We deliberately DO NOT include market prices here
-            # The LLM must estimate probabilities blind, then guess market price
+
+            # Include microstructure context if available
+            if microstructure and market.ticker in microstructure:
+                micro_ctx = microstructure[market.ticker]
+                desc += f"\nMARKET SIGNALS:\n{micro_ctx.to_prompt_string()}\n"
+
             market_descriptions.append(desc)
 
         markets_text = "\n---\n".join(market_descriptions)
@@ -1304,71 +1239,31 @@ Analyze:
         from datetime import datetime
         current_date = datetime.now().strftime("%B %d, %Y")
 
-        prompt = ChatPromptTemplate.from_messages([
-            ("system", f"""You are a prediction market TRADER looking for PROFITABLE opportunities. Today is {current_date}.
+        # Use versioned prompt (v2 includes BASE RATE ANCHORING, CALIBRATION SELF-CHECK, evidence citation)
+        prompt = get_market_eval_prompt(current_date)
 
-YOUR GOAL: Make money by finding markets where you have an edge over the market price.
+        # Get base rate from driver analysis (default to 0.5 if not available)
+        base_rate = 0.5
+        if research_context.driver_analysis and research_context.driver_analysis.base_rate:
+            base_rate = research_context.driver_analysis.base_rate
 
-HOW PREDICTION MARKETS WORK:
-- Contracts pay $1 (100c) if YES resolves, $0 if NO resolves
-- Buy YES at Xc → profit (100-X)c if YES, lose Xc if NO
-- Buy NO at Yc → profit (100-Y)c if NO, lose Yc if YES
-- EXPECTED VALUE: EV = P(correct) × profit - P(wrong) × loss
-- Only bet when EV > 0 AND you have sufficient confidence
-
-For each market, you will complete TWO SEPARATE tasks:
-
-TASK 1 - YOUR PROBABILITY ESTIMATE:
-Based ONLY on the evidence and reasoning, estimate the TRUE probability.
-This is YOUR view - what you would bet your own money on.
-Do NOT anchor on what the market might believe.
-
-TASK 2 - MARKET PRICE GUESS:
-AFTER forming your probability, separately guess what price the market is trading at.
-This tests calibration - we compare your guess to actual price.
-You will NOT be told actual prices.
-
-WHAT MAKES MONEY:
-- If you think YES is more likely than the price implies → buy YES
-- If you think NO is more likely than the price implies → buy NO
-- You don't need a huge edge - being right slightly more often = profit over time
-
-KEY QUESTION: "Do I think this resolves YES or NO, and am I more confident than the market?" """),
-            ("user", """EVENT RESEARCH:
-{event_context}
-
-KEY DRIVER: {primary_driver}
-
-MARKETS TO EVALUATE:
-{markets_text}
-
-For EACH market, complete these steps IN ORDER:
-
-1. UNDERSTAND: What specific question does this market ask?
-
-2. APPLY: How does the key driver apply to THIS specific market?
-
-3. YOUR ESTIMATE (Task 1): What is YOUR probability estimate for YES?
-   - Range: 0.0 to 1.0
-   - Base this ONLY on evidence and reasoning
-   - Include 2-3 sentences of reasoning
-
-4. MARKET GUESS (Task 2): What price (0-100 cents) do you think this market is trading at?
-   - This is your guess of what OTHER traders believe
-   - May differ from your estimate if you think market is mispriced
-
-5. CONFIDENCE: How confident are you in your estimate?
-   - high: Strong evidence, clear reasoning, 80%+ certainty
-   - medium: Reasonable evidence, some uncertainty, 60-80% certainty
-   - low: Weak or conflicting evidence, <60% certainty""")
-        ])
+        logger.info(
+            f"[PROMPT] Using market_eval prompt version: {ACTIVE_MARKET_EVAL_VERSION}, "
+            f"base_rate={base_rate:.0%}"
+        )
 
         try:
             chain = prompt | self._llm.with_structured_output(BatchMarketAssessmentOutput)
+            # Defensive access for driver_analysis in case of error fallback
+            primary_driver = (
+                research_context.driver_analysis.primary_driver
+                if research_context.driver_analysis else "Unknown"
+            )
             result = await self._invoke_with_retry(chain, {
                 "event_context": research_context.to_prompt_string(),
                 "markets_text": markets_text,
-                "primary_driver": research_context.driver_analysis.primary_driver,
+                "primary_driver": primary_driver,
+                "base_rate": base_rate,  # CRITICAL: Pass base rate for v2 prompt anchoring
             })
 
             # Convert to MarketAssessment objects

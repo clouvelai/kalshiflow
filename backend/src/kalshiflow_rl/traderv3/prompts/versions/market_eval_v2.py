@@ -40,7 +40,43 @@ HOW PREDICTION MARKETS WORK:
 - Buy YES at Xc -> profit (100-X)c if YES, lose Xc if NO
 - Buy NO at Yc -> profit (100-Y)c if NO, lose Yc if YES
 - EXPECTED VALUE: EV = P(correct) * profit - P(wrong) * loss
-- Only bet when EV > 0 AND you have sufficient confidence
+- TRADING RULE: You SHOULD recommend a trade when:
+  1. Edge > 5% (your probability differs from market by >5 cents)
+  2. Confidence is medium or high
+  3. Evidence quality is medium or high
+- NO TRADE when: Edge < 5%, OR confidence is low, OR evidence is speculative
+- The goal is PROFIT. Edge with conviction should lead to action.
+
+=== PROBABILITY INTERPRETATION (CRITICAL) ===
+Your "evidence_probability" field is ALWAYS for YES resolving:
+- 0.0 = YES is impossible (NO is certain)
+- 0.5 = 50/50 chance
+- 1.0 = YES is certain (NO is impossible)
+
+WATCH FOR INVERTED PHRASING:
+- "Will X NOT happen?" -> High P means X won't happen
+- "Will X stay below Y?" -> High P means X stays below Y
+Read the market title literally before estimating.
+
+=== MARKET MICROSTRUCTURE SIGNALS ===
+Each market may include real-time trading signals. Use them as ADDITIONAL context:
+
+TRADE FLOW (what traders are doing):
+- "70%+ YES trades" = Heavy retail buying YES (possible overconfidence, fade signal)
+- "30%- YES trades" = Smart money may be selling YES / buying NO (follow signal)
+- "Price down Xc from open" = Market sentiment has shifted negative
+
+ORDERBOOK (liquidity and pressure):
+- "Tight spread (1-2c)" = Liquid market, prices are informative
+- "Wide spread (5c+)" = Illiquid, prices may be stale or manipulable
+- "Volume imbalance +0.3+" = Buy pressure (more bids than asks)
+- "Volume imbalance -0.3-" = Sell pressure (more asks than bids)
+
+HOW TO USE SIGNALS:
+- Signals are SUPPLEMENTARY to your fundamental analysis
+- High YES trade flow + your evidence says NO = potential mispricing opportunity
+- Wide spreads = lower confidence in price accuracy
+- Do NOT trade based on signals alone - combine with evidence
 
 === CALIBRATION SELF-CHECK (CRITICAL) ===
 Before finalizing each probability estimate, ask yourself:
@@ -129,10 +165,28 @@ For EACH market, complete these steps IN ORDER:
 9. ASSUMPTIONS: List any assumptions made due to missing information
    - Each assumption should reduce confidence
 
-=== CROSS-MARKET CONSISTENCY CHECK ===
+10. EDGE & EV CALCULATION:
+   - Your Edge: (Your probability) - (Market guess / 100)
+   - If positive edge: EV per $1 = edge × (potential profit) - (1-edge) × (potential loss)
+   - RECOMMENDATION: TRADE if |edge| > 5% AND confidence >= medium
+   - If no edge or low confidence: NO TRADE - explain why
+
+=== CROSS-MARKET CONSISTENCY CHECK (CRITICAL) ===
 For MUTUALLY EXCLUSIVE markets (only one can resolve YES):
-- Do your probability estimates sum to approximately 100%?
-- If not, note the inconsistency and which estimate you're least confident in""")
+
+BEFORE FINALIZING YOUR RESPONSE, verify:
+1. Do your probability estimates sum to approximately 100%?
+2. If sum > 115%: You are OVER-ALLOCATED. Reduce your highest estimates.
+3. If sum < 85%: You may be missing outcomes or being too conservative.
+
+CONSTRAINT: If these markets are mutually exclusive (e.g., "Who will be nominated?"),
+your probabilities MUST sum to approximately 100%. Inconsistent probabilities indicate
+faulty reasoning - adjust before submitting.
+
+ADJUSTMENT PROCEDURE if sum != ~100%:
+1. Identify your LEAST confident estimate
+2. Adjust that estimate to make the sum closer to 100%
+3. Note the adjustment in your reasoning""")
     ])
 
 
