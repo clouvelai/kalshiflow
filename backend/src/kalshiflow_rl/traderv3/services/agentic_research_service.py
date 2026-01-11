@@ -23,8 +23,8 @@ from typing import Dict, Any, Optional, List, TYPE_CHECKING
 from enum import Enum
 
 from langchain_openai import ChatOpenAI
-from langchain_community.tools import DuckDuckGoSearchRun
 from langchain_core.prompts import ChatPromptTemplate
+from ddgs import DDGS
 from pydantic import BaseModel, Field
 
 if TYPE_CHECKING:
@@ -162,13 +162,13 @@ class AgenticResearchService:
             api_key=self._api_key,
         )
         
-        # Initialize web search tool if enabled
-        self._search_tool = None
+        # Initialize web search tool if enabled (ddgs library)
+        self._ddgs = None
         if self._web_search_enabled:
             try:
-                self._search_tool = DuckDuckGoSearchRun()
+                self._ddgs = DDGS()
             except Exception as e:
-                logger.warning(f"Failed to initialize web search tool: {e}. Web search will be disabled.")
+                logger.warning(f"Failed to initialize DDGS search: {e}. Web search will be disabled.")
                 self._web_search_enabled = False
         
         # State
@@ -572,34 +572,34 @@ class AgenticResearchService:
     async def _search_web(self, question: str) -> Dict[str, Any]:
         """
         Search the web for information about the question.
-        
-        Uses LangChain's DuckDuckGo search tool.
+
+        Uses ddgs library for structured search results.
         """
-        if not self._search_tool:
+        if not self._ddgs:
             return {"facts": [], "sources": []}
-        
+
         try:
-            # Run search (synchronous tool, but we can run in executor for async)
+            # Run search in executor (ddgs is synchronous)
             loop = asyncio.get_running_loop()
-            search_result = await loop.run_in_executor(
+            results = await loop.run_in_executor(
                 None,
-                self._search_tool.run,
-                question
+                lambda: list(self._ddgs.text(question, max_results=5, timelimit="w"))
             )
-            
-            # Parse search results
-            # DuckDuckGo returns a string with results
-            # For now, treat the result as a fact and extract URLs if present
-            facts = [search_result[:500]]  # First 500 chars as fact
+
+            # Parse structured ddgs results
+            # ddgs returns: [{"title": "...", "href": "...", "body": "..."}, ...]
+            facts = []
             sources = []
 
-            # Try to extract URLs from search result
-            urls = re.findall(r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+', search_result)
-            sources.extend(urls[:5])  # First 5 URLs as sources
-            
+            for item in results:
+                if item.get("body"):
+                    facts.append(item["body"][:500])  # Truncate long bodies
+                if item.get("href"):
+                    sources.append(item["href"])
+
             return {
-                "facts": facts,
-                "sources": sources,
+                "facts": facts[:5],
+                "sources": sources[:5],
             }
         except Exception as e:
             logger.warning(f"Web search error: {e}")

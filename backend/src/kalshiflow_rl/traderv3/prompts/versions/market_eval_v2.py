@@ -41,10 +41,10 @@ HOW PREDICTION MARKETS WORK:
 - Buy NO at Yc -> profit (100-Y)c if NO, lose Yc if YES
 - EXPECTED VALUE: EV = P(correct) * profit - P(wrong) * loss
 - TRADING RULE: You SHOULD recommend a trade when:
-  1. Edge > 5% (your probability differs from market by >5 cents)
+  1. Edge > 30% (your probability differs from market by >30 cents)
   2. Confidence is medium or high
   3. Evidence quality is medium or high
-- NO TRADE when: Edge < 5%, OR confidence is low, OR evidence is speculative
+- NO TRADE when: Edge < 30%, OR confidence is low, OR evidence is speculative
 - The goal is PROFIT. Edge with conviction should lead to action.
 
 === PROBABILITY INTERPRETATION (CRITICAL) ===
@@ -172,7 +172,7 @@ For EACH market, complete these steps IN ORDER:
 10. EDGE & EV CALCULATION:
    - Your Edge: (Your probability) - (Market guess / 100)
    - If positive edge: EV per $1 = edge × (potential profit) - (1-edge) × (potential loss)
-   - RECOMMENDATION: TRADE if |edge| > 5% AND confidence >= medium
+   - RECOMMENDATION: TRADE if |edge| > 30% AND confidence >= medium
    - If no edge or low confidence: NO TRADE - explain why
 
 === CROSS-MARKET CONSISTENCY CHECK (CRITICAL) ===

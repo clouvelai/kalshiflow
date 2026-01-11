@@ -486,6 +486,24 @@ export const useV3WebSocket = ({ onMessage }) => {
         }
         break;
 
+      case 'activity_feed_history':
+        // Replay historical activity events for cross-tab persistence
+        // This allows activity to persist when switching between Trader and Discovery views
+        if (data.data?.events) {
+          data.data.events.forEach(item => {
+            if (item.type === 'system_activity') {
+              const activityData = item.data;
+              onMessage?.('activity', activityData.message, {
+                activity_type: activityData.activity_type,
+                timestamp: activityData.timestamp,
+                metadata: activityData.metadata,
+                is_history: true
+              });
+            }
+          });
+        }
+        break;
+
       default:
         break;
     }

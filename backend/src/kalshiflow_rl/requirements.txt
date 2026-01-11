@@ -35,7 +35,8 @@ wandb>=0.17.0  # Experiment tracking (optional)
 # Agentic Research Dependencies
 langchain>=0.3.0  # Core LangChain framework for agentic pipelines
 langchain-openai>=0.2.0  # OpenAI integration for LangChain
-langchain-community>=0.3.0  # Community tools (web search, DuckDuckGo, etc.)
+# langchain-community>=0.3.0  # Replaced by ddgs for web search
+ddgs>=7.0.0  # DuckDuckGo search with multi-backend support (news, text, time filtering)
 
 # Note: The following are already available from base kalshiflow dependencies:
 # - asyncpg (database connections)

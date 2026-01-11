@@ -219,17 +219,31 @@ SkipBox.displayName = 'SkipBox';
 const SkipBreakdownSection = memo(({ strategyId, skipBreakdown }) => {
   // Agentic Research uses different skip categories
   if (strategyId === 'agentic_research') {
+    // Calculate totals for header
+    const totalSkips = (skipBreakdown.threshold || 0) +
+                       (skipBreakdown.position_limit || 0) +
+                       (skipBreakdown.event_limit || 0);
+
     return (
       <div className="mb-4">
         <div className="flex items-center space-x-2 mb-2">
           <AlertCircle className="w-3 h-3 text-gray-600" />
           <span className="text-[10px] text-gray-500 uppercase tracking-wider font-medium">Skip Breakdown</span>
+          {totalSkips > 0 && (
+            <span className="text-[10px] text-emerald-500 font-mono">({totalSkips} total)</span>
+          )}
         </div>
-        <div className="grid grid-cols-4 gap-2">
+        {/* Main skip categories */}
+        <div className="grid grid-cols-3 gap-2 mb-2">
           <SkipBox label="Threshold" value={skipBreakdown.threshold || 0} accentColor="emerald" />
           <SkipBox label="Position Lim" value={skipBreakdown.position_limit || 0} accentColor="emerald" />
           <SkipBox label="Event Lim" value={skipBreakdown.event_limit || 0} accentColor="emerald" />
-          <SkipBox label="Hold Rec" value={skipBreakdown.hold_recommendation || 0} accentColor="emerald" />
+        </div>
+        {/* Granular threshold breakdown (subset of Threshold) */}
+        <div className="grid grid-cols-3 gap-2">
+          <SkipBox label="Hold Rec" value={skipBreakdown.hold_recommendation || 0} accentColor="violet" />
+          <SkipBox label="Low Edge" value={skipBreakdown.below_edge_threshold || 0} accentColor="violet" />
+          <SkipBox label="Low Conf" value={skipBreakdown.low_confidence || 0} accentColor="violet" />
         </div>
       </div>
     );
@@ -413,24 +427,69 @@ const formatPnl = (pnlCents) => {
  * Renders strategy-specific columns based on strategyId
  */
 const DecisionRow = memo(({ decision, strategyId }) => {
-  const isExecuted = decision.action === 'executed' || decision.action === 'reentry' ||
-                     decision.action === 'entry_placed' || decision.action?.startsWith('exit_');
-  const isSkipped = decision.action?.startsWith('skipped');
+  const action = decision.action || 'unknown';
+
+  // Classify actions for styling
+  const isExecuted = action === 'executed' || action === 'reentry' ||
+                     action === 'entry_placed' || action?.startsWith('exit_');
+  const isSkipped = action?.startsWith('skipped') || action === 'hold';
+  const isShadowMode = action === 'shadow_mode';
+  const isPlanned = action === 'planned';
+
+  // Get action display color
+  const getActionStyle = () => {
+    if (isExecuted) return 'bg-green-900/30 text-green-400 border border-green-600/20';
+    if (isShadowMode) return 'bg-blue-900/30 text-blue-400 border border-blue-600/20';
+    if (isPlanned) return 'bg-cyan-900/30 text-cyan-400 border border-cyan-600/20';
+    if (isSkipped) return 'bg-yellow-900/30 text-yellow-400 border border-yellow-600/20';
+    return 'bg-gray-800/30 text-gray-400 border border-gray-600/20';
+  };
+
+  // Get action display text
+  const getActionText = () => {
+    if (action === 'shadow_mode') return 'SHADOW';
+    if (action === 'planned') return 'PLANNED';
+    if (action === 'hold') return 'HOLD';
+    return action?.replace('skipped_', '').replace('exit_', '').toUpperCase() || 'UNKNOWN';
+  };
+
+  // Build tooltip for agentic_research decisions
+  const getTooltip = () => {
+    if (strategyId !== 'agentic_research') return null;
+    const parts = [];
+    if (decision.trade_rationale) parts.push(decision.trade_rationale);
+    if (decision.action_details?.length) parts.push(`Actions: ${decision.action_details.join(', ')}`);
+    if (decision.risk_notes) parts.push(`Risk: ${decision.risk_notes}`);
+    if (decision.expected_value_cents) parts.push(`EV: ${decision.expected_value_cents}c`);
+    return parts.join(' | ') || null;
+  };
 
   // Render strategy-specific columns
   const renderStrategyColumns = () => {
     if (strategyId === 'agentic_research') {
       const aiProb = decision.ai_probability;
       const edge = decision.edge;
+      const confidence = decision.confidence;
+
+      // Confidence color mapping
+      const confColor = confidence === 'high' ? 'text-green-400'
+        : confidence === 'medium' ? 'text-yellow-400'
+        : 'text-gray-500';
+
       return (
         <>
           <td className="px-2 py-2 text-right">
             <span className="text-xs text-emerald-400">
               {aiProb != null ? `${(aiProb * 100).toFixed(0)}%` : '-'}
             </span>
+            {confidence && (
+              <span className={`ml-1 text-[9px] ${confColor}`}>
+                ({confidence[0].toUpperCase()})
+              </span>
+            )}
           </td>
           <td className="px-2 py-2 text-right">
-            <span className={`text-xs ${edge != null && edge > 0 ? 'text-green-400' : edge != null && edge < 0 ? 'text-red-400' : 'text-gray-400'}`}>
+            <span className={`text-xs ${edge != null && edge > 0.05 ? 'text-green-400' : edge != null && edge > 0 ? 'text-yellow-400' : 'text-gray-400'}`}>
               {edge != null ? `${(edge * 100).toFixed(1)}%` : '-'}
             </span>
           </td>
@@ -443,12 +502,12 @@ const DecisionRow = memo(({ decision, strategyId }) => {
         <>
           <td className="px-2 py-2 text-right">
             <span className="text-xs text-gray-400">
-              {decision.dip_depth != null ? `${decision.dip_depth}c` : '—'}
+              {decision.dip_depth != null ? `${decision.dip_depth}c` : '-'}
             </span>
           </td>
           <td className="px-2 py-2 text-right">
             <span className={`text-xs ${pnl?.colorClass || 'text-gray-400'}`}>
-              {pnl?.text || '—'}
+              {pnl?.text || '-'}
             </span>
           </td>
         </>
@@ -459,37 +518,42 @@ const DecisionRow = memo(({ decision, strategyId }) => {
       <>
         <td className="px-2 py-2 text-right">
           <span className="text-xs text-gray-400">
-            {decision.yes_ratio != null ? `${(decision.yes_ratio * 100).toFixed(0)}%` : '—'}
+            {decision.yes_ratio != null ? `${(decision.yes_ratio * 100).toFixed(0)}%` : '-'}
           </span>
         </td>
         <td className="px-2 py-2 text-right">
           <span className="text-xs text-gray-400">
-            {decision.price_drop != null ? `${decision.price_drop}c` : '—'}
+            {decision.price_drop != null ? `${decision.price_drop}c` : '-'}
           </span>
         </td>
       </>
     );
   };
 
+  const tooltip = getTooltip();
+
   return (
-    <tr className="border-b border-gray-700/20 hover:bg-gray-800/30 transition-colors">
+    <tr
+      className="border-b border-gray-700/20 hover:bg-gray-800/30 transition-colors cursor-default"
+      title={tooltip || undefined}
+    >
       <td className="px-2 py-2">
         <span className="font-mono text-gray-300 text-xs truncate block max-w-[100px]" title={decision.market_ticker}>
-          {decision.market_ticker || '—'}
+          {decision.market_ticker || '-'}
         </span>
       </td>
       <td className="px-2 py-2 text-center">
         <span className={`
           inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold
-          ${isExecuted
-            ? 'bg-green-900/30 text-green-400 border border-green-600/20'
-            : isSkipped
-              ? 'bg-yellow-900/30 text-yellow-400 border border-yellow-600/20'
-              : 'bg-red-900/30 text-red-400 border border-red-600/20'
-          }
+          ${getActionStyle()}
         `}>
-          {decision.action?.replace('skipped_', '').replace('exit_', '').toUpperCase() || 'UNKNOWN'}
+          {getActionText()}
         </span>
+        {decision.actions_count > 0 && !isSkipped && (
+          <span className="ml-1 text-[9px] text-gray-500">
+            x{decision.actions_count}
+          </span>
+        )}
       </td>
       {renderStrategyColumns()}
       <td className="px-2 py-2 text-right">
@@ -508,7 +572,8 @@ DecisionRow.displayName = 'DecisionRow';
  * Renders strategy-specific column headers based on strategyId
  */
 const RecentDecisionsSection = memo(({ decisions, strategyId }) => {
-  const [isExpanded, setIsExpanded] = useState(false);
+  // Default to expanded for agentic_research to improve decision visibility
+  const [isExpanded, setIsExpanded] = useState(strategyId === 'agentic_research');
 
   if (!decisions || decisions.length === 0) {
     return null;
@@ -519,7 +584,7 @@ const RecentDecisionsSection = memo(({ decisions, strategyId }) => {
     if (strategyId === 'agentic_research') {
       return (
         <>
-          <th className="px-2 py-1.5 text-right text-[9px] text-gray-500 uppercase font-semibold">AI Prob</th>
+          <th className="px-2 py-1.5 text-right text-[9px] text-gray-500 uppercase font-semibold" title="AI Probability (Confidence)">Prob/Conf</th>
           <th className="px-2 py-1.5 text-right text-[9px] text-gray-500 uppercase font-semibold">Edge</th>
         </>
       );

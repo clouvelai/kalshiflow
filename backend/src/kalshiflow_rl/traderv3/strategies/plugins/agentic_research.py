@@ -65,6 +65,13 @@ from ...services.agentic_research_service import (
 )
 from ...services.event_research_service import EventResearchService
 from ...services.order_context_service import get_order_context_service
+from ...services.execution_agent import (
+    ExecutionAgent,
+    MarketAssessmentToolResult,
+    MarketMicrostructureToolResult,
+    PositionsAndOrdersToolResult,
+    ActionType,
+)
 from ...state.microstructure_context import MicrostructureContext, TradeFlowState
 from ...state.event_research_context import (
     EventResearchContext,
@@ -141,6 +148,16 @@ class AgenticResearchStrategy:
         self._web_search_enabled = True
         self._cache_ttl_seconds = 300.0
         self._max_concurrent_research = 3
+        
+        # Execution agent config
+        self._execution_agent: Optional[ExecutionAgent] = None
+        self._execution_agent_model = "gpt-4o-mini"
+        self._execution_agent_temperature = 0.3
+        self._execution_shadow_mode = False  # Execution enabled - places orders via TradingDecisionService
+        self._execution_interval = 30.0  # Fast loop: every 30s
+        self._research_refresh_interval = 900.0  # Slow loop: every 15 minutes
+        self._execution_loop_task: Optional[asyncio.Task] = None
+        self._execution_candidate_limit = 20  # Max markets to evaluate per execution cycle
 
         # Decision tracking for iteration
         self._decision_log: List[Dict] = []  # Track all decisions with reasoning
@@ -203,6 +220,38 @@ class AgenticResearchStrategy:
             self._web_search_enabled = params.get("web_search_enabled", self._web_search_enabled)
             self._cache_ttl_seconds = params.get("cache_ttl_seconds", self._cache_ttl_seconds)
             self._max_concurrent_research = params.get("max_concurrent_research", self._max_concurrent_research)
+            
+            # Execution agent params
+            self._execution_agent_model = params.get("execution_agent_model", self._execution_agent_model)
+            self._execution_agent_temperature = params.get("execution_agent_temperature", self._execution_agent_temperature)
+            self._execution_shadow_mode = params.get("execution_shadow_mode", self._execution_shadow_mode)
+            self._execution_interval = params.get("execution_interval_seconds", self._execution_interval)
+            self._research_refresh_interval = params.get("research_refresh_interval_seconds", self._research_refresh_interval)
+            self._execution_candidate_limit = params.get("execution_candidate_limit", self._execution_candidate_limit)
+        
+        # Initialize execution agent (before loops start)
+        try:
+            self._execution_agent = ExecutionAgent(
+                openai_api_key=None,  # Load from env
+                model=self._execution_agent_model,
+                temperature=self._execution_agent_temperature,
+                shadow_mode=self._execution_shadow_mode,
+                # Position sizing constraints (passed to prompt)
+                default_contracts_per_trade=self._contracts_per_trade,
+                max_position_per_market=self._contracts_per_trade * 10,  # 10x default size max per market
+                max_total_positions=self._max_positions,
+                max_positions_per_event=self._max_positions_per_event,
+                # Event bus for activity feed
+                event_bus=self._context.event_bus if self._context else None,
+            )
+            logger.info(
+                f"ExecutionAgent initialized (model={self._execution_agent_model}, "
+                f"shadow_mode={self._execution_shadow_mode}, "
+                f"default_qty={self._contracts_per_trade})"
+            )
+        except Exception as e:
+            logger.error(f"Failed to initialize execution agent: {e}")
+            raise
 
         # Initialize event research service (primary for event-first approach)
         if self._use_event_first:
@@ -256,28 +305,39 @@ class AgenticResearchStrategy:
             await context.event_bus.subscribe_to_tmo_fetched(self._on_tmo_fetched)
             logger.info("Subscribed to TMO_FETCHED events for price improvement")
 
-        # Start periodic evaluation loop
+        # Start periodic evaluation loop (slow: research refresh)
         self._running = True
         self._started_at = time.time()
-        self._evaluation_task = asyncio.create_task(self._evaluation_loop())
+        self._evaluation_task = asyncio.create_task(self._research_refresh_loop())
+        
+        # Start fast execution loop (fast: trade decisions)
+        self._execution_loop_task = asyncio.create_task(self._execution_loop())
 
         logger.info(
             f"AgenticResearchStrategy started "
             f"(event_first={self._use_event_first}, "
-            f"min_mispricing={self._min_mispricing}, "
-            f"min_confidence={self._min_confidence}, "
-            f"max_positions={self._max_positions})"
+            f"execution_agent={self._execution_agent is not None}, "
+            f"execution_shadow_mode={self._execution_shadow_mode}, "
+            f"execution_interval={self._execution_interval}s, "
+            f"research_refresh_interval={self._research_refresh_interval}s)"
         )
     
     async def stop(self) -> None:
         """Stop the strategy."""
         self._running = False
 
-        # Cancel evaluation loop
+        # Cancel evaluation loops
         if self._evaluation_task:
             self._evaluation_task.cancel()
             try:
                 await self._evaluation_task
+            except asyncio.CancelledError:
+                pass
+        
+        if self._execution_loop_task:
+            self._execution_loop_task.cancel()
+            try:
+                await self._execution_loop_task
             except asyncio.CancelledError:
                 pass
 
@@ -310,6 +370,7 @@ class AgenticResearchStrategy:
         return (
             self._running
             and self._research_service is not None
+            and self._execution_agent is not None
             and self._context is not None
         )
     
@@ -424,6 +485,17 @@ class AgenticResearchStrategy:
             },
             # Recent decisions for debugging
             "recent_decisions": self._decision_log[-10:] if self._decision_log else [],
+            # Execution agent stats
+            "execution_agent": {
+                "shadow_mode": self._execution_shadow_mode,
+                "model": self._execution_agent_model,
+                "execution_interval": self._execution_interval,
+                "decisions_logged": len(self._execution_agent._decision_log) if self._execution_agent else 0,
+                "recent_decisions": (
+                    self._execution_agent.get_decision_history(limit=10)
+                    if self._execution_agent else []
+                ),
+            },
             **self._stats,
         }
     
@@ -605,31 +677,35 @@ class AgenticResearchStrategy:
 
         return context
     
-    async def _evaluation_loop(self) -> None:
-        """Periodic loop to evaluate tracked markets."""
+    async def _research_refresh_loop(self) -> None:
+        """Slow loop: Refresh event research and market assessments."""
         while self._running:
             try:
-                await asyncio.sleep(self._evaluation_interval)
-                await self._evaluate_tracked_markets()
+                await self._refresh_research()  # Run research first, then sleep
+                await asyncio.sleep(self._research_refresh_interval)
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.error(f"Error in evaluation loop: {e}", exc_info=True)
+                logger.error(f"Error in research refresh loop: {e}", exc_info=True)
     
-    async def _evaluate_tracked_markets(self) -> None:
+    async def _execution_loop(self) -> None:
+        """Fast loop: Make execution decisions using cached assessments + live market data."""
+        while self._running:
+            try:
+                await asyncio.sleep(self._execution_interval)
+                await self._run_execution_agent()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Error in execution loop: {e}", exc_info=True)
+    
+    async def _refresh_research(self) -> None:
         """
-        Evaluate all tracked markets for research/trading opportunities.
-
-        Uses event-first research when enabled:
-        1. Group markets by event_ticker
-        2. Research each event holistically
-        3. Evaluate all markets in event with shared context
-        4. Generate trades for mispriced markets
-
-        Falls back to market-by-market research when:
-        - event-first is disabled
-        - event has fewer markets than threshold
-        - event research service unavailable
+        Slow loop: Refresh event research and market assessments (every 15 minutes).
+        
+        This replaces the old _evaluate_tracked_markets() which did both
+        research AND execution. Now this only does research; execution is handled
+        by the fast execution loop.
         """
         if not self._context or not self._context.tracked_markets:
             return
@@ -641,15 +717,16 @@ class AgenticResearchStrategy:
 
         # Use event-first research if enabled and service available
         if self._use_event_first and self._event_research_service:
-            await self._evaluate_by_event(tracked_markets)
+            await self._evaluate_by_event_research_only(tracked_markets)
         else:
             await self._evaluate_by_market(tracked_markets)
-
-    async def _evaluate_by_event(self, tracked_markets: list) -> None:
+    
+    async def _evaluate_by_event_research_only(self, tracked_markets: list) -> None:
         """
-        Event-first evaluation: group markets by event and research holistically.
+        Event-first research only (no execution).
 
-        This is the primary research path when event-first is enabled.
+        Research events and cache assessments for the execution agent to use.
+        Execution decisions are made separately by the fast execution loop.
         """
         # Step 1: Group markets by event_ticker
         event_groups: Dict[str, list] = {}
@@ -667,18 +744,16 @@ class AgenticResearchStrategy:
 
         # Step 2: Process each event
         for event_ticker, markets in event_groups.items():
-            # Skip if event was recently researched
+            # Skip if event was recently researched (within TTL)
+            # Execution agent will handle trade decisions using cached assessments
             if event_ticker in self._events_researched:
-                # Check if we have cached results
                 cached_result = self._get_cached_event_result(event_ticker)
-                if cached_result and cached_result.success:
-                    # Re-check assessments for trading opportunities
-                    for assessment in cached_result.assessments:
-                        await self._check_and_trade_from_event_assessment(
-                            assessment,
-                            event_ticker=event_ticker,
-                        )
-                continue
+                if cached_result:
+                    # Still valid - skip research refresh
+                    continue
+                else:
+                    # Expired - clear from cache so we re-research
+                    self._events_researched.discard(event_ticker)
 
             # Skip events with too few markets (use market-by-market instead)
             if len(markets) < self._min_markets_for_event_research:
@@ -707,6 +782,7 @@ class AgenticResearchStrategy:
                     event_ticker=event_ticker,
                     markets=markets,
                     microstructure=microstructure,
+                    event_bus=self._context.event_bus if self._context else None,
                 )
 
                 # Cache the result
@@ -732,12 +808,8 @@ class AgenticResearchStrategy:
                             event_ticker, result
                         )
 
-                    # Step 6: Process assessments for trading
-                    for assessment in result.assessments:
-                        await self._check_and_trade_from_event_assessment(
-                            assessment,
-                            event_ticker=event_ticker,
-                        )
+                    # Step 6: Assessments are cached - execution agent will use them
+                    # (No direct execution here - that's now in the fast execution loop)
                 else:
                     logger.warning(
                         f"Event research failed for {event_ticker}: "
@@ -748,6 +820,450 @@ class AgenticResearchStrategy:
                 logger.error(f"Event research failed for {event_ticker}: {e}", exc_info=True)
                 # Fall back to market-by-market for this event's markets
                 await self._evaluate_by_market(markets)
+    
+    async def _run_execution_agent(self) -> None:
+        """
+        Fast execution loop: Make trade decisions using cached assessments + live market data.
+
+        This runs every 30 seconds and uses the execution agent to decide whether
+        to trade based on current microstructure, positions, and cached research.
+        """
+        if not self._execution_agent or not self._context:
+            return
+
+        # Get candidate markets from cached assessments
+        candidate_markets = self._get_candidate_markets()
+
+        if not candidate_markets:
+            logger.debug("[EXECUTION_AGENT] No candidate markets found")
+            return
+
+        logger.debug(f"[EXECUTION_AGENT] Evaluating {len(candidate_markets)} candidate markets")
+
+        # Process each candidate market
+        for market_ticker, event_ticker in candidate_markets:
+            try:
+                # Build tool functions for this market
+                async def get_assessment(ticker: str) -> MarketAssessmentToolResult:
+                    return await self._get_assessment_tool(ticker)
+
+                async def get_microstructure(ticker: str) -> MarketMicrostructureToolResult:
+                    return await self._get_microstructure_tool(ticker)
+
+                async def get_positions(ticker: str, _evt=event_ticker) -> PositionsAndOrdersToolResult:
+                    return await self._get_positions_tool(ticker, _evt)
+
+                async def execute_action(action) -> None:
+                    await self._execute_action_tool(action)
+
+                # Let execution agent decide
+                plan = await self._execution_agent.decide_actions(
+                    market_ticker=market_ticker,
+                    get_assessment_fn=get_assessment,
+                    get_microstructure_fn=get_microstructure,
+                    get_positions_fn=get_positions,
+                    execute_fn=execute_action,
+                )
+
+                if plan:
+                    # Count as an assessment completed (evaluation happened)
+                    self._stats["assessments_completed"] += 1
+
+                    # Track skip reasons based on plan outcome
+                    actions = plan.actions
+                    if not actions:
+                        # No action taken - this is a HOLD decision
+                        self._stats["trades_skipped_threshold"] += 1
+                        self._stats["skip_hold_recommendation"] += 1
+                    else:
+                        # Check if actions were executed
+                        executed_any = False
+                        for action in actions:
+                            if action.type == ActionType.PLACE_ORDER:
+                                # Order was placed (we track this in _execute_action_tool)
+                                executed_any = True
+
+                        if not executed_any:
+                            # Actions planned but not executed (e.g., shadow mode)
+                            pass  # Don't count as skip - it's by design
+
+                    logger.info(
+                        f"[EXECUTION_AGENT] {market_ticker}: {len(plan.actions)} actions planned "
+                        f"(EV={plan.expected_value_cents}c)"
+                    )
+
+            except Exception as e:
+                logger.error(
+                    f"[EXECUTION_AGENT] Failed to process {market_ticker}: {e}",
+                    exc_info=True
+                )
+    
+    def _get_candidate_markets(self) -> List[tuple]:
+        """
+        Get candidate markets for execution agent to evaluate.
+        
+        Returns list of (market_ticker, event_ticker) tuples.
+        """
+        candidates = []
+        current_time = time.time()
+        
+        # Get markets from cached event research results
+        for event_ticker, result in self._event_research_cache.items():
+            if not result or not result.success:
+                continue
+            
+            # Check if cache is still valid
+            age = current_time - result.event_context.researched_at
+            if age > self._event_cache_ttl_seconds:
+                continue
+            
+            # Add all markets from this event
+            for assessment in result.assessments:
+                candidates.append((assessment.market_ticker, event_ticker))
+        
+        # Also include markets with existing positions (for order management)
+        if self._context and self._context.state_container:
+            trading_state = self._context.state_container.trading_state
+            if trading_state and trading_state.positions:
+                for market_ticker in trading_state.positions.keys():
+                    # Get event ticker from tracked markets
+                    if self._context.tracked_markets:
+                        market = self._context.tracked_markets.get_market(market_ticker)
+                        if market:
+                            event_ticker = market.event_ticker or market_ticker
+                            if (market_ticker, event_ticker) not in candidates:
+                                candidates.append((market_ticker, event_ticker))
+        
+        # Limit candidates to avoid excessive token usage
+        return candidates[:self._execution_candidate_limit]
+    
+    async def _get_assessment_tool(self, market_ticker: str) -> MarketAssessmentToolResult:
+        """Tool: Get cached market assessment."""
+        # Find assessment in cached event results
+        assessment = None
+        event_ticker = None
+        assessment_time = 0.0
+        
+        for event_tick, result in self._event_research_cache.items():
+            if not result or not result.success:
+                continue
+            for assm in result.assessments:
+                if assm.market_ticker == market_ticker:
+                    assessment = assm
+                    event_ticker = event_tick
+                    assessment_time = result.event_context.researched_at
+                    break
+            if assessment:
+                break
+        
+        if not assessment:
+            # No assessment found - return default
+            return MarketAssessmentToolResult(
+                prob_yes=0.5,
+                confidence="low",
+                assessment_time=0.0,
+                age_seconds=999999.0,
+                market_probability_at_assessment=0.5,
+                mispricing_at_assessment=0.0,
+                thesis="No assessment available",
+                key_evidence=[],
+                what_would_change_mind="",
+                event_ticker=None,
+                resolution_criteria=None,
+            )
+        
+        age_seconds = time.time() - assessment_time
+        
+        # Get event context for additional metadata
+        resolution_criteria = None
+        if event_ticker:
+            cached_result = self._event_research_cache.get(event_ticker)
+            if cached_result and cached_result.event_context and cached_result.event_context.context:
+                resolution_criteria = cached_result.event_context.context.resolution_criteria
+        
+        return MarketAssessmentToolResult(
+            prob_yes=assessment.evidence_probability,
+            confidence=assessment.confidence.value if hasattr(assessment.confidence, 'value') else str(assessment.confidence),
+            assessment_time=assessment_time,
+            age_seconds=age_seconds,
+            market_probability_at_assessment=assessment.market_probability,
+            mispricing_at_assessment=assessment.mispricing_magnitude,
+            thesis=assessment.edge_explanation or "",
+            key_evidence=getattr(assessment, 'evidence_cited', []) or [],
+            what_would_change_mind=getattr(assessment, 'what_would_change_mind', "") or "",
+            event_ticker=event_ticker,
+            resolution_criteria=resolution_criteria,
+        )
+    
+    async def _get_microstructure_tool(self, market_ticker: str) -> MarketMicrostructureToolResult:
+        """Tool: Get live market microstructure (execution-quality)."""
+        # Build full microstructure context
+        micro_ctx = await self._build_microstructure_context(market_ticker)
+        
+        # Get orderbook snapshot for raw bid/ask data
+        yes_bid = None
+        yes_ask = None
+        no_bid = None
+        no_ask = None
+        yes_bid_size = None
+        yes_ask_size = None
+        no_bid_size = None
+        no_ask_size = None
+        orderbook_age = 999.0
+        
+        try:
+            orderbook_state = await asyncio.wait_for(
+                get_shared_orderbook_state(market_ticker),
+                timeout=2.0
+            )
+            snapshot = await orderbook_state.get_snapshot()
+            
+            if snapshot:
+                # Extract YES side
+                yes_bids = snapshot.get("yes_bids", {})
+                yes_asks = snapshot.get("yes_asks", {})
+                if yes_bids:
+                    yes_bid = max(yes_bids.keys())
+                    yes_bid_size = yes_bids.get(yes_bid, 0)
+                if yes_asks:
+                    yes_ask = min(yes_asks.keys())
+                    yes_ask_size = yes_asks.get(yes_ask, 0)
+                
+                # Extract NO side (or derive from YES)
+                no_bids = snapshot.get("no_bids", {})
+                no_asks = snapshot.get("no_asks", {})
+                if no_bids:
+                    no_bid = max(no_bids.keys())
+                    no_bid_size = no_bids.get(no_bid, 0)
+                if no_asks:
+                    no_ask = min(no_asks.keys())
+                    no_ask_size = no_asks.get(no_ask, 0)
+                elif yes_bid is not None and yes_ask is not None:
+                    # Derive NO prices from YES
+                    no_bid = 100 - yes_ask
+                    no_ask = 100 - yes_bid
+                
+                # Get orderbook age
+                last_update = snapshot.get("last_update_time", 0)
+                if last_update:
+                    orderbook_age = (time.time() * 1000 - last_update) / 1000.0
+        except Exception as e:
+            logger.debug(f"Could not get orderbook for {market_ticker}: {e}")
+        
+        # Calculate spreads
+        yes_spread = (yes_ask - yes_bid) if (yes_bid is not None and yes_ask is not None) else None
+        no_spread = (no_ask - no_bid) if (no_bid is not None and no_ask is not None) else None
+        
+        # Get recent trade info from trade flow
+        trade_flow = self._trade_flow.get(market_ticker)
+        recent_trade_count = trade_flow.total_trades if trade_flow else 0
+        recent_yes_trades = trade_flow.yes_trades if trade_flow else 0
+        recent_no_trades = trade_flow.no_trades if trade_flow else 0
+        last_trade_price = trade_flow.last_yes_price if trade_flow else None
+        last_trade_time = trade_flow.last_trade_at if trade_flow else None
+        
+        # Calculate price change (simple: from first to last)
+        price_change = 0
+        if trade_flow and trade_flow.first_yes_price and trade_flow.last_yes_price:
+            price_change = trade_flow.first_yes_price - trade_flow.last_yes_price
+        
+        # Determine staleness
+        trade_flow_age = micro_ctx.trade_flow_age_seconds if micro_ctx else 999.0
+        is_stale = orderbook_age > 30.0 or trade_flow_age > 120.0
+        
+        return MarketMicrostructureToolResult(
+            yes_bid=yes_bid,
+            yes_ask=yes_ask,
+            no_bid=no_bid,
+            no_ask=no_ask,
+            yes_spread=yes_spread,
+            no_spread=no_spread,
+            yes_bid_size=yes_bid_size,
+            yes_ask_size=yes_ask_size,
+            no_bid_size=no_bid_size,
+            no_ask_size=no_ask_size,
+            last_trade_price=last_trade_price,
+            last_trade_time=last_trade_time,
+            recent_trade_count=recent_trade_count,
+            recent_yes_trades=recent_yes_trades,
+            recent_no_trades=recent_no_trades,
+            price_change_last_5min=price_change,  # Simplified - could improve with time window
+            orderbook_age_seconds=orderbook_age,
+            trade_flow_age_seconds=trade_flow_age,
+            is_stale=is_stale,
+        )
+    
+    async def _get_positions_tool(
+        self,
+        market_ticker: str,
+        event_ticker: Optional[str]
+    ) -> PositionsAndOrdersToolResult:
+        """Tool: Get current positions and open orders."""
+        position_side = None
+        position_size = 0
+        avg_entry = None
+        unrealized_pnl = None
+        open_orders = []
+        event_exposure_count = 0
+        total_event_exposure = 0
+        
+        if self._context and self._context.state_container:
+            trading_state = self._context.state_container.trading_state
+            
+            # Get position in this market
+            if trading_state and trading_state.positions:
+                market_pos = trading_state.positions.get(market_ticker, {})
+                pos_value = market_pos.get("position", 0)
+                if pos_value != 0:
+                    position_size = abs(pos_value)
+                    position_side = "yes" if pos_value > 0 else "no"
+                    # Try to compute avg entry (simplified)
+                    total_traded = market_pos.get("total_traded", 0)
+                    if total_traded and position_size:
+                        avg_entry = int(total_traded / position_size)
+                    # Unrealized P&L
+                    market_exposure = market_pos.get("market_exposure", 0)
+                    if market_exposure and total_traded:
+                        unrealized_pnl = market_exposure - total_traded
+            
+            # Get open orders in this market
+            if trading_state and trading_state.orders:
+                for order_id, order_data in trading_state.orders.items():
+                    if order_data.get("ticker") == market_ticker:
+                        placed_at = order_data.get("placed_at", time.time())
+                        open_orders.append({
+                            "order_id": order_id,
+                            "side": order_data.get("side", "unknown"),
+                            "qty": order_data.get("count", 0),
+                            "price": order_data.get("price", 0),
+                            "age_seconds": time.time() - placed_at,
+                        })
+            
+            # Count event exposure
+            if event_ticker and trading_state and trading_state.positions:
+                if self._context.tracked_markets:
+                    for ticker, pos in trading_state.positions.items():
+                        market = self._context.tracked_markets.get_market(ticker)
+                        if market and market.event_ticker == event_ticker:
+                            pos_value = pos.get("position", 0)
+                            if pos_value != 0:
+                                event_exposure_count += 1
+                                market_exposure = pos.get("market_exposure", 0)
+                                total_event_exposure += market_exposure
+        
+        return PositionsAndOrdersToolResult(
+            current_position_side=position_side,
+            current_position_size=position_size,
+            avg_entry_price=avg_entry,
+            unrealized_pnl_cents=unrealized_pnl,
+            open_orders=open_orders,
+            event_exposure_count=event_exposure_count,
+            total_event_exposure_cents=total_event_exposure,
+        )
+    
+    async def _execute_action_tool(self, action) -> None:
+        """Tool: Execute an action (place order). Raises exception on failure."""
+        if not self._context or not self._context.trading_service:
+            raise RuntimeError("No trading service available")
+        
+        if action.type != ActionType.PLACE_ORDER:
+            raise ValueError(f"Action type {action.type} not yet implemented")
+        
+        if not action.market_ticker or not action.side or not action.qty or not action.limit_price:
+            raise ValueError("Invalid action: missing required fields")
+        
+        # Create TradingDecision
+        from ...services.trading_decision_service import TradingDecision
+        
+        decision = TradingDecision(
+            action="buy",
+            market=action.market_ticker,
+            side=action.side,
+            quantity=action.qty,
+            price=action.limit_price,
+            reason=f"Execution agent: {action.reason}",
+            confidence=0.75,  # Default confidence (could be improved)
+            strategy_id=self.name,  # Important: keep attribution to agentic_research
+            signal_params={
+                "execution_agent": True,
+                "action_reason": action.reason,
+            },
+        )
+        
+        # Execute via trading service
+        success = await self._context.trading_service.execute_decision(decision)
+        
+        if success:
+            self._orders_placed += 1
+            self._signals_detected += 1
+            self._last_signal_at = time.time()
+            self._stats["orders_placed"] += 1
+            self._stats["signals_detected"] += 1
+            logger.info(
+                f"[EXECUTION_AGENT] Order placed: {action.side.upper()} "
+                f"{action.qty}x {action.market_ticker} @ {action.limit_price}c"
+            )
+        else:
+            # Raise exception so execution agent can track failure
+            raise RuntimeError(f"Trading service returned False for {action.market_ticker}")
+        
+        # Persist execution decision for analysis (fire-and-forget)
+        try:
+            await self._persist_execution_decision(action, decision, success)
+        except Exception as e:
+            logger.warning(f"Failed to persist execution decision: {e}")
+    
+    async def _persist_execution_decision(
+        self,
+        action,
+        decision: Any,  # TradingDecision
+        success: bool,
+    ) -> None:
+        """Persist execution agent decision to database for analysis."""
+        try:
+            from ...services.order_context_service import get_order_context_service
+            import json
+            
+            order_context_service = get_order_context_service()
+            db_pool = order_context_service.db_pool
+            
+            if not db_pool:
+                return
+            
+            # Get assessment for context
+            assessment_result = await self._get_assessment_tool(action.market_ticker)
+            
+            async with db_pool.acquire() as conn:
+                # Use existing research_decisions table
+                await conn.execute(
+                    """
+                    INSERT INTO research_decisions (
+                        session_id, strategy_id, market_ticker, event_ticker,
+                        action, reason, traded,
+                        ai_probability, market_probability, edge, confidence, recommendation,
+                        edge_explanation, key_driver, key_evidence
+                    ) VALUES (
+                        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15
+                    )
+                    """,
+                    self._session_id,
+                    self.name,
+                    action.market_ticker,
+                    assessment_result.event_ticker,
+                    f"EXECUTION_AGENT_{action.type.value.upper()}",
+                    action.reason,
+                    success,
+                    assessment_result.prob_yes,
+                    assessment_result.market_probability_at_assessment,
+                    assessment_result.mispricing_at_assessment,
+                    assessment_result.confidence,
+                    f"{action.side.upper()}" if action.side else "HOLD",
+                    f"Execution agent decision: {action.reason}",
+                    None,  # key_driver
+                    json.dumps(assessment_result.key_evidence) if assessment_result.key_evidence else None,
+                )
+        except Exception as e:
+            logger.warning(f"Failed to persist execution decision: {e}")
 
     async def _evaluate_by_market(self, tracked_markets: list) -> None:
         """
@@ -766,9 +1282,8 @@ class AgenticResearchStrategy:
                     market.ticker,
                     wait_seconds=0.0,
                 )
-                if assessment:
-                    # Re-evaluate for trading opportunity
-                    await self._check_and_trade(market.ticker, assessment)
+                # Legacy market-by-market path - assessments are cached for execution agent
+                # Execution agent will handle trade decisions in fast loop
                 continue
 
             # Check if market is researchable
@@ -810,298 +1325,9 @@ class AgenticResearchStrategy:
 
         return result
 
-    async def _check_and_trade_from_event_assessment(
-        self,
-        assessment: EventMarketAssessment,
-        event_ticker: Optional[str] = None,
-    ) -> None:
-        """
-        Check event-based market assessment and generate trade if warranted.
-
-        Similar to _check_and_trade but uses EventMarketAssessment structure.
-
-        Args:
-            assessment: Market assessment from event research
-            event_ticker: Event ticker for grouping (persisted for calibration queries)
-        """
-        if not self._context:
-            return
-
-        # Increment assessments completed at start (for tracking all evaluations)
-        self._stats["assessments_completed"] += 1
-
-        # Log the assessment being evaluated
-        logger.info(f"[RESEARCH] Market: {assessment.market_ticker}")
-        logger.info(
-            f"[RESEARCH] AI Prob: {assessment.evidence_probability:.1%} | "
-            f"Market Prob: {assessment.market_probability:.1%} | "
-            f"Edge: {assessment.mispricing_magnitude:+.1%}"
-        )
-        logger.info(
-            f"[RESEARCH] Confidence: {assessment.confidence.value} | "
-            f"Recommendation: {assessment.recommendation}"
-        )
-
-        # Extract research metadata for ALL decisions (not just trades)
-        # This enables full decision tracking even for SKIPs
-        key_driver = None
-        key_evidence = None
-        if event_ticker:
-            cached_result = self._event_research_cache.get(event_ticker)
-            if cached_result and cached_result.success:
-                key_driver = cached_result.event_context.driver_analysis.primary_driver
-                key_evidence = cached_result.event_context.evidence.key_evidence[:3]  # Top 3
-
-        # Helper to log decision (in-memory AND to database)
-        def log_decision(
-            action: str,
-            reason: str,
-            traded: bool = False,
-            price: int = 0,
-            order_id: Optional[str] = None,
-        ):
-            # 1. In-memory log (existing behavior - for real-time stats)
-            decision_entry = {
-                "timestamp": time.time(),
-                "market_ticker": assessment.market_ticker,
-                "strategy_id": self.name,
-                "ai_probability": assessment.evidence_probability,
-                "market_probability": assessment.market_probability,
-                "edge": assessment.mispricing_magnitude,
-                "confidence": assessment.confidence.value,
-                "recommendation": assessment.recommendation,
-                "reasoning": assessment.edge_explanation[:200] if assessment.edge_explanation else "",
-                "action": action,
-                "reason": reason,
-                "traded": traded,
-                "price": price,
-            }
-            self._decision_log.append(decision_entry)
-            # Keep only last 100 decisions
-            if len(self._decision_log) > 100:
-                self._decision_log = self._decision_log[-100:]
-
-            # 2. Database persistence (fire-and-forget background task)
-            # Persists full reasoning and all context for offline analysis
-            async def _persist():
-                await self._persist_decision(
-                    market_ticker=assessment.market_ticker,
-                    event_ticker=event_ticker,
-                    action=action,
-                    reason=reason,
-                    traded=traded,
-                    ai_probability=assessment.evidence_probability,
-                    market_probability=assessment.market_probability,
-                    edge=assessment.mispricing_magnitude,
-                    confidence=assessment.confidence.value,
-                    recommendation=assessment.recommendation,
-                    price_guess_cents=getattr(assessment, 'price_guess_cents', None),
-                    price_guess_error_cents=getattr(assessment, 'price_guess_error_cents', None),
-                    edge_explanation=assessment.edge_explanation,  # FULL text (not truncated)
-                    key_driver=key_driver,
-                    key_evidence=key_evidence,
-                    entry_price_cents=price if traded else None,
-                    order_id=order_id,
-                    # v2 calibration fields
-                    evidence_cited=getattr(assessment, 'evidence_cited', None),
-                    what_would_change_mind=getattr(assessment, 'what_would_change_mind', None),
-                    assumption_flags=getattr(assessment, 'assumption_flags', None),
-                    calibration_notes=getattr(assessment, 'calibration_notes', None),
-                    evidence_quality=getattr(assessment, 'evidence_quality', None),
-                )
-
-            # Schedule persistence task (non-blocking)
-            task = asyncio.create_task(_persist())
-            # Log exceptions but don't block
-            task.add_done_callback(
-                lambda t: logger.warning(f"Decision persistence failed: {t.exception()}")
-                if t.exception() else None
-            )
-
-        # Filter: Skip HOLD recommendations (not enough edge)
-        if assessment.recommendation == "HOLD":
-            self._stats["trades_skipped_threshold"] += 1
-            self._stats["skip_hold_recommendation"] += 1
-            logger.info(f"[DECISION] SKIP: HOLD recommendation (edge={assessment.mispricing_magnitude:+.1%})")
-            log_decision("SKIP_HOLD", "HOLD recommendation - insufficient edge")
-            return
-
-        # Filter: Skip if below mispricing threshold
-        abs_mispricing = abs(assessment.mispricing_magnitude)
-        if abs_mispricing < self._min_mispricing:
-            self._stats["trades_skipped_threshold"] += 1
-            self._stats["skip_below_threshold"] += 1
-            logger.info(
-                f"[DECISION] SKIP: Below threshold ({abs_mispricing:.1%} < {self._min_mispricing:.1%})"
-            )
-            log_decision("SKIP_EDGE", f"Below mispricing threshold: {abs_mispricing:.1%}")
-            return
-
-        # Filter: Skip LOW confidence
-        if assessment.confidence == Confidence.LOW:
-            self._stats["trades_skipped_threshold"] += 1
-            self._stats["skip_low_confidence"] += 1
-            logger.info(
-                f"[DECISION] SKIP: Low confidence (edge={assessment.mispricing_magnitude:+.1%}, conf={assessment.confidence.value})"
-            )
-            log_decision("SKIP_CONFIDENCE", f"Low confidence: edge={assessment.mispricing_magnitude:+.1%}")
-            return
-
-        # For trading decision, use confidence level directly
-        confidence = 0.80 if assessment.confidence == Confidence.HIGH else 0.70
-
-        # Check position limits
-        if not self._can_open_position(assessment.market_ticker):
-            self._stats["trades_skipped_position_limit"] += 1
-            logger.info(f"[DECISION] SKIP: Position limit reached")
-            log_decision("SKIP", "Position limit reached")
-            return
-
-        # Check per-event position limit (concentration control)
-        if event_ticker:
-            event_positions = self._count_event_positions(event_ticker)
-            if event_positions >= self._max_positions_per_event:
-                self._stats["trades_skipped_event_limit"] += 1
-                logger.info(
-                    f"[DECISION] SKIP: Event limit reached "
-                    f"({event_positions}/{self._max_positions_per_event} in {event_ticker})"
-                )
-                log_decision("SKIP_EVENT_LIMIT", f"Already {event_positions} positions in {event_ticker}")
-                return
-
-        # Determine side (HOLD is already filtered above)
-        if assessment.recommendation == "BUY_YES":
-            side = "yes"
-        elif assessment.recommendation == "BUY_NO":
-            side = "no"
-        else:
-            log_decision("SKIP", f"Invalid recommendation: {assessment.recommendation}")
-            return
-
-        # Get current orderbook price
-        ob_context = await self._get_orderbook(assessment.market_ticker)
-        if not ob_context:
-            # Fallback to market price from tracked markets
-            if self._context.tracked_markets:
-                market = self._context.tracked_markets.get_market(assessment.market_ticker)
-                if market and market.price:
-                    price = market.price if side == "yes" else (100 - market.price)
-                else:
-                    log_decision("SKIP", "No price available")
-                    return
-            else:
-                log_decision("SKIP", "No tracked markets")
-                return
-        else:
-            # Use orderbook best ask for buying, with fallback to tracked market price
-            if side == "yes":
-                if ob_context.yes_best_ask is not None:
-                    price = ob_context.yes_best_ask
-                elif self._context.tracked_markets:
-                    # Fallback to tracked market price (same as ob_context=None case)
-                    market = self._context.tracked_markets.get_market(assessment.market_ticker)
-                    if market and market.price:
-                        price = market.price
-                        log_decision("FALLBACK", f"Using tracked market price {price}c (empty orderbook)")
-                    else:
-                        log_decision("SKIP", f"No price source for {assessment.market_ticker}")
-                        return
-                else:
-                    log_decision("SKIP", f"No price source for {assessment.market_ticker}")
-                    return
-            else:  # NO side
-                if ob_context.no_best_ask is not None:
-                    price = ob_context.no_best_ask
-                elif self._context.tracked_markets:
-                    market = self._context.tracked_markets.get_market(assessment.market_ticker)
-                    if market and market.price:
-                        price = 100 - market.price  # Convert YES→NO
-                        log_decision("FALLBACK", f"Using tracked market price {price}c (empty orderbook)")
-                    else:
-                        log_decision("SKIP", f"No price source for {assessment.market_ticker}")
-                        return
-                else:
-                    log_decision("SKIP", f"No price source for {assessment.market_ticker}")
-                    return
-
-        # Create trading decision
-        from ...services.trading_decision_service import TradingDecision
-
-        # Get research metadata from cached event result
-        research_duration = None
-        llm_calls = None
-        sources_checked = None
-        evidence_reliability = None
-        key_driver = None
-        key_evidence = None
-        if event_ticker:
-            cached_result = self._event_research_cache.get(event_ticker)
-            if cached_result and cached_result.success:
-                research_duration = cached_result.event_context.research_duration_seconds
-                llm_calls = cached_result.event_context.llm_calls_made
-                sources_checked = cached_result.event_context.evidence.sources_checked
-                evidence_reliability = cached_result.event_context.evidence.reliability.value
-                # Audit trail: key reasoning components
-                key_driver = cached_result.event_context.driver_analysis.primary_driver
-                key_evidence = cached_result.event_context.evidence.key_evidence[:3]  # Top 3
-
-        decision = TradingDecision(
-            action="buy",
-            market=assessment.market_ticker,
-            side=side,
-            quantity=self._contracts_per_trade,
-            price=price,
-            reason=f"Event research: {assessment.edge_explanation[:150]}..." if assessment.edge_explanation else "Event research signal",
-            confidence=confidence,
-            strategy_id=self.name,
-            signal_params={
-                "evidence_probability": assessment.evidence_probability,
-                "market_probability": assessment.market_probability,
-                "mispricing_magnitude": assessment.mispricing_magnitude,
-                "confidence": assessment.confidence.value,  # For DB calibration column
-                "event_ticker": event_ticker,  # For DB event grouping column
-                "driver_application": assessment.driver_application,
-                "specific_question": assessment.specific_question,
-                # Price calibration (blind estimation tracking)
-                "price_guess_cents": assessment.price_guess_cents,
-                "price_guess_error_cents": assessment.price_guess_error_cents,
-                # Research metadata (for performance correlation)
-                "research_duration_seconds": research_duration,
-                "llm_calls": llm_calls,
-                "sources_checked": sources_checked,
-                "evidence_reliability": evidence_reliability,
-                # Audit trail: reasoning and evidence for post-hoc analysis
-                "key_driver": key_driver,
-                "key_evidence": key_evidence,
-                "edge_explanation": assessment.edge_explanation,  # Full LLM reasoning
-            },
-        )
-
-        # Execute via trading service
-        logger.info(f"[DECISION] TRADE: {side.upper()} {self._contracts_per_trade}x @ {price}c")
-
-        if self._context.trading_service:
-            success = await self._context.trading_service.execute_decision(decision)
-            if success:
-                self._orders_placed += 1
-                self._signals_detected += 1
-                self._last_signal_at = time.time()
-                self._stats["orders_placed"] += 1
-                self._stats["signals_detected"] += 1
-
-                # Log successful trade
-                log_decision(f"TRADE_{side.upper()}", f"Order placed @ {price}c", traded=True, price=price)
-
-                logger.info(
-                    f"[ORDER PLACED] {decision.market} "
-                    f"{decision.side} {decision.quantity}x @ {decision.price}c "
-                    f"(AI={assessment.evidence_probability:.1%}, "
-                    f"Mkt={assessment.market_probability:.1%}, "
-                    f"Edge={assessment.mispricing_magnitude:+.1%})"
-                )
-            else:
-                log_decision("TRADE_FAILED", "Trading service returned False")
-                logger.warning(f"[ORDER FAILED] {decision.market}: Trading service returned False")
+    # NOTE: _check_and_trade_from_event_assessment() has been removed.
+    # This legacy execution path was replaced by the execution agent in _run_execution_agent().
+    # See git history for the original implementation if needed for reference.
     
     def _is_researchable(self, market) -> bool:
         """Check if market is worth researching.
@@ -1154,69 +1380,9 @@ class AgenticResearchStrategy:
 
         return True
     
-    async def _check_and_trade(
-        self,
-        market_ticker: str,
-        assessment: Optional[ResearchAssessment] = None,
-    ) -> None:
-        """Check assessment and generate trade if warranted."""
-        if not self._research_service or not self._context:
-            return
-        
-        # Get assessment if not provided
-        if not assessment:
-            assessment = await self._research_service.get_assessment(
-                market_ticker,
-                wait_seconds=2.0,
-            )
-        
-        if not assessment:
-            return  # Research not complete yet
-
-        # Increment assessments completed at start (for tracking all evaluations)
-        self._stats["assessments_completed"] += 1
-
-        # Check if recommendation is actionable
-        if assessment.recommendation == "HOLD":
-            return
-        
-        # Check thresholds
-        abs_mispricing = abs(assessment.mispricing_magnitude)
-        if abs_mispricing < self._min_mispricing:
-            self._stats["trades_skipped_threshold"] += 1
-            return
-        
-        if assessment.confidence < self._min_confidence:
-            self._stats["trades_skipped_threshold"] += 1
-            return
-        
-        # Check position limits
-        if not self._can_open_position(market_ticker):
-            self._stats["trades_skipped_position_limit"] += 1
-            return
-        
-        # Generate trading decision
-        decision = await self._create_trading_decision(assessment)
-        if not decision:
-            return
-        
-        # Execute via trading service
-        if self._context.trading_service:
-            success = await self._context.trading_service.execute_decision(decision)
-            if success:
-                self._orders_placed += 1
-                self._signals_detected += 1
-                self._last_signal_at = time.time()
-                self._stats["orders_placed"] += 1
-                self._stats["signals_detected"] += 1
-
-                logger.info(
-                    f"Agentic research trade executed: {decision.market} "
-                    f"{decision.side} {decision.quantity}x @ {decision.price}c "
-                    f"(agent_prob={assessment.agent_probability:.2f}, "
-                    f"market_prob={assessment.market_price_probability:.2f}, "
-                    f"mispricing={assessment.mispricing_magnitude:+.2f})"
-                )
+    # NOTE: _check_and_trade() has been removed.
+    # This legacy execution path was replaced by the execution agent in _run_execution_agent().
+    # See git history for the original implementation if needed for reference.
     
     def _can_open_position(self, market_ticker: str) -> bool:
         """Check if we can open a new position.
@@ -1298,83 +1464,10 @@ class AgenticResearchStrategy:
 
         return market_ticker in trading_state.positions
     
-    async def _create_trading_decision(
-        self,
-        assessment: ResearchAssessment,
-    ) -> Optional[Any]:  # TradingDecision
-        """Create trading decision from assessment."""
-        if not self._context:
-            return None
-        
-        # Determine side and quantity
-        if assessment.recommendation == "BUY_YES":
-            side = "yes"
-        elif assessment.recommendation == "BUY_NO":
-            side = "no"
-        else:
-            return None
-        
-        # Get current orderbook price
-        ob_context = await self._get_orderbook(assessment.market_ticker)
-        if not ob_context:
-            # Fallback to market price from tracked markets
-            if self._context.tracked_markets:
-                market = self._context.tracked_markets.get_market(assessment.market_ticker)
-                if market and market.price:
-                    # market.price is YES price, convert to NO if needed
-                    price = market.price if side == "yes" else (100 - market.price)
-                else:
-                    return None
-            else:
-                return None
-        else:
-            # Use orderbook best ask for buying, with fallback to tracked market price
-            if side == "yes":
-                if ob_context.yes_best_ask is not None:
-                    price = ob_context.yes_best_ask
-                elif self._context.tracked_markets:
-                    # Fallback to tracked market price (same as ob_context=None case)
-                    market = self._context.tracked_markets.get_market(assessment.market_ticker)
-                    if market and market.price:
-                        price = market.price
-                    else:
-                        return None
-                else:
-                    return None
-            else:  # NO side
-                if ob_context.no_best_ask is not None:
-                    price = ob_context.no_best_ask
-                elif self._context.tracked_markets:
-                    market = self._context.tracked_markets.get_market(assessment.market_ticker)
-                    if market and market.price:
-                        price = 100 - market.price  # Convert YES→NO
-                    else:
-                        return None
-                else:
-                    return None
+    # NOTE: _create_trading_decision() has been removed.
+    # This was only used by the deprecated _check_and_trade() path.
+    # The execution agent now creates TradingDecision objects directly in _execute_action_tool().
 
-        # Create decision
-        from ...services.trading_decision_service import TradingDecision
-        
-        return TradingDecision(
-            action="buy",
-            market=assessment.market_ticker,
-            side=side,
-            quantity=self._contracts_per_trade,
-            price=price,
-            reason=f"Agentic research: {assessment.reasoning[:150]}...",
-            confidence=assessment.confidence,
-            strategy_id=self.name,
-            signal_params={
-                "agent_probability": assessment.agent_probability,
-                "market_probability": assessment.market_price_probability,
-                "mispricing_magnitude": assessment.mispricing_magnitude,
-                "key_facts": assessment.key_facts,
-                "sources": assessment.sources,
-                "research_duration_seconds": assessment.research_duration_seconds,
-            },
-        )
-    
     async def _get_orderbook(self, market_ticker: str):
         """Get orderbook context for market (supports both YES and NO sides)."""
         if not self._context or not self._context.orderbook_integration:
@@ -1400,19 +1493,94 @@ class AgenticResearchStrategy:
             return None
 
     def get_decision_history(self, limit: int = 20) -> List[Dict[str, Any]]:
-        """Get recent decision history for frontend display."""
+        """Get recent decision history for frontend display.
+
+        Pulls decisions from the execution agent and transforms them into the
+        format expected by the TradingStrategiesPanel frontend component.
+
+        Expected frontend format:
+        - market_ticker: str
+        - action: str (e.g., "executed", "skipped", "hold")
+        - ai_probability: float (0-1)
+        - edge: float (signed, e.g., 0.15 for 15% edge)
+        - confidence: str ("high", "medium", "low")
+        - age_seconds: int
+        - strategy_id: str (for filtering in multi-strategy view)
+        """
         current_time = time.time()
-        decisions = list(self._decision_log)
-        decisions.reverse()  # Newest first
         result = []
-        for d in decisions[:limit]:
+
+        # Get decisions from execution agent
+        if self._execution_agent:
+            agent_decisions = self._execution_agent.get_decision_history(limit=limit)
+
+            for d in agent_decisions:
+                # Extract data from the nested structure
+                plan = d.get("plan", {})
+                tool_snapshots = d.get("tool_snapshots", {})
+                assessment = tool_snapshots.get("assessment", {})
+                execution_results = d.get("execution_results", [])
+
+                # Determine action type based on plan actions
+                actions = plan.get("actions", [])
+                if not actions:
+                    action = "hold"
+                elif any(r.get("executed") for r in execution_results):
+                    action = "executed"
+                elif any(r.get("error") == "shadow_mode" for r in execution_results):
+                    action = "shadow_mode"
+                else:
+                    # Actions were planned but failed or not executed
+                    first_action = actions[0] if actions else {}
+                    action_type = first_action.get("type", "hold")
+                    if action_type == "hold":
+                        action = "hold"
+                    else:
+                        action = "planned"
+
+                # Calculate edge from assessment data
+                prob_yes = assessment.get("prob_yes", 0.5)
+                market_prob = assessment.get("market_probability_at_assessment", 0.5)
+                edge = abs(prob_yes - market_prob) if prob_yes and market_prob else 0
+
+                # Get action details for display
+                action_details = []
+                for a in actions:
+                    side = a.get("side", "")
+                    qty = a.get("qty", 0)
+                    price = a.get("limit_price", 0)
+                    if side and qty:
+                        action_details.append(f"{side.upper()} {qty}@{price}c")
+
+                entry = {
+                    "market_ticker": d.get("market_ticker", ""),
+                    "action": action,
+                    "ai_probability": prob_yes,
+                    "edge": edge,
+                    "confidence": assessment.get("confidence", "unknown"),
+                    "age_seconds": int(current_time - d.get("timestamp", current_time)),
+                    "strategy_id": self.name,
+                    # Additional details for expanded view
+                    "trade_rationale": plan.get("trade_rationale", ""),
+                    "expected_value_cents": plan.get("expected_value_cents"),
+                    "risk_notes": plan.get("risk_notes", ""),
+                    "action_details": action_details,
+                    "actions_count": len(actions),
+                }
+                result.append(entry)
+
+        # Also include any decisions from the strategy's own log (legacy)
+        for d in list(self._decision_log)[-limit:]:
             entry = dict(d)
             entry["age_seconds"] = int(current_time - d.get("timestamp", current_time))
-            # Ensure market_ticker is present (backwards compatibility)
+            entry["strategy_id"] = self.name
             if "market_ticker" not in entry and "market" in entry:
                 entry["market_ticker"] = entry["market"]
             result.append(entry)
-        return result
+
+        # Sort by timestamp (newest first) and limit
+        result.sort(key=lambda x: x.get("age_seconds", 9999))
+        return result[:limit]
 
     async def _persist_decision(
         self,

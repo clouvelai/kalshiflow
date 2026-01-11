@@ -37,7 +37,7 @@ YOUR GOAL: Make money by finding markets where you have an edge over the market 
 - Contracts pay $1 (100c) if YES resolves, $0 if NO resolves
 - Buy YES at Xc -> profit (100-X)c if YES, lose Xc if NO
 - Buy NO at Yc -> profit (100-Y)c if NO, lose Yc if YES
-- TRADING RULE: Recommend trade when |edge| > 5%, confidence >= medium, evidence >= medium
+- TRADING RULE: Recommend trade when |edge| > 30%, confidence >= medium, evidence >= medium
 
 === PROBABILITY INTERPRETATION ===
 Your "evidence_probability" is ALWAYS for YES resolving:
@@ -117,7 +117,7 @@ MARKETS TO EVALUATE:
 
 8. EDGE CALCULATION:
    - Edge = (your probability) - (market guess / 100)
-   - TRADE if |edge| > 5% AND confidence >= medium
+   - TRADE if |edge| > 30% AND confidence >= medium
    - NO TRADE otherwise
 
 === CROSS-MARKET CONSISTENCY ===

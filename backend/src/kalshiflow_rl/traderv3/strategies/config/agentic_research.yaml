@@ -23,7 +23,7 @@ max_trades_per_minute: 5   # Strategy-specific rate limit
 # Strategy-specific parameters
 params:
   # Trading thresholds
-  min_mispricing: 0.10     # 10% mispricing required to trade
+  min_mispricing: 0.30     # 30% mispricing required to trade
   min_confidence: 0.70     # 70% confidence required
 
   # Position sizing
@@ -31,8 +31,16 @@ params:
   max_positions: 1000      # Must be in params for code to read it
   max_positions_per_event: 100  # Max positions per event (high limit for paper trading)
 
-  # Evaluation interval
-  evaluation_interval_seconds: 30.0  # Check markets every 30 seconds
+  # === EXECUTION AGENT SETTINGS ===
+  # Fast loop: LLM-powered execution decisions
+  execution_agent_model: "gpt-4o-mini"  # Lightweight model for execution decisions
+  execution_agent_temperature: 0.3  # Temperature for execution agent
+  execution_shadow_mode: false  # Execution enabled - places orders via TradingDecisionService
+  execution_interval_seconds: 30.0  # Fast loop: check for trade opportunities every 30s
+  execution_candidate_limit: 20  # Max markets to evaluate per execution cycle (controls token usage)
+
+  # Slow loop: Research refresh
+  research_refresh_interval_seconds: 900.0  # Slow loop: refresh research every 15 minutes
 
   # === EVENT-FIRST RESEARCH SETTINGS ===
   # When enabled, groups markets by event and researches holistically

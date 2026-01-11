@@ -36,8 +36,8 @@ from typing import Dict, Any, Optional, List, Tuple, TYPE_CHECKING
 from urllib.parse import urlparse
 
 from langchain_openai import ChatOpenAI
-from langchain_community.tools import DuckDuckGoSearchRun
 from langchain_core.prompts import ChatPromptTemplate, SystemMessagePromptTemplate, HumanMessagePromptTemplate
+from ddgs import DDGS
 from pydantic import BaseModel, Field
 
 from ..state.event_research_context import (
@@ -329,13 +329,13 @@ class EventResearchService:
             api_key=self._api_key,
         )
 
-        # Initialize web search
-        self._search_tool = None
+        # Initialize web search (ddgs library)
+        self._ddgs = None
         if self._web_search_enabled:
             try:
-                self._search_tool = DuckDuckGoSearchRun()
+                self._ddgs = DDGS()
             except Exception as e:
-                logger.warning(f"Failed to initialize web search: {e}")
+                logger.warning(f"Failed to initialize DDGS search: {e}")
                 self._web_search_enabled = False
 
         # Stats
@@ -360,6 +360,43 @@ class EventResearchService:
             f"EventResearchService initialized "
             f"(model={openai_model}, web_search={web_search_enabled}, cache_ttl={cache_ttl_seconds}s)"
         )
+
+    async def _emit_phase_progress(
+        self,
+        event_bus,
+        event_ticker: str,
+        phase: str,
+        message: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """
+        Emit a research phase progress event for frontend visibility.
+
+        This allows the activity feed to show real-time research progress
+        regardless of which tab the user is viewing.
+
+        Args:
+            event_bus: EventBus instance (optional, no-op if None)
+            event_ticker: Event being researched
+            phase: Phase identifier (event_details, context_extraction, etc.)
+            message: Human-readable progress message
+            metadata: Additional metadata for the event
+        """
+        if not event_bus:
+            return
+        try:
+            await event_bus.emit_system_activity(
+                activity_type="research_phase",
+                message=message,
+                metadata={
+                    "event_ticker": event_ticker,
+                    "phase": phase,
+                    **(metadata or {}),
+                },
+            )
+        except Exception as e:
+            # Don't let activity emission failures break research
+            logger.debug(f"Failed to emit phase progress: {e}")
 
     async def _invoke_with_retry(self, chain, params: dict, max_retries: int = 3):
         """Invoke LLM chain with exponential backoff retry."""
@@ -838,6 +875,7 @@ class EventResearchService:
         event_ticker: str,
         markets: List["TrackedMarket"],
         microstructure: Optional[Dict[str, "MicrostructureContext"]] = None,
+        event_bus=None,
     ) -> EventResearchResult:
         """
         Execute full event research pipeline.
@@ -854,6 +892,7 @@ class EventResearchService:
             event_ticker: The event ticker (e.g., "KXNFL-25JAN05")
             markets: List of TrackedMarket objects in this event
             microstructure: Optional dict of market_ticker -> MicrostructureContext
+            event_bus: Optional EventBus for emitting phase progress to frontend
 
         Returns:
             EventResearchResult with event context and per-market assessments
@@ -879,6 +918,12 @@ class EventResearchService:
             event_category = event_details.get("category") or "Unknown"
 
             logger.info(f"[PHASE 1] Fetched event details: {event_title}")
+
+            # Emit phase progress to frontend
+            await self._emit_phase_progress(
+                event_bus, event_ticker, "event_details",
+                f"Fetched: {event_title[:40]}{'...' if len(event_title) > 40 else ''}"
+            )
 
             # Enrich TrackedMarket titles from event's nested market data
             # Note: market "title" field is DEPRECATED in Kalshi API - use yes_sub_title instead
@@ -933,6 +978,12 @@ class EventResearchService:
                 self._cache_misses += 1
                 logger.info(f"[CACHE MISS] Extracting semantic frame for {event_ticker}")
 
+                # Emit context extraction start
+                await self._emit_phase_progress(
+                    event_bus, event_ticker, "context_extraction",
+                    f"Extracting context for {event_ticker}"
+                )
+
                 research_context = await self._extract_full_context(
                     event_ticker=event_ticker,
                     event_title=event_title,
@@ -943,6 +994,14 @@ class EventResearchService:
 
                 # Cache the result for future calls (memory)
                 await self._cache_context(event_ticker, research_context)
+
+                # Emit context complete
+                frame_type = research_context.semantic_frame.frame_type.value if research_context.semantic_frame else "unknown"
+                await self._emit_phase_progress(
+                    event_bus, event_ticker, "context_complete",
+                    f"Context: {frame_type} frame",
+                    {"frame_type": frame_type}
+                )
 
                 # Persist to database for recovery across restarts (async, non-blocking)
                 # Add error callback to log failures without blocking
@@ -955,6 +1014,13 @@ class EventResearchService:
 
             # Phase 4: Gather evidence (uses semantic frame queries if available)
             logger.info(f"[PHASE 4] Gathering evidence for {event_ticker}")
+
+            # Emit evidence gathering start
+            await self._emit_phase_progress(
+                event_bus, event_ticker, "evidence_gathering",
+                f"Searching for evidence on {event_ticker}"
+            )
+
             evidence = await self._gather_evidence(
                 driver_analysis=research_context.driver_analysis,
                 event_title=event_title,
@@ -966,11 +1032,26 @@ class EventResearchService:
                 f"reliability={evidence.reliability.value}"
             )
 
+            # Emit evidence complete
+            await self._emit_phase_progress(
+                event_bus, event_ticker, "evidence_complete",
+                f"Evidence: {len(evidence.sources)} sources ({evidence.reliability.value})",
+                {"sources_count": len(evidence.sources), "reliability": evidence.reliability.value}
+            )
+
             # Update research context with evidence
             research_context.evidence = evidence
 
             # Phase 5: Evaluate markets in batch
             logger.info(f"[PHASE 5] Evaluating {len(markets)} markets for {event_ticker}")
+
+            # Emit market evaluation start
+            await self._emit_phase_progress(
+                event_bus, event_ticker, "market_evaluation",
+                f"Evaluating {len(markets)} markets",
+                {"market_count": len(markets)}
+            )
+
             assessments = await self._evaluate_markets_batch(
                 research_context=research_context,
                 markets=markets,
@@ -986,6 +1067,13 @@ class EventResearchService:
             logger.info(
                 f"[PHASE 5] Batch assessment complete: {len(assessments)} markets, "
                 f"{num_with_edge} with edge"
+            )
+
+            # Emit evaluation complete
+            await self._emit_phase_progress(
+                event_bus, event_ticker, "evaluation_complete",
+                f"Found {num_with_edge} markets with edge",
+                {"markets_evaluated": len(assessments), "markets_with_edge": num_with_edge}
             )
 
             # Calculate stats
@@ -1019,6 +1107,13 @@ class EventResearchService:
                 f"{markets_with_edge} with edge, "
                 f"{duration:.1f}s duration, "
                 f"{llm_calls} LLM calls"
+            )
+
+            # Emit research complete
+            await self._emit_phase_progress(
+                event_bus, event_ticker, "research_complete",
+                f"Research complete: {markets_with_edge} opportunities",
+                {"duration_seconds": round(duration, 1), "opportunities": markets_with_edge}
             )
 
             return result
@@ -1156,8 +1251,8 @@ class EventResearchService:
         event_title: str,
         semantic_frame: Optional[SemanticFrame] = None,
     ) -> Evidence:
-        """Web evidence gatherer (existing implementation extracted for composition)."""
-        if not self._web_search_enabled or not self._search_tool:
+        """Web evidence gatherer using ddgs library for structured search results."""
+        if not self._web_search_enabled or not self._ddgs:
             return Evidence(
                 evidence_summary="Web search not available",
                 reliability=EvidenceReliability.LOW,
@@ -1194,14 +1289,17 @@ class EventResearchService:
                 search_queries = [f"{event_title} {driver_analysis.primary_driver}"]
                 search_queries.append(f"{event_title} news today")
 
-            # Run searches for all queries in parallel
+            # Run searches for all queries in parallel using ddgs
             loop = asyncio.get_running_loop()
 
-            async def _run_search(query: str) -> Optional[str]:
-                """Execute a single search with timeout and error handling."""
+            async def _run_search(query: str) -> Optional[List[Dict[str, Any]]]:
+                """Execute a single ddgs search with timeout and error handling."""
                 try:
                     result = await asyncio.wait_for(
-                        loop.run_in_executor(None, self._search_tool.run, query),
+                        loop.run_in_executor(
+                            None,
+                            lambda q=query: list(self._ddgs.text(q, max_results=5, timelimit="w"))
+                        ),
                         timeout=15.0  # Shorter timeout per query
                     )
                     return result
@@ -1219,26 +1317,30 @@ class EventResearchService:
             # Filter out None results from failed/timed-out searches
             all_results = [r for r in results if r is not None]
 
-            # Combine results
-            search_result = "\n\n".join(all_results) if all_results else ""
-
-            # Parse results
+            # Parse structured ddgs results
+            # ddgs returns: [{"title": "...", "href": "...", "body": "..."}, ...]
             key_evidence = []
             sources = []
+            full_text_parts = []
 
-            # Extract key points (split by sentences, take meaningful ones)
-            sentences = re.split(r'[.!?]+', search_result)
-            for sentence in sentences[:10]:  # Top 10 sentences
-                sentence = sentence.strip()
-                if len(sentence) > 30:  # Skip very short fragments
-                    key_evidence.append(sentence)
+            for query_results in all_results:
+                for item in query_results:
+                    # Extract body text as evidence
+                    if item.get("body"):
+                        body = item["body"].strip()
+                        if len(body) > 30:  # Skip very short fragments
+                            key_evidence.append(body[:200])  # Truncate long bodies
+                            full_text_parts.append(body)
+                    # Extract URLs directly from structured results
+                    if item.get("href"):
+                        sources.append(item["href"])
 
-            # Extract URLs
-            urls = re.findall(
-                r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+',
-                search_result
-            )
-            sources.extend(urls[:5])
+            # Deduplicate while preserving order
+            key_evidence = list(dict.fromkeys(key_evidence))[:10]
+            sources = list(dict.fromkeys(sources))[:5]
+
+            # Build combined text for summary (used downstream)
+            search_result = "\n\n".join(full_text_parts) if full_text_parts else ""
 
             # === Source Quality Assessment (v2 improvement) ===
             high_quality_sources = 0
@@ -1536,12 +1638,12 @@ class EventResearchService:
 
                 # Determine recommendation based on mispricing magnitude
                 # (Still generates HOLD for logging, but plugin won't skip on it)
-                if mispricing > 0.05:  # LLM thinks YES is underpriced
+                if mispricing > 0.30:  # LLM thinks YES is underpriced (30% edge threshold)
                     recommendation = "BUY_YES"
-                elif mispricing < -0.05:  # LLM thinks NO is underpriced
+                elif mispricing < -0.30:  # LLM thinks NO is underpriced (30% edge threshold)
                     recommendation = "BUY_NO"
                 else:
-                    recommendation = "HOLD"  # Small edge - logged but still traded
+                    recommendation = "HOLD"  # Edge below 30% threshold
 
                 # Map confidence
                 confidence_map = {

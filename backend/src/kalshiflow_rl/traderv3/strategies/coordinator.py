@@ -794,6 +794,10 @@ class StrategyCoordinator:
                     },
                 }
 
+                # Include strategy-specific metrics if available (e.g., agentic_metrics)
+                if "agentic_metrics" in stats:
+                    strategy_data["agentic_metrics"] = stats["agentic_metrics"]
+
                 strategies_data[name] = strategy_data
 
             except Exception as e:

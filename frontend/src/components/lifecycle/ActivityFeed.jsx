@@ -269,6 +269,32 @@ function getEventStyle(eventType, event = {}) {
         };
       }
     }
+    // Research phase events (Agentic Research pipeline)
+    case 'research_phase': {
+      const phase = event.metadata?.phase || 'research';
+      const phaseStyles = {
+        'event_details': { typeLabel: 'FETCH', typeColor: 'bg-cyan-500/20 text-cyan-400', bgColor: 'bg-cyan-900/5' },
+        'context_extraction': { typeLabel: 'CONTEXT', typeColor: 'bg-indigo-500/20 text-indigo-400', bgColor: 'bg-indigo-900/5' },
+        'context_complete': { typeLabel: 'CONTEXT', typeColor: 'bg-indigo-500/20 text-indigo-400', bgColor: 'bg-indigo-900/5' },
+        'evidence_gathering': { typeLabel: 'SEARCH', typeColor: 'bg-violet-500/20 text-violet-400', bgColor: 'bg-violet-900/5' },
+        'evidence_complete': { typeLabel: 'SEARCH', typeColor: 'bg-violet-500/20 text-violet-400', bgColor: 'bg-violet-900/5' },
+        'market_evaluation': { typeLabel: 'EVAL', typeColor: 'bg-fuchsia-500/20 text-fuchsia-400', bgColor: 'bg-fuchsia-900/5' },
+        'evaluation_complete': { typeLabel: 'EVAL', typeColor: 'bg-fuchsia-500/20 text-fuchsia-400', bgColor: 'bg-fuchsia-900/5' },
+        'research_complete': { typeLabel: 'DONE', typeColor: 'bg-emerald-500/20 text-emerald-400', bgColor: 'bg-emerald-900/5' },
+      };
+      return phaseStyles[phase] || { typeLabel: 'RESEARCH', typeColor: 'bg-purple-500/20 text-purple-400', bgColor: 'bg-purple-900/5' };
+    }
+    // Execution agent decision events
+    case 'execution_decision': {
+      const decisionType = event.metadata?.decision_type || 'decision';
+      const decisionStyles = {
+        'hold': { typeLabel: 'HOLD', typeColor: 'bg-gray-500/20 text-gray-400', bgColor: 'bg-gray-900/5' },
+        'executed': { typeLabel: 'EXEC', typeColor: 'bg-green-500/20 text-green-400', bgColor: 'bg-green-900/5' },
+        'shadow': { typeLabel: 'SHADOW', typeColor: 'bg-yellow-500/20 text-yellow-400', bgColor: 'bg-yellow-900/5' },
+        'planned': { typeLabel: 'PLAN', typeColor: 'bg-blue-500/20 text-blue-400', bgColor: 'bg-blue-900/5' },
+      };
+      return decisionStyles[decisionType] || { typeLabel: 'AGENT', typeColor: 'bg-purple-500/20 text-purple-400', bgColor: 'bg-purple-900/5' };
+    }
     default:
       return {
         typeLabel: eventType?.toUpperCase()?.slice(0, 6) || 'EVENT',
@@ -390,6 +416,14 @@ function formatEventMessage(event) {
     case 'event_alert': {
       // Use the reason/message field which contains the formatted alert message
       return event.reason || event.metadata?.message || 'Event exposure alert';
+    }
+    // Research phase events (Agentic Research pipeline)
+    case 'research_phase': {
+      return event.reason || event.metadata?.message || 'Research phase';
+    }
+    // Execution agent decision events
+    case 'execution_decision': {
+      return event.reason || event.metadata?.message || 'Execution decision';
     }
     default:
       return event.action || event.metadata?.message || event.event_type || 'Event';
