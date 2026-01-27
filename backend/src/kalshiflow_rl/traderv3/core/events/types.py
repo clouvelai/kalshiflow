@@ -43,9 +43,15 @@ class EventType(Enum):
     MARKET_TRACKED = "market_tracked"                   # Market added to tracking
     MARKET_DETERMINED = "market_determined"             # Market outcome resolved
 
-    # RLM (Reverse Line Movement) events
-    RLM_MARKET_UPDATE = "rlm_market_update"            # RLM state changed for a market
-    RLM_TRADE_ARRIVED = "rlm_trade_arrived"            # New trade arrived for RLM tracking
+    # Trade Flow events (market microstructure tracking)
+    TRADE_FLOW_MARKET_UPDATE = "trade_flow_market_update"    # Trade flow state changed for a market
+    TRADE_FLOW_TRADE_ARRIVED = "trade_flow_trade_arrived"    # New trade arrived for tracking
 
     # True Market Open (TMO) events
     TMO_FETCHED = "tmo_fetched"                        # True market open price fetched from candlestick API
+
+    # Event Research Agent events (visible research feed)
+    RESEARCH_STRATEGY = "research_strategy"            # Calibration output - what we're looking for
+    RESEARCH_ITEM = "research_item"                    # Each news item found (visible feed)
+    RESEARCH_SIGNAL = "research_signal"                # Actionable signal extracted from research
+    RESEARCH_BATCH_COMPLETE = "research_batch_complete"  # Batch summary after each loop

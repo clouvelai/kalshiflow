@@ -798,6 +798,24 @@ class StrategyCoordinator:
                 if "agentic_metrics" in stats:
                     strategy_data["agentic_metrics"] = stats["agentic_metrics"]
 
+                # Include agent_pipeline-specific fields
+                if name == "agent_pipeline":
+                    for key in [
+                        "markets_tracked", "events_researched", "signals_generated",
+                        "trades_executed", "events_analyzed", "target_events",
+                        "captain", "research_signal", "market_state", "execution"
+                    ]:
+                        if key in stats:
+                            strategy_data[key] = stats[key]
+
+                    # Include consolidated view for the pipeline panel
+                    if hasattr(strategy, 'get_consolidated_view'):
+                        try:
+                            consolidated = strategy.get_consolidated_view()
+                            strategy_data["consolidated_view"] = consolidated
+                        except Exception as e:
+                            logger.error(f"Failed to get consolidated view from agent_pipeline: {e}")
+
                 strategies_data[name] = strategy_data
 
             except Exception as e:

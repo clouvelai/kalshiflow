@@ -9,14 +9,14 @@ Usage:
     # In a strategy plugin file:
     from ..registry import StrategyRegistry
 
-    @StrategyRegistry.register("rlm_no")
-    class RLMNoStrategy:
-        name = "rlm_no"
-        display_name = "Reverse Line Movement NO"
+    @StrategyRegistry.register("agent_pipeline")
+    class AgentPipelineStrategy:
+        name = "agent_pipeline"
+        display_name = "Agent Pipeline"
         ...
 
     # In the coordinator:
-    strategy_class = StrategyRegistry.get("rlm_no")
+    strategy_class = StrategyRegistry.get("agent_pipeline")
     strategy = strategy_class()
     await strategy.start(context)
 
@@ -79,10 +79,10 @@ class StrategyRegistry:
             Decorator function
 
         Example:
-            @StrategyRegistry.register("rlm_no")
-            class RLMNoStrategy:
-                name = "rlm_no"
-                display_name = "Reverse Line Movement NO"
+            @StrategyRegistry.register("agent_pipeline")
+            class AgentPipelineStrategy:
+                name = "agent_pipeline"
+                display_name = "Agent Pipeline"
                 subscribed_events = {EventType.PUBLIC_TRADE_RECEIVED}
                 ...
         """

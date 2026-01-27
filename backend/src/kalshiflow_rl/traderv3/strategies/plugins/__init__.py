@@ -1,10 +1,9 @@
 # Strategy plugins directory
 # Each plugin file should register itself with StrategyRegistry
 
-# Import plugins to trigger registration
-from .hold import HoldStrategy
-from .rlm_no import RLMNoStrategy
-from .odmr import ODMRStrategy
-from .agentic_research import AgenticResearchStrategy
+# Strategy plugins
+from .deep_agent import DeepAgentStrategy
 
-__all__ = ['HoldStrategy', 'RLMNoStrategy', 'ODMRStrategy', 'AgenticResearchStrategy']
+__all__ = [
+    'DeepAgentStrategy',
+]

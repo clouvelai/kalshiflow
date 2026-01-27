@@ -65,8 +65,8 @@ from .events import (
     MarketLifecycleEvent,
     MarketTrackedEvent,
     MarketDeterminedEvent,
-    RLMMarketUpdateEvent,
-    RLMTradeArrivedEvent,
+    TradeFlowMarketUpdateEvent,
+    TradeFlowTradeArrivedEvent,
     TMOFetchedEvent,
 )
 
@@ -766,23 +766,23 @@ class EventBus:
         logger.debug(f"Added market determined subscriber: {callback.__name__}")
 
     # ============================================================
-    # RLM (Reverse Line Movement) Event Methods
+    # Trade Flow Event Methods
     # ============================================================
 
-    async def emit_rlm_market_update(
+    async def emit_trade_flow_market_update(
         self,
         market_ticker: str,
         state: Dict[str, Any],
     ) -> bool:
         """
-        Emit an RLM market state update event (non-blocking).
+        Emit a trade flow market state update event (non-blocking).
 
-        Called by RLMService when a tracked market's trade state changes.
+        Called by MarketStateAgent when a tracked market's trade state changes.
         Used for real-time UI updates showing trade direction and price movement.
 
         Args:
             market_ticker: Market ticker for this update
-            state: Dictionary containing RLM state (yes_trades, no_trades, etc.)
+            state: Dictionary containing trade flow state (yes_trades, no_trades, etc.)
 
         Returns:
             True if event was queued, False if queue full
@@ -790,8 +790,8 @@ class EventBus:
         if not self._running:
             return False
 
-        event = RLMMarketUpdateEvent(
-            event_type=EventType.RLM_MARKET_UPDATE,
+        event = TradeFlowMarketUpdateEvent(
+            event_type=EventType.TRADE_FLOW_MARKET_UPDATE,
             market_ticker=market_ticker,
             state=state,
             timestamp=time.time(),
@@ -799,24 +799,26 @@ class EventBus:
 
         return await self._queue_event(event)
 
-    async def emit_rlm_trade_arrived(
+    async def emit_trade_flow_trade_arrived(
         self,
         market_ticker: str,
         side: str,
         count: int,
-        price_cents: int,
+        yes_price: int,
+        event_ticker: str = "",
     ) -> bool:
         """
-        Emit an RLM trade arrived event (non-blocking).
+        Emit a trade flow trade arrived event (non-blocking).
 
-        Called by RLMService for every trade in a tracked market.
+        Called by MarketStateAgent for every trade in a tracked market.
         Used for real-time UI pulse/glow animations on trade arrival.
 
         Args:
             market_ticker: Market ticker where trade occurred
             side: Trade side ("yes" or "no")
             count: Number of contracts in this trade
-            price_cents: Trade price in cents
+            yes_price: YES price in cents
+            event_ticker: Event ticker this market belongs to
 
         Returns:
             True if event was queued, False if queue full
@@ -824,42 +826,43 @@ class EventBus:
         if not self._running:
             return False
 
-        event = RLMTradeArrivedEvent(
-            event_type=EventType.RLM_TRADE_ARRIVED,
+        event = TradeFlowTradeArrivedEvent(
+            event_type=EventType.TRADE_FLOW_TRADE_ARRIVED,
             market_ticker=market_ticker,
+            event_ticker=event_ticker,
             side=side,
             count=count,
-            price_cents=price_cents,
+            price_cents=yes_price,
             timestamp=time.time(),
         )
 
         return await self._queue_event(event)
 
-    async def subscribe_to_rlm_market_update(self, callback: Callable) -> None:
+    async def subscribe_to_trade_flow_market_update(self, callback: Callable) -> None:
         """
-        Subscribe to RLM market update events.
+        Subscribe to trade flow market update events.
 
         Args:
-            callback: Async function(event: RLMMarketUpdateEvent) to call on update
+            callback: Async function(event: TradeFlowMarketUpdateEvent) to call on update
         """
-        if EventType.RLM_MARKET_UPDATE not in self._subscribers:
-            self._subscribers[EventType.RLM_MARKET_UPDATE] = []
+        if EventType.TRADE_FLOW_MARKET_UPDATE not in self._subscribers:
+            self._subscribers[EventType.TRADE_FLOW_MARKET_UPDATE] = []
 
-        self._subscribers[EventType.RLM_MARKET_UPDATE].append(callback)
-        logger.debug(f"Added RLM market update subscriber: {callback.__name__}")
+        self._subscribers[EventType.TRADE_FLOW_MARKET_UPDATE].append(callback)
+        logger.debug(f"Added trade flow market update subscriber: {callback.__name__}")
 
-    async def subscribe_to_rlm_trade_arrived(self, callback: Callable) -> None:
+    async def subscribe_to_trade_flow_trade_arrived(self, callback: Callable) -> None:
         """
-        Subscribe to RLM trade arrived events.
+        Subscribe to trade flow trade arrived events.
 
         Args:
-            callback: Async function(event: RLMTradeArrivedEvent) to call on trade
+            callback: Async function(event: TradeFlowTradeArrivedEvent) to call on trade
         """
-        if EventType.RLM_TRADE_ARRIVED not in self._subscribers:
-            self._subscribers[EventType.RLM_TRADE_ARRIVED] = []
+        if EventType.TRADE_FLOW_TRADE_ARRIVED not in self._subscribers:
+            self._subscribers[EventType.TRADE_FLOW_TRADE_ARRIVED] = []
 
-        self._subscribers[EventType.RLM_TRADE_ARRIVED].append(callback)
-        logger.debug(f"Added RLM trade arrived subscriber: {callback.__name__}")
+        self._subscribers[EventType.TRADE_FLOW_TRADE_ARRIVED].append(callback)
+        logger.debug(f"Added trade flow trade arrived subscriber: {callback.__name__}")
 
     # ============================================================
     # True Market Open (TMO) Event Methods

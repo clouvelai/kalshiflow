@@ -26,13 +26,14 @@ class DateTimeEncoder(json.JSONEncoder):
             return obj.isoformat()
         return super().default(obj)
 
-from .event_bus import EventBus, EventType, StateTransitionEvent, TraderStatusEvent, RLMMarketUpdateEvent, RLMTradeArrivedEvent
+from .event_bus import EventBus, EventType, StateTransitionEvent, TraderStatusEvent, TradeFlowMarketUpdateEvent, TradeFlowTradeArrivedEvent
 
 # Import for type hints only to avoid circular imports
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from ..services.trading_decision_service import TradingDecisionService
     from ..services.upcoming_markets_syncer import UpcomingMarketsSyncer
+    from ..services.entity_market_index import EntityMarketIndex
     from ..state.tracked_markets import TrackedMarketsState
     from ..state.event_research_context import EventResearchResult
     from .state_container import V3StateContainer
@@ -83,6 +84,7 @@ class V3WebSocketManager:
         self._market_price_syncer = None  # Set via set_market_price_syncer()
         self._tracked_markets_state: Optional['TrackedMarketsState'] = None  # Set via set_tracked_markets_state()
         self._upcoming_markets_syncer: Optional['UpcomingMarketsSyncer'] = None  # Set via set_upcoming_markets_syncer()
+        self._entity_market_index: Optional['EntityMarketIndex'] = None  # Set via set_entity_market_index()
         self._clients: Dict[str, WebSocketClient] = {}
         self._client_counter = 0
         self._started_at: Optional[float] = None
@@ -203,6 +205,19 @@ class V3WebSocketManager:
         self._upcoming_markets_syncer = syncer
         logger.info("UpcomingMarketsSyncer set on WebSocket manager")
 
+    def set_entity_market_index(self, entity_index: 'EntityMarketIndex') -> None:
+        """
+        Set the entity market index for entity index snapshots.
+
+        This enables sending entity index snapshots to new clients and
+        broadcasting entity signal updates when reddit signals arrive.
+
+        Args:
+            entity_index: EntityMarketIndex instance
+        """
+        self._entity_market_index = entity_index
+        logger.info("EntityMarketIndex set on WebSocket manager")
+
     def _add_to_activity_feed_history(self, message_type: str, data: dict) -> None:
         """
         Track events for Activity Feed history replay.
@@ -235,9 +250,9 @@ class V3WebSocketManager:
         if self._event_bus:
             self._event_bus.subscribe(EventType.SYSTEM_ACTIVITY, self._handle_system_activity)
             self._event_bus.subscribe(EventType.TRADER_STATUS, self._handle_trader_status)
-            # RLM (Reverse Line Movement) events
-            await self._event_bus.subscribe_to_rlm_market_update(self._handle_rlm_market_update)
-            await self._event_bus.subscribe_to_rlm_trade_arrived(self._handle_rlm_trade_arrived)
+            # Trade flow events (market microstructure tracking)
+            await self._event_bus.subscribe_to_trade_flow_market_update(self._handle_trade_flow_market_update)
+            await self._event_bus.subscribe_to_trade_flow_trade_arrived(self._handle_trade_flow_trade_arrived)
             logger.info("Subscribed to event bus for real-time updates")
         
         # Start periodic tasks
@@ -425,9 +440,9 @@ class V3WebSocketManager:
             if self._tracked_markets_state and client_id in self._clients:
                 await self._send_tracked_markets_snapshot(client_id)
 
-            # Send RLM market states snapshot if strategy coordinator is available
+            # Send trade flow market states snapshot if strategy coordinator is available
             if self._strategy_coordinator and client_id in self._clients:
-                await self._send_rlm_states_snapshot(client_id)
+                await self._send_trade_flow_states_snapshot(client_id)
                 # Also send initial trade_processing snapshot
                 await self._send_trade_processing_snapshot(client_id)
 
@@ -447,6 +462,10 @@ class V3WebSocketManager:
             # This ensures the Activity Feed is populated when switching views
             if self._activity_feed_history and client_id in self._clients:
                 await self._send_activity_feed_history(client_id)
+
+            # Send entity index snapshot if entity market index is available
+            if self._entity_market_index and client_id in self._clients:
+                await self._send_entity_index_snapshot(client_id)
 
             # Now handle incoming messages
             # (Current state is already included in the historical transitions replay)
@@ -634,41 +653,44 @@ class V3WebSocketManager:
             "metrics": event.metrics
         })
 
-    async def _handle_rlm_market_update(self, event: RLMMarketUpdateEvent) -> None:
+    async def _handle_trade_flow_market_update(self, event: TradeFlowMarketUpdateEvent) -> None:
         """
-        Handle RLM market state update events from event bus.
+        Handle trade flow market state update events from event bus.
 
         Broadcasts market trade state (YES/NO counts, price movement) to
-        all connected frontend clients for the RLM strategy UI.
+        all connected frontend clients for the trade flow UI.
 
         Args:
-            event: RLMMarketUpdateEvent containing market state
+            event: TradeFlowMarketUpdateEvent containing market state
         """
-        await self.broadcast_message("rlm_market_state", {
+        await self.broadcast_message("trade_flow_market_state", {
+            "ticker": event.market_ticker,
             "market_ticker": event.market_ticker,
             **event.state,
             "timestamp": time.strftime("%H:%M:%S", time.localtime(event.timestamp)),
         })
 
-    async def _handle_rlm_trade_arrived(self, event: RLMTradeArrivedEvent) -> None:
+    async def _handle_trade_flow_trade_arrived(self, event: TradeFlowTradeArrivedEvent) -> None:
         """
-        Handle RLM trade arrived events from event bus.
+        Handle trade flow trade arrived events from event bus.
 
         Broadcasts lightweight trade notification to all connected clients,
         triggering pulse/glow animations on the corresponding market card.
 
         Args:
-            event: RLMTradeArrivedEvent containing trade details
+            event: TradeFlowTradeArrivedEvent containing trade details
         """
-        await self.broadcast_message("rlm_trade_arrived", {
+        await self.broadcast_message("trade_flow_trade_arrived", {
+            "ticker": event.market_ticker,
             "market_ticker": event.market_ticker,
+            "event_ticker": event.event_ticker,
             "side": event.side,
             "count": event.count,
-            "price_cents": event.price_cents,
+            "yes_price": event.price_cents,
             "timestamp": time.strftime("%H:%M:%S", time.localtime(event.timestamp)),
         })
 
-    # ========== Trade Processing Heartbeat for RLM ==========
+    # ========== Trade Processing Heartbeat ==========
 
     async def _trade_processing_heartbeat(self) -> None:
         """
@@ -691,7 +713,7 @@ class V3WebSocketManager:
         Broadcast trade processing state to all connected clients.
 
         Sends recent tracked trades, stats, and decision breakdown.
-        Provides trade processing stats for RLM mode.
+        Provides trade processing stats for the trade flow UI.
 
         Uses StrategyCoordinator for multi-strategy aggregation.
         Uses _build_trade_processing_data() to ensure consistency with snapshots.
@@ -913,6 +935,78 @@ class V3WebSocketManager:
         }
         await self.broadcast_message("market_info_update", update_data)
 
+    # ========== Entity Index Methods ==========
+
+    async def broadcast_entity_index_snapshot(self) -> None:
+        """
+        Broadcast full entity index snapshot to all connected clients.
+
+        Called after entity index refresh to provide visibility into
+        all canonical entities with their aliases and market mappings.
+        """
+        if not self._entity_market_index:
+            return
+
+        entities = []
+        for entity in self._entity_market_index.get_all_canonical_entities():
+            entities.append({
+                "entity_id": entity.entity_id,
+                "canonical_name": entity.canonical_name,
+                "entity_type": entity.entity_type,
+                "aliases": list(entity.aliases),
+                "markets": [m.to_dict() for m in entity.markets],
+                "reddit_signals": {
+                    "total_mentions": entity.reddit_mentions,
+                    "aggregate_sentiment": entity.aggregate_sentiment,
+                    "last_signal_at": entity.last_reddit_signal,
+                },
+            })
+
+        await self.broadcast_message("entity_index_snapshot", {
+            "total_entities": len(entities),
+            "entities": entities,
+            "timestamp": time.time(),
+        })
+
+        logger.info(f"Broadcast entity_index_snapshot: {len(entities)} entities")
+
+    async def broadcast_entity_signal_update(
+        self,
+        entity_id: str,
+        canonical_name: str,
+        reddit_stats: Dict[str, Any]
+    ) -> None:
+        """
+        Broadcast entity signal update when new reddit signal received.
+
+        Called by PriceImpactAgent when processing new entity signals.
+
+        Args:
+            entity_id: Entity ID that received signal
+            canonical_name: Entity's canonical name
+            reddit_stats: Updated reddit signal stats
+        """
+        await self.broadcast_message("entity_signal_update", {
+            "entity_id": entity_id,
+            "canonical_name": canonical_name,
+            "reddit_signals": reddit_stats,
+            "timestamp": time.time(),
+        })
+
+    async def broadcast_entity_linked(self, entity_data: Dict[str, Any]) -> None:
+        """
+        Broadcast when a new entity is linked from market discovery.
+
+        Called when entity index discovers a new market entity.
+
+        Args:
+            entity_data: Full canonical entity data
+        """
+        await self.broadcast_message("entity_linked", {
+            **entity_data,
+            "timestamp": time.time(),
+        })
+
     async def broadcast_event_research(
         self,
         event_ticker: str,
@@ -1114,18 +1208,18 @@ class V3WebSocketManager:
                     market["trading"] = trading
         return snapshot
 
-    async def _send_rlm_states_snapshot(self, client_id: str) -> None:
-        """Send RLM market states snapshot to a specific client."""
+    async def _send_trade_flow_states_snapshot(self, client_id: str) -> None:
+        """Send trade flow market states snapshot to a specific client."""
         await self._send_snapshot(
             client_id,
-            "rlm_states_snapshot",
+            "trade_flow_states_snapshot",
             self._strategy_coordinator,
-            lambda: self._build_rlm_states_data(),
-            log_name="RLM states"
+            lambda: self._build_trade_flow_states_data(),
+            log_name="trade flow states"
         )
 
-    def _build_rlm_states_data(self) -> dict:
-        """Build RLM market states snapshot data."""
+    def _build_trade_flow_states_data(self) -> dict:
+        """Build trade flow market states snapshot data."""
         market_states = self._strategy_coordinator.get_market_states(limit=100)
         return {
             "markets": market_states,
@@ -1249,6 +1343,38 @@ class V3WebSocketManager:
         return {
             "events": history_list,
             "count": len(history_list)
+        }
+
+    async def _send_entity_index_snapshot(self, client_id: str) -> None:
+        """Send entity index snapshot to a specific client."""
+        await self._send_snapshot(
+            client_id,
+            "entity_index_snapshot",
+            self._entity_market_index,
+            lambda: self._build_entity_index_data(),
+            log_name="entity_index"
+        )
+
+    def _build_entity_index_data(self) -> dict:
+        """Build entity index snapshot data."""
+        entities = []
+        for entity in self._entity_market_index.get_all_canonical_entities():
+            entities.append({
+                "entity_id": entity.entity_id,
+                "canonical_name": entity.canonical_name,
+                "entity_type": entity.entity_type,
+                "aliases": list(entity.aliases),
+                "markets": [m.to_dict() for m in entity.markets],
+                "reddit_signals": {
+                    "total_mentions": entity.reddit_mentions,
+                    "aggregate_sentiment": entity.aggregate_sentiment,
+                    "last_signal_at": entity.last_reddit_signal,
+                },
+            })
+        return {
+            "total_entities": len(entities),
+            "entities": entities,
+            "timestamp": time.time(),
         }
 
     def get_stats(self) -> Dict[str, Any]:
