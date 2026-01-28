@@ -406,6 +406,13 @@ class DeepAgentTools:
                     yes_bid = m.yes_bid if hasattr(m, 'yes_bid') else (m.price or 50)
                     yes_ask = m.yes_ask if hasattr(m, 'yes_ask') else (m.price or 50)
 
+                    # Convert status to string if it's an enum
+                    status_val = m.status
+                    if hasattr(status_val, 'value'):
+                        status_val = status_val.value
+                    elif status_val is None:
+                        status_val = "active"
+
                     markets.append(MarketInfo(
                         ticker=m.ticker,
                         event_ticker=m.event_ticker,
@@ -414,7 +421,7 @@ class DeepAgentTools:
                         yes_ask=yes_ask,
                         spread=yes_ask - yes_bid,
                         volume_24h=getattr(m, 'volume_24h', 0) or 0,
-                        status=m.status or "active",
+                        status=str(status_val),
                         last_trade_price=getattr(m, 'last_price', None),
                     ))
 
