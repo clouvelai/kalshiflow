@@ -741,6 +741,9 @@ class DeepAgentTools:
         """
         Execute a trade on the market.
 
+        Places a limit order at the current ask price to cross the spread
+        and fill immediately. All Kalshi orders are limit orders.
+
         Args:
             ticker: Market ticker to trade
             side: "yes" or "no"
@@ -783,8 +786,42 @@ class DeepAgentTools:
             )
 
         try:
-            # Execute market order through trading client
-            # Use place_order() which is the actual method on V3TradingClientIntegration
+            # Step 1: Fetch current market data to get bid/ask prices
+            market_data = await self._trading_client.get_market(ticker)
+            if not market_data:
+                return TradeResult(
+                    success=False,
+                    ticker=ticker,
+                    side=side,
+                    contracts=contracts,
+                    error=f"Could not fetch market data for {ticker}",
+                )
+
+            # Step 2: Calculate limit price - use ask price to cross spread and fill
+            # Kalshi markets have yes_bid/yes_ask. NO price = 100 - YES price.
+            yes_ask = market_data.get("yes_ask", 0)
+            yes_bid = market_data.get("yes_bid", 0)
+
+            if side == "yes":
+                # Buying YES: pay the yes_ask to fill immediately
+                limit_price = yes_ask
+            else:
+                # Buying NO: NO ask = 100 - YES bid
+                limit_price = 100 - yes_bid if yes_bid > 0 else 0
+
+            # Validate we have a valid price
+            if limit_price <= 0 or limit_price >= 100:
+                return TradeResult(
+                    success=False,
+                    ticker=ticker,
+                    side=side,
+                    contracts=contracts,
+                    error=f"Invalid price calculated: {limit_price}c (yes_bid={yes_bid}, yes_ask={yes_ask})",
+                )
+
+            logger.info(f"[trade] Using limit price {limit_price}c for {side} (yes_bid={yes_bid}, yes_ask={yes_ask})")
+
+            # Step 3: Place limit order through trading client
             # For buying YES/NO contracts: action is always "buy"
             # side determines whether we're buying YES or NO contracts
             result = await self._trading_client.place_order(
@@ -792,7 +829,8 @@ class DeepAgentTools:
                 action="buy",  # Always buying (to sell, we'd buy the opposite side)
                 side=side,     # "yes" or "no"
                 count=contracts,
-                order_type="market",  # Market order for immediate execution
+                price=limit_price,  # Limit price in cents
+                order_type="limit",  # All Kalshi orders are limit orders
             )
 
             # Check for success in response - place_order returns {"order": {...}}
