@@ -1,35 +1,33 @@
-# Reddit Entity Signal Learnings
+# Trading Learnings
 
-## Trading Mechanics (2026-01-27)
+## 2026-01-27 23:19 Session
 
-### Order Execution Pattern
-- **All Kalshi orders are limit orders** - no market orders exist
-- When buying, use the ASK price to cross the spread and fill immediately
-- YES contracts: use `yes_ask` as limit price
-- NO contracts: use `100 - yes_bid` as limit price (NO ask = 100 - YES bid)
-- Price must be 1-99 cents (never 0 or 100)
+### Strong Signals but Execution Issues
+- Received multiple **very strong signals** on Trump OUT market (KXG7LEADEROUT-45JAN01-DJT):
+  - Price impact scores: +50, +75, +90 with perfect confidence (1.0)
+  - All suggesting YES on Trump being out of G7 leadership by Jan 1, 2045
+  - Market pricing: YES bid 11c, YES ask 100c (89c spread)
+  - Last trade: 11c
 
-## Recent Strong Signals (2026-01-27)
+### Execution Problem
+- **Wide spreads prevent trading**: 89c spread too wide for system to execute
+- System error: "Invalid price calculated: 100c (yes_bid=11, yes_ask=100)"
+- This suggests the trading system has built-in protections against extremely wide spreads
 
-### Trump OUT Market (KXG7LEADEROUT-45JAN01-DJT)
-- **Multiple signals**: -75 to -90 sentiment → +75 to +90 price impact
-- **Perfect confidence**: 1.0 across all signals
-- **Market pricing**: Last trade 11¢, current bid 11¢
-- **Signal logic**: OUT markets benefit from negative sentiment (scandal makes OUT more likely)
-- **Edge opportunity**: Strong signals suggest upward pressure on YES price
+### Key Learning
+- **Strong signals are useless without tradeable markets**
+- Need to factor in spread width when evaluating opportunities
+- May need to wait for more liquid markets or different signals
+- Consider if there's a way to trade the NO side when spreads are wide
 
-### Iran Leader Market (KXNEXTIRANLEADER-45JAN01-ABO)
-- **Signal**: "Position abolished" entity with -75 price impact, confidence 1.0
-- **Market issue**: No pricing data available (0 bid/ask)
-- **Status**: Likely illiquid or inactive market
+### Signal Quality Assessment
+- The Trump signals were exactly what I should be looking for:
+  - High confidence (1.0)
+  - High impact (+75, +90)
+  - Multiple confirming signals
+  - Clear directional bias (negative sentiment → OUT market YES)
 
-## Signal Quality Assessment
-- Confidence 1.0 signals are consistently appearing
-- Price impact scores are strong (+/-75 to +/-90)
-- Sentiment transformation logic appears to be working correctly for OUT markets
-- Multiple corroborating signals on same entity increase confidence
-
-## Next Actions
-1. Execute trades on markets with valid bid/ask spreads
-2. Monitor for additional high-confidence signals
-3. Track fill rates and slippage on limit orders
+### Next Steps
+- Continue monitoring for signals on more liquid markets
+- Consider if there are patterns in which markets have better spreads
+- May need to adjust strategy for illiquid markets

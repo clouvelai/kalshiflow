@@ -110,15 +110,17 @@ class PriceImpactItem:
     market_ticker: str
     entity_id: str
     entity_name: str
-    sentiment_score: int      # Original entity sentiment: -100 to +100
-    price_impact_score: int   # Transformed for market type: -100 to +100
-    confidence: float         # Signal confidence: 0.0 to 1.0
+    sentiment_score: int      # Mapped from 5-point scale: -75, -40, 0, 40, 75
+    price_impact_score: int   # Transformed for market type: -75, -40, 0, 40, 75
+    confidence: float         # From LLM: 0.5, 0.7, 0.9
     market_type: str          # OUT, WIN, CONFIRM, NOMINEE
     event_ticker: str
     transformation_logic: str # Explains the sentiment→impact transformation
     source_subreddit: str
     created_at: str           # ISO timestamp
     suggested_side: str       # "yes" or "no" based on impact direction
+    source_title: str = ""    # Reddit post title for context
+    context_snippet: str = "" # Text around entity mention
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -308,6 +310,8 @@ class DeepAgentTools:
                             source_subreddit=row.get("source_subreddit", ""),
                             created_at=row.get("created_at", ""),
                             suggested_side="yes" if row.get("price_impact_score", 0) > 0 else "no",
+                            source_title=row.get("source_title", ""),
+                            context_snippet=row.get("context_snippet", ""),
                         ))
                         if len(items) >= limit:
                             break
@@ -357,6 +361,8 @@ class DeepAgentTools:
                         source_subreddit=signal.source_subreddit,
                         created_at=datetime.fromtimestamp(signal.created_at).isoformat(),
                         suggested_side="yes" if signal.price_impact_score > 0 else "no",
+                        source_title=getattr(signal, "source_title", ""),
+                        context_snippet=getattr(signal, "context_snippet", ""),
                     ))
 
                 logger.info(f"[get_price_impacts] Returned {len(items)} signals from store")
