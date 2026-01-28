@@ -271,6 +271,11 @@ class DeepAgentTools:
         # Try to use the price impact store
         if store:
             try:
+                store_stats = store.get_stats()
+                logger.info(
+                    f"[get_price_impacts] Store stats: {store_stats['signal_count']} signals, "
+                    f"{store_stats['total_ingested']} ingested total"
+                )
                 signals = await store.get_impacts_for_trading(
                     min_confidence=min_confidence,
                     min_impact_magnitude=min_impact_magnitude,

@@ -449,6 +449,18 @@ class TrackedMarketsState:
         """Get markets by category."""
         return [m for m in self._markets.values() if m.category.lower() == category.lower()]
 
+    def get_markets_by_event(self) -> Dict[str, List[TrackedMarket]]:
+        """Get markets grouped by event_ticker."""
+        result: Dict[str, List[TrackedMarket]] = {}
+        for market in self._markets.values():
+            if market.status != MarketStatus.ACTIVE:
+                continue
+            event_ticker = market.event_ticker or "unknown"
+            if event_ticker not in result:
+                result[event_ticker] = []
+            result[event_ticker].append(market)
+        return result
+
     # ======== Capacity Management ========
 
     @property

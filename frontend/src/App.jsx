@@ -9,7 +9,7 @@ import TopTradesList from './components/TopTradesList';
 import FAQ from './components/FAQ';
 import RLTraderDashboard from './components/RLTraderDashboard';
 import V3TraderConsole from './components/V3TraderConsole';
-import EventsPage from './components/v3-trader/pages/EventsPage';
+import AgentPage from './components/v3-trader/pages/AgentPage';
 import { LifecycleDiscovery } from './components/lifecycle';
 
 const MainDashboard = () => {
@@ -96,8 +96,8 @@ function App() {
           element={<V3TraderConsole />}
         />
         <Route
-          path="/v3-trader/events"
-          element={<EventsPage />}
+          path="/v3-trader/agent"
+          element={<AgentPage />}
         />
         <Route
           path="/lifecycle"

@@ -25,7 +25,7 @@ const LifecycleDiscovery = () => {
     isAtCapacity,
     clearEvents,
     // RLM (Reverse Line Movement) state
-    rlmStates,
+    tradeFlowStates,
     tradePulses,
     // Upcoming markets (opening within 4 hours)
     upcomingMarkets,
@@ -92,7 +92,7 @@ const LifecycleDiscovery = () => {
       } else if (filters.status === 'signal_ready') {
         // Currently meeting threshold OR has triggered before
         result = result.filter(m => {
-          const rlmState = rlmStates[m.ticker];
+          const rlmState = tradeFlowStates[m.ticker];
           return rlmState?.signalReady || (rlmState?.signal_trigger_count > 0);
         });
       } else {
@@ -135,7 +135,7 @@ const LifecycleDiscovery = () => {
     }
 
     return result;
-  }, [activeMarkets, filters, rlmStates]);
+  }, [activeMarkets, filters, tradeFlowStates]);
 
   // Group markets by category OR event for display
   const groupedMarkets = useMemo(() => {
@@ -210,7 +210,7 @@ const LifecycleDiscovery = () => {
               marketsByCategory={groupedMarkets}
               showCategoryHeaders={!filters.category || filters.groupBy === 'event'}
               groupBy={filters.groupBy}
-              rlmStates={rlmStates}
+              tradeFlowStates={tradeFlowStates}
               tradePulses={tradePulses}
               rlmConfig={tradingState?.rlm_config}
               eventExposure={eventExposure}
@@ -224,7 +224,7 @@ const LifecycleDiscovery = () => {
               events={recentEvents}
               onClear={clearEvents}
               upcomingMarkets={upcomingMarkets}
-              rlmStates={rlmStates}
+              tradeFlowStates={tradeFlowStates}
             />
           </div>
         </div>

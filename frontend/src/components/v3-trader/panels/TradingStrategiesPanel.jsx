@@ -24,31 +24,12 @@ import { formatAge } from '../../../utils/v3-trader';
 /**
  * Strategy display configuration
  *
- * MULTI-STRATEGY SUPPORT: To add a new strategy (e.g., "s013"):
- * 1. Add an entry here with unique colors (see SettlementsPanel.jsx for color options)
- * 2. The backend already broadcasts all strategies - no backend changes needed
- * 3. See "MULTI-STRATEGY REFACTOR" comment below for rendering changes
+ * Deep Agent is the sole active strategy.
  */
 const STRATEGY_CONFIG = {
-  rlm_no: {
-    label: 'RLM NO',
-    description: 'Reverse Line Movement',
-    accentColor: 'violet',
-    bgClass: 'bg-violet-900/20',
-    borderClass: 'border-violet-700/30',
-    textClass: 'text-violet-400',
-  },
-  odmr: {
-    label: 'ODMR',
-    description: 'Dip Buyer / Mean Reversion',
-    accentColor: 'amber',
-    bgClass: 'bg-amber-900/20',
-    borderClass: 'border-amber-700/30',
-    textClass: 'text-amber-400',
-  },
-  agentic_research: {
-    label: 'AI Research',
-    description: 'Agentic Event Research',
+  deep_agent: {
+    label: 'Deep Agent',
+    description: 'Deep Research Agent',
     accentColor: 'emerald',
     bgClass: 'bg-emerald-900/20',
     borderClass: 'border-emerald-700/30',
@@ -214,42 +195,59 @@ const SkipBox = memo(({ label, value, accentColor = 'yellow' }) => {
 SkipBox.displayName = 'SkipBox';
 
 /**
+ * DeepAgentMetrics - Metrics specific to the Deep Agent
+ */
+const DeepAgentMetrics = memo(({ strategyData }) => {
+  if (!strategyData) return null;
+
+  const marketsTracked = strategyData.markets_tracked || 0;
+  const researchCompleted = strategyData.research_completed || 0;
+  const signalsGenerated = strategyData.signals_generated || 0;
+  const tradesExecuted = strategyData.trades_executed || 0;
+
+  return (
+    <div className="space-y-4 mb-4">
+      {/* Primary Stats */}
+      <div>
+        <div className="flex items-center space-x-2 mb-2">
+          <Brain className="w-3 h-3 text-emerald-500" />
+          <span className="text-[10px] text-gray-500 uppercase tracking-wider font-medium">Deep Agent Status</span>
+        </div>
+        <div className="grid grid-cols-4 gap-2">
+          <div className="rounded-lg p-2 border text-center bg-emerald-900/20 border-emerald-700/30">
+            <div className="text-[9px] text-gray-500 uppercase tracking-wider font-medium mb-0.5">Markets</div>
+            <div className="text-sm font-mono font-bold text-emerald-400">{marketsTracked}</div>
+          </div>
+          <div className="rounded-lg p-2 border text-center bg-cyan-900/20 border-cyan-700/30">
+            <div className="text-[9px] text-gray-500 uppercase tracking-wider font-medium mb-0.5">Research</div>
+            <div className="text-sm font-mono font-bold text-cyan-400">{researchCompleted}</div>
+          </div>
+          <div className="rounded-lg p-2 border text-center bg-violet-900/20 border-violet-700/30">
+            <div className="text-[9px] text-gray-500 uppercase tracking-wider font-medium mb-0.5">Signals</div>
+            <div className="text-sm font-mono font-bold text-violet-400">{signalsGenerated}</div>
+          </div>
+          <div className="rounded-lg p-2 border text-center bg-green-900/20 border-green-700/30">
+            <div className="text-[9px] text-gray-500 uppercase tracking-wider font-medium mb-0.5">Trades</div>
+            <div className="text-sm font-mono font-bold text-green-400">{tradesExecuted}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+});
+
+DeepAgentMetrics.displayName = 'DeepAgentMetrics';
+
+/**
  * SkipBreakdownSection - Renders strategy-specific skip breakdown
  */
 const SkipBreakdownSection = memo(({ strategyId, skipBreakdown }) => {
-  // Agentic Research uses different skip categories
-  if (strategyId === 'agentic_research') {
-    // Calculate totals for header
-    const totalSkips = (skipBreakdown.threshold || 0) +
-                       (skipBreakdown.position_limit || 0) +
-                       (skipBreakdown.event_limit || 0);
-
-    return (
-      <div className="mb-4">
-        <div className="flex items-center space-x-2 mb-2">
-          <AlertCircle className="w-3 h-3 text-gray-600" />
-          <span className="text-[10px] text-gray-500 uppercase tracking-wider font-medium">Skip Breakdown</span>
-          {totalSkips > 0 && (
-            <span className="text-[10px] text-emerald-500 font-mono">({totalSkips} total)</span>
-          )}
-        </div>
-        {/* Main skip categories */}
-        <div className="grid grid-cols-3 gap-2 mb-2">
-          <SkipBox label="Threshold" value={skipBreakdown.threshold || 0} accentColor="emerald" />
-          <SkipBox label="Position Lim" value={skipBreakdown.position_limit || 0} accentColor="emerald" />
-          <SkipBox label="Event Lim" value={skipBreakdown.event_limit || 0} accentColor="emerald" />
-        </div>
-        {/* Granular threshold breakdown (subset of Threshold) */}
-        <div className="grid grid-cols-3 gap-2">
-          <SkipBox label="Hold Rec" value={skipBreakdown.hold_recommendation || 0} accentColor="violet" />
-          <SkipBox label="Low Edge" value={skipBreakdown.below_edge_threshold || 0} accentColor="violet" />
-          <SkipBox label="Low Conf" value={skipBreakdown.low_confidence || 0} accentColor="violet" />
-        </div>
-      </div>
-    );
+  // Deep Agent uses DeepAgentMetrics instead
+  if (strategyId === 'deep_agent') {
+    return null;
   }
 
-  // Default: RLM/ODMR skip breakdown
+  // Default skip breakdown (for any future strategies)
   return (
     <div className="mb-4">
       <div className="flex items-center space-x-2 mb-2">
@@ -269,76 +267,6 @@ const SkipBreakdownSection = memo(({ strategyId, skipBreakdown }) => {
 });
 
 SkipBreakdownSection.displayName = 'SkipBreakdownSection';
-
-/**
- * AgenticMetricsSection - Extended metrics for Agentic Research strategy
- */
-const AgenticMetricsSection = memo(({ strategyData }) => {
-  const agenticMetrics = strategyData?.agentic_metrics || {};
-
-  // Only show for agentic_research strategy
-  if (!agenticMetrics || Object.keys(agenticMetrics).length === 0) {
-    return null;
-  }
-
-  const eventsResearched = agenticMetrics.events_researched || 0;
-  const marketsResearched = agenticMetrics.markets_researched || 0;
-  const cacheHitRate = (agenticMetrics.cache_hit_rate || 0) * 100;
-  const calibrationSamples = agenticMetrics.calibration_samples || 0;
-  const calibrationError = agenticMetrics.calibration_avg_error_cents || 0;
-
-  return (
-    <div className="mb-4">
-      <div className="flex items-center space-x-2 mb-2">
-        <Brain className="w-3 h-3 text-emerald-500" />
-        <span className="text-[10px] text-gray-500 uppercase tracking-wider font-medium">Research Metrics</span>
-      </div>
-      <div className="grid grid-cols-4 gap-2">
-        {/* Events Researched */}
-        <div className="rounded-lg p-2 border text-center bg-emerald-900/20 border-emerald-700/30">
-          <div className="text-[9px] text-gray-500 uppercase tracking-wider font-medium mb-0.5">
-            Events
-          </div>
-          <div className="text-sm font-mono font-bold text-emerald-400">
-            {eventsResearched}
-          </div>
-        </div>
-
-        {/* Markets Researched */}
-        <div className="rounded-lg p-2 border text-center bg-emerald-900/20 border-emerald-700/30">
-          <div className="text-[9px] text-gray-500 uppercase tracking-wider font-medium mb-0.5">
-            Markets
-          </div>
-          <div className="text-sm font-mono font-bold text-emerald-400">
-            {marketsResearched}
-          </div>
-        </div>
-
-        {/* Cache Hit Rate */}
-        <div className="rounded-lg p-2 border text-center bg-cyan-900/20 border-cyan-700/30">
-          <div className="text-[9px] text-gray-500 uppercase tracking-wider font-medium mb-0.5">
-            Cache Hit
-          </div>
-          <div className="text-sm font-mono font-bold text-cyan-400">
-            {cacheHitRate.toFixed(0)}%
-          </div>
-        </div>
-
-        {/* LLM Calibration */}
-        <div className="rounded-lg p-2 border text-center bg-violet-900/20 border-violet-700/30">
-          <div className="text-[9px] text-gray-500 uppercase tracking-wider font-medium mb-0.5">
-            Calib Err
-          </div>
-          <div className="text-sm font-mono font-bold text-violet-400">
-            {calibrationSamples > 0 ? `${calibrationError}c` : '-'}
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-});
-
-AgenticMetricsSection.displayName = 'AgenticMetricsSection';
 
 /**
  * RateLimiterBar - Progress bar showing rate limiter utilization
@@ -424,7 +352,6 @@ const formatPnl = (pnlCents) => {
 
 /**
  * DecisionRow - Row in the recent decisions table
- * Renders strategy-specific columns based on strategyId
  */
 const DecisionRow = memo(({ decision, strategyId }) => {
   const action = decision.action || 'unknown';
@@ -453,67 +380,8 @@ const DecisionRow = memo(({ decision, strategyId }) => {
     return action?.replace('skipped_', '').replace('exit_', '').toUpperCase() || 'UNKNOWN';
   };
 
-  // Build tooltip for agentic_research decisions
-  const getTooltip = () => {
-    if (strategyId !== 'agentic_research') return null;
-    const parts = [];
-    if (decision.trade_rationale) parts.push(decision.trade_rationale);
-    if (decision.action_details?.length) parts.push(`Actions: ${decision.action_details.join(', ')}`);
-    if (decision.risk_notes) parts.push(`Risk: ${decision.risk_notes}`);
-    if (decision.expected_value_cents) parts.push(`EV: ${decision.expected_value_cents}c`);
-    return parts.join(' | ') || null;
-  };
-
-  // Render strategy-specific columns
+  // Render strategy columns (default: strategy compatible)
   const renderStrategyColumns = () => {
-    if (strategyId === 'agentic_research') {
-      const aiProb = decision.ai_probability;
-      const edge = decision.edge;
-      const confidence = decision.confidence;
-
-      // Confidence color mapping
-      const confColor = confidence === 'high' ? 'text-green-400'
-        : confidence === 'medium' ? 'text-yellow-400'
-        : 'text-gray-500';
-
-      return (
-        <>
-          <td className="px-2 py-2 text-right">
-            <span className="text-xs text-emerald-400">
-              {aiProb != null ? `${(aiProb * 100).toFixed(0)}%` : '-'}
-            </span>
-            {confidence && (
-              <span className={`ml-1 text-[9px] ${confColor}`}>
-                ({confidence[0].toUpperCase()})
-              </span>
-            )}
-          </td>
-          <td className="px-2 py-2 text-right">
-            <span className={`text-xs ${edge != null && edge > 0.05 ? 'text-green-400' : edge != null && edge > 0 ? 'text-yellow-400' : 'text-gray-400'}`}>
-              {edge != null ? `${(edge * 100).toFixed(1)}%` : '-'}
-            </span>
-          </td>
-        </>
-      );
-    }
-    if (strategyId === 'odmr') {
-      const pnl = formatPnl(decision.pnl_cents);
-      return (
-        <>
-          <td className="px-2 py-2 text-right">
-            <span className="text-xs text-gray-400">
-              {decision.dip_depth != null ? `${decision.dip_depth}c` : '-'}
-            </span>
-          </td>
-          <td className="px-2 py-2 text-right">
-            <span className={`text-xs ${pnl?.colorClass || 'text-gray-400'}`}>
-              {pnl?.text || '-'}
-            </span>
-          </td>
-        </>
-      );
-    }
-    // Default: RLM_NO columns
     return (
       <>
         <td className="px-2 py-2 text-right">
@@ -530,12 +398,9 @@ const DecisionRow = memo(({ decision, strategyId }) => {
     );
   };
 
-  const tooltip = getTooltip();
-
   return (
     <tr
       className="border-b border-gray-700/20 hover:bg-gray-800/30 transition-colors cursor-default"
-      title={tooltip || undefined}
     >
       <td className="px-2 py-2">
         <span className="font-mono text-gray-300 text-xs truncate block max-w-[100px]" title={decision.market_ticker}>
@@ -569,35 +434,16 @@ DecisionRow.displayName = 'DecisionRow';
 
 /**
  * RecentDecisionsSection - Collapsible table of recent decisions
- * Renders strategy-specific column headers based on strategyId
  */
 const RecentDecisionsSection = memo(({ decisions, strategyId }) => {
-  // Default to expanded for agentic_research to improve decision visibility
-  const [isExpanded, setIsExpanded] = useState(strategyId === 'agentic_research');
+  const [isExpanded, setIsExpanded] = useState(false);
 
   if (!decisions || decisions.length === 0) {
     return null;
   }
 
-  // Render strategy-specific column headers
+  // Render column headers (default: strategy compatible)
   const renderColumnHeaders = () => {
-    if (strategyId === 'agentic_research') {
-      return (
-        <>
-          <th className="px-2 py-1.5 text-right text-[9px] text-gray-500 uppercase font-semibold" title="AI Probability (Confidence)">Prob/Conf</th>
-          <th className="px-2 py-1.5 text-right text-[9px] text-gray-500 uppercase font-semibold">Edge</th>
-        </>
-      );
-    }
-    if (strategyId === 'odmr') {
-      return (
-        <>
-          <th className="px-2 py-1.5 text-right text-[9px] text-gray-500 uppercase font-semibold">Dip</th>
-          <th className="px-2 py-1.5 text-right text-[9px] text-gray-500 uppercase font-semibold">P&L</th>
-        </>
-      );
-    }
-    // Default: RLM_NO column headers
     return (
       <>
         <th className="px-2 py-1.5 text-right text-[9px] text-gray-500 uppercase font-semibold">YES%</th>
@@ -693,7 +539,7 @@ const formatUptime = (seconds) => {
  */
 const TradingStrategiesPanel = ({ strategyStatus }) => {
   const [isExpanded, setIsExpanded] = useState(true);
-  const [activeStrategy, setActiveStrategy] = useState('rlm_no');
+  const [activeStrategy, setActiveStrategy] = useState('deep_agent');
 
   const coordinator = strategyStatus?.coordinator || {};
   const strategies = strategyStatus?.strategies || {};
@@ -803,11 +649,9 @@ const TradingStrategiesPanel = ({ strategyStatus }) => {
               {/* Primary Metrics Grid */}
               <div className="grid grid-cols-4 gap-3 mb-4">
                 <StatBox
-                  label={strategyId === 'agentic_research' ? 'Order Rate' : 'Execution Rate'}
+                  label="Execution Rate"
                   value={`${performance.execution_rate || 0}%`}
-                  subtitle={strategyId === 'agentic_research'
-                    ? `${performance.signals_executed || 0}/${performance.signals_detected || 0} orders`
-                    : `${performance.signals_executed || 0}/${performance.signals_detected || 0}`}
+                  subtitle={`${performance.signals_executed || 0}/${performance.signals_detected || 0}`}
                   icon={Target}
                   accentColor={performance.execution_rate >= 50 ? 'green' : 'yellow'}
                   valueClass={performance.execution_rate >= 50 ? 'text-green-400' : 'text-yellow-400'}
@@ -849,9 +693,9 @@ const TradingStrategiesPanel = ({ strategyStatus }) => {
                 skipBreakdown={skipBreakdown}
               />
 
-              {/* Agentic Research Extended Metrics */}
-              {strategyId === 'agentic_research' && (
-                <AgenticMetricsSection strategyData={strategyData} />
+              {/* Deep Agent Metrics */}
+              {strategyId === 'deep_agent' && (
+                <DeepAgentMetrics strategyData={strategyData} />
               )}
 
               {/* Collapsible Sections */}

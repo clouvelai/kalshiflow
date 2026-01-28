@@ -26,6 +26,7 @@ import {
 import V3Header from '../layout/V3Header';
 import { useV3WebSocket } from '../../../hooks/v3-trader/useV3WebSocket';
 import { useDeepAgent } from '../../../hooks/v3-trader/useDeepAgent';
+import { EntityKnowledgeBasePanel } from '../panels';
 
 /**
  * Pipeline Stage Card - Visualizes a stage in the data pipeline
@@ -616,6 +617,7 @@ const AgentPage = () => {
     entityPriceImpacts,
     entityStats,
     entitySystemActive,
+    entityIndex,
   } = useV3WebSocket({ onMessage: handleMessage });
 
   // Get deep agent strategy data
@@ -844,6 +846,14 @@ const AgentPage = () => {
 
             {/* Learnings - Collapsed by default */}
             <LearningsPanel learnings={learnings} memoryUpdates={memoryUpdates} />
+
+            {/* Entity Knowledge Base - What the agent knows */}
+            <div className="mt-6">
+              <EntityKnowledgeBasePanel
+                entityIndex={entityIndex}
+                entitySystemActive={entitySystemActive}
+              />
+            </div>
           </div>
         </div>
       </div>

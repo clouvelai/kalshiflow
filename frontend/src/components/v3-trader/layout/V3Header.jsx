@@ -1,16 +1,16 @@
 import React, { memo } from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { Activity, Wifi, WifiOff } from 'lucide-react';
+import { Activity, Wifi, WifiOff, Brain } from 'lucide-react';
 import { StateBadge } from '../ui/StateBadge';
 
 /**
- * NavTabs - Navigation between Trader, Events, and Discovery views
+ * NavTabs - Navigation between Trader, Agent, and Events views
  */
 const NavTabs = () => {
   const location = useLocation();
   const isTrader = location.pathname === '/v3' || location.pathname === '/v3-trader';
+  const isAgent = location.pathname === '/v3-trader/agent';
   const isEvents = location.pathname === '/v3-trader/events';
-  const isDiscovery = location.pathname.includes('lifecycle');
 
   return (
     <div className="flex items-center bg-gray-800/50 rounded-lg p-1">
@@ -25,6 +25,17 @@ const NavTabs = () => {
         Trader
       </Link>
       <Link
+        to="/v3-trader/agent"
+        className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors flex items-center gap-1.5 ${
+          isAgent
+            ? 'bg-violet-500/30 text-violet-300'
+            : 'text-gray-400 hover:text-white hover:bg-gray-700/50'
+        }`}
+      >
+        <Brain className="w-3.5 h-3.5" />
+        Agent
+      </Link>
+      <Link
         to="/v3-trader/events"
         className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
           isEvents
@@ -33,16 +44,6 @@ const NavTabs = () => {
         }`}
       >
         Events
-      </Link>
-      <Link
-        to="/lifecycle"
-        className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
-          isDiscovery
-            ? 'bg-cyan-500/30 text-cyan-300'
-            : 'text-gray-400 hover:text-white hover:bg-gray-700/50'
-        }`}
-      >
-        Discovery
       </Link>
     </div>
   );

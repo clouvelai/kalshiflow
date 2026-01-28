@@ -17,33 +17,12 @@ import { formatSettlementCurrency, formatTime, formatCents, getPnLColor, formatA
  * Strategy configuration for display and styling
  */
 const STRATEGY_CONFIG = {
-  rlm_no: {
-    label: 'RLM NO',
-    bgClass: 'bg-blue-900/20',
-    borderClass: 'border-blue-700/30',
-    textClass: 'text-blue-400',
-    rowBgClass: 'hover:bg-blue-900/10',
-  },
-  s013: {
-    label: 'S013',
+  deep_agent: {
+    label: 'DEEP AGENT',
     bgClass: 'bg-emerald-900/20',
     borderClass: 'border-emerald-700/30',
     textClass: 'text-emerald-400',
     rowBgClass: 'hover:bg-emerald-900/10',
-  },
-  hold: {
-    label: 'HOLD',
-    bgClass: 'bg-gray-800/30',
-    borderClass: 'border-gray-700/30',
-    textClass: 'text-gray-500',
-    rowBgClass: 'hover:bg-gray-800/10',
-  },
-  mixed: {
-    label: 'MIXED',
-    bgClass: 'bg-amber-900/20',
-    borderClass: 'border-amber-700/30',
-    textClass: 'text-amber-400',
-    rowBgClass: 'hover:bg-amber-900/10',
   },
 };
 

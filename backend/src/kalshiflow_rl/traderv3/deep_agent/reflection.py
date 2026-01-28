@@ -384,6 +384,29 @@ Be specific and actionable in your learnings.
         """Get list of pending trades awaiting settlement."""
         return [asdict(t) for t in self._pending_trades.values()]
 
+    def get_pending_trades_serializable(self) -> List[Dict]:
+        """
+        Get pending trades in serializable format for WebSocket snapshot.
+
+        Returns a simplified version of pending trades suitable for
+        frontend restoration after page refresh.
+
+        Returns:
+            List of dicts with trade details
+        """
+        return [
+            {
+                "trade_id": t.trade_id,
+                "ticker": t.ticker,
+                "side": t.side,
+                "contracts": t.contracts,
+                "entry_price_cents": t.entry_price_cents,
+                "reasoning": t.reasoning[:200] if t.reasoning else "",
+                "timestamp": t.timestamp,
+            }
+            for t in self._pending_trades.values()
+        ]
+
     def get_recent_reflections(self, limit: int = 10) -> List[Dict]:
         """Get recent reflection results."""
         return [asdict(r) for r in self._reflections[-limit:]]

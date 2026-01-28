@@ -541,6 +541,74 @@
   .animate-pulse-red {
     animation: pulseRed 1.5s ease-out forwards;
   }
+
+  /* Entity Knowledge Base animations */
+  @keyframes entityDiscovered {
+    0% {
+      opacity: 0;
+      transform: scale(0.8);
+      box-shadow: 0 0 0 rgba(6, 182, 212, 0);
+    }
+    50% {
+      opacity: 1;
+      transform: scale(1.05);
+      box-shadow: 0 0 40px var(--entity-glow, rgba(6, 182, 212, 0.6));
+    }
+    100% {
+      opacity: 1;
+      transform: scale(1);
+      box-shadow: 0 0 0 rgba(6, 182, 212, 0);
+    }
+  }
+
+  @keyframes sentimentPulsePositive {
+    0% {
+      background-color: transparent;
+    }
+    25% {
+      background-color: rgba(34, 197, 94, 0.15);
+    }
+    100% {
+      background-color: transparent;
+    }
+  }
+
+  @keyframes sentimentPulseNegative {
+    0% {
+      background-color: transparent;
+    }
+    25% {
+      background-color: rgba(239, 68, 68, 0.15);
+    }
+    100% {
+      background-color: transparent;
+    }
+  }
+
+  @keyframes recentActivityGlow {
+    0%, 100% {
+      box-shadow: 0 0 0 0 rgba(6, 182, 212, 0);
+    }
+    50% {
+      box-shadow: 0 0 15px 2px rgba(6, 182, 212, 0.2);
+    }
+  }
+
+  .animate-entity-discovered {
+    animation: entityDiscovered 0.8s cubic-bezier(0.34, 1.56, 0.64, 1);
+  }
+
+  .animate-sentiment-positive {
+    animation: sentimentPulsePositive 0.6s ease-out;
+  }
+
+  .animate-sentiment-negative {
+    animation: sentimentPulseNegative 0.6s ease-out;
+  }
+
+  .animate-recent-activity {
+    animation: recentActivityGlow 2s ease-in-out infinite;
+  }
 }
 
 /* Base styles */

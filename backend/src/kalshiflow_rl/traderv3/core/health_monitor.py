@@ -118,6 +118,7 @@ class V3HealthMonitor:
         self._monitoring_task: Optional[asyncio.Task] = None
         self._running = False
         self._health_check_count = 0
+        self._was_all_healthy = True  # Track health state for change detection
 
         logger.info("Health monitor initialized")
 
@@ -326,15 +327,15 @@ class V3HealthMonitor:
         all_critical_healthy = all(critical_health.values()) if critical_health else True
         all_non_critical_healthy = all(non_critical_health.values()) if non_critical_health else True
 
-        # Emit health check activity (only occasionally to avoid spam)
+        # Emit health check activity only when state changes (to reduce spam)
         if current_state == V3State.READY:
             self._health_check_count += 1
 
-            # Emit every 5th check or if any component is unhealthy
-            if not all_healthy or self._health_check_count % 5 == 0:
+            # Only emit when health state changes (healthy -> degraded or vice versa)
+            if all_healthy != self._was_all_healthy:
                 await self._event_bus.emit_system_activity(
                     activity_type="health_check",
-                    message=f"Health check: {'All components healthy' if all_healthy else 'Some components degraded'}",
+                    message=f"Health: {'Recovered - all components healthy' if all_healthy else 'Degraded - some components unhealthy'}",
                     metadata={
                         "components": components_health,
                         "all_healthy": all_healthy,
@@ -342,6 +343,7 @@ class V3HealthMonitor:
                         "non_critical_healthy": all_non_critical_healthy
                     }
                 )
+                self._was_all_healthy = all_healthy
 
         # Handle READY state
         if current_state == V3State.READY:

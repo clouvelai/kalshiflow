@@ -8,7 +8,7 @@ import LifecycleMarketCard from './LifecycleMarketCard';
  * Props:
  *   - marketsByCategory: Object mapping category -> array of markets
  *   - showCategoryHeaders: Boolean to show category headers
- *   - rlmStates: Object mapping ticker -> RLM state
+ *   - tradeFlowStates: Object mapping ticker -> RLM state
  *   - tradePulses: Object mapping ticker -> { side, ts } for pulse animation
  *   - rlmConfig: RLM strategy config from backend { min_trades, yes_threshold, min_price_drop }
  *   - eventExposure: Event exposure data { event_groups: { event_ticker -> EventGroup } }
@@ -75,7 +75,7 @@ const cardVariants = {
   exit: { opacity: 0, scale: 0.9, transition: { duration: 0.2 } }
 };
 
-const MarketGrid = ({ marketsByCategory, showCategoryHeaders, groupBy = 'category', rlmStates = {}, tradePulses = {}, rlmConfig, eventExposure, getMarketResearch }) => {
+const MarketGrid = ({ marketsByCategory, showCategoryHeaders, groupBy = 'category', tradeFlowStates = {}, tradePulses = {}, rlmConfig, eventExposure, getMarketResearch }) => {
   const categories = Object.entries(marketsByCategory);
 
   if (categories.length === 0) {
@@ -113,7 +113,7 @@ const MarketGrid = ({ marketsByCategory, showCategoryHeaders, groupBy = 'categor
             >
               <LifecycleMarketCard
                 market={market}
-                rlmState={rlmStates[market.ticker]}
+                rlmState={tradeFlowStates[market.ticker]}
                 tradePulse={tradePulses[market.ticker]}
                 rlmConfig={rlmConfig}
                 eventExposure={getMarketEventExposure(market, eventExposure)}
@@ -161,7 +161,7 @@ const MarketGrid = ({ marketsByCategory, showCategoryHeaders, groupBy = 'categor
                 >
                   <LifecycleMarketCard
                     market={market}
-                    rlmState={rlmStates[market.ticker]}
+                    rlmState={tradeFlowStates[market.ticker]}
                     tradePulse={tradePulses[market.ticker]}
                     rlmConfig={rlmConfig}
                     eventExposure={getMarketEventExposure(market, eventExposure)}

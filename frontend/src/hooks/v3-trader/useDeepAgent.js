@@ -242,6 +242,61 @@ export const useDeepAgent = ({ useV3WebSocketState }) => {
   }, []);
 
   /**
+   * Handle deep_agent_snapshot message - Restore state after page refresh
+   */
+  const handleSnapshot = useCallback((data) => {
+    // Restore cumulative state
+    setAgentState(prev => ({
+      ...prev,
+      status: data.status,
+      cycleCount: data.cycle_count || 0,
+      tradesExecuted: data.trades_executed || 0,
+      winRate: data.win_rate || 0,
+      toolStats: data.tool_stats || {},
+      targetEvents: data.config?.target_events || [],
+    }));
+
+    // Restore recent tool calls
+    if (data.recent_tool_calls?.length > 0) {
+      setToolCalls(data.recent_tool_calls.map(tc => ({
+        id: `${tc.timestamp}-${tc.tool}`,
+        tool: tc.tool,
+        input: tc.input,
+        outputPreview: tc.output_preview,
+        cycle: tc.cycle,
+        timestamp: tc.timestamp,
+      })));
+    }
+
+    // Restore recent trades
+    if (data.recent_trades?.length > 0) {
+      setTrades(data.recent_trades.map(t => ({
+        id: `${t.timestamp}-${t.ticker}`,
+        ticker: t.ticker,
+        side: t.side,
+        contracts: t.contracts,
+        priceCents: t.price_cents,
+        reasoning: t.reasoning,
+        timestamp: t.timestamp,
+        status: 'executed',
+      })));
+    }
+
+    // Restore settlements from reflections
+    if (data.settlements?.length > 0) {
+      setSettlements(data.settlements.map(s => ({
+        id: `${s.reflection_timestamp}-${s.ticker}`,
+        ticker: s.ticker,
+        pnlCents: s.pnl_cents,
+        result: s.result,
+        timestamp: s.reflection_timestamp,
+      })));
+    }
+
+    console.log(`[useDeepAgent] Snapshot restored: cycle ${data.cycle_count}, ${data.trades_executed} trades`);
+  }, []);
+
+  /**
    * Handle price_impact message - Entity sentiment transformed to market-specific impact
    */
   const handlePriceImpact = useCallback((data) => {
@@ -307,6 +362,9 @@ export const useDeepAgent = ({ useV3WebSocketState }) => {
       case 'deep_agent_error':
         handleError(data);
         break;
+      case 'deep_agent_snapshot':
+        handleSnapshot(data);
+        break;
       default:
         // Ignore other message types
         break;
@@ -323,6 +381,7 @@ export const useDeepAgent = ({ useV3WebSocketState }) => {
     handleRedditSignal,
     handlePriceImpact,
     handleError,
+    handleSnapshot,
   ]);
 
   /**

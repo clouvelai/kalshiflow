@@ -926,6 +926,70 @@ class KalshiDemoTradingClient:
             logger.error(f"Failed to get event {event_ticker}: {e}")
             return {}
 
+    async def get_event_candlesticks(
+        self,
+        series_ticker: str,
+        event_ticker: str,
+        start_ts: int,
+        end_ts: int,
+        period_interval: int = 60,
+    ) -> Dict[str, Any]:
+        """
+        Get candlestick OHLC data for ALL markets in an event at once.
+
+        GET /trade-api/v2/series/{series_ticker}/events/{event_ticker}/candlesticks
+
+        This is more efficient than fetching candlesticks per-market because it
+        returns data for all markets in a single API call.
+
+        Args:
+            series_ticker: Series ticker (e.g., "KXPRESNOMD")
+            event_ticker: Event ticker (e.g., "KXPRESNOMD-28")
+            start_ts: Start timestamp (Unix seconds)
+            end_ts: End timestamp (Unix seconds)
+            period_interval: Candle period in minutes - 1 (1-min), 60 (1-hour), 1440 (1-day)
+
+        Returns:
+            Dict with:
+            - market_tickers: List of market tickers
+            - market_candlesticks: List of candlestick arrays (one per market)
+            Each candlestick has:
+            - end_period_ts: Unix timestamp for period end
+            - yes_bid: OHLC for YES buy offers
+            - yes_ask: OHLC for YES sell offers
+            - price: Trade price OHLC
+            - volume: Contracts traded
+            - open_interest: Total contracts by period end
+
+        Raises:
+            KalshiDemoTradingClientError: If request fails
+        """
+        try:
+            params = [
+                f"start_ts={start_ts}",
+                f"end_ts={end_ts}",
+                f"period_interval={period_interval}",
+            ]
+            query_string = "&".join(params)
+            path = f"/series/{series_ticker}/events/{event_ticker}/candlesticks?{query_string}"
+
+            response = await self._make_request("GET", path)
+
+            market_tickers = response.get("market_tickers", [])
+            market_candlesticks = response.get("market_candlesticks", [])
+            total_candles = sum(len(c) for c in market_candlesticks if c)
+
+            logger.debug(
+                f"Retrieved {total_candles} candlesticks across "
+                f"{len(market_tickers)} markets for event {event_ticker}"
+            )
+            return response
+
+        except Exception as e:
+            raise KalshiDemoTradingClientError(
+                f"Failed to get event candlesticks for {event_ticker}: {e}"
+            )
+
     async def get_events(
         self,
         status: Optional[str] = None,

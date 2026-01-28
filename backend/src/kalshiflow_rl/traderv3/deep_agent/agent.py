@@ -16,6 +16,7 @@ import logging
 import os
 import time
 import uuid
+from collections import deque
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from pathlib import Path
@@ -251,6 +252,16 @@ class SelfImprovingAgent:
         self._reflection.set_reflection_callback(self._handle_reflection)
 
         # Initialize Anthropic client
+        # Check for API key to provide helpful error message
+        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        if not api_key:
+            logger.warning(
+                "[agent] ANTHROPIC_API_KEY not set! "
+                "The agent will not be able to call Claude API. "
+                "Set ANTHROPIC_API_KEY in your environment."
+            )
+        else:
+            logger.info("[agent] ANTHROPIC_API_KEY found, Claude API ready")
         self._client = AsyncAnthropic()
 
         # Agent state
@@ -266,6 +277,11 @@ class SelfImprovingAgent:
 
         # Background task
         self._cycle_task: Optional[asyncio.Task] = None
+
+        # History buffers for session persistence (replay to new WebSocket clients)
+        self._thinking_history: deque = deque(maxlen=10)
+        self._tool_call_history: deque = deque(maxlen=50)
+        self._trade_history: deque = deque(maxlen=50)
 
         # Tool definitions for Claude
         self._tool_definitions = self._build_tool_definitions()
@@ -410,28 +426,36 @@ class SelfImprovingAgent:
             logger.warning("[agent] Already running")
             return
 
+        logger.info("[agent] start() called, ws_manager present: %s", self._ws_manager is not None)
         logger.info("[agent] Starting self-improving agent")
         self._running = True
         self._started_at = time.time()
 
         # Initialize memory files
         await self._init_memory_files()
+        logger.info("[agent] Memory files initialized")
 
         # Start reflection engine
         await self._reflection.start()
+        logger.info("[agent] Reflection engine started")
 
         # Start main cycle loop
         self._cycle_task = asyncio.create_task(self._main_loop())
+        logger.info("[agent] Main loop task created: %s", self._cycle_task)
 
         logger.info("[agent] Agent started successfully")
 
         # Broadcast status
+        logger.info("[agent] About to broadcast status, ws_manager: %s", self._ws_manager)
         if self._ws_manager:
             await self._ws_manager.broadcast_message("deep_agent_status", {
                 "status": "started",
                 "config": asdict(self._config),
                 "timestamp": time.strftime("%H:%M:%S"),
             })
+            logger.info("[agent] Broadcast deep_agent_status with status='started'")
+        else:
+            logger.warning("[agent] No ws_manager - cannot broadcast status to frontend!")
 
     async def stop(self) -> None:
         """Stop the agent."""
@@ -532,19 +556,40 @@ This file records patterns that have led to profitable trades.
 
     async def _main_loop(self) -> None:
         """Main observe-act-reflect loop."""
+        logger.info("[agent] _main_loop() STARTED - will run first cycle now")
+
+        # Broadcast "active" status when main loop actually starts executing
+        # This ensures clients connecting after startup see the correct status
+        if self._ws_manager:
+            await self._ws_manager.broadcast_message("deep_agent_status", {
+                "status": "active",
+                "cycle_count": self._cycle_count,
+                "config": asdict(self._config),
+                "timestamp": time.strftime("%H:%M:%S"),
+            })
+            logger.info("[agent] Broadcast deep_agent_status with status='active' (main loop running)")
+
         while self._running:
             try:
+                logger.info("[agent] About to run cycle %d", self._cycle_count + 1)
                 # Run one cycle
                 await self._run_cycle()
+                logger.info(
+                    "[agent] Cycle %d completed, sleeping %ss",
+                    self._cycle_count,
+                    self._config.cycle_interval_seconds
+                )
 
                 # Wait for next cycle
                 await asyncio.sleep(self._config.cycle_interval_seconds)
 
             except asyncio.CancelledError:
+                logger.info("[agent] _main_loop() cancelled")
                 break
             except Exception as e:
-                logger.error(f"[agent] Error in main loop: {e}")
+                logger.error("[agent] Error in main loop: %s", e, exc_info=True)
                 await asyncio.sleep(5.0)  # Brief pause on error
+        logger.info("[agent] _main_loop() STOPPED")
 
     async def _run_cycle(self) -> None:
         """Run one observe-act cycle."""
@@ -684,11 +729,14 @@ Remember: Only trade when you have identified edge. It's okay to hold.
                 if block.type == "text":
                     # Stream thinking to WebSocket
                     if self._ws_manager and block.text.strip():
-                        await self._ws_manager.broadcast_message("deep_agent_thinking", {
+                        thinking_msg = {
                             "text": block.text,
                             "cycle": self._cycle_count,
                             "timestamp": time.strftime("%H:%M:%S"),
-                        })
+                        }
+                        await self._ws_manager.broadcast_message("deep_agent_thinking", thinking_msg)
+                        # Store in history for session persistence
+                        self._thinking_history.append(thinking_msg)
                     assistant_content.append({"type": "text", "text": block.text})
 
                 elif block.type == "tool_use":
@@ -718,13 +766,16 @@ Remember: Only trade when you have identified edge. It's okay to hold.
 
                 # Stream tool call to WebSocket
                 if self._ws_manager:
-                    await self._ws_manager.broadcast_message("deep_agent_tool_call", {
+                    tool_call_msg = {
                         "tool": tool_block.name,
                         "input": tool_block.input,
                         "output_preview": str(result)[:200],
                         "cycle": self._cycle_count,
                         "timestamp": time.strftime("%H:%M:%S"),
-                    })
+                    }
+                    await self._ws_manager.broadcast_message("deep_agent_tool_call", tool_call_msg)
+                    # Store in history for session persistence
+                    self._tool_call_history.append(tool_call_msg)
 
                 tool_results.append({
                     "type": "tool_result",
@@ -798,6 +849,17 @@ Remember: Only trade when you have identified edge. It's okay to hold.
                         entry_price_cents=result.price_cents or 50,
                         reasoning=tool_input["reasoning"],
                     )
+
+                    # Store in trade history for session persistence
+                    trade_msg = {
+                        "ticker": tool_input["ticker"],
+                        "side": tool_input["side"],
+                        "contracts": contracts,
+                        "price_cents": result.price_cents or 50,
+                        "reasoning": tool_input["reasoning"][:200],
+                        "timestamp": time.strftime("%H:%M:%S"),
+                    }
+                    self._trade_history.append(trade_msg)
 
                 return result.to_dict()
 
@@ -1014,4 +1076,35 @@ Remember: Only trade when you have identified edge. It's okay to hold.
             "tool_stats": stats["tool_stats"],
             "memory_dir": str(self._memory_dir),
             "target_events": self._config.target_events,
+        }
+
+    def get_snapshot(self) -> Dict[str, Any]:
+        """
+        Get full agent state for new client initialization.
+
+        Returns a snapshot containing all cumulative state needed to restore
+        the frontend after a page refresh. This includes:
+        - Agent status and configuration
+        - Cycle count and trade statistics
+        - Recent thinking, tool calls, and trades (from history buffers)
+        - Pending trades awaiting settlement
+        - Recent settlements/reflections
+
+        Returns:
+            Dict containing full agent state for WebSocket snapshot
+        """
+        stats = self.get_stats()
+        return {
+            "status": "active" if self._running else "stopped",
+            "started_at": self._started_at,
+            "cycle_count": self._cycle_count,
+            "trades_executed": self._trades_executed,
+            "win_rate": stats["reflection_stats"]["win_rate"],
+            "config": asdict(self._config),
+            "recent_thinking": list(self._thinking_history),
+            "recent_tool_calls": list(self._tool_call_history),
+            "recent_trades": list(self._trade_history),
+            "pending_trades": self._reflection.get_pending_trades_serializable(),
+            "settlements": self._reflection.get_recent_reflections(20),
+            "tool_stats": self._tools.get_tool_stats(),
         }

@@ -38,6 +38,7 @@ if TYPE_CHECKING:
     from ..state.event_research_context import EventResearchResult
     from .state_container import V3StateContainer
     from ..strategies import StrategyCoordinator
+    from ..deep_agent import SelfImprovingAgent
 
 logger = logging.getLogger("kalshiflow_rl.traderv3.websocket_manager")
 
@@ -85,6 +86,7 @@ class V3WebSocketManager:
         self._tracked_markets_state: Optional['TrackedMarketsState'] = None  # Set via set_tracked_markets_state()
         self._upcoming_markets_syncer: Optional['UpcomingMarketsSyncer'] = None  # Set via set_upcoming_markets_syncer()
         self._entity_market_index: Optional['EntityMarketIndex'] = None  # Set via set_entity_market_index()
+        self._deep_agent: Optional['SelfImprovingAgent'] = None  # Set via set_deep_agent()
         self._clients: Dict[str, WebSocketClient] = {}
         self._client_counter = 0
         self._started_at: Optional[float] = None
@@ -217,6 +219,19 @@ class V3WebSocketManager:
         """
         self._entity_market_index = entity_index
         logger.info("EntityMarketIndex set on WebSocket manager")
+
+    def set_deep_agent(self, agent: 'SelfImprovingAgent') -> None:
+        """
+        Set the deep agent for sending snapshots on client connect.
+
+        This enables sending deep agent state snapshots to new clients
+        when they connect, allowing session persistence across page refreshes.
+
+        Args:
+            agent: SelfImprovingAgent instance
+        """
+        self._deep_agent = agent
+        logger.info("SelfImprovingAgent set on WebSocket manager")
 
     def _add_to_activity_feed_history(self, message_type: str, data: dict) -> None:
         """
@@ -467,6 +482,10 @@ class V3WebSocketManager:
             if self._entity_market_index and client_id in self._clients:
                 await self._send_entity_index_snapshot(client_id)
 
+            # Send deep agent snapshot for session persistence (Agent tab)
+            if self._deep_agent and client_id in self._clients:
+                await self._send_deep_agent_snapshot(client_id)
+
             # Now handle incoming messages
             # (Current state is already included in the historical transitions replay)
             async for message in websocket.iter_text():
@@ -492,7 +511,10 @@ class V3WebSocketManager:
             data: Message data
         """
         # Critical types need immediate delivery - no coalescing
-        critical_types = ("state_transition", "connection", "system_activity", "history_replay")
+        critical_types = (
+            "state_transition", "connection", "system_activity", "history_replay",
+            "deep_agent_status", "deep_agent_cycle", "deep_agent_error"
+        )
         if message_type in critical_types:
             await self._broadcast_immediate(message_type, data)
             return
@@ -1376,6 +1398,33 @@ class V3WebSocketManager:
             "entities": entities,
             "timestamp": time.time(),
         }
+
+    async def _send_deep_agent_snapshot(self, client_id: str) -> None:
+        """
+        Send deep agent snapshot to a specific client.
+
+        This enables session persistence for the Deep Agent page,
+        restoring cycle count, tool calls, trades, and settlements
+        after a page refresh.
+        """
+        if not self._deep_agent:
+            return
+        if client_id not in self._clients:
+            return
+
+        try:
+            snapshot = self._deep_agent.get_snapshot()
+            await self._send_to_client(client_id, {
+                "type": "deep_agent_snapshot",
+                "data": snapshot
+            })
+            logger.info(
+                f"Sent deep agent snapshot to {client_id}: "
+                f"cycle {snapshot.get('cycle_count', 0)}, "
+                f"{snapshot.get('trades_executed', 0)} trades"
+            )
+        except Exception as e:
+            logger.warning(f"Could not send deep agent snapshot to {client_id}: {e}")
 
     def get_stats(self) -> Dict[str, Any]:
         """Get WebSocket manager statistics."""

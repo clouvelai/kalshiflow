@@ -6,17 +6,17 @@ import React, { useState, useMemo } from 'react';
  * Format: [timestamp] [event_type] message
  * Clean, minimal design for easy scanning.
  */
-const ActivityFeed = ({ events, onClear, upcomingMarkets = [], rlmStates = {} }) => {
+const ActivityFeed = ({ events, onClear, upcomingMarkets = [], tradeFlowStates = {} }) => {
   // Collapse state for upcoming section
   const [upcomingExpanded, setUpcomingExpanded] = useState(false);
 
   // Calculate tracked trades summary from RLM states
   const { totalTrades, marketsWithTrades } = useMemo(() => {
-    const states = Object.values(rlmStates || {});
+    const states = Object.values(tradeFlowStates || {});
     const total = states.reduce((sum, state) => sum + (state?.total_trades || 0), 0);
     const withTrades = states.filter(state => (state?.total_trades || 0) > 0).length;
     return { totalTrades: total, marketsWithTrades: withTrades };
-  }, [rlmStates]);
+  }, [tradeFlowStates]);
 
   // Process events into display format (no complex aggregation - just simple list)
   const processedEvents = useMemo(() => {

@@ -76,6 +76,13 @@ class DeepAgentStrategy:
             logger.warning("[deep_agent] Already running")
             return
 
+        logger.info("[deep_agent] start() called with context:")
+        logger.info("[deep_agent]   - websocket_manager: %s", context.websocket_manager is not None)
+        logger.info("[deep_agent]   - trading_client_integration: %s", context.trading_client_integration is not None)
+        logger.info("[deep_agent]   - state_container: %s", context.state_container is not None)
+        logger.info("[deep_agent]   - tracked_markets: %s", context.tracked_markets is not None)
+        logger.info("[deep_agent]   - config: %s", context.config)
+
         logger.info("[deep_agent] Starting Deep Agent Strategy")
         self._context = context
         self._running = True
@@ -104,6 +111,13 @@ class DeepAgentStrategy:
             logger.warning("[deep_agent] Missing dependencies for EventPositionTracker")
 
         # Initialize the self-improving agent with event awareness
+        logger.info("[deep_agent] Creating SelfImprovingAgent with:")
+        logger.info("[deep_agent]   - trading_client: %s", context.trading_client_integration is not None)
+        logger.info("[deep_agent]   - state_container: %s", context.state_container is not None)
+        logger.info("[deep_agent]   - websocket_manager: %s", context.websocket_manager is not None)
+        logger.info("[deep_agent]   - tracked_markets: %s", context.tracked_markets is not None)
+        logger.info("[deep_agent]   - event_position_tracker: %s", self._event_position_tracker is not None)
+
         self._agent = SelfImprovingAgent(
             trading_client=context.trading_client_integration,
             state_container=context.state_container,
@@ -112,9 +126,17 @@ class DeepAgentStrategy:
             tracked_markets=context.tracked_markets,
             event_position_tracker=self._event_position_tracker,
         )
+        logger.info("[deep_agent] SelfImprovingAgent created")
 
         # Start the agent
+        logger.info("[deep_agent] About to call agent.start()")
         await self._agent.start()
+        logger.info("[deep_agent] agent.start() completed")
+
+        # Wire agent to websocket manager for session persistence (snapshot on connect)
+        if context.websocket_manager:
+            context.websocket_manager.set_deep_agent(self._agent)
+            logger.info("[deep_agent] Agent wired to websocket manager for session persistence")
 
         # Note: Reddit monitoring is now handled by the entity pipeline:
         # - RedditEntityAgent: Extracts entities from Reddit with market-led normalization

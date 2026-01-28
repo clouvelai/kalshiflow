@@ -120,6 +120,11 @@ class V3Config:
     dormant_volume_threshold: int = 0  # volume_24h <= this is "dormant" (default 0 = no activity)
     dormant_grace_period_hours: float = 1.0  # Minimum hours tracked before considering dormant
 
+    # Entity Trading System Configuration
+    # Reddit entity-based trading (PRAW + GLiNER + sentiment → price impact)
+    entity_system_enabled: bool = False  # Enable Reddit entity trading pipeline
+    entity_subreddits: List[str] = field(default_factory=lambda: ["politics", "news"])
+
     # State Machine Configuration
     sync_duration: float = 10.0  # seconds for Kalshi data sync
     health_check_interval: float = 5.0  # seconds
@@ -274,6 +279,12 @@ class V3Config:
         dormant_volume_threshold = int(os.environ.get("DORMANT_VOLUME_THRESHOLD", "0"))
         dormant_grace_period_hours = float(os.environ.get("DORMANT_GRACE_PERIOD_HOURS", "1.0"))
 
+        # Entity Trading System configuration
+        # Reddit entity-based trading (PRAW + GLiNER + sentiment → price impact)
+        entity_system_enabled = os.environ.get("V3_ENTITY_SYSTEM_ENABLED", "false").lower() == "true"
+        entity_subreddits_str = os.environ.get("V3_ENTITY_SUBREDDITS", "politics,news")
+        entity_subreddits = [s.strip() for s in entity_subreddits_str.split(",") if s.strip()]
+
         sync_duration = float(os.environ.get("V3_SYNC_DURATION", os.environ.get("V3_CALIBRATION_DURATION", "10.0")))
         health_check_interval = float(os.environ.get("V3_HEALTH_CHECK_INTERVAL", "5.0"))
         error_recovery_delay = float(os.environ.get("V3_ERROR_RECOVERY_DELAY", "30.0"))
@@ -335,6 +346,8 @@ class V3Config:
             dormant_detection_enabled=dormant_detection_enabled,
             dormant_volume_threshold=dormant_volume_threshold,
             dormant_grace_period_hours=dormant_grace_period_hours,
+            entity_system_enabled=entity_system_enabled,
+            entity_subreddits=entity_subreddits,
             sync_duration=sync_duration,
             health_check_interval=health_check_interval,
             error_recovery_delay=error_recovery_delay,
@@ -389,6 +402,11 @@ class V3Config:
             logger.info(f"  - Order TTL: {order_ttl_seconds}s (auto-cancel stale resting orders)")
         else:
             logger.info(f"  - Order TTL: DISABLED")
+        if entity_system_enabled:
+            logger.info(f"  - Entity trading: ENABLED")
+            logger.info(f"    - Subreddits: r/{', r/'.join(entity_subreddits)}")
+        else:
+            logger.info(f"  - Entity trading: DISABLED")
 
         # Log event tracking config
         if event_tracking_enabled:

@@ -628,10 +628,12 @@ class EntityMarketIndex:
 
         try:
             # Use trading client to get events
+            logger.info(f"[entity_index] Fetching events for series: {series_filter}")
             raw_events = await self._trading_client.get_events(
                 series_ticker=series_filter,
                 status="open",
             )
+            logger.info(f"[entity_index] Series {series_filter}: found {len(raw_events or [])} raw events")
 
             for event in raw_events or []:
                 event_ticker = event.get("event_ticker", "")
@@ -641,10 +643,12 @@ class EntityMarketIndex:
                 # Fetch full event with markets
                 full_event = await self._trading_client.get_event(event_ticker)
                 if full_event:
+                    markets_count = len(full_event.get("markets", []))
+                    logger.debug(f"[entity_index] Event {event_ticker}: {markets_count} markets")
                     events.append(full_event)
 
         except Exception as e:
-            logger.error(f"[entity_index] Error fetching events for {series_filter}: {e}")
+            logger.error(f"[entity_index] Error fetching events for {series_filter}: {e}", exc_info=True)
 
         return events
 

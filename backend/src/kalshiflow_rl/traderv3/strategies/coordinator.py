@@ -298,6 +298,14 @@ class StrategyCoordinator:
         self._started_at = time.time()
         started = 0
 
+        # Log context state for debugging
+        logger.info("[strategy_coordinator] Starting strategies with context:")
+        logger.info("[strategy_coordinator]   - websocket_manager: %s", self._context.websocket_manager is not None)
+        logger.info("[strategy_coordinator]   - trading_client_integration: %s", self._context.trading_client_integration is not None)
+        logger.info("[strategy_coordinator]   - state_container: %s", self._context.state_container is not None)
+        logger.info("[strategy_coordinator]   - tracked_markets: %s", self._context.tracked_markets is not None)
+        logger.info("[strategy_coordinator] Configs to process: %s", list(self._configs.keys()))
+
         for name, config in self._configs.items():
             if not config.enabled:
                 logger.info(f"Strategy '{name}' disabled, skipping")

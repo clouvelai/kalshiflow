@@ -442,6 +442,49 @@ async def export_order_contexts_endpoint(request: Request):
         )
 
 
+async def entity_index_endpoint(request: Request) -> JSONResponse:
+    """Debug endpoint to expose entity market index contents."""
+    if not coordinator:
+        return JSONResponse({"error": "Coordinator not initialized"}, status_code=503)
+
+    try:
+        # Get the entity market index from coordinator
+        entity_index = coordinator._entity_market_index
+        if not entity_index:
+            return JSONResponse({"error": "Entity index not available"}, status_code=404)
+
+        # Get all entities with their market mappings
+        entities = []
+        for entry in entity_index.get_all_entities():
+            entities.append({
+                "entity_id": entry.entity_id,
+                "canonical_name": entry.canonical_name,
+                "market_count": len(entry.markets),
+                "markets": [
+                    {
+                        "ticker": m.market_ticker,
+                        "event_ticker": m.event_ticker,
+                        "market_type": m.market_type,
+                    }
+                    for m in entry.markets
+                ],
+            })
+
+        # Sort by market count (most relevant entities first)
+        entities.sort(key=lambda x: x["market_count"], reverse=True)
+
+        return JSONResponse({
+            "total_entities": len(entities),
+            "total_markets": sum(e["market_count"] for e in entities),
+            "entities": entities,
+            "stats": entity_index.get_stats(),
+        })
+
+    except Exception as e:
+        logger.error(f"Entity index endpoint error: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 # Create Starlette application
 app = Starlette(
     lifespan=lifespan,
@@ -450,6 +493,7 @@ app = Starlette(
         Route("/v3/status", status_endpoint),
         Route("/v3/cleanup", cleanup_endpoint, methods=["POST"]),
         Route("/v3/export/order-contexts", export_order_contexts_endpoint),
+        Route("/v3/entity-index", entity_index_endpoint),
         WebSocketRoute("/v3/ws", websocket_endpoint)
     ]
 )

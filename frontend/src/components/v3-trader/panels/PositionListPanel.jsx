@@ -6,29 +6,11 @@ import { formatPnLCurrency, formatCentsAsCurrency, formatRelativeTime, getSideCl
  * Strategy configuration for display and styling
  */
 const STRATEGY_CONFIG = {
-  rlm_no: {
-    label: 'RLM',
-    bgClass: 'bg-blue-900/30',
-    borderClass: 'border-blue-700/40',
-    textClass: 'text-blue-400',
-  },
-  s013: {
-    label: 'S013',
+  deep_agent: {
+    label: 'DEEP',
     bgClass: 'bg-emerald-900/30',
     borderClass: 'border-emerald-700/40',
     textClass: 'text-emerald-400',
-  },
-  hold: {
-    label: 'HOLD',
-    bgClass: 'bg-gray-800/40',
-    borderClass: 'border-gray-700/40',
-    textClass: 'text-gray-500',
-  },
-  mixed: {
-    label: 'MIX',
-    bgClass: 'bg-amber-900/30',
-    borderClass: 'border-amber-700/40',
-    textClass: 'text-amber-400',
   },
 };
 

@@ -6,7 +6,9 @@ import {
   PositionListPanel,
   SettlementsPanel,
   TradeProcessingPanel,
-  TradingStrategiesPanel
+  TradingStrategiesPanel,
+  DeepAgentPanel,
+  EntityIndexPanel
 } from './v3-trader/panels';
 
 // UI components
@@ -54,7 +56,8 @@ const V3TraderConsole = () => {
     dismissTtlCancellation,
     newResearchAlert,
     dismissResearchAlert,
-    metrics
+    metrics,
+    entityIndex
   } = useV3WebSocket({ onMessage: addMessage });
 
   return (
@@ -100,6 +103,13 @@ const V3TraderConsole = () => {
           <TradeProcessingPanel tradeProcessing={tradeProcessing} />
         </div>
 
+        {/* Deep Agent Panel - Consolidated view when deep_agent strategy is active */}
+        {strategyStatus?.strategies?.deep_agent && (
+          <DeepAgentPanel
+            strategyData={strategyStatus.strategies.deep_agent}
+          />
+        )}
+
         {/* Position List Panel - Detailed per-position P&L */}
         <PositionListPanel
           positions={tradingState?.positions_details}
@@ -116,6 +126,13 @@ const V3TraderConsole = () => {
         <div className="mb-6">
           <TradingStrategiesPanel strategyStatus={strategyStatus} />
         </div>
+
+        {/* Entity Index Panel - Canonical entities with aliases and reddit signals */}
+        {entityIndex?.entities?.length > 0 && (
+          <div className="mb-6">
+            <EntityIndexPanel entityIndex={entityIndex} />
+          </div>
+        )}
 
         <div className="grid grid-cols-12 gap-6">
           {/* Metrics Panel */}

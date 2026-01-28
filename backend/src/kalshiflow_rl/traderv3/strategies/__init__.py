@@ -47,14 +47,14 @@ Configuration:
     Strategy configurations are stored as YAML files in strategies/config/.
     Each file defines one strategy with its parameters.
 
-    Example (rlm_no.yaml):
-        name: rlm_no
+    Example (agent_pipeline.yaml):
+        name: agent_pipeline
         enabled: true
-        display_name: "Reverse Line Movement NO"
+        display_name: "Agent Pipeline"
         max_positions: 60
         params:
-          yes_threshold: 0.70
-          min_trades: 25
+          edge_threshold: 0.30
+          max_concurrent: 5
 """
 
 from .protocol import Strategy, StrategyContext

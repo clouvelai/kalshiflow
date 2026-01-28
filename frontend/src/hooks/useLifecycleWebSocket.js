@@ -31,10 +31,10 @@ const INITIAL_EVENTS = [];
  * Connects to the V3 backend WebSocket endpoint and handles lifecycle-specific
  * message types: tracked_markets, lifecycle_event, market_info_update
  *
- * Also handles RLM (Reverse Line Movement) state updates:
- * - rlm_states_snapshot: Initial snapshot of all RLM market states
- * - rlm_market_state: Real-time update for a single market's RLM state
- * - rlm_trade_arrived: Trade pulse for animation (green=YES, red=NO)
+ * Also handles trade flow state updates:
+ * - trade_flow_states_snapshot: Initial snapshot of all trade flow market states
+ * - trade_flow_market_state: Real-time update for a single market's trade flow state
+ * - trade_flow_trade_arrived: Trade pulse for animation (green=YES, red=NO)
  *
  * @param {Object} options
  * @param {Function} options.onMessage - Callback for console/log messages
@@ -46,9 +46,9 @@ export const useLifecycleWebSocket = ({ onMessage } = {}) => {
   const [recentEvents, setRecentEvents] = useState(INITIAL_EVENTS);
   const [lastUpdateTime, setLastUpdateTime] = useState(null);
 
-  // RLM (Reverse Line Movement) state
-  // rlmStates: Map of ticker -> RLM state { yes_trades, no_trades, yes_ratio, price_drop, etc. }
-  const [rlmStates, setRlmStates] = useState({});
+  // Trade flow state
+  // tradeFlowStates: Map of ticker -> trade flow state { yes_trades, no_trades, yes_ratio, price_drop, etc. }
+  const [tradeFlowStates, setTradeFlowStates] = useState({});
   // tradePulses: Map of ticker -> { side: 'yes'|'no', ts: timestamp } for pulse animation
   const [tradePulses, setTradePulses] = useState({});
 
@@ -198,30 +198,30 @@ export const useLifecycleWebSocket = ({ onMessage } = {}) => {
         }
         break;
 
-      // ========== RLM (Reverse Line Movement) Messages ==========
+      // ========== Trade Flow Messages ==========
 
-      case 'rlm_states_snapshot':
-        // Initial snapshot of all RLM market states on connect
+      case 'trade_flow_states_snapshot':
+        // Initial snapshot of all trade flow market states on connect
         if (data.data && data.data.markets) {
           const statesMap = {};
           data.data.markets.forEach(state => {
             statesMap[state.market_ticker] = state;
           });
-          setRlmStates(statesMap);
+          setTradeFlowStates(statesMap);
         }
         break;
 
-      case 'rlm_market_state':
-        // Real-time update for a single market's RLM state
+      case 'trade_flow_market_state':
+        // Real-time update for a single market's trade flow state
         if (data.data && data.data.market_ticker) {
-          setRlmStates(prev => ({
+          setTradeFlowStates(prev => ({
             ...prev,
             [data.data.market_ticker]: data.data
           }));
         }
         break;
 
-      case 'rlm_trade_arrived':
+      case 'trade_flow_trade_arrived':
         // Trade pulse for animation - set pulse (batch cleanup via interval)
         if (data.data && data.data.market_ticker) {
           const ticker = data.data.market_ticker;
@@ -250,7 +250,7 @@ export const useLifecycleWebSocket = ({ onMessage } = {}) => {
           setTradingState({
             balance: data.data.balance || 0,
             min_trader_cash: data.data.min_trader_cash || 0,
-            rlm_config: data.data.rlm_config || null
+            trade_flow_config: data.data.trade_flow_config || null
           });
           // Extract event exposure data for correlated position tracking
           if (data.data.event_exposure) {
@@ -528,8 +528,8 @@ export const useLifecycleWebSocket = ({ onMessage } = {}) => {
     markets: trackedMarkets.markets,
     isConnected: wsStatus === 'connected',
     isAtCapacity: trackedMarkets.stats.tracked >= trackedMarkets.stats.capacity,
-    // RLM (Reverse Line Movement) state
-    rlmStates,       // Map of ticker -> RLM state
+    // Trade flow state
+    tradeFlowStates,       // Map of ticker -> trade flow state
     tradePulses,     // Map of ticker -> { side, ts } for pulse animation
     // Upcoming markets (opening within 4 hours)
     upcomingMarkets, // List of upcoming market objects

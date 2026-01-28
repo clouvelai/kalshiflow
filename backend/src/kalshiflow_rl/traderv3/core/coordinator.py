@@ -42,6 +42,15 @@ from ..services.order_cleanup_service import OrderCleanupService
 from ..services.event_position_tracker import EventPositionTracker
 from ..strategies import StrategyCoordinator, StrategyContext
 
+# Entity trading agents (optional, for Reddit entity-based trading)
+from ..agents import (
+    RedditEntityAgent,
+    RedditEntityAgentConfig,
+    PriceImpactAgent,
+    PriceImpactAgentConfig,
+)
+from ..services.entity_market_index import EntityMarketIndex, get_entity_market_index
+
 logger = logging.getLogger("kalshiflow_rl.traderv3.core.coordinator")
 
 
@@ -197,6 +206,12 @@ class V3Coordinator:
         self._upcoming_markets_syncer: Optional['UpcomingMarketsSyncer'] = None
         self._api_discovery_syncer: Optional['ApiDiscoverySyncer'] = None
 
+        # Entity trading agents (Reddit entity-based trading)
+        self._entity_system_enabled = config.entity_system_enabled if hasattr(config, 'entity_system_enabled') else False
+        self._entity_market_index: Optional[EntityMarketIndex] = None
+        self._reddit_entity_agent: Optional[RedditEntityAgent] = None
+        self._price_impact_agent: Optional[PriceImpactAgent] = None
+
         self._started_at: Optional[float] = None
         self._running = False
 
@@ -301,6 +316,10 @@ class V3Coordinator:
             # Start API discovery syncer AFTER trading client is connected
             # This must come after trading client because it uses REST API calls
             await self._start_api_discovery()
+
+            # Start entity trading system (if enabled)
+            # Must be after trading client for REST API access
+            await self._start_entity_system()
 
         # Transition to READY with actual metrics
         await self._transition_to_ready()
@@ -438,31 +457,29 @@ class V3Coordinator:
 
     async def _connect_lifecycle(self) -> None:
         """
-        Connect to lifecycle WebSocket for market discovery.
+        Initialize TrackedMarketsState, StrategyCoordinator, and optionally lifecycle WebSocket.
 
-        Only active when market_mode == "lifecycle". Creates and wires:
-        - TrackedMarketsState for market state
+        This method ALWAYS creates:
+        - TrackedMarketsState for market state tracking
+        - StrategyCoordinator for plugin-based strategies (e.g., agent_pipeline)
+        - Component wiring (WebSocketManager, StateContainer, StatusReporter)
+
+        Only when market_mode == "lifecycle" does it also create:
         - LifecycleClient for lifecycle WebSocket
         - V3LifecycleIntegration for EventBus integration
         - EventLifecycleService for event processing
         - TrackedMarketsSyncer for REST price updates
         """
-        if self._config.market_mode != "lifecycle":
-            logger.debug(f"Skipping lifecycle connection ({self._config.market_mode} mode)")
-            return
+        is_lifecycle_mode = self._config.market_mode == "lifecycle"
+        mode_description = f"Lifecycle mode" if is_lifecycle_mode else f"Config mode (strategies self-discover)"
 
-        logger.info("Starting lifecycle mode...")
+        logger.info(f"Starting {mode_description}...")
 
         try:
             # Import here to avoid circular imports
-            from ..clients.lifecycle_client import LifecycleClient
-            from ..clients.lifecycle_integration import V3LifecycleIntegration
-            from ..services.event_lifecycle_service import EventLifecycleService
-            from ..services.tracked_markets_syncer import TrackedMarketsSyncer
-            from ..services.upcoming_markets_syncer import UpcomingMarketsSyncer
             from ..state.tracked_markets import TrackedMarketsState
-            from kalshiflow.auth import KalshiAuth
-            from ...data.database import rl_db
+
+            # === ALWAYS NEEDED (all modes) ===
 
             # 1. Create TrackedMarketsState
             self._tracked_markets_state = TrackedMarketsState(
@@ -478,77 +495,22 @@ class V3Coordinator:
             )
             logger.info("TrackedMarketsState callbacks wired to orderbook integration")
 
-            # NOTE: DB persistence removed - markets discovered fresh each startup via
-            # lifecycle WebSocket and API discovery. All trading state comes from Kalshi API.
-            logger.info("TrackedMarketsState initialized (no DB persistence - fresh discovery mode)")
+            logger.info("TrackedMarketsState initialized (strategies will self-discover markets)")
 
-            # 2. Create KalshiAuth for lifecycle WebSocket
-            auth = KalshiAuth.from_env()
-
-            # 3. Create LifecycleClient
-            self._lifecycle_client = LifecycleClient(
-                ws_url=self._config.ws_url,
-                auth=auth,
-                base_reconnect_delay=5.0,
-            )
-
-            # 4. Create V3LifecycleIntegration
-            self._lifecycle_integration = V3LifecycleIntegration(
-                lifecycle_client=self._lifecycle_client,
-                event_bus=self._event_bus,
-            )
-
-            # 5. Create EventLifecycleService
-            self._event_lifecycle_service = EventLifecycleService(
-                event_bus=self._event_bus,
-                tracked_markets=self._tracked_markets_state,
-                trading_client=self._trading_client_integration,
-                db=rl_db,
-                categories=self._config.lifecycle_categories,
-                sports_prefixes=self._config.sports_allowed_prefixes,
-            )
-
-            # NOTE: EventLifecycleService callbacks removed - TrackedMarketsState now handles
-            # orderbook subscription sync via callbacks wired in step 1a-pre above.
-            # This prevents double-subscription when markets are added/removed.
-
-            # 6. Set TrackedMarketsState on WebSocketManager, StateContainer, and StatusReporter
+            # 2. Set TrackedMarketsState on WebSocketManager, StateContainer, and StatusReporter
             self._websocket_manager.set_tracked_markets_state(self._tracked_markets_state)
             self._state_container.set_tracked_markets(self._tracked_markets_state)
             self._status_reporter.set_tracked_markets_state(self._tracked_markets_state)
 
-            # 6b. Set trading client on StateContainer for settlement result lookups
+            # 2b. Set trading client on StateContainer for settlement result lookups
             if self._trading_client_integration:
                 self._state_container.set_trading_client(self._trading_client_integration)
 
-            # 8. Start lifecycle integration
-            await self._lifecycle_integration.start()
-
-            # 9. Wait for connection
-            connected = await self._lifecycle_integration.wait_for_connection(timeout=30.0)
-            if not connected:
-                logger.warning("Lifecycle connection failed - lifecycle mode degraded")
-                await self._event_bus.emit_system_activity(
-                    activity_type="connection",
-                    message="Lifecycle WebSocket connection failed - running in degraded mode",
-                    metadata={"degraded": True, "feature": "lifecycle", "severity": "warning"}
-                )
-                return
-
-            # 10. Start EventLifecycleService
-            await self._event_lifecycle_service.start()
-
-            # NOTE: ApiDiscoverySyncer is started AFTER trading client connects
-            # in _start_api_discovery() to ensure the client is ready for REST calls
-
-            # 10.1 Subscribe to MARKET_DETERMINED for state cleanup
+            # 3. Subscribe to MARKET_DETERMINED for state cleanup (always needed)
             await self._event_bus.subscribe_to_market_determined(self._handle_market_determined_cleanup)
             logger.info("Subscribed to MARKET_DETERMINED for state cleanup")
 
-            # NOTE: No DB recovery - markets discovered fresh via lifecycle WS and API discovery
-            # Orderbook subscriptions happen through TrackedMarketsState subscription callbacks
-
-            # 10a. Initialize Truth Social cache service (for evidence gathering)
+            # 4. Initialize Truth Social cache service (for evidence gathering)
             # This must happen before Strategy Coordinator because strategies may use EventResearchService
             try:
                 from ..services.truth_social_cache import initialize_truth_social_cache
@@ -560,9 +522,9 @@ class V3Coordinator:
             except Exception as e:
                 logger.warning(f"Failed to initialize TruthSocialCacheService: {e} - continuing without Truth Social evidence")
 
-            # 10b. Initialize Strategy Coordinator (plugin-based strategy management)
-            # The StrategyCoordinator replaces direct RLMService instantiation,
-            # loading strategies from YAML configs in strategies/config/
+            # 5. Initialize Strategy Coordinator (plugin-based strategy management)
+            # The StrategyCoordinator loads strategies from YAML configs in strategies/config/
+            # agent_pipeline strategy will self-discover its target events via REST API
             if self._trading_service:
                 # Create strategy context with all required dependencies
                 strategy_context = StrategyContext(
@@ -589,8 +551,7 @@ class V3Coordinator:
                 self._health_monitor.set_strategy_coordinator(self._strategy_coordinator)
                 logger.info("StrategyCoordinator initialized for plugin-based strategy management")
 
-            # 10c. Initialize TrueMarketOpenFetcher (for accurate price drop calculation)
-            # This fetches true market open prices from candlestick API to improve RLM accuracy
+            # 6. Initialize TrueMarketOpenFetcher (for accurate price drop calculation)
             if self._trading_client_integration:
                 self._tmo_fetcher = TrueMarketOpenFetcher(
                     event_bus=self._event_bus,
@@ -601,8 +562,7 @@ class V3Coordinator:
                 )
                 logger.info("TrueMarketOpenFetcher initialized for candlestick-based price tracking")
 
-            # 10d. Initialize EventPositionTracker (for event-level position tracking)
-            # Tracks positions grouped by event_ticker to detect correlated exposure
+            # 7. Initialize EventPositionTracker (for event-level position tracking)
             if self._config.event_tracking_enabled and self._trading_service:
                 self._event_position_tracker = EventPositionTracker(
                     tracked_markets=self._tracked_markets_state,
@@ -615,7 +575,98 @@ class V3Coordinator:
                 self._status_reporter.set_event_position_tracker(self._event_position_tracker)
                 logger.info("EventPositionTracker initialized for event-level position tracking")
 
-            # 11. Start TrackedMarketsSyncer (for REST price/volume updates + dormant detection)
+            # === LIFECYCLE MODE ONLY ===
+            if is_lifecycle_mode:
+                await self._start_lifecycle_websocket()
+            else:
+                logger.info(
+                    f"Config mode active - strategies will self-discover their target markets. "
+                    f"No broad lifecycle discovery."
+                )
+                await self._event_bus.emit_system_activity(
+                    activity_type="connection",
+                    message="Config mode: agent_pipeline will fetch target events directly",
+                    metadata={
+                        "feature": "config_mode",
+                        "market_mode": self._config.market_mode,
+                        "severity": "info"
+                    }
+                )
+
+        except Exception as e:
+            logger.error(f"Failed to initialize core components: {e}")
+            await self._event_bus.emit_system_activity(
+                activity_type="connection",
+                message=f"Core initialization failed: {str(e)}",
+                metadata={"error": str(e), "severity": "error"}
+            )
+
+    async def _start_lifecycle_websocket(self) -> None:
+        """
+        Start lifecycle WebSocket and broad discovery services.
+
+        Only called when market_mode == "lifecycle". This enables:
+        - Lifecycle WebSocket for real-time market open/close events
+        - EventLifecycleService for processing lifecycle events
+        - TrackedMarketsSyncer for REST price updates
+        - UpcomingMarketsSyncer for scheduled market tracking
+        """
+        try:
+            from ..clients.lifecycle_client import LifecycleClient
+            from ..clients.lifecycle_integration import V3LifecycleIntegration
+            from ..services.event_lifecycle_service import EventLifecycleService
+            from ..services.tracked_markets_syncer import TrackedMarketsSyncer
+            from ..services.upcoming_markets_syncer import UpcomingMarketsSyncer
+            from kalshiflow.auth import KalshiAuth
+            from ...data.database import rl_db
+
+            # 1. Create KalshiAuth for lifecycle WebSocket
+            auth = KalshiAuth.from_env()
+
+            # 2. Create LifecycleClient
+            self._lifecycle_client = LifecycleClient(
+                ws_url=self._config.ws_url,
+                auth=auth,
+                base_reconnect_delay=5.0,
+            )
+
+            # 3. Create V3LifecycleIntegration
+            self._lifecycle_integration = V3LifecycleIntegration(
+                lifecycle_client=self._lifecycle_client,
+                event_bus=self._event_bus,
+            )
+
+            # 4. Create EventLifecycleService
+            self._event_lifecycle_service = EventLifecycleService(
+                event_bus=self._event_bus,
+                tracked_markets=self._tracked_markets_state,
+                trading_client=self._trading_client_integration,
+                db=rl_db,
+                categories=self._config.lifecycle_categories,
+                sports_prefixes=self._config.sports_allowed_prefixes,
+            )
+
+            # 5. Start lifecycle integration
+            await self._lifecycle_integration.start()
+
+            # 6. Wait for connection
+            connected = await self._lifecycle_integration.wait_for_connection(timeout=30.0)
+            if not connected:
+                logger.warning("Lifecycle connection failed - lifecycle mode degraded")
+                await self._event_bus.emit_system_activity(
+                    activity_type="connection",
+                    message="Lifecycle WebSocket connection failed - running in degraded mode",
+                    metadata={"degraded": True, "feature": "lifecycle", "severity": "warning"}
+                )
+                return
+
+            # 7. Start EventLifecycleService
+            await self._event_lifecycle_service.start()
+
+            # NOTE: ApiDiscoverySyncer is started AFTER trading client connects
+            # in _start_api_discovery() to ensure the client is ready for REST calls
+
+            # 8. Start TrackedMarketsSyncer (for REST price/volume updates + dormant detection)
             self._lifecycle_syncer = TrackedMarketsSyncer(
                 trading_client=self._trading_client_integration,
                 tracked_markets_state=self._tracked_markets_state,
@@ -627,9 +678,7 @@ class V3Coordinator:
             )
             await self._lifecycle_syncer.start()
 
-            # 12. Start UpcomingMarketsSyncer (for upcoming markets schedule)
-            # NOTE: Paper/demo env has no realistic upcoming markets (test data opens in 2030).
-            # This feature is most useful with production API where real markets are scheduled.
+            # 9. Start UpcomingMarketsSyncer (for upcoming markets schedule)
             self._upcoming_markets_syncer = UpcomingMarketsSyncer(
                 trading_client=self._trading_client_integration,
                 websocket_manager=self._websocket_manager,
@@ -656,11 +705,113 @@ class V3Coordinator:
             )
 
         except Exception as e:
-            logger.error(f"Failed to start lifecycle mode: {e}")
+            logger.error(f"Failed to start lifecycle WebSocket: {e}")
             await self._event_bus.emit_system_activity(
                 activity_type="connection",
-                message=f"Lifecycle mode failed: {str(e)}",
+                message=f"Lifecycle WebSocket failed: {str(e)}",
                 metadata={"error": str(e), "severity": "error"}
+            )
+
+    async def _start_entity_system(self) -> None:
+        """
+        Start the Reddit entity trading system.
+
+        Initializes:
+        1. EntityMarketIndex - maps entities to Kalshi markets
+        2. RedditEntityAgent - streams Reddit posts, extracts entities
+        3. PriceImpactAgent - transforms sentiment to price impact signals
+
+        Requires trading client to be connected for REST API access.
+        """
+        if not self._entity_system_enabled:
+            logger.debug("Entity system disabled")
+            return
+
+        try:
+            logger.info("Starting entity trading system...")
+
+            # 1. Build Entity-Market Index from Kalshi API
+            self._entity_market_index = get_entity_market_index()
+            if self._entity_market_index is None:
+                self._entity_market_index = EntityMarketIndex()
+
+            if self._trading_client_integration:
+                await self._entity_market_index.build_index(
+                    trading_client=self._trading_client_integration,
+                    categories=["Politics"],  # Focus on politics markets
+                )
+                logger.info(
+                    f"EntityMarketIndex built: {self._entity_market_index.get_stats()['total_entities']} entities"
+                )
+
+                # Wire entity index to websocket manager for client snapshots
+                self._websocket_manager.set_entity_market_index(self._entity_market_index)
+
+                # Broadcast index stats to frontend
+                await self._websocket_manager.broadcast_message("entity_index_update", {
+                    "entity_count": self._entity_market_index.get_stats()["total_entities"],
+                    "market_count": self._entity_market_index.get_stats()["total_markets"],
+                })
+
+            # 2. Initialize Reddit Entity Agent
+            reddit_config = RedditEntityAgentConfig(
+                subreddits=["politics", "news"],
+                skip_existing=False,  # Get historical 100 items
+                enabled=True,
+            )
+            self._reddit_entity_agent = RedditEntityAgent(
+                config=reddit_config,
+                websocket_manager=self._websocket_manager,
+                event_bus=self._event_bus,
+                entity_index=self._entity_market_index,  # For market-led normalization
+            )
+
+            # 3. Initialize Price Impact Agent
+            impact_config = PriceImpactAgentConfig(
+                min_confidence=0.5,
+                min_sentiment_magnitude=20,
+                enabled=True,
+            )
+            self._price_impact_agent = PriceImpactAgent(
+                config=impact_config,
+                websocket_manager=self._websocket_manager,
+                event_bus=self._event_bus,
+                entity_index=self._entity_market_index,
+            )
+
+            # 4. Start agents
+            await self._reddit_entity_agent.start()
+            await self._price_impact_agent.start()
+
+            # 5. Broadcast system status
+            await self._websocket_manager.broadcast_message("entity_system_status", {
+                "is_active": True,
+                "stats": {
+                    "indexSize": self._entity_market_index.get_stats()["total_entities"] if self._entity_market_index else 0,
+                    "postsProcessed": 0,
+                    "entitiesExtracted": 0,
+                    "signalsGenerated": 0,
+                },
+            })
+
+            await self._event_bus.emit_system_activity(
+                activity_type="entity_system",
+                message="Entity trading system active - streaming r/politics + r/news",
+                metadata={
+                    "feature": "entity_trading",
+                    "subreddits": ["politics", "news"],
+                    "entity_count": self._entity_market_index.get_stats()["total_entities"] if self._entity_market_index else 0,
+                    "severity": "info"
+                }
+            )
+            logger.info("Entity trading system started successfully")
+
+        except Exception as e:
+            logger.error(f"Failed to start entity system: {e}")
+            await self._event_bus.emit_system_activity(
+                activity_type="entity_system",
+                message=f"Entity system failed: {str(e)}",
+                metadata={"error": str(e), "severity": "warning"}
             )
 
     async def _connect_trading_client(self) -> None:
@@ -1303,6 +1454,9 @@ class V3Coordinator:
         # Note: stop_all() for strategy coordinator, stop() for others
         shutdown_sequence = [
             (self._strategy_coordinator, "Strategy Coordinator", lambda c: c.stop_all()),
+            # Entity trading agents (stop before strategy coordinator dependencies)
+            (self._reddit_entity_agent, "Reddit Entity Agent", lambda c: c.stop()),
+            (self._price_impact_agent, "Price Impact Agent", lambda c: c.stop()),
             (self._tmo_fetcher, "TMO Fetcher", lambda c: c.stop()),
             (self._trades_integration, "Trades Integration", lambda c: c.stop()),
             (self._upcoming_markets_syncer, "Upcoming Markets Syncer", lambda c: c.stop()),
@@ -1437,6 +1591,19 @@ class V3Coordinator:
                 logger.debug("Truth Social cache: get_truth_social_cache() returned None")
         except Exception as e:
             logger.warning(f"Truth Social cache status error: {e}")
+
+        # Add entity system components if enabled
+        components["entity_system"] = {
+            "enabled": self._entity_system_enabled,
+            "reddit_agent_running": self._reddit_entity_agent is not None and self._reddit_entity_agent.is_running,
+            "price_impact_agent_running": self._price_impact_agent is not None and self._price_impact_agent.is_running,
+            "entity_index_size": self._entity_market_index.get_stats()["total_entities"] if self._entity_market_index else 0,
+            "entity_market_count": self._entity_market_index.get_stats()["total_markets"] if self._entity_market_index else 0,
+        }
+        if self._reddit_entity_agent:
+            components["reddit_entity_agent"] = self._reddit_entity_agent.get_health_details()
+        if self._price_impact_agent:
+            components["price_impact_agent"] = self._price_impact_agent.get_health_details()
 
         # Get metrics from various sources
         orderbook_metrics = self._orderbook_integration.get_metrics()
