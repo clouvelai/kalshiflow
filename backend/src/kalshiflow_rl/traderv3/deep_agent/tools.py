@@ -418,14 +418,18 @@ class DeepAgentTools:
                         last_trade_price=getattr(m, 'last_price', None),
                     ))
 
-                logger.info(f"[get_markets] Returned {len(markets)} markets from tracked_markets")
-                return markets
+                if markets:
+                    logger.info(f"[get_markets] Returned {len(markets)} markets from tracked_markets")
+                    return markets
+                else:
+                    logger.info(f"[get_markets] No markets in tracked_markets for event={event_ticker}, trying API")
+                    # Fall through to API fallback
 
             except Exception as e:
                 logger.warning(f"[get_markets] Error reading tracked_markets: {e}")
                 # Fall through to API fallback
 
-        # Fallback: Direct API call via trading client
+        # Fallback: Direct API call via trading client (for untracked events/markets)
         if self._trading_client:
             try:
                 raw_markets = []
