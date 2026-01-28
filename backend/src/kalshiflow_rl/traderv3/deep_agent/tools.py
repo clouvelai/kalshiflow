@@ -399,8 +399,8 @@ class DeepAgentTools:
                     markets_by_event = self._tracked_markets.get_markets_by_event()
                     event_markets = markets_by_event.get(event_ticker, [])
                 else:
-                    # Get all tracked markets
-                    event_markets = list(self._tracked_markets.markets.values())
+                    # Get all tracked markets using public method
+                    event_markets = self._tracked_markets.get_all()
 
                 for m in event_markets[:limit]:
                     yes_bid = m.yes_bid if hasattr(m, 'yes_bid') else (m.price or 50)
