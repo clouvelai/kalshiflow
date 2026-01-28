@@ -385,21 +385,11 @@ export const useDeepAgent = ({ useV3WebSocketState }) => {
   ]);
 
   /**
-   * Clear thinking state after a delay
+   * Track last thinking for display persistence
+   * We DON'T clear thinking between cycles - user wants to see the last thought
+   * The UI will show "Waiting for next cycle..." only on initial load (text === '')
    */
-  useEffect(() => {
-    if (!thinking.text) return;
-
-    // Clear thinking after 10 seconds of no updates
-    const timeout = setTimeout(() => {
-      setThinking(prev => ({
-        ...prev,
-        text: '',
-      }));
-    }, 10000);
-
-    return () => clearTimeout(timeout);
-  }, [thinking.text, thinking.timestamp]);
+  // Removed auto-clear timeout - preserve last thinking for visibility
 
   /**
    * Reset state

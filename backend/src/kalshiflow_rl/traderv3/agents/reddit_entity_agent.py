@@ -139,10 +139,14 @@ class RedditEntityAgent(BaseAgent):
         self._content_extractor = None
         self._video_transcriber = None
 
+        # Duplicate prevention - track seen post IDs in memory
+        self._seen_post_ids: set = set()
+
         # Stats
         self._posts_processed = 0
         self._entities_extracted = 0
         self._posts_skipped = 0
+        self._posts_skipped_duplicate = 0  # Track duplicates separately
         self._posts_inserted = 0
         self._entities_normalized = 0  # Track how many were normalized to market entities
         self._related_entities_extracted = 0
@@ -165,6 +169,9 @@ class RedditEntityAgent(BaseAgent):
         # Initialize Supabase for persistence (enables Realtime flow)
         if not await self._init_supabase():
             logger.warning("[reddit_entity] Supabase not available, entities won't persist")
+        else:
+            # Pre-populate seen posts from DB to avoid re-processing on restart
+            await self._load_seen_posts_from_db()
 
         # Initialize related entity store
         if self._config.extract_related_entities:
@@ -219,6 +226,8 @@ class RedditEntityAgent(BaseAgent):
             "related_entities_extracted": self._related_entities_extracted,
             "content_extractions": self._content_extractions,
             "posts_skipped": self._posts_skipped,
+            "posts_skipped_duplicate": self._posts_skipped_duplicate,
+            "seen_posts_cached": len(self._seen_post_ids),
             "posts_inserted": self._posts_inserted,
             "subreddits": self._config.subreddits,
             "praw_available": self._reddit is not None,
@@ -456,6 +465,27 @@ class RedditEntityAgent(BaseAgent):
             logger.error(f"[reddit_entity] Supabase insert error: {e}")
             return False
 
+    async def _load_seen_posts_from_db(self) -> None:
+        """Pre-populate seen post IDs from database to prevent re-processing on restart."""
+        if not self._supabase:
+            return
+
+        try:
+            # Load recent post IDs (last 2000 posts should cover most restarts)
+            result = await self._supabase.table("reddit_entities").select(
+                "post_id"
+            ).order(
+                "created_at", desc=True
+            ).limit(2000).execute()
+
+            if result.data:
+                self._seen_post_ids = {row["post_id"] for row in result.data}
+                logger.info(
+                    f"[reddit_entity] Pre-loaded {len(self._seen_post_ids)} seen post IDs from DB"
+                )
+        except Exception as e:
+            logger.warning(f"[reddit_entity] Could not pre-load seen posts: {e}")
+
     async def _stream_loop(self) -> None:
         """Main streaming loop for Reddit posts."""
         while self._running:
@@ -509,6 +539,12 @@ class RedditEntityAgent(BaseAgent):
             post_id = submission.id
             selftext = getattr(submission, "selftext", "") or ""
             url = submission.url
+
+            # Skip already-processed posts (prevents duplicate LLM calls on restart)
+            if post_id in self._seen_post_ids:
+                self._posts_skipped_duplicate += 1
+                return
+            self._seen_post_ids.add(post_id)
 
             # Skip short titles
             if len(title) < self._config.min_title_length:

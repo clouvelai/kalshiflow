@@ -16,9 +16,9 @@ params:
   max_trades_per_cycle: 3     # Max trades per cycle
   max_positions: 5            # Max concurrent positions
 
-  # Target events (empty = all available markets)
-  target_events: ["KXPRESNOMD"]  # Democratic Primary Winner 2028
-  # Example: target_events: ["KXPRESNOMD-28"]
+  # Target events (empty = all available markets with price impact signals)
+  target_events: []  # Empty = trade on ANY event with Reddit-derived signals
+  # Restricted example: target_events: ["KXPRESNOMD", "KXNEXTSPEAKER"]
 
   # Safety settings
   max_contracts_per_trade: 25
