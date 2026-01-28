@@ -428,16 +428,50 @@ class DeepAgentTools:
         # Fallback: Direct API call via trading client
         if self._trading_client:
             try:
+                raw_markets = []
+
                 if event_ticker:
+                    # Try to get event data from API (for markets not in tracked_markets)
+                    logger.info(f"[get_markets] Fetching event {event_ticker} from API")
                     event_data = await self._trading_client.get_event(event_ticker)
                     if event_data:
                         raw_markets = event_data.get("markets", [])[:limit]
-                    else:
-                        raw_markets = []
-                else:
-                    # Get market tickers from price impacts and fetch those
-                    # (trading client requires specific tickers)
-                    raw_markets = []
+                        logger.info(f"[get_markets] Got {len(raw_markets)} markets from event API")
+
+                # If no event_ticker or event lookup failed, try to get specific tickers
+                # from recent price impact signals
+                if not raw_markets and not event_ticker:
+                    # Get recent signal tickers and fetch those markets
+                    try:
+                        import os
+                        from supabase import create_client
+
+                        url = os.getenv("SUPABASE_URL")
+                        key = os.getenv("SUPABASE_KEY") or os.getenv("SUPABASE_ANON_KEY")
+
+                        if url and key:
+                            supabase = create_client(url, key)
+                            from datetime import timezone, timedelta
+                            cutoff_time = datetime.now(timezone.utc) - timedelta(hours=2)
+
+                            # Get unique market tickers from recent signals
+                            result = supabase.table("market_price_impacts") \
+                                .select("market_ticker") \
+                                .gte("created_at", cutoff_time.isoformat()) \
+                                .limit(20) \
+                                .execute()
+
+                            signal_tickers = list(set(
+                                row.get("market_ticker") for row in (result.data or [])
+                                if row.get("market_ticker")
+                            ))
+
+                            if signal_tickers:
+                                logger.info(f"[get_markets] Fetching {len(signal_tickers)} signal market tickers from API")
+                                raw_markets = await self._trading_client.get_markets(signal_tickers)
+                                logger.info(f"[get_markets] Got {len(raw_markets)} markets from API for signal tickers")
+                    except Exception as e:
+                        logger.warning(f"[get_markets] Could not fetch signal tickers: {e}")
 
                 for m in raw_markets:
                     yes_bid = m.get("yes_bid", 0) or 0
@@ -455,8 +489,9 @@ class DeepAgentTools:
                         last_trade_price=m.get("last_price"),
                     ))
 
-                logger.info(f"[get_markets] Returned {len(markets)} markets from API")
-                return markets
+                if markets:
+                    logger.info(f"[get_markets] Returned {len(markets)} markets from API")
+                    return markets
 
             except Exception as e:
                 logger.error(f"[get_markets] API Error: {e}")
