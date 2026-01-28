@@ -243,6 +243,8 @@ class DeepAgentTools:
         Signals come from Reddit entity extraction → sentiment scoring →
         market-specific price impact transformation.
 
+        Uses direct Supabase query for reliability (persists across restarts).
+
         Args:
             market_ticker: Filter by specific market
             entity_id: Filter by specific entity
@@ -262,57 +264,7 @@ class DeepAgentTools:
 
         items = []
 
-        # Try injected store first, then fall back to global singleton
-        store = self._price_impact_store
-        if store is None:
-            from ..services.price_impact_store import get_price_impact_store
-            store = get_price_impact_store()
-
-        # Try to use the price impact store
-        if store:
-            try:
-                store_stats = store.get_stats()
-                logger.info(
-                    f"[get_price_impacts] Store stats: {store_stats['signal_count']} signals, "
-                    f"{store_stats['total_ingested']} ingested total"
-                )
-                signals = await store.get_impacts_for_trading(
-                    min_confidence=min_confidence,
-                    min_impact_magnitude=min_impact_magnitude,
-                    limit=limit,
-                    max_age_hours=max_age_hours,
-                )
-
-                for signal in signals:
-                    # Apply additional filters
-                    if market_ticker and signal.market_ticker != market_ticker:
-                        continue
-                    if entity_id and signal.entity_id != entity_id:
-                        continue
-
-                    items.append(PriceImpactItem(
-                        signal_id=signal.signal_id,
-                        market_ticker=signal.market_ticker,
-                        entity_id=signal.entity_id,
-                        entity_name=signal.entity_name,
-                        sentiment_score=signal.sentiment_score,
-                        price_impact_score=signal.price_impact_score,
-                        confidence=signal.confidence,
-                        market_type=signal.market_type,
-                        event_ticker=signal.event_ticker,
-                        transformation_logic=signal.transformation_logic,
-                        source_subreddit=signal.source_subreddit,
-                        created_at=datetime.fromtimestamp(signal.created_at).isoformat(),
-                        suggested_side="yes" if signal.price_impact_score > 0 else "no",
-                    ))
-
-                logger.info(f"[get_price_impacts] Returned {len(items)} signals from store")
-                return items
-
-            except Exception as e:
-                logger.warning(f"[get_price_impacts] Store query failed, falling back to Supabase: {e}")
-
-        # Fallback: Try direct Supabase query if store is empty or failed
+        # Primary: Direct Supabase query (reliable, persists across restarts)
         try:
             import os
             from supabase import create_client
@@ -360,10 +312,57 @@ class DeepAgentTools:
                         if len(items) >= limit:
                             break
 
-                logger.info(f"[get_price_impacts] Returned {len(items)} signals (direct query)")
+                logger.info(f"[get_price_impacts] Returned {len(items)} signals from Supabase")
+                return items
 
         except Exception as e:
-            logger.error(f"[get_price_impacts] Direct query error: {e}")
+            logger.warning(f"[get_price_impacts] Supabase query failed: {e}")
+
+        # Fallback: Try in-memory store if Supabase failed
+        store = self._price_impact_store
+        if store is None:
+            from ..services.price_impact_store import get_price_impact_store
+            store = get_price_impact_store()
+
+        if store:
+            try:
+                store_stats = store.get_stats()
+                logger.info(
+                    f"[get_price_impacts] Store stats: {store_stats['signal_count']} signals"
+                )
+                signals = await store.get_impacts_for_trading(
+                    min_confidence=min_confidence,
+                    min_impact_magnitude=min_impact_magnitude,
+                    limit=limit,
+                    max_age_hours=max_age_hours,
+                )
+
+                for signal in signals:
+                    if market_ticker and signal.market_ticker != market_ticker:
+                        continue
+                    if entity_id and signal.entity_id != entity_id:
+                        continue
+
+                    items.append(PriceImpactItem(
+                        signal_id=signal.signal_id,
+                        market_ticker=signal.market_ticker,
+                        entity_id=signal.entity_id,
+                        entity_name=signal.entity_name,
+                        sentiment_score=signal.sentiment_score,
+                        price_impact_score=signal.price_impact_score,
+                        confidence=signal.confidence,
+                        market_type=signal.market_type,
+                        event_ticker=signal.event_ticker,
+                        transformation_logic=signal.transformation_logic,
+                        source_subreddit=signal.source_subreddit,
+                        created_at=datetime.fromtimestamp(signal.created_at).isoformat(),
+                        suggested_side="yes" if signal.price_impact_score > 0 else "no",
+                    ))
+
+                logger.info(f"[get_price_impacts] Returned {len(items)} signals from store")
+
+            except Exception as e:
+                logger.error(f"[get_price_impacts] Store query error: {e}")
 
         return items
 
@@ -377,6 +376,9 @@ class DeepAgentTools:
         """
         Get current market data.
 
+        Uses tracked_markets state as primary source (already synced from API).
+        Falls back to direct API calls if needed.
+
         Args:
             event_ticker: Optional event to filter markets
             limit: Maximum number of markets to return
@@ -389,44 +391,78 @@ class DeepAgentTools:
 
         markets = []
 
-        if not self._trading_client:
-            logger.warning("[get_markets] No trading client available")
-            return markets
-
-        try:
-            if event_ticker:
-                # Fetch specific event markets
-                event_data = await self._trading_client.get_event(event_ticker)
-                if event_data:
-                    raw_markets = event_data.get("markets", [])[:limit]
+        # Primary source: Use tracked_markets state (already has live data)
+        if self._tracked_markets:
+            try:
+                if event_ticker:
+                    # Get markets for specific event
+                    markets_by_event = self._tracked_markets.get_markets_by_event()
+                    event_markets = markets_by_event.get(event_ticker, [])
                 else:
+                    # Get all tracked markets
+                    event_markets = list(self._tracked_markets.markets.values())
+
+                for m in event_markets[:limit]:
+                    yes_bid = m.yes_bid if hasattr(m, 'yes_bid') else (m.price or 50)
+                    yes_ask = m.yes_ask if hasattr(m, 'yes_ask') else (m.price or 50)
+
+                    markets.append(MarketInfo(
+                        ticker=m.ticker,
+                        event_ticker=m.event_ticker,
+                        title=m.yes_sub_title or m.title or "",
+                        yes_bid=yes_bid,
+                        yes_ask=yes_ask,
+                        spread=yes_ask - yes_bid,
+                        volume_24h=getattr(m, 'volume_24h', 0) or 0,
+                        status=m.status or "active",
+                        last_trade_price=getattr(m, 'last_price', None),
+                    ))
+
+                logger.info(f"[get_markets] Returned {len(markets)} markets from tracked_markets")
+                return markets
+
+            except Exception as e:
+                logger.warning(f"[get_markets] Error reading tracked_markets: {e}")
+                # Fall through to API fallback
+
+        # Fallback: Direct API call via trading client
+        if self._trading_client:
+            try:
+                if event_ticker:
+                    event_data = await self._trading_client.get_event(event_ticker)
+                    if event_data:
+                        raw_markets = event_data.get("markets", [])[:limit]
+                    else:
+                        raw_markets = []
+                else:
+                    # Get market tickers from price impacts and fetch those
+                    # (trading client requires specific tickers)
                     raw_markets = []
-            else:
-                # Fetch active markets
-                raw_markets = await self._trading_client.get_markets(limit=limit)
 
-            for m in raw_markets:
-                yes_bid = m.get("yes_bid", 0) or 0
-                yes_ask = m.get("yes_ask", 0) or 0
+                for m in raw_markets:
+                    yes_bid = m.get("yes_bid", 0) or 0
+                    yes_ask = m.get("yes_ask", 0) or 0
 
-                markets.append(MarketInfo(
-                    ticker=m.get("ticker", ""),
-                    event_ticker=m.get("event_ticker", ""),
-                    title=m.get("yes_sub_title") or m.get("title", ""),
-                    yes_bid=yes_bid,
-                    yes_ask=yes_ask,
-                    spread=yes_ask - yes_bid,
-                    volume_24h=m.get("volume_24h", 0) or 0,
-                    status=m.get("status", "unknown"),
-                    last_trade_price=m.get("last_price"),
-                ))
+                    markets.append(MarketInfo(
+                        ticker=m.get("ticker", ""),
+                        event_ticker=m.get("event_ticker", ""),
+                        title=m.get("yes_sub_title") or m.get("title", ""),
+                        yes_bid=yes_bid,
+                        yes_ask=yes_ask,
+                        spread=yes_ask - yes_bid,
+                        volume_24h=m.get("volume_24h", 0) or 0,
+                        status=m.get("status", "unknown"),
+                        last_trade_price=m.get("last_price"),
+                    ))
 
-            logger.info(f"[get_markets] Returned {len(markets)} markets")
-            return markets
+                logger.info(f"[get_markets] Returned {len(markets)} markets from API")
+                return markets
 
-        except Exception as e:
-            logger.error(f"[get_markets] Error: {e}")
-            return []
+            except Exception as e:
+                logger.error(f"[get_markets] API Error: {e}")
+
+        logger.warning("[get_markets] No market data source available")
+        return []
 
     # === News Search ===
 
@@ -709,39 +745,58 @@ class DeepAgentTools:
 
         try:
             # Execute market order through trading client
-            result = await self._trading_client.place_market_order(
+            # Use place_order() which is the actual method on V3TradingClientIntegration
+            # For buying YES/NO contracts: action is always "buy"
+            # side determines whether we're buying YES or NO contracts
+            result = await self._trading_client.place_order(
                 ticker=ticker,
-                side=side,
+                action="buy",  # Always buying (to sell, we'd buy the opposite side)
+                side=side,     # "yes" or "no"
                 count=contracts,
+                order_type="market",  # Market order for immediate execution
             )
 
-            if result.get("success"):
+            # Check for success in response - place_order returns {"order": {...}}
+            order = result.get("order")
+            success = order is not None
+
+            if success:
+                # Extract order details
+                order_id = order.get("order_id", "")
+                # For market orders, avg_price comes from fills
+                avg_price = order.get("avg_price") or order.get("price")
+
                 # Broadcast to WebSocket
                 if self._ws_manager:
                     await self._ws_manager.broadcast_message("deep_agent_trade", {
                         "ticker": ticker,
                         "side": side,
                         "contracts": contracts,
-                        "price_cents": result.get("avg_price_cents"),
+                        "price_cents": avg_price,
+                        "order_id": order_id,
                         "reasoning": reasoning[:200],
                         "timestamp": time.strftime("%H:%M:%S"),
                     })
+
+                logger.info(f"[trade] Order placed successfully: {order_id} @ {avg_price}c")
 
                 return TradeResult(
                     success=True,
                     ticker=ticker,
                     side=side,
                     contracts=contracts,
-                    price_cents=result.get("avg_price_cents"),
-                    order_id=result.get("order_id"),
+                    price_cents=avg_price,
+                    order_id=order_id,
                 )
             else:
+                error_msg = result.get("error") or result.get("message") or "Unknown error"
+                logger.warning(f"[trade] Order failed: {error_msg}")
                 return TradeResult(
                     success=False,
                     ticker=ticker,
                     side=side,
                     contracts=contracts,
-                    error=result.get("error", "Unknown error"),
+                    error=error_msg,
                 )
 
         except Exception as e:
