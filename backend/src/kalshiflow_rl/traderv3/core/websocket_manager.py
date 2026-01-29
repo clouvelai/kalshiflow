@@ -1405,8 +1405,6 @@ class V3WebSocketManager:
                     "mention_count": entity.reddit_mentions,
                     "aggregate_sentiment": entity.aggregate_sentiment,
                     "last_signal_at": entity.last_reddit_signal,
-                    # Deprecated field name kept for backward compatibility
-                    "total_mentions": entity.reddit_mentions,
                 },
             })
         return {

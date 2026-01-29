@@ -579,8 +579,6 @@ class PriceImpactAgent(BaseAgent):
                                     "mention_count": entity.reddit_mentions,
                                     "aggregate_sentiment": entity.aggregate_sentiment,
                                     "last_signal_at": entity.last_reddit_signal,
-                                    # Keep total_mentions for backward compatibility
-                                    "total_mentions": entity.reddit_mentions,
                                 },
                             )
 

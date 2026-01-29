@@ -1002,8 +1002,6 @@ class V3StateContainer:
                 "side": side,
                 "total_cost": total_cost,            # Cost basis (cents) - from tracked orders or approximated
                 "current_value": current_value,      # Current market value (price × qty)
-                "total_traded": pos.get("total_traded", 0),  # DEPRECATED: Raw Kalshi value, don't use for P&L
-                "market_exposure": market_exposure,  # DEPRECATED: Kalshi's cost field, use total_cost instead
                 "realized_pnl": pos.get("realized_pnl", 0),
                 "unrealized_pnl": unrealized_pnl,    # current_value - total_cost
                 "fees_paid": pos.get("fees_paid", 0),

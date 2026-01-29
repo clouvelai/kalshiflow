@@ -137,7 +137,7 @@ class V3Coordinator:
         self._trading_orchestrator = None
         if trading_client_integration:
             # Get trading strategy from config (default: HOLD for safety)
-            strategy = config.trading_strategy if hasattr(config, 'trading_strategy') else TradingStrategy.HOLD
+            strategy = config.trading_strategy
 
             self._trading_service = TradingDecisionService(
                 trading_client=trading_client_integration,

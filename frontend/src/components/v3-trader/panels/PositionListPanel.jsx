@@ -170,7 +170,7 @@ DecisionBox.displayName = 'DecisionBox';
  *
  * CRITICAL: Uses backend-provided values (total_cost, current_value, unrealized_pnl)
  * instead of recalculating. The backend computes these from:
- * - total_cost: tracked filled orders (or market_exposure approximation)
+ * - total_cost: tracked filled orders
  * - current_value: current_price × quantity from live market data
  * - unrealized_pnl: current_value - total_cost
  */
@@ -181,11 +181,11 @@ const calcPositionMetrics = (pos) => {
   }
 
   // Use backend-provided cost basis (computed from tracked filled orders)
-  const totalCost = pos.total_cost ?? pos.market_exposure ?? 0;
+  const totalCost = pos.total_cost ?? 0;
   const costPerContract = Math.round(totalCost / qty);
 
   // Use backend-provided current value (computed from market price × qty)
-  const totalValue = pos.current_value ?? pos.market_exposure ?? 0;
+  const totalValue = pos.current_value ?? 0;
   const valuePerContract = Math.round(totalValue / qty);
 
   // Use backend-provided unrealized P&L (already computed correctly)
@@ -310,7 +310,6 @@ const PositionListPanel = ({ positions, positionListener, sessionUpdates }) => {
       const prev = prevPositionsRef.current[pos.ticker];
       if (prev) {
         if (prev.position !== pos.position ||
-            prev.total_traded !== pos.total_traded ||
             prev.unrealized_pnl !== pos.unrealized_pnl ||
             prev.market_bid !== pos.market_bid ||
             prev.market_last !== pos.market_last) {

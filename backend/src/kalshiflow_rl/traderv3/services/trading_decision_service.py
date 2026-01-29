@@ -65,9 +65,7 @@ class TradingDecision:
         price: Limit price in cents (None for market order)
         reason: Human-readable explanation
         confidence: Confidence score (0.0 - 1.0)
-        strategy: DEPRECATED - Use strategy_id instead. Kept for backward compatibility.
-        strategy_id: String identifier for the strategy (e.g., "rlm_no", "s013").
-                    This is the preferred field for strategy attribution.
+        strategy_id: String identifier for the strategy (e.g., "rlm_no", "s013")
         signal_params: Strategy-specific parameters for quant analysis
     """
     action: str  # "buy", "sell", "hold"
@@ -77,14 +75,8 @@ class TradingDecision:
     price: Optional[int] = None  # If None, use market order
     reason: str = ""
     confidence: float = 0.0
-    strategy: TradingStrategy = TradingStrategy.HOLD  # DEPRECATED: Use strategy_id
-    strategy_id: str = ""  # New: String identifier for plugin system
+    strategy_id: str = ""  # String identifier for the strategy (e.g., "rlm_no", "s013")
     signal_params: Dict[str, Any] = field(default_factory=dict)  # Strategy-specific params for quant analysis
-
-    def __post_init__(self):
-        """Set strategy_id from strategy enum if not provided."""
-        if not self.strategy_id and self.strategy != TradingStrategy.HOLD:
-            self.strategy_id = self.strategy.value
 
 
 class TradingDecisionService:
@@ -190,7 +182,7 @@ class TradingDecisionService:
                 side="",
                 quantity=0,
                 reason="HOLD strategy - no trading",
-                strategy=self._strategy
+                strategy_id=self._strategy.value
             )
         # Note: RLM_NO strategy is handled by RLMNoStrategy plugin via event-driven architecture
 
@@ -324,7 +316,7 @@ class TradingDecisionService:
         try:
             # Emit decision event
             # Use strategy_id if available, fall back to strategy enum for backward compat
-            strategy_name = decision.strategy_id or decision.strategy.value
+            strategy_name = decision.strategy_id or "hold"
             await self._event_bus.emit_system_activity(
                 activity_type="trading_decision",
                 message=f"Executing {decision.action} {decision.quantity} {decision.side} on {decision.market}",
@@ -441,7 +433,7 @@ class TradingDecisionService:
 
             # Create staged context
             # Use strategy_id if available, fall back to strategy enum for backward compat
-            strategy_name = decision.strategy_id or decision.strategy.value
+            strategy_name = decision.strategy_id or "hold"
             context = StagedOrderContext(
                 order_id=order_id,
                 market_ticker=decision.market,
@@ -469,7 +461,7 @@ class TradingDecisionService:
 
             logger.debug(
                 f"Staged order context: order_id={order_id[:8]}..., "
-                f"strategy={decision.strategy.value}, ticker={decision.market}, "
+                f"strategy={decision.strategy_id or 'hold'}, ticker={decision.market}, "
                 f"session={session_id}, ob_captured={orderbook_snapshot.best_bid_cents is not None}"
             )
 
@@ -516,7 +508,7 @@ class TradingDecisionService:
             # Track order in trading attachment for tracked markets
             # Status is "resting" since API confirmed the order is on the book
             signal_id = f"{decision.reason}:{decision.market}:{int(time.time() * 1000)}"
-            strategy_id = decision.strategy_id or decision.strategy.value
+            strategy_id = decision.strategy_id or "hold"
             await self._state_container.update_order_in_attachment(
                 ticker=decision.market,
                 order_id=order_id,
@@ -537,7 +529,7 @@ class TradingDecisionService:
             await self._stage_order_context(order_id, decision, signal_id)
 
             # Emit order_placed activity for frontend visibility
-            strategy_name = decision.strategy_id or decision.strategy.value
+            strategy_name = decision.strategy_id or "hold"
             await self._event_bus.emit_system_activity(
                 activity_type="order_placed",
                 message=f"Order placed: BUY {decision.quantity} {decision.side.upper()} @ {decision.price}c",
@@ -606,7 +598,7 @@ class TradingDecisionService:
             # Track order in trading attachment for tracked markets
             # Status is "resting" since API confirmed the order is on the book
             signal_id = f"{decision.reason}:{decision.market}:{int(time.time() * 1000)}"
-            strategy_id = decision.strategy_id or decision.strategy.value
+            strategy_id = decision.strategy_id or "hold"
             await self._state_container.update_order_in_attachment(
                 ticker=decision.market,
                 order_id=order_id,
@@ -627,7 +619,7 @@ class TradingDecisionService:
             await self._stage_order_context(order_id, decision, signal_id)
 
             # Emit order_placed activity for frontend visibility
-            strategy_name = decision.strategy_id or decision.strategy.value
+            strategy_name = decision.strategy_id or "hold"
             await self._event_bus.emit_system_activity(
                 activity_type="order_placed",
                 message=f"Order placed: SELL {decision.quantity} {decision.side.upper()} @ {decision.price}c",

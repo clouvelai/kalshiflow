@@ -163,7 +163,7 @@ ResultBadge.displayName = 'ResultBadge';
  */
 const SettlementRow = memo(({ settlement }) => {
   const qty = Math.abs(settlement.position || 0);
-  const totalCost = settlement.total_cost || settlement.total_traded || 0;
+  const totalCost = settlement.total_cost || 0;
   const netPnl = settlement.net_pnl ?? settlement.realized_pnl ?? 0;
   const entryPrice = settlement.entry_price || 0;
   const tradeRoi = settlement.trade_roi || 0;
@@ -275,7 +275,7 @@ const SettlementsPanel = ({ settlements }) => {
     }
 
     const totalPnL = settlementsData.reduce((sum, s) => sum + (s.net_pnl || s.realized_pnl || 0), 0);
-    const totalCost = settlementsData.reduce((sum, s) => sum + (s.total_cost || s.total_traded || 0), 0);
+    const totalCost = settlementsData.reduce((sum, s) => sum + (s.total_cost || 0), 0);
     const totalFees = settlementsData.reduce((sum, s) => sum + (s.fees || 0), 0);
 
     const winners = settlementsData.filter(s => (s.net_pnl || s.realized_pnl || 0) > 0);

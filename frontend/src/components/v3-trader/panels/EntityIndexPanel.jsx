@@ -183,7 +183,7 @@ const MARKET_TYPE_BADGES = {
 const EntityRow = memo(({ entity, isExpanded, onToggle, animationClasses }) => {
   const aliasCount = entity.aliases?.length || 0;
   const marketCount = entity.markets?.length || 0;
-  const mentions = entity.reddit_signals?.total_mentions || 0;
+  const mentions = entity.reddit_signals?.mention_count || 0;
   const sentiment = entity.reddit_signals?.aggregate_sentiment || 0;
   const lastSignal = entity.reddit_signals?.last_signal_at;
 
@@ -326,10 +326,10 @@ const StatsSummary = memo(({ entities, recentActivityCount }) => {
     let withSignals = 0;
 
     entities.forEach(e => {
-      totalMentions += e.reddit_signals?.total_mentions || 0;
+      totalMentions += e.reddit_signals?.mention_count || 0;
       totalMarkets += e.markets?.length || 0;
       totalAliases += e.aliases?.length || 0;
-      if (e.reddit_signals?.total_mentions > 0) withSignals++;
+      if (e.reddit_signals?.mention_count > 0) withSignals++;
     });
 
     return {
@@ -459,7 +459,7 @@ const EntityIndexPanel = ({
 
       switch (sortBy) {
         case 'mentions':
-          return (b.reddit_signals?.total_mentions || 0) - (a.reddit_signals?.total_mentions || 0);
+          return (b.reddit_signals?.mention_count || 0) - (a.reddit_signals?.mention_count || 0);
         case 'sentiment':
           return Math.abs(b.reddit_signals?.aggregate_sentiment || 0) - Math.abs(a.reddit_signals?.aggregate_sentiment || 0);
         case 'markets':
