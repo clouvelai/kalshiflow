@@ -738,7 +738,7 @@ class V3Coordinator:
             if self._trading_client_integration:
                 await self._entity_market_index.build_index(
                     trading_client=self._trading_client_integration,
-                    categories=["Politics"],  # Focus on politics markets
+                    categories=self._config.lifecycle_categories,
                 )
                 logger.info(
                     f"EntityMarketIndex built: {self._entity_market_index.get_stats()['total_entities']} entities"
@@ -752,10 +752,15 @@ class V3Coordinator:
                     "entity_count": self._entity_market_index.get_stats()["total_entities"],
                     "market_count": self._entity_market_index.get_stats()["total_markets"],
                 })
+            else:
+                logger.warning(
+                    "No trading client available - entity index will be EMPTY. "
+                    "Entity-based trading signals will not be generated."
+                )
 
             # 2. Initialize Reddit Entity Agent
             reddit_config = RedditEntityAgentConfig(
-                subreddits=["politics", "news"],
+                subreddits=self._config.entity_subreddits,
                 skip_existing=False,  # Get historical 100 items
                 enabled=True,
             )
@@ -796,12 +801,13 @@ class V3Coordinator:
                 },
             })
 
+            subreddit_display = ", ".join(f"r/{s}" for s in self._config.entity_subreddits)
             await self._event_bus.emit_system_activity(
                 activity_type="entity_system",
-                message="Entity trading system active - streaming r/politics + r/news",
+                message=f"Entity trading system active - streaming {subreddit_display}",
                 metadata={
                     "feature": "entity_trading",
-                    "subreddits": ["politics", "news"],
+                    "subreddits": self._config.entity_subreddits,
                     "entity_count": self._entity_market_index.get_stats()["total_entities"] if self._entity_market_index else 0,
                     "severity": "info"
                 }

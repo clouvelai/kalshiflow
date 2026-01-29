@@ -145,16 +145,13 @@ class SelfImprovingAgent:
         self._reflection.set_reflection_callback(self._handle_reflection)
 
         # Initialize Anthropic client
-        # Check for API key to provide helpful error message
         api_key = os.environ.get("ANTHROPIC_API_KEY")
         if not api_key:
-            logger.warning(
-                "[deep_agent.agent] ANTHROPIC_API_KEY not set! "
-                "The agent will not be able to call Claude API. "
-                "Set ANTHROPIC_API_KEY in your environment."
+            raise RuntimeError(
+                "ANTHROPIC_API_KEY is not set. The deep agent requires Claude API access. "
+                "Set ANTHROPIC_API_KEY in your .env.paper file."
             )
-        else:
-            logger.info("[deep_agent.agent] ANTHROPIC_API_KEY found, Claude API ready")
+        logger.info("[deep_agent.agent] ANTHROPIC_API_KEY found, Claude API ready")
         self._client = AsyncAnthropic()
 
         # Agent state
@@ -512,6 +509,15 @@ class SelfImprovingAgent:
         self._total_cache_created_tokens = 0
 
         logger.info("[deep_agent.agent] Cleared history buffers for fresh session")
+
+        # Validate Supabase connectivity (warn only — not fatal)
+        supabase_url = os.environ.get("SUPABASE_URL")
+        supabase_key = os.environ.get("SUPABASE_KEY") or os.environ.get("SUPABASE_ANON_KEY")
+        if not supabase_url or not supabase_key:
+            logger.warning(
+                "[deep_agent.agent] SUPABASE_URL or SUPABASE_KEY not set. "
+                "Price impact signals will be unavailable (agent will see no trading signals)."
+            )
 
         # Initialize memory files
         await self._init_memory_files()

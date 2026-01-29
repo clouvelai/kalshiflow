@@ -234,6 +234,7 @@ class DeepAgentTools:
         self._price_impact_store = price_impact_store
         self._tracked_markets = tracked_markets
         self._event_position_tracker = event_position_tracker
+        self._supabase_client = None
 
         # Ensure memory directory exists
         self._memory_dir.mkdir(parents=True, exist_ok=True)
@@ -251,6 +252,16 @@ class DeepAgentTools:
             "write_memory": 0,
             "get_event_context": 0,
         }
+
+    def _get_supabase(self):
+        """Get or create cached Supabase client."""
+        if self._supabase_client is None:
+            url = os.getenv("SUPABASE_URL")
+            key = os.getenv("SUPABASE_KEY") or os.getenv("SUPABASE_ANON_KEY")
+            if url and key:
+                from supabase import create_client
+                self._supabase_client = create_client(url, key)
+        return self._supabase_client
 
     # === Price Impact Tools (PRIMARY DATA SOURCE) ===
 
@@ -351,16 +362,11 @@ class DeepAgentTools:
 
         # Primary: Direct Supabase query (reliable, persists across restarts)
         try:
-            import os
-            from supabase import create_client
+            supabase = self._get_supabase()
 
-            url = os.getenv("SUPABASE_URL")
-            key = os.getenv("SUPABASE_KEY") or os.getenv("SUPABASE_ANON_KEY")
-
-            if url and key:
+            if supabase:
                 from datetime import timezone, timedelta
 
-                supabase = create_client(url, key)
                 cutoff_time = datetime.now(timezone.utc) - timedelta(hours=max_age_hours)
 
                 query = supabase.table("market_price_impacts") \
@@ -588,14 +594,9 @@ class DeepAgentTools:
                 if not raw_markets and not event_ticker:
                     # Get recent signal tickers and fetch those markets
                     try:
-                        import os
-                        from supabase import create_client
+                        supabase = self._get_supabase()
 
-                        url = os.getenv("SUPABASE_URL")
-                        key = os.getenv("SUPABASE_KEY") or os.getenv("SUPABASE_ANON_KEY")
-
-                        if url and key:
-                            supabase = create_client(url, key)
+                        if supabase:
                             from datetime import timezone, timedelta
                             cutoff_time = datetime.now(timezone.utc) - timedelta(hours=2)
 

@@ -319,8 +319,13 @@ export const useDeepAgent = ({ useV3WebSocketState }) => {
       setSettlements(data.settlements.map(s => ({
         id: `${s.reflection_timestamp}-${s.ticker}`,
         ticker: s.ticker,
+        side: s.side || null,
+        contracts: s.contracts || null,
+        entryPrice: s.entry_price || null,
+        exitPrice: s.exit_price || null,
         pnlCents: s.pnl_cents,
         result: s.result,
+        reasoning: s.reasoning || null,
         timestamp: s.reflection_timestamp,
       })));
     }

@@ -24,6 +24,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set, TYPE_CHECKING
 
+from ..config.environment import DEFAULT_LIFECYCLE_CATEGORIES
 from ..schemas.entity_schemas import (
     MarketMapping,
     EntityMarketEntry,
@@ -257,7 +258,7 @@ class EntityMarketIndexConfig:
     min_confidence: float = 0.6  # Minimum mapping confidence
 
     # Dynamic category-based discovery (no hardcoded series!)
-    categories: List[str] = field(default_factory=lambda: ["Politics"])
+    categories: List[str] = field(default_factory=lambda: list(DEFAULT_LIFECYCLE_CATEGORIES))
     sports_prefixes: List[str] = field(default_factory=list)  # e.g., ["KXNFL"]
     min_hours_to_settlement: float = 4.0
     max_days_to_settlement: int = 30

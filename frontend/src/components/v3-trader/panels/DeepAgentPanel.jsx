@@ -24,129 +24,7 @@ import {
   User,
   BarChart3,
 } from 'lucide-react';
-
-/**
- * Renders markdown text into formatted JSX with visual hierarchy.
- * Handles headers, subheaders, bold text, bullets, and preserves emojis.
- */
-const renderThinkingMarkdown = (text) => {
-  if (!text) return null;
-
-  const lines = text.split('\n');
-  const elements = [];
-  let currentList = [];
-  let listKey = 0;
-
-  const flushList = () => {
-    if (currentList.length > 0) {
-      elements.push(
-        <ul key={`list-${listKey++}`} className="space-y-1 ml-4 my-2">
-          {currentList}
-        </ul>
-      );
-      currentList = [];
-    }
-  };
-
-  const renderInlineFormatting = (lineText) => {
-    // Handle **bold** text
-    const parts = lineText.split(/(\*\*[^*]+\*\*)/g);
-    return parts.map((part, i) => {
-      if (part.startsWith('**') && part.endsWith('**')) {
-        return (
-          <strong key={i} className="text-gray-200 font-semibold">
-            {part.slice(2, -2)}
-          </strong>
-        );
-      }
-      return part;
-    });
-  };
-
-  lines.forEach((line, index) => {
-    const trimmed = line.trim();
-
-    // Skip empty lines but preserve spacing
-    if (!trimmed) {
-      flushList();
-      elements.push(<div key={`space-${index}`} className="h-2" />);
-      return;
-    }
-
-    // ## Header (large, with border)
-    if (trimmed.startsWith('## ')) {
-      flushList();
-      const headerText = trimmed.slice(3);
-      elements.push(
-        <div
-          key={`h2-${index}`}
-          className="text-violet-300 font-semibold text-sm border-b border-violet-700/30 pb-1 mb-2 mt-3 first:mt-0"
-        >
-          {renderInlineFormatting(headerText)}
-        </div>
-      );
-      return;
-    }
-
-    // ### Subheader (medium, subtle background)
-    if (trimmed.startsWith('### ')) {
-      flushList();
-      const subheaderText = trimmed.slice(4);
-      elements.push(
-        <div
-          key={`h3-${index}`}
-          className="text-violet-400 font-medium text-xs bg-violet-900/30 px-2 py-1 rounded mt-3 mb-1"
-        >
-          {renderInlineFormatting(subheaderText)}
-        </div>
-      );
-      return;
-    }
-
-    // Bullet points (- item)
-    if (trimmed.startsWith('- ')) {
-      const bulletText = trimmed.slice(2);
-      currentList.push(
-        <li
-          key={`bullet-${index}`}
-          className="text-sm text-gray-300 flex items-start gap-2"
-        >
-          <span className="text-violet-500 mt-1.5 text-[8px]">●</span>
-          <span className="flex-1">{renderInlineFormatting(bulletText)}</span>
-        </li>
-      );
-      return;
-    }
-
-    // Numbered list (1. item, 2. item, etc.)
-    const numberedMatch = trimmed.match(/^(\d+)\.\s+(.+)$/);
-    if (numberedMatch) {
-      currentList.push(
-        <li
-          key={`num-${index}`}
-          className="text-sm text-gray-300 flex items-start gap-2"
-        >
-          <span className="text-violet-400 font-mono text-xs min-w-[16px]">{numberedMatch[1]}.</span>
-          <span className="flex-1">{renderInlineFormatting(numberedMatch[2])}</span>
-        </li>
-      );
-      return;
-    }
-
-    // Regular text
-    flushList();
-    elements.push(
-      <div key={`text-${index}`} className="text-sm text-gray-300 my-0.5">
-        {renderInlineFormatting(trimmed)}
-      </div>
-    );
-  });
-
-  // Flush any remaining list items
-  flushList();
-
-  return elements;
-};
+import renderThinkingMarkdown from '../../../utils/renderThinkingMarkdown';
 
 /**
  * Thinking Stream - Real-time agent reasoning display
@@ -172,8 +50,8 @@ const ThinkingStream = memo(({ thinking, isLearning }) => {
         <div className="flex-1 min-w-0">
           <div className="text-xs text-violet-400 font-medium mb-2 uppercase tracking-wider flex items-center justify-between">
             <span>Thinking</span>
-            {thinking?.cycleNumber && (
-              <span className="text-violet-500 font-mono">Cycle {thinking.cycleNumber}</span>
+            {thinking?.cycle > 0 && (
+              <span className="text-violet-500 font-mono">Cycle {thinking.cycle}</span>
             )}
           </div>
           <div className="break-words">
@@ -223,7 +101,7 @@ const ToolCallRow = memo(({ toolCall }) => {
           {toolCall.tool}
         </span>
         <span className="text-[10px] text-gray-500 truncate max-w-[200px]">
-          {JSON.stringify(toolCall.input).slice(0, 50)}...
+          {(() => { const s = JSON.stringify(toolCall.input); return s.length > 50 ? s.slice(0, 50) + '...' : s; })()}
         </span>
       </div>
       <span className="font-mono text-[10px] text-gray-500">
@@ -290,9 +168,11 @@ const SettlementRow = memo(({ settlement }) => {
         <span className="font-mono text-xs text-gray-300">{settlement.ticker}</span>
       </div>
       <div className="flex items-center gap-3">
-        <span className="text-[10px] text-gray-500">
-          {settlement.entryPrice}c → {settlement.exitPrice}c
-        </span>
+        {(settlement.entryPrice != null && settlement.exitPrice != null) && (
+          <span className="text-[10px] text-gray-500">
+            {settlement.entryPrice}c → {settlement.exitPrice}c
+          </span>
+        )}
         <span className={`font-mono text-xs font-bold ${isWin ? 'text-green-400' : isLoss ? 'text-red-400' : 'text-gray-400'}`}>
           ${(settlement.pnlCents / 100).toFixed(2)}
         </span>
@@ -495,12 +375,14 @@ const PriceImpactRow = memo(({ impact }) => {
             {marketType.label}
           </span>
           {/* Suggested Side Badge */}
-          <span className={`
-            px-2 py-1 rounded-lg text-[10px] font-bold border shadow-sm
-            ${sideBadge}
-          `}>
-            {impact.suggestedSide}
-          </span>
+          {impact.suggestedSide && (
+            <span className={`
+              px-2 py-1 rounded-lg text-[10px] font-bold border shadow-sm
+              ${sideBadge}
+            `}>
+              {impact.suggestedSide}
+            </span>
+          )}
         </div>
       </div>
 

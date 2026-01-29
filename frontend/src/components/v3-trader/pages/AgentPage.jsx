@@ -24,6 +24,7 @@ import {
   DollarSign,
 } from 'lucide-react';
 import V3Header from '../layout/V3Header';
+import renderThinkingMarkdown from '../../../utils/renderThinkingMarkdown';
 import { useV3WebSocket } from '../../../hooks/v3-trader/useV3WebSocket';
 import { useDeepAgent } from '../../../hooks/v3-trader/useDeepAgent';
 import { EntityIndexPanel } from '../panels';
@@ -132,9 +133,11 @@ const PriceImpactCard = memo(({ impact }) => {
           <span className={`px-2.5 py-1 rounded-lg text-[10px] font-bold border ${marketTypeBadge}`}>
             {impact.market_type}
           </span>
-          <span className={`px-3 py-1.5 rounded-lg text-xs font-bold border ${sideBadge}`}>
-            {impact.suggested_side}
-          </span>
+          {impact.suggested_side && (
+            <span className={`px-3 py-1.5 rounded-lg text-xs font-bold border ${sideBadge}`}>
+              {impact.suggested_side}
+            </span>
+          )}
         </div>
       </div>
 
@@ -417,7 +420,7 @@ AgentStatusHeader.displayName = 'AgentStatusHeader';
 /**
  * Thinking Stream - Real-time agent reasoning with pulse animation
  */
-const ThinkingStream = memo(({ thinking }) => {
+const ThinkingStream = memo(({ thinking, isRunning }) => {
   if (!thinking.text) {
     return (
       <div className="p-4 bg-gray-800/30 rounded-xl border border-gray-700/30">
@@ -440,12 +443,14 @@ const ThinkingStream = memo(({ thinking }) => {
         <span className="ml-auto text-[10px] text-gray-500 font-mono">Cycle {thinking.cycle}</span>
       </div>
       <div className="text-sm text-gray-200 leading-relaxed">
-        {thinking.text}
+        {renderThinkingMarkdown(thinking.text)}
       </div>
-      <div className="mt-2 flex items-center gap-2">
-        <div className="w-2 h-2 bg-violet-400 rounded-full animate-pulse" />
-        <span className="text-[10px] text-violet-400">Processing...</span>
-      </div>
+      {isRunning && (
+        <div className="mt-2 flex items-center gap-2">
+          <div className="w-2 h-2 bg-violet-400 rounded-full animate-pulse" />
+          <span className="text-[10px] text-violet-400">Processing...</span>
+        </div>
+      )}
     </div>
   );
 });
@@ -463,6 +468,8 @@ const ToolCallCard = memo(({ toolCall }) => {
     read_memory: BookOpen,
     write_memory: BookOpen,
     get_event_context: Database,
+    think: Brain,
+    get_session_state: Activity,
   };
 
   const Icon = toolIcons[toolCall.tool] || Wrench;
@@ -988,7 +995,7 @@ const AgentPage = () => {
             </div>
 
             {/* Thinking Stream - Always visible */}
-            <ThinkingStream thinking={thinking} />
+            <ThinkingStream thinking={thinking} isRunning={isAgentRunning} />
 
             {/* Tool Calls - Collapsible, default collapsed */}
             <ToolCallsPanel toolCalls={toolCalls} defaultCollapsed={true} />

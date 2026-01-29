@@ -121,6 +121,34 @@ if [ -z "$KALSHI_PRIVATE_KEY_CONTENT" ] && [ -n "$KALSHI_PRIVATE_KEY_PATH" ]; th
     fi
 fi
 
+# Deep Agent required credentials
+if [ -z "$ANTHROPIC_API_KEY" ]; then
+    echo -e "${RED}Error: Missing ANTHROPIC_API_KEY${NC}"
+    echo "The deep agent requires Claude API access. Set ANTHROPIC_API_KEY in ${ENV_FILE}"
+    exit 1
+fi
+
+if [ -z "$SUPABASE_URL" ]; then
+    echo -e "${RED}Error: Missing SUPABASE_URL${NC}"
+    echo "The deep agent requires Supabase for price impact signals. Set SUPABASE_URL in ${ENV_FILE}"
+    exit 1
+fi
+
+if [ -z "$SUPABASE_KEY" ] && [ -z "$SUPABASE_ANON_KEY" ]; then
+    echo -e "${RED}Error: Missing SUPABASE_KEY or SUPABASE_ANON_KEY${NC}"
+    echo "The deep agent requires a Supabase key. Set SUPABASE_KEY or SUPABASE_ANON_KEY in ${ENV_FILE}"
+    exit 1
+fi
+
+# Non-critical credentials (warnings only)
+if [ -z "$OPENAI_API_KEY" ]; then
+    echo -e "${YELLOW}Warning: OPENAI_API_KEY not set - entity alias generation will degrade${NC}"
+fi
+
+if [ -z "$REDDIT_CLIENT_ID" ] || [ -z "$REDDIT_CLIENT_SECRET" ]; then
+    echo -e "${YELLOW}Warning: REDDIT_CLIENT_ID/REDDIT_CLIENT_SECRET not set - entity pipeline will degrade${NC}"
+fi
+
 # Change to backend directory
 cd backend
 

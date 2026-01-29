@@ -18,6 +18,13 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("kalshiflow_rl.traderv3.config.environment")
 
+# Canonical list of allowed Kalshi API categories for lifecycle discovery.
+# Validated against GET /search/tags_by_categories (2025-01-28).
+# All 13 Kalshi categories: Climate and Weather, Companies, Crypto, Economics,
+# Elections, Entertainment, Financials, Mentions, Politics, Science and Technology,
+# Social, Sports, World
+DEFAULT_LIFECYCLE_CATEGORIES = ["politics", "economics", "mentions", "entertainment", "world"]
+
 
 @dataclass
 class V3Config:
@@ -93,9 +100,7 @@ class V3Config:
     market_mode: str = "lifecycle"
 
     # Lifecycle Mode Configuration (RL_MODE=lifecycle)
-    # Categories: politics, media_mentions, entertainment, crypto, sports
-    # Sports markets are filtered by prefix (default: KXNFL only)
-    lifecycle_categories: List[str] = field(default_factory=lambda: ["politics", "media_mentions", "entertainment", "crypto", "sports"])
+    lifecycle_categories: List[str] = field(default_factory=lambda: list(DEFAULT_LIFECYCLE_CATEGORIES))
     # Sports prefix filter - only allow sports markets with these event_ticker prefixes
     # Set to empty list to allow ALL sports markets
     sports_allowed_prefixes: List[str] = field(default_factory=lambda: ["KXNFL"])
@@ -123,7 +128,7 @@ class V3Config:
     # Entity Trading System Configuration
     # Reddit entity-based trading (PRAW + GLiNER + sentiment → price impact)
     entity_system_enabled: bool = False  # Enable Reddit entity trading pipeline
-    entity_subreddits: List[str] = field(default_factory=lambda: ["politics", "news"])
+    entity_subreddits: List[str] = field(default_factory=lambda: ["politics", "news", "Conservative", "worldnews", "entertainment", "popculture", "television", "economics", "finance", "economy", "stocks", "wallstreetbets", "investing"])
 
     # State Machine Configuration
     sync_duration: float = 10.0  # seconds for Kalshi data sync
@@ -253,8 +258,7 @@ class V3Config:
         rlm_max_spread = int(os.environ.get("RLM_MAX_SPREAD", "10"))
 
         # Lifecycle discovery mode configuration
-        # Default: politics, media_mentions, entertainment, crypto, sports (NFL only via prefix filter)
-        lifecycle_categories_str = os.environ.get("LIFECYCLE_CATEGORIES", "politics,media_mentions,entertainment,crypto,sports")
+        lifecycle_categories_str = os.environ.get("LIFECYCLE_CATEGORIES", ",".join(DEFAULT_LIFECYCLE_CATEGORIES))
         lifecycle_categories = [c.strip() for c in lifecycle_categories_str.split(",") if c.strip()]
         # Sports prefix filter - only allow sports markets with these event_ticker prefixes
         # Default: KXNFL (NFL markets only). Set empty to allow all sports.
@@ -282,7 +286,7 @@ class V3Config:
         # Entity Trading System configuration
         # Reddit entity-based trading (PRAW + GLiNER + sentiment → price impact)
         entity_system_enabled = os.environ.get("V3_ENTITY_SYSTEM_ENABLED", "false").lower() == "true"
-        entity_subreddits_str = os.environ.get("V3_ENTITY_SUBREDDITS", "politics,news")
+        entity_subreddits_str = os.environ.get("V3_ENTITY_SUBREDDITS", "politics,news,Conservative,worldnews,entertainment,popculture,television,economics,finance,economy,stocks,wallstreetbets,investing")
         entity_subreddits = [s.strip() for s in entity_subreddits_str.split(",") if s.strip()]
 
         sync_duration = float(os.environ.get("V3_SYNC_DURATION", os.environ.get("V3_CALIBRATION_DURATION", "10.0")))

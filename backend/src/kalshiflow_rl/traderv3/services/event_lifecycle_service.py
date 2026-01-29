@@ -36,6 +36,7 @@ import os
 import time
 from typing import Dict, Any, List, Optional, Callable, Awaitable, TYPE_CHECKING
 
+from ..config.environment import DEFAULT_LIFECYCLE_CATEGORIES
 from ..core.event_bus import EventBus, EventType, MarketLifecycleEvent
 from ..state.tracked_markets import TrackedMarketsState, TrackedMarket, MarketStatus
 from ...data.database import RLDatabase
@@ -47,12 +48,7 @@ logger = logging.getLogger("kalshiflow_rl.traderv3.services.event_lifecycle_serv
 
 
 # Configuration from environment
-DEFAULT_LIFECYCLE_CATEGORIES = ["politics", "media_mentions", "entertainment", "crypto", "sports"]
 DEFAULT_SPORTS_PREFIXES = ["KXNFL"]
-LIFECYCLE_CATEGORIES = os.getenv(
-    "LIFECYCLE_CATEGORIES",
-    ",".join(DEFAULT_LIFECYCLE_CATEGORIES)
-).lower().split(",")
 SPORTS_ALLOWED_PREFIXES = [p.strip() for p in os.getenv(
     "SPORTS_ALLOWED_PREFIXES",
     ",".join(DEFAULT_SPORTS_PREFIXES)
@@ -111,7 +107,7 @@ class EventLifecycleService:
         self._tracked_markets = tracked_markets
         self._trading_client = trading_client
         self._db = db
-        self._categories = [c.strip().lower() for c in (categories or LIFECYCLE_CATEGORIES)]
+        self._categories = [c.strip().lower() for c in (categories or DEFAULT_LIFECYCLE_CATEGORIES)]
         self._sports_prefixes = sports_prefixes if sports_prefixes is not None else SPORTS_ALLOWED_PREFIXES
 
         # Callbacks for orderbook subscription management
@@ -287,6 +283,10 @@ class EventLifecycleService:
             event_ticker=market_info.get("event_ticker", ""),
             title=market_info.get("title", ""),
             category=market_info.get("category", ""),
+            yes_sub_title=market_info.get("yes_sub_title", ""),
+            no_sub_title=market_info.get("no_sub_title", ""),
+            subtitle=market_info.get("subtitle", ""),
+            rules_primary=market_info.get("rules_primary", ""),
             status=MarketStatus.ACTIVE,
             created_ts=payload.get("open_ts", 0),
             open_ts=payload.get("open_ts", 0),
@@ -294,6 +294,9 @@ class EventLifecycleService:
             tracked_at=time.time(),
             market_info=market_info,
             discovery_source="lifecycle_ws",
+            yes_bid=market_info.get("yes_bid", 0) or 0,
+            yes_ask=market_info.get("yes_ask", 0) or 0,
+            price=market_info.get("last_price", 0) or 0,
         )
 
         # Add to state
@@ -569,6 +572,10 @@ class EventLifecycleService:
             event_ticker=market_info.get("event_ticker", ""),
             title=market_info.get("title", ""),
             category=market_info.get("category", ""),
+            yes_sub_title=market_info.get("yes_sub_title", ""),
+            no_sub_title=market_info.get("no_sub_title", ""),
+            subtitle=market_info.get("subtitle", ""),
+            rules_primary=market_info.get("rules_primary", ""),
             status=MarketStatus.ACTIVE,
             created_ts=open_ts,  # Use open_ts as created_ts for API-discovered markets
             open_ts=open_ts,
@@ -576,10 +583,13 @@ class EventLifecycleService:
             tracked_at=time.time(),
             market_info=market_info,
             discovery_source="api",
-            # Populate volume fields from API data
+            # Populate volume and price fields from API data
             volume=market_info.get("volume", 0),
             volume_24h=market_info.get("volume_24h", 0),
             open_interest=market_info.get("open_interest", 0),
+            yes_bid=market_info.get("yes_bid", 0) or 0,
+            yes_ask=market_info.get("yes_ask", 0) or 0,
+            price=market_info.get("last_price", 0) or 0,
         )
 
         # Step 5: Add to state

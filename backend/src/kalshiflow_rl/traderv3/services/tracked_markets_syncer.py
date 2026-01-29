@@ -215,6 +215,7 @@ class TrackedMarketsSyncer:
                     open_interest=market.get("open_interest", 0),
                     yes_bid=market.get("yes_bid", 0),
                     yes_ask=market.get("yes_ask", 0),
+                    yes_sub_title=market.get("yes_sub_title", ""),
                 )
 
                 if updated:
