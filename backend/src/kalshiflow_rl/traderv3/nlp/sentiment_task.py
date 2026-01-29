@@ -9,6 +9,8 @@ Features:
 - Context-aware scoring considers entity position and surrounding text
 - Async support for non-blocking processing
 - Fallback to neutral sentiment on errors
+- 5-point scale (-2 to +2) for reliable LLM classification
+- LLM-provided confidence instead of hardcoded values
 """
 
 from __future__ import annotations
@@ -16,10 +18,35 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger("kalshiflow_rl.traderv3.nlp.sentiment_task")
+
+
+# =============================================================================
+# 5-Point Sentiment Scale Mappings
+# =============================================================================
+
+# Map categorical sentiment (-2 to +2) to price impact values
+# These values are chosen to align with trading decision thresholds:
+# - |impact| > 50: IMMEDIATE TRADE (strong signals)
+# - |impact| > 30: Regular trade (moderate signals)
+SENTIMENT_TO_IMPACT: Dict[int, int] = {
+    -2: -75,  # Strongly negative (scandal, catastrophic)
+    -1: -40,  # Mildly negative (criticism, setback)
+    0: 0,     # Neutral
+    1: 40,    # Mildly positive (endorsement, good news)
+    2: 75,    # Strongly positive (major win, vindication)
+}
+
+# Map LLM confidence labels to float values
+CONFIDENCE_TO_FLOAT: Dict[str, float] = {
+    "low": 0.5,
+    "medium": 0.7,
+    "high": 0.9,
+}
 
 
 @dataclass
@@ -28,8 +55,9 @@ class EntitySentimentResult:
 
     entity_text: str
     entity_type: str  # MARKET_ENTITY, PERSON, ORG, etc.
-    sentiment_score: int  # -100 to +100
-    confidence: float  # 0.0 to 1.0
+    sentiment_category: int  # -2 to +2 (5-point scale)
+    sentiment_score: int  # Mapped value: -75, -40, 0, 40, 75
+    confidence: float  # From LLM: 0.5, 0.7, 0.9
     context_snippet: str  # Relevant surrounding text
 
 
@@ -164,7 +192,11 @@ class BatchedSentimentTask:
         entities: List[Tuple[str, str]],
     ) -> str:
         """
-        Build the sentiment analysis prompt.
+        Build the sentiment analysis prompt using a 5-point scale.
+
+        The 5-point scale (-2 to +2) is more reliable for LLMs than
+        fine-grained numeric scales. Each category maps directly to
+        a trading decision tier.
 
         Args:
             text: The full text
@@ -181,22 +213,35 @@ class BatchedSentimentTask:
 
         entity_section = "\n".join(entity_list)
 
-        prompt = f"""Analyze the sentiment toward each entity mentioned in this text.
+        prompt = f"""Analyze sentiment toward each entity in this text.
+
+For each entity, provide:
+1. SENTIMENT (-2 to +2):
+   -2: Strongly negative (scandal, criminal accusation, catastrophic failure)
+   -1: Mildly negative (criticism, setback, unfavorable coverage)
+    0: Neutral (factual mention, no clear valence)
+   +1: Mildly positive (praise, endorsement, favorable coverage)
+   +2: Strongly positive (major victory, vindication, overwhelming support)
+
+2. CONFIDENCE (low/medium/high):
+   low: Ambiguous or requires significant interpretation
+   medium: Clear direction but some nuance
+   high: Unambiguous, obvious sentiment
+
+Examples:
+"Bondi faces investigation over campaign finance" -> Pam Bondi: -2, high
+"Analysts question Newsom's strategy" -> Gavin Newsom: -1, medium
+"Hegseth receives veterans group endorsement" -> Pete Hegseth: +2, high
+"Biden mentioned the infrastructure bill" -> Joe Biden: 0, high
+"Reports suggest Kennedy may face scrutiny" -> RFK Jr: -1, low
 
 Text: "{text}"
 
 Entities to analyze:
 {entity_section}
 
-For each entity, rate the sentiment expressed toward them in this text:
-- Scale: -100 (extremely negative) to +100 (extremely positive)
-- Consider: Is this good or bad news for them? Does it help or hurt their reputation/position?
-- 0 means neutral or not enough context to judge
-
-Respond with ONLY a comma-separated list of integers in order.
-Example format: 50,-75,0,30
-
-Your scores:"""
+Respond ONLY with: entity_name: sentiment, confidence
+One entity per line."""
 
         return prompt
 
@@ -220,6 +265,14 @@ Your scores:"""
         """
         Parse LLM response into EntitySentimentResult objects.
 
+        Expected format from LLM:
+            entity_name: sentiment, confidence
+            entity_name: sentiment, confidence
+
+        Examples:
+            Pam Bondi: -2, high
+            Gavin Newsom: -1, medium
+
         Args:
             response: OpenAI API response
             entities: List of (entity_text, entity_type) tuples
@@ -232,27 +285,59 @@ Your scores:"""
 
         try:
             content = response.choices[0].message.content.strip()
+            lines = content.split("\n")
 
-            # Parse comma-separated scores
-            scores = []
-            for val in content.split(","):
-                try:
-                    score = int(float(val.strip()))
-                    score = max(-100, min(100, score))
-                    scores.append(score)
-                except ValueError:
-                    scores.append(0)
+            # Parse each line: "entity_name: sentiment, confidence"
+            parsed_results: Dict[str, Tuple[int, float]] = {}
 
-            # Build results
-            for i, (entity_text, entity_type) in enumerate(entities):
-                sentiment = scores[i] if i < len(scores) else 0
+            for line in lines:
+                line = line.strip()
+                if not line or ":" not in line:
+                    continue
+
+                # Parse "entity_name: sentiment, confidence"
+                match = re.match(r"(.+?):\s*([+-]?\d+)\s*,\s*(\w+)", line)
+                if match:
+                    entity_name = match.group(1).strip()
+                    try:
+                        sentiment_cat = int(match.group(2))
+                        sentiment_cat = max(-2, min(2, sentiment_cat))
+                    except ValueError:
+                        sentiment_cat = 0
+
+                    confidence_label = match.group(3).strip().lower()
+                    confidence = CONFIDENCE_TO_FLOAT.get(confidence_label, 0.7)
+
+                    parsed_results[entity_name.lower()] = (sentiment_cat, confidence)
+
+            # Build results for each entity
+            for entity_text, entity_type in entities:
                 context = self._extract_context(text, entity_text)
+
+                # Try to find matching parsed result
+                entity_key = entity_text.lower()
+                if entity_key in parsed_results:
+                    sentiment_cat, confidence = parsed_results[entity_key]
+                else:
+                    # Try partial match
+                    matched = False
+                    for key, (cat, conf) in parsed_results.items():
+                        if key in entity_key or entity_key in key:
+                            sentiment_cat, confidence = cat, conf
+                            matched = True
+                            break
+                    if not matched:
+                        sentiment_cat, confidence = 0, 0.5
+
+                # Map category to impact score
+                sentiment_score = SENTIMENT_TO_IMPACT.get(sentiment_cat, 0)
 
                 results.append(EntitySentimentResult(
                     entity_text=entity_text,
                     entity_type=entity_type,
-                    sentiment_score=sentiment,
-                    confidence=0.8 if sentiment != 0 else 0.5,
+                    sentiment_category=sentiment_cat,
+                    sentiment_score=sentiment_score,
+                    confidence=confidence,
                     context_snippet=context,
                 ))
 
@@ -301,6 +386,7 @@ Your scores:"""
             results.append(EntitySentimentResult(
                 entity_text=entity_text,
                 entity_type=entity_type,
+                sentiment_category=0,
                 sentiment_score=0,
                 confidence=0.0,
                 context_snippet=context,

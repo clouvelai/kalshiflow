@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useCallback } from 'react';
 import TradingSessionPanel from './TradingSessionPanel';
 
 // Panel components
@@ -6,9 +6,8 @@ import {
   PositionListPanel,
   SettlementsPanel,
   TradeProcessingPanel,
-  TradingStrategiesPanel,
   DeepAgentPanel,
-  EntityIndexPanel
+  EntityTradesFeedPanel,
 } from './v3-trader/panels';
 
 // UI components
@@ -18,7 +17,7 @@ import { SettlementToast, OrderFillToast, OrderCancelledToast, ResearchAlertToas
 import { V3Header, V3MetricsPanel, V3ConsoleOutput } from './v3-trader/layout';
 
 // Custom hooks
-import { useV3WebSocket, useConsoleMessages } from '../hooks/v3-trader';
+import { useV3WebSocket, useConsoleMessages, useDeepAgent } from '../hooks/v3-trader';
 
 /**
  * V3TraderConsole - Main console component for V3 Trader
@@ -39,6 +38,26 @@ const V3TraderConsole = () => {
     toggleMessageExpansion
   } = useConsoleMessages();
 
+  // Deep agent state management (stats-only mode needs minimal state)
+  const {
+    agentState,
+    trades: deepAgentTrades,
+    settlements: deepAgentSettlements,
+    processMessage: processDeepAgentMessage,
+    isRunning: deepAgentIsRunning,
+    isLearning: deepAgentIsLearning,
+  } = useDeepAgent({ useV3WebSocketState: true });
+
+  // Message handler that routes to both console AND deep agent processor
+  const handleWebSocketMessage = useCallback((type, message, context) => {
+    // Route deep_agent_* messages to the deep agent processor
+    if (type.startsWith('deep_agent_') || type === 'price_impact' || type === 'reddit_signal') {
+      processDeepAgentMessage(type, message);
+    }
+    // Always add to console messages
+    addMessage(type, message, context);
+  }, [processDeepAgentMessage, addMessage]);
+
   // WebSocket connection and state management
   const {
     wsStatus,
@@ -57,8 +76,15 @@ const V3TraderConsole = () => {
     newResearchAlert,
     dismissResearchAlert,
     metrics,
-    entityIndex
-  } = useV3WebSocket({ onMessage: addMessage });
+    entityIndex,
+    // Entity trading data (Reddit → Entities → Price Impacts)
+    entityRedditPosts,
+    entityPriceImpacts,
+    entityStats,
+    // Trade flow for entity trades feed
+    eventTrades,
+    tradePulses,
+  } = useV3WebSocket({ onMessage: handleWebSocketMessage });
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-950 via-gray-900 to-gray-950">
@@ -103,10 +129,24 @@ const V3TraderConsole = () => {
           <TradeProcessingPanel tradeProcessing={tradeProcessing} />
         </div>
 
-        {/* Deep Agent Panel - Consolidated view when deep_agent strategy is active */}
+        {/* Deep Agent Panel - Stats-only compact view when deep_agent strategy is active */}
         {strategyStatus?.strategies?.deep_agent && (
           <DeepAgentPanel
-            strategyData={strategyStatus.strategies.deep_agent}
+            statsOnly={true}
+            agentState={{
+              ...agentState,
+              // Merge entity stats into agent state for display
+              redditPostsProcessed: entityStats?.postsProcessed || 0,
+              entitiesExtracted: entityStats?.entitiesExtracted || 0,
+              signalsGenerated: entityStats?.signalsGenerated || 0,
+              indexSize: entityStats?.indexSize || 0,
+            }}
+            trades={deepAgentTrades}
+            settlements={deepAgentSettlements}
+            redditSignals={entityRedditPosts}
+            priceImpacts={entityPriceImpacts}
+            isRunning={deepAgentIsRunning || (strategyStatus?.strategies?.deep_agent?.running ?? false)}
+            isLearning={deepAgentIsLearning}
           />
         )}
 
@@ -122,16 +162,13 @@ const V3TraderConsole = () => {
           <SettlementsPanel settlements={settlements} />
         </div>
 
-        {/* Trading Strategies Panel - Strategy performance and skip breakdown */}
-        <div className="mb-6">
-          <TradingStrategiesPanel strategyStatus={strategyStatus} />
-        </div>
-
-        {/* Entity Index Panel - Canonical entities with aliases and reddit signals */}
+        {/* Entity Trades Feed Panel - Live trades filtered to entity-tracked markets */}
         {entityIndex?.entities?.length > 0 && (
-          <div className="mb-6">
-            <EntityIndexPanel entityIndex={entityIndex} />
-          </div>
+          <EntityTradesFeedPanel
+            entityIndex={entityIndex}
+            eventTrades={eventTrades}
+            tradePulses={tradePulses}
+          />
         )}
 
         <div className="grid grid-cols-12 gap-6">

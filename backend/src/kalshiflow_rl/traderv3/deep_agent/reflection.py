@@ -38,6 +38,7 @@ class PendingTrade:
     entry_price_cents: int
     reasoning: str
     timestamp: float
+    order_id: Optional[str] = None  # Kalshi order ID for precise matching
     # Filled after settlement
     settled: bool = False
     exit_price_cents: Optional[int] = None
@@ -107,6 +108,13 @@ class ReflectionEngine:
         self._check_interval_seconds = 30.0
         self._max_pending_trades = 100
 
+        # File lock to prevent race conditions on memory file writes
+        self._file_lock = asyncio.Lock()
+
+        # Queue for background reflection processing (prevents blocking main loop)
+        self._reflection_queue: asyncio.Queue = asyncio.Queue()
+        self._reflection_worker_task: Optional[asyncio.Task] = None
+
     def set_reflection_callback(self, callback: Callable) -> None:
         """
         Set the callback to trigger agent reflection.
@@ -125,12 +133,13 @@ class ReflectionEngine:
     async def start(self) -> None:
         """Start the reflection engine."""
         if self._running:
-            logger.warning("[reflection] Already running")
+            logger.warning("[deep_agent.reflection] Already running")
             return
 
         self._running = True
         self._monitor_task = asyncio.create_task(self._settlement_monitor_loop())
-        logger.info("[reflection] Started reflection engine")
+        self._reflection_worker_task = asyncio.create_task(self._reflection_worker_loop())
+        logger.info("[deep_agent.reflection] Started reflection engine")
 
     async def stop(self) -> None:
         """Stop the reflection engine."""
@@ -146,7 +155,14 @@ class ReflectionEngine:
             except asyncio.CancelledError:
                 pass
 
-        logger.info("[reflection] Stopped reflection engine")
+        if self._reflection_worker_task and not self._reflection_worker_task.done():
+            self._reflection_worker_task.cancel()
+            try:
+                await self._reflection_worker_task
+            except asyncio.CancelledError:
+                pass
+
+        logger.info("[deep_agent.reflection] Stopped reflection engine")
 
     def record_trade(
         self,
@@ -157,18 +173,20 @@ class ReflectionEngine:
         contracts: int,
         entry_price_cents: int,
         reasoning: str,
+        order_id: Optional[str] = None,
     ) -> None:
         """
         Record a trade for later reflection.
 
         Args:
-            trade_id: Unique trade identifier (order_id or generated)
+            trade_id: Unique trade identifier (generated UUID)
             ticker: Market ticker
             event_ticker: Event ticker
             side: "yes" or "no"
             contracts: Number of contracts
             entry_price_cents: Entry price in cents
             reasoning: Agent's reasoning for the trade
+            order_id: Kalshi order ID for precise settlement matching
         """
         if len(self._pending_trades) >= self._max_pending_trades:
             # Remove oldest trade
@@ -187,10 +205,11 @@ class ReflectionEngine:
             entry_price_cents=entry_price_cents,
             reasoning=reasoning,
             timestamp=time.time(),
+            order_id=order_id,
         )
 
         self._pending_trades[trade_id] = trade
-        logger.info(f"[reflection] Recorded pending trade: {ticker} {side} @ {entry_price_cents}c")
+        logger.info(f"[deep_agent.reflection] Recorded pending trade: {ticker} {side} @ {entry_price_cents}c (order_id={order_id})")
 
     async def _settlement_monitor_loop(self) -> None:
         """Background loop to check for settled trades."""
@@ -201,7 +220,44 @@ class ReflectionEngine:
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.error(f"[reflection] Error in monitor loop: {e}")
+                logger.error(f"[deep_agent.reflection] Error in monitor loop: {e}")
+
+    async def _reflection_worker_loop(self) -> None:
+        """Background worker that processes reflection queue without blocking main loop."""
+        while self._running:
+            try:
+                # Wait for a trade to reflect on (with timeout to check _running)
+                try:
+                    trade = await asyncio.wait_for(
+                        self._reflection_queue.get(),
+                        timeout=5.0
+                    )
+                except asyncio.TimeoutError:
+                    continue
+
+                # Process reflection
+                # NOTE: Agent has full control over memory writes via write_memory() tool
+                # We no longer auto-append to avoid duplicates - agent decides what to save
+                if self._reflection_callback:
+                    try:
+                        reflection_result = await self._reflection_callback(trade)
+                        if reflection_result:
+                            self._reflections.append(reflection_result)
+                            # Removed: await self._store_learning(reflection_result)
+                            # Agent now handles all memory writes directly
+                            logger.info(
+                                f"[deep_agent.reflection] Completed reflection for "
+                                f"{trade.ticker} ({trade.result})"
+                            )
+                    except Exception as e:
+                        logger.error(f"[deep_agent.reflection] Error in reflection callback: {e}")
+
+                self._reflection_queue.task_done()
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"[deep_agent.reflection] Error in reflection worker: {e}")
 
     async def _check_settlements(self) -> None:
         """Check for settled trades and trigger reflection."""
@@ -216,23 +272,60 @@ class ReflectionEngine:
             summary = self._state_container.get_trading_summary()
             settlements = summary.get("settlements", [])
 
-            # Build set of settled tickers for quick lookup
-            settled_tickers = {s.get("ticker") for s in settlements}
+            # Build lookup structures for matching
+            # Primary: order_id -> settlement
+            settlements_by_order_id = {
+                s.get("order_id"): s for s in settlements if s.get("order_id")
+            }
+            # Secondary: (ticker, side) -> list of settlements
+            settlements_by_ticker_side: Dict[tuple, List] = {}
+            for s in settlements:
+                key = (s.get("ticker"), s.get("side", "").lower())
+                if key not in settlements_by_ticker_side:
+                    settlements_by_ticker_side[key] = []
+                settlements_by_ticker_side[key].append(s)
 
             # Check each pending trade
             for trade_id, trade in list(self._pending_trades.items()):
                 if trade.settled:
                     continue
 
-                if trade.ticker in settled_tickers:
-                    # Find the matching settlement
-                    for settlement in settlements:
-                        if settlement.get("ticker") == trade.ticker:
-                            await self._handle_settlement(trade, settlement)
+                matched_settlement = None
+
+                # Primary match: by order_id (most precise)
+                if trade.order_id and trade.order_id in settlements_by_order_id:
+                    matched_settlement = settlements_by_order_id[trade.order_id]
+                    logger.debug(
+                        f"[deep_agent.reflection] Matched by order_id: {trade.order_id}"
+                    )
+
+                # Secondary match: by ticker + side + contracts (fallback)
+                if matched_settlement is None:
+                    key = (trade.ticker, trade.side.lower())
+                    candidates = settlements_by_ticker_side.get(key, [])
+                    for settlement in candidates:
+                        # Match by contract count for disambiguation
+                        settlement_contracts = settlement.get("contracts", 0)
+                        if settlement_contracts == trade.contracts:
+                            matched_settlement = settlement
+                            logger.debug(
+                                f"[deep_agent.reflection] Matched by ticker+side+contracts: "
+                                f"{trade.ticker} {trade.side} x{trade.contracts}"
+                            )
                             break
+                    # If no exact contract match, take first match (backward compat)
+                    if matched_settlement is None and candidates:
+                        matched_settlement = candidates[0]
+                        logger.debug(
+                            f"[deep_agent.reflection] Matched by ticker+side (fallback): "
+                            f"{trade.ticker} {trade.side}"
+                        )
+
+                if matched_settlement:
+                    await self._handle_settlement(trade, matched_settlement)
 
         except Exception as e:
-            logger.error(f"[reflection] Error checking settlements: {e}")
+            logger.error(f"[deep_agent.reflection] Error checking settlements: {e}")
 
     async def _handle_settlement(
         self,
@@ -258,7 +351,7 @@ class ReflectionEngine:
         trade.settled_at = time.time()
 
         logger.info(
-            f"[reflection] Trade settled: {trade.ticker} {result} "
+            f"[deep_agent.reflection] Trade settled: {trade.ticker} {result} "
             f"P&L: ${pnl_cents / 100:.2f}"
         )
 
@@ -276,17 +369,10 @@ class ReflectionEngine:
                 "timestamp": time.strftime("%H:%M:%S"),
             })
 
-        # Trigger reflection callback if set
+        # Queue reflection for background processing (non-blocking)
         if self._reflection_callback:
-            try:
-                reflection_result = await self._reflection_callback(trade)
-                if reflection_result:
-                    self._reflections.append(reflection_result)
-
-                    # Store learning in memory
-                    await self._store_learning(reflection_result)
-            except Exception as e:
-                logger.error(f"[reflection] Error in reflection callback: {e}")
+            await self._reflection_queue.put(trade)
+            logger.info(f"[deep_agent.reflection] Queued reflection for {trade.ticker}")
 
         # Remove from pending
         del self._pending_trades[trade.trade_id]
@@ -304,29 +390,31 @@ class ReflectionEngine:
                 f"- Learning: {reflection.learning}\n"
             )
 
-            # Append to learnings.md
-            learnings_path = self._memory_dir / "learnings.md"
-            self._append_to_file(learnings_path, entry)
+            # Use lock to prevent race conditions on concurrent file writes
+            async with self._file_lock:
+                # Append to learnings.md
+                learnings_path = self._memory_dir / "learnings.md"
+                self._append_to_file(learnings_path, entry)
 
-            # If mistake identified, add to mistakes.md
-            if reflection.mistake_identified:
-                mistake_entry = f"\n- {reflection.mistake_identified} (from {reflection.ticker} {reflection.result})\n"
-                mistakes_path = self._memory_dir / "mistakes.md"
-                self._append_to_file(mistakes_path, mistake_entry)
+                # If mistake identified, add to mistakes.md
+                if reflection.mistake_identified:
+                    mistake_entry = f"\n- {reflection.mistake_identified} (from {reflection.ticker} {reflection.result})\n"
+                    mistakes_path = self._memory_dir / "mistakes.md"
+                    self._append_to_file(mistakes_path, mistake_entry)
 
-            # If pattern identified, add to patterns.md
-            if reflection.pattern_identified:
-                pattern_entry = f"\n- {reflection.pattern_identified}\n"
-                patterns_path = self._memory_dir / "patterns.md"
-                self._append_to_file(patterns_path, pattern_entry)
+                # If pattern identified, add to patterns.md
+                if reflection.pattern_identified:
+                    pattern_entry = f"\n- {reflection.pattern_identified}\n"
+                    patterns_path = self._memory_dir / "patterns.md"
+                    self._append_to_file(patterns_path, pattern_entry)
 
-            logger.info(f"[reflection] Stored learning from {reflection.ticker}")
+            logger.info(f"[deep_agent.reflection] Stored learning from {reflection.ticker}")
 
         except Exception as e:
-            logger.error(f"[reflection] Error storing learning: {e}")
+            logger.error(f"[deep_agent.reflection] Error storing learning: {e}")
 
     def _append_to_file(self, path: Path, content: str) -> None:
-        """Append content to a file, creating if needed."""
+        """Append content to a file, creating if needed. Must be called under _file_lock."""
         if path.exists():
             existing = path.read_text(encoding="utf-8")
             path.write_text(existing + content, encoding="utf-8")

@@ -20,12 +20,13 @@ from collections import deque
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Literal, TYPE_CHECKING
+from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING
 
 from anthropic import AsyncAnthropic
 
 from .tools import DeepAgentTools, set_global_tools
 from .reflection import ReflectionEngine, PendingTrade, ReflectionResult
+from .prompts import build_system_prompt
 
 if TYPE_CHECKING:
     from ..core.websocket_manager import V3WebSocketManager
@@ -68,134 +69,18 @@ class DeepAgentConfig:
     require_fresh_news: bool = True
     max_news_age_hours: float = 2.0
 
+    # Circuit breaker settings (prevents repeated failures on same market)
+    circuit_breaker_enabled: bool = True
+    circuit_breaker_threshold: int = 3  # Failures before blacklisting
+    circuit_breaker_window_seconds: float = 3600.0  # 1 hour window for failures
+    circuit_breaker_cooldown_seconds: float = 1800.0  # 30 min blacklist duration
 
-# System prompt for the self-improving agent (ENTITY-BASED TRADING)
-SYSTEM_PROMPT = """You are a self-improving prediction market trader on Kalshi.
+    # Prompt settings (experimental)
+    include_enders_game: bool = True  # Toggle Ender's Game framing for A/B testing
 
-## Your Data Source
-You trade EXCLUSIVELY on Reddit entity signals. Each signal has been processed through:
-1. Reddit post extraction (r/politics, r/news)
-2. GLiNER entity recognition (people, organizations)
-3. LLM sentiment scoring (-100 to +100)
-4. Market-specific price impact transformation
 
-## Key Insight: Sentiment ≠ Price Impact
-The transformation depends on market type:
-- **OUT markets**: INVERT sentiment (scandal = more likely OUT, so +impact)
-- **WIN/CONFIRM/NOMINEE**: PRESERVE sentiment direction
-
-Example:
-- "Pam Bondi scandal" → sentiment: -98 (bad for her)
-- "BONDI-OUT" market → price_impact: +98 (more likely she's OUT)
-
-## Your Tools
-- **get_price_impacts**: Query Reddit entity signals (PRIMARY DATA SOURCE)
-- **get_markets**: Check current market prices and spreads
-- **get_event_context**: Understand event relationships (CRITICAL for risk)
-- **trade**: Execute YES/NO trades
-- **get_session_state**: Check your positions and P&L
-- **read_memory / write_memory**: Access your learnings
-
-## CRITICAL: Event Awareness & Mutual Exclusivity
-
-Markets within the same event are MUTUALLY EXCLUSIVE - only ONE can resolve YES.
-
-### How Events Work
-- Event "KXPRESNOMD" = Democratic Presidential Primary 2028
-- Contains 20+ markets: Harris, Biden, Newsom, Shapiro, etc.
-- ONLY ONE candidate can win → ONLY ONE market resolves YES
-- All other markets resolve NO
-
-### Risk Implications
-When you buy NO on a candidate:
-- You're betting they WON'T win
-- This is CORRELATED with NO bets on other candidates
-- If you hold multiple NO positions → CORRELATED RISK
-
-### Risk Levels (for multiple NO positions in same event)
-- **ARBITRAGE**: YES prices sum > 105c → NO is cheap, safe to hold all
-- **NORMAL**: YES prices sum 100-105c → Fair pricing
-- **HIGH_RISK**: YES prices sum 95-99c → NO is getting expensive
-- **GUARANTEED_LOSS**: YES prices sum < 95c → You WILL lose money!
-
-### When to Use get_event_context()
-Call this tool when:
-1. Before trading a market to check event-level exposure
-2. When you have multiple positions in related markets
-3. When a market's event_ticker looks like a multi-candidate event (e.g., KXPRES*)
-4. To understand why the system might block a trade
-
-Example: Before buying NO on KXPRESNOMD-HARRIS, call get_event_context("KXPRESNOMD")
-to see all related markets and your current exposure.
-
-## Trading Logic
-1. Call get_price_impacts() to see recent signals
-2. For high-confidence signals (>0.7), check if price_impact_score suggests edge
-3. **IMPORTANT**: Check get_event_context() for the event to assess risk
-4. Compare signal direction with current market price
-5. If edge exists and within strategy.md limits, trade
-6. Record your reasoning
-
-## Signal Interpretation
-Each price impact signal tells you:
-- **entity**: Who the news is about (e.g., "Pam Bondi")
-- **sentiment_score**: How news affects the entity (-100 to +100)
-- **price_impact_score**: Expected price movement for THIS market
-- **market_type**: OUT, WIN, CONFIRM, NOMINEE
-- **confidence**: Signal reliability (0.0 to 1.0)
-- **suggested_side**: "yes" or "no" based on impact direction
-
-## The Self-Improvement Loop
-You follow the OBSERVE → ACT → REFLECT cycle:
-
-### 1. OBSERVE
-- Read your memory files (learnings.md, strategy.md)
-- Call get_price_impacts() to see recent signals
-- Check current market prices with get_markets()
-- **Check event context for markets you're considering**
-- Review session state (positions, P&L)
-
-### 2. ACT
-Based on signals and strategy:
-- **TRADE NOW**: If |price_impact| > 50 with confidence > 0.7 - EXECUTE IMMEDIATELY
-- **Trade**: If |price_impact| > 30 with confidence > 0.6
-- **Hold**: ONLY if no signals with |impact| > 30
-- **Exit**: If contradicting signal appears
-- **AVOID**: If event exposure is HIGH_RISK or GUARANTEED_LOSS
-
-**BIAS TO ACTION**: When you see strong signals, execute trades. Don't overthink.
-
-### 3. REFLECT (after trades settle)
-- Did the price_impact_score predict correctly?
-- Update learnings.md with the insight
-- Adjust strategy.md if patterns emerge
-
-## Memory Files
-- **learnings.md**: What you've learned about Reddit signals
-- **strategy.md**: Your current trading rules
-- **mistakes.md**: Errors to avoid
-
-## Trading Rules
-- **EXECUTE** on signals with |price_impact_score| > 50 and confidence > 0.7
-- Trade signals with |price_impact_score| > 30 and confidence > 0.6
-- Prefer spreads < 5c (better entry price)
-- Max {max_contracts} contracts per trade
-- Max {max_positions} positions at once
-- **CHECK EVENT CONTEXT before adding NO positions in multi-candidate events**
-- Always explain your reasoning before trading
-
-## ACTION BIAS
-You are a TRADER. Your job is to EXECUTE trades when signals appear.
-If you see strong signals and don't trade, you're not doing your job.
-Call trade() when edge exists - don't wait for perfect conditions.
-
-## Important
-- TRUST the price_impact_score direction
-- Don't second-guess the sentiment→impact transformation
-- Focus on signal strength and market conditions
-- **Be aware of correlated risk in mutually exclusive markets**
-- Learn from every outcome
-"""
+# System prompt is now built dynamically via build_system_prompt() from prompts.py
+# This allows modular editing and A/B testing of prompt sections
 
 
 class SelfImprovingAgent:
@@ -264,12 +149,12 @@ class SelfImprovingAgent:
         api_key = os.environ.get("ANTHROPIC_API_KEY")
         if not api_key:
             logger.warning(
-                "[agent] ANTHROPIC_API_KEY not set! "
+                "[deep_agent.agent] ANTHROPIC_API_KEY not set! "
                 "The agent will not be able to call Claude API. "
                 "Set ANTHROPIC_API_KEY in your environment."
             )
         else:
-            logger.info("[agent] ANTHROPIC_API_KEY found, Claude API ready")
+            logger.info("[deep_agent.agent] ANTHROPIC_API_KEY found, Claude API ready")
         self._client = AsyncAnthropic()
 
         # Agent state
@@ -290,6 +175,29 @@ class SelfImprovingAgent:
         self._thinking_history: deque = deque(maxlen=10)
         self._tool_call_history: deque = deque(maxlen=50)
         self._trade_history: deque = deque(maxlen=50)
+        self._learnings_history: deque = deque(maxlen=50)
+
+        # Circuit breaker state (prevents repeated failures on same market)
+        # Maps ticker -> list of failure timestamps
+        self._failed_attempts: Dict[str, List[float]] = {}
+        # Maps ticker -> blacklist expiry timestamp
+        self._blacklisted_tickers: Dict[str, float] = {}
+
+        # Think enforcement tracking (soft enforcement - warn if trade without think)
+        self._last_think_decision: Optional[str] = None
+        self._last_think_timestamp: Optional[float] = None
+
+        # Token usage tracking for prompt caching metrics
+        self._total_input_tokens = 0
+        self._total_output_tokens = 0
+        self._total_cache_read_tokens = 0
+        self._total_cache_created_tokens = 0
+
+        # Session-start context from memory files (loaded once at start)
+        self._initial_context: Dict[str, str] = {}
+
+        # Reflection count for consolidation trigger
+        self._reflection_count = 0
 
         # Tool definitions for Claude
         self._tool_definitions = self._build_tool_definitions()
@@ -425,52 +333,225 @@ class SelfImprovingAgent:
                     },
                     "required": ["filename", "content"]
                 }
+            },
+            {
+                "name": "think",
+                "description": "REQUIRED before every trade. Structured pre-trade analysis that forces consideration of key factors. Must be called before trade() - trades without prior think() will be flagged.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "signal_analysis": {
+                            "type": "string",
+                            "description": "What signal are you acting on? (entity, impact score, confidence, source)"
+                        },
+                        "strategy_check": {
+                            "type": "string",
+                            "description": "Does this trade align with your strategy.md rules? Which rules apply?"
+                        },
+                        "risk_assessment": {
+                            "type": "string",
+                            "description": "What are the risks? (spread, position limits, event exposure, market liquidity)"
+                        },
+                        "decision": {
+                            "type": "string",
+                            "enum": ["TRADE", "WAIT", "PASS"],
+                            "description": "Your decision: TRADE (execute now), WAIT (wait for corroborating signal/trending validation), PASS (no edge)"
+                        },
+                        "reflection": {
+                            "type": "string",
+                            "description": "Optional: Any additional reasoning or notes for future learning"
+                        }
+                    },
+                    "required": ["signal_analysis", "strategy_check", "risk_assessment", "decision"]
+                }
             }
         ]
+
+    # === Circuit Breaker Methods ===
+
+    def _clean_expired_failures(self) -> None:
+        """Remove expired failure records and blacklist entries."""
+        now = time.time()
+
+        # Clean expired blacklist entries
+        expired_blacklist = [
+            ticker for ticker, expiry in self._blacklisted_tickers.items()
+            if now >= expiry
+        ]
+        for ticker in expired_blacklist:
+            del self._blacklisted_tickers[ticker]
+            logger.info(f"[deep_agent.circuit_breaker] {ticker} removed from blacklist (cooldown expired)")
+
+        # Clean old failure records
+        window = self._config.circuit_breaker_window_seconds
+        for ticker in list(self._failed_attempts.keys()):
+            self._failed_attempts[ticker] = [
+                ts for ts in self._failed_attempts[ticker]
+                if now - ts < window
+            ]
+            if not self._failed_attempts[ticker]:
+                del self._failed_attempts[ticker]
+
+    def _is_ticker_blacklisted(self, ticker: str) -> tuple[bool, Optional[str]]:
+        """
+        Check if a ticker is currently blacklisted.
+
+        Returns:
+            Tuple of (is_blacklisted, reason_message)
+        """
+        if not self._config.circuit_breaker_enabled:
+            return False, None
+
+        self._clean_expired_failures()
+
+        if ticker in self._blacklisted_tickers:
+            expiry = self._blacklisted_tickers[ticker]
+            remaining = int(expiry - time.time())
+            reason = (
+                f"Market {ticker} is temporarily blacklisted after "
+                f"{self._config.circuit_breaker_threshold} consecutive failures. "
+                f"Cooldown: {remaining}s remaining. "
+                f"This prevents wasting cycles on illiquid/impossible trades."
+            )
+            return True, reason
+
+        return False, None
+
+    def _record_trade_failure(self, ticker: str, error: str) -> bool:
+        """
+        Record a trade failure for circuit breaker tracking.
+
+        Args:
+            ticker: The market ticker that failed
+            error: The error message
+
+        Returns:
+            True if ticker was blacklisted as a result
+        """
+        if not self._config.circuit_breaker_enabled:
+            return False
+
+        now = time.time()
+
+        # Record the failure
+        if ticker not in self._failed_attempts:
+            self._failed_attempts[ticker] = []
+        self._failed_attempts[ticker].append(now)
+
+        # Clean old failures
+        self._clean_expired_failures()
+
+        # Check if threshold reached
+        failure_count = len(self._failed_attempts.get(ticker, []))
+        threshold = self._config.circuit_breaker_threshold
+
+        if failure_count >= threshold:
+            # Blacklist the ticker
+            cooldown = self._config.circuit_breaker_cooldown_seconds
+            self._blacklisted_tickers[ticker] = now + cooldown
+
+            logger.warning(
+                f"[deep_agent.circuit_breaker] {ticker} BLACKLISTED after {failure_count} failures. "
+                f"Cooldown: {cooldown}s. Error: {error[:100]}"
+            )
+
+            # Clear failure records for this ticker (we've already blacklisted)
+            self._failed_attempts.pop(ticker, None)
+
+            return True
+
+        logger.info(
+            f"[deep_agent.circuit_breaker] {ticker} failure {failure_count}/{threshold}: {error[:100]}"
+        )
+        return False
+
+    def get_circuit_breaker_status(self) -> Dict[str, Any]:
+        """Get current circuit breaker status for debugging/monitoring."""
+        self._clean_expired_failures()
+        now = time.time()
+
+        return {
+            "enabled": self._config.circuit_breaker_enabled,
+            "threshold": self._config.circuit_breaker_threshold,
+            "window_seconds": self._config.circuit_breaker_window_seconds,
+            "cooldown_seconds": self._config.circuit_breaker_cooldown_seconds,
+            "blacklisted_tickers": {
+                ticker: int(expiry - now)
+                for ticker, expiry in self._blacklisted_tickers.items()
+            },
+            "pending_failures": {
+                ticker: len(failures)
+                for ticker, failures in self._failed_attempts.items()
+            },
+        }
 
     async def start(self) -> None:
         """Start the agent."""
         if self._running:
-            logger.warning("[agent] Already running")
+            logger.warning("[deep_agent.agent] Already running")
             return
 
-        logger.info("[agent] start() called, ws_manager present: %s", self._ws_manager is not None)
-        logger.info("[agent] Starting self-improving agent")
+        logger.info("[deep_agent.agent] start() called, ws_manager present: %s", self._ws_manager is not None)
+        logger.info("[deep_agent.agent] Starting self-improving agent")
         self._running = True
         self._started_at = time.time()
 
+        # Clear history buffers for fresh state on restart
+        self._thinking_history.clear()
+        self._tool_call_history.clear()
+        self._trade_history.clear()
+        self._learnings_history.clear()
+        self._conversation_history.clear()
+        self._cycle_count = 0
+        self._trades_executed = 0
+
+        # Reset token usage counters
+        self._total_input_tokens = 0
+        self._total_output_tokens = 0
+        self._total_cache_read_tokens = 0
+        self._total_cache_created_tokens = 0
+
+        logger.info("[deep_agent.agent] Cleared history buffers for fresh session")
+
         # Initialize memory files
         await self._init_memory_files()
-        logger.info("[agent] Memory files initialized")
+        logger.info("[deep_agent.agent] Memory files initialized")
+
+        # Load initial context from memory files (mistakes and patterns to avoid/repeat)
+        await self._load_initial_context()
+        logger.info("[deep_agent.agent] Loaded initial context from memory files")
+
+        # Reset reflection count for consolidation trigger
+        self._reflection_count = 0
 
         # Start reflection engine
         await self._reflection.start()
-        logger.info("[agent] Reflection engine started")
+        logger.info("[deep_agent.agent] Reflection engine started")
 
         # Start main cycle loop
         self._cycle_task = asyncio.create_task(self._main_loop())
-        logger.info("[agent] Main loop task created: %s", self._cycle_task)
+        logger.info("[deep_agent.agent] Main loop task created: %s", self._cycle_task)
 
-        logger.info("[agent] Agent started successfully")
+        logger.info("[deep_agent.agent] Agent started successfully")
 
         # Broadcast status
-        logger.info("[agent] About to broadcast status, ws_manager: %s", self._ws_manager)
+        logger.info("[deep_agent.agent] About to broadcast status, ws_manager: %s", self._ws_manager)
         if self._ws_manager:
             await self._ws_manager.broadcast_message("deep_agent_status", {
                 "status": "started",
                 "config": asdict(self._config),
                 "timestamp": time.strftime("%H:%M:%S"),
             })
-            logger.info("[agent] Broadcast deep_agent_status with status='started'")
+            logger.info("[deep_agent.agent] Broadcast deep_agent_status with status='started'")
         else:
-            logger.warning("[agent] No ws_manager - cannot broadcast status to frontend!")
+            logger.warning("[deep_agent.agent] No ws_manager - cannot broadcast status to frontend!")
 
     async def stop(self) -> None:
         """Stop the agent."""
         if not self._running:
             return
 
-        logger.info("[agent] Stopping self-improving agent")
+        logger.info("[deep_agent.agent] Stopping self-improving agent")
         self._running = False
 
         # Cancel cycle task
@@ -484,7 +565,7 @@ class SelfImprovingAgent:
         # Stop reflection engine
         await self._reflection.stop()
 
-        logger.info("[agent] Agent stopped")
+        logger.info("[deep_agent.agent] Agent stopped")
 
         # Broadcast status
         if self._ws_manager:
@@ -496,63 +577,39 @@ class SelfImprovingAgent:
             })
 
     async def _init_memory_files(self) -> None:
-        """Initialize memory files with starter content if they don't exist."""
+        """Initialize memory files with minimal starter content if they don't exist."""
         self._memory_dir.mkdir(parents=True, exist_ok=True)
 
-        # Initial content for each file
+        # Minimal templates - agent builds its own learnings from scratch
+        # The system prompt already explains how to use each file
         initial_content = {
             "learnings.md": """# Trading Learnings
 
-This file contains accumulated wisdom from trading experiences.
-The agent updates this file after each trade settlement.
-
-## Getting Started
-- Add learnings as you trade
-- Be specific and actionable
-- Reference specific trades and outcomes
+Trade-by-trade insights are recorded here.
 """,
-            "strategy.md": """# Current Trading Strategy
+            "strategy.md": """# Trading Strategy
 
-## Entry Criteria
-- Only trade when spread > 3c (indicates inefficiency)
-- Require fresh news (<2 hours old) for directional trades
-- Whale activity is confirmatory, not primary signal
+## Entry Rules
+- Trade when |impact| >= 40, confidence >= 0.7, gap > 5c
 
 ## Position Sizing
-- Max 25 contracts per trade
-- Max 5 positions at once
-- Never exceed 10% of bankroll per trade
+- Strong signals (+75): 25 contracts
+- Moderate signals (+40): 15 contracts
+
+## Risk Rules
+- Max 5 positions
+- Check event context before correlated trades
 
 ## Exit Rules
-- Take profit at 20% gain
-- Cut losses at 15% decline
-- Exit before settlement if uncertain
-
-## Market Selection
-- Focus on events with clear resolution criteria
-- Prefer markets with high volume (more liquidity)
-- Avoid illiquid markets (spread > 10c)
+- (Develop through experience)
 """,
             "mistakes.md": """# Mistakes to Avoid
 
-This file tracks errors to prevent repeating them.
-
-## Common Mistakes
-1. **CHASING**: Don't buy after price moved 10%+ on news
-2. **OVERTRADING**: More than 5 trades/hour = too many
-3. **STALE NEWS**: News >2 hours old is already priced in
-4. **WHALE FOMO**: Whale activity alone is not sufficient edge
-5. **NO EXIT PLAN**: Always have exit criteria before entering
+Errors and anti-patterns go here.
 """,
-            "patterns.md": """# Successful Patterns
+            "patterns.md": """# Winning Patterns
 
-This file records patterns that have led to profitable trades.
-
-## Pattern Template
-- **Setup**: What conditions were present
-- **Trigger**: What prompted entry
-- **Outcome**: How the trade performed
-- **Why it worked**: The edge explanation
+Successful patterns go here.
 """
         }
 
@@ -560,11 +617,37 @@ This file records patterns that have led to profitable trades.
             filepath = self._memory_dir / filename
             if not filepath.exists():
                 filepath.write_text(content, encoding="utf-8")
-                logger.info(f"[agent] Created initial memory file: {filename}")
+                logger.info(f"[deep_agent.agent] Created initial memory file: {filename}")
+
+    async def _load_initial_context(self) -> None:
+        """Load context from memory files at session start.
+
+        Loads mistakes and patterns to provide accumulated wisdom to the agent
+        from the very first cycle. This helps avoid repeating past errors and
+        leverage successful patterns discovered in previous sessions.
+        """
+        try:
+            mistakes = await self._tools.read_memory("mistakes.md")
+            patterns = await self._tools.read_memory("patterns.md")
+
+            # Store truncated versions for inclusion in cycle context
+            self._initial_context = {
+                "mistakes": mistakes[:400] if mistakes else "",
+                "patterns": patterns[:400] if patterns else "",
+            }
+
+            if mistakes and len(mistakes) > 50:
+                logger.info("[deep_agent.agent] Loaded mistakes context (%d chars)", len(mistakes))
+            if patterns and len(patterns) > 50:
+                logger.info("[deep_agent.agent] Loaded patterns context (%d chars)", len(patterns))
+
+        except Exception as e:
+            logger.warning(f"[deep_agent.agent] Could not load initial context: {e}")
+            self._initial_context = {}
 
     async def _main_loop(self) -> None:
         """Main observe-act-reflect loop."""
-        logger.info("[agent] _main_loop() STARTED - will run first cycle now")
+        logger.info("[deep_agent.agent] _main_loop() STARTED - will run first cycle now")
 
         # Broadcast "active" status when main loop actually starts executing
         # This ensures clients connecting after startup see the correct status
@@ -575,15 +658,15 @@ This file records patterns that have led to profitable trades.
                 "config": asdict(self._config),
                 "timestamp": time.strftime("%H:%M:%S"),
             })
-            logger.info("[agent] Broadcast deep_agent_status with status='active' (main loop running)")
+            logger.info("[deep_agent.agent] Broadcast deep_agent_status with status='active' (main loop running)")
 
         while self._running:
             try:
-                logger.info("[agent] About to run cycle %d", self._cycle_count + 1)
+                logger.info("[deep_agent.agent] About to run cycle %d", self._cycle_count + 1)
                 # Run one cycle
                 await self._run_cycle()
                 logger.info(
-                    "[agent] Cycle %d completed, sleeping %ss",
+                    "[deep_agent.agent] Cycle %d completed, sleeping %ss",
                     self._cycle_count,
                     self._config.cycle_interval_seconds
                 )
@@ -592,19 +675,19 @@ This file records patterns that have led to profitable trades.
                 await asyncio.sleep(self._config.cycle_interval_seconds)
 
             except asyncio.CancelledError:
-                logger.info("[agent] _main_loop() cancelled")
+                logger.info("[deep_agent.agent] _main_loop() cancelled")
                 break
             except Exception as e:
-                logger.error("[agent] Error in main loop: %s", e, exc_info=True)
+                logger.error("[deep_agent.agent] Error in main loop: %s", e, exc_info=True)
                 await asyncio.sleep(5.0)  # Brief pause on error
-        logger.info("[agent] _main_loop() STOPPED")
+        logger.info("[deep_agent.agent] _main_loop() STOPPED")
 
     async def _run_cycle(self) -> None:
         """Run one observe-act cycle."""
         self._cycle_count += 1
         self._last_cycle_at = time.time()
 
-        logger.info(f"[agent] === Starting cycle {self._cycle_count} ===")
+        logger.info(f"[deep_agent.agent] === Starting cycle {self._cycle_count} ===")
 
         # Broadcast cycle start
         if self._ws_manager:
@@ -622,7 +705,7 @@ This file records patterns that have led to profitable trades.
             await self._run_agent_cycle(context)
 
         except Exception as e:
-            logger.error(f"[agent] Error in cycle: {e}")
+            logger.error(f"[deep_agent.agent] Error in cycle: {e}")
 
             if self._ws_manager:
                 await self._ws_manager.broadcast_message("deep_agent_error", {
@@ -654,21 +737,42 @@ This file records patterns that have led to profitable trades.
             ]
 
             if groups_with_positions:
-                event_lines = ["### Event Exposure (⚠️ Correlated Risk)"]
+                event_lines = ["### Event Exposure (Correlated Risk)"]
                 for group in groups_with_positions:
                     risk_emoji = {
-                        "ARBITRAGE": "✅",
-                        "NORMAL": "🟢",
-                        "HIGH_RISK": "🟡",
-                        "GUARANTEED_LOSS": "🔴",
-                    }.get(group.risk_level, "⚪")
+                        "ARBITRAGE": "+",
+                        "NORMAL": "o",
+                        "HIGH_RISK": "!",
+                        "GUARANTEED_LOSS": "X",
+                    }.get(group.risk_level, "?")
 
                     event_lines.append(
                         f"- **{group.event_ticker}**: {group.markets_with_positions}/{group.market_count} markets, "
-                        f"YES_sum={group.yes_sum}c, {risk_emoji} {group.risk_level}"
+                        f"YES_sum={group.yes_sum}c, [{risk_emoji}] {group.risk_level}"
                     )
 
                 event_exposure_str = "\n" + "\n".join(event_lines) + "\n"
+
+        # Load strategy excerpt for decision-making (first 600 chars of active rules)
+        strategy_excerpt = ""
+        try:
+            strategy = await self._tools.read_memory("strategy.md")
+            if strategy and len(strategy) > 50:
+                strategy_excerpt = f"\n### Your Current Strategy Rules\n{strategy[:600]}\n"
+        except Exception as e:
+            logger.debug(f"[deep_agent.agent] Could not load strategy: {e}")
+
+        # Include session-start context (mistakes/patterns) on first few cycles
+        initial_context_str = ""
+        if self._cycle_count <= 3 and self._initial_context:
+            if self._initial_context.get("mistakes"):
+                mistakes_preview = self._initial_context["mistakes"][:300]
+                if mistakes_preview.strip() and len(mistakes_preview) > 50:
+                    initial_context_str += f"\n### Mistakes to Avoid (from memory)\n{mistakes_preview}\n"
+            if self._initial_context.get("patterns"):
+                patterns_preview = self._initial_context["patterns"][:300]
+                if patterns_preview.strip() and len(patterns_preview) > 50:
+                    initial_context_str += f"\n### Winning Patterns (from memory)\n{patterns_preview}\n"
 
         context = f"""
 ## New Trading Cycle - {datetime.now().strftime("%Y-%m-%d %H:%M")}
@@ -680,54 +784,124 @@ This file records patterns that have led to profitable trades.
 - Positions: {session_state.position_count}
 - Trade Count: {session_state.trade_count}
 - Win Rate: {session_state.win_rate:.1%}
-{event_exposure_str}
+{event_exposure_str}{strategy_excerpt}{initial_context_str}
 ### Target Events
 {target_events_str}
 
 ### Instructions
 1. **FIRST: Call get_price_impacts()** to see Reddit entity signals (this is your PRIMARY data source)
-2. For signals with |impact| > 50 and confidence > 0.7, get market data with get_markets()
-3. Compare signal direction with market prices - look for edge opportunities
+2. For signals with |impact| >= 40 and confidence >= 0.7, check market prices with get_markets()
+3. Compare signal direction with market prices - look for price gap > 5c
 4. **If you have event exposure above, use get_event_context() to understand risk**
-5. If edge exists (signal suggests direction + favorable spread): EXECUTE A TRADE
-6. If no strong signals, hold and wait for next cycle
+5. If edge exists (signal + gap + liquidity): EXECUTE A TRADE
+6. If no actionable signals, PASS and wait for next cycle
 
-**IMPORTANT**: You MUST call get_price_impacts() every cycle. If you see strong signals (+75, +90), trade them!
+**IMPORTANT**: Call get_price_impacts() every cycle. Strong signals (+/-75) with confidence >= 0.7 and gap > 5c = TRADE.
 """
         return context
 
     async def _run_agent_cycle(self, context: str) -> None:
         """Run the agent with tool calling."""
-        # Add context to conversation
-        self._conversation_history.append({
-            "role": "user",
-            "content": context
-        })
+        # Add context to conversation (only if we have content to add)
+        if context:
+            self._conversation_history.append({
+                "role": "user",
+                "content": context
+            })
 
         # Trim history if too long
         if len(self._conversation_history) > self._max_history_length:
+            dropped_count = len(self._conversation_history) - self._max_history_length
+            logger.warning(
+                f"[deep_agent.agent] Truncating conversation history: "
+                f"dropping {dropped_count} messages (keeping last {self._max_history_length})"
+            )
             self._conversation_history = self._conversation_history[-self._max_history_length:]
 
-        # Build system prompt
-        system = SYSTEM_PROMPT.format(
+        # Build system prompt using modular architecture
+        system = build_system_prompt(
             max_contracts=self._config.max_contracts_per_trade,
             max_positions=self._config.max_positions,
+            include_enders_game=self._config.include_enders_game,
         )
 
         # Track tool calls for this cycle
         tool_calls_this_cycle = 0
         max_tool_calls = 20  # Safety limit
 
+        # === PROMPT CACHING SETUP ===
+        # Use Claude's prompt caching to reduce token usage by ~50-60%
+        # System prompt and tool definitions are cached with 5-min ephemeral TTL
+        system_blocks = [
+            {
+                "type": "text",
+                "text": system,
+                "cache_control": {"type": "ephemeral"}  # 5-min TTL
+            }
+        ]
+
+        # Add cache_control to the last tool definition for optimal caching
+        # (Cache breakpoints should be at the end of large static content)
+        cached_tools = [tool.copy() for tool in self._tool_definitions]
+        if cached_tools:
+            cached_tools[-1] = {**cached_tools[-1], "cache_control": {"type": "ephemeral"}}
+
         while tool_calls_this_cycle < max_tool_calls:
-            # Call Claude with tools
-            response = await self._client.messages.create(
-                model=self._config.model,
-                max_tokens=self._config.max_tokens,
-                temperature=self._config.temperature,
-                system=system,
-                messages=self._conversation_history,
-                tools=self._tool_definitions,
-            )
+            # Call Claude with tools (with timeout to prevent hung cycles)
+            try:
+                response = await asyncio.wait_for(
+                    self._client.messages.create(
+                        model=self._config.model,
+                        max_tokens=self._config.max_tokens,
+                        temperature=self._config.temperature,
+                        system=system_blocks,
+                        messages=self._conversation_history,
+                        tools=cached_tools,
+                    ),
+                    timeout=120.0,  # 2 minute timeout
+                )
+
+                # === CACHE METRICS LOGGING ===
+                # Track prompt caching effectiveness for cost optimization
+                if hasattr(response, 'usage') and response.usage:
+                    usage = response.usage
+                    cache_created = getattr(usage, 'cache_creation_input_tokens', 0) or 0
+                    cache_read = getattr(usage, 'cache_read_input_tokens', 0) or 0
+                    input_tokens = getattr(usage, 'input_tokens', 0) or 0
+                    output_tokens = getattr(usage, 'output_tokens', 0) or 0
+
+                    # Update cumulative metrics
+                    self._total_input_tokens += input_tokens
+                    self._total_output_tokens += output_tokens
+                    self._total_cache_read_tokens += cache_read
+                    self._total_cache_created_tokens += cache_created
+
+                    # Log cache status
+                    if cache_read > 0:
+                        cache_pct = (cache_read / (input_tokens + cache_read)) * 100 if (input_tokens + cache_read) > 0 else 0
+                        logger.info(
+                            f"[deep_agent.agent] Cache HIT: {cache_read} tokens cached ({cache_pct:.1f}%), "
+                            f"input={input_tokens}, output={output_tokens}"
+                        )
+                    elif cache_created > 0:
+                        logger.info(
+                            f"[deep_agent.agent] Cache CREATED: {cache_created} tokens cached for next call, "
+                            f"input={input_tokens}, output={output_tokens}"
+                        )
+                    else:
+                        logger.debug(
+                            f"[deep_agent.agent] No cache: input={input_tokens}, output={output_tokens}"
+                        )
+
+            except asyncio.TimeoutError:
+                logger.error("[deep_agent.agent] Claude API call timed out after 120s")
+                if self._ws_manager:
+                    await self._ws_manager.broadcast_message("deep_agent_error", {
+                        "error": "Claude API timeout (120s) - cycle terminated",
+                        "cycle": self._cycle_count,
+                        "timestamp": time.strftime("%H:%M:%S"),
+                    })
+                return
 
             # Process response
             assistant_content = []
@@ -801,11 +975,11 @@ This file records patterns that have led to profitable trades.
             if response.stop_reason == "end_turn":
                 break
 
-        logger.info(f"[agent] Cycle {self._cycle_count} completed with {tool_calls_this_cycle} tool calls")
+        logger.info(f"[deep_agent.agent] Cycle {self._cycle_count} completed with {tool_calls_this_cycle} tool calls")
 
     async def _execute_tool(self, tool_name: str, tool_input: Dict) -> Any:
         """Execute a tool and return the result."""
-        logger.info(f"[agent] Executing tool: {tool_name}")
+        logger.info(f"[deep_agent.agent] Executing tool: {tool_name}")
 
         try:
             if tool_name == "get_price_impacts":
@@ -825,32 +999,79 @@ This file records patterns that have led to profitable trades.
                 return [m.to_dict() for m in markets]
 
             elif tool_name == "trade":
+                ticker = tool_input["ticker"]
+
+                # === THINK ENFORCEMENT (SOFT - WARN ONLY) ===
+                think_warning = None
+                if self._last_think_decision is None:
+                    think_warning = "No think() call before trade - you should always call think() first!"
+                    logger.warning(f"[deep_agent.agent] {think_warning}")
+                elif self._last_think_decision != "TRADE":
+                    think_warning = f"Last think() decision was {self._last_think_decision}, not TRADE"
+                    logger.warning(f"[deep_agent.agent] {think_warning}")
+                elif self._last_think_timestamp and time.time() - self._last_think_timestamp > 120:
+                    think_warning = "think() decision is stale (>2min) - consider calling think() again"
+                    logger.warning(f"[deep_agent.agent] {think_warning}")
+
+                # NOTE: Think state is cleared ONLY after successful trade execution
+                # (moved to the success block below to prevent clearing on blocked trades)
+
+                # === CIRCUIT BREAKER CHECK ===
+                # Prevent repeated failures on the same market
+                is_blacklisted, blacklist_reason = self._is_ticker_blacklisted(ticker)
+                if is_blacklisted:
+                    logger.warning(f"[deep_agent.agent] Trade blocked by circuit breaker: {ticker}")
+                    return {
+                        "success": False,
+                        "ticker": ticker,
+                        "side": tool_input["side"],
+                        "contracts": tool_input["contracts"],
+                        "error": blacklist_reason,
+                        "circuit_breaker_blocked": True,
+                    }
+
                 # Validate contracts
                 contracts = min(tool_input["contracts"], self._config.max_contracts_per_trade)
 
                 result = await self._tools.trade(
-                    ticker=tool_input["ticker"],
+                    ticker=ticker,
                     side=tool_input["side"],
                     contracts=contracts,
                     reasoning=tool_input["reasoning"],
                 )
 
+                # === CIRCUIT BREAKER: Record failure if trade failed ===
+                if not result.success and result.error:
+                    was_blacklisted = self._record_trade_failure(ticker, result.error)
+                    if was_blacklisted:
+                        # Add note to result so agent knows about the blacklist
+                        result.error = (
+                            f"{result.error} | CIRCUIT BREAKER: Market now blacklisted "
+                            f"after {self._config.circuit_breaker_threshold} failures. "
+                            f"Try other markets instead."
+                        )
+
                 # Record for reflection if successful
                 if result.success:
                     self._trades_executed += 1
+
+                    # Clear think state only after successful execution
+                    # (require fresh think for next trade)
+                    self._last_think_decision = None
+                    self._last_think_timestamp = None
 
                     # Get event_ticker from trading client
                     event_ticker = ""
                     try:
                         if self._trading_client:
-                            market = await self._trading_client.get_market(tool_input["ticker"])
+                            market = await self._trading_client.get_market(ticker)
                             event_ticker = market.get("event_ticker", "") if market else ""
                     except Exception as e:
-                        logger.warning(f"[agent] Could not fetch event_ticker: {e}")
+                        logger.warning(f"[deep_agent.agent] Could not fetch event_ticker: {e}")
 
                     self._reflection.record_trade(
                         trade_id=result.order_id or str(uuid.uuid4()),
-                        ticker=tool_input["ticker"],
+                        ticker=ticker,
                         event_ticker=event_ticker,
                         side=tool_input["side"],
                         contracts=contracts,
@@ -860,7 +1081,7 @@ This file records patterns that have led to profitable trades.
 
                     # Store in trade history for session persistence
                     trade_msg = {
-                        "ticker": tool_input["ticker"],
+                        "ticker": ticker,
                         "side": tool_input["side"],
                         "contracts": contracts,
                         "price_cents": result.price_cents or 50,
@@ -869,7 +1090,11 @@ This file records patterns that have led to profitable trades.
                     }
                     self._trade_history.append(trade_msg)
 
-                return result.to_dict()
+                # Include think warning in result if present
+                trade_result = result.to_dict()
+                if think_warning:
+                    trade_result["think_warning"] = think_warning
+                return trade_result
 
             elif tool_name == "get_session_state":
                 state = await self._tools.get_session_state()
@@ -880,10 +1105,19 @@ This file records patterns that have led to profitable trades.
                 return content
 
             elif tool_name == "write_memory":
-                success = await self._tools.write_memory(
-                    tool_input["filename"],
-                    tool_input["content"],
-                )
+                filename = tool_input["filename"]
+                content = tool_input["content"]
+                success = await self._tools.write_memory(filename, content)
+
+                # Track learnings for session persistence
+                if success and filename == "learnings.md":
+                    learning_entry = {
+                        "id": f"learning-{time.strftime('%H:%M:%S')}",
+                        "content": content[:200] + "..." if len(content) > 200 else content,
+                        "timestamp": time.strftime("%H:%M:%S"),
+                    }
+                    self._learnings_history.append(learning_entry)
+
                 return {"success": success}
 
             elif tool_name == "get_event_context":
@@ -895,16 +1129,86 @@ This file records patterns that have led to profitable trades.
                 else:
                     return {"error": f"Event {tool_input['event_ticker']} not found or no tracked markets"}
 
+            elif tool_name == "think":
+                # REQUIRED pre-trade analysis tool - forces structured reasoning
+                # All 4 fields are required; reflection is optional for additional notes
+
+                # Extract structured fields
+                signal_analysis = tool_input.get("signal_analysis", "")
+                strategy_check = tool_input.get("strategy_check", "")
+                risk_assessment = tool_input.get("risk_assessment", "")
+                decision = tool_input.get("decision", "")
+                reflection = tool_input.get("reflection", "")  # Optional
+
+                # Validate required fields
+                missing = []
+                if not signal_analysis.strip():
+                    missing.append("signal_analysis")
+                if not strategy_check.strip():
+                    missing.append("strategy_check")
+                if not risk_assessment.strip():
+                    missing.append("risk_assessment")
+                if decision not in ("TRADE", "WAIT", "PASS"):
+                    missing.append("decision (must be TRADE, WAIT, or PASS)")
+
+                if missing:
+                    return {"recorded": False, "error": f"Missing required fields: {', '.join(missing)}"}
+
+                # Format structured analysis for display
+                formatted_analysis = (
+                    f"**Signal**: {signal_analysis}\n"
+                    f"**Strategy**: {strategy_check}\n"
+                    f"**Risks**: {risk_assessment}\n"
+                    f"**Decision**: {decision}"
+                )
+                if reflection:
+                    formatted_analysis += f"\n**Notes**: {reflection}"
+
+                logger.info(f"[deep_agent.agent] Think: decision={decision}, signal={signal_analysis[:100]}...")
+
+                # Build thinking message with structured data
+                thinking_msg = {
+                    "text": f"[Pre-Trade Analysis]\n{formatted_analysis}",
+                    "cycle": self._cycle_count,
+                    "timestamp": time.strftime("%H:%M:%S"),
+                    "is_structured_reflection": True,
+                    "decision": decision,
+                    "structured_data": {
+                        "signal_analysis": signal_analysis,
+                        "strategy_check": strategy_check,
+                        "risk_assessment": risk_assessment,
+                        "decision": decision,
+                        "reflection": reflection,
+                    }
+                }
+
+                # Store in history for session persistence
+                self._thinking_history.append(thinking_msg)
+
+                # Update think enforcement tracking
+                self._last_think_decision = decision
+                self._last_think_timestamp = time.time()
+
+                # Broadcast to connected WebSocket clients
+                if self._ws_manager:
+                    await self._ws_manager.broadcast_message("deep_agent_thinking", thinking_msg)
+
+                return {
+                    "recorded": True,
+                    "decision": decision,
+                    "proceed_to_trade": decision == "TRADE",
+                }
+
             else:
                 return {"error": f"Unknown tool: {tool_name}"}
 
         except Exception as e:
-            logger.error(f"[agent] Error executing {tool_name}: {e}")
+            logger.error(f"[deep_agent.agent] Error executing {tool_name}: {e}")
             return {"error": str(e)}
 
     async def _handle_reflection(self, trade: PendingTrade) -> Optional[ReflectionResult]:
         """Handle reflection callback from the reflection engine."""
-        logger.info(f"[agent] Reflecting on trade: {trade.ticker} ({trade.result})")
+        logger.info(f"[deep_agent.agent] Reflecting on trade: {trade.ticker} ({trade.result})")
 
         # Generate reflection prompt
         prompt = self._reflection.generate_reflection_prompt(trade)
@@ -924,6 +1228,11 @@ This file records patterns that have led to profitable trades.
             mistake = self._extract_mistake_from_response()
             pattern = self._extract_pattern_from_response()
 
+            # Increment reflection count and check for consolidation trigger
+            self._reflection_count += 1
+            if self._reflection_count % 10 == 0:
+                await self._trigger_consolidation()
+
             return ReflectionResult(
                 trade_id=trade.trade_id,
                 ticker=trade.ticker,
@@ -936,8 +1245,47 @@ This file records patterns that have led to profitable trades.
             )
 
         except Exception as e:
-            logger.error(f"[agent] Error in reflection: {e}")
+            logger.error(f"[deep_agent.agent] Error in reflection: {e}")
             return None
+
+    async def _trigger_consolidation(self) -> None:
+        """Trigger memory consolidation after multiple reflections.
+
+        Every 10 reflections, ask the agent to review learnings.md and
+        distill insights into strategy.md updates.
+        """
+        logger.info(f"[deep_agent.agent] Triggering consolidation after {self._reflection_count} reflections")
+
+        consolidation_prompt = """## Memory Consolidation Time
+
+You have completed 10 reflections since the last consolidation.
+Time to distill your learnings into actionable strategy updates.
+
+### Instructions
+1. Call read_memory("learnings.md") to review your recent insights
+2. Identify patterns or rules that should be added to strategy.md
+3. Call read_memory("strategy.md") to see your current rules
+4. Call write_memory("strategy.md", ...) with updated rules if needed
+5. Keep strategy.md concise and actionable - it's loaded every cycle
+
+Focus on:
+- New entry/exit rules discovered
+- Position sizing adjustments
+- Risk rules that worked or failed
+- Patterns worth codifying
+
+Be selective: only add rules with clear evidence from multiple trades.
+"""
+        self._conversation_history.append({
+            "role": "user",
+            "content": consolidation_prompt
+        })
+
+        try:
+            await self._run_agent_cycle("")
+            logger.info("[deep_agent.agent] Consolidation cycle completed")
+        except Exception as e:
+            logger.error(f"[deep_agent.agent] Error in consolidation: {e}")
 
     def _extract_learning_from_response(self) -> str:
         """Extract learning insight from the last assistant message."""
@@ -1057,6 +1405,13 @@ This file records patterns that have led to profitable trades.
         """Get agent statistics."""
         uptime = time.time() - self._started_at if self._started_at else 0
 
+        # Calculate cache efficiency
+        total_potential_input = self._total_input_tokens + self._total_cache_read_tokens
+        cache_hit_rate = (
+            self._total_cache_read_tokens / total_potential_input * 100
+            if total_potential_input > 0 else 0.0
+        )
+
         return {
             "running": self._running,
             "healthy": self.is_healthy(),
@@ -1068,6 +1423,15 @@ This file records patterns that have led to profitable trades.
             "tool_stats": self._tools.get_tool_stats(),
             "reflection_stats": self._reflection.get_stats(),
             "pending_trades": len(self._reflection.get_pending_trades()),
+            "circuit_breaker": self.get_circuit_breaker_status(),
+            "token_usage": {
+                "total_input_tokens": self._total_input_tokens,
+                "total_output_tokens": self._total_output_tokens,
+                "total_cache_read_tokens": self._total_cache_read_tokens,
+                "total_cache_created_tokens": self._total_cache_created_tokens,
+                "cache_hit_rate_pct": round(cache_hit_rate, 1),
+                "tokens_saved_by_cache": self._total_cache_read_tokens,
+            },
         }
 
     def get_consolidated_view(self) -> Dict[str, Any]:
@@ -1112,7 +1476,9 @@ This file records patterns that have led to profitable trades.
             "recent_thinking": list(self._thinking_history),
             "recent_tool_calls": list(self._tool_call_history),
             "recent_trades": list(self._trade_history),
+            "recent_learnings": list(self._learnings_history),
             "pending_trades": self._reflection.get_pending_trades_serializable(),
             "settlements": self._reflection.get_recent_reflections(20),
             "tool_stats": self._tools.get_tool_stats(),
+            "token_usage": stats["token_usage"],
         }

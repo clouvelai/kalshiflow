@@ -20,10 +20,11 @@ import asyncio
 import logging
 import os
 import time
+from collections import deque
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, TYPE_CHECKING
+from typing import Any, Deque, Dict, List, Literal, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ..core.websocket_manager import V3WebSocketManager
@@ -117,10 +118,31 @@ class PriceImpactItem:
     event_ticker: str
     transformation_logic: str # Explains the sentiment→impact transformation
     source_subreddit: str
-    created_at: str           # ISO timestamp
+    created_at: str           # ISO timestamp (when signal was processed)
     suggested_side: str       # "yes" or "no" based on impact direction
     source_title: str = ""    # Reddit post title for context
     context_snippet: str = "" # Text around entity mention
+    source_created_at: str = ""  # ISO timestamp of original Reddit post
+    content_type: str = ""    # Content type: text, video, link, image, social
+    source_domain: str = ""   # Source domain: youtube.com, foxnews.com, reddit.com
+    # Liquidity info (populated when liquidity gating is enabled)
+    market_spread: Optional[int] = None  # Spread in cents (None if unknown)
+    is_tradeable: bool = True  # False if spread exceeds threshold
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class FillRecord:
+    """A recorded fill from trade execution."""
+    order_id: str
+    ticker: str
+    side: str  # "yes" or "no"
+    contracts: int
+    price_cents: int
+    timestamp: float
+    reasoning: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -216,6 +238,9 @@ class DeepAgentTools:
         # Ensure memory directory exists
         self._memory_dir.mkdir(parents=True, exist_ok=True)
 
+        # Recent fills tracking for session state
+        self._recent_fills: Deque[FillRecord] = deque(maxlen=50)
+
         # Track tool usage for metrics
         self._tool_calls = {
             "get_price_impacts": 0,
@@ -229,6 +254,56 @@ class DeepAgentTools:
 
     # === Price Impact Tools (PRIMARY DATA SOURCE) ===
 
+    async def _get_market_spreads_batch(
+        self,
+        tickers: List[str],
+    ) -> Dict[str, int]:
+        """
+        Fetch spreads for multiple markets efficiently.
+
+        Args:
+            tickers: List of market tickers to fetch spreads for
+
+        Returns:
+            Dict mapping ticker -> spread in cents (or 100 if unknown/illiquid)
+        """
+        spreads: Dict[str, int] = {}
+
+        if not tickers:
+            return spreads
+
+        # Try tracked_markets first (already synced, fast)
+        if self._tracked_markets:
+            try:
+                for ticker in tickers:
+                    market = self._tracked_markets.get(ticker)
+                    if market:
+                        yes_bid = market.yes_bid if hasattr(market, 'yes_bid') else 0
+                        yes_ask = market.yes_ask if hasattr(market, 'yes_ask') else 100
+                        spreads[ticker] = yes_ask - yes_bid if yes_bid > 0 else 100
+            except Exception as e:
+                logger.warning(f"[deep_agent.tools._get_market_spreads_batch] tracked_markets error: {e}")
+
+        # For any missing tickers, try API
+        missing_tickers = [t for t in tickers if t not in spreads]
+        if missing_tickers and self._trading_client:
+            try:
+                markets = await self._trading_client.get_markets(missing_tickers)
+                for m in markets:
+                    ticker = m.get("ticker", "")
+                    yes_bid = m.get("yes_bid", 0) or 0
+                    yes_ask = m.get("yes_ask", 100) or 100
+                    spreads[ticker] = yes_ask - yes_bid if yes_bid > 0 else 100
+            except Exception as e:
+                logger.warning(f"[deep_agent.tools._get_market_spreads_batch] API error: {e}")
+
+        # Default unknown tickers to max spread (illiquid)
+        for ticker in tickers:
+            if ticker not in spreads:
+                spreads[ticker] = 100  # Assume illiquid if unknown
+
+        return spreads
+
     async def get_price_impacts(
         self,
         market_ticker: Optional[str] = None,
@@ -237,6 +312,8 @@ class DeepAgentTools:
         min_impact_magnitude: int = 30,
         limit: int = 20,
         max_age_hours: float = 2.0,
+        max_spread_cents: int = 15,
+        only_tradeable: bool = True,
     ) -> List[PriceImpactItem]:
         """
         Query recent price impact signals from the entity pipeline.
@@ -247,6 +324,10 @@ class DeepAgentTools:
 
         Uses direct Supabase query for reliability (persists across restarts).
 
+        LIQUIDITY GATING: By default, only returns signals for markets with
+        spreads <= max_spread_cents. This prevents the agent from seeing
+        signals it cannot act on (the root cause of repeated execution failures).
+
         Args:
             market_ticker: Filter by specific market
             entity_id: Filter by specific entity
@@ -254,13 +335,15 @@ class DeepAgentTools:
             min_impact_magnitude: Minimum |price_impact_score| to include
             limit: Maximum number of signals to return
             max_age_hours: Maximum signal age in hours
+            max_spread_cents: Maximum spread for tradeable markets (default: 15c)
+            only_tradeable: If True, filter out signals for illiquid markets
 
         Returns:
             List of PriceImpactItem objects sorted by created_at DESC
         """
         self._tool_calls["get_price_impacts"] += 1
         logger.info(
-            f"[get_price_impacts] market={market_ticker}, entity={entity_id}, "
+            f"[deep_agent.tools.get_price_impacts] market={market_ticker}, entity={entity_id}, "
             f"min_conf={min_confidence}, min_impact={min_impact_magnitude}, limit={limit}"
         )
 
@@ -312,64 +395,109 @@ class DeepAgentTools:
                             suggested_side="yes" if row.get("price_impact_score", 0) > 0 else "no",
                             source_title=row.get("source_title", ""),
                             context_snippet=row.get("context_snippet", ""),
+                            source_created_at=row.get("source_created_at", ""),
+                            content_type=row.get("content_type", ""),
+                            source_domain=row.get("source_domain", ""),
                         ))
-                        if len(items) >= limit:
-                            break
 
-                logger.info(f"[get_price_impacts] Returned {len(items)} signals from Supabase")
-                return items
+                logger.info(f"[deep_agent.tools.get_price_impacts] Found {len(items)} raw signals from Supabase")
+                # Don't return here - apply liquidity filter below
 
         except Exception as e:
-            logger.warning(f"[get_price_impacts] Supabase query failed: {e}")
+            logger.warning(f"[deep_agent.tools.get_price_impacts] Supabase query failed: {e}")
 
-        # Fallback: Try in-memory store if Supabase failed
-        store = self._price_impact_store
-        if store is None:
-            from ..services.price_impact_store import get_price_impact_store
-            store = get_price_impact_store()
+        # Fallback: Try in-memory store if Supabase failed (items is empty)
+        if not items:
+            store = self._price_impact_store
+            if store is None:
+                from ..services.price_impact_store import get_price_impact_store
+                store = get_price_impact_store()
 
-        if store:
-            try:
-                store_stats = store.get_stats()
+            if store:
+                try:
+                    store_stats = store.get_stats()
+                    logger.info(
+                        f"[deep_agent.tools.get_price_impacts] Store stats: {store_stats['signal_count']} signals"
+                    )
+                    signals = await store.get_impacts_for_trading(
+                        min_confidence=min_confidence,
+                        min_impact_magnitude=min_impact_magnitude,
+                        limit=limit,
+                        max_age_hours=max_age_hours,
+                    )
+
+                    for signal in signals:
+                        if market_ticker and signal.market_ticker != market_ticker:
+                            continue
+                        if entity_id and signal.entity_id != entity_id:
+                            continue
+
+                        # Format source_created_at if available
+                        source_created_at_str = ""
+                        source_created_at = getattr(signal, "source_created_at", None)
+                        if source_created_at:
+                            source_created_at_str = datetime.fromtimestamp(source_created_at).isoformat()
+
+                        items.append(PriceImpactItem(
+                            signal_id=signal.signal_id,
+                            market_ticker=signal.market_ticker,
+                            entity_id=signal.entity_id,
+                            entity_name=signal.entity_name,
+                            sentiment_score=signal.sentiment_score,
+                            price_impact_score=signal.price_impact_score,
+                            confidence=signal.confidence,
+                            market_type=signal.market_type,
+                            event_ticker=signal.event_ticker,
+                            transformation_logic=signal.transformation_logic,
+                            source_subreddit=signal.source_subreddit,
+                            created_at=datetime.fromtimestamp(signal.created_at).isoformat(),
+                            suggested_side="yes" if signal.price_impact_score > 0 else "no",
+                            source_title=getattr(signal, "source_title", ""),
+                            context_snippet=getattr(signal, "context_snippet", ""),
+                            source_created_at=source_created_at_str,
+                            content_type=getattr(signal, "content_type", ""),
+                            source_domain=getattr(signal, "source_domain", ""),
+                        ))
+
+                    logger.info(f"[deep_agent.tools.get_price_impacts] Found {len(items)} raw signals from store")
+
+                except Exception as e:
+                    logger.error(f"[deep_agent.tools.get_price_impacts] Store query error: {e}")
+
+        # === LIQUIDITY GATING ===
+        # Filter signals to only include those for tradeable markets
+        # This prevents the agent from seeing signals it cannot act on
+        if items:
+            # Get unique tickers
+            tickers = list(set(item.market_ticker for item in items))
+
+            # Fetch spreads for all tickers
+            spreads = await self._get_market_spreads_batch(tickers)
+
+            # Annotate and filter
+            filtered_items = []
+            illiquid_count = 0
+
+            for item in items:
+                spread = spreads.get(item.market_ticker, 100)
+                item.market_spread = spread
+                item.is_tradeable = spread <= max_spread_cents
+
+                if item.is_tradeable or not only_tradeable:
+                    filtered_items.append(item)
+                else:
+                    illiquid_count += 1
+
+            if illiquid_count > 0:
                 logger.info(
-                    f"[get_price_impacts] Store stats: {store_stats['signal_count']} signals"
-                )
-                signals = await store.get_impacts_for_trading(
-                    min_confidence=min_confidence,
-                    min_impact_magnitude=min_impact_magnitude,
-                    limit=limit,
-                    max_age_hours=max_age_hours,
+                    f"[deep_agent.tools.get_price_impacts] Filtered out {illiquid_count} signals on illiquid markets "
+                    f"(spread > {max_spread_cents}c)"
                 )
 
-                for signal in signals:
-                    if market_ticker and signal.market_ticker != market_ticker:
-                        continue
-                    if entity_id and signal.entity_id != entity_id:
-                        continue
+            # Apply limit to filtered results
+            items = filtered_items[:limit]
 
-                    items.append(PriceImpactItem(
-                        signal_id=signal.signal_id,
-                        market_ticker=signal.market_ticker,
-                        entity_id=signal.entity_id,
-                        entity_name=signal.entity_name,
-                        sentiment_score=signal.sentiment_score,
-                        price_impact_score=signal.price_impact_score,
-                        confidence=signal.confidence,
-                        market_type=signal.market_type,
-                        event_ticker=signal.event_ticker,
-                        transformation_logic=signal.transformation_logic,
-                        source_subreddit=signal.source_subreddit,
-                        created_at=datetime.fromtimestamp(signal.created_at).isoformat(),
-                        suggested_side="yes" if signal.price_impact_score > 0 else "no",
-                        source_title=getattr(signal, "source_title", ""),
-                        context_snippet=getattr(signal, "context_snippet", ""),
-                    ))
-
-                logger.info(f"[get_price_impacts] Returned {len(items)} signals from store")
-
-            except Exception as e:
-                logger.error(f"[get_price_impacts] Store query error: {e}")
-
+        logger.info(f"[deep_agent.tools.get_price_impacts] Returning {len(items)} tradeable signals")
         return items
 
     # === Market Tools ===
@@ -393,7 +521,7 @@ class DeepAgentTools:
             List of MarketInfo objects with current prices and spreads
         """
         self._tool_calls["get_markets"] += 1
-        logger.info(f"[get_markets] event_ticker={event_ticker}, limit={limit}")
+        logger.info(f"[deep_agent.tools.get_markets] event_ticker={event_ticker}, limit={limit}")
 
         markets = []
 
@@ -432,14 +560,14 @@ class DeepAgentTools:
                     ))
 
                 if markets:
-                    logger.info(f"[get_markets] Returned {len(markets)} markets from tracked_markets")
+                    logger.info(f"[deep_agent.tools.get_markets] Returned {len(markets)} markets from tracked_markets")
                     return markets
                 else:
-                    logger.info(f"[get_markets] No markets in tracked_markets for event={event_ticker}, trying API")
+                    logger.info(f"[deep_agent.tools.get_markets] No markets in tracked_markets for event={event_ticker}, trying API")
                     # Fall through to API fallback
 
             except Exception as e:
-                logger.warning(f"[get_markets] Error reading tracked_markets: {e}")
+                logger.warning(f"[deep_agent.tools.get_markets] Error reading tracked_markets: {e}")
                 # Fall through to API fallback
 
         # Fallback: Direct API call via trading client (for untracked events/markets)
@@ -449,11 +577,11 @@ class DeepAgentTools:
 
                 if event_ticker:
                     # Try to get event data from API (for markets not in tracked_markets)
-                    logger.info(f"[get_markets] Fetching event {event_ticker} from API")
+                    logger.info(f"[deep_agent.tools.get_markets] Fetching event {event_ticker} from API")
                     event_data = await self._trading_client.get_event(event_ticker)
                     if event_data:
                         raw_markets = event_data.get("markets", [])[:limit]
-                        logger.info(f"[get_markets] Got {len(raw_markets)} markets from event API")
+                        logger.info(f"[deep_agent.tools.get_markets] Got {len(raw_markets)} markets from event API")
 
                 # If no event_ticker or event lookup failed, try to get specific tickers
                 # from recent price impact signals
@@ -484,11 +612,11 @@ class DeepAgentTools:
                             ))
 
                             if signal_tickers:
-                                logger.info(f"[get_markets] Fetching {len(signal_tickers)} signal market tickers from API")
+                                logger.info(f"[deep_agent.tools.get_markets] Fetching {len(signal_tickers)} signal market tickers from API")
                                 raw_markets = await self._trading_client.get_markets(signal_tickers)
-                                logger.info(f"[get_markets] Got {len(raw_markets)} markets from API for signal tickers")
+                                logger.info(f"[deep_agent.tools.get_markets] Got {len(raw_markets)} markets from API for signal tickers")
                     except Exception as e:
-                        logger.warning(f"[get_markets] Could not fetch signal tickers: {e}")
+                        logger.warning(f"[deep_agent.tools.get_markets] Could not fetch signal tickers: {e}")
 
                 for m in raw_markets:
                     yes_bid = m.get("yes_bid", 0) or 0
@@ -507,13 +635,13 @@ class DeepAgentTools:
                     ))
 
                 if markets:
-                    logger.info(f"[get_markets] Returned {len(markets)} markets from API")
+                    logger.info(f"[deep_agent.tools.get_markets] Returned {len(markets)} markets from API")
                     return markets
 
             except Exception as e:
-                logger.error(f"[get_markets] API Error: {e}")
+                logger.error(f"[deep_agent.tools.get_markets] API Error: {e}")
 
-        logger.warning("[get_markets] No market data source available")
+        logger.warning("[deep_agent.tools.get_markets] No market data source available")
         return []
 
     # === News Search ===
@@ -538,7 +666,7 @@ class DeepAgentTools:
             List of NewsItem objects with title, URL, and snippet
         """
         self._tool_calls["search_news"] += 1
-        logger.info(f"[search_news] query='{query}', max_results={max_results}")
+        logger.info(f"[deep_agent.tools.search_news] query='{query}', max_results={max_results}")
 
         news_items = []
 
@@ -564,14 +692,14 @@ class DeepAgentTools:
                     relevance_score=0.5,  # Default, could be enhanced with scoring
                 ))
 
-            logger.info(f"[search_news] Found {len(news_items)} results")
+            logger.info(f"[deep_agent.tools.search_news] Found {len(news_items)} results")
             return news_items
 
         except ImportError:
-            logger.error("[search_news] duckduckgo_search not installed")
+            logger.error("[deep_agent.tools.search_news] duckduckgo_search not installed")
             return []
         except Exception as e:
-            logger.error(f"[search_news] Error: {e}")
+            logger.error(f"[deep_agent.tools.search_news] Error: {e}")
             return []
 
     # === Event Context ===
@@ -594,10 +722,10 @@ class DeepAgentTools:
             EventContextInfo with markets, risk levels, and positions, or None if not found
         """
         self._tool_calls["get_event_context"] += 1
-        logger.info(f"[get_event_context] event_ticker={event_ticker}")
+        logger.info(f"[deep_agent.tools.get_event_context] event_ticker={event_ticker}")
 
         if not self._tracked_markets:
-            logger.warning("[get_event_context] No tracked_markets available")
+            logger.warning("[deep_agent.tools.get_event_context] No tracked_markets available")
             return None
 
         # Get markets grouped by event
@@ -605,7 +733,7 @@ class DeepAgentTools:
         event_markets = markets_by_event.get(event_ticker)
 
         if not event_markets:
-            logger.warning(f"[get_event_context] Event {event_ticker} not found")
+            logger.warning(f"[deep_agent.tools.get_event_context] Event {event_ticker} not found")
             return None
 
         # Get positions from state container
@@ -676,7 +804,7 @@ class DeepAgentTools:
         )
 
         logger.info(
-            f"[get_event_context] {event_ticker}: {n_markets} markets, "
+            f"[deep_agent.tools.get_event_context] {event_ticker}: {n_markets} markets, "
             f"YES_sum={yes_sum}c, risk={risk_level}, positions={position_count}"
         )
 
@@ -767,8 +895,8 @@ class DeepAgentTools:
             TradeResult with success status and fill details
         """
         self._tool_calls["trade"] += 1
-        logger.info(f"[trade] ticker={ticker}, side={side}, contracts={contracts}")
-        logger.info(f"[trade] reasoning: {reasoning[:100]}...")
+        logger.info(f"[deep_agent.tools.trade] ticker={ticker}, side={side}, contracts={contracts}")
+        logger.info(f"[deep_agent.tools.trade] reasoning: {reasoning[:100]}...")
 
         # Validate inputs
         if contracts < 1 or contracts > 100:
@@ -832,7 +960,7 @@ class DeepAgentTools:
                     error=f"Invalid price calculated: {limit_price}c (yes_bid={yes_bid}, yes_ask={yes_ask})",
                 )
 
-            logger.info(f"[trade] Using limit price {limit_price}c for {side} (yes_bid={yes_bid}, yes_ask={yes_ask})")
+            logger.info(f"[deep_agent.tools.trade] Using limit price {limit_price}c for {side} (yes_bid={yes_bid}, yes_ask={yes_ask})")
 
             # Step 3: Place limit order through trading client
             # For buying YES/NO contracts: action is always "buy"
@@ -868,7 +996,23 @@ class DeepAgentTools:
                         "timestamp": time.strftime("%H:%M:%S"),
                     })
 
-                logger.info(f"[trade] Order placed successfully: {order_id} @ {avg_price}c")
+                logger.info(f"[deep_agent.tools.trade] Order placed successfully: {order_id} @ {avg_price}c")
+
+                # Record order fill in session tracker for P&L metrics
+                if self._state_container:
+                    order_cost_cents = contracts * limit_price
+                    self._state_container.record_order_fill(order_cost_cents, contracts)
+                    logger.info(f"[deep_agent.tools.trade] Session recorded: {contracts} contracts @ {limit_price}c = {order_cost_cents}c")
+
+                # Record fill in recent fills for session state visibility
+                self.record_fill(
+                    order_id=order_id,
+                    ticker=ticker,
+                    side=side,
+                    contracts=contracts,
+                    price_cents=avg_price or limit_price,
+                    reasoning=reasoning,
+                )
 
                 return TradeResult(
                     success=True,
@@ -880,7 +1024,7 @@ class DeepAgentTools:
                 )
             else:
                 error_msg = result.get("error") or result.get("message") or "Unknown error"
-                logger.warning(f"[trade] Order failed: {error_msg}")
+                logger.warning(f"[deep_agent.tools.trade] Order failed: {error_msg}")
                 return TradeResult(
                     success=False,
                     ticker=ticker,
@@ -890,7 +1034,7 @@ class DeepAgentTools:
                 )
 
         except Exception as e:
-            logger.error(f"[trade] Error: {e}")
+            logger.error(f"[deep_agent.tools.trade] Error: {e}")
             return TradeResult(
                 success=False,
                 ticker=ticker,
@@ -898,6 +1042,54 @@ class DeepAgentTools:
                 contracts=contracts,
                 error=str(e),
             )
+
+    # === Fill Recording ===
+
+    def record_fill(
+        self,
+        order_id: str,
+        ticker: str,
+        side: str,
+        contracts: int,
+        price_cents: int,
+        reasoning: str = "",
+    ) -> None:
+        """
+        Record a trade fill for session state tracking.
+
+        Called automatically after successful trade execution.
+
+        Args:
+            order_id: The order ID from Kalshi
+            ticker: Market ticker
+            side: "yes" or "no"
+            contracts: Number of contracts filled
+            price_cents: Fill price in cents
+            reasoning: Agent's reasoning for the trade
+        """
+        fill = FillRecord(
+            order_id=order_id,
+            ticker=ticker,
+            side=side,
+            contracts=contracts,
+            price_cents=price_cents,
+            timestamp=time.time(),
+            reasoning=reasoning[:200] if reasoning else "",
+        )
+        self._recent_fills.appendleft(fill)
+        logger.debug(f"[deep_agent.tools] Recorded fill: {ticker} {side} {contracts}@{price_cents}c")
+
+    def get_recent_fills(self, limit: int = 10) -> List[Dict[str, Any]]:
+        """
+        Get recent fills for session state.
+
+        Args:
+            limit: Maximum number of fills to return
+
+        Returns:
+            List of fill records as dicts
+        """
+        return [fill.to_dict() for fill in list(self._recent_fills)[:limit]]
 
     # === Session State ===
 
@@ -909,10 +1101,10 @@ class DeepAgentTools:
             SessionState with balance, positions, P&L, and recent activity
         """
         self._tool_calls["get_session_state"] += 1
-        logger.info("[get_session_state] Fetching session state")
+        logger.info("[deep_agent.tools.get_session_state] Fetching session state")
 
         if not self._state_container:
-            logger.warning("[get_session_state] No state container available")
+            logger.warning("[deep_agent.tools.get_session_state] No state container available")
             return SessionState(
                 balance_cents=0,
                 portfolio_value_cents=0,
@@ -958,11 +1150,11 @@ class DeepAgentTools:
                 trade_count=total_settled,
                 win_rate=win_rate,
                 positions=positions,
-                recent_fills=[],  # TODO: Add recent fills
+                recent_fills=self.get_recent_fills(limit=10),
             )
 
         except Exception as e:
-            logger.error(f"[get_session_state] Error: {e}")
+            logger.error(f"[deep_agent.tools.get_session_state] Error: {e}")
             return SessionState(
                 balance_cents=0,
                 portfolio_value_cents=0,
@@ -993,18 +1185,18 @@ class DeepAgentTools:
         safe_name = Path(filename).name
         file_path = self._memory_dir / safe_name
 
-        logger.info(f"[read_memory] Reading {safe_name}")
+        logger.info(f"[deep_agent.tools.read_memory] Reading {safe_name}")
 
         try:
             if file_path.exists():
                 content = file_path.read_text(encoding="utf-8")
-                logger.info(f"[read_memory] Read {len(content)} chars from {safe_name}")
+                logger.info(f"[deep_agent.tools.read_memory] Read {len(content)} chars from {safe_name}")
                 return content
             else:
-                logger.warning(f"[read_memory] File not found: {safe_name}")
+                logger.warning(f"[deep_agent.tools.read_memory] File not found: {safe_name}")
                 return ""
         except Exception as e:
-            logger.error(f"[read_memory] Error reading {safe_name}: {e}")
+            logger.error(f"[deep_agent.tools.read_memory] Error reading {safe_name}: {e}")
             return ""
 
     async def write_memory(self, filename: str, content: str) -> bool:
@@ -1024,7 +1216,7 @@ class DeepAgentTools:
         safe_name = Path(filename).name
         file_path = self._memory_dir / safe_name
 
-        logger.info(f"[write_memory] Writing {len(content)} chars to {safe_name}")
+        logger.info(f"[deep_agent.tools.write_memory] Writing {len(content)} chars to {safe_name}")
 
         try:
             file_path.write_text(content, encoding="utf-8")
@@ -1037,11 +1229,11 @@ class DeepAgentTools:
                     "timestamp": time.strftime("%H:%M:%S"),
                 })
 
-            logger.info(f"[write_memory] Successfully wrote {safe_name}")
+            logger.info(f"[deep_agent.tools.write_memory] Successfully wrote {safe_name}")
             return True
 
         except Exception as e:
-            logger.error(f"[write_memory] Error writing {safe_name}: {e}")
+            logger.error(f"[deep_agent.tools.write_memory] Error writing {safe_name}: {e}")
             return False
 
     async def append_memory(self, filename: str, content: str) -> bool:

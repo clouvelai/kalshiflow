@@ -765,6 +765,8 @@ class V3Coordinator:
                 event_bus=self._event_bus,
                 entity_index=self._entity_market_index,  # For market-led normalization
             )
+            # Wire reddit agent to websocket manager for entity snapshots
+            self._websocket_manager.set_reddit_agent(self._reddit_entity_agent)
 
             # 3. Initialize Price Impact Agent
             impact_config = PriceImpactAgentConfig(

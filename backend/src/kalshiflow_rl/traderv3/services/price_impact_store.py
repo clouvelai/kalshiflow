@@ -26,14 +26,21 @@ class CachedPriceImpact:
     market_ticker: str
     entity_id: str
     entity_name: str
-    sentiment_score: int  # Original entity sentiment: -100 to +100
-    price_impact_score: int  # Transformed for market type: -100 to +100
-    confidence: float  # Signal reliability: 0.0 to 1.0
+    sentiment_score: int  # Mapped from 5-point scale: -75, -40, 0, 40, 75
+    price_impact_score: int  # Transformed for market type: -75, -40, 0, 40, 75
+    confidence: float  # From LLM: 0.5, 0.7, 0.9
     market_type: str  # OUT, WIN, CONFIRM, NOMINEE
     event_ticker: str
     transformation_logic: str  # Explains the sentiment→impact transformation
     source_subreddit: str
     created_at: float  # Unix timestamp
+    source_title: str = ""  # Reddit post title for context
+    context_snippet: str = ""  # Text around entity mention
+    source_created_at: Optional[float] = None  # Original Reddit post creation time
+    source_type: str = "reddit_text"  # Source type: reddit_text, video_transcript, article_extract
+    content_type: str = "text"  # Content type: text, video, link, image, social
+    source_domain: str = "reddit.com"  # Source domain: youtube.com, foxnews.com, reddit.com
+    agent_status: str = "pending"  # Agent status: pending, viewed, traded, observed, rejected
 
 
 class PriceImpactStore:
@@ -67,6 +74,16 @@ class PriceImpactStore:
             signal_data: Dict with all CachedPriceImpact fields
         """
         try:
+            # Deduplicate: Skip if signal already exists
+            signal_id = signal_data.get("signal_id", "")
+            if signal_id and signal_id in self._signals:
+                logger.debug(f"[price_impact_store] Duplicate signal skipped: {signal_id}")
+                return
+            # Parse source_created_at if present
+            source_created_at = signal_data.get("source_created_at")
+            if source_created_at is not None:
+                source_created_at = float(source_created_at)
+
             signal = CachedPriceImpact(
                 signal_id=signal_data["signal_id"],
                 market_ticker=signal_data["market_ticker"],
@@ -80,6 +97,13 @@ class PriceImpactStore:
                 transformation_logic=signal_data["transformation_logic"],
                 source_subreddit=signal_data["source_subreddit"],
                 created_at=float(signal_data["created_at"]),
+                source_title=signal_data.get("source_title", ""),
+                context_snippet=signal_data.get("context_snippet", ""),
+                source_created_at=source_created_at,
+                source_type=signal_data.get("source_type", "reddit_text"),
+                content_type=signal_data.get("content_type", "text"),
+                source_domain=signal_data.get("source_domain", "reddit.com"),
+                agent_status=signal_data.get("agent_status", "pending"),
             )
 
             self._signals[signal.signal_id] = (signal, time.time())
@@ -248,6 +272,16 @@ class PriceImpactStore:
                     else:
                         created_at = time.time()
 
+                    # Parse source_created_at if present
+                    source_created_at = None
+                    source_created_at_str = row.get("source_created_at", "")
+                    if source_created_at_str:
+                        try:
+                            source_created_at_dt = datetime.fromisoformat(source_created_at_str.replace("Z", "+00:00"))
+                            source_created_at = source_created_at_dt.timestamp()
+                        except (ValueError, TypeError):
+                            pass
+
                     signal_data = {
                         "signal_id": signal_id,
                         "market_ticker": row.get("market_ticker", ""),
@@ -261,6 +295,13 @@ class PriceImpactStore:
                         "transformation_logic": row.get("transformation_logic", ""),
                         "source_subreddit": row.get("source_subreddit", ""),
                         "created_at": created_at,
+                        "source_title": row.get("source_title", ""),
+                        "context_snippet": row.get("context_snippet", ""),
+                        "source_created_at": source_created_at,
+                        "source_type": row.get("source_type", "reddit_text"),
+                        "content_type": row.get("content_type", "text"),
+                        "source_domain": row.get("source_domain", "reddit.com"),
+                        "agent_status": row.get("agent_status", "pending"),
                     }
 
                     # Ingest into store (skip if already exists)
@@ -287,6 +328,95 @@ class PriceImpactStore:
             "total_pruned": self._total_pruned,
             "ttl_seconds": self._ttl_seconds,
         }
+
+    def get_recent_for_snapshot(self, limit: int = 30) -> List[dict]:
+        """
+        Get recent signals for client snapshot.
+
+        Returns formatted signal data suitable for WebSocket snapshot.
+
+        Args:
+            limit: Maximum signals to return
+
+        Returns:
+            List of signal dicts sorted by recency
+        """
+        # Get all signals, sorted by created_at descending
+        signals = [signal for signal, _ in self._signals.values()]
+        signals.sort(key=lambda s: s.created_at, reverse=True)
+
+        # Convert to dicts for JSON serialization
+        result = []
+        for signal in signals[:limit]:
+            result.append({
+                "signal_id": signal.signal_id,
+                "market_ticker": signal.market_ticker,
+                "entity_id": signal.entity_id,
+                "entity_name": signal.entity_name,
+                "sentiment_score": signal.sentiment_score,
+                "price_impact_score": signal.price_impact_score,
+                "confidence": signal.confidence,
+                "market_type": signal.market_type,
+                "event_ticker": signal.event_ticker,
+                "transformation_logic": signal.transformation_logic,
+                "source_subreddit": signal.source_subreddit,
+                "source_title": signal.source_title,
+                "context_snippet": signal.context_snippet,
+                "created_at": signal.created_at,
+                "source_created_at": signal.source_created_at,
+                "source_type": signal.source_type,
+                "content_type": signal.content_type,
+                "source_domain": signal.source_domain,
+                "agent_status": signal.agent_status,
+            })
+
+        return result
+
+    def update_agent_status(self, signal_id: str, status: str) -> bool:
+        """
+        Update the agent status for a signal.
+
+        Since CachedPriceImpact is frozen, we create a new instance
+        with the updated status.
+
+        Args:
+            signal_id: The signal ID to update
+            status: New status (pending, viewed, traded, observed, rejected)
+
+        Returns:
+            True if updated, False if signal not found
+        """
+        if signal_id not in self._signals:
+            return False
+
+        old_signal, added_at = self._signals[signal_id]
+
+        # Create new signal with updated status
+        new_signal = CachedPriceImpact(
+            signal_id=old_signal.signal_id,
+            market_ticker=old_signal.market_ticker,
+            entity_id=old_signal.entity_id,
+            entity_name=old_signal.entity_name,
+            sentiment_score=old_signal.sentiment_score,
+            price_impact_score=old_signal.price_impact_score,
+            confidence=old_signal.confidence,
+            market_type=old_signal.market_type,
+            event_ticker=old_signal.event_ticker,
+            transformation_logic=old_signal.transformation_logic,
+            source_subreddit=old_signal.source_subreddit,
+            created_at=old_signal.created_at,
+            source_title=old_signal.source_title,
+            context_snippet=old_signal.context_snippet,
+            source_created_at=old_signal.source_created_at,
+            source_type=old_signal.source_type,
+            content_type=old_signal.content_type,
+            source_domain=old_signal.source_domain,
+            agent_status=status,
+        )
+
+        self._signals[signal_id] = (new_signal, added_at)
+        logger.debug(f"[price_impact_store] Updated {signal_id} status to {status}")
+        return True
 
     def clear(self) -> None:
         """Clear all signals from the store."""

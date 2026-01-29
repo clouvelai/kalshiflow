@@ -73,6 +73,11 @@ class RedditEntityAgentConfig:
     video_daily_budget_minutes: float = 60.0  # ~$0.36/day at $0.006/min
     article_max_chars: int = 10_000
 
+    # Market Impact Reasoning (for indirect market effects)
+    market_impact_reasoning_enabled: bool = True
+    market_impact_model: str = "gpt-4o-mini"
+    market_impact_max_markets: int = 50  # Max markets to include in reasoning prompt
+
     enabled: bool = True
 
 
@@ -139,8 +144,16 @@ class RedditEntityAgent(BaseAgent):
         self._content_extractor = None
         self._video_transcriber = None
 
+        # Market Impact Reasoner (for indirect market effects)
+        self._market_impact_reasoner = None
+
         # Duplicate prevention - track seen post IDs in memory
         self._seen_post_ids: set = set()
+
+        # History buffers for session persistence (snapshot on client connect)
+        from collections import deque
+        self._recent_posts: deque = deque(maxlen=30)
+        self._recent_entities: deque = deque(maxlen=50)
 
         # Stats
         self._posts_processed = 0
@@ -151,6 +164,19 @@ class RedditEntityAgent(BaseAgent):
         self._entities_normalized = 0  # Track how many were normalized to market entities
         self._related_entities_extracted = 0
         self._content_extractions = 0  # Track content extraction attempts
+        self._market_impact_reasoning_calls = 0  # Track reasoner invocations
+        self._market_impact_signals_created = 0  # Track signals from reasoner
+
+        # Startup health tracking - tracks initialization status of critical components
+        self._init_results: Dict[str, bool] = {
+            "praw": False,
+            "nlp_pipeline": False,
+            "supabase": False,
+        }
+        self._startup_health: str = "initializing"  # "healthy", "degraded", "unhealthy"
+
+        # Health broadcast task
+        self._health_broadcast_task: Optional[asyncio.Task] = None
 
     async def _on_start(self) -> None:
         """Initialize resources on agent start."""
@@ -158,20 +184,31 @@ class RedditEntityAgent(BaseAgent):
             logger.info("[reddit_entity] Agent disabled")
             return
 
-        # Initialize PRAW (Reddit API)
-        if not await self._init_praw():
+        # Initialize PRAW (Reddit API) - track result
+        self._init_results["praw"] = await self._init_praw()
+        if not self._init_results["praw"]:
             logger.warning("[reddit_entity] PRAW not available, running in mock mode")
 
-        # Initialize KB-backed NLP pipeline
-        if not await self._init_kb_pipeline():
+        # Initialize KB-backed NLP pipeline - track result
+        self._init_results["nlp_pipeline"] = await self._init_kb_pipeline()
+        if not self._init_results["nlp_pipeline"]:
             logger.warning("[reddit_entity] KB pipeline not available, entity extraction disabled")
 
-        # Initialize Supabase for persistence (enables Realtime flow)
-        if not await self._init_supabase():
+        # Initialize Supabase for persistence (enables Realtime flow) - track result
+        self._init_results["supabase"] = await self._init_supabase()
+        if not self._init_results["supabase"]:
             logger.warning("[reddit_entity] Supabase not available, entities won't persist")
         else:
             # Pre-populate seen posts from DB to avoid re-processing on restart
             await self._load_seen_posts_from_db()
+
+        # Compute startup health based on init results
+        self._startup_health = self._compute_startup_health()
+        logger.info(
+            f"[reddit_entity] Startup health: {self._startup_health} "
+            f"(praw={self._init_results['praw']}, nlp={self._init_results['nlp_pipeline']}, "
+            f"supabase={self._init_results['supabase']})"
+        )
 
         # Initialize related entity store
         if self._config.extract_related_entities:
@@ -189,8 +226,15 @@ class RedditEntityAgent(BaseAgent):
         if self._config.content_extraction_enabled:
             await self._init_content_extractor()
 
+        # Initialize market impact reasoner
+        if self._config.market_impact_reasoning_enabled:
+            await self._init_market_impact_reasoner()
+
         # Start streaming task
         self._stream_task = asyncio.create_task(self._stream_loop())
+
+        # Start health broadcast task (sends status every 5 seconds)
+        self._health_broadcast_task = asyncio.create_task(self._health_broadcast_loop())
 
         content_status = "enabled" if self._content_extractor else "disabled"
         logger.info(
@@ -198,12 +242,44 @@ class RedditEntityAgent(BaseAgent):
             f"r/{' + r/'.join(self._config.subreddits)}"
         )
 
+    def _compute_startup_health(self) -> str:
+        """
+        Compute startup health status based on initialization results.
+
+        Returns:
+            "healthy" - All critical components initialized
+            "degraded" - Some components failed but agent can run
+            "unhealthy" - Critical components failed, agent cannot function
+        """
+        praw_ok = self._init_results.get("praw", False)
+        nlp_ok = self._init_results.get("nlp_pipeline", False)
+        supabase_ok = self._init_results.get("supabase", False)
+
+        # Healthy: All critical components working
+        if praw_ok and nlp_ok and supabase_ok:
+            return "healthy"
+
+        # Unhealthy: No data source at all
+        if not praw_ok:
+            return "unhealthy"
+
+        # Degraded: PRAW works but some processing missing
+        return "degraded"
+
     async def _on_stop(self) -> None:
         """Cleanup resources on agent stop."""
         if self._stream_task and not self._stream_task.done():
             self._stream_task.cancel()
             try:
                 await self._stream_task
+            except asyncio.CancelledError:
+                pass
+
+        # Cleanup health broadcast task
+        if self._health_broadcast_task and not self._health_broadcast_task.done():
+            self._health_broadcast_task.cancel()
+            try:
+                await self._health_broadcast_task
             except asyncio.CancelledError:
                 pass
 
@@ -237,6 +313,13 @@ class RedditEntityAgent(BaseAgent):
             "entity_index_available": self._entity_index is not None,
             "batched_sentiment_active": self._sentiment_task is not None,
             "content_extraction_enabled": self._content_extractor is not None,
+            # Market Impact Reasoning stats
+            "market_impact_reasoning_enabled": self._market_impact_reasoner is not None,
+            "market_impact_reasoning_calls": self._market_impact_reasoning_calls,
+            "market_impact_signals_created": self._market_impact_signals_created,
+            # Startup health tracking
+            "init_results": self._init_results.copy(),
+            "startup_health": self._startup_health,
         }
 
         # Add content extraction sub-stats if available
@@ -420,6 +503,25 @@ class RedditEntityAgent(BaseAgent):
             logger.error(f"[reddit_entity] Content extractor init failed: {e}")
             return False
 
+    async def _init_market_impact_reasoner(self) -> bool:
+        """Initialize the Market Impact Reasoner for indirect market effects."""
+        try:
+            from ..nlp.market_impact_reasoner import MarketImpactReasoner
+
+            self._market_impact_reasoner = MarketImpactReasoner(
+                model=self._config.market_impact_model,
+                max_markets_in_prompt=self._config.market_impact_max_markets,
+            )
+            logger.info("[reddit_entity] Market Impact Reasoner initialized")
+            return True
+
+        except ImportError as e:
+            logger.warning(f"[reddit_entity] Market Impact Reasoner dependencies not available: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"[reddit_entity] Market Impact Reasoner init failed: {e}")
+            return False
+
     async def _insert_to_supabase(
         self, post_data: Dict[str, Any], entities: List[Dict[str, Any]]
     ) -> bool:
@@ -447,12 +549,37 @@ class RedditEntityAgent(BaseAgent):
                 "post_created_utc": None,  # Would need conversion from Unix timestamp
                 "entities": entities,
                 "aggregate_sentiment": aggregate_sentiment,
+                # Content extraction metadata
+                "content_type": post_data.get("content_type"),
+                "source_domain": post_data.get("source_domain"),
+                "extraction_source": post_data.get("extraction_source"),
+                "extraction_success": post_data.get("extraction_success", False),
+                "extraction_error": post_data.get("extraction_error"),
             }
 
             # Insert (upsert on post_id to handle duplicates)
-            result = await self._supabase.table("reddit_entities").upsert(
-                insert_data, on_conflict="post_id"
-            ).execute()
+            # Handle missing columns gracefully (migration may not be applied yet)
+            try:
+                result = await self._supabase.table("reddit_entities").upsert(
+                    insert_data, on_conflict="post_id"
+                ).execute()
+            except Exception as schema_error:
+                error_str = str(schema_error)
+                # If columns don't exist yet, retry without them
+                if "content_type" in error_str or "source_domain" in error_str:
+                    logger.warning(
+                        "[reddit_entity] Content metadata columns not in schema, retrying without"
+                    )
+                    insert_data.pop("content_type", None)
+                    insert_data.pop("source_domain", None)
+                    insert_data.pop("extraction_source", None)
+                    insert_data.pop("extraction_success", None)
+                    insert_data.pop("extraction_error", None)
+                    result = await self._supabase.table("reddit_entities").upsert(
+                        insert_data, on_conflict="post_id"
+                    ).execute()
+                else:
+                    raise
 
             if result.data:
                 self._posts_inserted += 1
@@ -502,6 +629,46 @@ class RedditEntityAgent(BaseAgent):
                 logger.error(f"[reddit_entity] Stream error: {e}")
                 self._record_error(str(e))
                 await asyncio.sleep(30.0)
+
+    async def _health_broadcast_loop(self) -> None:
+        """Periodically broadcast health status to frontend."""
+        while self._running:
+            try:
+                # Build health status
+                health_status = {
+                    "agent_name": "reddit_entity",
+                    "is_running": self._running,
+                    "praw_available": self._reddit is not None,
+                    "nlp_available": self._nlp is not None,
+                    "kb_available": self._kb is not None,
+                    "supabase_available": self._supabase is not None,
+                    "entity_index_available": self._entity_index is not None,
+                    "subreddits": self._config.subreddits,
+                    "posts_processed": self._posts_processed,
+                    "entities_extracted": self._entities_extracted,
+                    "posts_skipped": self._posts_skipped,
+                    "last_error": self._stats.last_error,
+                    "errors_count": self._stats.errors_count,
+                    # Extraction stats for frontend visibility
+                    "extraction_stats": self._content_extractor.get_stats() if self._content_extractor else {},
+                    "video_stats": self._video_transcriber.get_stats() if self._video_transcriber else {},
+                    "content_extractions": self._content_extractions,
+                    # Startup health tracking (new)
+                    "init_results": self._init_results.copy(),
+                    "startup_health": self._startup_health,
+                }
+
+                # Use startup_health for overall health status
+                health_status["health"] = self._startup_health
+
+                await self._broadcast_to_frontend("reddit_agent_health", health_status)
+                await asyncio.sleep(5.0)  # Broadcast every 5 seconds
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.debug(f"[reddit_entity] Health broadcast error: {e}")
+                await asyncio.sleep(5.0)
 
     async def _stream_reddit(self) -> None:
         """Stream posts from Reddit using PRAW.
@@ -567,6 +734,8 @@ class RedditEntityAgent(BaseAgent):
             }
 
             await self._broadcast_to_frontend("reddit_post", post_data)
+            # Store in history buffer for session persistence
+            self._recent_posts.appendleft(post_data)
 
             # Build combined text for entity extraction
             # Start with title + body text (for text posts)
@@ -574,16 +743,40 @@ class RedditEntityAgent(BaseAgent):
             if selftext:
                 combined_text = f"{title}\n\n{selftext}"
 
+            # Track extraction metadata for persistence
+            extraction_meta = {
+                "content_type": "text",  # Default to text
+                "source_domain": "reddit.com",  # Default to reddit
+                "extraction_source": "selftext" if selftext else "none",
+                "extraction_success": bool(selftext),
+                "extraction_error": None,
+            }
+
             # Extract additional content from URL (video transcription, article text)
             if self._content_extractor and url:
                 extracted = await self._content_extractor.extract(url, selftext)
+                # Update extraction metadata from result
+                extraction_meta["content_type"] = extracted.content_type
+                extraction_meta["source_domain"] = extracted.source_domain
+                extraction_meta["extraction_source"] = extracted.source or "none"
+                extraction_meta["extraction_success"] = extracted.success
+                extraction_meta["extraction_error"] = extracted.error
+
                 if extracted.success and extracted.text:
                     self._content_extractions += 1
                     combined_text = f"{combined_text}\n\n{extracted.text}"
                     logger.info(
                         f"[reddit_entity] Extracted {extracted.content_type} content "
-                        f"({len(extracted.text)} chars) from {url[:50]}..."
+                        f"({len(extracted.text)} chars) from {extracted.source_domain}"
                     )
+                elif extracted.error:
+                    logger.debug(
+                        f"[reddit_entity] Extraction failed for {extracted.source_domain}: "
+                        f"{extracted.error}"
+                    )
+
+            # Add extraction metadata to post_data for persistence
+            post_data.update(extraction_meta)
 
             # Extract entities using KB-backed pipeline
             entities = []
@@ -596,6 +789,8 @@ class RedditEntityAgent(BaseAgent):
             for entity in entities:
                 self._entities_extracted += 1
                 await self._broadcast_to_frontend("entity_extracted", entity)
+                # Store in history buffer for session persistence
+                self._recent_entities.appendleft(entity)
 
             # Process related entities (second-hand signals)
             for related in related_entities:
@@ -609,6 +804,17 @@ class RedditEntityAgent(BaseAgent):
                 )
                 # Insert into Supabase (triggers Realtime for Price Impact Agent)
                 await self._insert_to_supabase(post_data, entities)
+
+            # Run Market Impact Reasoning for indirect market effects
+            # This catches impacts that direct entity→market mapping misses
+            # (e.g., ICE shooting → government shutdown market)
+            if self._market_impact_reasoner and self._entity_index:
+                await self._run_market_impact_reasoning(
+                    combined_text,
+                    entities,
+                    related_entities,
+                    post_data,
+                )
 
         except Exception as e:
             logger.error(f"[reddit_entity] Process error: {e}")
@@ -668,7 +874,7 @@ class RedditEntityAgent(BaseAgent):
                         "matched_text": ent.text,
                     })
 
-                elif ent.label_ in {"PERSON", "ORG", "GPE", "EVENT"}:
+                elif ent.label_ in {"PERSON", "ORG", "GPE", "EVENT", "NORP"}:
                     # Related entity (for second-hand signals)
                     if self._config.extract_related_entities:
                         from ..schemas.entity_schemas import normalize_entity_id
@@ -765,6 +971,150 @@ class RedditEntityAgent(BaseAgent):
 
         return market_entities, related_entities
 
+    async def _run_market_impact_reasoning(
+        self,
+        content: str,
+        market_entities: List[Dict[str, Any]],
+        related_entities: List[Dict[str, Any]],
+        post_data: Dict[str, Any],
+    ) -> None:
+        """
+        Run Market Impact Reasoning for indirect market effects.
+
+        This catches market impacts that direct entity→market mapping misses.
+        Example: "ICE shooting in Minnesota" → government shutdown market.
+
+        Args:
+            content: Combined text content
+            market_entities: Already-extracted market entities
+            related_entities: Already-extracted related entities
+            post_data: Post metadata
+        """
+        if not self._market_impact_reasoner or not self._entity_index:
+            return
+
+        try:
+            from ..nlp.market_impact_reasoner import (
+                MarketInfo,
+                should_analyze_for_market_impact,
+            )
+
+            # Build entity list for filter check and reasoner
+            all_entities = []
+            for e in market_entities:
+                all_entities.append((e.get("canonical_name", ""), "MARKET_ENTITY"))
+            for e in related_entities:
+                all_entities.append((e.get("entity_text", ""), e.get("entity_type", "")))
+
+            # Calculate average sentiment magnitude
+            sentiments = [abs(e.get("sentiment_score", 0)) for e in market_entities]
+            sentiments.extend([abs(e.get("sentiment_score", 0)) for e in related_entities])
+            avg_sentiment_magnitude = sum(sentiments) / len(sentiments) if sentiments else 0
+
+            # Check if content qualifies for market impact reasoning
+            if not should_analyze_for_market_impact(
+                content=content,
+                entities=all_entities,
+                avg_sentiment_magnitude=avg_sentiment_magnitude,
+                entity_mapped_count=len(market_entities),
+            ):
+                logger.debug("[reddit_entity] Content does not qualify for market impact reasoning")
+                return
+
+            # Get all markets from EntityMarketIndex
+            all_markets_data = self._entity_index.get_all_markets_for_reasoner()
+            if not all_markets_data:
+                logger.debug("[reddit_entity] No markets available for impact reasoning")
+                return
+
+            # Convert to MarketInfo objects
+            active_markets = [
+                MarketInfo(
+                    ticker=m["ticker"],
+                    title=m["title"],
+                    event_ticker=m.get("event_ticker", ""),
+                )
+                for m in all_markets_data
+            ]
+
+            # Get tickers already handled by entity mapping (to exclude from reasoning)
+            exclude_tickers = [e.get("market_ticker", "") for e in market_entities if e.get("market_ticker")]
+
+            # Run the reasoner
+            self._market_impact_reasoning_calls += 1
+            results = await self._market_impact_reasoner.analyze(
+                content=content,
+                entities=all_entities,
+                active_markets=active_markets,
+                exclude_tickers=exclude_tickers,
+            )
+
+            if not results:
+                logger.debug(f"[reddit_entity] No market impacts found for post {post_data.get('post_id')}")
+                return
+
+            logger.info(
+                f"[reddit_entity] 🎯 Market Impact Reasoning found {len(results)} indirect impacts "
+                f"for post {post_data.get('post_id')}"
+            )
+
+            # Process and persist results
+            for impact in results:
+                self._market_impact_signals_created += 1
+
+                # Broadcast to frontend
+                impact_data = {
+                    **impact,
+                    "source_post_id": post_data.get("post_id"),
+                    "source_subreddit": post_data.get("subreddit"),
+                    "source_title": post_data.get("title"),
+                }
+                await self._broadcast_to_frontend("market_impact_reasoning", impact_data)
+
+                # Persist to Supabase market_price_impacts table
+                await self._insert_market_impact_signal(impact_data)
+
+        except Exception as e:
+            logger.error(f"[reddit_entity] Market impact reasoning error: {e}")
+
+    async def _insert_market_impact_signal(self, impact_data: Dict[str, Any]) -> bool:
+        """Insert a market impact reasoning signal into Supabase."""
+        if not self._supabase:
+            return False
+
+        try:
+            import time
+
+            insert_data = {
+                "source_post_id": impact_data.get("source_post_id", ""),
+                "source_subreddit": impact_data.get("source_subreddit", ""),
+                "entity_id": "market_impact_reasoning",  # Special marker
+                "entity_name": "Indirect Impact",
+                "market_ticker": impact_data.get("market_ticker", ""),
+                "event_ticker": impact_data.get("event_ticker", ""),
+                "market_type": "REASONED",  # Mark as reasoned (not entity-based)
+                "sentiment_score": 0,  # Not applicable for reasoned signals
+                "price_impact_score": impact_data.get("price_impact_score", 0),
+                "confidence": impact_data.get("confidence_float", 0.5),
+                "transformation_logic": impact_data.get("reasoning", ""),
+                "source_title": impact_data.get("source_title", ""),
+                "content_type": "market_impact_reasoning",
+                "source_domain": "reddit.com",
+            }
+
+            result = await self._supabase.table("market_price_impacts").insert(insert_data).execute()
+
+            if result.data:
+                logger.debug(
+                    f"[reddit_entity] Inserted market impact signal for {impact_data.get('market_ticker')}"
+                )
+                return True
+            return False
+
+        except Exception as e:
+            logger.error(f"[reddit_entity] Market impact signal insert error: {e}")
+            return False
+
     async def _get_sentiment(self, context: str, entity: str) -> int:
         """Get sentiment score for an entity in context using LLM."""
         try:
@@ -800,3 +1150,24 @@ Respond with ONLY a number between -100 and 100."""
         except Exception as e:
             logger.debug(f"[reddit_entity] Sentiment error for {entity}: {e}")
             return 0  # Neutral on error
+
+    def get_entity_snapshot(self) -> Dict[str, Any]:
+        """
+        Get entity pipeline snapshot for new client initialization.
+
+        Returns a snapshot containing recent posts and entities for
+        session persistence across page refreshes.
+
+        Returns:
+            Dict containing recent_posts, recent_entities, stats, and is_active
+        """
+        return {
+            "reddit_posts": list(self._recent_posts),
+            "entities": list(self._recent_entities),
+            "stats": {
+                # Use camelCase to match frontend expectations
+                "postsProcessed": self._posts_processed,
+                "entitiesExtracted": self._entities_extracted,
+            },
+            "is_active": self._running,
+        }

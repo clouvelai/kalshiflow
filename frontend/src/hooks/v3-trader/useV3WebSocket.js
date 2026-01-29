@@ -85,6 +85,26 @@ const INITIAL_ENTITY_STATE = {
 };
 
 /**
+ * Initial state for Reddit agent health status
+ */
+const INITIAL_REDDIT_AGENT_HEALTH = {
+  health: 'unknown', // 'healthy', 'degraded', 'unhealthy', 'unknown'
+  isRunning: false,
+  prawAvailable: false,
+  nlpAvailable: false,
+  kbAvailable: false,
+  supabaseAvailable: false,
+  subreddits: [],
+  postsProcessed: 0,
+  errorsCount: 0,
+  lastError: null,
+  // Extraction stats
+  extractionStats: {},
+  videoStats: {},
+  contentExtractions: 0,
+};
+
+/**
  * Initial state for entity index (Canonical entities with aliases)
  */
 const INITIAL_ENTITY_INDEX = {
@@ -120,9 +140,14 @@ export const useV3WebSocket = ({ onMessage }) => {
   const [entityPriceImpacts, setEntityPriceImpacts] = useState([]);
   const [entityStats, setEntityStats] = useState(INITIAL_ENTITY_STATE.stats);
   const [entitySystemActive, setEntitySystemActive] = useState(false);
+  const [redditAgentHealth, setRedditAgentHealth] = useState(INITIAL_REDDIT_AGENT_HEALTH);
 
   // Entity Index state (Canonical entities with aliases)
   const [entityIndex, setEntityIndex] = useState(INITIAL_ENTITY_INDEX);
+
+  // Related Entities state (PERSON, ORG, GPE, EVENT from spaCy NER - not in KB)
+  const [relatedEntities, setRelatedEntities] = useState([]);
+
   const [newSettlement, setNewSettlement] = useState(null);
   const [newOrderFill, setNewOrderFill] = useState(null);
   const [newTtlCancellation, setNewTtlCancellation] = useState(null);
@@ -706,7 +731,7 @@ export const useV3WebSocket = ({ onMessage }) => {
         break;
 
       case 'entity_extracted':
-        // Entity extracted from a post with sentiment
+        // Entity extracted from a post with sentiment (MARKET_ENTITY - in KB)
         if (data.data?.entity_id) {
           setEntityExtractions(prev => {
             // Check for duplicates
@@ -718,6 +743,22 @@ export const useV3WebSocket = ({ onMessage }) => {
             ...prev,
             entitiesExtracted: prev.entitiesExtracted + 1,
           }));
+        }
+        break;
+
+      case 'related_entity':
+        // Related entity from spaCy NER (PERSON, ORG, GPE, EVENT - NOT in KB)
+        // These are entities detected but not linked to any Kalshi market
+        if (data.data?.normalized_id) {
+          setRelatedEntities(prev => {
+            // Check for duplicates using source_post_id + normalized_id
+            const key = `${data.data.source_post_id}_${data.data.normalized_id}`;
+            if (prev.some(e => `${e.source_post_id}_${e.normalized_id}` === key)) return prev;
+            return [data.data, ...prev].slice(0, 100); // Keep max 100
+          });
+          console.log(
+            `[useV3WebSocket] Related entity: ${data.data.entity_text} (${data.data.entity_type})`
+          );
         }
         break;
 
@@ -758,6 +799,30 @@ export const useV3WebSocket = ({ onMessage }) => {
             ...prev,
             ...data.data.stats,
           }));
+        }
+        break;
+
+      case 'reddit_agent_health':
+        // Reddit agent health status update (periodic broadcast)
+        if (data.data) {
+          setRedditAgentHealth({
+            health: data.data.health || 'unknown',
+            isRunning: data.data.is_running || false,
+            prawAvailable: data.data.praw_available || false,
+            nlpAvailable: data.data.nlp_available || false,
+            kbAvailable: data.data.kb_available || false,
+            supabaseAvailable: data.data.supabase_available || false,
+            entityIndexAvailable: data.data.entity_index_available || false,
+            subreddits: data.data.subreddits || [],
+            postsProcessed: data.data.posts_processed || 0,
+            entitiesExtracted: data.data.entities_extracted || 0,
+            errorsCount: data.data.errors_count || 0,
+            lastError: data.data.last_error || null,
+            // Extraction stats for visibility panel
+            extractionStats: data.data.extraction_stats || {},
+            videoStats: data.data.video_stats || {},
+            contentExtractions: data.data.content_extractions || 0,
+          });
         }
         break;
 
@@ -996,6 +1061,9 @@ export const useV3WebSocket = ({ onMessage }) => {
     entityPriceImpacts,
     entityStats,
     entitySystemActive,
+    redditAgentHealth,
+    // Related Entities (spaCy NER - not in KB)
+    relatedEntities,
     // Entity Index (Canonical entities with aliases)
     entityIndex,
   };

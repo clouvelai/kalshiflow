@@ -106,6 +106,11 @@ class PriceImpactAgent(BaseAgent):
         self._entities_skipped = 0
         self._reconnect_attempts = 0
 
+        # Health monitoring for silent disconnect detection
+        self._last_signal_time: Optional[float] = None
+        self._signal_timeout_seconds: float = 300.0  # 5 minutes without signal = reconnect
+        self._health_check_interval: float = 60.0  # Check health every 60 seconds
+
         # Callback for external signal handling
         self._signal_callback: Optional[Callable[[PriceImpactSignal], None]] = None
 
@@ -162,6 +167,11 @@ class PriceImpactAgent(BaseAgent):
 
     def _get_agent_stats(self) -> Dict[str, Any]:
         """Get agent-specific statistics."""
+        # Calculate seconds since last signal for health monitoring
+        seconds_since_signal = None
+        if self._last_signal_time is not None:
+            seconds_since_signal = time.time() - self._last_signal_time
+
         return {
             "entities_received": self._entities_received,
             "impacts_created": self._impacts_created,
@@ -169,6 +179,9 @@ class PriceImpactAgent(BaseAgent):
             "reconnect_attempts": self._reconnect_attempts,
             "supabase_connected": self._channel is not None,
             "entity_index_available": self._entity_index is not None,
+            "last_signal_time": self._last_signal_time,
+            "seconds_since_signal": seconds_since_signal,
+            "signal_timeout_seconds": self._signal_timeout_seconds,
         }
 
     async def _init_supabase(self) -> bool:
@@ -199,14 +212,37 @@ class PriceImpactAgent(BaseAgent):
             return False
 
     async def _subscription_loop(self) -> None:
-        """Main subscription loop with reconnection handling."""
+        """Main subscription loop with reconnection handling and health monitoring."""
         while self._running:
             try:
                 await self._subscribe_to_entities()
 
-                # Keep subscription alive
+                # Keep subscription alive with health monitoring
+                health_check_counter = 0
                 while self._running and self._channel:
                     await asyncio.sleep(1.0)
+                    health_check_counter += 1
+
+                    # Health check every 60 seconds
+                    if health_check_counter >= self._health_check_interval:
+                        health_check_counter = 0
+
+                        # Check for silent disconnect (no signals for 5+ minutes)
+                        if self._last_signal_time is not None:
+                            seconds_since_signal = time.time() - self._last_signal_time
+                            if seconds_since_signal > self._signal_timeout_seconds:
+                                logger.warning(
+                                    f"[price_impact] No signals for {seconds_since_signal:.0f}s "
+                                    f"(timeout: {self._signal_timeout_seconds}s), forcing reconnect"
+                                )
+                                # Force reconnect by breaking inner loop
+                                if self._channel:
+                                    try:
+                                        await self._channel.unsubscribe()
+                                    except Exception:
+                                        pass
+                                    self._channel = None
+                                break
 
             except asyncio.CancelledError:
                 break
@@ -291,10 +327,14 @@ class PriceImpactAgent(BaseAgent):
             self._entities_received += 1
             self._record_event_processed()
 
+            # Update health monitoring - track when we last received a signal
+            self._last_signal_time = time.time()
+
             db_id = record.get("id")
             post_id = record.get("post_id", "")
             subreddit = record.get("subreddit", "")
             title = record.get("title", "")
+            post_created_utc = record.get("post_created_utc")  # Original Reddit timestamp
             entities_data = record.get("entities", [])
 
             if not entities_data:
@@ -344,6 +384,17 @@ class PriceImpactAgent(BaseAgent):
                     )
                     continue
 
+                # Get context_snippet from entity data if available
+                if isinstance(entity_data, dict):
+                    context_snippet = entity_data.get("context_snippet", "")
+                else:
+                    context_snippet = getattr(entity_data, "context_snippet", "")
+
+                # Get source metadata from record (set by reddit_entity_agent)
+                source_type = record.get("source_type", "reddit_text")
+                content_type = record.get("content_type", "text")
+                source_domain = record.get("source_domain", "reddit.com")
+
                 # Create price impact for each market
                 for mapping in markets:
                     # Compute price impact based on market type
@@ -367,7 +418,14 @@ class PriceImpactAgent(BaseAgent):
                         "suggested_side": suggested_side,
                         "source_post_id": post_id,
                         "source_subreddit": subreddit,
+                        "source_title": title,  # Reddit post title for context
+                        "context_snippet": context_snippet,  # Text around entity mention
                         "created_at": time.time(),
+                        "source_created_at": post_created_utc,  # Original Reddit post timestamp
+                        "source_type": source_type,  # reddit_text, video_transcript, article_extract
+                        "content_type": content_type,  # text, video, link, image, social
+                        "source_domain": source_domain,  # youtube.com, foxnews.com, reddit.com
+                        "agent_status": "pending",  # Default status, updated by deep agent
                     }
 
                     # Ingest to in-memory store for fast DeepAgent queries
@@ -385,7 +443,14 @@ class PriceImpactAgent(BaseAgent):
                             "event_ticker": signal_data["event_ticker"],
                             "transformation_logic": signal_data["transformation_logic"],
                             "source_subreddit": signal_data["source_subreddit"],
+                            "source_title": signal_data["source_title"],
+                            "context_snippet": signal_data["context_snippet"],
                             "created_at": signal_data["created_at"],
+                            "source_created_at": signal_data["source_created_at"],
+                            "source_type": signal_data["source_type"],
+                            "content_type": signal_data["content_type"],
+                            "source_domain": signal_data["source_domain"],
+                            "agent_status": signal_data["agent_status"],
                         })
                     except Exception as e:
                         logger.warning(f"[price_impact] Store ingest failed: {e}")
@@ -415,9 +480,12 @@ class PriceImpactAgent(BaseAgent):
                                 entity_id=entity_id,
                                 canonical_name=canonical_name,
                                 reddit_stats={
-                                    "total_mentions": entity.reddit_mentions,
+                                    # Use consistent field names (mention_count for frontend)
+                                    "mention_count": entity.reddit_mentions,
                                     "aggregate_sentiment": entity.aggregate_sentiment,
                                     "last_signal_at": entity.last_reddit_signal,
+                                    # Keep total_mentions for backward compatibility
+                                    "total_mentions": entity.reddit_mentions,
                                 },
                             )
 
@@ -453,6 +521,8 @@ class PriceImpactAgent(BaseAgent):
             return False
 
         try:
+            from datetime import datetime, timezone
+
             # Build insert payload matching table schema
             insert_data = {
                 "source_post_id": signal_data.get("source_post_id", ""),
@@ -466,14 +536,43 @@ class PriceImpactAgent(BaseAgent):
                 "price_impact_score": int(signal_data.get("price_impact_score", 0)),
                 "confidence": float(signal_data.get("confidence", 0.5)),
                 "transformation_logic": signal_data.get("transformation_logic", ""),
+                "source_title": signal_data.get("source_title", ""),
+                "context_snippet": signal_data.get("context_snippet", ""),
+                "content_type": signal_data.get("content_type", ""),
+                "source_domain": signal_data.get("source_domain", ""),
             }
+
+            # Add source_created_at if available (convert Unix timestamp to ISO)
+            source_created_at = signal_data.get("source_created_at")
+            if source_created_at is not None:
+                try:
+                    insert_data["source_created_at"] = datetime.fromtimestamp(
+                        float(source_created_at), tz=timezone.utc
+                    ).isoformat()
+                except (ValueError, TypeError, OSError):
+                    pass  # Skip if timestamp is invalid
 
             # Add reddit_entity_id reference if available
             if reddit_entity_id:
                 insert_data["reddit_entity_id"] = str(reddit_entity_id)
 
             # Insert into table (using async client)
-            result = await self._supabase.table("market_price_impacts").insert(insert_data).execute()
+            try:
+                result = await self._supabase.table("market_price_impacts").insert(insert_data).execute()
+            except Exception as schema_error:
+                # Handle missing columns gracefully (migration not yet applied)
+                error_str = str(schema_error)
+                optional_columns = ["context_snippet", "source_title", "source_created_at", "content_type", "source_domain"]
+                if any(col in error_str for col in optional_columns):
+                    logger.warning(
+                        "[price_impact] New columns not in schema, retrying without optional columns"
+                    )
+                    # Remove optional columns and retry
+                    for col in optional_columns:
+                        insert_data.pop(col, None)
+                    result = await self._supabase.table("market_price_impacts").insert(insert_data).execute()
+                else:
+                    raise
 
             if result.data:
                 logger.info(

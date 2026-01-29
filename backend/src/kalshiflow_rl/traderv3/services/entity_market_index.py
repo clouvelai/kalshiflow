@@ -16,7 +16,9 @@ Key functionality:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
 import re
 import time
 from dataclasses import dataclass, field
@@ -36,6 +38,7 @@ from ..nlp.knowledge_base import (
 
 if TYPE_CHECKING:
     from ..clients.trading_client_integration import V3TradingClientIntegration
+    from openai import AsyncOpenAI
 
 logger = logging.getLogger("kalshiflow_rl.traderv3.services.entity_market_index")
 
@@ -50,6 +53,8 @@ MARKET_TYPE_PATTERNS = {
         r"step.?down",
         r"fired",
         r"removed",
+        r"shutdown",
+        r"shut.*down",
     ],
     "CONFIRM": [
         r"confirm",
@@ -61,6 +66,7 @@ MARKET_TYPE_PATTERNS = {
         r"\bwin\b",
         r"winner",
         r"victory",
+        r"elect",
     ],
     "NOMINEE": [
         r"nomin",
@@ -72,51 +78,23 @@ MARKET_TYPE_PATTERNS = {
         r"president",
         r"potus",
         r"oval.?office",
+        r"trump",
+        r"biden",
+    ],
+    "MENTION": [
+        r"mention",
+        r"tweet",
+        r"truth.*social",
+        r"statement",
     ],
 }
 
 # ============================================================================
-# Political Nicknames Lookup Table
+# LLM-Generated Alias System
 # ============================================================================
-# Maps canonical names to common nicknames/aliases for entity matching.
-# These are used in addition to the algorithmically-generated aliases.
-
-POLITICAL_NICKNAMES: Dict[str, Set[str]] = {
-    # US Political Figures
-    "donald trump": {"the donald", "djt", "45", "potus", "trump", "donald j trump", "president trump"},
-    "joe biden": {"biden", "joe", "46", "potus", "president biden", "sleepy joe"},
-    "kamala harris": {"harris", "kamala", "vp", "vice president harris"},
-    "elizabeth warren": {"liz warren", "pocahontas", "warren", "senator warren"},
-    "pete hegseth": {"hegseth", "pete"},
-    "marco rubio": {"rubio", "marco", "senator rubio", "little marco"},
-    "ted cruz": {"cruz", "ted", "senator cruz", "rafael cruz"},
-    "bernie sanders": {"bernie", "sanders", "senator sanders"},
-    "nancy pelosi": {"pelosi", "speaker pelosi"},
-    "mitch mcconnell": {"mcconnell", "mitch", "senator mcconnell"},
-    "kevin mccarthy": {"mccarthy", "speaker mccarthy"},
-    "mike johnson": {"johnson", "speaker johnson"},
-    "kristi noem": {"noem", "kristi", "governor noem"},
-    "pam bondi": {"bondi", "pam", "ag bondi", "attorney general bondi"},
-    "tulsi gabbard": {"gabbard", "tulsi"},
-    "robert kennedy": {"rfk", "rfk jr", "kennedy", "bobby kennedy"},
-    "vivek ramaswamy": {"vivek", "ramaswamy"},
-    "ron desantis": {"desantis", "ron", "governor desantis"},
-    "gavin newsom": {"newsom", "gavin", "governor newsom"},
-    "elon musk": {"musk", "elon"},
-    "jd vance": {"vance", "jd", "senator vance"},
-
-    # International Leaders
-    "vladimir putin": {"putin", "vladimir"},
-    "xi jinping": {"xi", "jinping", "president xi"},
-    "benjamin netanyahu": {"netanyahu", "bibi"},
-    "emmanuel macron": {"macron", "emmanuel"},
-    "olaf scholz": {"scholz", "olaf"},
-    "keir starmer": {"starmer", "keir"},
-    "justin trudeau": {"trudeau", "justin"},
-    "narendra modi": {"modi", "narendra"},
-    "pope francis": {"francis", "pope", "the pope"},
-    "ali khamenei": {"khamenei", "ayatollah", "supreme leader"},
-}
+# Instead of hardcoded nicknames, aliases are now generated dynamically
+# by an LLM and cached in Supabase for persistence.
+# See EntityMarketIndex._generate_llm_aliases() for the implementation.
 
 # Common title prefixes to strip from names
 TITLE_PREFIXES = [
@@ -149,7 +127,11 @@ def detect_market_type(event_title: str, market_ticker: str) -> str:
     return "UNKNOWN"
 
 
-def build_aliases(canonical_name: str, entity_type: str = "person") -> Set[str]:
+def build_aliases(
+    canonical_name: str,
+    entity_type: str = "person",
+    llm_aliases: Optional[Set[str]] = None,
+) -> Set[str]:
     """
     Build comprehensive alias set from canonical name.
 
@@ -158,11 +140,12 @@ def build_aliases(canonical_name: str, entity_type: str = "person") -> Set[str]:
     - Individual name parts
     - Initials for people
     - Title-stripped versions
-    - Known nicknames from lookup table
+    - LLM-generated aliases (if provided)
 
     Args:
         canonical_name: The canonical entity name (e.g., "Donald Trump")
         entity_type: Entity type ("person", "organization", "position")
+        llm_aliases: Optional set of LLM-generated aliases to merge
 
     Returns:
         Set of aliases for matching
@@ -198,8 +181,9 @@ def build_aliases(canonical_name: str, entity_type: str = "person") -> Set[str]:
                 # Also add normalized version of stripped name
                 aliases.add(normalize_entity_id(stripped))
 
-    # Common nicknames from lookup table
-    aliases.update(POLITICAL_NICKNAMES.get(name_lower, set()))
+    # Merge LLM-generated aliases if provided
+    if llm_aliases:
+        aliases.update(llm_aliases)
 
     return aliases
 
@@ -271,22 +255,13 @@ class EntityMarketIndexConfig:
 
     refresh_interval_seconds: float = 300.0  # 5 minutes
     min_confidence: float = 0.6  # Minimum mapping confidence
-    series_filters: List[str] = field(default_factory=lambda: [
-        # Production series (US politics)
-        "KXCABINET",
-        "KXPRES",
-        "KXSENATE",
-        "KXHOUSE",
-        # Demo API series (international politics/leaders)
-        "KXNEWPOPE",
-        "KXXISUCCESSOR",
-        "KXNEXTISRAELPM",
-        "KXNEXTIRANLEADER",
-        "KXLALEADEROUT",
-        "KXG7LEADEROUT",
-        "KXAFRICALEADEROUT",
-        "KXNEXTSPEAKER",
-    ])
+
+    # Dynamic category-based discovery (no hardcoded series!)
+    categories: List[str] = field(default_factory=lambda: ["Politics"])
+    sports_prefixes: List[str] = field(default_factory=list)  # e.g., ["KXNFL"]
+    min_hours_to_settlement: float = 4.0
+    max_days_to_settlement: int = 30
+
     exclude_patterns: List[str] = field(default_factory=lambda: [
         r"^test",
         r"^demo",
@@ -340,6 +315,9 @@ class EntityMarketIndex:
         # Name variations for fuzzy matching: variation -> entity_id
         self._name_variations: Dict[str, str] = {}
 
+        # All markets cache (for MarketImpactReasoner - includes markets without entities)
+        self._all_markets_cache: List[Dict[str, Any]] = []
+
         # Alias lookup: alias -> entity_id (comprehensive alias matching)
         self._alias_lookup: Dict[str, str] = {}
 
@@ -353,9 +331,22 @@ class EntityMarketIndex:
         self._total_markets = 0
         self._refresh_count = 0
         self._total_aliases = 0
+        self._llm_aliases_generated = 0
 
         # spaCy Knowledge Base (for NLP pipeline integration)
         self._kb: Optional[KalshiKnowledgeBase] = None
+        self._kb_lock = asyncio.Lock()  # Protects KB access during refresh
+
+        # LLM client for alias generation
+        self._llm_client: Optional["AsyncOpenAI"] = None
+        self._llm_alias_model: str = "gpt-4o-mini"
+
+        # In-memory alias cache: entity_id -> set of LLM-generated aliases
+        # This is populated from Supabase on startup and updated on generation
+        self._llm_alias_cache: Dict[str, Set[str]] = {}
+
+        # Supabase client for alias persistence (lazy initialized)
+        self._supabase = None
 
     async def build_index(
         self,
@@ -370,32 +361,13 @@ class EntityMarketIndex:
 
         Args:
             trading_client: Kalshi trading client for API access
-            categories: Optional list of categories to filter (e.g., ["Politics"])
+            categories: Categories to filter (e.g., ["Politics"]) - uses config default if not specified
         """
         if trading_client:
             self._trading_client = trading_client
 
         if categories:
-            # Map categories to series filters
-            category_series_map = {
-                "politics": [
-                    # Production series (US politics)
-                    "KXCABINET", "KXPRES", "KXSENATE", "KXHOUSE",
-                    # Demo API series (international politics/leaders)
-                    "KXNEWPOPE", "KXXISUCCESSOR", "KXNEXTISRAELPM",
-                    "KXNEXTIRANLEADER", "KXLALEADEROUT", "KXG7LEADEROUT",
-                    "KXAFRICALEADEROUT", "KXNEXTSPEAKER",
-                ],
-                "media_mentions": [],
-                "entertainment": [],
-                "crypto": [],
-                "sports": ["KXNFL", "KXNBA", "KXMLB"],
-            }
-            series_filters = []
-            for cat in categories:
-                series_filters.extend(category_series_map.get(cat.lower(), []))
-            if series_filters:
-                self._config.series_filters = series_filters
+            self._config.categories = categories
 
         await self._refresh_index()
         logger.info(
@@ -415,6 +387,9 @@ class EntityMarketIndex:
 
         logger.info("[entity_index] Starting entity-market index service")
         self._running = True
+
+        # Load cached LLM aliases from Supabase
+        await self._load_cached_aliases()
 
         # Initial build
         await self._refresh_index()
@@ -444,6 +419,159 @@ class EntityMarketIndex:
 
         logger.info("[entity_index] Stopped")
 
+    # =========================================================================
+    # LLM Alias Generation
+    # =========================================================================
+
+    def _get_llm_client(self) -> "AsyncOpenAI":
+        """Get or create async OpenAI client for alias generation."""
+        if self._llm_client is None:
+            from openai import AsyncOpenAI
+            self._llm_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        return self._llm_client
+
+    def _get_supabase_client(self):
+        """Get or create Supabase client for alias persistence."""
+        if self._supabase is None:
+            from supabase import create_client
+            url = os.getenv("SUPABASE_URL") or os.getenv("DATABASE_URL", "").replace(
+                "postgresql://", "https://"
+            ).split("?")[0].replace(":5432", "")
+            key = os.getenv("SUPABASE_SERVICE_KEY") or os.getenv("SUPABASE_ANON_KEY", "")
+            if url and key:
+                self._supabase = create_client(url, key)
+        return self._supabase
+
+    async def _load_cached_aliases(self) -> None:
+        """Load LLM-generated aliases from Supabase into memory cache."""
+        try:
+            supabase = self._get_supabase_client()
+            if not supabase:
+                logger.debug("[entity_index] No Supabase client for alias cache")
+                return
+
+            # Fetch all cached aliases
+            response = supabase.table("entity_aliases").select("*").execute()
+            if response.data:
+                for row in response.data:
+                    entity_id = row.get("entity_id")
+                    aliases = row.get("aliases", [])
+                    if entity_id and aliases:
+                        self._llm_alias_cache[entity_id] = set(aliases)
+
+                logger.info(
+                    f"[entity_index] Loaded {len(self._llm_alias_cache)} entities "
+                    f"with cached LLM aliases"
+                )
+        except Exception as e:
+            # Table might not exist yet - that's ok
+            if "entity_aliases" not in str(e):
+                logger.debug(f"[entity_index] Alias cache load: {e}")
+
+    async def _save_aliases_to_cache(
+        self, entity_id: str, canonical_name: str, aliases: Set[str]
+    ) -> None:
+        """Save LLM-generated aliases to Supabase for persistence."""
+        try:
+            supabase = self._get_supabase_client()
+            if not supabase:
+                return
+
+            # Upsert the aliases
+            supabase.table("entity_aliases").upsert({
+                "entity_id": entity_id,
+                "canonical_name": canonical_name,
+                "aliases": list(aliases),
+                "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            }, on_conflict="entity_id").execute()
+
+        except Exception as e:
+            logger.debug(f"[entity_index] Alias cache save error: {e}")
+
+    async def _generate_llm_aliases(
+        self, canonical_name: str, entity_type: str, context: str = ""
+    ) -> Set[str]:
+        """
+        Generate aliases for an entity using LLM.
+
+        Uses GPT-4o-mini to generate common nicknames, abbreviations,
+        and alternative names that might appear in news headlines.
+
+        Args:
+            canonical_name: The canonical entity name (e.g., "Donald Trump")
+            entity_type: Entity type ("person", "organization", "position")
+            context: Optional context like event title for better alias generation
+
+        Returns:
+            Set of lowercase aliases
+        """
+        entity_id = normalize_entity_id(canonical_name)
+
+        # Check in-memory cache first
+        if entity_id in self._llm_alias_cache:
+            return self._llm_alias_cache[entity_id]
+
+        # Generate via LLM
+        try:
+            client = self._get_llm_client()
+
+            prompt = f"""Generate common alternative names, nicknames, and shortened forms for the {entity_type}: "{canonical_name}"
+
+These aliases will be used to match mentions in news headlines. Include:
+- Common nicknames (e.g., "Bibi" for Benjamin Netanyahu)
+- Shortened versions (e.g., "RFK Jr" for Robert Kennedy Jr)
+- Title variations (e.g., "Senator Cruz" for Ted Cruz)
+- Initials if commonly used (e.g., "DJT" for Donald Trump)
+- Informal names (e.g., "Bernie" for Bernie Sanders)
+
+{f'Context: {context}' if context else ''}
+
+Return ONLY a JSON array of strings in lowercase. Example: ["nickname1", "alias2", "short form"]
+Do NOT include the canonical name itself: "{canonical_name.lower()}"
+Generate 3-8 aliases maximum."""
+
+            response = await client.chat.completions.create(
+                model=self._llm_alias_model,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=150,
+                temperature=0.3,
+            )
+
+            # Parse JSON response
+            content = response.choices[0].message.content.strip()
+            # Handle potential markdown code blocks
+            if content.startswith("```"):
+                content = content.split("```")[1]
+                if content.startswith("json"):
+                    content = content[4:]
+            content = content.strip()
+
+            aliases_list = json.loads(content)
+            aliases = set(alias.lower().strip() for alias in aliases_list if alias)
+
+            # Cache in memory and Supabase
+            self._llm_alias_cache[entity_id] = aliases
+            await self._save_aliases_to_cache(entity_id, canonical_name, aliases)
+            self._llm_aliases_generated += 1
+
+            logger.info(
+                f"[entity_index] Generated {len(aliases)} LLM aliases for '{canonical_name}': "
+                f"{list(aliases)[:5]}{'...' if len(aliases) > 5 else ''}"
+            )
+
+            return aliases
+
+        except json.JSONDecodeError as e:
+            logger.warning(
+                f"[entity_index] LLM alias parse error for '{canonical_name}': {e}"
+            )
+            return set()
+        except Exception as e:
+            logger.warning(
+                f"[entity_index] LLM alias generation error for '{canonical_name}': {e}"
+            )
+            return set()
+
     async def _refresh_loop(self) -> None:
         """Periodically refresh the index."""
         while self._running:
@@ -457,12 +585,12 @@ class EntityMarketIndex:
                 await asyncio.sleep(30.0)  # Brief pause on error
 
     async def _refresh_index(self) -> None:
-        """Refresh the entity-market index from Kalshi API."""
+        """Refresh the entity-market index from Kalshi API using category-based discovery."""
         if not self._trading_client:
             logger.warning("[entity_index] No trading client available")
             return
 
-        logger.info("[entity_index] Refreshing entity-market index...")
+        logger.info(f"[entity_index] Refreshing index with categories: {self._config.categories}")
 
         new_index: Dict[str, EntityMarketEntry] = {}
         new_canonical_entities: Dict[str, CanonicalEntity] = {}
@@ -471,116 +599,117 @@ class EntityMarketIndex:
         new_alias_lookup: Dict[str, str] = {}
 
         try:
-            # Fetch events for configured series
-            events_processed = 0
-            markets_processed = 0
+            # Single call to get all markets for configured categories
+            markets = await self._trading_client.get_open_markets(
+                categories=self._config.categories,
+                sports_prefixes=self._config.sports_prefixes if self._config.sports_prefixes else None,
+                min_hours_to_settlement=self._config.min_hours_to_settlement,
+                max_days_to_settlement=self._config.max_days_to_settlement,
+            )
+
+            logger.info(
+                f"[entity_index] Fetched {len(markets)} markets for categories: {self._config.categories}"
+            )
+
+            # Cache all markets for MarketImpactReasoner (includes markets without entities)
+            self._all_markets_cache = markets
+
             current_time = time.time()
+            markets_processed = 0
 
-            for series_filter in self._config.series_filters:
-                try:
-                    # Get events matching the series
-                    events = await self._fetch_events_for_series(series_filter)
+            for market in markets:
+                market_ticker = market.get("ticker", "")
+                yes_sub_title = market.get("yes_sub_title", "")
+                event_ticker = market.get("event_ticker", "")
+                event_title = market.get("title", "") or market.get("subtitle", "")
 
-                    for event in events:
-                        event_ticker = event.get("event_ticker", "")
-                        event_title = event.get("title", "")
-                        markets = event.get("markets", [])
-
-                        events_processed += 1
-
-                        for market in markets:
-                            market_ticker = market.get("ticker", "")
-                            yes_sub_title = market.get("yes_sub_title", "")
-
-                            if not yes_sub_title or not market_ticker:
-                                continue
-
-                            # Skip excluded patterns
-                            if any(
-                                re.search(p, market_ticker.lower())
-                                for p in self._config.exclude_patterns
-                            ):
-                                continue
-
-                            markets_processed += 1
-
-                            # Detect market type
-                            market_type = detect_market_type(event_title, market_ticker)
-
-                            # Create entity from yes_sub_title
-                            entity_id = normalize_entity_id(yes_sub_title)
-
-                            # Detect entity type from context
-                            entity_type = detect_entity_type(yes_sub_title, event_title, market_ticker)
-
-                            # Create mapping
-                            mapping = MarketMapping(
-                                market_ticker=market_ticker,
-                                event_ticker=event_ticker,
-                                market_type=market_type,
-                                yes_sub_title=yes_sub_title,
-                                confidence=0.9 if market_type != "UNKNOWN" else 0.7,
-                            )
-
-                            # Build comprehensive aliases
-                            aliases = build_aliases(yes_sub_title, entity_type)
-
-                            # Add to legacy index (backward compatibility)
-                            if entity_id not in new_index:
-                                new_index[entity_id] = EntityMarketEntry(
-                                    entity_id=entity_id,
-                                    canonical_name=yes_sub_title,
-                                    markets=[mapping],
-                                    last_updated=current_time,
-                                )
-                            else:
-                                # Check if market already exists
-                                existing_tickers = {
-                                    m.market_ticker
-                                    for m in new_index[entity_id].markets
-                                }
-                                if market_ticker not in existing_tickers:
-                                    new_index[entity_id].markets.append(mapping)
-
-                            # Add to CanonicalEntity index
-                            if entity_id not in new_canonical_entities:
-                                new_canonical_entities[entity_id] = CanonicalEntity(
-                                    entity_id=entity_id,
-                                    canonical_name=yes_sub_title,
-                                    entity_type=entity_type,
-                                    aliases=aliases,
-                                    markets=[mapping],
-                                    created_at=current_time,
-                                    last_seen_at=current_time,
-                                )
-                            else:
-                                # Update existing canonical entity
-                                existing = new_canonical_entities[entity_id]
-                                existing.aliases.update(aliases)
-                                existing.last_seen_at = current_time
-                                existing_tickers = {m.market_ticker for m in existing.markets}
-                                if market_ticker not in existing_tickers:
-                                    existing.markets.append(mapping)
-
-                            # Build reverse index
-                            if market_ticker not in new_reverse_index:
-                                new_reverse_index[market_ticker] = []
-                            if entity_id not in new_reverse_index[market_ticker]:
-                                new_reverse_index[market_ticker].append(entity_id)
-
-                            # Build name variations (legacy)
-                            for variation in aliases:
-                                new_name_variations[variation] = entity_id
-
-                            # Build comprehensive alias lookup
-                            for alias in aliases:
-                                new_alias_lookup[alias.lower()] = entity_id
-
-                except Exception as e:
-                    logger.error(
-                        f"[entity_index] Error fetching series {series_filter}: {e}"
-                    )
+                if not yes_sub_title or not market_ticker:
                     continue
+
+                # Skip excluded patterns
+                if any(
+                    re.search(p, market_ticker.lower())
+                    for p in self._config.exclude_patterns
+                ):
+                    continue
+
+                markets_processed += 1
+
+                # Detect market type
+                market_type = detect_market_type(event_title, market_ticker)
+
+                # Create entity from yes_sub_title
+                entity_id = normalize_entity_id(yes_sub_title)
+
+                # Detect entity type from context
+                entity_type = detect_entity_type(yes_sub_title, event_title, market_ticker)
+
+                # Create mapping
+                mapping = MarketMapping(
+                    market_ticker=market_ticker,
+                    event_ticker=event_ticker,
+                    market_type=market_type,
+                    yes_sub_title=yes_sub_title,
+                    confidence=0.9 if market_type != "UNKNOWN" else 0.7,
+                )
+
+                # Get LLM-generated aliases (from cache or generate new)
+                # Note: This uses cached aliases if available, generates async if not
+                llm_aliases = self._llm_alias_cache.get(entity_id, set())
+
+                # Build comprehensive aliases with LLM aliases included
+                aliases = build_aliases(yes_sub_title, entity_type, llm_aliases)
+
+                # Add to legacy index (backward compatibility)
+                if entity_id not in new_index:
+                    new_index[entity_id] = EntityMarketEntry(
+                        entity_id=entity_id,
+                        canonical_name=yes_sub_title,
+                        markets=[mapping],
+                        last_updated=current_time,
+                    )
+                else:
+                    # Check if market already exists
+                    existing_tickers = {
+                        m.market_ticker
+                        for m in new_index[entity_id].markets
+                    }
+                    if market_ticker not in existing_tickers:
+                        new_index[entity_id].markets.append(mapping)
+
+                # Add to CanonicalEntity index
+                if entity_id not in new_canonical_entities:
+                    new_canonical_entities[entity_id] = CanonicalEntity(
+                        entity_id=entity_id,
+                        canonical_name=yes_sub_title,
+                        entity_type=entity_type,
+                        aliases=aliases,
+                        markets=[mapping],
+                        created_at=current_time,
+                        last_seen_at=current_time,
+                    )
+                else:
+                    # Update existing canonical entity
+                    existing = new_canonical_entities[entity_id]
+                    existing.aliases.update(aliases)
+                    existing.last_seen_at = current_time
+                    existing_tickers = {m.market_ticker for m in existing.markets}
+                    if market_ticker not in existing_tickers:
+                        existing.markets.append(mapping)
+
+                # Build reverse index
+                if market_ticker not in new_reverse_index:
+                    new_reverse_index[market_ticker] = []
+                if entity_id not in new_reverse_index[market_ticker]:
+                    new_reverse_index[market_ticker].append(entity_id)
+
+                # Build name variations (legacy)
+                for variation in aliases:
+                    new_name_variations[variation] = entity_id
+
+                # Build comprehensive alias lookup
+                for alias in aliases:
+                    new_alias_lookup[alias.lower()] = entity_id
 
             # Update indices atomically
             self._index = new_index
@@ -598,10 +727,41 @@ class EntityMarketIndex:
             logger.info(
                 f"[entity_index] Refresh complete: {self._total_entities} entities, "
                 f"{self._total_markets} market mappings, {self._total_aliases} aliases "
-                f"(from {events_processed} events, {markets_processed} markets)"
+                f"(from {markets_processed} politics markets)"
             )
 
+            # CRITICAL: Generate LLM aliases BEFORE KB sync (not after!)
+            # Otherwise new entities miss NER matching for 1 refresh cycle
+            entities_needing_aliases = [
+                (entity_id, ce.canonical_name, ce.entity_type)
+                for entity_id, ce in new_canonical_entities.items()
+                if entity_id not in self._llm_alias_cache
+            ]
+            if entities_needing_aliases:
+                # Limit to first 10 new entities per refresh to avoid rate limits
+                entities_to_generate = entities_needing_aliases[:10]
+                logger.info(
+                    f"[entity_index] Generating LLM aliases for {len(entities_to_generate)} "
+                    f"new entities BEFORE KB sync"
+                )
+                # Generate aliases SYNCHRONOUSLY (await) before KB sync
+                tasks = [
+                    self._generate_llm_aliases(canonical_name, entity_type)
+                    for _, canonical_name, entity_type in entities_to_generate
+                ]
+                if tasks:
+                    await asyncio.gather(*tasks, return_exceptions=True)
+                    # Update alias lookups with newly generated aliases
+                    for entity_id, ce in new_canonical_entities.items():
+                        if entity_id in self._llm_alias_cache:
+                            ce.aliases.update(self._llm_alias_cache[entity_id])
+                            for alias in self._llm_alias_cache[entity_id]:
+                                self._alias_lookup[alias.lower()] = entity_id
+                    # Update total aliases count after LLM generation
+                    self._total_aliases = len(self._alias_lookup)
+
             # Synchronize Knowledge Base for NLP pipeline
+            # NOTE: This MUST happen AFTER LLM alias generation so KB has complete aliases
             await self._sync_knowledge_base()
 
             # Broadcast entity index snapshot to connected clients
@@ -613,44 +773,6 @@ class EntityMarketIndex:
 
         except Exception as e:
             logger.error(f"[entity_index] Refresh failed: {e}")
-
-    async def _fetch_events_for_series(self, series_filter: str) -> List[Dict[str, Any]]:
-        """
-        Fetch events matching a series filter.
-
-        Args:
-            series_filter: Series prefix to filter (e.g., "KXCABINET")
-
-        Returns:
-            List of event dicts with markets
-        """
-        events = []
-
-        try:
-            # Use trading client to get events
-            logger.info(f"[entity_index] Fetching events for series: {series_filter}")
-            raw_events = await self._trading_client.get_events(
-                series_ticker=series_filter,
-                status="open",
-            )
-            logger.info(f"[entity_index] Series {series_filter}: found {len(raw_events or [])} raw events")
-
-            for event in raw_events or []:
-                event_ticker = event.get("event_ticker", "")
-                if not event_ticker:
-                    continue
-
-                # Fetch full event with markets
-                full_event = await self._trading_client.get_event(event_ticker)
-                if full_event:
-                    markets_count = len(full_event.get("markets", []))
-                    logger.debug(f"[entity_index] Event {event_ticker}: {markets_count} markets")
-                    events.append(full_event)
-
-        except Exception as e:
-            logger.error(f"[entity_index] Error fetching events for {series_filter}: {e}", exc_info=True)
-
-        return events
 
     def get_markets_for_entity(
         self,
@@ -733,6 +855,30 @@ class EntityMarketIndex:
         """Get all canonical entities with aliases and aggregated signals."""
         return list(self._canonical_entities.values())
 
+    def get_all_markets_for_reasoner(self) -> List[Dict[str, str]]:
+        """
+        Get all cached markets in format suitable for MarketImpactReasoner.
+
+        Returns markets including those without direct entity matches,
+        enabling indirect impact reasoning.
+
+        Returns:
+            List of dicts with ticker, title, event_ticker fields
+        """
+        result = []
+        for market in self._all_markets_cache:
+            ticker = market.get("ticker", "")
+            title = market.get("title", "") or market.get("subtitle", "")
+            event_ticker = market.get("event_ticker", "")
+
+            if ticker and title:
+                result.append({
+                    "ticker": ticker,
+                    "title": title,
+                    "event_ticker": event_ticker,
+                })
+        return result
+
     def get_canonical_entity(self, entity_id: str) -> Optional[CanonicalEntity]:
         """Get a specific canonical entity by ID."""
         return self._canonical_entities.get(entity_id)
@@ -789,11 +935,13 @@ class EntityMarketIndex:
         """
         Synchronize the spaCy KnowledgeBase with current market data.
 
-        This method:
-        1. Creates KB if not exists
-        2. Clears existing KB data
-        3. Repopulates from current market index
+        Uses atomic swap pattern to prevent race conditions:
+        1. Creates NEW KB instance
+        2. Populates it completely
+        3. Atomically swaps: self._kb = new_kb
         4. Sets global KB instance for NLP pipeline access
+
+        This ensures the NLP pipeline never sees a partially-populated KB.
         """
         try:
             import spacy
@@ -808,25 +956,31 @@ class EntityMarketIndex:
                 vocab = nlp.vocab
                 set_shared_vocab(vocab)
 
-            # Create KB if needed
-            if self._kb is None:
-                self._kb = KalshiKnowledgeBase(vocab, entity_vector_length=64)
-            else:
-                # Clear existing KB for fresh population
-                self._kb.clear()
+            # Create NEW KB instance (atomic swap pattern - never clear existing)
+            new_kb = KalshiKnowledgeBase(vocab, entity_vector_length=64)
 
             # Build market data for KB population
             markets_for_kb = self._get_markets_for_kb()
 
-            # Populate KB
-            self._kb.populate_from_markets(markets_for_kb, alias_builder=build_aliases)
+            # Create alias builder that includes LLM aliases from cache
+            # This is critical - without LLM aliases, the KB won't match Reddit entities!
+            def alias_builder_with_llm(name: str, entity_type: str) -> Set[str]:
+                entity_id = normalize_entity_id(name)
+                llm_aliases = self._llm_alias_cache.get(entity_id, set())
+                return build_aliases(name, entity_type, llm_aliases)
 
-            # Set global KB instance
-            set_kalshi_knowledge_base(self._kb)
+            # Populate new KB with LLM-enhanced alias builder
+            new_kb.populate_from_markets(markets_for_kb, alias_builder=alias_builder_with_llm)
+
+            # Atomic swap under lock to prevent concurrent access issues
+            async with self._kb_lock:
+                self._kb = new_kb
+                # Set global KB instance
+                set_kalshi_knowledge_base(new_kb)
 
             logger.info(
-                f"[entity_index] KB synced: {self._kb.get_entity_count()} entities, "
-                f"{self._kb.get_alias_count()} aliases"
+                f"[entity_index] KB synced: {new_kb.get_entity_count()} entities, "
+                f"{new_kb.get_alias_count()} aliases"
             )
 
         except Exception as e:
@@ -878,9 +1032,11 @@ class EntityMarketIndex:
             "total_entities": self._total_entities,
             "total_markets": self._total_markets,
             "total_aliases": self._total_aliases,
+            "llm_aliases_generated": self._llm_aliases_generated,
+            "llm_alias_cache_size": len(self._llm_alias_cache),
             "refresh_count": self._refresh_count,
             "last_refresh_at": self._last_refresh_at,
-            "series_filters": self._config.series_filters,
+            "categories": self._config.categories,
             "knowledge_base": kb_stats,
         }
 

@@ -1,18 +1,128 @@
-import React, { useState, useMemo, memo } from 'react';
+import React, { useState, useMemo, memo, useCallback } from 'react';
 import {
   Users,
   Tag,
   TrendingUp,
   TrendingDown,
   Search,
-  Filter,
   ChevronRight,
   ChevronDown,
   Building,
   User,
   Award,
-  MessageCircle
+  MessageCircle,
+  BarChart3,
+  Activity,
+  Zap,
+  Database,
+  Clock,
+  Globe,
+  FileText,
+  Video,
+  Link,
+  Image,
+  CheckCircle2,
+  XCircle,
 } from 'lucide-react';
+import { useEntityAnimations } from '../../../hooks/v3-trader/useEntityAnimations';
+
+/**
+ * Content Type Icon - Maps content type to appropriate icon
+ */
+const ContentTypeIcon = memo(({ type, className = "w-3 h-3" }) => {
+  const icons = {
+    text: FileText,
+    video: Video,
+    link: Link,
+    image: Image,
+    social: Globe,
+  };
+  const Icon = icons[type] || FileText;
+  return <Icon className={className} />;
+});
+
+ContentTypeIcon.displayName = 'ContentTypeIcon';
+
+/**
+ * Extraction Metrics Panel - Shows content extraction stats
+ */
+const ExtractionMetricsPanel = memo(({ extractionStats, videoStats, contentExtractions }) => {
+  if (!extractionStats || Object.keys(extractionStats).length === 0) {
+    return null;
+  }
+
+  const { attempted = 0, by_type = {} } = extractionStats;
+  const { transcriptions_today = 0, budget_minutes = 60, budget_used_minutes = 0 } = videoStats || {};
+
+  // Calculate success rate per type
+  const typeStats = Object.entries(by_type).map(([type, count]) => ({
+    type,
+    count,
+    percentage: attempted > 0 ? Math.round((count / attempted) * 100) : 0,
+  }));
+
+  // Sort by count descending
+  typeStats.sort((a, b) => b.count - a.count);
+
+  const successRate = attempted > 0 && contentExtractions > 0
+    ? Math.round((contentExtractions / attempted) * 100)
+    : 0;
+
+  return (
+    <div className="mb-4 p-3 bg-gray-800/30 rounded-xl border border-gray-700/30">
+      <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center gap-2">
+          <Globe className="w-4 h-4 text-violet-400" />
+          <span className="text-sm font-medium text-gray-200">Content Extraction</span>
+        </div>
+        <div className="flex items-center gap-2">
+          {successRate > 50 ? (
+            <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+          ) : (
+            <XCircle className="w-3.5 h-3.5 text-amber-400" />
+          )}
+          <span className={`text-xs font-mono font-bold ${successRate > 50 ? 'text-emerald-400' : 'text-amber-400'}`}>
+            {successRate}% success
+          </span>
+        </div>
+      </div>
+
+      {/* Content Type Breakdown */}
+      <div className="flex flex-wrap gap-2 mb-3">
+        {typeStats.map(({ type, count }) => (
+          <div
+            key={type}
+            className="flex items-center gap-1.5 px-2 py-1 bg-gray-800/50 rounded-lg border border-gray-700/40"
+          >
+            <ContentTypeIcon type={type} className="w-3 h-3 text-gray-400" />
+            <span className="text-[10px] text-gray-400 capitalize">{type}</span>
+            <span className="text-[10px] font-mono font-bold text-white">{count}</span>
+          </div>
+        ))}
+      </div>
+
+      {/* Video Budget */}
+      {videoStats && Object.keys(videoStats).length > 0 && (
+        <div className="flex items-center gap-3 pt-2 border-t border-gray-700/30">
+          <div className="flex items-center gap-1.5">
+            <Video className="w-3 h-3 text-violet-400" />
+            <span className="text-[10px] text-gray-500">Videos today:</span>
+            <span className="text-[10px] font-mono font-bold text-white">{transcriptions_today}</span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <Clock className="w-3 h-3 text-gray-500" />
+            <span className="text-[10px] text-gray-500">Budget:</span>
+            <span className="text-[10px] font-mono text-gray-300">
+              {budget_used_minutes.toFixed(1)}/{budget_minutes}m
+            </span>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+});
+
+ExtractionMetricsPanel.displayName = 'ExtractionMetricsPanel';
 
 /**
  * Entity type icon mapping
@@ -33,7 +143,7 @@ const EntityTypeIcon = memo(({ type }) => {
 EntityTypeIcon.displayName = 'EntityTypeIcon';
 
 /**
- * Sentiment badge with color coding
+ * Sentiment badge with color coding and smooth transitions
  */
 const SentimentBadge = memo(({ value }) => {
   if (value === null || value === undefined || value === 0) {
@@ -45,7 +155,7 @@ const SentimentBadge = memo(({ value }) => {
 
   return (
     <span className={`
-      inline-flex items-center gap-0.5 text-xs font-mono
+      inline-flex items-center gap-0.5 text-xs font-mono transition-colors duration-500
       ${isPositive ? 'text-green-400' : isNegative ? 'text-red-400' : 'text-gray-400'}
     `}>
       {isPositive ? <TrendingUp className="w-3 h-3" /> : isNegative ? <TrendingDown className="w-3 h-3" /> : null}
@@ -57,9 +167,20 @@ const SentimentBadge = memo(({ value }) => {
 SentimentBadge.displayName = 'SentimentBadge';
 
 /**
- * Single entity row component
+ * Market type badge colors
  */
-const EntityRow = memo(({ entity, isExpanded, onToggle }) => {
+const MARKET_TYPE_BADGES = {
+  OUT: 'bg-red-900/30 text-red-400',
+  WIN: 'bg-green-900/30 text-green-400',
+  CONFIRM: 'bg-blue-900/30 text-blue-400',
+  NOMINEE: 'bg-violet-900/30 text-violet-400',
+  PRESIDENT: 'bg-cyan-900/30 text-cyan-400',
+};
+
+/**
+ * Single entity row component with animation support
+ */
+const EntityRow = memo(({ entity, isExpanded, onToggle, animationClasses }) => {
   const aliasCount = entity.aliases?.length || 0;
   const marketCount = entity.markets?.length || 0;
   const mentions = entity.reddit_signals?.total_mentions || 0;
@@ -79,14 +200,14 @@ const EntityRow = memo(({ entity, isExpanded, onToggle }) => {
   const lastSignalDisplay = formatLastSignal(lastSignal);
 
   return (
-    <div className="border-b border-gray-800/50 last:border-b-0">
+    <div className={`border-b border-gray-800/50 last:border-b-0 transition-all duration-300 ${animationClasses}`}>
       {/* Main row */}
       <div
         className="flex items-center gap-3 px-3 py-2 hover:bg-gray-800/30 cursor-pointer transition-colors"
         onClick={() => onToggle(entity.entity_id)}
       >
         {/* Expand indicator */}
-        <button className="text-gray-500 hover:text-gray-300">
+        <button className="text-gray-500 hover:text-gray-300 transition-colors">
           {isExpanded ? (
             <ChevronDown className="w-4 h-4" />
           ) : (
@@ -137,7 +258,7 @@ const EntityRow = memo(({ entity, isExpanded, onToggle }) => {
 
       {/* Expanded content */}
       {isExpanded && (
-        <div className="px-4 py-3 bg-gray-900/50 border-t border-gray-800/30">
+        <div className="px-4 py-3 bg-gray-900/50 border-t border-gray-800/30 animate-fade-in">
           {/* Aliases */}
           <div className="mb-3">
             <div className="text-xs text-gray-500 uppercase mb-1.5 flex items-center gap-1.5">
@@ -178,10 +299,7 @@ const EntityRow = memo(({ entity, isExpanded, onToggle }) => {
                   </span>
                   <span className={`
                     px-1.5 py-0.5 rounded text-[10px] font-medium
-                    ${market.market_type === 'OUT' ? 'bg-red-900/30 text-red-400' :
-                      market.market_type === 'WIN' ? 'bg-green-900/30 text-green-400' :
-                      market.market_type === 'CONFIRM' ? 'bg-blue-900/30 text-blue-400' :
-                      'bg-gray-800 text-gray-400'}
+                    ${MARKET_TYPE_BADGES[market.market_type] || 'bg-gray-800 text-gray-400'}
                   `}>
                     {market.market_type}
                   </span>
@@ -198,9 +316,9 @@ const EntityRow = memo(({ entity, isExpanded, onToggle }) => {
 EntityRow.displayName = 'EntityRow';
 
 /**
- * Stats summary component
+ * Stats summary component with enhanced styling
  */
-const StatsSummary = memo(({ entities }) => {
+const StatsSummary = memo(({ entities, recentActivityCount }) => {
   const stats = useMemo(() => {
     let totalMentions = 0;
     let totalMarkets = 0;
@@ -242,7 +360,12 @@ const StatsSummary = memo(({ entities }) => {
         <div className="text-[10px] text-gray-500 uppercase">Mentions</div>
       </div>
       <div className="bg-gradient-to-br from-blue-950/30 to-gray-900/50 rounded-lg p-2 border border-blue-500/20">
-        <div className="text-lg font-mono font-bold text-blue-400">{stats.withSignals}</div>
+        <div className="flex items-center gap-1">
+          <div className="text-lg font-mono font-bold text-blue-400">{recentActivityCount}</div>
+          {recentActivityCount > 0 && (
+            <Activity className="w-3 h-3 text-blue-400 animate-pulse" />
+          )}
+        </div>
         <div className="text-[10px] text-gray-500 uppercase">Active</div>
       </div>
     </div>
@@ -252,13 +375,59 @@ const StatsSummary = memo(({ entities }) => {
 StatsSummary.displayName = 'StatsSummary';
 
 /**
- * EntityIndexPanel - Display canonical entities with aliases and reddit signals
+ * Empty state component
  */
-const EntityIndexPanel = ({ entityIndex }) => {
+const EmptyState = memo(({ entitySystemActive, searchTerm }) => (
+  <div className="flex flex-col items-center justify-center py-12 px-4">
+    <div className="p-4 rounded-2xl bg-gray-800/30 border border-gray-700/30 mb-4">
+      <Database className="w-10 h-10 text-gray-600" />
+    </div>
+    <div className="text-gray-400 text-sm font-medium mb-1">
+      {searchTerm ? 'No entities match your search' : 'No entities indexed yet'}
+    </div>
+    <div className="text-gray-600 text-xs text-center max-w-[280px]">
+      {searchTerm
+        ? 'Try adjusting your search term or filters'
+        : entitySystemActive
+          ? 'Entities will appear as they are discovered from Reddit posts'
+          : 'Entity system is inactive'}
+    </div>
+  </div>
+));
+
+EmptyState.displayName = 'EmptyState';
+
+/**
+ * EntityIndexPanel - Display canonical entities with aliases and reddit signals
+ *
+ * Props:
+ * - entityIndex: Object with entities array
+ * - entitySystemActive: Boolean indicating if entity system is live
+ * - redditAgentHealth: Object with extraction stats, video stats
+ * - showContentExtraction: Boolean to show/hide content extraction metrics
+ *
+ * Features:
+ * - List view of entities with expand/collapse
+ * - Search and filtering
+ * - Animation support via useEntityAnimations hook
+ * - Content extraction stats (when showContentExtraction=true)
+ */
+const EntityIndexPanel = ({
+  entityIndex,
+  entitySystemActive = false,
+  redditAgentHealth,
+  showContentExtraction = false,
+}) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [typeFilter, setTypeFilter] = useState('all');
   const [sortBy, setSortBy] = useState('mentions');
   const [expandedEntities, setExpandedEntities] = useState(new Set());
+
+  // Animation hook for entity updates
+  const {
+    getAnimationClasses,
+    recentActivityIds,
+  } = useEntityAnimations({ entityIndex, entitySystemActive });
 
   const entities = useMemo(() => entityIndex?.entities || [], [entityIndex?.entities]);
 
@@ -281,8 +450,13 @@ const EntityIndexPanel = ({ entityIndex }) => {
       filtered = filtered.filter(e => e.entity_type === typeFilter);
     }
 
-    // Sort
+    // Sort - prioritize recently active entities
     filtered = [...filtered].sort((a, b) => {
+      // Always put recently active entities first
+      const aRecent = recentActivityIds.has(a.entity_id) ? 1 : 0;
+      const bRecent = recentActivityIds.has(b.entity_id) ? 1 : 0;
+      if (aRecent !== bRecent) return bRecent - aRecent;
+
       switch (sortBy) {
         case 'mentions':
           return (b.reddit_signals?.total_mentions || 0) - (a.reddit_signals?.total_mentions || 0);
@@ -297,9 +471,9 @@ const EntityIndexPanel = ({ entityIndex }) => {
     });
 
     return filtered;
-  }, [entities, searchTerm, typeFilter, sortBy]);
+  }, [entities, searchTerm, typeFilter, sortBy, recentActivityIds]);
 
-  const toggleExpanded = (entityId) => {
+  const toggleExpanded = useCallback((entityId) => {
     setExpandedEntities(prev => {
       const next = new Set(prev);
       if (next.has(entityId)) {
@@ -309,24 +483,44 @@ const EntityIndexPanel = ({ entityIndex }) => {
       }
       return next;
     });
-  };
+  }, []);
 
   return (
-    <div className="h-full flex flex-col bg-gray-950">
+    <div className="h-full flex flex-col bg-gray-900/50 rounded-2xl border border-gray-800/50 overflow-hidden">
       {/* Header */}
       <div className="p-4 border-b border-gray-800">
         <div className="flex items-center justify-between mb-4">
-          <h2 className="text-lg font-bold text-white flex items-center gap-2">
-            <Users className="w-5 h-5 text-cyan-400" />
-            Entity Index
-          </h2>
-          <span className="text-xs text-gray-500">
-            {filteredEntities.length} of {entities.length} entities
-          </span>
+          <div className="flex items-center gap-3">
+            <div className="p-2 rounded-lg bg-gradient-to-br from-cyan-900/40 to-cyan-950/30 border border-cyan-700/30">
+              <Users className="w-5 h-5 text-cyan-400" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h2 className="text-lg font-bold text-white">Entity Index</h2>
+                {entitySystemActive && (
+                  <span className="px-2 py-0.5 text-[10px] font-bold bg-emerald-900/40 text-emerald-400 border border-emerald-600/40 rounded animate-pulse">
+                    LIVE
+                  </span>
+                )}
+              </div>
+              <p className="text-xs text-gray-500">
+                {filteredEntities.length} of {entities.length} entities
+              </p>
+            </div>
+          </div>
         </div>
 
+        {/* Content Extraction Metrics (optional) */}
+        {showContentExtraction && redditAgentHealth && (
+          <ExtractionMetricsPanel
+            extractionStats={redditAgentHealth.extractionStats}
+            videoStats={redditAgentHealth.videoStats}
+            contentExtractions={redditAgentHealth.contentExtractions}
+          />
+        )}
+
         {/* Stats summary */}
-        <StatsSummary entities={entities} />
+        <StatsSummary entities={entities} recentActivityCount={recentActivityIds.size} />
 
         {/* Search and filters */}
         <div className="flex gap-2">
@@ -338,7 +532,7 @@ const EntityIndexPanel = ({ entityIndex }) => {
               placeholder="Search by name or alias..."
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
-              className="w-full pl-10 pr-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-sm text-white placeholder-gray-500 focus:border-cyan-500 focus:outline-none"
+              className="w-full pl-10 pr-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-sm text-white placeholder-gray-500 focus:border-cyan-500 focus:outline-none transition-colors"
             />
           </div>
 
@@ -346,7 +540,7 @@ const EntityIndexPanel = ({ entityIndex }) => {
           <select
             value={typeFilter}
             onChange={(e) => setTypeFilter(e.target.value)}
-            className="px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-sm text-white focus:border-cyan-500 focus:outline-none"
+            className="px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-sm text-white focus:border-cyan-500 focus:outline-none transition-colors"
           >
             <option value="all">All Types</option>
             <option value="person">Person</option>
@@ -358,7 +552,7 @@ const EntityIndexPanel = ({ entityIndex }) => {
           <select
             value={sortBy}
             onChange={(e) => setSortBy(e.target.value)}
-            className="px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-sm text-white focus:border-cyan-500 focus:outline-none"
+            className="px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-sm text-white focus:border-cyan-500 focus:outline-none transition-colors"
           >
             <option value="mentions">Most Mentions</option>
             <option value="sentiment">Strongest Sentiment</option>
@@ -371,14 +565,7 @@ const EntityIndexPanel = ({ entityIndex }) => {
       {/* Entity list */}
       <div className="flex-1 overflow-y-auto">
         {filteredEntities.length === 0 ? (
-          <div className="flex flex-col items-center justify-center h-full text-gray-500">
-            <Users className="w-12 h-12 mb-3 opacity-30" />
-            <p className="text-sm">
-              {entities.length === 0
-                ? 'No entities indexed yet'
-                : 'No entities match your filters'}
-            </p>
-          </div>
+          <EmptyState entitySystemActive={entitySystemActive} searchTerm={searchTerm} />
         ) : (
           filteredEntities.map(entity => (
             <EntityRow
@@ -386,6 +573,7 @@ const EntityIndexPanel = ({ entityIndex }) => {
               entity={entity}
               isExpanded={expandedEntities.has(entity.entity_id)}
               onToggle={toggleExpanded}
+              animationClasses={getAnimationClasses(entity.entity_id)}
             />
           ))
         )}

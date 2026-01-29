@@ -101,14 +101,23 @@ class ExtractedEntity:
     A single entity extracted from text with sentiment analysis.
 
     This is immutable (frozen) to ensure consistency in the pipeline.
+
+    Sentiment uses a 5-point scale (-2 to +2) which is then mapped to
+    impact scores for trading decisions:
+        -2 (strongly negative) -> -75
+        -1 (mildly negative)   -> -40
+         0 (neutral)           ->   0
+        +1 (mildly positive)   -> +40
+        +2 (strongly positive) -> +75
     """
 
     entity_id: str  # Normalized: "pam_bondi"
     canonical_name: str  # Display: "Pam Bondi"
     entity_type: str  # "person", "org", "position"
-    sentiment_score: int  # -100 to +100
-    confidence: float  # 0.0 to 1.0
+    sentiment_score: int  # Mapped value: -75, -40, 0, 40, 75
+    confidence: float  # From LLM: 0.5, 0.7, 0.9
     context_snippet: str = ""  # Relevant text snippet
+    sentiment_category: Optional[int] = None  # Original 5-point scale: -2 to +2
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -122,6 +131,7 @@ class ExtractedEntity:
             sentiment_score=int(data.get("sentiment_score", 0)),
             confidence=float(data.get("confidence", 0.5)),
             context_snippet=data.get("context_snippet", ""),
+            sentiment_category=data.get("sentiment_category"),
         )
 
 
@@ -331,14 +341,18 @@ class PriceImpactSignal:
     source_subreddit: str
     reddit_entity_id: Optional[str] = None
 
-    # Timestamp
+    # Timestamps
     created_at: float = field(default_factory=time.time)
+    source_created_at: Optional[float] = None  # Original Reddit post creation time
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "PriceImpactSignal":
+        source_created_at = data.get("source_created_at")
+        if source_created_at is not None:
+            source_created_at = float(source_created_at)
         return cls(
             signal_id=data.get("signal_id", str(uuid.uuid4())),
             market_ticker=data.get("market_ticker", ""),
@@ -354,6 +368,7 @@ class PriceImpactSignal:
             source_subreddit=data.get("source_subreddit", ""),
             reddit_entity_id=data.get("reddit_entity_id"),
             created_at=float(data.get("created_at", time.time())),
+            source_created_at=source_created_at,
         )
 
     @classmethod
@@ -387,6 +402,7 @@ class PriceImpactSignal:
             source_subreddit=signal.subreddit,
             reddit_entity_id=reddit_entity_db_id,
             created_at=time.time(),
+            source_created_at=signal.post_created_utc,  # Original Reddit timestamp
         )
 
     @property
@@ -398,6 +414,86 @@ class PriceImpactSignal:
     def suggested_side(self) -> str:
         """Suggest trade side based on price impact."""
         return "yes" if self.price_impact_score > 0 else "no"
+
+
+# ============================================================================
+# Market Impact Reasoning Model (Indirect Effects)
+# ============================================================================
+
+
+@dataclass
+class MarketImpactResult:
+    """
+    Result of LLM reasoning about which markets are affected by news content.
+
+    This captures INDIRECT market impacts that entity-sentiment mapping misses.
+    For example: "ICE shooting in Minnesota" → government shutdown market.
+
+    The reasoner analyzes news content and determines which markets are affected,
+    even when there's no direct entity → market title match.
+    """
+
+    market_ticker: str  # "KXGOVSHUT-26JAN31"
+    market_title: str  # "Government shutdown on Saturday?"
+    impact_direction: str  # "bullish" or "bearish" (on YES price)
+    impact_magnitude: int  # -2 to +2 (same as sentiment scale)
+    confidence: str  # "low", "medium", "high"
+    reasoning: str  # LLM's causal chain explanation
+
+    # Source tracking
+    source_post_id: str = ""
+    source_content_summary: str = ""  # Brief summary of triggering content
+
+    # Timestamp
+    created_at: float = field(default_factory=time.time)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "market_ticker": self.market_ticker,
+            "market_title": self.market_title,
+            "impact_direction": self.impact_direction,
+            "impact_magnitude": self.impact_magnitude,
+            "confidence": self.confidence,
+            "reasoning": self.reasoning,
+            "source_post_id": self.source_post_id,
+            "source_content_summary": self.source_content_summary,
+            "created_at": self.created_at,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "MarketImpactResult":
+        return cls(
+            market_ticker=data.get("market_ticker", ""),
+            market_title=data.get("market_title", ""),
+            impact_direction=data.get("impact_direction", "neutral"),
+            impact_magnitude=int(data.get("impact_magnitude", 0)),
+            confidence=data.get("confidence", "low"),
+            reasoning=data.get("reasoning", ""),
+            source_post_id=data.get("source_post_id", ""),
+            source_content_summary=data.get("source_content_summary", ""),
+            created_at=float(data.get("created_at", time.time())),
+        )
+
+    @property
+    def price_impact_score(self) -> int:
+        """Convert magnitude (-2 to +2) to price impact score (-75 to +75)."""
+        magnitude_map = {-2: -75, -1: -40, 0: 0, 1: 40, 2: 75}
+        base_score = magnitude_map.get(self.impact_magnitude, 0)
+        # Bearish = negative impact, bullish = positive
+        if self.impact_direction == "bearish":
+            return -abs(base_score)
+        return abs(base_score)
+
+    @property
+    def confidence_float(self) -> float:
+        """Convert confidence label to float (0.5, 0.7, 0.9)."""
+        confidence_map = {"low": 0.5, "medium": 0.7, "high": 0.9}
+        return confidence_map.get(self.confidence.lower(), 0.5)
+
+    @property
+    def suggested_side(self) -> str:
+        """Suggest trade side based on impact direction."""
+        return "yes" if self.impact_direction == "bullish" else "no"
 
 
 # ============================================================================

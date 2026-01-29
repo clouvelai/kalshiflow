@@ -39,6 +39,7 @@ if TYPE_CHECKING:
     from .state_container import V3StateContainer
     from ..strategies import StrategyCoordinator
     from ..deep_agent import SelfImprovingAgent
+    from ..agents.reddit_entity_agent import RedditEntityAgent
 
 logger = logging.getLogger("kalshiflow_rl.traderv3.websocket_manager")
 
@@ -87,6 +88,7 @@ class V3WebSocketManager:
         self._upcoming_markets_syncer: Optional['UpcomingMarketsSyncer'] = None  # Set via set_upcoming_markets_syncer()
         self._entity_market_index: Optional['EntityMarketIndex'] = None  # Set via set_entity_market_index()
         self._deep_agent: Optional['SelfImprovingAgent'] = None  # Set via set_deep_agent()
+        self._reddit_agent: Optional['RedditEntityAgent'] = None  # Set via set_reddit_agent()
         self._clients: Dict[str, WebSocketClient] = {}
         self._client_counter = 0
         self._started_at: Optional[float] = None
@@ -232,6 +234,20 @@ class V3WebSocketManager:
         """
         self._deep_agent = agent
         logger.info("SelfImprovingAgent set on WebSocket manager")
+
+    def set_reddit_agent(self, agent: 'RedditEntityAgent') -> None:
+        """
+        Set the reddit entity agent for sending entity snapshots on client connect.
+
+        This enables sending entity pipeline state (recent posts, extractions,
+        price impacts) to new clients, allowing session persistence across
+        page refreshes.
+
+        Args:
+            agent: RedditEntityAgent instance
+        """
+        self._reddit_agent = agent
+        logger.info("RedditEntityAgent set on WebSocket manager")
 
     def _add_to_activity_feed_history(self, message_type: str, data: dict) -> None:
         """
@@ -485,6 +501,14 @@ class V3WebSocketManager:
             # Send deep agent snapshot for session persistence (Agent tab)
             if self._deep_agent and client_id in self._clients:
                 await self._send_deep_agent_snapshot(client_id)
+
+            # Send entity snapshot for session persistence (Reddit posts, entities, price impacts)
+            if self._reddit_agent and client_id in self._clients:
+                await self._send_entity_snapshot(client_id)
+
+            # Send price impacts snapshot for deep agent (ensures signals visible after refresh)
+            if client_id in self._clients:
+                await self._send_price_impacts_snapshot(client_id)
 
             # Now handle incoming messages
             # (Current state is already included in the historical transitions replay)
@@ -969,28 +993,11 @@ class V3WebSocketManager:
         if not self._entity_market_index:
             return
 
-        entities = []
-        for entity in self._entity_market_index.get_all_canonical_entities():
-            entities.append({
-                "entity_id": entity.entity_id,
-                "canonical_name": entity.canonical_name,
-                "entity_type": entity.entity_type,
-                "aliases": list(entity.aliases),
-                "markets": [m.to_dict() for m in entity.markets],
-                "reddit_signals": {
-                    "total_mentions": entity.reddit_mentions,
-                    "aggregate_sentiment": entity.aggregate_sentiment,
-                    "last_signal_at": entity.last_reddit_signal,
-                },
-            })
+        # Use the centralized builder to ensure consistency
+        snapshot_data = self._build_entity_index_data()
+        await self.broadcast_message("entity_index_snapshot", snapshot_data)
 
-        await self.broadcast_message("entity_index_snapshot", {
-            "total_entities": len(entities),
-            "entities": entities,
-            "timestamp": time.time(),
-        })
-
-        logger.info(f"Broadcast entity_index_snapshot: {len(entities)} entities")
+        logger.info(f"Broadcast entity_index_snapshot: {snapshot_data['total_entities']} entities")
 
     async def broadcast_entity_signal_update(
         self,
@@ -1381,16 +1388,25 @@ class V3WebSocketManager:
         """Build entity index snapshot data."""
         entities = []
         for entity in self._entity_market_index.get_all_canonical_entities():
+            # Extract market tickers as simple strings for frontend compatibility
+            market_tickers = [m.market_ticker for m in entity.markets]
+
             entities.append({
                 "entity_id": entity.entity_id,
                 "canonical_name": entity.canonical_name,
                 "entity_type": entity.entity_type,
                 "aliases": list(entity.aliases),
+                # Full market objects for detailed display
                 "markets": [m.to_dict() for m in entity.markets],
+                # Simple ticker list for quick access
+                "market_tickers": market_tickers,
                 "reddit_signals": {
-                    "total_mentions": entity.reddit_mentions,
+                    # Session-level aggregated stats
+                    "mention_count": entity.reddit_mentions,
                     "aggregate_sentiment": entity.aggregate_sentiment,
                     "last_signal_at": entity.last_reddit_signal,
+                    # Deprecated field name kept for backward compatibility
+                    "total_mentions": entity.reddit_mentions,
                 },
             })
         return {
@@ -1426,10 +1442,104 @@ class V3WebSocketManager:
         except Exception as e:
             logger.warning(f"Could not send deep agent snapshot to {client_id}: {e}")
 
+    async def _send_entity_snapshot(self, client_id: str) -> None:
+        """
+        Send entity pipeline snapshot to a specific client.
+
+        This enables session persistence for the Deep Agent page,
+        restoring Reddit posts, entity extractions, and price impacts
+        after a page refresh.
+        """
+        if not self._reddit_agent:
+            return
+        if client_id not in self._clients:
+            return
+
+        try:
+            # Get snapshot from reddit agent (posts + entities)
+            entity_snapshot = self._reddit_agent.get_entity_snapshot()
+
+            # Get price impacts from the global store
+            from ..services.price_impact_store import get_price_impact_store
+            price_impact_store = get_price_impact_store()
+            price_impacts = price_impact_store.get_recent_for_snapshot(limit=30)
+
+            # Get entity index size if available
+            index_size = 0
+            if self._entity_market_index:
+                try:
+                    index_stats = self._entity_market_index.get_stats()
+                    index_size = index_stats.get("total_entities", 0)
+                except Exception:
+                    pass
+
+            # Build stats with all required fields (camelCase for frontend)
+            stats = entity_snapshot.get("stats", {})
+            stats["signalsGenerated"] = len(price_impacts)
+            stats["indexSize"] = index_size
+
+            # Build combined snapshot
+            snapshot_data = {
+                "reddit_posts": entity_snapshot.get("reddit_posts", []),
+                "entities": entity_snapshot.get("entities", []),
+                "price_impacts": price_impacts,
+                "stats": stats,
+                "is_active": entity_snapshot.get("is_active", False),
+            }
+
+            await self._send_to_client(client_id, {
+                "type": "entity_snapshot",
+                "data": snapshot_data
+            })
+            logger.info(
+                f"Sent entity snapshot to {client_id}: "
+                f"{len(snapshot_data['reddit_posts'])} posts, "
+                f"{len(snapshot_data['entities'])} entities, "
+                f"{len(snapshot_data['price_impacts'])} price impacts, "
+                f"stats={stats}"
+            )
+        except Exception as e:
+            logger.warning(f"Could not send entity snapshot to {client_id}: {e}")
+
+    async def _send_price_impacts_snapshot(self, client_id: str) -> None:
+        """
+        Send price impacts snapshot to a specific client.
+
+        This ensures the Deep Agent page shows existing price impact signals
+        after a page refresh, without waiting for new signals to arrive.
+        """
+        if client_id not in self._clients:
+            return
+
+        try:
+            from ..services.price_impact_store import get_price_impact_store
+            price_impact_store = get_price_impact_store()
+            price_impacts = price_impact_store.get_recent_for_snapshot(limit=30)
+
+            if not price_impacts:
+                logger.debug(f"No price impacts to send to {client_id}")
+                return
+
+            await self._send_to_client(client_id, {
+                "type": "price_impacts_snapshot",
+                "data": {
+                    "price_impacts": price_impacts,
+                    "count": len(price_impacts),
+                    "timestamp": time.time(),
+                }
+            })
+            logger.info(
+                f"Sent price_impacts_snapshot to {client_id}: "
+                f"{len(price_impacts)} signals"
+            )
+
+        except Exception as e:
+            logger.warning(f"Could not send price impacts snapshot to {client_id}: {e}")
+
     def get_stats(self) -> Dict[str, Any]:
         """Get WebSocket manager statistics."""
         uptime = time.time() - self._started_at if self._started_at else 0
-        
+
         return {
             "running": self._running,
             "active_connections": self._active_connections,

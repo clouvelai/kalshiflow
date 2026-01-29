@@ -26,7 +26,7 @@ import {
 import V3Header from '../layout/V3Header';
 import { useV3WebSocket } from '../../../hooks/v3-trader/useV3WebSocket';
 import { useDeepAgent } from '../../../hooks/v3-trader/useDeepAgent';
-import { EntityKnowledgeBasePanel } from '../panels';
+import { EntityIndexPanel } from '../panels';
 
 /**
  * Pipeline Stage Card - Visualizes a stage in the data pipeline
@@ -237,21 +237,120 @@ const EntityExtractionCard = memo(({ extraction }) => {
 EntityExtractionCard.displayName = 'EntityExtractionCard';
 
 /**
- * Reddit Post Card - Shows a Reddit post from the stream
+ * Related Entity Card - Shows entity detected by spaCy NER but NOT in Knowledge Base
+ * These are PERSON, ORG, GPE, EVENT entities that don't map to any Kalshi market
  */
-const RedditPostCard = memo(({ post }) => (
-  <div className="p-3 bg-gray-800/30 rounded-lg border border-gray-700/30 hover:border-orange-700/30 transition-colors">
-    <div className="flex items-center gap-2 mb-1.5">
-      <span className="text-[10px] text-orange-400 font-medium">r/{post.subreddit}</span>
-      {post.score > 0 && (
-        <span className="text-[10px] text-gray-500">↑{post.score}</span>
+const RelatedEntityCard = memo(({ entity }) => {
+  const sentimentColor = entity.sentiment_score > 0 ? 'text-emerald-400' : 'text-rose-400';
+  const sentimentBg = entity.sentiment_score > 0 ? 'bg-emerald-900/20' : 'bg-rose-900/20';
+
+  // Entity type colors
+  const typeColors = {
+    PERSON: 'bg-blue-900/30 text-blue-300 border-blue-700/30',
+    ORG: 'bg-purple-900/30 text-purple-300 border-purple-700/30',
+    GPE: 'bg-amber-900/30 text-amber-300 border-amber-700/30',
+    EVENT: 'bg-pink-900/30 text-pink-300 border-pink-700/30',
+  };
+  const typeColor = typeColors[entity.entity_type] || 'bg-gray-700/50 text-gray-400';
+
+  return (
+    <div className="p-3 bg-gray-800/30 rounded-lg border border-gray-700/30 hover:border-blue-700/30 transition-colors">
+      <div className="flex items-center justify-between mb-2">
+        <div className="flex items-center gap-2">
+          <User className="w-3.5 h-3.5 text-blue-400" />
+          <span className="text-sm font-medium text-gray-200">{entity.entity_text}</span>
+          <span className={`px-1.5 py-0.5 text-[9px] rounded border ${typeColor}`}>
+            {entity.entity_type}
+          </span>
+        </div>
+        <div className={`px-2 py-0.5 rounded text-xs font-mono font-bold ${sentimentBg} ${sentimentColor}`}>
+          {entity.sentiment_score > 0 ? '+' : ''}{entity.sentiment_score}
+        </div>
+      </div>
+      {entity.source_subreddit && (
+        <div className="flex items-center gap-1.5 mb-1">
+          <MessageSquare className="w-3 h-3 text-orange-400" />
+          <span className="text-[10px] text-orange-400">r/{entity.source_subreddit}</span>
+        </div>
+      )}
+      {entity.context_snippet && (
+        <div className="text-[10px] text-gray-500 truncate" title={entity.context_snippet}>
+          "{entity.context_snippet}"
+        </div>
+      )}
+      {entity.co_occurring_market_entities?.length > 0 && (
+        <div className="mt-2 pt-2 border-t border-gray-700/30">
+          <span className="text-[9px] text-gray-500">Co-occurring with: </span>
+          {entity.co_occurring_market_entities.slice(0, 3).map((me, idx) => (
+            <span key={idx} className="text-[9px] text-cyan-400 mr-1">{me}</span>
+          ))}
+        </div>
       )}
     </div>
-    <div className="text-xs text-gray-300 line-clamp-2" title={post.title}>
-      {post.title}
+  );
+});
+
+RelatedEntityCard.displayName = 'RelatedEntityCard';
+
+/**
+ * Reddit Post Card - Shows a Reddit post from the stream with timestamp and extracted entities
+ */
+const RedditPostCard = memo(({ post, entities = [] }) => {
+  // Filter entities that belong to this post
+  const postEntities = entities.filter(e => e.post_id === post.post_id);
+
+  // Format timestamp
+  const formatTime = (utc) => {
+    if (!utc) return '';
+    const date = new Date(utc * 1000);
+    const now = new Date();
+    const diffMs = now - date;
+    const diffMins = Math.floor(diffMs / 60000);
+
+    if (diffMins < 1) return 'just now';
+    if (diffMins < 60) return `${diffMins}m ago`;
+    const diffHours = Math.floor(diffMins / 60);
+    if (diffHours < 24) return `${diffHours}h ago`;
+    return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  };
+
+  return (
+    <div className="p-3 bg-gray-800/30 rounded-lg border border-gray-700/30 hover:border-orange-700/30 transition-colors">
+      <div className="flex items-center justify-between mb-1.5">
+        <div className="flex items-center gap-2">
+          <span className="text-[10px] text-orange-400 font-medium">r/{post.subreddit}</span>
+          {post.score > 0 && (
+            <span className="text-[10px] text-gray-500">↑{post.score}</span>
+          )}
+        </div>
+        {post.created_utc && (
+          <span className="text-[9px] text-gray-600">{formatTime(post.created_utc)}</span>
+        )}
+      </div>
+      <div className="text-xs text-gray-300 line-clamp-2 mb-1.5" title={post.title}>
+        {post.title}
+      </div>
+      {/* Extracted entities from this post */}
+      {postEntities.length > 0 && (
+        <div className="flex flex-wrap gap-1 mt-2 pt-2 border-t border-gray-700/30">
+          {postEntities.map((entity, idx) => {
+            const sentimentColor = entity.sentiment_score > 0 ? 'text-emerald-400 bg-emerald-900/30 border-emerald-700/30' : 'text-rose-400 bg-rose-900/30 border-rose-700/30';
+            return (
+              <span
+                key={`${entity.entity_id}_${idx}`}
+                className={`inline-flex items-center gap-1 px-1.5 py-0.5 text-[9px] rounded border ${sentimentColor}`}
+                title={`${entity.canonical_name}: ${entity.sentiment_score > 0 ? '+' : ''}${entity.sentiment_score}`}
+              >
+                <span className="font-medium truncate max-w-[80px]">{entity.canonical_name}</span>
+                <span className="font-mono">{entity.sentiment_score > 0 ? '+' : ''}{entity.sentiment_score}</span>
+              </span>
+            );
+          })}
+        </div>
+      )}
     </div>
-  </div>
-));
+  );
+});
 
 RedditPostCard.displayName = 'RedditPostCard';
 
@@ -587,6 +686,7 @@ LearningsPanel.displayName = 'LearningsPanel';
 const AgentPage = () => {
   const [showPosts, setShowPosts] = useState(true);
   const [showEntities, setShowEntities] = useState(true);
+  const [showRelatedEntities, setShowRelatedEntities] = useState(true);
 
   // Initialize deep agent hook first to get processMessage
   const {
@@ -618,6 +718,8 @@ const AgentPage = () => {
     entityStats,
     entitySystemActive,
     entityIndex,
+    redditAgentHealth,
+    relatedEntities,
   } = useV3WebSocket({ onMessage: handleMessage });
 
   // Get deep agent strategy data
@@ -740,6 +842,28 @@ const AgentPage = () => {
                   <span className="px-2 py-0.5 bg-orange-900/30 text-orange-400 text-[10px] font-bold rounded-full">
                     {entityRedditPosts.length}
                   </span>
+                  {/* Health Status Indicator */}
+                  {redditAgentHealth.health === 'healthy' ? (
+                    <span className="flex items-center gap-1 px-1.5 py-0.5 bg-emerald-900/30 text-emerald-400 text-[9px] rounded-full border border-emerald-700/30" title={`Connected to r/${redditAgentHealth.subreddits?.join(', r/') || 'politics, news'}`}>
+                      <CheckCircle className="w-3 h-3" />
+                      <span className="font-medium">Live</span>
+                    </span>
+                  ) : redditAgentHealth.health === 'degraded' ? (
+                    <span className="flex items-center gap-1 px-1.5 py-0.5 bg-amber-900/30 text-amber-400 text-[9px] rounded-full border border-amber-700/30" title="Reddit connected but NLP/KB not ready">
+                      <AlertCircle className="w-3 h-3" />
+                      <span className="font-medium">Partial</span>
+                    </span>
+                  ) : redditAgentHealth.health === 'unhealthy' ? (
+                    <span className="flex items-center gap-1 px-1.5 py-0.5 bg-red-900/30 text-red-400 text-[9px] rounded-full border border-red-700/30" title={redditAgentHealth.lastError || 'Reddit API not connected'}>
+                      <XCircle className="w-3 h-3" />
+                      <span className="font-medium">Offline</span>
+                    </span>
+                  ) : (
+                    <span className="flex items-center gap-1 px-1.5 py-0.5 bg-gray-800/50 text-gray-500 text-[9px] rounded-full border border-gray-700/30" title="Waiting for status...">
+                      <Clock className="w-3 h-3" />
+                      <span className="font-medium">...</span>
+                    </span>
+                  )}
                 </div>
                 {showPosts ? <ChevronDown className="w-4 h-4 text-gray-500" /> : <ChevronRight className="w-4 h-4 text-gray-500" />}
               </button>
@@ -747,18 +871,44 @@ const AgentPage = () => {
                 <div className="px-4 pb-4 space-y-2 max-h-[300px] overflow-y-auto">
                   {entityRedditPosts.length === 0 ? (
                     <div className="text-center py-6 text-gray-500 text-sm">
-                      Waiting for Reddit posts...
+                      {redditAgentHealth.health === 'unhealthy' ? (
+                        <div className="space-y-2">
+                          <XCircle className="w-8 h-8 text-red-500 mx-auto" />
+                          <div className="text-red-400 font-medium">Reddit API not connected</div>
+                          <div className="text-[11px] text-gray-600">
+                            {redditAgentHealth.lastError || 'Check REDDIT_CLIENT_ID and REDDIT_CLIENT_SECRET env vars'}
+                          </div>
+                        </div>
+                      ) : redditAgentHealth.health === 'degraded' ? (
+                        <div className="space-y-2">
+                          <AlertCircle className="w-8 h-8 text-amber-500 mx-auto" />
+                          <div className="text-amber-400 font-medium">Partially connected</div>
+                          <div className="text-[11px] text-gray-600">
+                            Reddit: ✓ | NLP: {redditAgentHealth.nlpAvailable ? '✓' : '✗'} | KB: {redditAgentHealth.kbAvailable ? '✓' : '✗'}
+                          </div>
+                        </div>
+                      ) : redditAgentHealth.health === 'healthy' ? (
+                        <div className="space-y-2">
+                          <RefreshCw className="w-6 h-6 text-orange-400 mx-auto animate-spin" />
+                          <div>Listening to r/{redditAgentHealth.subreddits?.join(', r/') || 'politics, news'}...</div>
+                        </div>
+                      ) : (
+                        <div className="space-y-2">
+                          <Clock className="w-6 h-6 text-gray-500 mx-auto" />
+                          <div>Waiting for Reddit posts...</div>
+                        </div>
+                      )}
                     </div>
                   ) : (
                     entityRedditPosts.slice(0, 10).map((post) => (
-                      <RedditPostCard key={post.post_id} post={post} />
+                      <RedditPostCard key={post.post_id} post={post} entities={entityExtractions} />
                     ))
                   )}
                 </div>
               )}
             </div>
 
-            {/* Entity Extractions */}
+            {/* Entity Extractions (Market Entities - in KB) */}
             <div className="bg-gray-900/50 rounded-2xl border border-gray-800/50 overflow-hidden">
               <button
                 onClick={() => setShowEntities(!showEntities)}
@@ -770,6 +920,7 @@ const AgentPage = () => {
                   <span className="px-2 py-0.5 bg-violet-900/30 text-violet-400 text-[10px] font-bold rounded-full">
                     {entityExtractions.length}
                   </span>
+                  <span className="text-[9px] text-gray-500 italic">Market-linked</span>
                 </div>
                 {showEntities ? <ChevronDown className="w-4 h-4 text-gray-500" /> : <ChevronRight className="w-4 h-4 text-gray-500" />}
               </button>
@@ -782,6 +933,41 @@ const AgentPage = () => {
                   ) : (
                     entityExtractions.slice(0, 10).map((extraction, idx) => (
                       <EntityExtractionCard key={`${extraction.post_id}_${extraction.entity_id}_${idx}`} extraction={extraction} />
+                    ))
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Related Entities (PERSON, ORG, GPE, EVENT - NOT in KB) */}
+            <div className="bg-gray-900/50 rounded-2xl border border-gray-800/50 overflow-hidden">
+              <button
+                onClick={() => setShowRelatedEntities(!showRelatedEntities)}
+                className="w-full flex items-center justify-between p-4 hover:bg-gray-800/30 transition-colors"
+              >
+                <div className="flex items-center gap-2">
+                  <User className="w-4 h-4 text-blue-400" />
+                  <span className="text-sm font-semibold text-gray-300">Related Entities</span>
+                  <span className="px-2 py-0.5 bg-blue-900/30 text-blue-400 text-[10px] font-bold rounded-full">
+                    {relatedEntities.length}
+                  </span>
+                  <span className="text-[9px] text-gray-500 italic">Not in KB</span>
+                </div>
+                {showRelatedEntities ? <ChevronDown className="w-4 h-4 text-gray-500" /> : <ChevronRight className="w-4 h-4 text-gray-500" />}
+              </button>
+              {showRelatedEntities && (
+                <div className="px-4 pb-4 space-y-2 max-h-[300px] overflow-y-auto">
+                  {relatedEntities.length === 0 ? (
+                    <div className="text-center py-6 text-gray-500 text-sm">
+                      <div className="mb-2">No related entities detected yet...</div>
+                      <div className="text-[10px] text-gray-600">
+                        Shows PERSON, ORG, GPE, EVENT entities from spaCy NER
+                        <br />that don't match any Kalshi market in the Knowledge Base
+                      </div>
+                    </div>
+                  ) : (
+                    relatedEntities.slice(0, 15).map((entity, idx) => (
+                      <RelatedEntityCard key={`${entity.source_post_id}_${entity.normalized_id}_${idx}`} entity={entity} />
                     ))
                   )}
                 </div>
@@ -847,11 +1033,13 @@ const AgentPage = () => {
             {/* Learnings - Collapsed by default */}
             <LearningsPanel learnings={learnings} memoryUpdates={memoryUpdates} />
 
-            {/* Entity Knowledge Base - What the agent knows */}
+            {/* Entity Index - What the agent knows */}
             <div className="mt-6">
-              <EntityKnowledgeBasePanel
+              <EntityIndexPanel
                 entityIndex={entityIndex}
                 entitySystemActive={entitySystemActive}
+                redditAgentHealth={redditAgentHealth}
+                showContentExtraction={true}
               />
             </div>
           </div>

@@ -16,6 +16,7 @@ import os
 import re
 from dataclasses import dataclass
 from typing import Optional, TYPE_CHECKING
+from urllib.parse import urlparse
 
 import aiohttp
 
@@ -45,6 +46,29 @@ SOCIAL_PATTERNS = [
     r"reddit\.com/r/",  # Reddit links to other subreddits
 ]
 SOCIAL_REGEX = re.compile("|".join(SOCIAL_PATTERNS), re.IGNORECASE)
+
+
+def extract_source_domain(url: str) -> str:
+    """
+    Extract domain from URL (e.g., 'youtube.com', 'foxnews.com').
+
+    Args:
+        url: The URL to extract domain from
+
+    Returns:
+        Domain string or 'reddit.com' if no URL or 'unknown' on error
+    """
+    if not url:
+        return "reddit.com"
+    try:
+        parsed = urlparse(url)
+        domain = parsed.netloc.lower()
+        # Remove www. prefix
+        if domain.startswith("www."):
+            domain = domain[4:]
+        return domain or "reddit.com"
+    except Exception:
+        return "unknown"
 
 
 @dataclass
@@ -78,6 +102,7 @@ class ExtractedContent:
     source: str = ""  # "selftext", "whisper", "llm_extraction"
     success: bool = False
     error: Optional[str] = None
+    source_domain: str = ""  # Extracted domain (e.g., "youtube.com", "foxnews.com")
 
 
 class ContentExtractor:
@@ -165,6 +190,9 @@ class ContentExtractor:
         content_type = self.detect_content_type(url, selftext)
         self._by_type[content_type] = self._by_type.get(content_type, 0) + 1
 
+        # Extract domain for all content types
+        source_domain = extract_source_domain(url)
+
         try:
             if content_type == "text":
                 # Text post - just use selftext
@@ -174,15 +202,20 @@ class ContentExtractor:
                     text=selftext[: self._config.max_output_chars] if selftext else "",
                     source="selftext",
                     success=bool(selftext),
+                    source_domain=source_domain,
                 )
 
             elif content_type == "video":
                 # Video post - transcribe with Whisper
-                return await self._extract_video(url)
+                result = await self._extract_video(url)
+                result.source_domain = source_domain
+                return result
 
             elif content_type == "link":
                 # Link post - fetch and extract article
-                return await self._extract_article(url)
+                result = await self._extract_article(url)
+                result.source_domain = source_domain
+                return result
 
             elif content_type == "image":
                 # Image post - skip
@@ -191,6 +224,7 @@ class ContentExtractor:
                     content_type="image",
                     success=False,
                     error="Image content cannot be extracted as text",
+                    source_domain=source_domain,
                 )
 
             elif content_type == "social":
@@ -200,6 +234,7 @@ class ContentExtractor:
                     content_type="social",
                     success=False,
                     error="Social media links not supported for extraction",
+                    source_domain=source_domain,
                 )
 
             else:
@@ -208,6 +243,7 @@ class ContentExtractor:
                     content_type="unknown",
                     success=False,
                     error="Unknown content type",
+                    source_domain=source_domain,
                 )
 
         except Exception as e:
@@ -217,6 +253,7 @@ class ContentExtractor:
                 content_type=content_type,
                 success=False,
                 error=str(e),
+                source_domain=source_domain,
             )
 
     async def _extract_video(self, url: str) -> ExtractedContent:

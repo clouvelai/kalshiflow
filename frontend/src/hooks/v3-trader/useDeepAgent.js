@@ -242,6 +242,38 @@ export const useDeepAgent = ({ useV3WebSocketState }) => {
   }, []);
 
   /**
+   * Handle price_impacts_snapshot message - Restore price impacts after page refresh
+   */
+  const handlePriceImpactsSnapshot = useCallback((data) => {
+    const impacts = data.price_impacts || [];
+    if (impacts.length === 0) return;
+
+    // Transform backend format to frontend format
+    const transformedImpacts = impacts.map(pi => ({
+      id: pi.signal_id || `${Date.now()}-${pi.market_ticker}`,
+      marketTicker: pi.market_ticker,
+      eventTicker: pi.event_ticker,
+      entityId: pi.entity_id,
+      entityName: pi.entity_name,
+      sentimentScore: pi.sentiment_score,
+      priceImpactScore: pi.price_impact_score,
+      marketType: pi.market_type || 'UNKNOWN',
+      transformationLogic: pi.transformation_logic,
+      confidence: pi.confidence,
+      subreddit: pi.source_subreddit,
+      sourceTitle: pi.source_title || '',
+      contextSnippet: pi.context_snippet || '',
+      timestamp: pi.created_at || Date.now(),
+      sourceCreatedAt: pi.source_created_at || null,
+      sourceType: pi.source_type || 'reddit_text',
+      agentStatus: pi.agent_status || 'pending',
+    }));
+
+    setPriceImpacts(transformedImpacts.slice(0, maxPriceImpacts));
+    console.log(`[useDeepAgent] Restored ${transformedImpacts.length} price impacts from snapshot`);
+  }, []);
+
+  /**
    * Handle deep_agent_snapshot message - Restore state after page refresh
    */
   const handleSnapshot = useCallback((data) => {
@@ -293,7 +325,26 @@ export const useDeepAgent = ({ useV3WebSocketState }) => {
       })));
     }
 
-    console.log(`[useDeepAgent] Snapshot restored: cycle ${data.cycle_count}, ${data.trades_executed} trades`);
+    // Restore thinking from snapshot (show most recent)
+    if (data.recent_thinking?.length > 0) {
+      const latestThinking = data.recent_thinking[data.recent_thinking.length - 1];
+      setThinking({
+        text: latestThinking.text || latestThinking,
+        timestamp: latestThinking.timestamp || null,
+        cycle: latestThinking.cycle || data.cycle_count || 0,
+      });
+    }
+
+    // Restore learnings from snapshot
+    if (data.recent_learnings?.length > 0) {
+      setLearnings(data.recent_learnings.map((l, i) => ({
+        id: l.id || `learning-restored-${i}`,
+        content: l.content || l,
+        timestamp: l.timestamp || new Date().toISOString(),
+      })));
+    }
+
+    console.log(`[useDeepAgent] Snapshot restored: cycle ${data.cycle_count}, ${data.trades_executed} trades, ${data.recent_thinking?.length || 0} thinking, ${data.recent_learnings?.length || 0} learnings`);
   }, []);
 
   /**
@@ -308,13 +359,22 @@ export const useDeepAgent = ({ useV3WebSocketState }) => {
       entityName: data.entity_name,
       sentimentScore: data.sentiment_score,
       priceImpactScore: data.price_impact_score,
-      marketType: data.market_type,
+      marketType: data.market_type || 'UNKNOWN',
       transformationLogic: data.transformation_logic,
       confidence: data.confidence,
       suggestedSide: data.suggested_side,
       subreddit: data.source_subreddit,
       postId: data.source_post_id,
+      // Source context fields
+      sourceTitle: data.source_title || '',
+      contextSnippet: data.context_snippet || '',
+      // Timestamps
       timestamp: data.created_at || Date.now(),
+      sourceCreatedAt: data.source_created_at || null, // Original Reddit post time
+      // Source type (text/video/article)
+      sourceType: data.source_type || 'reddit_text',
+      // Agent status (pending/viewed/traded/observed/rejected)
+      agentStatus: data.agent_status || 'pending',
     };
 
     setPriceImpacts(prev => [impact, ...prev].slice(0, maxPriceImpacts));
@@ -365,6 +425,9 @@ export const useDeepAgent = ({ useV3WebSocketState }) => {
       case 'deep_agent_snapshot':
         handleSnapshot(data);
         break;
+      case 'price_impacts_snapshot':
+        handlePriceImpactsSnapshot(data);
+        break;
       default:
         // Ignore other message types
         break;
@@ -382,6 +445,7 @@ export const useDeepAgent = ({ useV3WebSocketState }) => {
     handlePriceImpact,
     handleError,
     handleSnapshot,
+    handlePriceImpactsSnapshot,
   ]);
 
   /**

@@ -44,6 +44,12 @@ from .entity_store import (
     RelatedEntityStore,
     RelatedEntity,
 )
+from .market_impact_reasoner import (
+    MarketImpactReasoner,
+    MarketInfo,
+    should_analyze_for_market_impact,
+    analyze_market_impact,
+)
 
 __all__ = [
     # Knowledge Base
@@ -63,4 +69,9 @@ __all__ = [
     # Related Entities
     "RelatedEntityStore",
     "RelatedEntity",
+    # Market Impact Reasoning
+    "MarketImpactReasoner",
+    "MarketInfo",
+    "should_analyze_for_market_impact",
+    "analyze_market_impact",
 ]

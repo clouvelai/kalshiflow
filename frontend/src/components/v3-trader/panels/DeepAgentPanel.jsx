@@ -26,6 +26,129 @@ import {
 } from 'lucide-react';
 
 /**
+ * Renders markdown text into formatted JSX with visual hierarchy.
+ * Handles headers, subheaders, bold text, bullets, and preserves emojis.
+ */
+const renderThinkingMarkdown = (text) => {
+  if (!text) return null;
+
+  const lines = text.split('\n');
+  const elements = [];
+  let currentList = [];
+  let listKey = 0;
+
+  const flushList = () => {
+    if (currentList.length > 0) {
+      elements.push(
+        <ul key={`list-${listKey++}`} className="space-y-1 ml-4 my-2">
+          {currentList}
+        </ul>
+      );
+      currentList = [];
+    }
+  };
+
+  const renderInlineFormatting = (lineText) => {
+    // Handle **bold** text
+    const parts = lineText.split(/(\*\*[^*]+\*\*)/g);
+    return parts.map((part, i) => {
+      if (part.startsWith('**') && part.endsWith('**')) {
+        return (
+          <strong key={i} className="text-gray-200 font-semibold">
+            {part.slice(2, -2)}
+          </strong>
+        );
+      }
+      return part;
+    });
+  };
+
+  lines.forEach((line, index) => {
+    const trimmed = line.trim();
+
+    // Skip empty lines but preserve spacing
+    if (!trimmed) {
+      flushList();
+      elements.push(<div key={`space-${index}`} className="h-2" />);
+      return;
+    }
+
+    // ## Header (large, with border)
+    if (trimmed.startsWith('## ')) {
+      flushList();
+      const headerText = trimmed.slice(3);
+      elements.push(
+        <div
+          key={`h2-${index}`}
+          className="text-violet-300 font-semibold text-sm border-b border-violet-700/30 pb-1 mb-2 mt-3 first:mt-0"
+        >
+          {renderInlineFormatting(headerText)}
+        </div>
+      );
+      return;
+    }
+
+    // ### Subheader (medium, subtle background)
+    if (trimmed.startsWith('### ')) {
+      flushList();
+      const subheaderText = trimmed.slice(4);
+      elements.push(
+        <div
+          key={`h3-${index}`}
+          className="text-violet-400 font-medium text-xs bg-violet-900/30 px-2 py-1 rounded mt-3 mb-1"
+        >
+          {renderInlineFormatting(subheaderText)}
+        </div>
+      );
+      return;
+    }
+
+    // Bullet points (- item)
+    if (trimmed.startsWith('- ')) {
+      const bulletText = trimmed.slice(2);
+      currentList.push(
+        <li
+          key={`bullet-${index}`}
+          className="text-sm text-gray-300 flex items-start gap-2"
+        >
+          <span className="text-violet-500 mt-1.5 text-[8px]">●</span>
+          <span className="flex-1">{renderInlineFormatting(bulletText)}</span>
+        </li>
+      );
+      return;
+    }
+
+    // Numbered list (1. item, 2. item, etc.)
+    const numberedMatch = trimmed.match(/^(\d+)\.\s+(.+)$/);
+    if (numberedMatch) {
+      currentList.push(
+        <li
+          key={`num-${index}`}
+          className="text-sm text-gray-300 flex items-start gap-2"
+        >
+          <span className="text-violet-400 font-mono text-xs min-w-[16px]">{numberedMatch[1]}.</span>
+          <span className="flex-1">{renderInlineFormatting(numberedMatch[2])}</span>
+        </li>
+      );
+      return;
+    }
+
+    // Regular text
+    flushList();
+    elements.push(
+      <div key={`text-${index}`} className="text-sm text-gray-300 my-0.5">
+        {renderInlineFormatting(trimmed)}
+      </div>
+    );
+  });
+
+  // Flush any remaining list items
+  flushList();
+
+  return elements;
+};
+
+/**
  * Thinking Stream - Real-time agent reasoning display
  */
 const ThinkingStream = memo(({ thinking, isLearning }) => {
@@ -41,18 +164,21 @@ const ThinkingStream = memo(({ thinking, isLearning }) => {
   }
 
   return (
-    <div className="p-4 bg-violet-900/20 rounded-lg border border-violet-700/30">
+    <div className="p-4 bg-violet-900/20 rounded-lg border border-violet-700/30 max-h-[400px] overflow-y-auto">
       <div className="flex items-start gap-3">
         <div className="p-2 rounded-lg bg-violet-900/40 flex-shrink-0">
           <Brain className="w-4 h-4 text-violet-400 animate-pulse" />
         </div>
         <div className="flex-1 min-w-0">
-          <div className="text-xs text-violet-400 font-medium mb-1 uppercase tracking-wider">
-            Thinking
+          <div className="text-xs text-violet-400 font-medium mb-2 uppercase tracking-wider flex items-center justify-between">
+            <span>Thinking</span>
+            {thinking?.cycleNumber && (
+              <span className="text-violet-500 font-mono">Cycle {thinking.cycleNumber}</span>
+            )}
           </div>
-          <div className="text-sm text-gray-300 whitespace-pre-wrap break-words">
-            {thinking?.text}
-            <span className="animate-pulse">█</span>
+          <div className="break-words">
+            {renderThinkingMarkdown(thinking?.text)}
+            <span className="animate-pulse text-violet-400">█</span>
           </div>
         </div>
       </div>
@@ -233,6 +359,13 @@ RedditSignalRow.displayName = 'RedditSignalRow';
  *
  * This is the key visualization showing how Reddit entity sentiment gets
  * transformed into market-specific price impact signals.
+ *
+ * Displays:
+ * - Source context (Reddit post title and entity context snippet)
+ * - Source time (when Reddit post was created)
+ * - Source type (video/article/text)
+ * - Agent status (what the deep agent has done with this signal)
+ * - Sentiment → Impact transformation pipeline
  */
 const PriceImpactRow = memo(({ impact }) => {
   const sentimentIsPositive = impact.sentimentScore > 0;
@@ -251,20 +384,60 @@ const PriceImpactRow = memo(({ impact }) => {
   const sentimentColor = sentimentIsPositive ? 'text-emerald-400' : 'text-rose-400';
   const impactColor = impactIsPositive ? 'text-emerald-400' : 'text-rose-400';
 
-  // Market type badge colors
-  const marketTypeBadge = {
-    OUT: 'bg-amber-900/30 text-amber-400 border-amber-600/30',
-    CONFIRM: 'bg-blue-900/30 text-blue-400 border-blue-600/30',
-    WIN: 'bg-emerald-900/30 text-emerald-400 border-emerald-600/30',
-    NOMINEE: 'bg-violet-900/30 text-violet-400 border-violet-600/30',
-    PRESIDENT: 'bg-cyan-900/30 text-cyan-400 border-cyan-600/30',
-    UNKNOWN: 'bg-gray-800/30 text-gray-400 border-gray-600/30',
-  }[impact.marketType] || 'bg-gray-800/30 text-gray-400 border-gray-600/30';
+  // Market type badge colors and labels
+  const marketTypeConfig = {
+    OUT: { style: 'bg-amber-900/30 text-amber-400 border-amber-600/30', label: 'OUT' },
+    CONFIRM: { style: 'bg-blue-900/30 text-blue-400 border-blue-600/30', label: 'CONFIRM' },
+    WIN: { style: 'bg-emerald-900/30 text-emerald-400 border-emerald-600/30', label: 'WIN' },
+    NOMINEE: { style: 'bg-violet-900/30 text-violet-400 border-violet-600/30', label: 'NOMINEE' },
+    PRESIDENT: { style: 'bg-cyan-900/30 text-cyan-400 border-cyan-600/30', label: 'PRES' },
+    MENTION: { style: 'bg-orange-900/30 text-orange-400 border-orange-600/30', label: 'MENTION' },
+    UNKNOWN: { style: 'bg-gray-800/30 text-gray-500 border-gray-600/30', label: 'SIGNAL' },
+  };
+  const marketType = marketTypeConfig[impact.marketType] || marketTypeConfig.UNKNOWN;
 
-  // Format timestamp
-  const formattedTime = typeof impact.timestamp === 'number'
+  // Agent status badge configuration
+  const agentStatusConfig = {
+    pending: { style: 'bg-gray-800/40 text-gray-400 border-gray-600/30', label: 'Pending', icon: Clock },
+    viewed: { style: 'bg-blue-900/30 text-blue-400 border-blue-600/30', label: 'Viewed', icon: Activity },
+    traded: { style: 'bg-emerald-900/30 text-emerald-400 border-emerald-600/30', label: 'Traded', icon: CheckCircle },
+    observed: { style: 'bg-amber-900/30 text-amber-400 border-amber-600/30', label: 'Watching', icon: AlertCircle },
+    rejected: { style: 'bg-red-900/30 text-red-400 border-red-600/30', label: 'Rejected', icon: XCircle },
+  };
+  const agentStatus = agentStatusConfig[impact.agentStatus] || agentStatusConfig.pending;
+  const StatusIcon = agentStatus.icon;
+
+  // Source type badge configuration
+  const sourceTypeConfig = {
+    reddit_text: { style: 'bg-orange-900/30 text-orange-400 border-orange-600/30', label: 'Text', icon: FileText },
+    video_transcript: { style: 'bg-rose-900/30 text-rose-400 border-rose-600/30', label: 'Video', icon: Activity },
+    article_extract: { style: 'bg-blue-900/30 text-blue-400 border-blue-600/30', label: 'Article', icon: BookOpen },
+  };
+  const sourceType = sourceTypeConfig[impact.sourceType] || sourceTypeConfig.reddit_text;
+  const SourceIcon = sourceType.icon;
+
+  // Format source time (when Reddit post was created) - this is the key timestamp
+  const formatSourceTime = (timestamp) => {
+    if (!timestamp) return null;
+    const date = new Date(timestamp * 1000);
+    const now = new Date();
+    const diffMs = now - date;
+    const diffMins = Math.floor(diffMs / 60000);
+    const diffHours = Math.floor(diffMs / 3600000);
+
+    if (diffMins < 60) {
+      return `${diffMins}m ago`;
+    } else if (diffHours < 24) {
+      return `${diffHours}h ago`;
+    } else {
+      return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    }
+  };
+
+  const sourceTime = formatSourceTime(impact.sourceCreatedAt);
+  const signalTime = typeof impact.timestamp === 'number'
     ? new Date(impact.timestamp * 1000).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
-    : impact.timestamp;
+    : null;
 
   return (
     <div className={`
@@ -283,7 +456,7 @@ const PriceImpactRow = memo(({ impact }) => {
         ${impactIsPositive ? 'bg-emerald-500/5' : 'bg-rose-500/5'}
       `} />
 
-      {/* Header: Entity + Market Type + Suggested Side */}
+      {/* Header: Entity + Badges Row */}
       <div className="relative flex items-center justify-between mb-2">
         <div className="flex items-center gap-2 min-w-0 flex-1">
           <div className="p-1.5 rounded-lg bg-gray-800/50 border border-gray-700/30">
@@ -293,18 +466,35 @@ const PriceImpactRow = memo(({ impact }) => {
             <div className="text-sm font-medium text-gray-200 truncate">
               {impact.entityName}
             </div>
-            {impact.subreddit && (
-              <div className="text-[10px] text-orange-400/80">
-                r/{impact.subreddit}
-              </div>
-            )}
+            <div className="flex items-center gap-2 mt-0.5">
+              {impact.subreddit && (
+                <span className="text-[10px] text-orange-400/80">r/{impact.subreddit}</span>
+              )}
+              {sourceTime && (
+                <span className="text-[10px] text-gray-500 flex items-center gap-1">
+                  <Clock className="w-2.5 h-2.5" />
+                  {sourceTime}
+                </span>
+              )}
+            </div>
           </div>
         </div>
 
-        <div className="flex items-center gap-2 flex-shrink-0">
-          <span className={`px-2 py-0.5 rounded text-[9px] font-bold border ${marketTypeBadge}`}>
-            {impact.marketType}
+        {/* Right side badges: Agent Status + Market Type + Side */}
+        <div className="flex items-center gap-1.5 flex-shrink-0">
+          {/* Agent Status Badge */}
+          <span className={`
+            px-1.5 py-0.5 rounded text-[9px] font-medium border flex items-center gap-1
+            ${agentStatus.style}
+          `}>
+            <StatusIcon className="w-2.5 h-2.5" />
+            {agentStatus.label}
           </span>
+          {/* Market Type Badge */}
+          <span className={`px-2 py-0.5 rounded text-[9px] font-bold border ${marketType.style}`}>
+            {marketType.label}
+          </span>
+          {/* Suggested Side Badge */}
           <span className={`
             px-2 py-1 rounded-lg text-[10px] font-bold border shadow-sm
             ${sideBadge}
@@ -314,13 +504,54 @@ const PriceImpactRow = memo(({ impact }) => {
         </div>
       </div>
 
+      {/* Source Context: Reddit Post Title + Context Snippet - THE WHY */}
+      <div className="relative mb-2 p-2 bg-gray-900/60 rounded-lg border border-gray-800/40">
+        <div className="flex items-start gap-2">
+          <div className="flex-shrink-0 mt-0.5">
+            <SourceIcon className={`w-3 h-3 ${sourceType.style.includes('orange') ? 'text-orange-400/70' : sourceType.style.includes('rose') ? 'text-rose-400/70' : 'text-blue-400/70'}`} />
+          </div>
+          <div className="flex-1 min-w-0">
+            {impact.sourceTitle ? (
+              <>
+                <div className="text-[11px] text-gray-300 line-clamp-2 leading-relaxed" title={impact.sourceTitle}>
+                  "{impact.sourceTitle}"
+                </div>
+                {impact.contextSnippet && (
+                  <div className="text-[9px] text-gray-500 italic mt-1 line-clamp-2" title={impact.contextSnippet}>
+                    Context: "{impact.contextSnippet}"
+                  </div>
+                )}
+              </>
+            ) : (
+              <div className="text-[10px] text-gray-500 italic">
+                No source context available
+              </div>
+            )}
+            {/* Source type label */}
+            <div className="mt-1 flex items-center gap-2">
+              <span className={`px-1.5 py-0.5 rounded text-[8px] font-medium border ${sourceType.style}`}>
+                {sourceType.label}
+              </span>
+              {signalTime && (
+                <span className="text-[8px] text-gray-600">
+                  Signal: {signalTime}
+                </span>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+
       {/* Transformation Pipeline: Sentiment → Impact */}
       <div className="relative flex items-center gap-2 mb-2 py-2 px-2 bg-gray-900/40 rounded-lg border border-gray-800/50">
-        {/* Sentiment Score */}
+        {/* Entity Sentiment Score */}
         <div className="flex-1 text-center">
-          <div className="text-[9px] text-gray-500 uppercase tracking-wider mb-1">Sentiment</div>
+          <div className="text-[9px] text-gray-500 uppercase tracking-wider mb-1">Entity Sentiment</div>
           <div className={`text-lg font-mono font-bold ${sentimentColor}`}>
             {impact.sentimentScore > 0 ? '+' : ''}{impact.sentimentScore}
+          </div>
+          <div className="text-[8px] text-gray-600 mt-0.5">
+            {sentimentIsPositive ? 'Positive news' : 'Negative news'}
           </div>
         </div>
 
@@ -334,9 +565,12 @@ const PriceImpactRow = memo(({ impact }) => {
 
         {/* Price Impact Score */}
         <div className="flex-1 text-center">
-          <div className="text-[9px] text-gray-500 uppercase tracking-wider mb-1">Impact</div>
+          <div className="text-[9px] text-gray-500 uppercase tracking-wider mb-1">Price Impact</div>
           <div className={`text-lg font-mono font-bold ${impactColor}`}>
             {impact.priceImpactScore > 0 ? '+' : ''}{impact.priceImpactScore}
+          </div>
+          <div className="text-[8px] text-gray-600 mt-0.5">
+            Buy {impact.priceImpactScore > 0 ? 'YES' : 'NO'}
           </div>
         </div>
 
@@ -345,6 +579,9 @@ const PriceImpactRow = memo(({ impact }) => {
           <div className="text-[9px] text-gray-500 uppercase tracking-wider mb-1">Confidence</div>
           <div className="text-lg font-mono font-bold text-cyan-400">
             {(impact.confidence * 100).toFixed(0)}%
+          </div>
+          <div className="text-[8px] text-gray-600 mt-0.5">
+            Signal strength
           </div>
         </div>
       </div>
@@ -356,16 +593,9 @@ const PriceImpactRow = memo(({ impact }) => {
           <span className="font-mono text-[11px] text-gray-400">{impact.marketTicker}</span>
         </div>
         <span className="text-[9px] text-gray-500 italic truncate max-w-[200px]" title={impact.transformationLogic}>
-          {impact.transformationLogic || (wasInverted ? 'Sentiment inverted for market type' : 'Direct correlation')}
+          {impact.transformationLogic || (wasInverted ? 'Sentiment inverted for market type' : 'Direct sentiment correlation')}
         </span>
       </div>
-
-      {/* Timestamp */}
-      {formattedTime && (
-        <div className="absolute top-2 right-2 text-[9px] text-gray-600">
-          {formattedTime}
-        </div>
-      )}
     </div>
   );
 });
@@ -387,14 +617,25 @@ StatsCard.displayName = 'StatsCard';
 /**
  * DeepAgentPanel - Main panel for the self-improving deep agent
  *
- * Displays:
- * - Agent status and session metrics
- * - Real-time thinking stream
- * - Tool call activity
- * - Price impacts (entity → market transformation pipeline)
- * - Trade executions and settlements
- * - Learnings (live updates to memory)
- * - Reddit signals (if enabled)
+ * Props:
+ * - statsOnly: When true, renders only header and 8-stat summary (for Trader tab)
+ * - agentState: Current agent state object
+ * - thinking: Current thinking stream
+ * - toolCalls: Array of tool call records
+ * - trades: Array of trade records
+ * - settlements: Array of settlement records
+ * - learnings: Array of learning records
+ * - redditSignals: Array of reddit signal records
+ * - priceImpacts: Array of price impact records
+ * - isRunning: Whether agent is currently running
+ * - isLearning: Whether agent is in learning mode
+ *
+ * When statsOnly={true}, displays:
+ * - Agent status header with RUNNING/STOPPED badge
+ * - Session stats (P&L, Trades, Win Rate, Cycles)
+ * - Entity pipeline stats (Reddit, Entities, Signals, Index)
+ *
+ * When statsOnly={false} (default), displays full view with all sections.
  */
 const DeepAgentPanel = ({
   agentState,
@@ -407,6 +648,7 @@ const DeepAgentPanel = ({
   priceImpacts = [],
   isRunning = false,
   isLearning = false,
+  statsOnly = false,
 }) => {
   const [isExpanded, setIsExpanded] = useState(true);
   const [showTools, setShowTools] = useState(false);
@@ -523,6 +765,41 @@ const DeepAgentPanel = ({
             />
           </div>
 
+          {/* Entity Pipeline Stats (Reddit → Entities → Signals) */}
+          <div className={statsOnly ? "grid grid-cols-4 gap-2" : "grid grid-cols-4 gap-2 mb-4"}>
+            <StatsCard
+              label="Reddit"
+              value={agentState?.redditPostsProcessed || redditSignals.length || 0}
+              color="text-orange-400"
+              bgColor="bg-orange-900/20"
+              borderColor="border-orange-700/30"
+            />
+            <StatsCard
+              label="Entities"
+              value={agentState?.entitiesExtracted || 0}
+              color="text-amber-400"
+              bgColor="bg-amber-900/20"
+              borderColor="border-amber-700/30"
+            />
+            <StatsCard
+              label="Signals"
+              value={agentState?.signalsGenerated || priceImpacts.length || 0}
+              color="text-rose-400"
+              bgColor="bg-rose-900/20"
+              borderColor="border-rose-700/30"
+            />
+            <StatsCard
+              label="Index"
+              value={agentState?.indexSize || 0}
+              color="text-blue-400"
+              bgColor="bg-blue-900/20"
+              borderColor="border-blue-700/30"
+            />
+          </div>
+
+          {/* Stats-only mode stops here - skip remaining sections */}
+          {statsOnly ? null : (
+          <>
           {/* Thinking Stream */}
           <div className="mb-4">
             <div className="flex items-center space-x-2 mb-2">
@@ -689,6 +966,8 @@ const DeepAgentPanel = ({
                 </div>
               )}
             </div>
+          )}
+          </>
           )}
         </>
       )}
