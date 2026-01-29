@@ -1,4 +1,7 @@
 import React, { useState, useCallback, useMemo, memo } from 'react';
+import { formatRelativeTimestamp, formatLatency } from '../../../utils/v3-trader/formatters';
+import useRelativeTime from '../../../hooks/v3-trader/useRelativeTime';
+import useSignalFreshness from '../../../hooks/v3-trader/useSignalFreshness';
 import {
   Brain,
   Sparkles,
@@ -22,6 +25,7 @@ import {
   XCircle,
   Clock,
   DollarSign,
+  FileText,
 } from 'lucide-react';
 import V3Header from '../layout/V3Header';
 import renderThinkingMarkdown from '../../../utils/renderThinkingMarkdown';
@@ -73,8 +77,9 @@ PipelineStage.displayName = 'PipelineStage';
 
 /**
  * Price Impact Card - Full visualization of entity → market transformation
+ * (Full-page variant using snake_case field names)
  */
-const PriceImpactCard = memo(({ impact }) => {
+const PriceImpactCard = memo(({ impact, isNew = false, freshnessTier = 'normal' }) => {
   const sentimentIsPositive = impact.sentiment_score > 0;
   const impactIsPositive = impact.price_impact_score > 0;
   const wasInverted = sentimentIsPositive !== impactIsPositive;
@@ -96,6 +101,42 @@ const PriceImpactCard = memo(({ impact }) => {
     UNKNOWN: 'bg-gray-800/40 text-gray-300 border-gray-600/40',
   }[impact.market_type] || 'bg-gray-800/40 text-gray-300 border-gray-600/40';
 
+  // Source type config
+  const sourceTypeConfig = {
+    reddit_text: { style: 'bg-orange-900/30 text-orange-400 border-orange-600/30', label: 'Text', icon: FileText },
+    video_transcript: { style: 'bg-rose-900/30 text-rose-400 border-rose-600/30', label: 'Video', icon: Activity },
+    article_extract: { style: 'bg-blue-900/30 text-blue-400 border-blue-600/30', label: 'Article', icon: BookOpen },
+  };
+  const sourceType = sourceTypeConfig[impact.source_type] || sourceTypeConfig.reddit_text;
+  const SourceIcon = sourceType.icon;
+
+  // Live-updating timestamps (snake_case fields)
+  const postedAgo = formatRelativeTimestamp(impact.source_created_at);
+  const detectedAgo = formatRelativeTimestamp(impact.timestamp || impact.created_at);
+  const lag = formatLatency(impact.source_created_at, impact.timestamp || impact.created_at);
+
+  // Contextual subtitles
+  const sentimentSubtitle = impact.context_snippet
+    ? (impact.context_snippet.length > 50 ? impact.context_snippet.slice(0, 50) + '...' : impact.context_snippet)
+    : `${impact.source_type === 'reddit_text' ? 'Reddit' : 'Source'} discussion: ${sentimentIsPositive ? 'positive' : 'negative'} tone`;
+
+  const impactSubtitle = wasInverted
+    ? `${impact.market_type || 'OUT'}: negative news helps`
+    : `${impact.market_type === 'WIN' ? 'WIN' : 'Direct'}: sentiment aligns`;
+
+  const confidenceSubtitle = impact.confidence >= 0.9
+    ? 'High: strong match'
+    : impact.confidence >= 0.7
+      ? 'Medium: likely match'
+      : 'Low: uncertain match';
+
+  // Build animation classes
+  const animationClasses = [
+    isNew ? 'animate-signal-slide-in' : '',
+    freshnessTier === 'fresh' ? 'animate-signal-fresh' : '',
+    freshnessTier === 'recent' ? 'animate-signal-recent' : '',
+  ].filter(Boolean).join(' ');
+
   return (
     <div className={`
       relative overflow-hidden rounded-2xl border border-gray-700/50
@@ -103,6 +144,7 @@ const PriceImpactCard = memo(({ impact }) => {
       backdrop-blur-sm p-5
       transition-all duration-300 hover:border-gray-600/60
       group
+      ${animationClasses}
     `}>
       {/* Glow effect */}
       <div className={`
@@ -111,7 +153,7 @@ const PriceImpactCard = memo(({ impact }) => {
       `} />
 
       {/* Header */}
-      <div className="relative flex items-start justify-between mb-4">
+      <div className="relative flex items-start justify-between mb-3">
         <div className="flex items-center gap-3">
           <div className="p-2.5 rounded-xl bg-gray-800/60 border border-gray-700/40">
             <User className="w-5 h-5 text-gray-300" />
@@ -141,6 +183,66 @@ const PriceImpactCard = memo(({ impact }) => {
         </div>
       </div>
 
+      {/* Dual Timestamp Bar: Posted | Detected | Lag */}
+      {(postedAgo || detectedAgo) && (
+        <div className="relative flex items-center gap-4 mb-4 px-3 py-2 bg-gray-900/50 rounded-lg border border-gray-800/30 text-xs">
+          {postedAgo && (
+            <span className="flex items-center gap-1.5">
+              <Clock className="w-3.5 h-3.5 text-gray-500" />
+              <span className="text-gray-500">Posted</span>
+              <span className="text-orange-400 font-medium">{postedAgo}</span>
+            </span>
+          )}
+          {postedAgo && detectedAgo && (
+            <span className="text-gray-700">|</span>
+          )}
+          {detectedAgo && (
+            <span className="flex items-center gap-1.5">
+              <Zap className="w-3.5 h-3.5 text-gray-500" />
+              <span className="text-gray-500">Detected</span>
+              <span className="text-cyan-400 font-medium">{detectedAgo}</span>
+            </span>
+          )}
+          {lag && (
+            <>
+              <span className="text-gray-700">|</span>
+              <span className="flex items-center gap-1.5">
+                <Activity className="w-3.5 h-3.5 text-gray-500" />
+                <span className="text-gray-500">{lag} lag</span>
+              </span>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* Source Context: Reddit Post Title + Context Snippet */}
+      {(impact.source_title || impact.context_snippet) && (
+        <div className="relative mb-4 p-3 bg-gray-900/60 rounded-xl border border-gray-800/40">
+          <div className="flex items-start gap-2">
+            <div className="flex-shrink-0 mt-0.5">
+              <SourceIcon className={`w-3.5 h-3.5 ${sourceType.style.includes('orange') ? 'text-orange-400/70' : sourceType.style.includes('rose') ? 'text-rose-400/70' : 'text-blue-400/70'}`} />
+            </div>
+            <div className="flex-1 min-w-0">
+              {impact.source_title && (
+                <div className="text-xs font-medium text-gray-200 line-clamp-2 leading-relaxed" title={impact.source_title}>
+                  "{impact.source_title}"
+                </div>
+              )}
+              {impact.context_snippet && (
+                <div className="text-[10px] text-gray-400 mt-1 line-clamp-3" title={impact.context_snippet}>
+                  {impact.context_snippet}
+                </div>
+              )}
+              <div className="mt-1.5">
+                <span className={`px-1.5 py-0.5 rounded text-[8px] font-medium border ${sourceType.style}`}>
+                  {sourceType.label}
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Transformation Pipeline */}
       <div className="relative flex items-center gap-4 p-4 bg-gray-900/50 rounded-xl border border-gray-800/60 mb-4">
         {/* Sentiment */}
@@ -149,8 +251,8 @@ const PriceImpactCard = memo(({ impact }) => {
           <div className={`text-3xl font-mono font-bold ${sentimentIsPositive ? 'text-emerald-400' : 'text-rose-400'}`}>
             {impact.sentiment_score > 0 ? '+' : ''}{impact.sentiment_score}
           </div>
-          <div className="text-[9px] text-gray-600 mt-1">
-            {sentimentIsPositive ? 'Positive news' : 'Negative news'}
+          <div className="text-[10px] text-gray-500 mt-1">
+            {sentimentSubtitle}
           </div>
         </div>
 
@@ -175,8 +277,8 @@ const PriceImpactCard = memo(({ impact }) => {
           <div className={`text-3xl font-mono font-bold ${impactIsPositive ? 'text-emerald-400' : 'text-rose-400'}`}>
             {impact.price_impact_score > 0 ? '+' : ''}{impact.price_impact_score}
           </div>
-          <div className="text-[9px] text-gray-600 mt-1">
-            {impactIsPositive ? 'Buy YES' : 'Buy NO'}
+          <div className="text-[10px] text-gray-500 mt-1" title={impact.transformation_logic}>
+            {impactSubtitle}
           </div>
         </div>
 
@@ -187,17 +289,17 @@ const PriceImpactCard = memo(({ impact }) => {
           <div className="text-3xl font-mono font-bold text-cyan-400">
             {(impact.confidence * 100).toFixed(0)}%
           </div>
-          <div className="text-[9px] text-gray-600 mt-1">Signal strength</div>
+          <div className="text-[10px] text-gray-500 mt-1">{confidenceSubtitle}</div>
         </div>
       </div>
 
       {/* Market Info */}
-      <div className="relative flex items-center justify-between">
+      <div className="relative flex items-center justify-between border-t border-gray-800/30 pt-2">
         <div className="flex items-center gap-2">
           <BarChart3 className="w-4 h-4 text-gray-500" />
           <span className="font-mono text-sm text-gray-300">{impact.market_ticker}</span>
         </div>
-        <span className="text-xs text-gray-500 italic max-w-[300px] truncate" title={impact.transformation_logic}>
+        <span className="text-[10px] text-gray-400 max-w-[300px] truncate" title={impact.transformation_logic}>
           {impact.transformation_logic || (wasInverted ? 'Sentiment inverted for OUT market' : 'Direct sentiment correlation')}
         </span>
       </div>
@@ -695,6 +797,9 @@ const AgentPage = () => {
   const [showEntities, setShowEntities] = useState(true);
   const [showRelatedEntities, setShowRelatedEntities] = useState(true);
 
+  // Live-updating timestamps: forces re-render every 30s
+  useRelativeTime(30000);
+
   // Initialize deep agent hook first to get processMessage
   const {
     agentState,
@@ -732,6 +837,9 @@ const AgentPage = () => {
   // Get deep agent strategy data
   const deepAgentStrategy = strategyStatus?.strategies?.deep_agent;
   const isAgentRunning = agentIsRunning || deepAgentStrategy?.running || entitySystemActive;
+
+  // Track new signal arrivals + freshness tiers for price impact cards
+  const { newSignalIds, getFreshnessTier } = useSignalFreshness(entityPriceImpacts);
 
   // Pipeline stats
   const pipelineStats = useMemo(() => ({
@@ -1028,7 +1136,12 @@ const AgentPage = () => {
                   </div>
                 ) : (
                   entityPriceImpacts.slice(0, 20).map((impact) => (
-                    <PriceImpactCard key={impact.signal_id} impact={impact} />
+                    <PriceImpactCard
+                      key={impact.signal_id}
+                      impact={impact}
+                      isNew={newSignalIds.has(impact.signal_id)}
+                      freshnessTier={getFreshnessTier(impact)}
+                    />
                   ))
                 )}
               </div>

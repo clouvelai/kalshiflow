@@ -421,6 +421,50 @@ class ReflectionEngine:
         else:
             path.write_text(content, encoding="utf-8")
 
+    def _build_performance_scorecard(self) -> str:
+        """
+        Build a quantitative performance scorecard for injection into reflections.
+
+        Returns a compact summary of all-time stats, recent trend (last 5 trades),
+        and P&L trajectory to give the agent concrete feedback on improvement.
+        """
+        if not self._reflections:
+            return ""
+
+        total = len(self._reflections)
+        wins = sum(1 for r in self._reflections if r.result == "win")
+        losses = sum(1 for r in self._reflections if r.result == "loss")
+        total_pnl = sum(r.pnl_cents for r in self._reflections)
+        win_rate = wins / total if total > 0 else 0.0
+
+        # Last 5 trades trend
+        recent = self._reflections[-5:]
+        recent_wins = sum(1 for r in recent if r.result == "win")
+        recent_pnl = sum(r.pnl_cents for r in recent)
+        recent_win_rate = recent_wins / len(recent) if recent else 0.0
+
+        # Strategy update count
+        strategy_updates = sum(1 for r in self._reflections if r.should_update_strategy)
+        mistakes_found = sum(1 for r in self._reflections if r.mistake_identified)
+
+        # Trend arrow
+        if len(self._reflections) >= 5:
+            first_half_pnl = sum(r.pnl_cents for r in self._reflections[:total // 2])
+            second_half_pnl = sum(r.pnl_cents for r in self._reflections[total // 2:])
+            trend = "IMPROVING" if second_half_pnl > first_half_pnl else "DECLINING" if second_half_pnl < first_half_pnl else "FLAT"
+        else:
+            trend = "TOO_EARLY"
+
+        lines = [
+            "### Performance Scorecard",
+            f"- **All-Time**: {wins}W/{losses}L ({win_rate:.0%} win rate), P&L: ${total_pnl / 100:.2f}",
+            f"- **Last 5 Trades**: {recent_wins}W/{len(recent) - recent_wins}L ({recent_win_rate:.0%}), P&L: ${recent_pnl / 100:.2f}",
+            f"- **Trend**: {trend}",
+            f"- **Strategy Updates**: {strategy_updates} | **Mistakes Found**: {mistakes_found}",
+        ]
+
+        return "\n".join(lines)
+
     def generate_reflection_prompt(self, trade: PendingTrade) -> str:
         """
         Generate a reflection prompt for a settled trade.
@@ -434,6 +478,10 @@ class ReflectionEngine:
             Structured prompt for reflection
         """
         result_emoji = "✅" if trade.result == "win" else "❌" if trade.result == "loss" else "➖"
+
+        # Build performance scorecard for quantitative context
+        scorecard = self._build_performance_scorecard()
+        scorecard_section = f"\n{scorecard}\n" if scorecard else ""
 
         return f"""
 ## Trade Settlement - Time to Reflect {result_emoji}
@@ -451,7 +499,7 @@ A trade you made has settled. Analyze the outcome and extract learnings.
 
 ### Your Original Reasoning
 {trade.reasoning}
-
+{scorecard_section}
 ### Reflection Questions
 1. **Why did this trade {trade.result}?** What was the key factor?
 2. **Was your reasoning correct?** Did the market move as you expected?
@@ -459,11 +507,19 @@ A trade you made has settled. Analyze the outcome and extract learnings.
 4. **Should you update your strategy?** Is there a rule to add/modify?
 
 ### Instructions
-Based on your analysis:
-1. Call `write_memory("learnings.md", ...)` to add this learning
-2. If you made a mistake, call `write_memory("mistakes.md", ...)` to avoid it next time
-3. If you found a successful pattern, call `write_memory("patterns.md", ...)` to remember it
-4. If your strategy needs updating, call `write_memory("strategy.md", ...)` with the new version
+Use the `reflect()` tool to record your structured analysis. It auto-appends to the right memory files.
+
+Call `reflect(trade_ticker, outcome_analysis, reasoning_accuracy, key_learning, ...)` with:
+- **trade_ticker**: "{trade.ticker}"
+- **outcome_analysis**: Why did this trade {trade.result}?
+- **reasoning_accuracy**: "correct", "partially_correct", or "wrong"
+- **key_learning**: Specific, actionable insight
+- **mistake**: (optional) Clear error to avoid
+- **pattern**: (optional) Repeatable winning setup
+- **strategy_update_needed**: true/false
+- **confidence_in_learning**: "high", "medium", or "low"
+
+If strategy_update_needed=true, also call `read_memory("strategy.md")` then `write_memory("strategy.md", ...)` with the updated version.
 
 Be specific and actionable in your learnings.
 """

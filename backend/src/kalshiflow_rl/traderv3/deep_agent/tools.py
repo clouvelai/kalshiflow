@@ -250,6 +250,7 @@ class DeepAgentTools:
             "get_session_state": 0,
             "read_memory": 0,
             "write_memory": 0,
+            "append_memory": 0,
             "get_event_context": 0,
         }
 
@@ -1237,20 +1238,60 @@ class DeepAgentTools:
             logger.error(f"[deep_agent.tools.write_memory] Error writing {safe_name}: {e}")
             return False
 
-    async def append_memory(self, filename: str, content: str) -> bool:
+    async def append_memory(self, filename: str, content: str) -> dict:
         """
-        Append to a memory file.
+        Append to a memory file with automatic size management.
+
+        If the file exceeds 10,000 characters after appending, the oldest
+        half of the content is archived to memory_archive/{date}/ to prevent
+        unbounded growth while preserving history.
 
         Args:
             filename: Name of memory file
             content: Content to append
 
         Returns:
-            True if successful
+            Dict with success status and metadata
         """
-        existing = await self.read_memory(filename)
+        self._tool_calls["append_memory"] += 1
+
+        safe_name = Path(filename).name
+        existing = await self.read_memory(safe_name)
         new_content = existing + "\n" + content if existing else content
-        return await self.write_memory(filename, new_content)
+
+        # Size guard: archive oldest half if over 10,000 chars
+        archived = False
+        archive_path = ""
+        if len(new_content) > 10000:
+            midpoint = len(new_content) // 2
+            # Find the nearest newline after midpoint to avoid cutting mid-line
+            split_point = new_content.find("\n", midpoint)
+            if split_point == -1:
+                split_point = midpoint
+
+            archived_content = new_content[:split_point]
+            new_content = new_content[split_point:].lstrip("\n")
+
+            # Archive the older half
+            archive_dir = self._memory_dir / "memory_archive" / datetime.now().strftime("%Y-%m-%d")
+            archive_dir.mkdir(parents=True, exist_ok=True)
+            archive_file = archive_dir / f"{safe_name}.{datetime.now().strftime('%H%M%S')}"
+            archive_file.write_text(archived_content, encoding="utf-8")
+            archive_path = str(archive_file)
+            archived = True
+
+            logger.info(
+                f"[deep_agent.tools.append_memory] Archived {len(archived_content)} chars "
+                f"from {safe_name} to {archive_path}"
+            )
+
+        success = await self.write_memory(safe_name, new_content)
+        return {
+            "success": success,
+            "new_length": len(new_content),
+            "archived": archived,
+            "archive_path": archive_path if archived else None,
+        }
 
     def get_tool_stats(self) -> Dict[str, int]:
         """Get tool usage statistics."""

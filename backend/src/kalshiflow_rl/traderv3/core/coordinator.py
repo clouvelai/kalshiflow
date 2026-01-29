@@ -763,6 +763,9 @@ class V3Coordinator:
                 subreddits=self._config.entity_subreddits,
                 skip_existing=False,  # Get historical 100 items
                 enabled=True,
+                llm_entity_extraction_enabled=getattr(
+                    self._config, "llm_entity_extraction_enabled", True
+                ),
             )
             self._reddit_entity_agent = RedditEntityAgent(
                 config=reddit_config,

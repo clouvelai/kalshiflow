@@ -50,6 +50,9 @@ from .market_impact_reasoner import (
     should_analyze_for_market_impact,
     analyze_market_impact,
 )
+from .llm_entity_extractor import (
+    LLMEntityExtractor,
+)
 
 __all__ = [
     # Knowledge Base
@@ -74,4 +77,6 @@ __all__ = [
     "MarketInfo",
     "should_analyze_for_market_impact",
     "analyze_market_impact",
+    # LLM Entity Extraction
+    "LLMEntityExtractor",
 ]

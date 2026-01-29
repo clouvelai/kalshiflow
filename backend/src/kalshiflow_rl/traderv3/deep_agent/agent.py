@@ -163,7 +163,7 @@ class SelfImprovingAgent:
 
         # Conversation history for context
         self._conversation_history: List[Dict[str, Any]] = []
-        self._max_history_length = 20
+        self._max_history_length = 40
 
         # Background task
         self._cycle_task: Optional[asyncio.Task] = None
@@ -190,11 +190,9 @@ class SelfImprovingAgent:
         self._total_cache_read_tokens = 0
         self._total_cache_created_tokens = 0
 
-        # Session-start context from memory files (loaded once at start)
-        self._initial_context: Dict[str, str] = {}
-
         # Reflection count for consolidation trigger
         self._reflection_count = 0
+        self._consecutive_losses = 0  # Track loss streaks for urgent consolidation
 
         # Tool definitions for Claude
         self._tool_definitions = self._build_tool_definitions()
@@ -315,7 +313,7 @@ class SelfImprovingAgent:
             },
             {
                 "name": "write_memory",
-                "description": "Write to a memory file to save learnings, update strategy, or record mistakes.",
+                "description": "FULL REPLACE a memory file. Use ONLY for strategy.md rewrites where you need to restructure the entire file. For adding learnings/mistakes/patterns, use append_memory instead.",
                 "input_schema": {
                     "type": "object",
                     "properties": {
@@ -325,7 +323,25 @@ class SelfImprovingAgent:
                         },
                         "content": {
                             "type": "string",
-                            "description": "Content to write"
+                            "description": "Content to write (REPLACES entire file)"
+                        }
+                    },
+                    "required": ["filename", "content"]
+                }
+            },
+            {
+                "name": "append_memory",
+                "description": "APPEND to a memory file (safe, no data loss). Use for learnings.md, mistakes.md, and patterns.md. Automatically archives old content if file exceeds 10,000 chars.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "filename": {
+                            "type": "string",
+                            "description": "Memory file to append to (e.g., 'learnings.md', 'mistakes.md', 'patterns.md')"
+                        },
+                        "content": {
+                            "type": "string",
+                            "description": "Content to append (added to end of file)"
                         }
                     },
                     "required": ["filename", "content"]
@@ -360,6 +376,50 @@ class SelfImprovingAgent:
                         }
                     },
                     "required": ["signal_analysis", "strategy_check", "risk_assessment", "decision"]
+                }
+            },
+            {
+                "name": "reflect",
+                "description": "Structured post-trade reflection. Use after a trade settles to record learnings. Auto-appends to appropriate memory files (no data loss). Preferred over manual write_memory calls for reflections.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "trade_ticker": {
+                            "type": "string",
+                            "description": "Market ticker of the settled trade"
+                        },
+                        "outcome_analysis": {
+                            "type": "string",
+                            "description": "Why did this trade win/lose? What was the key factor?"
+                        },
+                        "reasoning_accuracy": {
+                            "type": "string",
+                            "enum": ["correct", "partially_correct", "wrong"],
+                            "description": "Was your original reasoning accurate?"
+                        },
+                        "key_learning": {
+                            "type": "string",
+                            "description": "The main insight from this trade. Be specific and actionable."
+                        },
+                        "mistake": {
+                            "type": "string",
+                            "description": "Optional: A clear error or anti-pattern to avoid next time"
+                        },
+                        "pattern": {
+                            "type": "string",
+                            "description": "Optional: A repeatable winning setup discovered"
+                        },
+                        "strategy_update_needed": {
+                            "type": "boolean",
+                            "description": "Should strategy.md be updated based on this learning?"
+                        },
+                        "confidence_in_learning": {
+                            "type": "string",
+                            "enum": ["high", "medium", "low"],
+                            "description": "How confident are you in this learning? High = clear evidence, Low = speculative"
+                        }
+                    },
+                    "required": ["trade_ticker", "outcome_analysis", "reasoning_accuracy", "key_learning", "strategy_update_needed", "confidence_in_learning"]
                 }
             }
         ]
@@ -523,12 +583,9 @@ class SelfImprovingAgent:
         await self._init_memory_files()
         logger.info("[deep_agent.agent] Memory files initialized")
 
-        # Load initial context from memory files (mistakes and patterns to avoid/repeat)
-        await self._load_initial_context()
-        logger.info("[deep_agent.agent] Loaded initial context from memory files")
-
-        # Reset reflection count for consolidation trigger
+        # Reset reflection count and loss streak for consolidation trigger
         self._reflection_count = 0
+        self._consecutive_losses = 0
 
         # Start reflection engine
         await self._reflection.start()
@@ -553,7 +610,7 @@ class SelfImprovingAgent:
             logger.warning("[deep_agent.agent] No ws_manager - cannot broadcast status to frontend!")
 
     async def stop(self) -> None:
-        """Stop the agent."""
+        """Stop the agent with end-of-session summary and memory archival."""
         if not self._running:
             return
 
@@ -568,6 +625,20 @@ class SelfImprovingAgent:
             except asyncio.CancelledError:
                 pass
 
+        # Generate end-of-session summary (with timeout to prevent blocking shutdown)
+        try:
+            await asyncio.wait_for(self._generate_session_summary(), timeout=60.0)
+        except asyncio.TimeoutError:
+            logger.warning("[deep_agent.agent] Session summary timed out after 60s, skipping")
+        except Exception as e:
+            logger.error(f"[deep_agent.agent] Error generating session summary: {e}")
+
+        # Archive memory files for this session
+        try:
+            self._archive_session_memory()
+        except Exception as e:
+            logger.error(f"[deep_agent.agent] Error archiving memory: {e}")
+
         # Stop reflection engine
         await self._reflection.stop()
 
@@ -581,6 +652,93 @@ class SelfImprovingAgent:
                 "trades_executed": self._trades_executed,
                 "timestamp": time.strftime("%H:%M:%S"),
             })
+
+    async def _generate_session_summary(self) -> None:
+        """
+        Generate an end-of-session summary before shutdown.
+
+        Runs a final reflection cycle that reviews the full session:
+        - Overall performance stats
+        - Strategy effectiveness
+        - Session-level patterns
+        - Recommendations for next session
+        """
+        if self._cycle_count == 0 and self._trades_executed == 0:
+            logger.info("[deep_agent.agent] No cycles/trades in session, skipping summary")
+            return
+
+        logger.info("[deep_agent.agent] Generating end-of-session summary...")
+
+        # Build session stats
+        stats = self._reflection.get_stats()
+        uptime_seconds = time.time() - self._started_at if self._started_at else 0
+        uptime_minutes = uptime_seconds / 60
+
+        session_state = await self._tools.get_session_state()
+
+        summary_prompt = f"""## End-of-Session Summary
+
+Your trading session is ending. Review your performance and capture session-level insights.
+
+### Session Stats
+- **Duration**: {uptime_minutes:.0f} minutes
+- **Cycles Run**: {self._cycle_count}
+- **Trades Executed**: {self._trades_executed}
+- **Win Rate**: {stats.get('win_rate', 0):.0%} ({stats.get('wins', 0)}W/{stats.get('losses', 0)}L)
+- **Total P&L**: ${session_state.total_pnl_cents / 100:.2f}
+- **Reflections**: {stats.get('total_reflections', 0)}
+- **Strategy Updates**: {stats.get('strategy_updates', 0)}
+- **Mistakes Found**: {stats.get('mistakes_identified', 0)}
+
+### Instructions
+1. Call `read_memory("strategy.md")` to review your current strategy
+2. Consider: What worked this session? What didn't?
+3. Are there session-level patterns not captured in individual trade reflections?
+4. Call `append_memory("learnings.md", ...)` with session-level insights
+5. If strategy needs updating, call `write_memory("strategy.md", ...)` with improvements
+6. Keep it concise - focus on the most impactful learnings
+
+This is your last chance to capture insights before the session ends.
+"""
+
+        self._conversation_history.append({
+            "role": "user",
+            "content": summary_prompt
+        })
+
+        try:
+            # Temporarily re-enable running for this final cycle
+            self._running = True
+            await self._run_agent_cycle("")
+            self._running = False
+            logger.info("[deep_agent.agent] Session summary completed")
+        except Exception as e:
+            self._running = False
+            logger.error(f"[deep_agent.agent] Error in session summary: {e}")
+
+    def _archive_session_memory(self) -> None:
+        """
+        Archive all memory files for this session.
+
+        Creates a timestamped copy of all memory files in memory_archive/
+        to preserve the state at session end. This provides a historical
+        record of how memory evolved across sessions.
+        """
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+        archive_dir = self._memory_dir / "memory_archive" / timestamp
+        archive_dir.mkdir(parents=True, exist_ok=True)
+
+        archived_count = 0
+        for filename in self._config.memory_files:
+            source = self._memory_dir / filename
+            if source.exists():
+                dest = archive_dir / filename
+                dest.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+                archived_count += 1
+
+        logger.info(
+            f"[deep_agent.agent] Archived {archived_count} memory files to {archive_dir}"
+        )
 
     async def _init_memory_files(self) -> None:
         """Initialize memory files with minimal starter content if they don't exist."""
@@ -624,32 +782,6 @@ Successful patterns go here.
             if not filepath.exists():
                 filepath.write_text(content, encoding="utf-8")
                 logger.info(f"[deep_agent.agent] Created initial memory file: {filename}")
-
-    async def _load_initial_context(self) -> None:
-        """Load context from memory files at session start.
-
-        Loads mistakes and patterns to provide accumulated wisdom to the agent
-        from the very first cycle. This helps avoid repeating past errors and
-        leverage successful patterns discovered in previous sessions.
-        """
-        try:
-            mistakes = await self._tools.read_memory("mistakes.md")
-            patterns = await self._tools.read_memory("patterns.md")
-
-            # Store truncated versions for inclusion in cycle context
-            self._initial_context = {
-                "mistakes": mistakes[:400] if mistakes else "",
-                "patterns": patterns[:400] if patterns else "",
-            }
-
-            if mistakes and len(mistakes) > 50:
-                logger.info("[deep_agent.agent] Loaded mistakes context (%d chars)", len(mistakes))
-            if patterns and len(patterns) > 50:
-                logger.info("[deep_agent.agent] Loaded patterns context (%d chars)", len(patterns))
-
-        except Exception as e:
-            logger.warning(f"[deep_agent.agent] Could not load initial context: {e}")
-            self._initial_context = {}
 
     async def _main_loop(self) -> None:
         """Main observe-act-reflect loop."""
@@ -759,26 +891,44 @@ Successful patterns go here.
 
                 event_exposure_str = "\n" + "\n".join(event_lines) + "\n"
 
-        # Load strategy excerpt for decision-making (first 600 chars of active rules)
+        # Load strategy (full content up to 2000 chars for complete visibility)
         strategy_excerpt = ""
         try:
             strategy = await self._tools.read_memory("strategy.md")
             if strategy and len(strategy) > 50:
-                strategy_excerpt = f"\n### Your Current Strategy Rules\n{strategy[:600]}\n"
+                strategy_excerpt = f"\n### Your Current Strategy Rules\n{strategy[:2000]}\n"
         except Exception as e:
             logger.debug(f"[deep_agent.agent] Could not load strategy: {e}")
 
-        # Include session-start context (mistakes/patterns) on first few cycles
-        initial_context_str = ""
-        if self._cycle_count <= 3 and self._initial_context:
-            if self._initial_context.get("mistakes"):
-                mistakes_preview = self._initial_context["mistakes"][:300]
-                if mistakes_preview.strip() and len(mistakes_preview) > 50:
-                    initial_context_str += f"\n### Mistakes to Avoid (from memory)\n{mistakes_preview}\n"
-            if self._initial_context.get("patterns"):
-                patterns_preview = self._initial_context["patterns"][:300]
-                if patterns_preview.strip() and len(patterns_preview) > 50:
-                    initial_context_str += f"\n### Winning Patterns (from memory)\n{patterns_preview}\n"
+        # Load mistakes and patterns EVERY cycle (not just first 3)
+        # Char limits scale down after cycle 10 to save tokens on mature sessions
+        memory_context_str = ""
+        try:
+            mistakes = await self._tools.read_memory("mistakes.md")
+            if mistakes and len(mistakes) > 50:
+                mistakes_limit = 800 if self._cycle_count <= 10 else 400
+                mistakes_preview = mistakes[:mistakes_limit]
+                memory_context_str += f"\n### Mistakes to Avoid (from memory)\n{mistakes_preview}\n"
+        except Exception as e:
+            logger.debug(f"[deep_agent.agent] Could not load mistakes: {e}")
+
+        try:
+            patterns = await self._tools.read_memory("patterns.md")
+            if patterns and len(patterns) > 50:
+                patterns_limit = 800 if self._cycle_count <= 10 else 400
+                patterns_preview = patterns[:patterns_limit]
+                memory_context_str += f"\n### Winning Patterns (from memory)\n{patterns_preview}\n"
+        except Exception as e:
+            logger.debug(f"[deep_agent.agent] Could not load patterns: {e}")
+
+        # Build performance scorecard from reflection engine
+        scorecard_str = ""
+        try:
+            scorecard = self._reflection._build_performance_scorecard()
+            if scorecard:
+                scorecard_str = f"\n{scorecard}\n"
+        except Exception as e:
+            logger.debug(f"[deep_agent.agent] Could not build scorecard: {e}")
 
         context = f"""
 ## New Trading Cycle - {datetime.now().strftime("%Y-%m-%d %H:%M")}
@@ -790,7 +940,7 @@ Successful patterns go here.
 - Positions: {session_state.position_count}
 - Trade Count: {session_state.trade_count}
 - Win Rate: {session_state.win_rate:.1%}
-{event_exposure_str}{strategy_excerpt}{initial_context_str}
+{event_exposure_str}{strategy_excerpt}{memory_context_str}{scorecard_str}
 ### Target Events
 {target_events_str}
 
@@ -815,14 +965,18 @@ Successful patterns go here.
                 "content": context
             })
 
-        # Trim history if too long
+        # Trim history if too long - keep first 2 messages (session init) + last N
         if len(self._conversation_history) > self._max_history_length:
+            keep_prefix = 2  # First 2 messages contain session setup context
+            keep_suffix = self._max_history_length - keep_prefix
             dropped_count = len(self._conversation_history) - self._max_history_length
             logger.warning(
                 f"[deep_agent.agent] Truncating conversation history: "
-                f"dropping {dropped_count} messages (keeping last {self._max_history_length})"
+                f"dropping {dropped_count} messages (keeping first {keep_prefix} + last {keep_suffix})"
             )
-            self._conversation_history = self._conversation_history[-self._max_history_length:]
+            prefix = self._conversation_history[:keep_prefix]
+            suffix = self._conversation_history[-keep_suffix:]
+            self._conversation_history = prefix + suffix
 
         # Build system prompt using modular architecture
         system = build_system_prompt(
@@ -1126,6 +1280,22 @@ Successful patterns go here.
 
                 return {"success": success}
 
+            elif tool_name == "append_memory":
+                filename = tool_input["filename"]
+                content = tool_input["content"]
+                result = await self._tools.append_memory(filename, content)
+
+                # Track learnings for session persistence
+                if result.get("success") and filename == "learnings.md":
+                    learning_entry = {
+                        "id": f"learning-{time.strftime('%H:%M:%S')}",
+                        "content": content[:200] + "..." if len(content) > 200 else content,
+                        "timestamp": time.strftime("%H:%M:%S"),
+                    }
+                    self._learnings_history.append(learning_entry)
+
+                return result
+
             elif tool_name == "get_event_context":
                 context = await self._tools.get_event_context(
                     event_ticker=tool_input["event_ticker"],
@@ -1205,6 +1375,66 @@ Successful patterns go here.
                     "proceed_to_trade": decision == "TRADE",
                 }
 
+            elif tool_name == "reflect":
+                # Structured post-trade reflection tool
+                trade_ticker = tool_input["trade_ticker"]
+                outcome_analysis = tool_input["outcome_analysis"]
+                reasoning_accuracy = tool_input["reasoning_accuracy"]
+                key_learning = tool_input["key_learning"]
+                mistake = tool_input.get("mistake", "")
+                pattern = tool_input.get("pattern", "")
+                strategy_update_needed = tool_input.get("strategy_update_needed", False)
+                confidence_in_learning = tool_input.get("confidence_in_learning", "medium")
+
+                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+                results = {"trade_ticker": trade_ticker, "appended_to": []}
+
+                # Always append key learning to learnings.md
+                learning_entry = (
+                    f"\n## {timestamp} - {trade_ticker}\n"
+                    f"- **Outcome**: {outcome_analysis}\n"
+                    f"- **Reasoning Accuracy**: {reasoning_accuracy}\n"
+                    f"- **Learning** [{confidence_in_learning}]: {key_learning}\n"
+                )
+                await self._tools.append_memory("learnings.md", learning_entry)
+                results["appended_to"].append("learnings.md")
+
+                # Append mistake if provided
+                if mistake and mistake.strip():
+                    mistake_entry = (
+                        f"\n## {timestamp} - {trade_ticker}\n"
+                        f"- {mistake}\n"
+                    )
+                    await self._tools.append_memory("mistakes.md", mistake_entry)
+                    results["appended_to"].append("mistakes.md")
+
+                # Append pattern if provided
+                if pattern and pattern.strip():
+                    pattern_entry = (
+                        f"\n## {timestamp} - {trade_ticker}\n"
+                        f"- {pattern}\n"
+                    )
+                    await self._tools.append_memory("patterns.md", pattern_entry)
+                    results["appended_to"].append("patterns.md")
+
+                results["strategy_update_needed"] = strategy_update_needed
+
+                # Track learnings for session persistence
+                learning_msg = {
+                    "id": f"reflect-{time.strftime('%H:%M:%S')}",
+                    "content": key_learning[:200],
+                    "timestamp": time.strftime("%H:%M:%S"),
+                }
+                self._learnings_history.append(learning_msg)
+
+                logger.info(
+                    f"[deep_agent.agent] Reflect: {trade_ticker} "
+                    f"accuracy={reasoning_accuracy} confidence={confidence_in_learning} "
+                    f"files={results['appended_to']}"
+                )
+
+                return results
+
             else:
                 return {"error": f"Unknown tool: {tool_name}"}
 
@@ -1234,15 +1464,23 @@ Successful patterns go here.
             mistake = self._extract_mistake_from_response()
             pattern = self._extract_pattern_from_response()
 
+            # Track consecutive losses for urgent consolidation
+            trade_result = trade.result or "unknown"
+            if trade_result == "loss":
+                self._consecutive_losses += 1
+            else:
+                self._consecutive_losses = 0
+
             # Increment reflection count and check for consolidation trigger
             self._reflection_count += 1
-            if self._reflection_count % 10 == 0:
-                await self._trigger_consolidation()
+            should_consolidate, trigger_reason = self._should_consolidate(trade)
+            if should_consolidate:
+                await self._trigger_consolidation(trigger_reason)
 
             return ReflectionResult(
                 trade_id=trade.trade_id,
                 ticker=trade.ticker,
-                result=trade.result or "unknown",
+                result=trade_result,
                 pnl_cents=trade.pnl_cents or 0,
                 learning=learning,
                 should_update_strategy=bool(pattern),
@@ -1254,17 +1492,60 @@ Successful patterns go here.
             logger.error(f"[deep_agent.agent] Error in reflection: {e}")
             return None
 
-    async def _trigger_consolidation(self) -> None:
+    def _should_consolidate(self, trade: PendingTrade) -> tuple:
+        """
+        Determine if memory consolidation should be triggered.
+
+        Returns (should_consolidate, trigger_reason) tuple.
+
+        Triggers:
+        - Every 10 reflections (baseline)
+        - Significant loss > $5
+        - 3 consecutive losses (loss streak)
+        - New mistake identified on a loss
+        """
+        # Baseline: every 10 reflections
+        if self._reflection_count % 10 == 0:
+            return True, "routine"
+
+        # Urgent: significant loss (> $5 = 500 cents)
+        if trade.pnl_cents is not None and trade.pnl_cents < -500:
+            return True, "significant_loss"
+
+        # Urgent: 3 consecutive losses
+        if self._consecutive_losses >= 3:
+            return True, "loss_streak"
+
+        return False, ""
+
+    async def _trigger_consolidation(self, trigger_reason: str = "routine") -> None:
         """Trigger memory consolidation after multiple reflections.
 
-        Every 10 reflections, ask the agent to review learnings.md and
-        distill insights into strategy.md updates.
+        Args:
+            trigger_reason: Why consolidation was triggered (routine, significant_loss, loss_streak)
         """
-        logger.info(f"[deep_agent.agent] Triggering consolidation after {self._reflection_count} reflections")
+        logger.info(
+            f"[deep_agent.agent] Triggering consolidation after {self._reflection_count} reflections "
+            f"(trigger: {trigger_reason})"
+        )
 
-        consolidation_prompt = """## Memory Consolidation Time
+        # Build urgency context based on trigger
+        urgency_context = ""
+        if trigger_reason == "significant_loss":
+            urgency_context = (
+                "\n**URGENT**: This consolidation was triggered by a significant loss (>$5). "
+                "Focus on what went wrong and update risk rules immediately.\n"
+            )
+        elif trigger_reason == "loss_streak":
+            urgency_context = (
+                f"\n**URGENT**: This consolidation was triggered by {self._consecutive_losses} consecutive losses. "
+                "Something systematic may be wrong. Review your recent trades for common patterns "
+                "and consider tightening entry criteria.\n"
+            )
 
-You have completed 10 reflections since the last consolidation.
+        consolidation_prompt = f"""## Memory Consolidation Time
+{urgency_context}
+You have completed {self._reflection_count} reflections since session start.
 Time to distill your learnings into actionable strategy updates.
 
 ### Instructions

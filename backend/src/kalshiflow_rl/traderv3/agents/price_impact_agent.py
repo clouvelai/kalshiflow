@@ -54,9 +54,20 @@ class PriceImpactAgentConfig:
     min_confidence: float = 0.5  # Minimum entity confidence to process
     min_sentiment_magnitude: int = 20  # Minimum |sentiment| to create impact
 
-    # Reconnection
-    reconnect_delay_seconds: float = 5.0
-    max_reconnect_attempts: int = 10
+    # Reconnection (exponential backoff for full-recreation)
+    reconnect_backoff_base: float = 5.0
+    reconnect_backoff_max: float = 300.0  # 5 minutes max backoff
+
+    # Timeouts for Supabase Realtime operations
+    subscribe_timeout: float = 30.0
+    unsubscribe_timeout: float = 10.0
+
+    # SDK configuration (override defaults)
+    realtime_timeout: int = 30  # SDK join push timeout (default 10s is too short)
+    realtime_max_retries: int = 20  # SDK initial WS connect retries (default 5)
+
+    # Nuclear reconnect: full client recreation after this many seconds unhealthy
+    nuclear_reconnect_threshold: float = 600.0  # 10 minutes
 
     enabled: bool = True
 
@@ -110,6 +121,9 @@ class PriceImpactAgent(BaseAgent):
         self._last_signal_time: Optional[float] = None
         self._signal_timeout_seconds: float = 300.0  # 5 minutes without signal = reconnect
         self._health_check_interval: float = 60.0  # Check health every 60 seconds
+        self._subscription_healthy: bool = False
+        self._subscription_state: str = "disconnected"
+        self._last_healthy_time: Optional[float] = None
 
         # Callback for external signal handling
         self._signal_callback: Optional[Callable[[PriceImpactSignal], None]] = None
@@ -135,6 +149,9 @@ class PriceImpactAgent(BaseAgent):
             loaded = await store.load_from_supabase(self._supabase, max_age_hours=2.0)
             logger.info(f"[price_impact] Loaded {loaded} signals from Supabase on startup")
 
+        # Initialize signal time so health check works from startup
+        self._last_signal_time = time.time()
+
         # Start Realtime subscription
         self._subscription_task = asyncio.create_task(self._subscription_loop())
 
@@ -146,10 +163,15 @@ class PriceImpactAgent(BaseAgent):
 
     async def _on_stop(self) -> None:
         """Cleanup resources on agent stop."""
-        # Unsubscribe from Realtime
+        # Unsubscribe from Realtime with timeout
         if self._channel:
             try:
-                await self._channel.unsubscribe()
+                await asyncio.wait_for(
+                    self._channel.unsubscribe(),
+                    timeout=self._config.unsubscribe_timeout,
+                )
+            except asyncio.TimeoutError:
+                logger.warning("[price_impact] Unsubscribe timed out during shutdown")
             except Exception as e:
                 logger.error(f"[price_impact] Unsubscribe error: {e}")
 
@@ -178,8 +200,11 @@ class PriceImpactAgent(BaseAgent):
             "entities_skipped": self._entities_skipped,
             "reconnect_attempts": self._reconnect_attempts,
             "supabase_connected": self._channel is not None,
+            "subscription_healthy": self._subscription_healthy,
+            "subscription_state": self._subscription_state,
             "entity_index_available": self._entity_index is not None,
             "last_signal_time": self._last_signal_time,
+            "last_healthy_time": self._last_healthy_time,
             "seconds_since_signal": seconds_since_signal,
             "signal_timeout_seconds": self._signal_timeout_seconds,
         }
@@ -201,7 +226,15 @@ class PriceImpactAgent(BaseAgent):
 
             # Use async client for Realtime support
             self._supabase: AsyncClient = await acreate_client(url, key)
-            logger.info("[price_impact] Supabase async client initialized")
+
+            # Configure Realtime for stability (override SDK defaults)
+            self._supabase.realtime.timeout = self._config.realtime_timeout
+            self._supabase.realtime.max_retries = self._config.realtime_max_retries
+            logger.info(
+                f"[price_impact] Supabase async client initialized "
+                f"(timeout={self._config.realtime_timeout}s, "
+                f"max_retries={self._config.realtime_max_retries})"
+            )
             return True
 
         except ImportError:
@@ -212,37 +245,45 @@ class PriceImpactAgent(BaseAgent):
             return False
 
     async def _subscription_loop(self) -> None:
-        """Main subscription loop with reconnection handling and health monitoring."""
+        """Main loop: subscribe once, let SDK handle transient failures.
+
+        The SDK's built-in rejoin_timer uses exponential backoff (2^tries seconds)
+        to retry channel joins on timeout. We only intervene with a full client
+        recreation (nuclear reconnect) if the subscription has been unhealthy
+        for longer than nuclear_reconnect_threshold (default 10 minutes).
+        """
         while self._running:
             try:
                 await self._subscribe_to_entities()
 
-                # Keep subscription alive with health monitoring
-                health_check_counter = 0
                 while self._running and self._channel:
-                    await asyncio.sleep(1.0)
-                    health_check_counter += 1
+                    await asyncio.sleep(self._health_check_interval)
 
-                    # Health check every 60 seconds
-                    if health_check_counter >= self._health_check_interval:
-                        health_check_counter = 0
+                    # If SDK's built-in reconnection has recovered, update timer
+                    if self._subscription_healthy:
+                        self._last_healthy_time = time.time()
+                        continue
 
-                        # Check for silent disconnect (no signals for 5+ minutes)
-                        if self._last_signal_time is not None:
-                            seconds_since_signal = time.time() - self._last_signal_time
-                            if seconds_since_signal > self._signal_timeout_seconds:
-                                logger.warning(
-                                    f"[price_impact] No signals for {seconds_since_signal:.0f}s "
-                                    f"(timeout: {self._signal_timeout_seconds}s), forcing reconnect"
-                                )
-                                # Force reconnect by breaking inner loop
-                                if self._channel:
-                                    try:
-                                        await self._channel.unsubscribe()
-                                    except Exception:
-                                        pass
-                                    self._channel = None
-                                break
+                    # Not healthy - how long has it been?
+                    reference_time = (
+                        self._last_healthy_time
+                        or self._last_signal_time
+                        or time.time()
+                    )
+                    unhealthy_duration = time.time() - reference_time
+
+                    if unhealthy_duration > self._config.nuclear_reconnect_threshold:
+                        logger.warning(
+                            f"[price_impact] Unhealthy for {unhealthy_duration:.0f}s, "
+                            f"recreating Supabase client (nuclear reconnect)"
+                        )
+                        await self._nuclear_reconnect()
+                        break  # Break inner loop to re-subscribe with fresh client
+                    else:
+                        logger.info(
+                            f"[price_impact] Subscription unhealthy for {unhealthy_duration:.0f}s, "
+                            f"SDK rejoin_timer active (nuclear at {self._config.nuclear_reconnect_threshold:.0f}s)"
+                        )
 
             except asyncio.CancelledError:
                 break
@@ -251,24 +292,64 @@ class PriceImpactAgent(BaseAgent):
                 self._record_error(str(e))
 
                 self._reconnect_attempts += 1
-                if self._reconnect_attempts >= self._config.max_reconnect_attempts:
-                    logger.error("[price_impact] Max reconnect attempts reached")
-                    break
+                backoff = min(
+                    self._config.reconnect_backoff_base * (2 ** self._reconnect_attempts),
+                    self._config.reconnect_backoff_max,
+                )
+                logger.info(f"[price_impact] Reconnect backoff: {backoff:.0f}s")
+                await asyncio.sleep(backoff)
 
-                await asyncio.sleep(self._config.reconnect_delay_seconds)
+    async def _nuclear_reconnect(self) -> None:
+        """Destroy and recreate Supabase client + channel. Last resort."""
+        self._reconnect_attempts += 1
+
+        # Clean up old channel
+        if self._channel:
+            try:
+                await asyncio.wait_for(
+                    self._channel.unsubscribe(),
+                    timeout=self._config.unsubscribe_timeout,
+                )
+            except asyncio.TimeoutError:
+                logger.warning("[price_impact] Unsubscribe timed out during nuclear reconnect")
+            except Exception as e:
+                logger.warning(f"[price_impact] Unsubscribe error during nuclear reconnect: {e}")
+            self._channel = None
+
+        # Close old Realtime connection
+        if self._supabase and hasattr(self._supabase, "realtime"):
+            try:
+                await self._supabase.realtime.close()
+            except Exception:
+                pass
+
+        self._supabase = None
+        self._subscription_healthy = False
+        self._subscription_state = "disconnected"
+
+        # Recreate client
+        if not await self._init_supabase():
+            logger.error("[price_impact] Failed to recreate Supabase client in nuclear reconnect")
+            return
+
+        self._last_healthy_time = time.time()  # Reset timer to avoid immediate re-trigger
 
     async def _subscribe_to_entities(self) -> None:
-        """Subscribe to reddit_entities table INSERT events."""
+        """Subscribe to reddit_entities table INSERT events.
+
+        Uses the SDK's subscribe(callback=...) form to track subscription
+        state transitions (SUBSCRIBED, TIMED_OUT, CHANNEL_ERROR). The SDK's
+        built-in rejoin_timer handles transient failures automatically.
+        """
         if not self._supabase:
             logger.warning("[price_impact] No Supabase client for subscription")
             return
 
         try:
-            # Create channel and subscribe (async client)
+            from realtime.types import RealtimeSubscribeStates
+
             self._channel = self._supabase.channel("reddit-entities-price-impact")
 
-            # Subscribe to INSERT events on reddit_entities
-            # Note: With async client, subscribe() may return a coroutine
             channel_with_listener = self._channel.on_postgres_changes(
                 event="INSERT",
                 schema="public",
@@ -276,13 +357,27 @@ class PriceImpactAgent(BaseAgent):
                 callback=self._handle_entity_insert,
             )
 
-            # Subscribe - handle both sync and async subscribe() return values
-            result = channel_with_listener.subscribe()
-            if asyncio.iscoroutine(result):
-                await result
+            def on_subscribe_state(state: RealtimeSubscribeStates, error=None):
+                """Track subscription state - SDK calls this on state changes."""
+                self._subscription_state = state.value if hasattr(state, "value") else str(state)
+                if state == RealtimeSubscribeStates.SUBSCRIBED:
+                    self._subscription_healthy = True
+                    self._last_healthy_time = time.time()
+                    self._reconnect_attempts = 0
+                    logger.info("[price_impact] Subscribed to reddit_entities Realtime")
+                elif state == RealtimeSubscribeStates.TIMED_OUT:
+                    self._subscription_healthy = False
+                    logger.warning(
+                        "[price_impact] Subscribe timed out - SDK rejoin_timer will retry"
+                    )
+                elif state == RealtimeSubscribeStates.CHANNEL_ERROR:
+                    self._subscription_healthy = False
+                    logger.error(f"[price_impact] Channel error: {error}")
+                elif state == RealtimeSubscribeStates.CLOSED:
+                    self._subscription_healthy = False
+                    logger.info("[price_impact] Channel closed")
 
-            self._reconnect_attempts = 0
-            logger.info("[price_impact] Subscribed to reddit_entities Realtime")
+            await channel_with_listener.subscribe(callback=on_subscribe_state)
 
         except Exception as e:
             logger.error(f"[price_impact] Subscription setup error: {e}")

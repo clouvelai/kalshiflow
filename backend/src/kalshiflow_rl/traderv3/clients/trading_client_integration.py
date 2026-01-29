@@ -1137,6 +1137,8 @@ class V3TradingClientIntegration:
                                 continue  # Too far out, skip for capital efficiency
                             market["category"] = event.get("category", "")
                             market["event_ticker"] = event.get("event_ticker", "")
+                            market["event_title"] = event.get("title", "")
+                            market["event_subtitle"] = event.get("subtitle", "")
                             all_markets.append(market)
 
                 if not cursor:

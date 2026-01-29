@@ -1,4 +1,7 @@
 import React, { useState, memo, useMemo } from 'react';
+import { formatRelativeTimestamp, formatLatency } from '../../../utils/v3-trader/formatters';
+import useRelativeTime from '../../../hooks/v3-trader/useRelativeTime';
+import useSignalFreshness from '../../../hooks/v3-trader/useSignalFreshness';
 import {
   ChevronRight,
   ChevronDown,
@@ -241,13 +244,13 @@ RedditSignalRow.displayName = 'RedditSignalRow';
  * transformed into market-specific price impact signals.
  *
  * Displays:
+ * - Dual timestamp bar (Posted / Detected / Lag)
+ * - Contextual subtitles for sentiment, impact, and confidence
  * - Source context (Reddit post title and entity context snippet)
- * - Source time (when Reddit post was created)
- * - Source type (video/article/text)
- * - Agent status (what the deep agent has done with this signal)
+ * - Agent status and market type badges
  * - Sentiment → Impact transformation pipeline
  */
-const PriceImpactRow = memo(({ impact }) => {
+const PriceImpactRow = memo(({ impact, isNew = false, freshnessTier = 'normal' }) => {
   const sentimentIsPositive = impact.sentimentScore > 0;
   const impactIsPositive = impact.priceImpactScore > 0;
   const wasInverted = sentimentIsPositive !== impactIsPositive;
@@ -296,28 +299,32 @@ const PriceImpactRow = memo(({ impact }) => {
   const sourceType = sourceTypeConfig[impact.sourceType] || sourceTypeConfig.reddit_text;
   const SourceIcon = sourceType.icon;
 
-  // Format source time (when Reddit post was created) - this is the key timestamp
-  const formatSourceTime = (timestamp) => {
-    if (!timestamp) return null;
-    const date = new Date(timestamp * 1000);
-    const now = new Date();
-    const diffMs = now - date;
-    const diffMins = Math.floor(diffMs / 60000);
-    const diffHours = Math.floor(diffMs / 3600000);
+  // Live-updating timestamps
+  const postedAgo = formatRelativeTimestamp(impact.sourceCreatedAt);
+  const detectedAgo = formatRelativeTimestamp(impact.timestamp);
+  const lag = formatLatency(impact.sourceCreatedAt, impact.timestamp);
 
-    if (diffMins < 60) {
-      return `${diffMins}m ago`;
-    } else if (diffHours < 24) {
-      return `${diffHours}h ago`;
-    } else {
-      return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-    }
-  };
+  // Contextual subtitles
+  const sentimentSubtitle = impact.contextSnippet
+    ? (impact.contextSnippet.length > 40 ? impact.contextSnippet.slice(0, 40) + '...' : impact.contextSnippet)
+    : `${impact.sourceType === 'reddit_text' ? 'Reddit' : 'Source'} discussion: ${sentimentIsPositive ? 'positive' : 'negative'} tone`;
 
-  const sourceTime = formatSourceTime(impact.sourceCreatedAt);
-  const signalTime = typeof impact.timestamp === 'number'
-    ? new Date(impact.timestamp * 1000).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
-    : null;
+  const impactSubtitle = wasInverted
+    ? `${impact.marketType || 'OUT'}: negative news helps`
+    : `${impact.marketType === 'WIN' ? 'WIN' : 'Direct'}: sentiment aligns`;
+
+  const confidenceSubtitle = impact.confidence >= 0.9
+    ? 'High: strong match'
+    : impact.confidence >= 0.7
+      ? 'Medium: likely match'
+      : 'Low: uncertain match';
+
+  // Build animation classes
+  const animationClasses = [
+    isNew ? 'animate-signal-slide-in' : '',
+    freshnessTier === 'fresh' ? 'animate-signal-fresh' : '',
+    freshnessTier === 'recent' ? 'animate-signal-recent' : '',
+  ].filter(Boolean).join(' ');
 
   return (
     <div className={`
@@ -329,6 +336,7 @@ const PriceImpactRow = memo(({ impact }) => {
       transition-all duration-300
       hover:border-gray-600/50 hover:shadow-lg
       group
+      ${animationClasses}
     `}>
       {/* Subtle glow effect */}
       <div className={`
@@ -346,17 +354,9 @@ const PriceImpactRow = memo(({ impact }) => {
             <div className="text-sm font-medium text-gray-200 truncate">
               {impact.entityName}
             </div>
-            <div className="flex items-center gap-2 mt-0.5">
-              {impact.subreddit && (
-                <span className="text-[10px] text-orange-400/80">r/{impact.subreddit}</span>
-              )}
-              {sourceTime && (
-                <span className="text-[10px] text-gray-500 flex items-center gap-1">
-                  <Clock className="w-2.5 h-2.5" />
-                  {sourceTime}
-                </span>
-              )}
-            </div>
+            {impact.subreddit && (
+              <span className="text-[10px] text-orange-400/80">r/{impact.subreddit}</span>
+            )}
           </div>
         </div>
 
@@ -386,8 +386,40 @@ const PriceImpactRow = memo(({ impact }) => {
         </div>
       </div>
 
+      {/* Dual Timestamp Bar: Posted | Detected | Lag */}
+      {(postedAgo || detectedAgo) && (
+        <div className="relative flex items-center gap-3 mb-2 px-2 py-1.5 bg-gray-900/50 rounded-lg border border-gray-800/30 text-[10px]">
+          {postedAgo && (
+            <span className="flex items-center gap-1">
+              <Clock className="w-3 h-3 text-gray-500" />
+              <span className="text-gray-500">Posted</span>
+              <span className="text-orange-400 font-medium">{postedAgo}</span>
+            </span>
+          )}
+          {postedAgo && detectedAgo && (
+            <span className="text-gray-700">|</span>
+          )}
+          {detectedAgo && (
+            <span className="flex items-center gap-1">
+              <Zap className="w-3 h-3 text-gray-500" />
+              <span className="text-gray-500">Detected</span>
+              <span className="text-cyan-400 font-medium">{detectedAgo}</span>
+            </span>
+          )}
+          {lag && (
+            <>
+              <span className="text-gray-700">|</span>
+              <span className="flex items-center gap-1">
+                <Activity className="w-3 h-3 text-gray-500" />
+                <span className="text-gray-500">{lag} lag</span>
+              </span>
+            </>
+          )}
+        </div>
+      )}
+
       {/* Source Context: Reddit Post Title + Context Snippet - THE WHY */}
-      <div className="relative mb-2 p-2 bg-gray-900/60 rounded-lg border border-gray-800/40">
+      <div className="relative mb-2 p-2.5 bg-gray-900/60 rounded-lg border border-gray-800/40">
         <div className="flex items-start gap-2">
           <div className="flex-shrink-0 mt-0.5">
             <SourceIcon className={`w-3 h-3 ${sourceType.style.includes('orange') ? 'text-orange-400/70' : sourceType.style.includes('rose') ? 'text-rose-400/70' : 'text-blue-400/70'}`} />
@@ -395,12 +427,12 @@ const PriceImpactRow = memo(({ impact }) => {
           <div className="flex-1 min-w-0">
             {impact.sourceTitle ? (
               <>
-                <div className="text-[11px] text-gray-300 line-clamp-2 leading-relaxed" title={impact.sourceTitle}>
+                <div className="text-xs font-medium text-gray-200 line-clamp-2 leading-relaxed" title={impact.sourceTitle}>
                   "{impact.sourceTitle}"
                 </div>
                 {impact.contextSnippet && (
-                  <div className="text-[9px] text-gray-500 italic mt-1 line-clamp-2" title={impact.contextSnippet}>
-                    Context: "{impact.contextSnippet}"
+                  <div className="text-[10px] text-gray-400 mt-1 line-clamp-3" title={impact.contextSnippet}>
+                    {impact.contextSnippet}
                   </div>
                 )}
               </>
@@ -410,15 +442,10 @@ const PriceImpactRow = memo(({ impact }) => {
               </div>
             )}
             {/* Source type label */}
-            <div className="mt-1 flex items-center gap-2">
+            <div className="mt-1">
               <span className={`px-1.5 py-0.5 rounded text-[8px] font-medium border ${sourceType.style}`}>
                 {sourceType.label}
               </span>
-              {signalTime && (
-                <span className="text-[8px] text-gray-600">
-                  Signal: {signalTime}
-                </span>
-              )}
             </div>
           </div>
         </div>
@@ -432,8 +459,8 @@ const PriceImpactRow = memo(({ impact }) => {
           <div className={`text-lg font-mono font-bold ${sentimentColor}`}>
             {impact.sentimentScore > 0 ? '+' : ''}{impact.sentimentScore}
           </div>
-          <div className="text-[8px] text-gray-600 mt-0.5">
-            {sentimentIsPositive ? 'Positive news' : 'Negative news'}
+          <div className="text-[9px] text-gray-500 mt-0.5">
+            {sentimentSubtitle}
           </div>
         </div>
 
@@ -451,8 +478,8 @@ const PriceImpactRow = memo(({ impact }) => {
           <div className={`text-lg font-mono font-bold ${impactColor}`}>
             {impact.priceImpactScore > 0 ? '+' : ''}{impact.priceImpactScore}
           </div>
-          <div className="text-[8px] text-gray-600 mt-0.5">
-            Buy {impact.priceImpactScore > 0 ? 'YES' : 'NO'}
+          <div className="text-[9px] text-gray-500 mt-0.5" title={impact.transformationLogic}>
+            {impactSubtitle}
           </div>
         </div>
 
@@ -462,19 +489,19 @@ const PriceImpactRow = memo(({ impact }) => {
           <div className="text-lg font-mono font-bold text-cyan-400">
             {(impact.confidence * 100).toFixed(0)}%
           </div>
-          <div className="text-[8px] text-gray-600 mt-0.5">
-            Signal strength
+          <div className="text-[9px] text-gray-500 mt-0.5">
+            {confidenceSubtitle}
           </div>
         </div>
       </div>
 
       {/* Market Ticker + Transformation Logic */}
-      <div className="relative flex items-center justify-between">
+      <div className="relative flex items-center justify-between border-t border-gray-800/30 pt-1">
         <div className="flex items-center gap-2">
           <BarChart3 className="w-3 h-3 text-gray-500" />
           <span className="font-mono text-[11px] text-gray-400">{impact.marketTicker}</span>
         </div>
-        <span className="text-[9px] text-gray-500 italic truncate max-w-[200px]" title={impact.transformationLogic}>
+        <span className="text-[10px] text-gray-400 truncate max-w-[280px]" title={impact.transformationLogic}>
           {impact.transformationLogic || (wasInverted ? 'Sentiment inverted for market type' : 'Direct sentiment correlation')}
         </span>
       </div>
@@ -536,6 +563,11 @@ const DeepAgentPanel = ({
   const [showTools, setShowTools] = useState(false);
   const [showReddit, setShowReddit] = useState(false);
   const [showPriceImpacts, setShowPriceImpacts] = useState(true);
+
+  // Live-updating timestamps: forces re-render every 30s
+  useRelativeTime(30000);
+  // Track new signal arrivals + freshness tiers
+  const { newSignalIds, getFreshnessTier } = useSignalFreshness(priceImpacts);
 
   // Calculate session P&L from settlements
   const sessionPnL = useMemo(() => {
@@ -730,7 +762,12 @@ const DeepAgentPanel = ({
               {showPriceImpacts && (
                 <div className="mt-3 max-h-[400px] overflow-y-auto pr-1 space-y-0">
                   {priceImpacts.slice(0, 10).map((impact) => (
-                    <PriceImpactRow key={impact.id} impact={impact} />
+                    <PriceImpactRow
+                      key={impact.id}
+                      impact={impact}
+                      isNew={newSignalIds.has(impact.id)}
+                      freshnessTier={getFreshnessTier(impact)}
+                    />
                   ))}
                 </div>
               )}

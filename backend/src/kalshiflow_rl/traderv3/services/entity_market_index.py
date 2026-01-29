@@ -22,7 +22,7 @@ import os
 import re
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Set, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, Set, Tuple, TYPE_CHECKING
 
 from ..config.environment import DEFAULT_LIFECYCLE_CATEGORIES
 from ..schemas.entity_schemas import (
@@ -349,6 +349,16 @@ class EntityMarketIndex:
         # Supabase client for alias persistence (lazy initialized)
         self._supabase = None
 
+        # Keyword cache: event_ticker -> list of keywords
+        self._keyword_cache: Dict[str, List[str]] = {}
+
+        # Reverse ticker index: market_ticker -> (entity_id, MarketMapping)
+        self._ticker_to_entity: Dict[str, Tuple[str, MarketMapping]] = {}
+
+        # Enriched market list (built once per refresh, not per-post)
+        self._enriched_market_list: List[Dict[str, str]] = []
+        self._enriched_market_prompt: str = ""
+
     async def build_index(
         self,
         trading_client: Optional["V3TradingClientIntegration"] = None,
@@ -369,6 +379,10 @@ class EntityMarketIndex:
 
         if categories:
             self._config.categories = categories
+
+        # Load cached data from Supabase before building
+        await self._load_cached_aliases()
+        await self._load_cached_keywords()
 
         await self._refresh_index()
         logger.info(
@@ -391,6 +405,9 @@ class EntityMarketIndex:
 
         # Load cached LLM aliases from Supabase
         await self._load_cached_aliases()
+
+        # Load cached event keywords from Supabase
+        await self._load_cached_keywords()
 
         # Initial build
         await self._refresh_index()
@@ -489,6 +506,140 @@ class EntityMarketIndex:
         except Exception as e:
             logger.debug(f"[entity_index] Alias cache save error: {e}")
 
+    # =========================================================================
+    # Event Keyword Generation (for enriched market context)
+    # =========================================================================
+
+    async def _load_cached_keywords(self) -> None:
+        """Load event keywords from Supabase into memory cache."""
+        try:
+            supabase = self._get_supabase_client()
+            if not supabase:
+                logger.debug("[entity_index] No Supabase client for keyword cache")
+                return
+
+            response = supabase.table("entity_event_keywords").select("*").execute()
+            if response.data:
+                for row in response.data:
+                    event_ticker = row.get("event_ticker")
+                    keywords = row.get("keywords", [])
+                    if event_ticker and keywords:
+                        self._keyword_cache[event_ticker] = keywords
+
+                logger.info(
+                    f"[entity_index] Loaded {len(self._keyword_cache)} events "
+                    f"with cached keywords"
+                )
+        except Exception as e:
+            if "entity_event_keywords" not in str(e):
+                logger.debug(f"[entity_index] Keyword cache load: {e}")
+
+    async def _save_keywords_to_cache(
+        self, event_ticker: str, event_title: str, keywords: List[str]
+    ) -> None:
+        """Save event keywords to Supabase for persistence."""
+        try:
+            supabase = self._get_supabase_client()
+            if not supabase:
+                return
+
+            supabase.table("entity_event_keywords").upsert({
+                "event_ticker": event_ticker,
+                "event_title": event_title,
+                "keywords": keywords,
+                "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            }, on_conflict="event_ticker").execute()
+
+        except Exception as e:
+            logger.debug(f"[entity_index] Keyword cache save error: {e}")
+
+    async def _generate_event_keywords(
+        self,
+        event_ticker: str,
+        event_title: str,
+        event_subtitle: str,
+        yes_sub_title: str,
+        category: str = "",
+    ) -> List[str]:
+        """
+        Generate matching keywords for an event using LLM. Cached in Supabase.
+
+        Given event metadata, generates 5-10 keywords/phrases that Reddit posts
+        might use when discussing this event.
+
+        Args:
+            event_ticker: Event ticker (e.g., "KXBONDIOUT")
+            event_title: Event title
+            event_subtitle: Event subtitle
+            yes_sub_title: YES outcome subtitle
+            category: Event category (e.g., "Politics")
+
+        Returns:
+            List of keyword strings
+        """
+        # Check in-memory cache first
+        if event_ticker in self._keyword_cache:
+            return self._keyword_cache[event_ticker]
+
+        try:
+            client = self._get_llm_client()
+
+            prompt = f"""Generate 5-10 keywords/phrases that people on Reddit might use when discussing this prediction market event.
+
+Event: "{event_title}"
+Subtitle: "{event_subtitle}"
+Outcome: "{yes_sub_title}"
+Category: {category or "General"}
+
+Include:
+- People's names (full and short forms)
+- Key topics and issues
+- Common abbreviations or acronyms
+- Related concepts that would appear in news/Reddit posts about this
+- Informal terms people might use
+
+Return ONLY a JSON array of lowercase strings. Example: ["keyword1", "key phrase 2", "acronym"]
+Generate 5-10 keywords maximum."""
+
+            response = await client.chat.completions.create(
+                model=self._llm_alias_model,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=200,
+                temperature=0.3,
+            )
+
+            content = response.choices[0].message.content.strip()
+            if content.startswith("```"):
+                content = content.split("```")[1]
+                if content.startswith("json"):
+                    content = content[4:]
+            content = content.strip()
+
+            keywords = json.loads(content)
+            keywords = [k.lower().strip() for k in keywords if k]
+
+            # Cache in memory and Supabase
+            self._keyword_cache[event_ticker] = keywords
+            await self._save_keywords_to_cache(event_ticker, event_title, keywords)
+
+            logger.info(
+                f"[entity_index] Generated {len(keywords)} keywords for event "
+                f"'{event_ticker}': {keywords[:5]}{'...' if len(keywords) > 5 else ''}"
+            )
+
+            return keywords
+
+        except json.JSONDecodeError as e:
+            logger.warning(f"[entity_index] Keyword parse error for '{event_ticker}': {e}")
+            return []
+        except Exception as e:
+            logger.warning(f"[entity_index] Keyword generation error for '{event_ticker}': {e}")
+            return []
+
+    # =========================================================================
+    # LLM Alias Generation
+    # =========================================================================
+
     async def _generate_llm_aliases(
         self, canonical_name: str, entity_type: str, context: str = ""
     ) -> Set[str]:
@@ -573,6 +724,73 @@ Generate 3-8 aliases maximum."""
             )
             return set()
 
+    @staticmethod
+    def _extract_aliases_from_text(
+        event_title: str,
+        event_subtitle: str,
+        yes_sub_title: str,
+    ) -> Set[str]:
+        """
+        Extract additional entity aliases from event title and subtitle.
+
+        Parses proper nouns (capitalized multi-word sequences) from the event
+        title/subtitle that differ from the yes_sub_title entity. This captures
+        entity references in market questions, e.g., "Will Amazon stock drop?"
+        has "Amazon" in the title.
+
+        Args:
+            event_title: Event title text
+            event_subtitle: Event subtitle text
+            yes_sub_title: The primary entity name (already handled separately)
+
+        Returns:
+            Set of additional lowercase aliases extracted from title/subtitle
+        """
+        extra_aliases: Set[str] = set()
+        yes_lower = yes_sub_title.lower().strip()
+
+        for text in (event_title, event_subtitle):
+            if not text:
+                continue
+            text_lower = text.lower()
+
+            # Skip if the text IS the yes_sub_title (no new info)
+            if text_lower.strip() == yes_lower:
+                continue
+
+            # Extract capitalized word sequences (proper nouns)
+            # Matches sequences like "Amazon", "Gavin Newsom", "Project Dawn"
+            proper_nouns = re.findall(r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\b", text)
+            for noun in proper_nouns:
+                noun_lower = noun.lower()
+                # Skip if it's already the primary entity
+                if noun_lower == yes_lower:
+                    continue
+                # Skip very short matches (likely not entities)
+                if len(noun_lower) < 3:
+                    continue
+                # Skip common non-entity capitalized words
+                skip_words = {
+                    "will", "what", "who", "when", "where", "how", "does",
+                    "the", "yes", "monday", "tuesday", "wednesday",
+                    "thursday", "friday", "saturday", "sunday",
+                    "january", "february", "march", "april", "may",
+                    "june", "july", "august", "september", "october",
+                    "november", "december",
+                }
+                if noun_lower in skip_words:
+                    continue
+                extra_aliases.add(noun_lower)
+
+            # Also extract ALL-CAPS acronyms (e.g., "AWS", "ICE", "NASA")
+            acronyms = re.findall(r"\b([A-Z]{2,6})\b", text)
+            for acr in acronyms:
+                acr_lower = acr.lower()
+                if len(acr_lower) >= 2 and acr_lower != yes_lower:
+                    extra_aliases.add(acr_lower)
+
+        return extra_aliases
+
     async def _refresh_loop(self) -> None:
         """Periodically refresh the index."""
         while self._running:
@@ -598,6 +816,7 @@ Generate 3-8 aliases maximum."""
         new_reverse_index: Dict[str, List[str]] = {}
         new_name_variations: Dict[str, str] = {}
         new_alias_lookup: Dict[str, str] = {}
+        new_ticker_to_entity: Dict[str, Tuple[str, MarketMapping]] = {}
 
         try:
             # Single call to get all markets for configured categories
@@ -622,7 +841,14 @@ Generate 3-8 aliases maximum."""
                 market_ticker = market.get("ticker", "")
                 yes_sub_title = market.get("yes_sub_title", "")
                 event_ticker = market.get("event_ticker", "")
-                event_title = market.get("title", "") or market.get("subtitle", "")
+                # Use event-level title/subtitle (propagated from get_open_markets)
+                # Fall back to market-level title/subtitle
+                event_title = (
+                    market.get("event_title", "")
+                    or market.get("title", "")
+                    or market.get("subtitle", "")
+                )
+                event_subtitle = market.get("event_subtitle", "")
 
                 if not yes_sub_title or not market_ticker:
                     continue
@@ -660,6 +886,14 @@ Generate 3-8 aliases maximum."""
 
                 # Build comprehensive aliases with LLM aliases included
                 aliases = build_aliases(yes_sub_title, entity_type, llm_aliases)
+
+                # Extract additional aliases from event title and subtitle
+                # This captures entity references in market questions
+                # e.g., "Will Amazon stock drop?" has "Amazon" in the title
+                extra_aliases = self._extract_aliases_from_text(
+                    event_title, event_subtitle, yes_sub_title
+                )
+                aliases.update(extra_aliases)
 
                 # Add to legacy index (backward compatibility)
                 if entity_id not in new_index:
@@ -712,12 +946,16 @@ Generate 3-8 aliases maximum."""
                 for alias in aliases:
                     new_alias_lookup[alias.lower()] = entity_id
 
+                # Build reverse ticker -> entity index
+                new_ticker_to_entity[market_ticker] = (entity_id, mapping)
+
             # Update indices atomically
             self._index = new_index
             self._canonical_entities = new_canonical_entities
             self._reverse_index = new_reverse_index
             self._name_variations = new_name_variations
             self._alias_lookup = new_alias_lookup
+            self._ticker_to_entity = new_ticker_to_entity
             self._last_refresh_at = time.time()
             self._refresh_count += 1
             self._total_aliases = len(new_alias_lookup)
@@ -760,6 +998,62 @@ Generate 3-8 aliases maximum."""
                                 self._alias_lookup[alias.lower()] = entity_id
                     # Update total aliases count after LLM generation
                     self._total_aliases = len(self._alias_lookup)
+
+            # Generate event keywords for enriched market context
+            # Collect unique event tickers that need keywords
+            events_needing_keywords = set()
+            for market in markets:
+                event_ticker = market.get("event_ticker", "")
+                if event_ticker and event_ticker not in self._keyword_cache:
+                    events_needing_keywords.add(event_ticker)
+
+            if events_needing_keywords:
+                # Limit to first 10 new events per refresh to avoid rate limits
+                events_to_generate = list(events_needing_keywords)[:10]
+                logger.info(
+                    f"[entity_index] Generating keywords for {len(events_to_generate)} "
+                    f"new events"
+                )
+                keyword_tasks = []
+                for evt_ticker in events_to_generate:
+                    # Find a market with this event ticker for metadata
+                    evt_market = next(
+                        (m for m in markets if m.get("event_ticker") == evt_ticker), None
+                    )
+                    if evt_market:
+                        keyword_tasks.append(
+                            self._generate_event_keywords(
+                                event_ticker=evt_ticker,
+                                event_title=evt_market.get("event_title", "") or evt_market.get("title", ""),
+                                event_subtitle=evt_market.get("event_subtitle", ""),
+                                yes_sub_title=evt_market.get("yes_sub_title", ""),
+                                category=evt_market.get("category", ""),
+                            )
+                        )
+                if keyword_tasks:
+                    await asyncio.gather(*keyword_tasks, return_exceptions=True)
+
+            # Build enriched market list (for LLM market-aware extraction)
+            new_enriched_list = []
+            for entity_id, ce in new_canonical_entities.items():
+                for m in ce.markets:
+                    keywords = self._keyword_cache.get(m.event_ticker, [])
+                    new_enriched_list.append({
+                        "ticker": m.market_ticker,
+                        "title": m.yes_sub_title,
+                        "keywords": ", ".join(keywords[:8]),
+                    })
+            self._enriched_market_list = new_enriched_list[:200]
+
+            # Pre-format the prompt string so extract_with_markets() doesn't rebuild per-post
+            self._enriched_market_prompt = "\n".join(
+                f"{m['ticker']} | {m['title']} | {m['keywords']}" for m in self._enriched_market_list
+            )
+
+            logger.info(
+                f"[entity_index] Enriched market list: {len(self._enriched_market_list)} markets, "
+                f"{len(self._keyword_cache)} events with keywords"
+            )
 
             # Synchronize Knowledge Base for NLP pipeline
             # NOTE: This MUST happen AFTER LLM alias generation so KB has complete aliases
@@ -901,6 +1195,26 @@ Generate 3-8 aliases maximum."""
         if entity_id:
             return self._canonical_entities.get(entity_id)
         return None
+
+    def get_market_mapping_by_ticker(self, ticker: str) -> Optional[Tuple[str, MarketMapping]]:
+        """
+        Reverse lookup: ticker -> (entity_id, mapping) for LLM direct matches.
+
+        Args:
+            ticker: Market ticker to look up
+
+        Returns:
+            Tuple of (entity_id, MarketMapping) if found, None otherwise
+        """
+        return self._ticker_to_entity.get(ticker)
+
+    def get_enriched_market_list(self) -> List[Dict[str, str]]:
+        """Return cached enriched market list (rebuilt on index refresh only)."""
+        return self._enriched_market_list
+
+    def get_enriched_market_prompt(self) -> str:
+        """Return pre-formatted market list string for LLM prompt."""
+        return self._enriched_market_prompt
 
     def update_entity_reddit_stats(
         self,

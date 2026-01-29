@@ -17,7 +17,7 @@ import re
 import time
 import uuid
 from dataclasses import dataclass, field, asdict
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 
 # ============================================================================
@@ -93,6 +93,52 @@ def normalize_entity_id(name: str) -> str:
 # ============================================================================
 # Reddit Entity Signal Models
 # ============================================================================
+
+
+@dataclass(frozen=True)
+class LLMExtractedEntity:
+    """
+    An entity extracted by the LLM entity extractor.
+
+    Combines entity extraction and sentiment scoring in a single LLM call.
+    This replaces the separate spaCy NER + batched sentiment approach.
+    """
+
+    name: str  # Canonical name: "Alex Pretti"
+    entity_type: str  # PERSON, ORG, GPE, EVENT, POLICY, NORP
+    sentiment: int  # -100 to +100
+    confidence: str  # "low", "medium", "high"
+    market_tickers: Tuple[str, ...] = ()  # LLM-matched market tickers (from extract_with_markets)
+
+    @property
+    def name_normalized(self) -> str:
+        """Return normalized entity ID."""
+        return normalize_entity_id(self.name)
+
+    @property
+    def confidence_float(self) -> float:
+        """Convert confidence label to float."""
+        confidence_map = {"low": 0.5, "medium": 0.7, "high": 0.9}
+        return confidence_map.get(self.confidence.lower(), 0.5)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "name": self.name,
+            "entity_type": self.entity_type,
+            "sentiment": self.sentiment,
+            "confidence": self.confidence,
+            "market_tickers": list(self.market_tickers),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "LLMExtractedEntity":
+        return cls(
+            name=data.get("name", ""),
+            entity_type=data.get("type", data.get("entity_type", "UNKNOWN")),
+            sentiment=int(data.get("sentiment", 0)),
+            confidence=data.get("confidence", "low"),
+            market_tickers=tuple(data.get("market_tickers", [])),
+        )
 
 
 @dataclass(frozen=True)

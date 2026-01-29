@@ -129,6 +129,7 @@ class V3Config:
     # Reddit entity-based trading (PRAW + GLiNER + sentiment → price impact)
     entity_system_enabled: bool = False  # Enable Reddit entity trading pipeline
     entity_subreddits: List[str] = field(default_factory=lambda: ["politics", "news", "Conservative", "worldnews", "entertainment", "popculture", "television", "economics", "finance", "economy", "stocks", "wallstreetbets", "investing"])
+    llm_entity_extraction_enabled: bool = True  # Use LLM for entity extraction (Phase 2)
 
     # State Machine Configuration
     sync_duration: float = 10.0  # seconds for Kalshi data sync
@@ -288,6 +289,7 @@ class V3Config:
         entity_system_enabled = os.environ.get("V3_ENTITY_SYSTEM_ENABLED", "false").lower() == "true"
         entity_subreddits_str = os.environ.get("V3_ENTITY_SUBREDDITS", "politics,news,Conservative,worldnews,entertainment,popculture,television,economics,finance,economy,stocks,wallstreetbets,investing")
         entity_subreddits = [s.strip() for s in entity_subreddits_str.split(",") if s.strip()]
+        llm_entity_extraction_enabled = os.environ.get("V3_LLM_ENTITY_EXTRACTION_ENABLED", "true").lower() == "true"
 
         sync_duration = float(os.environ.get("V3_SYNC_DURATION", os.environ.get("V3_CALIBRATION_DURATION", "10.0")))
         health_check_interval = float(os.environ.get("V3_HEALTH_CHECK_INTERVAL", "5.0"))
@@ -352,6 +354,7 @@ class V3Config:
             dormant_grace_period_hours=dormant_grace_period_hours,
             entity_system_enabled=entity_system_enabled,
             entity_subreddits=entity_subreddits,
+            llm_entity_extraction_enabled=llm_entity_extraction_enabled,
             sync_duration=sync_duration,
             health_check_interval=health_check_interval,
             error_recovery_delay=error_recovery_delay,

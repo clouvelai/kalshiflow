@@ -78,6 +78,12 @@ class RedditEntityAgentConfig:
     market_impact_model: str = "gpt-4o-mini"
     market_impact_max_markets: int = 50  # Max markets to include in reasoning prompt
 
+    # LLM entity extraction (replaces unreliable spaCy NER for Phase 2)
+    llm_entity_extraction_enabled: bool = True
+    llm_entity_model: str = "gpt-4o-mini"
+    llm_entity_timeout: float = 10.0
+    llm_entity_fallback_to_spacy: bool = True  # Use spaCy NER if LLM fails
+
     enabled: bool = True
 
 
@@ -147,6 +153,9 @@ class RedditEntityAgent(BaseAgent):
         # Market Impact Reasoner (for indirect market effects)
         self._market_impact_reasoner = None
 
+        # LLM Entity Extractor (Phase 2 of two-phase pipeline)
+        self._llm_entity_extractor = None
+
         # Duplicate prevention - track seen post IDs in memory
         self._seen_post_ids: set = set()
 
@@ -166,6 +175,10 @@ class RedditEntityAgent(BaseAgent):
         self._content_extractions = 0  # Track content extraction attempts
         self._market_impact_reasoning_calls = 0  # Track reasoner invocations
         self._market_impact_signals_created = 0  # Track signals from reasoner
+        self._llm_entity_extractions = 0  # Track LLM entity extraction calls
+        self._llm_entity_kb_promotions = 0  # Track LLM entities promoted to market entities
+        self._llm_market_matches = 0  # Track LLM direct market ticker matches
+        self._llm_skipped_entities = 0  # Track entities with no market match
 
         # Startup health tracking - tracks initialization status of critical components
         self._init_results: Dict[str, bool] = {
@@ -225,6 +238,10 @@ class RedditEntityAgent(BaseAgent):
         # Initialize content extraction tools
         if self._config.content_extraction_enabled:
             await self._init_content_extractor()
+
+        # Initialize LLM entity extractor
+        if self._config.llm_entity_extraction_enabled:
+            await self._init_llm_entity_extractor()
 
         # Initialize market impact reasoner
         if self._config.market_impact_reasoning_enabled:
@@ -317,6 +334,12 @@ class RedditEntityAgent(BaseAgent):
             "market_impact_reasoning_enabled": self._market_impact_reasoner is not None,
             "market_impact_reasoning_calls": self._market_impact_reasoning_calls,
             "market_impact_signals_created": self._market_impact_signals_created,
+            # LLM entity extraction stats
+            "llm_entity_extraction_enabled": self._llm_entity_extractor is not None,
+            "llm_entity_extractions": self._llm_entity_extractions,
+            "llm_entity_kb_promotions": self._llm_entity_kb_promotions,
+            "llm_market_matches": self._llm_market_matches,
+            "llm_skipped_entities": self._llm_skipped_entities,
             # Startup health tracking
             "init_results": self._init_results.copy(),
             "startup_health": self._startup_health,
@@ -522,6 +545,30 @@ class RedditEntityAgent(BaseAgent):
             logger.error(f"[reddit_entity] Market Impact Reasoner init failed: {e}")
             return False
 
+    async def _init_llm_entity_extractor(self) -> bool:
+        """Initialize the LLM entity extractor for Phase 2 extraction."""
+        try:
+            import os
+            if not os.getenv("OPENAI_API_KEY"):
+                logger.warning("[reddit_entity] OPENAI_API_KEY not set, LLM entity extraction disabled")
+                return False
+
+            from ..nlp.llm_entity_extractor import LLMEntityExtractor
+
+            self._llm_entity_extractor = LLMEntityExtractor(
+                model=self._config.llm_entity_model,
+                timeout=self._config.llm_entity_timeout,
+            )
+            logger.info("[reddit_entity] LLM entity extractor initialized")
+            return True
+
+        except ImportError as e:
+            logger.warning(f"[reddit_entity] LLM entity extractor dependencies not available: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"[reddit_entity] LLM entity extractor init failed: {e}")
+            return False
+
     async def _insert_to_supabase(
         self, post_data: Dict[str, Any], entities: List[Dict[str, Any]]
     ) -> bool:
@@ -653,6 +700,12 @@ class RedditEntityAgent(BaseAgent):
                     "extraction_stats": self._content_extractor.get_stats() if self._content_extractor else {},
                     "video_stats": self._video_transcriber.get_stats() if self._video_transcriber else {},
                     "content_extractions": self._content_extractions,
+                    # LLM entity extraction stats
+                    "llm_entity_extraction_enabled": self._llm_entity_extractor is not None,
+                    "llm_entity_extractions": self._llm_entity_extractions,
+                    "llm_entity_kb_promotions": self._llm_entity_kb_promotions,
+                    "llm_market_matches": self._llm_market_matches,
+                    "llm_skipped_entities": self._llm_skipped_entities,
                     # Startup health tracking (new)
                     "init_results": self._init_results.copy(),
                     "startup_health": self._startup_health,
@@ -824,13 +877,17 @@ class RedditEntityAgent(BaseAgent):
         self, text: str, post_data: Dict[str, Any]
     ) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         """
-        Extract entities using the KB-backed NLP pipeline.
+        Two-phase entity extraction pipeline.
 
-        This is the new pipeline that:
-        1. Uses EntityRuler patterns from KB for market entity detection
-        2. Uses spaCy NER for general entity discovery (PERSON, ORG, GPE, EVENT)
-        3. Links market entities to KB for metadata
-        4. Scores sentiment for all entities (batched)
+        Phase 1 (EntityRuler, unchanged): KB pattern match -> MARKET_ENTITY
+            Fast, free, accurate. Uses spaCy EntityRuler with KB-generated patterns.
+
+        Phase 2 (LLM Entity Extractor): Structured extraction + sentiment in ONE call
+            Replaces unreliable spaCy NER AND separate batched sentiment call.
+            Produces higher-quality entities from Reddit headlines.
+            LLM-extracted entities are cross-referenced against KB for market linking.
+
+        Falls back to old spaCy NER if LLM extraction is disabled or fails.
 
         Returns:
             Tuple of (market_entities, related_entities)
@@ -843,30 +900,29 @@ class RedditEntityAgent(BaseAgent):
             return market_entities, related_entities
 
         try:
-            # Process text with KB-backed pipeline
+            # =================================================================
+            # Phase 1: KB EntityRuler (fast, free, accurate) - UNCHANGED
+            # =================================================================
             doc = self._nlp(text)
 
-            # Collect entities for batched sentiment
-            entities_for_sentiment = []
+            # Collect Phase 1 market entities (EntityRuler matches)
+            phase1_market_entities_for_sentiment = []
 
             for ent in doc.ents:
-                # Skip stopwords
                 if ent.text.lower() in ENTITY_STOPWORDS:
                     continue
 
                 if ent.label_ == "MARKET_ENTITY":
-                    # Market-linked entity
                     entity_id = ent.ent_id_
                     if not entity_id or entity_id in seen_entity_ids:
                         continue
                     seen_entity_ids.add(entity_id)
 
-                    # Get metadata from KB
                     metadata = self._kb.get_entity_metadata(entity_id)
                     if not metadata:
                         continue
 
-                    entities_for_sentiment.append({
+                    phase1_market_entities_for_sentiment.append({
                         "text": metadata.canonical_name,
                         "label": "MARKET_ENTITY",
                         "entity_id": entity_id,
@@ -874,97 +930,285 @@ class RedditEntityAgent(BaseAgent):
                         "matched_text": ent.text,
                     })
 
-                elif ent.label_ in {"PERSON", "ORG", "GPE", "EVENT", "NORP"}:
-                    # Related entity (for second-hand signals)
-                    if self._config.extract_related_entities:
-                        from ..schemas.entity_schemas import normalize_entity_id
-                        normalized_id = normalize_entity_id(ent.text)
+            # =================================================================
+            # Phase 2: LLM Market-Aware Entity Extraction
+            # =================================================================
+            llm_entities = []
+            use_llm = (
+                self._llm_entity_extractor is not None
+                and self._config.llm_entity_extraction_enabled
+            )
 
-                        if normalized_id in seen_entity_ids:
-                            continue
-                        seen_entity_ids.add(normalized_id)
+            # Get cached enriched market context (pre-formatted, not per-post)
+            market_prompt = ""
+            if self._entity_index:
+                market_prompt = self._entity_index.get_enriched_market_prompt()
 
-                        entities_for_sentiment.append({
-                            "text": ent.text,
-                            "label": ent.label_,
-                            "entity_id": normalized_id,
-                            "metadata": None,
-                            "matched_text": ent.text,
-                        })
+            if use_llm:
+                try:
+                    if market_prompt:
+                        llm_entities = await self._llm_entity_extractor.extract_with_markets(
+                            title=post_data.get("title", ""),
+                            subreddit=post_data.get("subreddit", ""),
+                            body=text[:1000],
+                            market_prompt=market_prompt,
+                        )
+                    else:
+                        llm_entities = await self._llm_entity_extractor.extract(
+                            title=post_data.get("title", ""),
+                            subreddit=post_data.get("subreddit", ""),
+                            body=text[:1000],
+                        )
+                    self._llm_entity_extractions += 1
+                except Exception as llm_err:
+                    logger.warning(f"[reddit_entity] LLM extraction failed: {llm_err}")
+                    if self._config.llm_entity_fallback_to_spacy:
+                        llm_entities = []  # Will fall through to spaCy NER below
 
-            # Batch sentiment analysis
+            # Build sentiment map from LLM entities (name -> sentiment)
+            # This is used for Phase 1 entities too, avoiding a separate sentiment call
+            llm_sentiment_map = {}
+            for llm_ent in llm_entities:
+                llm_sentiment_map[llm_ent.name.lower()] = llm_ent.sentiment
+
+            # Score Phase 1 market entities using LLM sentiment or fallback
             sentiments = {}
-            if entities_for_sentiment:
-                if self._sentiment_task and self._config.use_batched_sentiment:
-                    # Use batched sentiment task
-                    results = await self._sentiment_task.analyze_async(
-                        text,
-                        [(e["text"], e["label"]) for e in entities_for_sentiment]
-                    )
-                    sentiments = {r.entity_text: r.sentiment_score for r in results}
+            if phase1_market_entities_for_sentiment:
+                if llm_entities:
+                    # Try to match Phase 1 entities to LLM sentiment results
+                    unmatched = []
+                    for e in phase1_market_entities_for_sentiment:
+                        name_lower = e["text"].lower()
+                        matched_lower = e["matched_text"].lower()
+                        # Try exact name match, then matched text
+                        if name_lower in llm_sentiment_map:
+                            sentiments[e["text"]] = llm_sentiment_map[name_lower]
+                        elif matched_lower in llm_sentiment_map:
+                            sentiments[e["text"]] = llm_sentiment_map[matched_lower]
+                        else:
+                            # Try partial match (LLM may use different name form)
+                            # Guard: require min 4 chars to avoid greedy matches like "trump" → "trump_organization"
+                            found = False
+                            if len(name_lower) >= 4:
+                                for llm_name, llm_sent in llm_sentiment_map.items():
+                                    if len(llm_name) >= 4 and (llm_name == name_lower or llm_name == matched_lower):
+                                        # Exact match on either form — highest priority
+                                        sentiments[e["text"]] = llm_sent
+                                        found = True
+                                        break
+                                if not found:
+                                    for llm_name, llm_sent in llm_sentiment_map.items():
+                                        if len(llm_name) >= 4 and (llm_name in name_lower or name_lower in llm_name):
+                                            sentiments[e["text"]] = llm_sent
+                                            found = True
+                                            break
+                            if not found:
+                                unmatched.append(e)
+
+                    # For unmatched Phase 1 entities, use batched sentiment fallback
+                    if unmatched:
+                        if self._sentiment_task and self._config.use_batched_sentiment:
+                            results = await self._sentiment_task.analyze_async(
+                                text,
+                                [(e["text"], e["label"]) for e in unmatched]
+                            )
+                            for r in results:
+                                sentiments[r.entity_text] = r.sentiment_score
+                        else:
+                            for e in unmatched:
+                                s = await self._get_sentiment(text, e["text"])
+                                sentiments[e["text"]] = s
                 else:
-                    # Fall back to per-entity sentiment
-                    for e in entities_for_sentiment:
-                        sentiment = await self._get_sentiment(text, e["text"])
-                        sentiments[e["text"]] = sentiment
+                    # No LLM entities — use old batched sentiment for Phase 1
+                    if self._sentiment_task and self._config.use_batched_sentiment:
+                        results = await self._sentiment_task.analyze_async(
+                            text,
+                            [(e["text"], e["label"]) for e in phase1_market_entities_for_sentiment]
+                        )
+                        sentiments = {r.entity_text: r.sentiment_score for r in results}
+                    else:
+                        for e in phase1_market_entities_for_sentiment:
+                            s = await self._get_sentiment(text, e["text"])
+                            sentiments[e["text"]] = s
 
-            # Build output entities
-            market_entity_ids = []  # Track for co-occurrence
+            # Build Phase 1 market entity output
+            market_entity_ids = []
 
-            for e in entities_for_sentiment:
+            for e in phase1_market_entities_for_sentiment:
                 sentiment = sentiments.get(e["text"], 0)
+                metadata = e["metadata"]
+                self._entities_normalized += 1
+                market_entity_ids.append(e["entity_id"])
 
-                if e["label"] == "MARKET_ENTITY":
-                    metadata = e["metadata"]
-                    self._entities_normalized += 1
-                    market_entity_ids.append(e["entity_id"])
+                market_entities.append({
+                    "entity_id": e["entity_id"],
+                    "canonical_name": metadata.canonical_name,
+                    "entity_type": metadata.entity_type,
+                    "sentiment_score": sentiment,
+                    "confidence": 1.0,
+                    "context_snippet": text[:200],
+                    "post_id": post_data.get("post_id"),
+                    "subreddit": post_data.get("subreddit"),
+                    "was_normalized": True,
+                    "matched_text": e["matched_text"],
+                    "market_ticker": metadata.market_ticker,
+                    "market_type": metadata.market_type,
+                })
 
-                    market_entities.append({
-                        "entity_id": e["entity_id"],
-                        "canonical_name": metadata.canonical_name,
-                        "entity_type": metadata.entity_type,
-                        "sentiment_score": sentiment,
-                        "confidence": 1.0,
-                        "context_snippet": text[:200],
-                        "post_id": post_data.get("post_id"),
-                        "subreddit": post_data.get("subreddit"),
-                        "was_normalized": True,
-                        "matched_text": e["matched_text"],
-                        "market_ticker": metadata.market_ticker,
-                        "market_type": metadata.market_type,
-                    })
+                logger.info(
+                    f"[reddit_entity] Phase1 KB matched '{e['matched_text']}' -> "
+                    f"'{metadata.canonical_name}' (sentiment={sentiment})"
+                )
 
-                    logger.info(
-                        f"[reddit_entity] ✅ KB matched '{e['matched_text']}' -> "
-                        f"'{metadata.canonical_name}' (sentiment={sentiment})"
-                    )
+            # =================================================================
+            # Phase 2 output: LLM-driven market ticker matching
+            # =================================================================
+            if llm_entities and self._entity_index:
+                from ..schemas.entity_schemas import normalize_entity_id
 
-                else:
-                    # Related entity
-                    related_entity = {
-                        "entity_text": e["text"],
-                        "entity_type": e["label"],
-                        "normalized_id": e["entity_id"],
-                        "sentiment_score": sentiment,
-                        "confidence": 0.8,
-                        "source_post_id": post_data.get("post_id"),
-                        "source_subreddit": post_data.get("subreddit"),
-                        "context_snippet": text[:200],
-                        "co_occurring_market_entities": market_entity_ids.copy(),
-                    }
-                    related_entities.append(related_entity)
+                for llm_ent in llm_entities:
+                    normalized_id = normalize_entity_id(llm_ent.name)
 
-                    # Store in related entity store
-                    if self._related_entity_store:
-                        from ..nlp.entity_store import RelatedEntity
-                        await self._related_entity_store.insert(
-                            RelatedEntity(**related_entity)
+                    # Skip if already seen in Phase 1
+                    if normalized_id in seen_entity_ids:
+                        continue
+                    seen_entity_ids.add(normalized_id)
+
+                    if llm_ent.market_tickers:
+                        # LLM directly mapped this entity to market tickers
+                        for ticker in llm_ent.market_tickers:
+                            result = self._entity_index.get_market_mapping_by_ticker(ticker)
+                            if not result:
+                                logger.debug(
+                                    f"[reddit_entity] LLM ticker '{ticker}' not found in index, skipping"
+                                )
+                                continue
+
+                            entity_id, mapping = result
+                            self._llm_market_matches += 1
+                            market_entity_ids.append(entity_id)
+
+                            # Get canonical entity for metadata
+                            canonical = self._entity_index.get_canonical_entity(entity_id)
+                            canonical_name = canonical.canonical_name if canonical else llm_ent.name
+                            entity_type = canonical.entity_type if canonical else llm_ent.entity_type.lower()
+
+                            market_entities.append({
+                                "entity_id": entity_id,
+                                "canonical_name": canonical_name,
+                                "entity_type": entity_type,
+                                "sentiment_score": llm_ent.sentiment,
+                                "confidence": llm_ent.confidence_float,
+                                "context_snippet": text[:200],
+                                "post_id": post_data.get("post_id"),
+                                "subreddit": post_data.get("subreddit"),
+                                "was_normalized": True,
+                                "matched_text": llm_ent.name,
+                                "market_ticker": mapping.market_ticker,
+                                "market_type": mapping.market_type,
+                                "source": "llm_market_mapped",
+                            })
+
+                            logger.info(
+                                f"[reddit_entity] Phase2 LLM market-mapped '{llm_ent.name}' -> "
+                                f"'{canonical_name}' ({mapping.market_ticker}, "
+                                f"sentiment={llm_ent.sentiment})"
+                            )
+                    else:
+                        # No market tickers - treat as related entity
+                        self._llm_skipped_entities += 1
+
+                        related_entity = {
+                            "entity_text": llm_ent.name,
+                            "entity_type": llm_ent.entity_type,
+                            "normalized_id": normalized_id,
+                            "sentiment_score": llm_ent.sentiment,
+                            "confidence": llm_ent.confidence_float,
+                            "source_post_id": post_data.get("post_id"),
+                            "source_subreddit": post_data.get("subreddit"),
+                            "context_snippet": text[:200],
+                            "co_occurring_market_entities": market_entity_ids.copy(),
+                            "source": "llm_extracted",
+                        }
+                        related_entities.append(related_entity)
+
+                        if self._related_entity_store:
+                            from ..nlp.entity_store import RelatedEntity
+                            store_data = {
+                                k: v for k, v in related_entity.items()
+                                if k != "source"
+                            }
+                            await self._related_entity_store.insert(
+                                RelatedEntity(**store_data)
+                            )
+
+                        logger.debug(
+                            f"[reddit_entity] Skipped '{llm_ent.name}' - no market match"
                         )
 
-                    logger.debug(
-                        f"[reddit_entity] Related entity '{e['text']}' ({e['label']}, "
-                        f"sentiment={sentiment})"
-                    )
+            elif not llm_entities and self._config.llm_entity_fallback_to_spacy:
+                # =============================================================
+                # Fallback: Use spaCy NER for related entities (old path)
+                # =============================================================
+                if self._config.extract_related_entities:
+                    from ..schemas.entity_schemas import normalize_entity_id
+
+                    spacy_related_for_sentiment = []
+
+                    for ent in doc.ents:
+                        if ent.text.lower() in ENTITY_STOPWORDS:
+                            continue
+                        if ent.label_ in {"PERSON", "ORG", "GPE", "EVENT", "NORP"}:
+                            normalized_id = normalize_entity_id(ent.text)
+                            if normalized_id in seen_entity_ids:
+                                continue
+                            seen_entity_ids.add(normalized_id)
+
+                            spacy_related_for_sentiment.append({
+                                "text": ent.text,
+                                "label": ent.label_,
+                                "entity_id": normalized_id,
+                            })
+
+                    # Score sentiment for spaCy-extracted related entities
+                    if spacy_related_for_sentiment:
+                        spacy_sentiments = {}
+                        if self._sentiment_task and self._config.use_batched_sentiment:
+                            results = await self._sentiment_task.analyze_async(
+                                text,
+                                [(e["text"], e["label"]) for e in spacy_related_for_sentiment]
+                            )
+                            spacy_sentiments = {r.entity_text: r.sentiment_score for r in results}
+                        else:
+                            for e in spacy_related_for_sentiment:
+                                s = await self._get_sentiment(text, e["text"])
+                                spacy_sentiments[e["text"]] = s
+
+                        for e in spacy_related_for_sentiment:
+                            sentiment = spacy_sentiments.get(e["text"], 0)
+                            related_entity = {
+                                "entity_text": e["text"],
+                                "entity_type": e["label"],
+                                "normalized_id": e["entity_id"],
+                                "sentiment_score": sentiment,
+                                "confidence": 0.8,
+                                "source_post_id": post_data.get("post_id"),
+                                "source_subreddit": post_data.get("subreddit"),
+                                "context_snippet": text[:200],
+                                "co_occurring_market_entities": market_entity_ids.copy(),
+                            }
+                            related_entities.append(related_entity)
+
+                            if self._related_entity_store:
+                                from ..nlp.entity_store import RelatedEntity
+                                await self._related_entity_store.insert(
+                                    RelatedEntity(**related_entity)
+                                )
+
+                            logger.debug(
+                                f"[reddit_entity] Fallback spaCy entity '{e['text']}' "
+                                f"({e['label']}, sentiment={sentiment})"
+                            )
 
         except Exception as e:
             logger.error(f"[reddit_entity] KB entity extraction error: {e}")

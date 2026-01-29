@@ -135,3 +135,36 @@ export const formatConsoleTimestamp = () => {
     second: '2-digit'
   });
 };
+
+/**
+ * Format a Unix timestamp as a relative time string.
+ * Recomputes delta on each call - designed for re-evaluation on render ticks.
+ * @param {number|null} unixSeconds - Unix timestamp in seconds
+ * @returns {string|null} Relative time like "12s ago", "3m ago", "2h ago", or "Jan 15"
+ */
+export const formatRelativeTimestamp = (unixSeconds) => {
+  if (unixSeconds == null) return null;
+  const now = Date.now() / 1000;
+  const delta = now - unixSeconds;
+  if (delta < 0) return 'just now';
+  if (delta < 60) return `${Math.floor(delta)}s ago`;
+  if (delta < 3600) return `${Math.floor(delta / 60)}m ago`;
+  if (delta < 86400) return `${Math.floor(delta / 3600)}h ago`;
+  const date = new Date(unixSeconds * 1000);
+  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+};
+
+/**
+ * Compute processing latency between source creation and signal detection.
+ * @param {number|null} sourceTs - Source creation Unix timestamp (seconds)
+ * @param {number|null} signalTs - Signal detection Unix timestamp (seconds)
+ * @returns {string|null} Latency like "45s", "3m 12s", or null if timestamps missing
+ */
+export const formatLatency = (sourceTs, signalTs) => {
+  if (sourceTs == null || signalTs == null) return null;
+  const delta = Math.max(0, signalTs - sourceTs);
+  if (delta < 60) return `${Math.floor(delta)}s`;
+  const mins = Math.floor(delta / 60);
+  const secs = Math.floor(delta % 60);
+  return secs > 0 ? `${mins}m ${secs}s` : `${mins}m`;
+};

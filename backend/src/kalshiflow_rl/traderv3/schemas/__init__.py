@@ -6,6 +6,7 @@ Data models for the entity extraction and price impact pipeline.
 
 from .entity_schemas import (
     ExtractedEntity,
+    LLMExtractedEntity,
     RedditEntitySignal,
     MarketMapping,
     EntityMarketEntry,
@@ -17,6 +18,7 @@ from .entity_schemas import (
 
 __all__ = [
     "ExtractedEntity",
+    "LLMExtractedEntity",
     "RedditEntitySignal",
     "MarketMapping",
     "EntityMarketEntry",
