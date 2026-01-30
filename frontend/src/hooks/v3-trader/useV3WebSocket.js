@@ -873,18 +873,22 @@ export const useV3WebSocket = ({ onMessage }) => {
         break;
 
       case 'entity_signal_update':
-        // Reddit signal update for a specific entity
+        // Reddit signal update for a specific entity (with accumulated data)
         if (data.data?.entity_id) {
           setEntityIndex(prev => {
             const entityId = data.data.entity_id;
             const existingEntity = prev.entityLookup[entityId];
             if (!existingEntity) return prev;
 
-            // Update the entity's reddit signals
+            // Update the entity's reddit signals + accumulated data
             const updatedEntity = {
               ...existingEntity,
               reddit_signals: data.data.reddit_signals,
             };
+            // Merge accumulated signal data if present
+            if (data.data.accumulated) {
+              updatedEntity.accumulated = data.data.accumulated;
+            }
 
             const updatedLookup = {
               ...prev.entityLookup,

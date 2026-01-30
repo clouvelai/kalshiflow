@@ -461,3 +461,37 @@ Respond with ONLY a comma-separated list of numbers in order, like: 50,-30,0,75
             return [0] * len(entities)
 
 
+@Language.factory(
+    "relation_extractor",
+    assigns=["doc._.relations"],
+    requires=["doc.ents"],
+    default_config={"model": "gpt-4o-mini"},
+)
+def create_relation_extractor_component(nlp, name: str, model: str):
+    """Factory for Relation Extractor spaCy component.
+
+    Wraps the async RelationExtractor for use in spaCy pipelines.
+    Note: The main integration runs the extractor asynchronously
+    outside the spaCy pipeline. This factory is for optional
+    pipeline-based usage.
+    """
+    from .relation_extractor import RelationExtractor
+    return RelationExtractorComponent(model)
+
+
+class RelationExtractorComponent:
+    """spaCy component wrapper for relation extraction.
+
+    Stores a reference to the RelationExtractor for pipeline-based usage.
+    The actual async extraction is typically done outside the pipeline
+    (in RedditEntityAgent), but this component registers the factory
+    for consistency with the spaCy component model.
+    """
+
+    def __init__(self, model: str = "gpt-4o-mini"):
+        self._model = model
+
+    def __call__(self, doc: "spacy.tokens.Doc") -> "spacy.tokens.Doc":
+        """No-op in synchronous pipeline. Relations are extracted async."""
+        return doc
+

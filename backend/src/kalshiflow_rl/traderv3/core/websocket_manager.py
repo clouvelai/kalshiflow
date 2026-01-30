@@ -1015,12 +1015,46 @@ class V3WebSocketManager:
             canonical_name: Entity's canonical name
             reddit_stats: Updated reddit signal stats
         """
-        await self.broadcast_message("entity_signal_update", {
+        from ..services.entity_accumulator import get_entity_accumulator
+
+        update_data = {
             "entity_id": entity_id,
             "canonical_name": canonical_name,
             "reddit_signals": reddit_stats,
             "timestamp": time.time(),
-        })
+        }
+
+        # Include accumulated signal data if available
+        accumulator = get_entity_accumulator()
+        if accumulator:
+            signal = accumulator.get_signal(entity_id)
+            if signal:
+                relations = accumulator.get_entity_relations(entity_id, limit=5)
+                update_data["accumulated"] = {
+                    "signal_strength": signal.signal_strength,
+                    "mention_count": signal.mention_count,
+                    "unique_sources": signal.unique_sources,
+                    "weighted_sentiment": signal.weighted_sentiment,
+                    "max_reddit_score": signal.max_reddit_score,
+                    "total_reddit_comments": signal.total_reddit_comments,
+                    "source_types": signal.source_types,
+                    "categories": signal.categories,
+                    "latest_context": signal.latest_context[:200] if signal.latest_context else "",
+                    "first_mention_at": signal.first_mention_at,
+                    "last_mention_at": signal.last_mention_at,
+                    "relations": [
+                        {
+                            "subject": r.subject_name,
+                            "relation": r.relation,
+                            "object": r.object_name,
+                            "confidence": round(r.confidence, 2),
+                            "context": r.context_snippet[:120] if r.context_snippet else "",
+                        }
+                        for r in relations
+                    ],
+                }
+
+        await self.broadcast_message("entity_signal_update", update_data)
 
     async def broadcast_entity_linked(self, entity_data: Dict[str, Any]) -> None:
         """
@@ -1385,13 +1419,16 @@ class V3WebSocketManager:
         )
 
     def _build_entity_index_data(self) -> dict:
-        """Build entity index snapshot data."""
+        """Build entity index snapshot data with accumulated signals."""
+        from ..services.entity_accumulator import get_entity_accumulator
+
+        accumulator = get_entity_accumulator()
         entities = []
         for entity in self._entity_market_index.get_all_canonical_entities():
             # Extract market tickers as simple strings for frontend compatibility
             market_tickers = [m.market_ticker for m in entity.markets]
 
-            entities.append({
+            entity_data = {
                 "entity_id": entity.entity_id,
                 "canonical_name": entity.canonical_name,
                 "entity_type": entity.entity_type,
@@ -1406,7 +1443,38 @@ class V3WebSocketManager:
                     "aggregate_sentiment": entity.aggregate_sentiment,
                     "last_signal_at": entity.last_reddit_signal,
                 },
-            })
+            }
+
+            # Enrich with accumulated signal data from EntityAccumulator
+            if accumulator:
+                signal = accumulator.get_signal(entity.entity_id)
+                if signal:
+                    relations = accumulator.get_entity_relations(entity.entity_id, limit=5)
+                    entity_data["accumulated"] = {
+                        "signal_strength": signal.signal_strength,
+                        "mention_count": signal.mention_count,
+                        "unique_sources": signal.unique_sources,
+                        "weighted_sentiment": signal.weighted_sentiment,
+                        "max_reddit_score": signal.max_reddit_score,
+                        "total_reddit_comments": signal.total_reddit_comments,
+                        "source_types": signal.source_types,
+                        "categories": signal.categories,
+                        "latest_context": signal.latest_context[:200] if signal.latest_context else "",
+                        "first_mention_at": signal.first_mention_at,
+                        "last_mention_at": signal.last_mention_at,
+                        "relations": [
+                            {
+                                "subject": r.subject_name,
+                                "relation": r.relation,
+                                "object": r.object_name,
+                                "confidence": round(r.confidence, 2),
+                                "context": r.context_snippet[:120] if r.context_snippet else "",
+                            }
+                            for r in relations
+                        ],
+                    }
+
+            entities.append(entity_data)
         return {
             "total_entities": len(entities),
             "entities": entities,

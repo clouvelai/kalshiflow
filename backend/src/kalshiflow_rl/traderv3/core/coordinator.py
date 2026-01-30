@@ -8,7 +8,7 @@ Simple, clean orchestration without business logic.
 import asyncio
 import logging
 import time
-from typing import Dict, Any, Optional, TYPE_CHECKING
+from typing import Dict, Any, Optional, Set, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ..clients.trading_client_integration import V3TradingClientIntegration
@@ -96,7 +96,10 @@ class V3Coordinator:
         self._orderbook_integration = orderbook_integration
         self._trading_client_integration = trading_client_integration
         self._trades_integration = trades_integration
-        
+
+        # T5.1: Track degraded subsystems for health visibility
+        self._degraded_subsystems: Set[str] = set()
+
         # Initialize state container
         self._state_container = V3StateContainer()
         
@@ -758,7 +761,21 @@ class V3Coordinator:
                     "Entity-based trading signals will not be generated."
                 )
 
-            # 2. Initialize Reddit Entity Agent
+            # 2. Initialize Entity Accumulator (sliding-window mention tracking + Supabase KB sync)
+            from ..services.entity_accumulator import (
+                EntityAccumulator, EntityAccumulatorConfig, set_entity_accumulator
+            )
+
+            accumulator_config = EntityAccumulatorConfig(
+                window_seconds=7200.0,
+                signal_threshold=0.4,
+                re_emit_threshold=0.2,
+            )
+            self._entity_accumulator = EntityAccumulator(config=accumulator_config)
+            set_entity_accumulator(self._entity_accumulator)
+            logger.info("EntityAccumulator initialized and registered as global singleton")
+
+            # 3. Initialize Reddit Entity Agent
             reddit_config = RedditEntityAgentConfig(
                 subreddits=self._config.entity_subreddits,
                 skip_existing=False,  # Get historical 100 items
@@ -776,7 +793,7 @@ class V3Coordinator:
             # Wire reddit agent to websocket manager for entity snapshots
             self._websocket_manager.set_reddit_agent(self._reddit_entity_agent)
 
-            # 3. Initialize Price Impact Agent
+            # 4. Initialize Price Impact Agent
             impact_config = PriceImpactAgentConfig(
                 min_confidence=0.5,
                 min_sentiment_magnitude=20,
@@ -789,11 +806,11 @@ class V3Coordinator:
                 entity_index=self._entity_market_index,
             )
 
-            # 4. Start agents
+            # 5. Start agents
             await self._reddit_entity_agent.start()
             await self._price_impact_agent.start()
 
-            # 5. Broadcast system status
+            # 6. Broadcast system status
             await self._websocket_manager.broadcast_message("entity_system_status", {
                 "is_active": True,
                 "stats": {
@@ -1029,8 +1046,10 @@ class V3Coordinator:
 
         except Exception as e:
             # Don't fail startup if market price syncer fails - it's non-critical
-            logger.warning(f"Market price syncer failed: {e}")
+            # T5.1: Upgrade to error and track degraded state
+            logger.error(f"Market price syncer failed: {e}")
             self._market_price_syncer = None
+            self._degraded_subsystems.add("market_price_syncer")
 
     async def _start_trading_state_syncer(self) -> None:
         """Start trading state syncer for periodic balance/positions/orders/settlements sync."""
@@ -1072,8 +1091,10 @@ class V3Coordinator:
 
         except Exception as e:
             # Don't fail startup if trading state syncer fails - it's non-critical
-            logger.warning(f"Trading state syncer failed: {e}")
+            # T5.1: Upgrade to error and track degraded state
+            logger.error(f"Trading state syncer failed: {e}")
             self._trading_state_syncer = None
+            self._degraded_subsystems.add("trading_state_syncer")
 
     async def _start_api_discovery(self) -> None:
         """
@@ -1710,8 +1731,13 @@ class V3Coordinator:
             "healthy": self.is_healthy(),
             "status": "running" if self._running else "stopped",
             "state": self._state_machine.current_state.value,
-            "uptime": time.time() - self._started_at if self._started_at else 0
+            "uptime": time.time() - self._started_at if self._started_at else 0,
+            "degraded_subsystems": list(self._degraded_subsystems),
         }
+
+    def get_degraded_subsystems(self) -> Set[str]:
+        """T5.1: Get set of subsystems that failed to start or are in degraded state."""
+        return self._degraded_subsystems.copy()
     
     @property
     def state_container(self) -> V3StateContainer:

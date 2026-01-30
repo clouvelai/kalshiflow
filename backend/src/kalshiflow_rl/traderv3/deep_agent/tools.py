@@ -26,6 +26,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Deque, Dict, List, Literal, Optional, TYPE_CHECKING
 
+from ..services.entity_accumulator import get_entity_accumulator
+
 if TYPE_CHECKING:
     from ..core.websocket_manager import V3WebSocketManager
     from ..clients.trading_client_integration import V3TradingClientIntegration
@@ -51,6 +53,7 @@ class MarketInfo:
     volume_24h: int
     status: str
     last_trade_price: Optional[int] = None
+    data_quality: str = "live"  # "live" | "estimated" | "unknown"
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -66,6 +69,7 @@ class TradeResult:
     price_cents: Optional[int] = None
     order_id: Optional[str] = None
     error: Optional[str] = None
+    limit_price_cents: Optional[int] = None  # The computed limit price used for the order
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -86,6 +90,8 @@ class SessionState:
     win_rate: float
     positions: List[Dict[str, Any]] = field(default_factory=list)
     recent_fills: List[Dict[str, Any]] = field(default_factory=list)
+    is_valid: bool = True  # False when state container is unavailable or errored
+    error: Optional[str] = None  # Error description when is_valid is False
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -140,8 +146,8 @@ class EventMarketInfo:
     """Info about a single market within an event."""
     ticker: str
     title: str
-    yes_price: int  # Current YES price in cents
-    no_price: int   # Current NO price (100 - yes_price)
+    yes_price: Optional[int]  # Current YES price in cents (None if unknown)
+    no_price: Optional[int]   # Current NO price (100 - yes_price, None if unknown)
     has_position: bool
     position_side: str  # "yes", "no", or "none"
     position_contracts: int
@@ -277,7 +283,9 @@ class DeepAgentTools:
 
         # RF-1: Per-event dollar exposure tracking (resets on restart)
         self._event_exposure_cents: Dict[str, int] = {}
-        self._max_event_exposure_cents: int = 10000  # $100 cap
+        # $100 cap per event — limits single-event concentration risk.
+        # Sized for paper trading; scale with bankroll for production.
+        self._max_event_exposure_cents: int = 10000
 
         # RF-5: Startup timestamp for marking pre-existing signals as historical
         self._startup_time: float = time.time()
@@ -299,6 +307,7 @@ class DeepAgentTools:
             "write_memory": 0,
             "append_memory": 0,
             "get_event_context": 0,
+            "get_entity_signals": 0,
         }
 
 
@@ -325,9 +334,9 @@ class DeepAgentTools:
             tickers: List of market tickers to fetch spreads for
 
         Returns:
-            Dict mapping ticker -> spread in cents (or 100 if unknown/illiquid)
+            Dict mapping ticker -> spread in cents (None if unknown)
         """
-        spreads: Dict[str, int] = {}
+        spreads: Dict[str, Optional[int]] = {}
 
         if not tickers:
             return spreads
@@ -338,9 +347,13 @@ class DeepAgentTools:
                 for ticker in tickers:
                     market = self._tracked_markets.get(ticker)
                     if market:
-                        yes_bid = market.yes_bid if hasattr(market, 'yes_bid') else 0
-                        yes_ask = market.yes_ask if hasattr(market, 'yes_ask') else 100
-                        spreads[ticker] = yes_ask - yes_bid if yes_bid > 0 else 100
+                        # T3.1: Use is not None checks instead of or-0/or-100
+                        yes_bid = market.yes_bid if hasattr(market, 'yes_bid') else None
+                        yes_ask = market.yes_ask if hasattr(market, 'yes_ask') else None
+                        if yes_bid is not None and yes_ask is not None:
+                            spreads[ticker] = yes_ask - yes_bid
+                        else:
+                            spreads[ticker] = None
             except Exception as e:
                 logger.warning(f"[deep_agent.tools._get_market_spreads_batch] tracked_markets error: {e}")
 
@@ -351,16 +364,24 @@ class DeepAgentTools:
                 markets = await self._trading_client.get_markets(missing_tickers)
                 for m in markets:
                     ticker = m.get("ticker", "")
-                    yes_bid = m.get("yes_bid", 0) or 0
-                    yes_ask = m.get("yes_ask", 100) or 100
-                    spreads[ticker] = yes_ask - yes_bid if yes_bid > 0 else 100
+                    yes_bid = m.get("yes_bid")
+                    yes_ask = m.get("yes_ask")
+                    if yes_bid is not None and yes_ask is not None:
+                        spreads[ticker] = yes_ask - yes_bid
+                    else:
+                        spreads[ticker] = None
             except Exception as e:
                 logger.warning(f"[deep_agent.tools._get_market_spreads_batch] API error: {e}")
 
-        # Default unknown tickers to max spread (illiquid)
-        for ticker in tickers:
-            if ticker not in spreads:
-                spreads[ticker] = 100  # Assume illiquid if unknown
+        # T3.2: Mark unknown tickers as None instead of assuming max spread
+        unknown_tickers = [t for t in tickers if t not in spreads]
+        if unknown_tickers:
+            logger.warning(
+                f"[deep_agent.tools._get_market_spreads_batch] "
+                f"{len(unknown_tickers)} tickers unresolved: {unknown_tickers[:5]}"
+            )
+            for ticker in unknown_tickers:
+                spreads[ticker] = None
 
         return spreads
 
@@ -408,6 +429,10 @@ class DeepAgentTools:
         )
 
         items = []
+
+        # T2.1: Track error strings from each source for pipeline visibility
+        supabase_error = None
+        store_error = None
 
         # Primary: Direct Supabase query (reliable, persists across restarts)
         try:
@@ -459,6 +484,7 @@ class DeepAgentTools:
                 # Don't return here - apply liquidity filter below
 
         except Exception as e:
+            supabase_error = str(e)
             logger.warning(f"[deep_agent.tools.get_price_impacts] Supabase query failed: {e}")
 
         # Fallback: Try in-memory store if Supabase failed (items is empty)
@@ -517,7 +543,20 @@ class DeepAgentTools:
                     logger.info(f"[deep_agent.tools.get_price_impacts] Found {len(items)} raw signals from store")
 
                 except Exception as e:
+                    store_error = str(e)
                     logger.error(f"[deep_agent.tools.get_price_impacts] Store query error: {e}")
+
+        # T2.1: Log pipeline health when both sources return nothing
+        if not items:
+            if supabase_error and store_error:
+                logger.error(
+                    f"[deep_agent.tools.get_price_impacts] SIGNAL PIPELINE DOWN: "
+                    f"Supabase={supabase_error}, Store={store_error}"
+                )
+            elif supabase_error:
+                logger.warning(
+                    f"[deep_agent.tools.get_price_impacts] Supabase failed ({supabase_error}), store empty"
+                )
 
         # === LIQUIDITY GATING ===
         # Filter signals to only include those for tradeable markets
@@ -532,21 +571,30 @@ class DeepAgentTools:
             # Annotate and filter
             filtered_items = []
             illiquid_count = 0
+            unknown_count = 0
 
             for item in items:
-                spread = spreads.get(item.market_ticker, 100)
+                spread = spreads.get(item.market_ticker)
                 item.market_spread = spread
-                item.is_tradeable = spread <= max_spread_cents
+
+                if spread is None:
+                    # T3.2: Unknown spread = don't trade (conservative)
+                    unknown_count += 1
+                    item.is_tradeable = False
+                elif spread > max_spread_cents:
+                    illiquid_count += 1
+                    item.is_tradeable = False
+                else:
+                    item.is_tradeable = True
 
                 if item.is_tradeable or not only_tradeable:
                     filtered_items.append(item)
-                else:
-                    illiquid_count += 1
 
-            if illiquid_count > 0:
+            if illiquid_count > 0 or unknown_count > 0:
                 logger.info(
-                    f"[deep_agent.tools.get_price_impacts] Filtered out {illiquid_count} signals on illiquid markets "
-                    f"(spread > {max_spread_cents}c)"
+                    f"[deep_agent.tools.get_price_impacts] Filtered: "
+                    f"{illiquid_count} illiquid (spread > {max_spread_cents}c), "
+                    f"{unknown_count} unknown spread"
                 )
 
             # Apply limit to filtered results
@@ -565,8 +613,13 @@ class DeepAgentTools:
                             item.created_at.replace("Z", "+00:00")
                         )
                         is_historical = signal_dt.timestamp() < self._startup_time
-                    except (ValueError, AttributeError):
-                        pass
+                    except (ValueError, AttributeError) as e:
+                        # T2.3: Conservative — treat unparseable timestamps as old
+                        is_historical = True
+                        logger.warning(
+                            f"[deep_agent.tools] Signal timestamp parse failed for "
+                            f"{item.signal_id}, treating as historical: {e}"
+                        )
                 self._signal_tracker.register_signal(
                     signal_id=item.signal_id,
                     market_ticker=item.market_ticker,
@@ -595,6 +648,52 @@ class DeepAgentTools:
 
         logger.info(f"[deep_agent.tools.get_price_impacts] Returning {len(items)} tradeable signals")
         return items
+
+    # === Entity Signal Tools ===
+
+    async def get_entity_signals(
+        self,
+        min_signal_strength: float = 0.3,
+        min_mentions: int = 1,
+        limit: int = 15,
+    ) -> Dict[str, Any]:
+        """Get accumulated entity signals from the knowledge base.
+
+        Shows entities with building narratives (multiple mentions,
+        rising sentiment, high engagement). Use alongside get_price_impacts()
+        for a complete picture.
+
+        Returns entities sorted by signal_strength (strongest first).
+        Each includes linked_market_tickers for actionable trading and
+        relations (extracted entity-to-entity relationships like SUPPORTS,
+        OPPOSES, CAUSES) for causal chain reasoning.
+        """
+        self._tool_calls["get_entity_signals"] += 1
+
+        accumulator = get_entity_accumulator()
+        if not accumulator:
+            return {
+                "entity_signals": [],
+                "message": "Entity accumulator not available",
+                "total_active": 0,
+            }
+
+        summaries = accumulator.get_entity_signal_summaries(
+            min_strength=min_signal_strength,
+            min_mentions=min_mentions,
+            limit=limit,
+        )
+
+        return {
+            "entity_signals": [s.to_dict() for s in summaries],
+            "total_active": len(summaries),
+            "window_hours": summaries[0].window_hours if summaries else 2.0,
+            "message": (
+                f"{len(summaries)} entities with active signals"
+                if summaries
+                else "No entities above threshold"
+            ),
+        }
 
     # === Market Tools ===
 
@@ -633,15 +732,29 @@ class DeepAgentTools:
                     event_markets = self._tracked_markets.get_all()
 
                 for m in event_markets[:limit]:
-                    yes_bid = m.yes_bid if hasattr(m, 'yes_bid') else (m.price or 50)
-                    yes_ask = m.yes_ask if hasattr(m, 'yes_ask') else (m.price or 50)
+                    # T3.3: Propagate None instead of hardcoded 50c fallback
+                    raw_bid = m.yes_bid if hasattr(m, 'yes_bid') else None
+                    raw_ask = m.yes_ask if hasattr(m, 'yes_ask') else None
 
-                    # Convert status to string if it's an enum
+                    if raw_bid is not None and raw_ask is not None:
+                        yes_bid = raw_bid
+                        yes_ask = raw_ask
+                        dq = "live"
+                    elif hasattr(m, 'price') and m.price is not None:
+                        yes_bid = m.price
+                        yes_ask = m.price
+                        dq = "estimated"
+                    else:
+                        yes_bid = 0
+                        yes_ask = 0
+                        dq = "unknown"
+
+                    # T3.4: Convert status to string, default to "unknown" not "active"
                     status_val = m.status
                     if hasattr(status_val, 'value'):
                         status_val = status_val.value
                     elif status_val is None:
-                        status_val = "active"
+                        status_val = "unknown"
 
                     markets.append(MarketInfo(
                         ticker=m.ticker,
@@ -653,6 +766,7 @@ class DeepAgentTools:
                         volume_24h=getattr(m, 'volume_24h', 0) or 0,
                         status=str(status_val),
                         last_trade_price=getattr(m, 'last_price', None),
+                        data_quality=dq,
                     ))
 
                 if markets:
@@ -811,6 +925,14 @@ class DeepAgentTools:
         edge, priced-in status, and risk/reward ratio. Call this after
         get_price_impacts() to evaluate whether a signal is worth trading.
 
+        Multi-step analysis flow:
+            1. Fetch current bid/ask from tracked markets or API fallback
+            2. Compute expected edge from BASE_EDGE lookup * confidence
+            3. Derive signal-implied fair price (midpoint +/- edge)
+            4. Calculate entry price, max profit/loss, and risk/reward
+            5. Detect if signal is already priced in (edge < spread)
+            6. Return quality verdict (strong/marginal/weak/negative_edge)
+
         Args:
             market_ticker: Market to assess
             signal_impact_score: Price impact from signal (-75 to +75)
@@ -827,33 +949,75 @@ class DeepAgentTools:
         )
 
         # --- Step 1: Get current market prices ---
-        yes_bid = 0
-        yes_ask = 100
+        yes_bid = None
+        yes_ask = None
         event_ticker = ""
+        has_live_data = False
 
         if self._tracked_markets:
             market = self._tracked_markets.get(market_ticker)
             if market:
-                yes_bid = market.yes_bid if hasattr(market, 'yes_bid') else 0
-                yes_ask = market.yes_ask if hasattr(market, 'yes_ask') else 100
+                yes_bid = market.yes_bid if hasattr(market, 'yes_bid') else None
+                yes_ask = market.yes_ask if hasattr(market, 'yes_ask') else None
                 event_ticker = market.event_ticker if hasattr(market, 'event_ticker') else ""
+                if yes_bid is not None and yes_ask is not None:
+                    has_live_data = True
 
         # Fallback to API if tracked_markets didn't have data
-        if yes_bid == 0 and yes_ask == 100 and self._trading_client:
+        if not has_live_data and self._trading_client:
             try:
                 market_data = await self._trading_client.get_market(market_ticker)
                 if market_data:
-                    yes_bid = market_data.get("yes_bid", 0) or 0
-                    yes_ask = market_data.get("yes_ask", 100) or 100
+                    yes_bid = market_data.get("yes_bid")
+                    yes_ask = market_data.get("yes_ask")
                     event_ticker = market_data.get("event_ticker", "") or event_ticker
+                    if yes_bid is not None and yes_ask is not None:
+                        has_live_data = True
             except Exception as e:
                 logger.warning(f"[deep_agent.tools.assess_trade_opportunity] API fallback failed: {e}")
+
+        # T1.3: If both sources failed, return NO_DATA assessment instead of
+        # computing edge from fabricated 0/100 sentinel prices
+        if not has_live_data:
+            logger.warning(
+                f"[deep_agent.tools.assess_trade_opportunity] No live market data for {market_ticker}"
+            )
+            return TradeOpportunityAssessment(
+                market_ticker=market_ticker,
+                current_yes_bid=0,
+                current_yes_ask=0,
+                current_spread=0,
+                signal_impact=signal_impact_score,
+                signal_confidence=signal_confidence,
+                suggested_side=suggested_side,
+                expected_edge_cents=0,
+                signal_implied_fair_price=0,
+                entry_price_cents=0,
+                price_24h_ago=None,
+                price_move_since_signal=None,
+                priced_in_pct=None,
+                priced_in_verdict="UNKNOWN",
+                max_profit_cents=0,
+                max_loss_cents=0,
+                expected_profit_cents=0,
+                reward_risk_ratio=0.0,
+                risk_reward_verdict="UNFAVORABLE",
+                trade_quality="NO_DATA",
+                reasoning=f"Cannot assess: no live market data available for {market_ticker}. "
+                          f"Both tracked_markets and API returned no bid/ask prices.",
+            )
+
+        # At this point yes_bid and yes_ask are guaranteed non-None
+        yes_bid = yes_bid or 0  # handle 0 as valid
+        yes_ask = yes_ask or 0
 
         spread = yes_ask - yes_bid
         midpoint = (yes_bid + yes_ask) // 2
 
         # --- Step 2: Expected edge model ---
-        # Base edge in cents per impact level (how much price should move)
+        # Base edge in cents per impact level, calibrated from backtest observations:
+        # impact 75 (max) -> 25c expected move, impact 40 (moderate) -> 12c.
+        # Fallback for other values: abs_impact // 3 (conservative linear scale).
         BASE_EDGE = {75: 25, 40: 12}
         abs_impact = abs(signal_impact_score)
         base_edge = BASE_EDGE.get(abs_impact, max(1, abs_impact // 3))
@@ -1021,14 +1185,18 @@ class DeepAgentTools:
         total_contracts = 0
         position_count = 0
 
+        missing_price_count = 0
         for market in event_markets:
             ticker = market.ticker
+            # T3.5: Use None instead of fabricated 50c
             yes_price = market.yes_ask if market.yes_ask > 0 else market.price
-            if yes_price <= 0:
-                yes_price = 50  # Default
+            if yes_price is None or yes_price <= 0:
+                yes_price = None
+                missing_price_count += 1
 
-            no_price = 100 - yes_price
-            yes_sum += yes_price
+            no_price = (100 - yes_price) if yes_price is not None else None
+            if yes_price is not None:
+                yes_sum += yes_price
 
             # Check position
             position = positions.get(ticker, {})
@@ -1061,7 +1229,8 @@ class DeepAgentTools:
 
         # Calculate aggregates
         n_markets = len(market_infos)
-        no_sum = n_markets * 100 - yes_sum
+        priced_markets = n_markets - missing_price_count
+        no_sum = priced_markets * 100 - yes_sum if priced_markets > 0 else 0
 
         # Get risk level from event position tracker if available
         risk_level = "NORMAL"
@@ -1074,6 +1243,12 @@ class DeepAgentTools:
         mutual_exclusivity_note = self._generate_mutual_exclusivity_note(
             event_ticker, n_markets, yes_sum, risk_level, position_count
         )
+        # T3.5: Note missing price data in the explanation
+        if missing_price_count > 0:
+            mutual_exclusivity_note += (
+                f" NOTE: {missing_price_count}/{n_markets} markets have no price data. "
+                f"YES sum is based on {priced_markets} priced markets only."
+            )
 
         logger.info(
             f"[deep_agent.tools.get_event_context] {event_ticker}: {n_markets} markets, "
@@ -1160,6 +1335,10 @@ class DeepAgentTools:
         - moderate: Place at midpoint + 1c. Saves ~half the spread, decent fill probability.
         - passive: Place near the bid + 1c. Cheapest entry, may not fill.
 
+        Enforces per-event dollar exposure cap (_max_event_exposure_cents) to prevent
+        concentration risk. Exposure is released when trades settle via
+        release_event_exposure().
+
         Args:
             ticker: Market ticker to trade
             side: "yes" or "no"
@@ -1216,8 +1395,18 @@ class DeepAgentTools:
 
             # Step 2: Calculate limit price based on execution strategy
             # Kalshi markets have yes_bid/yes_ask. NO price = 100 - YES price.
-            yes_ask = market_data.get("yes_ask", 0)
-            yes_bid = market_data.get("yes_bid", 0)
+            yes_ask = market_data.get("yes_ask")
+            yes_bid = market_data.get("yes_bid")
+
+            # T1.1: Validate bid/ask before computing execution price
+            if yes_ask is None or yes_bid is None or (yes_ask == 0 and yes_bid == 0):
+                return TradeResult(
+                    success=False,
+                    ticker=ticker,
+                    side=side,
+                    contracts=contracts,
+                    error=f"Market data incomplete: yes_bid={yes_bid}, yes_ask={yes_ask}",
+                )
             midpoint = (yes_bid + yes_ask) // 2 if yes_bid > 0 else 0
 
             if execution_strategy == "aggressive":
@@ -1356,6 +1545,7 @@ class DeepAgentTools:
                     contracts=contracts,
                     price_cents=avg_price,
                     order_id=order_id,
+                    limit_price_cents=limit_price,
                 )
             else:
                 error_msg = result.get("error") or result.get("message") or "Unknown error"
@@ -1377,6 +1567,32 @@ class DeepAgentTools:
                 contracts=contracts,
                 error=str(e),
             )
+
+    # === Event Exposure Management ===
+
+    def release_event_exposure(self, event_ticker: str, contracts: int, entry_price_cents: int) -> None:
+        """Release event exposure when a position settles or is exited.
+
+        Called from reflection handler when a PendingTrade settles. Without this,
+        _event_exposure_cents only increases, progressively locking the agent out
+        of trading on events it has already exited.
+        """
+        if not event_ticker or event_ticker not in self._event_exposure_cents:
+            return
+
+        release_amount = contracts * entry_price_cents
+        previous = self._event_exposure_cents[event_ticker]
+        self._event_exposure_cents[event_ticker] = max(0, previous - release_amount)
+
+        logger.info(
+            f"[deep_agent.tools] Released exposure for {event_ticker}: "
+            f"${release_amount/100:.2f} freed, "
+            f"${self._event_exposure_cents[event_ticker]/100:.2f} remaining"
+        )
+
+        # Clean up zero-exposure entries
+        if self._event_exposure_cents[event_ticker] == 0:
+            del self._event_exposure_cents[event_ticker]
 
     # === Fill Recording ===
 
@@ -1450,6 +1666,8 @@ class DeepAgentTools:
                 open_order_count=0,
                 trade_count=0,
                 win_rate=0.0,
+                is_valid=False,
+                error="No state container available",
             )
 
         try:
@@ -1459,10 +1677,23 @@ class DeepAgentTools:
             # Get positions with details
             positions = []
             for pos in summary.get("positions_details", []):
+                # T1.5: Explicit position side determination
+                yes_c = pos.get("yes_contracts", 0) or 0
+                no_c = pos.get("no_contracts", 0) or 0
+                if yes_c > 0:
+                    pos_side = "yes"
+                    pos_contracts = yes_c
+                elif no_c > 0:
+                    pos_side = "no"
+                    pos_contracts = no_c
+                else:
+                    pos_side = "none"
+                    pos_contracts = 0
+
                 positions.append({
                     "ticker": pos.get("ticker"),
-                    "side": "yes" if pos.get("yes_contracts", 0) > 0 else "no",
-                    "contracts": pos.get("yes_contracts", 0) or pos.get("no_contracts", 0),
+                    "side": pos_side,
+                    "contracts": pos_contracts,
                     "avg_price": pos.get("avg_price"),
                     "current_value": pos.get("market_value"),
                     "unrealized_pnl": pos.get("unrealized_pnl"),
@@ -1500,6 +1731,8 @@ class DeepAgentTools:
                 open_order_count=0,
                 trade_count=0,
                 win_rate=0.0,
+                is_valid=False,
+                error=str(e),
             )
 
     # === Memory Tools ===
@@ -1532,7 +1765,8 @@ class DeepAgentTools:
                 return ""
         except Exception as e:
             logger.error(f"[deep_agent.tools.read_memory] Error reading {safe_name}: {e}")
-            return ""
+            # T4.6: Return error message so agent knows memory is unavailable
+            return f"[ERROR: Could not read {safe_name}: {e}]"
 
     # Files that must NOT be fully replaced (use append_memory instead)
     _APPEND_ONLY_FILES = {"learnings.md", "mistakes.md", "patterns.md"}
@@ -1632,7 +1866,26 @@ class DeepAgentTools:
                 f"from {safe_name} to {archive_path}"
             )
 
-        success = await self.write_memory(safe_name, new_content)
+        # Write directly instead of calling write_memory(), which blocks
+        # append-only files (learnings.md, mistakes.md, patterns.md).
+        file_path = self._memory_dir / safe_name
+        try:
+            file_path.write_text(new_content, encoding="utf-8")
+
+            # Broadcast memory update to WebSocket
+            if self._ws_manager:
+                await self._ws_manager.broadcast_message("deep_agent_memory_update", {
+                    "filename": safe_name,
+                    "content_preview": new_content[:200] + "..." if len(new_content) > 200 else new_content,
+                    "timestamp": time.strftime("%H:%M:%S"),
+                })
+
+            logger.info(f"[deep_agent.tools.append_memory] Successfully wrote {len(new_content)} chars to {safe_name}")
+            success = True
+        except Exception as e:
+            logger.error(f"[deep_agent.tools.append_memory] Error writing {safe_name}: {e}")
+            success = False
+
         return {
             "success": success,
             "new_length": len(new_content),
@@ -1672,6 +1925,8 @@ async def get_price_impacts(
             limit=limit,
         )
         return [i.to_dict() for i in items]
+    # T4.7: Log when tools not initialized
+    logger.error("[deep_agent.tools] get_price_impacts called but _global_tools is None")
     return []
 
 
@@ -1680,6 +1935,7 @@ async def get_markets(event_ticker: Optional[str] = None, limit: int = 20) -> Li
     if _global_tools:
         markets = await _global_tools.get_markets(event_ticker, limit)
         return [m.to_dict() for m in markets]
+    logger.error("[deep_agent.tools] get_markets called but _global_tools is None")
     return []
 
 
@@ -1688,6 +1944,7 @@ async def trade(ticker: str, side: str, contracts: int, reasoning: str, executio
     if _global_tools:
         result = await _global_tools.trade(ticker, side, contracts, reasoning, execution_strategy=execution_strategy)
         return result.to_dict()
+    logger.error("[deep_agent.tools] trade called but _global_tools is None")
     return {"success": False, "error": "Tools not initialized"}
 
 
@@ -1696,6 +1953,7 @@ async def get_session_state() -> Dict:
     if _global_tools:
         state = await _global_tools.get_session_state()
         return state.to_dict()
+    logger.error("[deep_agent.tools] get_session_state called but _global_tools is None")
     return {}
 
 
@@ -1703,6 +1961,7 @@ async def read_memory(filename: str) -> str:
     """Read memory file."""
     if _global_tools:
         return await _global_tools.read_memory(filename)
+    logger.error("[deep_agent.tools] read_memory called but _global_tools is None")
     return ""
 
 
@@ -1710,6 +1969,7 @@ async def write_memory(filename: str, content: str) -> bool:
     """Write memory file."""
     if _global_tools:
         return await _global_tools.write_memory(filename, content)
+    logger.error("[deep_agent.tools] write_memory called but _global_tools is None")
     return False
 
 
@@ -1717,4 +1977,5 @@ async def append_memory(filename: str, content: str) -> dict:
     """Append to memory file with automatic size management."""
     if _global_tools:
         return await _global_tools.append_memory(filename, content)
+    logger.error("[deep_agent.tools] append_memory called but _global_tools is None")
     return {"success": False, "error": "Tools not initialized"}

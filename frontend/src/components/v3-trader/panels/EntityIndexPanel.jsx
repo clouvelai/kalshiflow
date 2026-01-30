@@ -23,6 +23,11 @@ import {
   Image,
   CheckCircle2,
   XCircle,
+  ArrowRight,
+  Flame,
+  Layers,
+  MessageSquare,
+  Quote,
 } from 'lucide-react';
 import { useEntityAnimations } from '../../../hooks/v3-trader/useEntityAnimations';
 
@@ -178,6 +183,122 @@ const MARKET_TYPE_BADGES = {
 };
 
 /**
+ * Signal Strength Bar - P0: horizontal gradient bar (0.0 to 1.0)
+ */
+const SignalStrengthBar = memo(({ value }) => {
+  if (!value || value <= 0) {
+    return <span className="text-gray-600 text-[10px]">--</span>;
+  }
+  const pct = Math.min(100, Math.round(value * 100));
+  // Color gradient: gray → amber → orange → red
+  const barColor = pct < 30
+    ? 'bg-gray-500'
+    : pct < 50
+      ? 'bg-amber-500'
+      : pct < 75
+        ? 'bg-orange-500'
+        : 'bg-red-500';
+  const glowColor = pct >= 75 ? 'shadow-red-500/30 shadow-sm' : '';
+
+  return (
+    <div className="flex items-center gap-1.5">
+      <div className={`w-16 h-1.5 bg-gray-800 rounded-full overflow-hidden ${glowColor}`}>
+        <div
+          className={`h-full rounded-full transition-all duration-500 ${barColor}`}
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+      <span className="text-[10px] font-mono text-gray-400">{value.toFixed(2)}</span>
+    </div>
+  );
+});
+
+SignalStrengthBar.displayName = 'SignalStrengthBar';
+
+/**
+ * Category Badge - P0: color-coded pill for entity categories
+ */
+const CATEGORY_COLORS = {
+  politics: 'bg-blue-900/40 text-blue-400 border-blue-700/40',
+  election: 'bg-violet-900/40 text-violet-400 border-violet-700/40',
+  policy: 'bg-teal-900/40 text-teal-400 border-teal-700/40',
+  legal: 'bg-amber-900/40 text-amber-400 border-amber-700/40',
+  economy: 'bg-green-900/40 text-green-400 border-green-700/40',
+  government: 'bg-cyan-900/40 text-cyan-400 border-cyan-700/40',
+  international: 'bg-pink-900/40 text-pink-400 border-pink-700/40',
+};
+
+const CategoryBadge = memo(({ category }) => {
+  const colorClass = CATEGORY_COLORS[category] || 'bg-gray-800/40 text-gray-400 border-gray-700/40';
+  return (
+    <span className={`px-1.5 py-0.5 text-[9px] font-medium rounded border ${colorClass}`}>
+      {category}
+    </span>
+  );
+});
+
+CategoryBadge.displayName = 'CategoryBadge';
+
+/**
+ * Relation Label Colors
+ */
+const RELATION_COLORS = {
+  SUPPORTS: 'text-green-400',
+  OPPOSES: 'text-red-400',
+  CAUSES: 'text-amber-400',
+  AFFECTED_BY: 'text-blue-400',
+  MEMBER_OF: 'text-purple-400',
+};
+
+/**
+ * Relation Row - P1: directional relation display
+ */
+const RelationRow = memo(({ relation }) => {
+  const color = RELATION_COLORS[relation.relation] || 'text-gray-400';
+  return (
+    <div className="flex items-center gap-2 px-2 py-1.5 bg-gray-800/30 rounded text-xs border border-gray-700/20">
+      <span className="text-gray-300 truncate max-w-[100px]">{relation.subject}</span>
+      <ArrowRight className={`w-3 h-3 flex-shrink-0 ${color}`} />
+      <span className={`font-medium flex-shrink-0 ${color}`}>{relation.relation}</span>
+      <ArrowRight className={`w-3 h-3 flex-shrink-0 ${color}`} />
+      <span className="text-gray-300 truncate max-w-[100px]">{relation.object}</span>
+      {relation.confidence >= 0.8 && (
+        <span className="text-[9px] text-gray-500 ml-auto">
+          {Math.round(relation.confidence * 100)}%
+        </span>
+      )}
+    </div>
+  );
+});
+
+RelationRow.displayName = 'RelationRow';
+
+/**
+ * Source Diversity Indicator - P1: shows variety of source types
+ */
+const SourceDiversityDots = memo(({ sourceTypes }) => {
+  if (!sourceTypes?.length) return null;
+  const sourceColors = {
+    reddit_post: 'bg-orange-400',
+    reddit_comment: 'bg-amber-400',
+    news: 'bg-blue-400',
+    social: 'bg-pink-400',
+  };
+  return (
+    <div className="flex items-center gap-0.5" title={`Sources: ${sourceTypes.join(', ')}`}>
+      {sourceTypes.slice(0, 4).map((t, i) => (
+        <div
+          key={i}
+          className={`w-1.5 h-1.5 rounded-full ${sourceColors[t] || 'bg-gray-500'}`}
+        />
+      ))}
+    </div>
+  );
+});
+
+SourceDiversityDots.displayName = 'SourceDiversityDots';
+
+/**
  * Single entity row component with animation support
  */
 const EntityRow = memo(({ entity, isExpanded, onToggle, animationClasses }) => {
@@ -186,6 +307,21 @@ const EntityRow = memo(({ entity, isExpanded, onToggle, animationClasses }) => {
   const mentions = entity.reddit_signals?.mention_count || 0;
   const sentiment = entity.reddit_signals?.aggregate_sentiment || 0;
   const lastSignal = entity.reddit_signals?.last_signal_at;
+  const acc = entity.accumulated;
+  const signalStrength = acc?.signal_strength || 0;
+  const categories = acc?.categories || [];
+  const relations = acc?.relations || [];
+  const latestContext = acc?.latest_context || '';
+  const maxRedditScore = acc?.max_reddit_score || 0;
+  const totalComments = acc?.total_reddit_comments || 0;
+  const sourceTypes = acc?.source_types || [];
+  const uniqueSources = acc?.unique_sources || 0;
+
+  // Signal trend: compare windowed vs session mentions
+  const windowedMentions = acc?.mention_count || 0;
+  const trendDirection = windowedMentions > 0
+    ? (windowedMentions >= mentions * 0.5 ? 'rising' : 'stable')
+    : (mentions > 0 ? 'falling' : null);
 
   // Format relative time for last signal
   const formatLastSignal = (ts) => {
@@ -218,10 +354,21 @@ const EntityRow = memo(({ entity, isExpanded, onToggle, animationClasses }) => {
         {/* Entity type icon */}
         <EntityTypeIcon type={entity.entity_type} />
 
-        {/* Name and type */}
+        {/* Name, type, and category tags */}
         <div className="flex-1 min-w-0">
-          <div className="text-sm font-medium text-white truncate">
-            {entity.canonical_name}
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-medium text-white truncate">
+              {entity.canonical_name}
+            </span>
+            {/* P1: Signal trend indicator */}
+            {trendDirection === 'rising' && (
+              <TrendingUp className="w-3 h-3 text-green-400 flex-shrink-0" title="Rising signal" />
+            )}
+            {trendDirection === 'falling' && (
+              <TrendingDown className="w-3 h-3 text-red-400 flex-shrink-0" title="Fading signal" />
+            )}
+            {/* P1: Source diversity */}
+            <SourceDiversityDots sourceTypes={sourceTypes} />
           </div>
           <div className="text-xs text-gray-500 flex items-center gap-2">
             <span className="capitalize">{entity.entity_type}</span>
@@ -229,11 +376,28 @@ const EntityRow = memo(({ entity, isExpanded, onToggle, animationClasses }) => {
             <span className="text-cyan-500/70">{aliasCount} aliases</span>
             <span className="text-gray-600">|</span>
             <span className="text-purple-500/70">{marketCount} markets</span>
+            {/* P0: Category tags */}
+            {categories.length > 0 && (
+              <>
+                <span className="text-gray-600">|</span>
+                <div className="flex items-center gap-1">
+                  {categories.slice(0, 3).map((cat, i) => (
+                    <CategoryBadge key={i} category={cat} />
+                  ))}
+                </div>
+              </>
+            )}
           </div>
         </div>
 
-        {/* Reddit signals */}
+        {/* Signal columns */}
         <div className="flex items-center gap-4 text-right">
+          {/* P0: Signal Strength */}
+          <div className="flex flex-col items-end min-w-[80px]">
+            <SignalStrengthBar value={signalStrength} />
+            <span className="text-[10px] text-gray-500 uppercase">signal</span>
+          </div>
+
           {/* Mentions */}
           <div className="flex flex-col items-end">
             <span className="text-sm font-mono text-white">{mentions}</span>
@@ -245,6 +409,17 @@ const EntityRow = memo(({ entity, isExpanded, onToggle, animationClasses }) => {
             <SentimentBadge value={sentiment} />
             <span className="text-[10px] text-gray-500 uppercase">sentiment</span>
           </div>
+
+          {/* P1: Engagement (reddit score / comments) */}
+          {(maxRedditScore > 0 || totalComments > 0) && (
+            <div className="flex flex-col items-end min-w-[45px]">
+              <div className="flex items-center gap-1">
+                <Flame className="w-3 h-3 text-orange-400" />
+                <span className="text-xs font-mono text-orange-400">{maxRedditScore}</span>
+              </div>
+              <span className="text-[10px] text-gray-500 uppercase">score</span>
+            </div>
+          )}
 
           {/* Last signal */}
           <div className="flex flex-col items-end min-w-[40px]">
@@ -258,9 +433,71 @@ const EntityRow = memo(({ entity, isExpanded, onToggle, animationClasses }) => {
 
       {/* Expanded content */}
       {isExpanded && (
-        <div className="px-4 py-3 bg-gray-900/50 border-t border-gray-800/30 animate-fade-in">
+        <div className="px-4 py-3 bg-gray-900/50 border-t border-gray-800/30 animate-fade-in space-y-3">
+          {/* P1: Latest context preview */}
+          {latestContext && (
+            <div>
+              <div className="text-xs text-gray-500 uppercase mb-1.5 flex items-center gap-1.5">
+                <Quote className="w-3 h-3" />
+                Latest Context
+              </div>
+              <div className="px-3 py-2 bg-gray-800/40 rounded-lg border-l-2 border-gray-600 text-xs text-gray-300 italic leading-relaxed">
+                {latestContext}
+              </div>
+            </div>
+          )}
+
+          {/* P1: Relations */}
+          {relations.length > 0 && (
+            <div>
+              <div className="text-xs text-gray-500 uppercase mb-1.5 flex items-center gap-1.5">
+                <Link className="w-3 h-3" />
+                Relations ({relations.length})
+              </div>
+              <div className="space-y-1">
+                {relations.map((rel, i) => (
+                  <RelationRow key={i} relation={rel} />
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* P1: Engagement + Source details */}
+          {acc && (
+            <div className="flex items-center gap-4 flex-wrap">
+              {uniqueSources > 0 && (
+                <div className="flex items-center gap-1.5 text-xs">
+                  <Layers className="w-3 h-3 text-gray-500" />
+                  <span className="text-gray-500">Sources:</span>
+                  <span className="font-mono text-gray-300">{uniqueSources}</span>
+                </div>
+              )}
+              {totalComments > 0 && (
+                <div className="flex items-center gap-1.5 text-xs">
+                  <MessageSquare className="w-3 h-3 text-gray-500" />
+                  <span className="text-gray-500">Comments:</span>
+                  <span className="font-mono text-gray-300">{totalComments}</span>
+                </div>
+              )}
+              {maxRedditScore > 0 && (
+                <div className="flex items-center gap-1.5 text-xs">
+                  <Flame className="w-3 h-3 text-gray-500" />
+                  <span className="text-gray-500">Top score:</span>
+                  <span className="font-mono text-orange-300">{maxRedditScore}</span>
+                </div>
+              )}
+              {sourceTypes.length > 0 && (
+                <div className="flex items-center gap-1.5 text-xs">
+                  <Globe className="w-3 h-3 text-gray-500" />
+                  <span className="text-gray-500">Types:</span>
+                  <span className="text-gray-300">{sourceTypes.join(', ')}</span>
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Aliases */}
-          <div className="mb-3">
+          <div>
             <div className="text-xs text-gray-500 uppercase mb-1.5 flex items-center gap-1.5">
               <Tag className="w-3 h-3" />
               Aliases ({aliasCount})
@@ -420,7 +657,7 @@ const EntityIndexPanel = ({
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [typeFilter, setTypeFilter] = useState('all');
-  const [sortBy, setSortBy] = useState('mentions');
+  const [sortBy, setSortBy] = useState('signal_strength');
   const [expandedEntities, setExpandedEntities] = useState(new Set());
 
   // Animation hook for entity updates
@@ -458,10 +695,14 @@ const EntityIndexPanel = ({
       if (aRecent !== bRecent) return bRecent - aRecent;
 
       switch (sortBy) {
+        case 'signal_strength':
+          return (b.accumulated?.signal_strength || 0) - (a.accumulated?.signal_strength || 0);
         case 'mentions':
           return (b.reddit_signals?.mention_count || 0) - (a.reddit_signals?.mention_count || 0);
         case 'sentiment':
           return Math.abs(b.reddit_signals?.aggregate_sentiment || 0) - Math.abs(a.reddit_signals?.aggregate_sentiment || 0);
+        case 'engagement':
+          return (b.accumulated?.max_reddit_score || 0) - (a.accumulated?.max_reddit_score || 0);
         case 'markets':
           return (b.markets?.length || 0) - (a.markets?.length || 0);
         case 'name':
@@ -554,8 +795,10 @@ const EntityIndexPanel = ({
             onChange={(e) => setSortBy(e.target.value)}
             className="px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-sm text-white focus:border-cyan-500 focus:outline-none transition-colors"
           >
+            <option value="signal_strength">Signal Strength</option>
             <option value="mentions">Most Mentions</option>
             <option value="sentiment">Strongest Sentiment</option>
+            <option value="engagement">Engagement</option>
             <option value="markets">Most Markets</option>
             <option value="name">Name A-Z</option>
           </select>

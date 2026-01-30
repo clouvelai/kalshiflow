@@ -282,44 +282,51 @@ class ReflectionEngine:
                     settlements_by_ticker_side[key] = []
                 settlements_by_ticker_side[key].append(s)
 
-            # Check each pending trade
+            # T4.4: Per-trade try/except so one bad trade doesn't abort all matching
             for trade_id, trade in list(self._pending_trades.items()):
                 if trade.settled:
                     continue
 
-                matched_settlement = None
+                try:
+                    matched_settlement = None
 
-                # Primary match: by order_id (most precise)
-                if trade.order_id and trade.order_id in settlements_by_order_id:
-                    matched_settlement = settlements_by_order_id[trade.order_id]
-                    logger.debug(
-                        f"[deep_agent.reflection] Matched by order_id: {trade.order_id}"
-                    )
-
-                # Secondary match: by ticker + side + contracts (fallback)
-                if matched_settlement is None:
-                    key = (trade.ticker, trade.side.lower())
-                    candidates = settlements_by_ticker_side.get(key, [])
-                    for settlement in candidates:
-                        # Match by contract count for disambiguation
-                        settlement_contracts = settlement.get("contracts", 0)
-                        if settlement_contracts == trade.contracts:
-                            matched_settlement = settlement
-                            logger.debug(
-                                f"[deep_agent.reflection] Matched by ticker+side+contracts: "
-                                f"{trade.ticker} {trade.side} x{trade.contracts}"
-                            )
-                            break
-                    # If no exact contract match, take first match (backward compat)
-                    if matched_settlement is None and candidates:
-                        matched_settlement = candidates[0]
+                    # Primary match: by order_id (most precise)
+                    if trade.order_id and trade.order_id in settlements_by_order_id:
+                        matched_settlement = settlements_by_order_id[trade.order_id]
                         logger.debug(
-                            f"[deep_agent.reflection] Matched by ticker+side (fallback): "
-                            f"{trade.ticker} {trade.side}"
+                            f"[deep_agent.reflection] Matched by order_id: {trade.order_id}"
                         )
 
-                if matched_settlement:
-                    await self._handle_settlement(trade, matched_settlement)
+                    # Secondary match: by ticker + side + contracts (fallback)
+                    if matched_settlement is None:
+                        key = (trade.ticker, trade.side.lower())
+                        candidates = settlements_by_ticker_side.get(key, [])
+                        for settlement in candidates:
+                            # Match by contract count for disambiguation
+                            settlement_contracts = settlement.get("contracts", 0)
+                            if settlement_contracts == trade.contracts:
+                                matched_settlement = settlement
+                                logger.debug(
+                                    f"[deep_agent.reflection] Matched by ticker+side+contracts: "
+                                    f"{trade.ticker} {trade.side} x{trade.contracts}"
+                                )
+                                break
+                        # If no exact contract match, take first match (backward compat)
+                        if matched_settlement is None and candidates:
+                            matched_settlement = candidates[0]
+                            logger.debug(
+                                f"[deep_agent.reflection] Matched by ticker+side (fallback): "
+                                f"{trade.ticker} {trade.side}"
+                            )
+
+                    if matched_settlement:
+                        await self._handle_settlement(trade, matched_settlement)
+
+                except Exception as e:
+                    logger.error(
+                        f"[deep_agent.reflection] Error matching trade {trade_id} "
+                        f"({trade.ticker}): {e}"
+                    )
 
         except Exception as e:
             logger.error(f"[deep_agent.reflection] Error checking settlements: {e}")
@@ -342,7 +349,17 @@ class ReflectionEngine:
 
         # Update trade record
         trade.settled = True
-        trade.exit_price_cents = settlement.get("price_cents")
+        # T4.5: Derive exit_price if settlement doesn't provide it
+        exit_price = settlement.get("price_cents")
+        if exit_price is None and trade.contracts > 0:
+            # Try to derive from P&L: exit = entry + (pnl / contracts)
+            try:
+                exit_price = trade.entry_price_cents + (pnl_cents // trade.contracts)
+            except (ZeroDivisionError, TypeError):
+                logger.warning(
+                    f"[deep_agent.reflection] Could not derive exit_price for {trade.ticker}"
+                )
+        trade.exit_price_cents = exit_price
         trade.pnl_cents = pnl_cents
         trade.result = result
         trade.settled_at = time.time()

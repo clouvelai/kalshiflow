@@ -85,6 +85,10 @@ class RedditEntityAgentConfig:
     llm_entity_timeout: float = 10.0
     llm_entity_fallback_to_spacy: bool = True  # Use spaCy NER if LLM fails
 
+    # Reddit metadata gating (Phase 4: skip low-engagement posts before LLM)
+    reddit_min_score: int = 5  # Minimum post score to process through LLM
+    reddit_min_comments: int = 5  # Minimum comment count to process through LLM
+
     enabled: bool = True
 
 
@@ -157,6 +161,9 @@ class RedditEntityAgent(BaseAgent):
         # LLM Entity Extractor (Phase 2 of two-phase pipeline)
         self._llm_entity_extractor = None
 
+        # Relation Extractor (REL - extracts relations between entities)
+        self._relation_extractor = None
+
         # Duplicate prevention - track seen post IDs in memory
         self._seen_post_ids: set = set()
 
@@ -180,6 +187,9 @@ class RedditEntityAgent(BaseAgent):
         self._llm_entity_kb_promotions = 0  # Track LLM entities promoted to market entities
         self._llm_market_matches = 0  # Track LLM direct market ticker matches
         self._llm_skipped_entities = 0  # Track entities with no market match
+        self._posts_skipped_low_engagement = 0  # Track posts gated by metadata
+        self._relation_extractions = 0  # Track REL extraction calls
+        self._relations_extracted = 0  # Track individual relations found
 
         # Startup health tracking - tracks initialization status of critical components
         self._init_results: Dict[str, bool] = {
@@ -247,6 +257,17 @@ class RedditEntityAgent(BaseAgent):
         # Initialize market impact reasoner
         if self._config.market_impact_reasoning_enabled:
             await self._init_market_impact_reasoner()
+
+        # Initialize relation extractor (REL)
+        try:
+            from ..nlp.relation_extractor import RelationExtractor
+            self._relation_extractor = RelationExtractor(
+                model=self._config.llm_entity_model,
+                timeout=self._config.llm_entity_timeout,
+            )
+            logger.info("[reddit_entity] RelationExtractor initialized")
+        except Exception as e:
+            logger.warning(f"[reddit_entity] RelationExtractor init failed: {e}")
 
         # Start streaming task
         self._stream_task = asyncio.create_task(self._stream_loop())
@@ -341,6 +362,10 @@ class RedditEntityAgent(BaseAgent):
             "llm_entity_kb_promotions": self._llm_entity_kb_promotions,
             "llm_market_matches": self._llm_market_matches,
             "llm_skipped_entities": self._llm_skipped_entities,
+            # Metadata gating stats
+            "posts_skipped_low_engagement": self._posts_skipped_low_engagement,
+            "reddit_min_score": self._config.reddit_min_score,
+            "reddit_min_comments": self._config.reddit_min_comments,
             # Startup health tracking
             "init_results": self._init_results.copy(),
             "startup_health": self._startup_health,
@@ -581,7 +606,7 @@ class RedditEntityAgent(BaseAgent):
             # Calculate aggregate sentiment
             if entities:
                 sentiments = [e.get("sentiment_score", 0) for e in entities]
-                aggregate_sentiment = sum(sentiments) // len(sentiments)
+                aggregate_sentiment = int(round(sum(sentiments) / len(sentiments)))
             else:
                 aggregate_sentiment = 0
 
@@ -775,6 +800,21 @@ class RedditEntityAgent(BaseAgent):
                 self._posts_skipped += 1
                 return
 
+            # Reddit metadata gating: skip low-engagement posts before LLM processing
+            # Posts are still counted/broadcast but not processed through the pipeline
+            post_score = getattr(submission, "score", 0) or 0
+            post_comments = getattr(submission, "num_comments", 0) or 0
+            if (
+                post_score < self._config.reddit_min_score
+                and post_comments < self._config.reddit_min_comments
+            ):
+                self._posts_skipped_low_engagement += 1
+                logger.debug(
+                    f"[reddit_entity] Skipping low-engagement post {post_id}: "
+                    f"score={post_score}, comments={post_comments}"
+                )
+                return
+
             self._posts_processed += 1
             self._record_event_processed()
 
@@ -861,6 +901,94 @@ class RedditEntityAgent(BaseAgent):
                 )
                 # Insert into Supabase (triggers Realtime for Price Impact Agent)
                 await self._insert_to_supabase(post_data, entities)
+
+            # Match against objective entities (keyword-based, no LLM call)
+            # Catches indirect effects: ICE → Government Shutdown via keyword matching
+            if self._entity_index and entities:
+                try:
+                    entity_names = [
+                        e.get("canonical_name", "") or e.get("entity_id", "")
+                        for e in entities
+                        if isinstance(e, dict)
+                    ]
+                    # Get categories from entities if available
+                    entity_categories = []
+                    for e in entities:
+                        if isinstance(e, dict):
+                            entity_categories.extend(e.get("categories", []))
+
+                    obj_matches = self._entity_index.match_text_to_objective_entities(
+                        text=combined_text,
+                        extracted_entity_names=entity_names,
+                        categories=entity_categories if entity_categories else None,
+                    )
+                    if obj_matches:
+                        logger.info(
+                            f"[reddit_entity] Objective entity matches for post {post_id}: "
+                            f"{[(m.objective_entity.canonical_name, m.hit_score) for m in obj_matches[:3]]}"
+                        )
+                        # Feed objective entity matches to accumulator via price impact agent
+                        # The accumulator will track these mentions and emit signals
+                        from ..services.entity_accumulator import get_entity_accumulator
+                        from ..schemas.kb_schemas import EntityMention
+                        accumulator = get_entity_accumulator()
+                        if accumulator:
+                            # Use strongest entity's sentiment for objective entity mention
+                            best_sentiment = 0
+                            best_confidence = 0.5
+                            for e in entities:
+                                if isinstance(e, dict):
+                                    s = abs(e.get("sentiment_score", 0))
+                                    if s > abs(best_sentiment):
+                                        best_sentiment = e.get("sentiment_score", 0)
+                                        best_confidence = e.get("confidence", 0.5)
+
+                            for match in obj_matches[:3]:  # Top 3 matches
+                                obj = match.objective_entity
+                                mention = EntityMention(
+                                    entity_id=obj.entity_id,
+                                    source_type="reddit_post",
+                                    source_post_id=post_id,
+                                    sentiment_score=best_sentiment,
+                                    confidence=best_confidence,
+                                    categories=obj.categories,
+                                    reddit_score=post_data.get("score", 0),
+                                    reddit_comments=post_data.get("num_comments", 0),
+                                    context_snippet=title[:200],
+                                    source_domain="reddit.com",
+                                )
+                                await accumulator.add_mention(
+                                    mention=mention,
+                                    canonical_name=obj.canonical_name,
+                                    entity_category="objective",
+                                    linked_market_tickers=obj.market_tickers,
+                                )
+                except Exception as obj_err:
+                    logger.debug(f"[reddit_entity] Objective matching error: {obj_err}")
+
+            # Extract relations between entities (REL)
+            # Requires 2+ entities and an initialized relation extractor
+            if self._relation_extractor and len(entities) >= 2:
+                try:
+                    from ..services.entity_accumulator import get_entity_accumulator
+                    relations = await self._relation_extractor.extract_relations(
+                        text=combined_text,
+                        entities=entities,
+                        source_post_id=post_id,
+                    )
+                    if relations:
+                        self._relation_extractions += 1
+                        self._relations_extracted += len(relations)
+                        accumulator = get_entity_accumulator()
+                        if accumulator:
+                            for rel in relations:
+                                await accumulator.add_relation(rel)
+                        logger.info(
+                            f"[reddit_entity] Extracted {len(relations)} relations "
+                            f"from post {post_id}"
+                        )
+                except Exception as rel_err:
+                    logger.debug(f"[reddit_entity] Relation extraction error: {rel_err}")
 
             # Run Market Impact Reasoning for indirect market effects
             # This catches impacts that direct entity→market mapping misses

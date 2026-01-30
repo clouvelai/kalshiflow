@@ -32,6 +32,7 @@ from ..schemas.entity_schemas import (
     CanonicalEntity,
     normalize_entity_id,
 )
+from ..schemas.kb_schemas import ObjectiveEntity, ObjectiveEntityMatch
 from ..nlp.knowledge_base import (
     KalshiKnowledgeBase,
     MarketData,
@@ -363,6 +364,13 @@ class EntityMarketIndex:
         # Caches LLM-extracted entities from event titles for outcome-market events
         self._event_entity_cache: Dict[str, Optional[Dict[str, str]]] = {}
 
+        # Cooldown for failed LLM event classifications to avoid hammering LLM
+        # Maps event_ticker -> timestamp of last failure (5-minute cooldown)
+        self._event_classification_failures: Dict[str, float] = {}
+
+        # Objective entities (outcome-type events with keyword matching)
+        self._objective_entities: Dict[str, ObjectiveEntity] = {}
+
         # Enriched market list (built once per refresh, not per-post)
         self._enriched_market_list: List[Dict[str, str]] = []
         self._enriched_market_prompt: str = ""
@@ -681,6 +689,9 @@ Generate 5-10 keywords maximum."""
                     self._event_entity_cache[event_ticker] = {
                         "event_entity": event_entity,
                         "classifications": classifications,
+                        "keywords": row.get("keywords") or [],
+                        "related_entities": row.get("related_entities") or [],
+                        "categories": row.get("categories") or [],
                     }
 
                 logger.info(
@@ -710,11 +721,41 @@ Generate 5-10 keywords maximum."""
                 "canonical_name": event_entity["name"] if event_entity else None,
                 "entity_type": event_entity["type"] if event_entity else "person",
                 "classifications": classification.get("classifications", {}),
+                "keywords": classification.get("keywords", []),
+                "related_entities": classification.get("related_entities", []),
+                "categories": classification.get("categories", []),
                 "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             }, on_conflict="event_ticker").execute()
 
         except Exception as e:
             logger.debug(f"[entity_index] Event classification cache save error: {e}")
+
+    async def _save_objective_entities(
+        self, objective_entities: Dict[str, ObjectiveEntity]
+    ) -> None:
+        """Save objective entities to Supabase objective_entities table."""
+        try:
+            supabase = self._get_supabase_client()
+            if not supabase:
+                return
+
+            for entity_id, obj in objective_entities.items():
+                supabase.table("objective_entities").upsert({
+                    "entity_id": entity_id,
+                    "canonical_name": obj.canonical_name,
+                    "event_ticker": obj.event_ticker,
+                    "market_tickers": obj.market_tickers,
+                    "keywords": obj.keywords,
+                    "related_entities": obj.related_entities,
+                    "categories": obj.categories,
+                    "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                }, on_conflict="entity_id").execute()
+
+            logger.info(
+                f"[entity_index] Saved {len(objective_entities)} objective entities to Supabase"
+            )
+        except Exception as e:
+            logger.warning(f"[entity_index] Objective entity save error: {e}")
 
     async def _classify_event(
         self,
@@ -754,6 +795,20 @@ Generate 5-10 keywords maximum."""
         if event_ticker in self._event_entity_cache:
             return self._event_entity_cache[event_ticker]
 
+        # Check cooldown for previously failed classifications (5-minute window)
+        last_failure = self._event_classification_failures.get(event_ticker, 0)
+        if last_failure and (time.time() - last_failure) < 300:
+            # Still in cooldown — return uncached fallback without retrying
+            return {
+                "event_entity": None,
+                "classifications": {
+                    yst: {"type": "person", "aliases": []} for yst in yes_sub_titles
+                },
+                "keywords": [],
+                "related_entities": [],
+                "categories": [],
+            }
+
         try:
             client = self._get_llm_client()
 
@@ -785,18 +840,34 @@ For EACH outcome, determine:
    - Example: "Government shutdown?" → null (no specific entity)
    - Example: "What will be the largest energy source?" → null (no specific entity)
 
+4. For outcome-type events (where event_entity is null and outcomes are NOT people):
+Also generate for the EVENT as a whole:
+- **keywords**: 5-15 lowercase terms that people on Reddit or news might use when discussing this event outcome
+- **related_entities**: real-world people/organizations whose actions directly affect this outcome
+- **categories**: topic categories from [politics, immigration, economy, foreign_policy, climate, technology, healthcare, crime, defense, trade, judiciary, elections, government, budget, energy, sports, entertainment, science, education, housing, labor, transportation]
+
+Example for "Government Shutdown on Saturday?":
+keywords: ["government shutdown", "shutdown", "cr", "continuing resolution", "funding bill", "dhs", "border"]
+related_entities: ["donald trump", "mike johnson", "congress", "ice", "dhs"]
+categories: ["government", "budget", "immigration"]
+
 Return ONLY valid JSON (no markdown):
 {{
   "event_entity": {{"name": "Full Name", "type": "person"}} or null,
   "classifications": {{
     "outcome_text": {{"type": "person|organization|outcome", "aliases": ["alias1", "alias2"]}}
-  }}
-}}"""
+  }},
+  "keywords": ["keyword1", "keyword2"],
+  "related_entities": ["entity1", "entity2"],
+  "categories": ["cat1", "cat2"]
+}}
+
+Note: keywords, related_entities, and categories should only be populated for outcome-type events (event_entity is null). For person/org events, set them to empty arrays."""
 
             response = await client.chat.completions.create(
                 model=self._llm_alias_model,
                 messages=[{"role": "user", "content": prompt}],
-                max_tokens=800,
+                max_tokens=1200,
                 temperature=0.1,
             )
 
@@ -845,6 +916,31 @@ Return ONLY valid JSON (no markdown):
                 normalized_cls[yst] = {"type": entity_type, "aliases": aliases}
             result["classifications"] = normalized_cls
 
+            # Normalize event-level objective entity fields
+            raw_keywords = result.get("keywords", [])
+            if not isinstance(raw_keywords, list):
+                raw_keywords = []
+            result["keywords"] = [
+                k.lower().strip() for k in raw_keywords
+                if isinstance(k, str) and k.strip()
+            ]
+
+            raw_related = result.get("related_entities", [])
+            if not isinstance(raw_related, list):
+                raw_related = []
+            result["related_entities"] = [
+                r.lower().strip() for r in raw_related
+                if isinstance(r, str) and r.strip()
+            ]
+
+            raw_categories = result.get("categories", [])
+            if not isinstance(raw_categories, list):
+                raw_categories = []
+            result["categories"] = [
+                c.lower().strip() for c in raw_categories
+                if isinstance(c, str) and c.strip()
+            ]
+
             # Cache in memory and Supabase
             self._event_entity_cache[event_ticker] = result
             await self._save_event_classification_to_cache(
@@ -858,6 +954,10 @@ Return ONLY valid JSON (no markdown):
                 type_counts[cls["type"]] += 1
                 total_aliases += len(cls["aliases"])
 
+            kw_count = len(result["keywords"])
+            re_count = len(result["related_entities"])
+            cat_count = len(result["categories"])
+
             logger.info(
                 f"[entity_index] Classified event '{event_ticker}': "
                 f"entity={event_entity['name'] if event_entity else 'None'}, "
@@ -865,36 +965,27 @@ Return ONLY valid JSON (no markdown):
                 f"{type_counts.get('outcome', 0)} outcome, "
                 f"{type_counts.get('organization', 0)} org, "
                 f"{total_aliases} aliases"
+                f"{f', {kw_count} keywords, {re_count} related, {cat_count} categories' if kw_count else ''}"
             )
 
             return result
 
-        except json.JSONDecodeError as e:
+        except (json.JSONDecodeError, Exception) as e:
             logger.warning(
-                f"[entity_index] Event classification parse error for '{event_ticker}': {e}"
+                f"[entity_index] Event classification failed for '{event_ticker}': {e}"
             )
-            # Return safe default — treat all as person with no aliases
-            fallback = {
+            # Record failure timestamp for cooldown (avoids hammering LLM on transient errors)
+            self._event_classification_failures[event_ticker] = time.time()
+            # T2.2: Return empty classifications instead of fabricating "person" types.
+            # Downstream handles empty classifications by falling through to
+            # detect_entity_type() heuristic.
+            return {
                 "event_entity": None,
-                "classifications": {
-                    yst: {"type": "person", "aliases": []} for yst in yes_sub_titles
-                },
+                "classifications": {},
+                "keywords": [],
+                "related_entities": [],
+                "categories": [],
             }
-            self._event_entity_cache[event_ticker] = fallback
-            return fallback
-        except Exception as e:
-            logger.warning(
-                f"[entity_index] Event classification error for '{event_ticker}': {e}"
-            )
-            # Return safe default
-            fallback = {
-                "event_entity": None,
-                "classifications": {
-                    yst: {"type": "person", "aliases": []} for yst in yes_sub_titles
-                },
-            }
-            self._event_entity_cache[event_ticker] = fallback
-            return fallback
 
     # =========================================================================
     # LLM Alias Generation
@@ -1341,8 +1432,9 @@ Generate 3-8 aliases maximum."""
 
                     # Get LLM classification for this yes_sub_title
                     cls = classifications.get(yes_sub_title, {})
-                    yst_type = cls.get("type", "person")
-                    if yst_type not in ("person", "organization", "outcome"):
+                    # T2.2: Don't default to "person" — fall through to heuristic
+                    yst_type = cls.get("type")
+                    if not yst_type or yst_type not in ("person", "organization", "outcome"):
                         yst_type = detect_entity_type(
                             yes_sub_title, m_event_title or event_title, market_ticker
                         )
@@ -1497,6 +1589,64 @@ Generate 3-8 aliases maximum."""
                         )
                 if keyword_tasks:
                     await asyncio.gather(*keyword_tasks, return_exceptions=True)
+
+            # ================================================================
+            # Phase D2: Generate ObjectiveEntity objects for outcome-type events
+            # ================================================================
+            new_objective_entities: Dict[str, ObjectiveEntity] = {}
+            for event_ticker, cached in self._event_entity_cache.items():
+                if not cached:
+                    continue
+                # Only generate for events without a specific event_entity (outcome-type)
+                if cached.get("event_entity") is not None:
+                    continue
+
+                keywords = cached.get("keywords", [])
+                related_entities = cached.get("related_entities", [])
+                categories = cached.get("categories", [])
+
+                if not keywords and not related_entities:
+                    continue  # No data to match against
+
+                # Get market tickers for this event
+                event_market_tickers = []
+                for m in event_groups.get(event_ticker, []):
+                    t = m.get("ticker", "")
+                    if t:
+                        event_market_tickers.append(t)
+
+                if not event_market_tickers:
+                    continue
+
+                # Use first market's event title as canonical name
+                first_market = event_groups.get(event_ticker, [{}])[0]
+                event_title_for_entity = (
+                    first_market.get("event_title", "")
+                    or first_market.get("title", "")
+                    or event_ticker
+                )
+
+                entity_id = normalize_entity_id(event_title_for_entity)
+                obj_entity = ObjectiveEntity(
+                    entity_id=entity_id,
+                    canonical_name=event_title_for_entity,
+                    event_ticker=event_ticker,
+                    market_tickers=event_market_tickers,
+                    keywords=[k.lower() for k in keywords],
+                    related_entities=[r.lower() for r in related_entities],
+                    categories=categories,
+                )
+                new_objective_entities[entity_id] = obj_entity
+
+            self._objective_entities = new_objective_entities
+
+            # Save objective entities to Supabase
+            if new_objective_entities:
+                await self._save_objective_entities(new_objective_entities)
+
+            logger.info(
+                f"[entity_index] Generated {len(new_objective_entities)} objective entities"
+            )
 
             # Build enriched market list (for LLM market-aware extraction)
             # Use canonical_name (real entity) not yes_sub_title (might be "Above 2.0%")
@@ -1686,6 +1836,89 @@ Generate 3-8 aliases maximum."""
         """Return pre-formatted market list string for LLM prompt."""
         return self._enriched_market_prompt
 
+    def get_objective_entities(self) -> List[ObjectiveEntity]:
+        """Get all objective entities with keyword sets."""
+        return list(self._objective_entities.values())
+
+    def get_entities_for_market(self, market_ticker: str) -> List[CanonicalEntity]:
+        """All entities (person + objective) linked to a market.
+
+        Args:
+            market_ticker: Kalshi market ticker
+
+        Returns:
+            List of CanonicalEntity objects linked to this market
+        """
+        entity_ids = self._reverse_index.get(market_ticker, [])
+        entities = []
+        for eid in entity_ids:
+            ce = self._canonical_entities.get(eid)
+            if ce:
+                entities.append(ce)
+        return entities
+
+    def match_text_to_objective_entities(
+        self,
+        text: str,
+        extracted_entity_names: List[str],
+        categories: Optional[List[str]] = None,
+    ) -> List[ObjectiveEntityMatch]:
+        """Fast keyword matching against objective entity keyword sets.
+
+        Matches incoming text (e.g., Reddit post titles) against the keyword
+        sets of objective entities to find relevant Kalshi markets for
+        outcome-type events that lack a specific person/org entity.
+
+        Args:
+            text: Full text to check for keyword matches
+            extracted_entity_names: Entity names extracted from the text
+            categories: Optional topic categories from TextCat
+
+        Returns:
+            List of ObjectiveEntityMatch with hit_score >= 2, sorted by score descending
+        """
+        text_lower = text.lower()
+        entity_names_lower = {n.lower() for n in extracted_entity_names}
+        cat_set = set(categories or [])
+
+        matches = []
+        for obj in self._objective_entities.values():
+            hit_score = 0
+            matched_keywords: List[str] = []
+            matched_entities: List[str] = []
+            matched_categories: List[str] = []
+
+            # Keyword in text
+            for kw in obj.keywords:
+                if kw in text_lower:
+                    hit_score += 1
+                    matched_keywords.append(kw)
+
+            # Extracted entity in related_entities
+            for related in obj.related_entities:
+                if related in entity_names_lower:
+                    hit_score += 2  # Stronger signal
+                    matched_entities.append(related)
+
+            # Category overlap
+            if cat_set and obj.categories:
+                overlap = cat_set & set(obj.categories)
+                hit_score += len(overlap)
+                matched_categories.extend(list(overlap))
+
+            if hit_score >= 2:  # Need at least 2 matching signals
+                matches.append(ObjectiveEntityMatch(
+                    objective_entity=obj,
+                    hit_score=hit_score,
+                    matched_keywords=matched_keywords,
+                    matched_entities=matched_entities,
+                    matched_categories=matched_categories,
+                ))
+
+        # Sort by hit_score descending
+        matches.sort(key=lambda m: m.hit_score, reverse=True)
+        return matches
+
     def update_entity_reddit_stats(
         self,
         entity_id: str,
@@ -1830,6 +2063,7 @@ Generate 3-8 aliases maximum."""
             "total_aliases": self._total_aliases,
             "llm_aliases_generated": self._llm_aliases_generated,
             "llm_alias_cache_size": len(self._llm_alias_cache),
+            "objective_entities": len(self._objective_entities),
             "refresh_count": self._refresh_count,
             "last_refresh_at": self._last_refresh_at,
             "categories": self._config.categories,

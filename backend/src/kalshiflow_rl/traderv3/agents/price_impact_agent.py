@@ -39,6 +39,8 @@ from ..schemas.entity_schemas import (
     compute_price_impact,
     IMPACT_RULES,
 )
+from ..schemas.kb_schemas import EntityMention
+from ..services.entity_accumulator import get_entity_accumulator
 from ..services.price_impact_store import get_price_impact_store
 
 if TYPE_CHECKING:
@@ -232,6 +234,9 @@ class PriceImpactAgent(BaseAgent):
         self._news_searches_enriched = 0
         self._news_searches_failed = 0
 
+        # Entity accumulator for KB state tracking
+        self._accumulator = None
+
         # Callback for external signal handling
         self._signal_callback: Optional[Callable[[PriceImpactSignal], None]] = None
 
@@ -255,6 +260,14 @@ class PriceImpactAgent(BaseAgent):
             store = get_price_impact_store()
             loaded = await store.load_from_supabase(self._supabase, max_age_hours=2.0)
             logger.info(f"[price_impact] Loaded {loaded} signals from Supabase on startup")
+
+        # Get global accumulator instance
+        self._accumulator = get_entity_accumulator()
+        if self._accumulator:
+            logger.info("[price_impact] Entity accumulator connected")
+            if self._supabase:
+                self._accumulator.set_supabase_client(self._supabase)
+                logger.info("[price_impact] Wired Supabase client to EntityAccumulator")
 
         # Initialize signal time so health check works from startup
         self._last_signal_time = time.time()
@@ -795,6 +808,30 @@ Guidelines:
                         "agent_status": "pending",  # Default status, updated by deep agent
                     }
 
+                    # Feed entity mention to accumulator for KB tracking
+                    if self._accumulator:
+                        try:
+                            mention = EntityMention(
+                                entity_id=entity_id,
+                                source_type=source_type,
+                                source_post_id=post_id,
+                                sentiment_score=sentiment_score,
+                                confidence=confidence,
+                                categories=entity_data.get("categories", []) if isinstance(entity_data, dict) else [],
+                                reddit_score=record.get("score", 0),
+                                reddit_comments=record.get("num_comments", 0),
+                                context_snippet=context_snippet[:200] if context_snippet else "",
+                                source_domain=source_domain,
+                            )
+                            await self._accumulator.add_mention(
+                                mention=mention,
+                                canonical_name=canonical_name,
+                                entity_category=entity_type or "person",
+                                linked_market_tickers=[mapping.market_ticker],
+                            )
+                        except Exception as acc_err:
+                            logger.debug(f"[price_impact] Accumulator error: {acc_err}")
+
                     # Ingest to in-memory store for fast DeepAgent queries
                     try:
                         store = get_price_impact_store()
@@ -1016,7 +1053,7 @@ Guidelines:
                 })
                 aggregate_sentiment += ent.sentiment
             if entities_jsonb:
-                aggregate_sentiment = aggregate_sentiment // len(entities_jsonb)
+                aggregate_sentiment = int(round(aggregate_sentiment / len(entities_jsonb)))
 
             # Step 5: INSERT into news_entities (upsert on article_url for dedup)
             if not self._supabase:

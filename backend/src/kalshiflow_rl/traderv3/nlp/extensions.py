@@ -120,6 +120,10 @@ def register_custom_extensions() -> bool:
     if not Doc.has_extension("related_entity_count"):
         Doc.set_extension("related_entity_count", default=0)
 
+    # Extracted relations between entities (populated by relation_extractor)
+    if not Doc.has_extension("relations"):
+        Doc.set_extension("relations", default=[])
+
     # Processing metadata
     if not Doc.has_extension("nlp_pipeline_version"):
         Doc.set_extension("nlp_pipeline_version", default="v2_kb")
@@ -263,4 +267,4 @@ def update_doc_stats(doc: Doc) -> None:
     # Calculate aggregate sentiment
     all_sentiments = [ent._.sentiment for ent in doc.ents if ent._.sentiment != 0]
     if all_sentiments:
-        doc._.aggregate_sentiment = sum(all_sentiments) // len(all_sentiments)
+        doc._.aggregate_sentiment = int(round(sum(all_sentiments) / len(all_sentiments)))

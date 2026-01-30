@@ -273,7 +273,12 @@ class PriceImpactStore:
                         created_at_dt = datetime.fromisoformat(created_at_str.replace("Z", "+00:00"))
                         created_at = created_at_dt.timestamp()
                     else:
-                        created_at = time.time()
+                        # T2.4: Skip signals without timestamps rather than fabricating freshness
+                        logger.warning(
+                            f"[price_impact_store] Skipping signal without created_at: "
+                            f"{row.get('market_ticker')}"
+                        )
+                        continue
 
                     # Parse source_created_at if present
                     source_created_at = None
@@ -282,11 +287,15 @@ class PriceImpactStore:
                         try:
                             source_created_at_dt = datetime.fromisoformat(source_created_at_str.replace("Z", "+00:00"))
                             source_created_at = source_created_at_dt.timestamp()
-                        except (ValueError, TypeError):
-                            pass
+                        except (ValueError, TypeError) as e:
+                            # T2.5: Log instead of silently swallowing
+                            logger.debug(
+                                f"[price_impact_store] source_created_at parse failed for "
+                                f"{row.get('market_ticker')}: {e}"
+                            )
 
                     # Mark pre-restart signals as "historical"
-                    agent_status = "historical" if self._session_start_time else row.get("agent_status", "pending")
+                    agent_status = "historical" if self._session_start_time is not None else row.get("agent_status", "pending")
 
                     signal_data = {
                         "signal_id": signal_id,

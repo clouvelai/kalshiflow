@@ -57,6 +57,36 @@ Win rate > 55% on qualified signals = graduation to production."""
 
 SIGNAL_UNDERSTANDING = """## Signal Interpretation
 
+You have TWO complementary signal views:
+
+### 1. Entity Signals (get_entity_signals) - ACCUMULATED entity-level signals
+Shows: mention frequency, weighted sentiment, engagement metrics, building narratives.
+- **signal_strength** (0-1): Composite of mentions, sentiment, engagement, source diversity
+- **mention_count**: How many times entity mentioned in window
+- **weighted_sentiment**: Reddit-score-weighted average sentiment (-100 to +100)
+- **linked_market_tickers**: Markets this entity maps to
+- **entity_category**: "person", "organization", or "objective" (indirect effects)
+
+**Magnitude guide:**
+- Single mention (strength < 0.3) = noise, ignore
+- 2-3 mentions (strength 0.3-0.5) = emerging, monitor
+- 4+ mentions (strength 0.5-0.7) = noteworthy narrative building
+- 5+ mentions across sources (strength > 0.7) = strong conviction signal
+
+"Objective" entities bridge INDIRECT effects:
+Example: ICE agent killed → "Government Shutdown" objective entity activated via keyword matching → KXGOVSHUT market signal
+
+**Relations** (entity-to-entity relationships):
+Each entity signal may include a `relations` list showing how it connects to other entities:
+- **SUPPORTS**: Subject endorses/defends object (e.g., "Trump backs Bondi")
+- **OPPOSES**: Subject criticizes/blocks object (e.g., "Democrats oppose shutdown")
+- **CAUSES**: Subject's action leads to object's outcome (e.g., "ICE raid triggers protests")
+- **AFFECTED_BY**: Subject impacted by object (e.g., "Markets affected by Fed decision")
+- **MEMBER_OF**: Subject belongs to object (e.g., "Bondi, Trump's AG pick")
+
+Use relations to build causal chains: if Entity A CAUSES Entity B, and Entity B has a strong signal on a market, that strengthens the case for the market move. Multiple aligned relations = stronger conviction.
+
+### 2. Price Impacts (get_price_impacts) - Individual market-level signals
 Reddit price impact signals use a discrete scale:
 
 | Impact | Meaning | Suggested Price |
@@ -72,11 +102,16 @@ Confidence levels: 0.5 (low), 0.7 (medium), 0.9 (high)
 **CRITICAL: OUT markets INVERT sentiment**
 Bad news for person = +impact (more likely to be OUT)
 
-**Edge Formula (conceptual):**
-```
-suggested_price = 50 + (impact / 2)
-price_gap = |market_price - suggested_price|
-```
+### Decision Flow
+1. **SCAN**: get_entity_signals() → find building narratives
+2. **DRILL**: For interesting entities, get_price_impacts() → specific market signals
+3. **ASSESS**: assess_trade_opportunity() → calibrated quality rating
+4. **ACT**: trade() if quality is STRONG or MODERATE
+
+**Multi-Source Signals:**
+Signals come from multiple sources (Reddit, news articles, etc).
+Check `content_type` and `source_domain` to see where a signal originated.
+Multiple independent sources with aligned sentiment = stronger conviction.
 
 **Quantitative Assessment:**
 Use `assess_trade_opportunity()` after finding signals. It returns a calibrated quality rating:
@@ -85,13 +120,7 @@ Use `assess_trade_opportunity()` after finding signals. It returns a calibrated 
 - **WEAK** - Marginal; likely not worth the risk
 - **AVOID** - No edge or adverse conditions
 
-Learn which quality levels are profitable for you and sharpen your criteria over time.
-Reddit signals decay fast. Act before the market catches up.
-
-**Multi-Source Signals:**
-Signals come from multiple sources (Reddit, news articles, etc).
-Check `content_type` and `source_domain` to see where a signal originated.
-Multiple independent sources with aligned sentiment = stronger conviction."""
+Reddit signals decay fast. Act before the market catches up."""
 
 
 # =============================================================================

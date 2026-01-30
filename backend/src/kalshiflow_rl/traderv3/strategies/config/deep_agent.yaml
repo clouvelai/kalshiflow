@@ -50,6 +50,26 @@ params:
     poll_interval_seconds: 30
     min_score: 0
 
+  # Knowledge Base Accumulator
+  accumulator_window_seconds: 7200    # 2hr sliding window
+  signal_threshold: 0.4               # Min strength to emit signal
+  re_emit_threshold: 0.2              # Min strength increase to re-emit
+  bypass_threshold_sentiment: 75      # Bypass accumulation for very strong signals
+  bypass_threshold_confidence: 0.9
+
+  # Relation Extraction (REL)
+  relation_extraction_enabled: true
+  relation_extraction_model: "gpt-4o-mini"
+  relation_extraction_timeout: 15.0
+  relation_max_per_post: 5
+
+  # Reddit Metadata Gating
+  reddit_min_score: 5
+  reddit_min_comments: 5
+
+  # Comment Listener
+  comment_flush_interval_seconds: 60  # Aggregate comments per minute
+
   # Memory settings (defaults to ./memory)
   # memory_dir: "/path/to/custom/memory"
   memory_files:

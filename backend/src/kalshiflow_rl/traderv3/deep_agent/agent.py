@@ -429,6 +429,31 @@ class SelfImprovingAgent:
                 }
             },
             {
+                "name": "get_entity_signals",
+                "description": "Get ACCUMULATED entity-level signals from the knowledge base. Shows building narratives: entities with multiple mentions, rising sentiment, and high engagement across sources. Use alongside get_price_impacts() - entity signals show BUILDING momentum, price impacts show SPECIFIC market effects. Entities with signal_strength > 0.6 and mention_count > 3 = strong conviction.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "min_signal_strength": {
+                            "type": "number",
+                            "description": "Minimum signal strength threshold (0.0-1.0, default: 0.3)",
+                            "default": 0.3
+                        },
+                        "min_mentions": {
+                            "type": "integer",
+                            "description": "Minimum mention count (default: 1)",
+                            "default": 1
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Maximum signals to return (default: 15)",
+                            "default": 15
+                        }
+                    },
+                    "required": []
+                }
+            },
+            {
                 "name": "reflect",
                 "description": "Structured post-trade reflection. Use after a trade settles to record learnings. Auto-appends to appropriate memory files (no data loss). Preferred over manual write_memory calls for reflections.",
                 "input_schema": {
@@ -591,6 +616,10 @@ class SelfImprovingAgent:
                 for ticker, failures in self._failed_attempts.items()
             },
         }
+
+    # =========================================================================
+    # Lifecycle (start / stop / main loop)
+    # =========================================================================
 
     async def start(self) -> None:
         """Start the agent."""
@@ -1142,6 +1171,10 @@ Successful patterns go here.
 """
         return context
 
+    # =========================================================================
+    # Agent Cycle (LLM interaction, tool dispatch)
+    # =========================================================================
+
     async def _run_agent_cycle(self, context: str) -> None:
         """Run the agent with tool calling."""
         # Add context to conversation (only if we have content to add)
@@ -1462,13 +1495,15 @@ Successful patterns go here.
                     except Exception as e:
                         logger.warning(f"[deep_agent.agent] Could not fetch event_ticker: {e}")
 
+                    # T1.2: Use limit_price_cents as fallback instead of fabricated 50c
+                    entry_price = result.price_cents or result.limit_price_cents or 50
                     self._reflection.record_trade(
                         trade_id=result.order_id or str(uuid.uuid4()),
                         ticker=ticker,
                         event_ticker=event_ticker,
                         side=tool_input["side"],
                         contracts=contracts,
-                        entry_price_cents=result.price_cents or 50,
+                        entry_price_cents=entry_price,
                         reasoning=tool_input["reasoning"],
                     )
 
@@ -1477,7 +1512,7 @@ Successful patterns go here.
                         "ticker": ticker,
                         "side": tool_input["side"],
                         "contracts": contracts,
-                        "price_cents": result.price_cents or 50,
+                        "price_cents": entry_price,
                         "reasoning": tool_input["reasoning"][:200],
                         "timestamp": time.strftime("%H:%M:%S"),
                     }
@@ -1546,6 +1581,14 @@ Successful patterns go here.
                     suggested_side=tool_input["suggested_side"],
                 )
                 return assessment.to_dict()
+
+            elif tool_name == "get_entity_signals":
+                result = await self._tools.get_entity_signals(
+                    min_signal_strength=tool_input.get("min_signal_strength", 0.3),
+                    min_mentions=tool_input.get("min_mentions", 1),
+                    limit=tool_input.get("limit", 15),
+                )
+                return result
 
             elif tool_name == "think":
                 # REQUIRED pre-trade analysis tool - forces structured reasoning
@@ -1702,9 +1745,18 @@ Successful patterns go here.
             logger.error(f"[deep_agent.agent] Error executing {tool_name}: {e}")
             return {"error": str(e)}
 
+    # =========================================================================
+    # Reflection & Memory Consolidation
+    # =========================================================================
+
     async def _handle_reflection(self, trade: PendingTrade) -> Optional[ReflectionResult]:
         """Handle reflection callback from the reflection engine."""
         logger.info(f"[deep_agent.agent] Reflecting on trade: {trade.ticker} ({trade.result})")
+
+        # Release event exposure now that the position has settled
+        self._tools.release_event_exposure(
+            trade.event_ticker, trade.contracts, trade.entry_price_cents
+        )
 
         # Generate reflection prompt
         prompt = self._reflection.generate_reflection_prompt(trade)
@@ -1725,11 +1777,13 @@ Successful patterns go here.
             pattern = self._extract_pattern_from_response()
 
             # Track consecutive losses for urgent consolidation
+            # T4.1: Don't reset counter on unknown results — only reset on wins/break_even
             trade_result = trade.result or "unknown"
             if trade_result == "loss":
                 self._consecutive_losses += 1
-            else:
+            elif trade_result in ("win", "break_even"):
                 self._consecutive_losses = 0
+            # "unknown" intentionally skips — preserves current loss streak count
 
             # Increment reflection count and check for consolidation trigger
             self._reflection_count += 1
@@ -1737,11 +1791,18 @@ Successful patterns go here.
             if should_consolidate:
                 await self._trigger_consolidation(trigger_reason)
 
+            # T4.2: Explicit None check — don't silently convert None to 0 (looks like break-even)
+            pnl_cents = trade.pnl_cents if trade.pnl_cents is not None else 0
+            if trade.pnl_cents is None:
+                logger.warning(
+                    f"[deep_agent.agent] Trade {trade.ticker} has None pnl_cents, using 0"
+                )
+
             return ReflectionResult(
                 trade_id=trade.trade_id,
                 ticker=trade.ticker,
                 result=trade_result,
-                pnl_cents=trade.pnl_cents or 0,
+                pnl_cents=pnl_cents,
                 learning=learning,
                 should_update_strategy=bool(pattern),
                 mistake_identified=mistake,
@@ -1750,7 +1811,16 @@ Successful patterns go here.
 
         except Exception as e:
             logger.error(f"[deep_agent.agent] Error in reflection: {e}")
-            return None
+            # T4.3: Return minimal ReflectionResult with known trade data
+            # instead of None (which loses all outcome data)
+            return ReflectionResult(
+                trade_id=trade.trade_id,
+                ticker=trade.ticker,
+                result=trade.result or "unknown",
+                pnl_cents=trade.pnl_cents if trade.pnl_cents is not None else 0,
+                learning=f"Reflection failed: {e}",
+                should_update_strategy=False,
+            )
 
     def _should_consolidate(self, trade: PendingTrade) -> tuple:
         """
@@ -1833,6 +1903,10 @@ Be selective: only add rules with clear evidence from multiple trades.
             logger.info("[deep_agent.agent] Consolidation cycle completed")
         except Exception as e:
             logger.error(f"[deep_agent.agent] Error in consolidation: {e}")
+
+    # =========================================================================
+    # Response Parsing Helpers
+    # =========================================================================
 
     def _extract_learning_from_response(self) -> str:
         """Extract learning insight from the last assistant message."""
