@@ -559,6 +559,122 @@ const StatsCard = memo(({ label, value, color = 'text-gray-300', bgColor = 'bg-g
 StatsCard.displayName = 'StatsCard';
 
 /**
+ * CostPanel - Collapsible LLM cost tracking display
+ */
+const CostPanel = memo(({ costData }) => {
+  const [isExpanded, setIsExpanded] = useState(false);
+
+  if (!costData) return null;
+
+  const sessionTotal = costData.sessionCost?.total_cost_usd || 0;
+  const cacheSavings = costData.sessionCost?.cache_savings_usd || 0;
+  const cycleCount = costData.cycle || 0;
+  const avgPerCycle = cycleCount > 0 ? sessionTotal / cycleCount : 0;
+
+  const formatUsd = (v) => {
+    if (v >= 1) return `$${v.toFixed(2)}`;
+    if (v >= 0.01) return `$${v.toFixed(3)}`;
+    return `$${v.toFixed(4)}`;
+  };
+
+  const formatTokens = (n) => {
+    if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+    if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
+    return String(n);
+  };
+
+  return (
+    <div className="rounded-lg border border-amber-800/30 overflow-hidden mb-4">
+      {/* Collapsed bar - always visible */}
+      <button
+        onClick={() => setIsExpanded(!isExpanded)}
+        className="w-full flex items-center justify-between px-3 py-2 bg-gradient-to-r from-amber-900/20 via-amber-900/10 to-transparent hover:from-amber-900/30 transition-all duration-200"
+      >
+        <div className="flex items-center gap-2">
+          <DollarSign className="w-3.5 h-3.5 text-amber-400" />
+          <span className="text-[11px] text-amber-300 uppercase tracking-wider font-semibold">
+            LLM Cost
+          </span>
+        </div>
+        <div className="flex items-center gap-3">
+          <span className="font-mono text-xs text-amber-400 font-bold">
+            {formatUsd(sessionTotal)}
+          </span>
+          {cacheSavings > 0 && (
+            <span className="text-[10px] text-emerald-400">
+              saved {formatUsd(cacheSavings)}
+            </span>
+          )}
+          {avgPerCycle > 0 && (
+            <span className="text-[10px] text-gray-500 font-mono">
+              ~{formatUsd(avgPerCycle)}/cycle
+            </span>
+          )}
+          {isExpanded ? (
+            <ChevronDown className="w-3.5 h-3.5 text-amber-400/60" />
+          ) : (
+            <ChevronRight className="w-3.5 h-3.5 text-amber-400/60" />
+          )}
+        </div>
+      </button>
+
+      {/* Expanded detail */}
+      {isExpanded && (
+        <div className="px-3 pb-3 pt-2 bg-gray-900/40 border-t border-amber-800/20">
+          {/* Model */}
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-[10px] text-gray-500">Model</span>
+            <span className="text-[10px] text-gray-300 font-mono">{costData.model || 'unknown'}</span>
+          </div>
+
+          {/* Token cost grid */}
+          <div className="grid grid-cols-2 gap-2 mb-2">
+            <div className="bg-gray-800/40 rounded p-1.5">
+              <div className="text-[9px] text-gray-500 uppercase">Input</div>
+              <div className="text-xs font-mono text-gray-300">{formatTokens(costData.sessionTokens?.input || 0)}</div>
+              <div className="text-[10px] font-mono text-amber-400">{formatUsd(costData.sessionCost?.input_cost_usd || 0)}</div>
+            </div>
+            <div className="bg-gray-800/40 rounded p-1.5">
+              <div className="text-[9px] text-gray-500 uppercase">Output</div>
+              <div className="text-xs font-mono text-gray-300">{formatTokens(costData.sessionTokens?.output || 0)}</div>
+              <div className="text-[10px] font-mono text-amber-400">{formatUsd(costData.sessionCost?.output_cost_usd || 0)}</div>
+            </div>
+            <div className="bg-gray-800/40 rounded p-1.5">
+              <div className="text-[9px] text-gray-500 uppercase">Cache Read</div>
+              <div className="text-xs font-mono text-gray-300">{formatTokens(costData.sessionTokens?.cache_read || 0)}</div>
+              <div className="text-[10px] font-mono text-emerald-400">{formatUsd(costData.sessionCost?.cache_read_cost_usd || 0)}</div>
+            </div>
+            <div className="bg-gray-800/40 rounded p-1.5">
+              <div className="text-[9px] text-gray-500 uppercase">Cache Write</div>
+              <div className="text-xs font-mono text-gray-300">{formatTokens(costData.sessionTokens?.cache_created || 0)}</div>
+              <div className="text-[10px] font-mono text-amber-400">{formatUsd(costData.sessionCost?.cache_write_cost_usd || 0)}</div>
+            </div>
+          </div>
+
+          {/* Cache savings highlight */}
+          {cacheSavings > 0 && (
+            <div className="flex items-center justify-between px-2 py-1.5 bg-emerald-900/20 rounded border border-emerald-800/30 mb-2">
+              <span className="text-[10px] text-emerald-400">Cache Savings</span>
+              <span className="text-xs font-mono font-bold text-emerald-400">{formatUsd(cacheSavings)}</span>
+            </div>
+          )}
+
+          {/* Last cycle info */}
+          {costData.lastCycleCost && (
+            <div className="flex items-center justify-between text-[10px] text-gray-500">
+              <span>Last cycle: {formatUsd(costData.lastCycleCost.total_cost_usd || 0)}</span>
+              <span>{costData.lastCycleTokens?.api_calls || 0} API calls</span>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+});
+
+CostPanel.displayName = 'CostPanel';
+
+/**
  * DeepAgentPanel - Main panel for the self-improving deep agent
  *
  * Props:
@@ -596,6 +712,7 @@ const DeepAgentPanel = ({
   getSignalLifecycle = null,
   lifecycleSummary = null,
   getStatusSortPriority = null,
+  costData = null,
 }) => {
   const [isExpanded, setIsExpanded] = useState(true);
   const [showTools, setShowTools] = useState(false);
@@ -728,7 +845,7 @@ const DeepAgentPanel = ({
           </div>
 
           {/* Entity Pipeline Stats (Reddit → Entities → Signals) */}
-          <div className={statsOnly ? "grid grid-cols-4 gap-2" : "grid grid-cols-4 gap-2 mb-4"}>
+          <div className={statsOnly ? "grid grid-cols-5 gap-2" : "grid grid-cols-4 gap-2 mb-4"}>
             <StatsCard
               label="Reddit"
               value={agentState?.redditPostsProcessed || redditSignals.length || 0}
@@ -757,11 +874,27 @@ const DeepAgentPanel = ({
               bgColor="bg-blue-900/20"
               borderColor="border-blue-700/30"
             />
+            {statsOnly && (
+              <StatsCard
+                label="LLM Cost"
+                value={costData?.sessionCost?.total_cost_usd != null
+                  ? `$${costData.sessionCost.total_cost_usd < 1
+                    ? costData.sessionCost.total_cost_usd.toFixed(3)
+                    : costData.sessionCost.total_cost_usd.toFixed(2)}`
+                  : '$0'}
+                color="text-amber-400"
+                bgColor="bg-amber-900/20"
+                borderColor="border-amber-700/30"
+              />
+            )}
           </div>
 
           {/* Stats-only mode stops here - skip remaining sections */}
           {statsOnly ? null : (
           <>
+          {/* LLM Cost Panel */}
+          <CostPanel costData={costData} />
+
           {/* Thinking Stream */}
           <div className="mb-4">
             <div className="flex items-center space-x-2 mb-2">
@@ -952,4 +1085,5 @@ const DeepAgentPanel = ({
   );
 };
 
+export { CostPanel };
 export default memo(DeepAgentPanel);

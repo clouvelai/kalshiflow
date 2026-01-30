@@ -15,6 +15,7 @@ const INITIAL_DEEP_AGENT_STATE = {
   targetEvents: [],
   redditEnabled: false,
   redditSignals: 0,
+  costData: null,
 };
 
 /**
@@ -59,8 +60,10 @@ export const useDeepAgent = ({ useV3WebSocketState }) => {
   const [learnings, setLearnings] = useState([]);
   const [settlements, setSettlements] = useState([]);
   const [errors, setErrors] = useState([]);
+  const [costHistory, setCostHistory] = useState([]);
 
   // Refs for managing max items
+  const maxCostHistory = 50;
   const maxToolCalls = 50;
   const maxTrades = 50;
   const maxMemoryUpdates = 20;
@@ -252,6 +255,29 @@ export const useDeepAgent = ({ useV3WebSocketState }) => {
   }, []);
 
   /**
+   * Handle deep_agent_cost message
+   */
+  const handleCost = useCallback((data) => {
+    setAgentState(prev => ({
+      ...prev,
+      costData: {
+        model: data.model,
+        sessionCost: data.session_cost,
+        sessionTokens: data.session_tokens,
+        lastCycleCost: data.cycle_cost,
+        lastCycleTokens: data.cycle_tokens,
+        cycle: data.cycle,
+        timestamp: data.timestamp,
+      },
+    }));
+
+    setCostHistory(prev => [
+      { cycle: data.cycle, cost: data.cycle_cost, tokens: data.cycle_tokens, timestamp: data.timestamp },
+      ...prev,
+    ].slice(0, maxCostHistory));
+  }, []);
+
+  /**
    * Handle price_impacts_snapshot message - Restore price impacts after page refresh
    */
   const handlePriceImpactsSnapshot = useCallback((data) => {
@@ -359,6 +385,22 @@ export const useDeepAgent = ({ useV3WebSocketState }) => {
       })));
     }
 
+    // Restore cost data from snapshot
+    if (data.cost_data) {
+      setAgentState(prev => ({
+        ...prev,
+        costData: {
+          model: data.cost_data.model,
+          sessionCost: data.cost_data.session_cost,
+          sessionTokens: data.cost_data.session_tokens,
+          lastCycleCost: null,
+          lastCycleTokens: null,
+          cycle: data.cost_data.cycle_count,
+          timestamp: null,
+        },
+      }));
+    }
+
     // Restore signal lifecycle state
     if (data.signal_lifecycle?.length > 0) {
       handleLifecycleSnapshot(data.signal_lifecycle);
@@ -439,6 +481,9 @@ export const useDeepAgent = ({ useV3WebSocketState }) => {
       case 'price_impact':
         handlePriceImpact(data);
         break;
+      case 'deep_agent_cost':
+        handleCost(data);
+        break;
       case 'deep_agent_error':
         handleError(data);
         break;
@@ -466,6 +511,7 @@ export const useDeepAgent = ({ useV3WebSocketState }) => {
     handleRedditSubmission,
     handleRedditSignal,
     handlePriceImpact,
+    handleCost,
     handleError,
     handleSnapshot,
     handlePriceImpactsSnapshot,
@@ -494,6 +540,7 @@ export const useDeepAgent = ({ useV3WebSocketState }) => {
     setLearnings([]);
     setSettlements([]);
     setErrors([]);
+    setCostHistory([]);
   }, []);
 
   /**
@@ -522,6 +569,7 @@ export const useDeepAgent = ({ useV3WebSocketState }) => {
     learnings,
     settlements,
     errors,
+    costHistory,
     // Signal lifecycle
     getSignalLifecycle: getLifecycle,
     lifecycleSummary,

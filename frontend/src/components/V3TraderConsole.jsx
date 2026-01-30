@@ -147,6 +147,7 @@ const V3TraderConsole = () => {
             priceImpacts={entityPriceImpacts}
             isRunning={deepAgentIsRunning || (strategyStatus?.strategies?.deep_agent?.running ?? false)}
             isLearning={deepAgentIsLearning}
+            costData={agentState.costData}
           />
         )}
 

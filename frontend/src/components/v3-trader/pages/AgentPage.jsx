@@ -32,6 +32,7 @@ import renderThinkingMarkdown from '../../../utils/renderThinkingMarkdown';
 import { useV3WebSocket } from '../../../hooks/v3-trader/useV3WebSocket';
 import { useDeepAgent } from '../../../hooks/v3-trader/useDeepAgent';
 import { EntityIndexPanel } from '../panels';
+import { CostPanel } from '../panels/DeepAgentPanel';
 
 /**
  * Pipeline Stage Card - Visualizes a stage in the data pipeline
@@ -1171,6 +1172,9 @@ const AgentPage = () => {
                 trades={trades}
               />
             </div>
+
+            {/* LLM Cost Panel */}
+            <CostPanel costData={agentState.costData} />
 
             {/* Thinking Stream - Always visible */}
             <ThinkingStream thinking={thinking} isRunning={isAgentRunning} />

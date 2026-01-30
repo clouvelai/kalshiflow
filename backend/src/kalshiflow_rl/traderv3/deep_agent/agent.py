@@ -24,7 +24,7 @@ from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING
 
 from anthropic import AsyncAnthropic
 
-from .tools import DeepAgentTools, set_global_tools
+from .tools import DeepAgentTools
 from .reflection import ReflectionEngine, PendingTrade, ReflectionResult
 from .prompts import build_system_prompt
 from .signal_tracker import SignalEvaluationTracker
@@ -37,6 +37,30 @@ if TYPE_CHECKING:
     from ..services.event_position_tracker import EventPositionTracker
 
 logger = logging.getLogger("kalshiflow_rl.traderv3.deep_agent.agent")
+
+# Per-token USD costs by model prefix (per million tokens)
+MODEL_PRICING = {
+    "claude-sonnet-4": {
+        "input": 3.0 / 1_000_000,
+        "output": 15.0 / 1_000_000,
+        "cache_write": 3.75 / 1_000_000,
+        "cache_read": 0.30 / 1_000_000,
+    },
+    "claude-haiku-4-5": {
+        "input": 1.0 / 1_000_000,
+        "output": 5.0 / 1_000_000,
+        "cache_write": 1.25 / 1_000_000,
+        "cache_read": 0.10 / 1_000_000,
+    },
+}
+
+
+def _get_model_pricing(model: str) -> Dict[str, float]:
+    """Resolve pricing by model prefix, falling back to Sonnet 4."""
+    for prefix, pricing in MODEL_PRICING.items():
+        if model.startswith(prefix):
+            return pricing
+    return MODEL_PRICING["claude-sonnet-4"]
 
 
 @dataclass
@@ -144,7 +168,6 @@ class SelfImprovingAgent:
             event_position_tracker=event_position_tracker,
             signal_tracker=self._signal_tracker,
         )
-        set_global_tools(self._tools)
 
         # Initialize reflection engine
         self._reflection = ReflectionEngine(
@@ -199,6 +222,14 @@ class SelfImprovingAgent:
         self._total_output_tokens = 0
         self._total_cache_read_tokens = 0
         self._total_cache_created_tokens = 0
+
+        # Per-cycle token counters (reset each cycle)
+        self._cycle_input_tokens = 0
+        self._cycle_output_tokens = 0
+        self._cycle_cache_read_tokens = 0
+        self._cycle_cache_created_tokens = 0
+        self._cycle_api_calls = 0
+        self._model_pricing = _get_model_pricing(self._config.model)
 
         # Reflection count for consolidation trigger
         self._reflection_count = 0
@@ -908,6 +939,13 @@ Successful patterns go here.
         self._cycle_count += 1
         self._last_cycle_at = time.time()
 
+        # Reset per-cycle token counters
+        self._cycle_input_tokens = 0
+        self._cycle_output_tokens = 0
+        self._cycle_cache_read_tokens = 0
+        self._cycle_cache_created_tokens = 0
+        self._cycle_api_calls = 0
+
         logger.info(f"[deep_agent.agent] === Starting cycle {self._cycle_count} ===")
 
         # Broadcast cycle start
@@ -945,6 +983,35 @@ Successful patterns go here.
         try:
             # Run the agent with streaming
             await self._run_agent_cycle(context)
+
+            # Broadcast cost data after successful cycle
+            if self._ws_manager and self._cycle_api_calls > 0:
+                await self._ws_manager.broadcast_message("deep_agent_cost", {
+                    "cycle": self._cycle_count,
+                    "model": self._config.model,
+                    "cycle_cost": self._calculate_cost(
+                        self._cycle_input_tokens, self._cycle_output_tokens,
+                        self._cycle_cache_read_tokens, self._cycle_cache_created_tokens,
+                    ),
+                    "cycle_tokens": {
+                        "input": self._cycle_input_tokens,
+                        "output": self._cycle_output_tokens,
+                        "cache_read": self._cycle_cache_read_tokens,
+                        "cache_created": self._cycle_cache_created_tokens,
+                        "api_calls": self._cycle_api_calls,
+                    },
+                    "session_cost": self._calculate_cost(
+                        self._total_input_tokens, self._total_output_tokens,
+                        self._total_cache_read_tokens, self._total_cache_created_tokens,
+                    ),
+                    "session_tokens": {
+                        "input": self._total_input_tokens,
+                        "output": self._total_output_tokens,
+                        "cache_read": self._total_cache_read_tokens,
+                        "cache_created": self._total_cache_created_tokens,
+                    },
+                    "timestamp": time.strftime("%H:%M:%S"),
+                })
 
         except Exception as e:
             logger.error(f"[deep_agent.agent] Error in cycle: {e}")
@@ -1258,6 +1325,13 @@ Successful patterns go here.
                     self._total_output_tokens += output_tokens
                     self._total_cache_read_tokens += cache_read
                     self._total_cache_created_tokens += cache_created
+
+                    # Update per-cycle metrics
+                    self._cycle_input_tokens += input_tokens
+                    self._cycle_output_tokens += output_tokens
+                    self._cycle_cache_read_tokens += cache_read
+                    self._cycle_cache_created_tokens += cache_created
+                    self._cycle_api_calls += 1
 
                     # Log cache status
                     if cache_read > 0:
@@ -1772,9 +1846,9 @@ Successful patterns go here.
             await self._run_agent_cycle("")
 
             # Extract learning from the agent's response
-            learning = self._extract_learning_from_response()
-            mistake = self._extract_mistake_from_response()
-            pattern = self._extract_pattern_from_response()
+            learning = self._extract_insight_from_response("learn")
+            mistake = self._extract_insight_from_response("mistake")
+            pattern = self._extract_insight_from_response("pattern")
 
             # Track consecutive losses for urgent consolidation
             # T4.1: Don't reset counter on unknown results — only reset on wins/break_even
@@ -1908,23 +1982,18 @@ Be selective: only add rules with clear evidence from multiple trades.
     # Response Parsing Helpers
     # =========================================================================
 
-    def _extract_learning_from_response(self) -> str:
-        """Extract learning insight from the last assistant message."""
-        for msg in reversed(self._conversation_history):
-            if msg.get("role") == "assistant":
-                content = msg.get("content", "")
-                # Handle list of content blocks (from tool calling)
-                if isinstance(content, list):
-                    for block in content:
-                        if isinstance(block, dict) and block.get("type") == "text":
-                            text = block.get("text", "")
-                            return self._extract_insight_from_text(text, "learn")
-                elif isinstance(content, str):
-                    return self._extract_insight_from_text(content, "learn")
-        return "Reflected on trade outcome"
+    def _extract_insight_from_response(self, insight_type: str) -> Optional[str]:
+        """Extract an insight of the given type from the last assistant message.
 
-    def _extract_mistake_from_response(self) -> Optional[str]:
-        """Extract mistake identification from the last assistant message."""
+        Args:
+            insight_type: "learn", "mistake", or "pattern"
+
+        Returns:
+            Extracted insight string. For "learn", returns a default if nothing found.
+            For "mistake"/"pattern", returns None if nothing found.
+        """
+        default = "Reflected on trade outcome" if insight_type == "learn" else None
+
         for msg in reversed(self._conversation_history):
             if msg.get("role") == "assistant":
                 content = msg.get("content", "")
@@ -1932,32 +2001,14 @@ Be selective: only add rules with clear evidence from multiple trades.
                     for block in content:
                         if isinstance(block, dict) and block.get("type") == "text":
                             text = block.get("text", "")
-                            insight = self._extract_insight_from_text(text, "mistake")
-                            if insight != "Reflected on trade outcome":
+                            insight = self._extract_insight_from_text(text, insight_type)
+                            if insight != "Reflected on trade outcome" or insight_type == "learn":
                                 return insight
                 elif isinstance(content, str):
-                    insight = self._extract_insight_from_text(content, "mistake")
-                    if insight != "Reflected on trade outcome":
+                    insight = self._extract_insight_from_text(content, insight_type)
+                    if insight != "Reflected on trade outcome" or insight_type == "learn":
                         return insight
-        return None
-
-    def _extract_pattern_from_response(self) -> Optional[str]:
-        """Extract pattern identification from the last assistant message."""
-        for msg in reversed(self._conversation_history):
-            if msg.get("role") == "assistant":
-                content = msg.get("content", "")
-                if isinstance(content, list):
-                    for block in content:
-                        if isinstance(block, dict) and block.get("type") == "text":
-                            text = block.get("text", "")
-                            insight = self._extract_insight_from_text(text, "pattern")
-                            if insight != "Reflected on trade outcome":
-                                return insight
-                elif isinstance(content, str):
-                    insight = self._extract_insight_from_text(content, "pattern")
-                    if insight != "Reflected on trade outcome":
-                        return insight
-        return None
+        return default
 
     def _extract_insight_from_text(self, text: str, insight_type: str) -> str:
         """
@@ -2022,6 +2073,26 @@ Be selective: only add rules with clear evidence from multiple trades.
 
         return True
 
+    def _calculate_cost(self, input_tokens: int, output_tokens: int,
+                        cache_read_tokens: int, cache_created_tokens: int) -> Dict[str, float]:
+        """Calculate USD cost from token counts using model pricing."""
+        p = self._model_pricing
+        input_cost = input_tokens * p["input"]
+        output_cost = output_tokens * p["output"]
+        cache_read_cost = cache_read_tokens * p["cache_read"]
+        cache_write_cost = cache_created_tokens * p["cache_write"]
+        total_cost = input_cost + output_cost + cache_read_cost + cache_write_cost
+        # What cache reads would have cost at full input price
+        cache_savings = cache_read_tokens * (p["input"] - p["cache_read"])
+        return {
+            "total_cost_usd": round(total_cost, 6),
+            "input_cost_usd": round(input_cost, 6),
+            "output_cost_usd": round(output_cost, 6),
+            "cache_read_cost_usd": round(cache_read_cost, 6),
+            "cache_write_cost_usd": round(cache_write_cost, 6),
+            "cache_savings_usd": round(cache_savings, 6),
+        }
+
     def get_stats(self) -> Dict[str, Any]:
         """Get agent statistics."""
         uptime = time.time() - self._started_at if self._started_at else 0
@@ -2053,6 +2124,10 @@ Be selective: only add rules with clear evidence from multiple trades.
                 "cache_hit_rate_pct": round(cache_hit_rate, 1),
                 "tokens_saved_by_cache": self._total_cache_read_tokens,
             },
+            "cost": self._calculate_cost(
+                self._total_input_tokens, self._total_output_tokens,
+                self._total_cache_read_tokens, self._total_cache_created_tokens,
+            ),
         }
 
     def get_consolidated_view(self) -> Dict[str, Any]:
@@ -2102,5 +2177,19 @@ Be selective: only add rules with clear evidence from multiple trades.
             "settlements": self._reflection.get_recent_reflections(20),
             "tool_stats": self._tools.get_tool_stats(),
             "token_usage": stats["token_usage"],
+            "cost_data": {
+                "model": self._config.model,
+                "session_cost": self._calculate_cost(
+                    self._total_input_tokens, self._total_output_tokens,
+                    self._total_cache_read_tokens, self._total_cache_created_tokens,
+                ),
+                "session_tokens": {
+                    "input": self._total_input_tokens,
+                    "output": self._total_output_tokens,
+                    "cache_read": self._total_cache_read_tokens,
+                    "cache_created": self._total_cache_created_tokens,
+                },
+                "cycle_count": self._cycle_count,
+            },
             "signal_lifecycle": self._signal_tracker.get_all_states(),
         }
