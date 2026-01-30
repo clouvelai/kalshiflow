@@ -61,16 +61,14 @@ class StrategyContext:
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for logging/debugging."""
-        return {
-            "event_bus": "connected" if self.event_bus else "not available",
-            "trading_service": "connected" if self.trading_service else "not available",
-            "state_container": "connected" if self.state_container else "not available",
-            "orderbook_integration": "connected" if self.orderbook_integration else "not available",
-            "tracked_markets": "connected" if self.tracked_markets else "not available",
-            "trading_client_integration": "connected" if self.trading_client_integration else "not available",
-            "websocket_manager": "connected" if self.websocket_manager else "not available",
-            "config": self.config.name if self.config else "not loaded",
-        }
+        _FIELDS = [
+            "event_bus", "trading_service", "state_container",
+            "orderbook_integration", "tracked_markets",
+            "trading_client_integration", "websocket_manager",
+        ]
+        result = {f: "connected" if getattr(self, f) else "not available" for f in _FIELDS}
+        result["config"] = self.config.name if self.config else "not loaded"
+        return result
 
 
 @runtime_checkable

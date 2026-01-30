@@ -176,18 +176,7 @@ class EventContextInfo:
     mutual_exclusivity_note: str  # Human-readable explanation
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
-            "event_ticker": self.event_ticker,
-            "market_count": self.market_count,
-            "markets": [m.to_dict() for m in self.markets],
-            "yes_sum": self.yes_sum,
-            "no_sum": self.no_sum,
-            "risk_level": self.risk_level,
-            "has_positions": self.has_positions,
-            "position_count": self.position_count,
-            "total_contracts": self.total_contracts,
-            "mutual_exclusivity_note": self.mutual_exclusivity_note,
-        }
+        return asdict(self)
 
 
 @dataclass
@@ -295,6 +284,11 @@ class DeepAgentTools:
 
         # Recent fills tracking for session state
         self._recent_fills: Deque[FillRecord] = deque(maxlen=50)
+
+        # Track tickers the deep agent has traded (for position filtering)
+        # Only positions in tickers we've actually traded are shown to the agent,
+        # preventing 100+ old positions from previous sessions from appearing.
+        self._traded_tickers: set = set()
 
         # Track tool usage for metrics
         self._tool_calls = {
@@ -428,9 +422,49 @@ class DeepAgentTools:
             f"min_conf={min_confidence}, min_impact={min_impact_magnitude}, limit={limit}"
         )
 
-        items = []
+        # Stage 1: Query Supabase (primary) then in-memory store (fallback)
+        items, supabase_error, store_error = await self._query_impact_sources(
+            market_ticker, entity_id, min_confidence, min_impact_magnitude, limit, max_age_hours,
+        )
 
-        # T2.1: Track error strings from each source for pipeline visibility
+        # T2.1: Log pipeline health when both sources return nothing
+        if not items:
+            if supabase_error and store_error:
+                logger.error(
+                    f"[deep_agent.tools.get_price_impacts] SIGNAL PIPELINE DOWN: "
+                    f"Supabase={supabase_error}, Store={store_error}"
+                )
+            elif supabase_error:
+                logger.warning(
+                    f"[deep_agent.tools.get_price_impacts] Supabase failed ({supabase_error}), store empty"
+                )
+
+        # Stage 2: Liquidity gating
+        if items:
+            items = await self._apply_liquidity_gating(items, max_spread_cents, only_tradeable, limit)
+
+        # Stage 3: Signal lifecycle filtering
+        if items and self._signal_tracker:
+            items = self._apply_signal_lifecycle_filter(items)
+
+        logger.info(f"[deep_agent.tools.get_price_impacts] Returning {len(items)} tradeable signals")
+        return items
+
+    async def _query_impact_sources(
+        self,
+        market_ticker: Optional[str],
+        entity_id: Optional[str],
+        min_confidence: float,
+        min_impact_magnitude: int,
+        limit: int,
+        max_age_hours: float,
+    ) -> tuple:
+        """Query Supabase (primary) then in-memory store (fallback) for price impacts.
+
+        Returns:
+            (items, supabase_error, store_error) tuple
+        """
+        items: List[PriceImpactItem] = []
         supabase_error = None
         store_error = None
 
@@ -481,7 +515,6 @@ class DeepAgentTools:
                         ))
 
                 logger.info(f"[deep_agent.tools.get_price_impacts] Found {len(items)} raw signals from Supabase")
-                # Don't return here - apply liquidity filter below
 
         except Exception as e:
             supabase_error = str(e)
@@ -546,108 +579,93 @@ class DeepAgentTools:
                     store_error = str(e)
                     logger.error(f"[deep_agent.tools.get_price_impacts] Store query error: {e}")
 
-        # T2.1: Log pipeline health when both sources return nothing
-        if not items:
-            if supabase_error and store_error:
-                logger.error(
-                    f"[deep_agent.tools.get_price_impacts] SIGNAL PIPELINE DOWN: "
-                    f"Supabase={supabase_error}, Store={store_error}"
-                )
-            elif supabase_error:
-                logger.warning(
-                    f"[deep_agent.tools.get_price_impacts] Supabase failed ({supabase_error}), store empty"
-                )
+        return items, supabase_error, store_error
 
-        # === LIQUIDITY GATING ===
-        # Filter signals to only include those for tradeable markets
-        # This prevents the agent from seeing signals it cannot act on
-        if items:
-            # Get unique tickers
-            tickers = list(set(item.market_ticker for item in items))
+    async def _apply_liquidity_gating(
+        self,
+        items: List[PriceImpactItem],
+        max_spread_cents: int,
+        only_tradeable: bool,
+        limit: int,
+    ) -> List[PriceImpactItem]:
+        """Filter signals to only include those for tradeable (liquid) markets."""
+        tickers = list(set(item.market_ticker for item in items))
+        spreads = await self._get_market_spreads_batch(tickers)
 
-            # Fetch spreads for all tickers
-            spreads = await self._get_market_spreads_batch(tickers)
+        filtered_items = []
+        illiquid_count = 0
+        unknown_count = 0
 
-            # Annotate and filter
-            filtered_items = []
-            illiquid_count = 0
-            unknown_count = 0
+        for item in items:
+            spread = spreads.get(item.market_ticker)
+            item.market_spread = spread
 
-            for item in items:
-                spread = spreads.get(item.market_ticker)
-                item.market_spread = spread
+            if spread is None:
+                # T3.2: Unknown spread = don't trade (conservative)
+                unknown_count += 1
+                item.is_tradeable = False
+            elif spread > max_spread_cents:
+                illiquid_count += 1
+                item.is_tradeable = False
+            else:
+                item.is_tradeable = True
 
-                if spread is None:
-                    # T3.2: Unknown spread = don't trade (conservative)
-                    unknown_count += 1
-                    item.is_tradeable = False
-                elif spread > max_spread_cents:
-                    illiquid_count += 1
-                    item.is_tradeable = False
-                else:
-                    item.is_tradeable = True
+            if item.is_tradeable or not only_tradeable:
+                filtered_items.append(item)
 
-                if item.is_tradeable or not only_tradeable:
-                    filtered_items.append(item)
+        if illiquid_count > 0 or unknown_count > 0:
+            logger.info(
+                f"[deep_agent.tools.get_price_impacts] Filtered: "
+                f"{illiquid_count} illiquid (spread > {max_spread_cents}c), "
+                f"{unknown_count} unknown spread"
+            )
 
-            if illiquid_count > 0 or unknown_count > 0:
-                logger.info(
-                    f"[deep_agent.tools.get_price_impacts] Filtered: "
-                    f"{illiquid_count} illiquid (spread > {max_spread_cents}c), "
-                    f"{unknown_count} unknown spread"
-                )
+        return filtered_items[:limit]
 
-            # Apply limit to filtered results
-            items = filtered_items[:limit]
+    def _apply_signal_lifecycle_filter(self, items: List[PriceImpactItem]) -> List[PriceImpactItem]:
+        """Register signals with tracker and filter out terminal/exhausted ones."""
+        for item in items:
+            # RF-5: Signals that predate this session are marked historical
+            # so they aren't re-evaluated after a restart.
+            is_historical = False
+            if item.created_at:
+                try:
+                    signal_dt = datetime.fromisoformat(
+                        item.created_at.replace("Z", "+00:00")
+                    )
+                    is_historical = signal_dt.timestamp() < self._startup_time
+                except (ValueError, AttributeError) as e:
+                    # T2.3: Conservative — treat unparseable timestamps as old
+                    is_historical = True
+                    logger.warning(
+                        f"[deep_agent.tools] Signal timestamp parse failed for "
+                        f"{item.signal_id}, treating as historical: {e}"
+                    )
+            self._signal_tracker.register_signal(
+                signal_id=item.signal_id,
+                market_ticker=item.market_ticker,
+                entity_name=item.entity_name,
+                is_historical=is_historical,
+            )
 
-        # === SIGNAL LIFECYCLE FILTERING ===
-        # Register signals with tracker and filter out terminal/exhausted ones
-        if items and self._signal_tracker:
-            for item in items:
-                # RF-5: Signals that predate this session are marked historical
-                # so they aren't re-evaluated after a restart.
-                is_historical = False
-                if item.created_at:
-                    try:
-                        signal_dt = datetime.fromisoformat(
-                            item.created_at.replace("Z", "+00:00")
-                        )
-                        is_historical = signal_dt.timestamp() < self._startup_time
-                    except (ValueError, AttributeError) as e:
-                        # T2.3: Conservative — treat unparseable timestamps as old
-                        is_historical = True
-                        logger.warning(
-                            f"[deep_agent.tools] Signal timestamp parse failed for "
-                            f"{item.signal_id}, treating as historical: {e}"
-                        )
-                self._signal_tracker.register_signal(
-                    signal_id=item.signal_id,
-                    market_ticker=item.market_ticker,
-                    entity_name=item.entity_name,
-                    is_historical=is_historical,
-                )
+        all_ids = [item.signal_id for item in items]
+        actionable_ids = set(self._signal_tracker.get_actionable_signals(all_ids))
 
-            all_ids = [item.signal_id for item in items]
-            actionable_ids = set(self._signal_tracker.get_actionable_signals(all_ids))
+        filtered_items = []
+        lifecycle_filtered = 0
+        for item in items:
+            if item.signal_id in actionable_ids:
+                filtered_items.append(item)
+            else:
+                lifecycle_filtered += 1
 
-            lifecycle_filtered = 0
-            filtered_items = []
-            for item in items:
-                if item.signal_id in actionable_ids:
-                    filtered_items.append(item)
-                else:
-                    lifecycle_filtered += 1
+        if lifecycle_filtered > 0:
+            logger.info(
+                f"[deep_agent.tools.get_price_impacts] Filtered {lifecycle_filtered} "
+                f"terminal/historical signals via lifecycle tracker"
+            )
 
-            if lifecycle_filtered > 0:
-                logger.info(
-                    f"[deep_agent.tools.get_price_impacts] Filtered {lifecycle_filtered} "
-                    f"terminal/historical signals via lifecycle tracker"
-                )
-
-            items = filtered_items
-
-        logger.info(f"[deep_agent.tools.get_price_impacts] Returning {len(items)} tradeable signals")
-        return items
+        return filtered_items
 
     # === Entity Signal Tools ===
 
@@ -1319,6 +1337,38 @@ class DeepAgentTools:
 
     # === Trade Execution ===
 
+    @staticmethod
+    def _compute_limit_price(side: str, yes_bid: int, yes_ask: int, execution_strategy: str) -> int:
+        """Compute limit price in cents given side, bid/ask, and strategy.
+
+        Returns a clamped price in [1, 99].
+        """
+        midpoint = (yes_bid + yes_ask) // 2 if yes_bid > 0 else 0
+
+        if execution_strategy == "aggressive":
+            if side == "yes":
+                price = yes_ask
+            else:
+                price = 100 - yes_bid if yes_bid > 0 else 0
+        elif execution_strategy == "moderate":
+            if side == "yes":
+                price = midpoint + 1 if midpoint > 0 else yes_ask
+            else:
+                price = (100 - midpoint) + 1 if midpoint > 0 else (100 - yes_bid if yes_bid > 0 else 0)
+        elif execution_strategy == "passive":
+            if side == "yes":
+                price = yes_bid + 1 if yes_bid > 0 else yes_ask
+            else:
+                price = (100 - yes_ask) + 1 if yes_ask > 0 else (100 - yes_bid if yes_bid > 0 else 0)
+        else:
+            # Fallback to aggressive
+            if side == "yes":
+                price = yes_ask
+            else:
+                price = 100 - yes_bid if yes_bid > 0 else 0
+
+        return max(1, min(99, price))
+
     async def trade(
         self,
         ticker: str,
@@ -1407,37 +1457,8 @@ class DeepAgentTools:
                     contracts=contracts,
                     error=f"Market data incomplete: yes_bid={yes_bid}, yes_ask={yes_ask}",
                 )
-            midpoint = (yes_bid + yes_ask) // 2 if yes_bid > 0 else 0
 
-            if execution_strategy == "aggressive":
-                # Cross the spread: buy at ask for immediate fill
-                if side == "yes":
-                    limit_price = yes_ask
-                else:
-                    limit_price = 100 - yes_bid if yes_bid > 0 else 0
-            elif execution_strategy == "moderate":
-                # Place near midpoint: save ~half the spread, decent fill probability
-                if side == "yes":
-                    limit_price = midpoint + 1 if midpoint > 0 else yes_ask
-                else:
-                    # NO midpoint = 100 - YES midpoint, place slightly above
-                    limit_price = (100 - midpoint) + 1 if midpoint > 0 else (100 - yes_bid if yes_bid > 0 else 0)
-            elif execution_strategy == "passive":
-                # Place near the bid: cheapest entry, may not fill
-                if side == "yes":
-                    limit_price = yes_bid + 1 if yes_bid > 0 else yes_ask
-                else:
-                    # NO bid = 100 - YES ask, place just inside
-                    limit_price = (100 - yes_ask) + 1 if yes_ask > 0 else (100 - yes_bid if yes_bid > 0 else 0)
-            else:
-                # Fallback to aggressive
-                if side == "yes":
-                    limit_price = yes_ask
-                else:
-                    limit_price = 100 - yes_bid if yes_bid > 0 else 0
-
-            # Clamp to valid range
-            limit_price = max(1, min(99, limit_price))
+            limit_price = self._compute_limit_price(side, yes_bid, yes_ask, execution_strategy)
 
             # RF-1: Enforce per-event dollar exposure cap
             event_ticker = market_data.get("event_ticker", "")
@@ -1471,7 +1492,7 @@ class DeepAgentTools:
 
             logger.info(
                 f"[deep_agent.tools.trade] Using limit price {limit_price}c for {side} "
-                f"(strategy={execution_strategy}, yes_bid={yes_bid}, yes_ask={yes_ask}, mid={midpoint})"
+                f"(strategy={execution_strategy}, yes_bid={yes_bid}, yes_ask={yes_ask}, mid={(yes_bid + yes_ask) / 2})"
             )
 
             # Step 3: Place limit order through trading client
@@ -1628,6 +1649,7 @@ class DeepAgentTools:
             reasoning=reasoning[:200] if reasoning else "",
         )
         self._recent_fills.appendleft(fill)
+        self._traded_tickers.add(ticker)
         logger.debug(f"[deep_agent.tools] Recorded fill: {ticker} {side} {contracts}@{price_cents}c")
 
     def get_recent_fills(self, limit: int = 10) -> List[Dict[str, Any]]:
@@ -1674,9 +1696,18 @@ class DeepAgentTools:
             summary = self._state_container.get_trading_summary()
             pnl = summary.get("pnl", {})
 
-            # Get positions with details
+            # Get positions with details, filtered to only tickers the deep
+            # agent has traded. The Kalshi API returns ALL positions (including
+            # old ones from previous sessions), which pollutes the agent's view.
+            # If no trades have happened yet, show NO positions (empty list).
             positions = []
             for pos in summary.get("positions_details", []):
+                ticker = pos.get("ticker")
+
+                # Filter: only show positions in tickers we've actually traded
+                if ticker not in self._traded_tickers:
+                    continue
+
                 # T1.5: Explicit position side determination
                 yes_c = pos.get("yes_contracts", 0) or 0
                 no_c = pos.get("no_contracts", 0) or 0
@@ -1691,7 +1722,7 @@ class DeepAgentTools:
                     pos_contracts = 0
 
                 positions.append({
-                    "ticker": pos.get("ticker"),
+                    "ticker": ticker,
                     "side": pos_side,
                     "contracts": pos_contracts,
                     "avg_price": pos.get("avg_price"),
@@ -1711,7 +1742,7 @@ class DeepAgentTools:
                 realized_pnl_cents=int(pnl.get("realized", 0) * 100),
                 unrealized_pnl_cents=int(pnl.get("unrealized", 0) * 100),
                 total_pnl_cents=int(pnl.get("total", 0) * 100),
-                position_count=summary.get("position_count", 0),
+                position_count=len(positions),  # Filtered count (this session only)
                 open_order_count=summary.get("order_count", 0),
                 trade_count=total_settled,
                 win_rate=win_rate,
@@ -1896,86 +1927,3 @@ class DeepAgentTools:
     def get_tool_stats(self) -> Dict[str, int]:
         """Get tool usage statistics."""
         return self._tool_calls.copy()
-
-
-# === Module-level convenience functions ===
-# These wrap the class-based tools for use without a class instance
-
-_global_tools: Optional[DeepAgentTools] = None
-
-
-def set_global_tools(tools: DeepAgentTools) -> None:
-    """Set the global tools instance."""
-    global _global_tools
-    _global_tools = tools
-
-
-async def get_price_impacts(
-    market_ticker: Optional[str] = None,
-    entity_id: Optional[str] = None,
-    min_confidence: float = 0.5,
-    limit: int = 20,
-) -> List[Dict]:
-    """Get price impact signals from the entity pipeline."""
-    if _global_tools:
-        items = await _global_tools.get_price_impacts(
-            market_ticker=market_ticker,
-            entity_id=entity_id,
-            min_confidence=min_confidence,
-            limit=limit,
-        )
-        return [i.to_dict() for i in items]
-    # T4.7: Log when tools not initialized
-    logger.error("[deep_agent.tools] get_price_impacts called but _global_tools is None")
-    return []
-
-
-async def get_markets(event_ticker: Optional[str] = None, limit: int = 20) -> List[Dict]:
-    """Get current market data."""
-    if _global_tools:
-        markets = await _global_tools.get_markets(event_ticker, limit)
-        return [m.to_dict() for m in markets]
-    logger.error("[deep_agent.tools] get_markets called but _global_tools is None")
-    return []
-
-
-async def trade(ticker: str, side: str, contracts: int, reasoning: str, execution_strategy: str = "aggressive") -> Dict:
-    """Execute a trade."""
-    if _global_tools:
-        result = await _global_tools.trade(ticker, side, contracts, reasoning, execution_strategy=execution_strategy)
-        return result.to_dict()
-    logger.error("[deep_agent.tools] trade called but _global_tools is None")
-    return {"success": False, "error": "Tools not initialized"}
-
-
-async def get_session_state() -> Dict:
-    """Get session state."""
-    if _global_tools:
-        state = await _global_tools.get_session_state()
-        return state.to_dict()
-    logger.error("[deep_agent.tools] get_session_state called but _global_tools is None")
-    return {}
-
-
-async def read_memory(filename: str) -> str:
-    """Read memory file."""
-    if _global_tools:
-        return await _global_tools.read_memory(filename)
-    logger.error("[deep_agent.tools] read_memory called but _global_tools is None")
-    return ""
-
-
-async def write_memory(filename: str, content: str) -> bool:
-    """Write memory file."""
-    if _global_tools:
-        return await _global_tools.write_memory(filename, content)
-    logger.error("[deep_agent.tools] write_memory called but _global_tools is None")
-    return False
-
-
-async def append_memory(filename: str, content: str) -> dict:
-    """Append to memory file with automatic size management."""
-    if _global_tools:
-        return await _global_tools.append_memory(filename, content)
-    logger.error("[deep_agent.tools] append_memory called but _global_tools is None")
-    return {"success": False, "error": "Tools not initialized"}

@@ -391,6 +391,26 @@ class ReflectionEngine:
         # Remove from pending
         del self._pending_trades[trade.trade_id]
 
+    def _compute_reflection_aggregates(self) -> Dict[str, Any]:
+        """Compute win/loss/total/pnl aggregates over settled reflections."""
+        total = len(self._reflections)
+        wins = sum(1 for r in self._reflections if r.result == "win")
+        losses = sum(1 for r in self._reflections if r.result == "loss")
+        total_pnl = sum(r.pnl_cents for r in self._reflections)
+        strategy_updates = sum(1 for r in self._reflections if r.should_update_strategy)
+        mistakes_found = sum(1 for r in self._reflections if r.mistake_identified)
+        patterns_found = sum(1 for r in self._reflections if r.pattern_identified)
+        return {
+            "total": total,
+            "wins": wins,
+            "losses": losses,
+            "total_pnl": total_pnl,
+            "win_rate": wins / total if total > 0 else 0.0,
+            "strategy_updates": strategy_updates,
+            "mistakes_found": mistakes_found,
+            "patterns_found": patterns_found,
+        }
+
     def _build_performance_scorecard(self) -> str:
         """
         Build a quantitative performance scorecard for injection into reflections.
@@ -406,11 +426,12 @@ class ReflectionEngine:
 
         # Settled trade stats (only if we have reflections)
         if self._reflections:
-            total = len(self._reflections)
-            wins = sum(1 for r in self._reflections if r.result == "win")
-            losses = sum(1 for r in self._reflections if r.result == "loss")
-            total_pnl = sum(r.pnl_cents for r in self._reflections)
-            win_rate = wins / total if total > 0 else 0.0
+            agg = self._compute_reflection_aggregates()
+            total = agg["total"]
+            wins = agg["wins"]
+            losses = agg["losses"]
+            total_pnl = agg["total_pnl"]
+            win_rate = agg["win_rate"]
 
             # Last 5 trades trend
             recent = self._reflections[-5:]
@@ -418,9 +439,8 @@ class ReflectionEngine:
             recent_pnl = sum(r.pnl_cents for r in recent)
             recent_win_rate = recent_wins / len(recent) if recent else 0.0
 
-            # Strategy update count
-            strategy_updates = sum(1 for r in self._reflections if r.should_update_strategy)
-            mistakes_found = sum(1 for r in self._reflections if r.mistake_identified)
+            strategy_updates = agg["strategy_updates"]
+            mistakes_found = agg["mistakes_found"]
 
             # Trend arrow
             if len(self._reflections) >= 5:
@@ -566,18 +586,15 @@ Be specific and actionable in your learnings.
 
     def get_stats(self) -> Dict[str, Any]:
         """Get reflection engine statistics."""
-        wins = sum(1 for r in self._reflections if r.result == "win")
-        losses = sum(1 for r in self._reflections if r.result == "loss")
-        total = len(self._reflections)
-
+        agg = self._compute_reflection_aggregates()
         return {
             "running": self._running,
             "pending_trades": len(self._pending_trades),
-            "total_reflections": total,
-            "wins": wins,
-            "losses": losses,
-            "win_rate": wins / total if total > 0 else 0.0,
-            "strategy_updates": sum(1 for r in self._reflections if r.should_update_strategy),
-            "mistakes_identified": sum(1 for r in self._reflections if r.mistake_identified),
-            "patterns_identified": sum(1 for r in self._reflections if r.pattern_identified),
+            "total_reflections": agg["total"],
+            "wins": agg["wins"],
+            "losses": agg["losses"],
+            "win_rate": agg["win_rate"],
+            "strategy_updates": agg["strategy_updates"],
+            "mistakes_identified": agg["mistakes_found"],
+            "patterns_identified": agg["patterns_found"],
         }

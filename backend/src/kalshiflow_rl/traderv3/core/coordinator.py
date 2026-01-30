@@ -327,17 +327,54 @@ class V3Coordinator:
         # Transition to READY with actual metrics
         await self._transition_to_ready()
     
+    def _market_summary_list(self) -> list:
+        """Return a short summary list of market tickers for state metadata."""
+        tickers = self._config.market_tickers
+        if len(tickers) > 2:
+            return tickers[:2] + [f"...and {len(tickers) - 2} more"]
+        return list(tickers)
+
+    async def _emit_orderbook_state(
+        self, context_msg: str, markets_connected: int, snapshots_received: int,
+        deltas_received: int = 0, connection_established: Optional[bool] = None,
+        first_snapshot_received: Optional[bool] = None, degraded: bool = False,
+    ) -> None:
+        """Emit orderbook state transition and update state container."""
+        metadata = {
+            "ws_url": self._config.ws_url,
+            "markets": self._market_summary_list(),
+            "market_count": len(self._config.market_tickers),
+            "environment": self._config.get_environment_name(),
+            "markets_connected": markets_connected,
+            "snapshots_received": snapshots_received,
+            "deltas_received": deltas_received,
+            "connection_established": connection_established,
+            "first_snapshot_received": first_snapshot_received,
+        }
+        if degraded:
+            metadata["degraded"] = True
+
+        await self._state_machine.transition_to(
+            V3State.ORDERBOOK_CONNECT, context=context_msg, metadata=metadata,
+        )
+        self._state_container.update_machine_state(
+            V3State.ORDERBOOK_CONNECT, context_msg,
+            {"markets_connected": markets_connected, "snapshots_received": snapshots_received,
+             "ws_url": self._config.ws_url, **({"degraded": True} if degraded else {})},
+        )
+        await self._status_reporter.emit_status_update(context_msg)
+
     async def _connect_orderbook(self) -> None:
         """Connect to orderbook WebSocket and wait for data."""
         logger.info("Connecting to orderbook...")
-        
+
         # Start integration
         await self._orderbook_integration.start()
-        
+
         # Wait for connection
         logger.info("🔄 Waiting for orderbook connection...")
         connection_success = await self._orderbook_integration.wait_for_connection(timeout=30.0)
-        
+
         if not connection_success:
             logger.warning("⚠️ DEGRADED MODE: Orderbook WebSocket unavailable - continuing without live market data")
             await self._event_bus.emit_system_activity(
@@ -345,79 +382,32 @@ class V3Coordinator:
                 message="⚠️ DEGRADED MODE: Running without orderbook connection",
                 metadata={"degraded": True, "reason": "WebSocket unavailable", "severity": "warning"}
             )
-            
-            # Still transition to ORDERBOOK_CONNECT state but with degraded status
-            await self._state_machine.transition_to(
-                V3State.ORDERBOOK_CONNECT,
-                context="Degraded mode - no orderbook connection",
-                metadata={
-                    "ws_url": self._config.ws_url,
-                    "markets": self._config.market_tickers[:2] + (["...and {} more".format(len(self._config.market_tickers) - 2)] if len(self._config.market_tickers) > 2 else []),
-                    "market_count": len(self._config.market_tickers),
-                    "environment": self._config.get_environment_name(),
-                    "markets_connected": 0,
-                    "snapshots_received": 0,
-                    "deltas_received": 0,
-                    "connection_established": False,
-                    "first_snapshot_received": False,
-                    "degraded": True
-                }
+            await self._emit_orderbook_state(
+                "Running in degraded mode without orderbook",
+                markets_connected=0, snapshots_received=0, deltas_received=0,
+                connection_established=False, first_snapshot_received=False, degraded=True,
             )
-            
-            # Update state container with degraded status
-            self._state_container.update_machine_state(
-                V3State.ORDERBOOK_CONNECT,
-                "Degraded mode - no orderbook connection",
-                {
-                    "markets_connected": 0,
-                    "snapshots_received": 0,
-                    "ws_url": self._config.ws_url,
-                    "degraded": True
-                }
-            )
-            
-            await self._status_reporter.emit_status_update("Running in degraded mode without orderbook")
             # Continue to ready state in degraded mode - don't return here
         else:
             # Wait for first snapshot
             logger.info("Waiting for initial orderbook snapshot...")
             data_flowing = await self._orderbook_integration.wait_for_first_snapshot(timeout=10.0)
-            
+
             if not data_flowing:
                 logger.warning("No orderbook data received - continuing anyway")
-        
+
         # Collect metrics and transition
         metrics = self._orderbook_integration.get_metrics()
         health_details = self._orderbook_integration.get_health_details()
-        
-        await self._state_machine.transition_to(
-            V3State.ORDERBOOK_CONNECT,
-            context=f"Connected to {metrics['markets_connected']} markets",
-            metadata={
-                "ws_url": self._config.ws_url,
-                "markets": self._config.market_tickers[:2] + (["...and {} more".format(len(self._config.market_tickers) - 2)] if len(self._config.market_tickers) > 2 else []),
-                "market_count": len(self._config.market_tickers),
-                "environment": self._config.get_environment_name(),
-                "markets_connected": metrics["markets_connected"],
-                "snapshots_received": metrics["snapshots_received"],
-                "deltas_received": metrics["deltas_received"],
-                "connection_established": health_details.get("connection_established"),
-                "first_snapshot_received": health_details.get("first_snapshot_received")
-            }
-        )
-        
-        # Update state container
-        self._state_container.update_machine_state(
-            V3State.ORDERBOOK_CONNECT,
+
+        await self._emit_orderbook_state(
             f"Connected to {metrics['markets_connected']} markets",
-            {
-                "markets_connected": metrics["markets_connected"],
-                "snapshots_received": metrics["snapshots_received"],
-                "ws_url": self._config.ws_url
-            }
+            markets_connected=metrics["markets_connected"],
+            snapshots_received=metrics["snapshots_received"],
+            deltas_received=metrics["deltas_received"],
+            connection_established=health_details.get("connection_established"),
+            first_snapshot_received=health_details.get("first_snapshot_received"),
         )
-        
-        await self._status_reporter.emit_status_update(f"Connected to {metrics['markets_connected']} markets")
 
     async def _connect_trades(self) -> None:
         """
@@ -780,6 +770,7 @@ class V3Coordinator:
                 subreddits=self._config.entity_subreddits,
                 skip_existing=False,  # Get historical 100 items
                 enabled=True,
+                extract_related_entities=True,  # Track all entities including non-market related ones
                 llm_entity_extraction_enabled=getattr(
                     self._config, "llm_entity_extraction_enabled", True
                 ),
@@ -806,11 +797,14 @@ class V3Coordinator:
                 entity_index=self._entity_market_index,
             )
 
-            # 5. Start agents
+            # 5. Enable Supabase Realtime on entity tables (required for PriceImpactAgent)
+            await self._enable_entity_realtime()
+
+            # 6. Start agents
             await self._reddit_entity_agent.start()
             await self._price_impact_agent.start()
 
-            # 6. Broadcast system status
+            # 7. Broadcast system status
             await self._websocket_manager.broadcast_message("entity_system_status", {
                 "is_active": True,
                 "stats": {
@@ -841,6 +835,39 @@ class V3Coordinator:
                 message=f"Entity system failed: {str(e)}",
                 metadata={"error": str(e), "severity": "warning"}
             )
+
+    async def _enable_entity_realtime(self) -> None:
+        """
+        Enable Supabase Realtime on entity tables.
+
+        PriceImpactAgent subscribes to INSERT events via Supabase Realtime.
+        The tables must be added to the supabase_realtime publication for
+        Realtime to deliver change events.
+        """
+        try:
+            from ...data.database import rl_db
+
+            db = rl_db
+            if not db or not db._pool:
+                logger.warning("Cannot enable Realtime: database pool not available")
+                return
+
+            async with db._pool.acquire() as conn:
+                for table in ("reddit_entities", "news_entities"):
+                    try:
+                        await conn.execute(
+                            f"ALTER PUBLICATION supabase_realtime ADD TABLE {table}"
+                        )
+                        logger.info(f"Enabled Supabase Realtime for {table}")
+                    except Exception as e:
+                        # "relation already member" is expected on subsequent starts
+                        if "already member" in str(e).lower():
+                            logger.debug(f"Realtime already enabled for {table}")
+                        else:
+                            logger.warning(f"Failed to enable Realtime for {table}: {e}")
+
+        except Exception as e:
+            logger.warning(f"Could not enable Supabase Realtime on entity tables: {e}")
 
     async def _connect_trading_client(self) -> None:
         """Connect to trading API."""
@@ -1560,58 +1587,27 @@ class V3Coordinator:
             "health_monitor": self._health_monitor.get_status(),
             "status_reporter": self._status_reporter.get_status()
         }
-        
-        # Add trading service if configured
-        if self._trading_service:
-            components["trading_service"] = self._trading_service.get_stats()
-        
-        # Add trading orchestrator if configured
-        if self._trading_orchestrator:
-            components["trading_orchestrator"] = self._trading_orchestrator.get_stats()
-        
-        # Add trading client if configured
-        if self._trading_client_integration:
-            components["trading_client"] = self._trading_client_integration.get_health_details()
 
-        # Add trades integration if configured
-        if self._trades_integration:
-            components["trades_integration"] = self._trades_integration.get_health_details()
-
-        # Add strategy coordinator if configured
-        if self._strategy_coordinator:
-            components["strategy_coordinator"] = self._strategy_coordinator.get_all_stats()
-
-        # Add API discovery syncer if configured
-        if self._api_discovery_syncer:
-            components["api_discovery_syncer"] = self._api_discovery_syncer.get_health_details()
-
-        # Add position listener if configured
-        if self._position_listener:
-            components["position_listener"] = self._position_listener.get_metrics()
-
-        # Add market ticker listener if configured
-        if self._market_ticker_listener:
-            components["market_ticker_listener"] = self._market_ticker_listener.get_metrics()
-
-        # Add market price syncer if configured
-        if self._market_price_syncer:
-            components["market_price_syncer"] = self._market_price_syncer.get_health_details()
-
-        # Add fill listener if configured
-        if self._fill_listener:
-            components["fill_listener"] = self._fill_listener.get_health_details()
-
-        # Add trading state syncer if configured
-        if self._trading_state_syncer:
-            components["trading_state_syncer"] = self._trading_state_syncer.get_health_details()
-
-        # Add tracked markets state if configured (lifecycle mode)
-        if self._tracked_markets_state:
-            components["tracked_markets_state"] = self._tracked_markets_state.get_stats()
-
-        # Add event lifecycle service if configured
-        if self._event_lifecycle_service:
-            components["event_lifecycle_service"] = self._event_lifecycle_service.get_stats()
+        # Add optional components that may or may not be configured
+        _OPTIONAL_STATUS_COMPONENTS = [
+            ("_trading_service", "trading_service", "get_stats"),
+            ("_trading_orchestrator", "trading_orchestrator", "get_stats"),
+            ("_trading_client_integration", "trading_client", "get_health_details"),
+            ("_trades_integration", "trades_integration", "get_health_details"),
+            ("_strategy_coordinator", "strategy_coordinator", "get_all_stats"),
+            ("_api_discovery_syncer", "api_discovery_syncer", "get_health_details"),
+            ("_position_listener", "position_listener", "get_metrics"),
+            ("_market_ticker_listener", "market_ticker_listener", "get_metrics"),
+            ("_market_price_syncer", "market_price_syncer", "get_health_details"),
+            ("_fill_listener", "fill_listener", "get_health_details"),
+            ("_trading_state_syncer", "trading_state_syncer", "get_health_details"),
+            ("_tracked_markets_state", "tracked_markets_state", "get_stats"),
+            ("_event_lifecycle_service", "event_lifecycle_service", "get_stats"),
+        ]
+        for attr, key, method in _OPTIONAL_STATUS_COMPONENTS:
+            comp = getattr(self, attr, None)
+            if comp is not None:
+                components[key] = getattr(comp, method)()
 
         # Add Truth Social cache service if available (for evidence gathering)
         try:

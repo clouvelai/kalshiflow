@@ -1421,9 +1421,11 @@ Successful patterns go here.
                     "tool_use_id": tool_block.id,
                     "content": json.dumps(result) if isinstance(result, (dict, list)) else str(result),
                 }
-                # Cache breakpoint on last tool result — enables prefix caching for next API call
-                if i == len(tool_use_blocks) - 1:
-                    result_block["cache_control"] = {"type": "ephemeral"}
+                # NOTE: Do NOT add cache_control to tool results. The API allows
+                # a maximum of 4 blocks with cache_control. We already use 2
+                # (system prompt + last tool definition). Adding cache_control to
+                # tool results in conversation history would exceed the limit on
+                # subsequent API calls within the same cycle.
                 tool_results.append(result_block)
 
             # Add tool results to conversation

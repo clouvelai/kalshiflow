@@ -244,34 +244,16 @@ class DeepAgentStrategy:
 
         if strategy_config and hasattr(strategy_config, 'params'):
             params = strategy_config.params or {}
-
-            # Model settings
-            if "model" in params:
-                config.model = params["model"]
-            if "temperature" in params:
-                config.temperature = params["temperature"]
-            if "max_tokens" in params:
-                config.max_tokens = params["max_tokens"]
-
-            # Loop settings
-            if "cycle_interval_seconds" in params:
-                config.cycle_interval_seconds = params["cycle_interval_seconds"]
-            if "max_trades_per_cycle" in params:
-                config.max_trades_per_cycle = params["max_trades_per_cycle"]
-
-            # Target events
-            if "target_events" in params:
-                config.target_events = params["target_events"]
-
-            # Safety settings
-            if "max_contracts_per_trade" in params:
-                config.max_contracts_per_trade = params["max_contracts_per_trade"]
-            if "min_spread_cents" in params:
-                config.min_spread_cents = params["min_spread_cents"]
-            if "require_fresh_news" in params:
-                config.require_fresh_news = params["require_fresh_news"]
-            if "max_news_age_hours" in params:
-                config.max_news_age_hours = params["max_news_age_hours"]
+            _CONFIG_FIELDS = [
+                "model", "temperature", "max_tokens",
+                "cycle_interval_seconds", "max_trades_per_cycle",
+                "target_events",
+                "max_contracts_per_trade", "min_spread_cents",
+                "require_fresh_news", "max_news_age_hours",
+            ]
+            for field_name in _CONFIG_FIELDS:
+                if field_name in params:
+                    setattr(config, field_name, params[field_name])
 
         return config
 

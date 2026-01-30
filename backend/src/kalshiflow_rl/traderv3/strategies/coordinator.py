@@ -578,127 +578,55 @@ class StrategyCoordinator:
         """
         Get aggregated trade processing statistics across all strategies.
 
-        This method is designed for WebSocketManager._broadcast_trade_processing()
-        which expects these specific keys:
-        - trades_processed: Total trades that passed filters
-        - trades_filtered: Total trades filtered out
-        - signals_detected: Total signals detected
-        - signals_executed: Total signals that resulted in orders
-        - signals_skipped: Total signals skipped
-        - rate_limited_count: Total rate limited signals
-        - reentries: Total re-entry signals
-
         Returns:
             Dict with aggregated stats from all running strategies
         """
-        aggregated = {
-            "trades_processed": 0,
-            "trades_filtered": 0,
-            "signals_detected": 0,
-            "signals_executed": 0,
-            "signals_skipped": 0,
-            "rate_limited_count": 0,
-            "reentries": 0,
-        }
+        _STAT_KEYS = [
+            "trades_processed", "trades_filtered", "signals_detected",
+            "signals_executed", "signals_skipped", "rate_limited_count", "reentries",
+        ]
+        aggregated = {k: 0 for k in _STAT_KEYS}
 
         for name, strategy in self._strategies.items():
             try:
                 stats = strategy.get_stats()
-                aggregated["trades_processed"] += stats.get("trades_processed", 0)
-                aggregated["trades_filtered"] += stats.get("trades_filtered", 0)
-                aggregated["signals_detected"] += stats.get("signals_detected", 0)
-                aggregated["signals_executed"] += stats.get("signals_executed", 0)
-                aggregated["signals_skipped"] += stats.get("signals_skipped", 0)
-                aggregated["rate_limited_count"] += stats.get("rate_limited_count", 0)
-                aggregated["reentries"] += stats.get("reentries", 0)
+                for k in _STAT_KEYS:
+                    aggregated[k] += stats.get(k, 0)
             except Exception as e:
                 logger.error(f"Failed to get trade processing stats from '{name}': {e}")
 
         return aggregated
 
-    def get_recent_tracked_trades(self, limit: int = 20) -> List[Dict[str, Any]]:
-        """
-        Get recent tracked trades aggregated across all strategies.
-
-        Combines trades from all strategies, sorts by timestamp (newest first),
-        and returns the most recent up to the limit.
-
-        Args:
-            limit: Maximum number of trades to return
-
-        Returns:
-            List of trade dicts sorted by timestamp (newest first)
-        """
-        all_trades: List[Dict[str, Any]] = []
-
+    def _aggregate_from_strategies(
+        self,
+        method_name: str,
+        sort_key: str,
+        limit: int,
+        reverse: bool = True,
+    ) -> List[Dict[str, Any]]:
+        """Collect, sort, and limit results from all strategies that have the given method."""
+        all_items: List[Dict[str, Any]] = []
         for name, strategy in self._strategies.items():
             try:
-                # Check if strategy has get_recent_tracked_trades method
-                if hasattr(strategy, 'get_recent_tracked_trades'):
-                    trades = strategy.get_recent_tracked_trades(limit=limit)
-                    all_trades.extend(trades)
+                method = getattr(strategy, method_name, None)
+                if method is not None:
+                    all_items.extend(method(limit=limit))
             except Exception as e:
-                logger.error(f"Failed to get recent trades from '{name}': {e}")
+                logger.error(f"Failed to get {method_name} from '{name}': {e}")
+        all_items.sort(key=lambda item: item.get(sort_key, 0), reverse=reverse)
+        return all_items[:limit]
 
-        # Sort by timestamp (newest first) and limit
-        all_trades.sort(key=lambda t: t.get("timestamp", 0), reverse=True)
-        return all_trades[:limit]
+    def get_recent_tracked_trades(self, limit: int = 20) -> List[Dict[str, Any]]:
+        """Get recent tracked trades aggregated across all strategies."""
+        return self._aggregate_from_strategies("get_recent_tracked_trades", "timestamp", limit)
 
     def get_decision_history(self, limit: int = 20) -> List[Dict[str, Any]]:
-        """
-        Get decision history aggregated across all strategies.
-
-        Combines decisions from all strategies, sorts by timestamp (newest first),
-        and returns the most recent up to the limit.
-
-        Args:
-            limit: Maximum number of decisions to return
-
-        Returns:
-            List of decision dicts sorted by timestamp (newest first)
-        """
-        all_decisions: List[Dict[str, Any]] = []
-
-        for name, strategy in self._strategies.items():
-            try:
-                # Check if strategy has get_decision_history method
-                if hasattr(strategy, 'get_decision_history'):
-                    decisions = strategy.get_decision_history(limit=limit)
-                    all_decisions.extend(decisions)
-            except Exception as e:
-                logger.error(f"Failed to get decision history from '{name}': {e}")
-
-        # Sort by timestamp (newest first) and limit
-        all_decisions.sort(key=lambda d: d.get("timestamp", 0), reverse=True)
-        return all_decisions[:limit]
+        """Get decision history aggregated across all strategies."""
+        return self._aggregate_from_strategies("get_decision_history", "timestamp", limit)
 
     def get_market_states(self, limit: int = 20) -> List[Dict[str, Any]]:
-        """
-        Get market states aggregated across all strategies.
-
-        Combines market states from all strategies, sorts by trade count
-        (most active first), and returns up to the limit.
-
-        Args:
-            limit: Maximum number of market states to return
-
-        Returns:
-            List of market state dicts sorted by activity
-        """
-        all_states: List[Dict[str, Any]] = []
-
-        for name, strategy in self._strategies.items():
-            try:
-                # Check if strategy has get_market_states method
-                if hasattr(strategy, 'get_market_states'):
-                    states = strategy.get_market_states(limit=limit)
-                    all_states.extend(states)
-            except Exception as e:
-                logger.error(f"Failed to get market states from '{name}': {e}")
-
-        # Sort by total_trades (most active first) and limit
-        all_states.sort(key=lambda s: s.get("total_trades", 0), reverse=True)
-        return all_states[:limit]
+        """Get market states aggregated across all strategies (sorted by activity)."""
+        return self._aggregate_from_strategies("get_market_states", "total_trades", limit)
 
     def get_strategy_panel_data(self, decision_limit: int = 15) -> Dict[str, Any]:
         """

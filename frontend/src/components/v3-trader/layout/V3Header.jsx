@@ -4,13 +4,12 @@ import { Activity, Wifi, WifiOff, Brain } from 'lucide-react';
 import { StateBadge } from '../ui/StateBadge';
 
 /**
- * NavTabs - Navigation between Trader, Agent, and Events views
+ * NavTabs - Navigation between Trader and Agent views
  */
 const NavTabs = () => {
   const location = useLocation();
   const isTrader = location.pathname === '/v3' || location.pathname === '/v3-trader';
   const isAgent = location.pathname === '/v3-trader/agent';
-  const isEvents = location.pathname === '/v3-trader/events';
 
   return (
     <div className="flex items-center bg-gray-800/50 rounded-lg p-1">
@@ -34,16 +33,6 @@ const NavTabs = () => {
       >
         <Brain className="w-3.5 h-3.5" />
         Agent
-      </Link>
-      <Link
-        to="/v3-trader/events"
-        className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
-          isEvents
-            ? 'bg-emerald-500/30 text-emerald-300'
-            : 'text-gray-400 hover:text-white hover:bg-gray-700/50'
-        }`}
-      >
-        Events
       </Link>
     </div>
   );

@@ -246,13 +246,38 @@ def detect_entity_type(canonical_name: str, event_title: str = "", market_ticker
         if keyword in name_lower:
             return "organization"
 
-    # Default to person for names that look like people
+    # Outcome detection — market outcomes are NOT person names.
+    # Outcomes contain: numbers, comparisons, generic action words, or
+    # aren't structured as "Firstname Lastname" proper nouns.
+    import re
+    outcome_patterns = [
+        r'\d',                    # Contains digits: "More than 25 days", "Above 2.0%"
+        r'(?:more|less|above|below|over|under|between|at least|fewer|greater)',
+        r'(?:yes|no|none|other|all|any|both|neither)',
+        r'(?:shut down|fired|hired|resign|impeach|removed|confirmed|rejected)',
+        r'(?:wind|solar|hydro|coal|gas|nuclear)',  # Energy categories
+        r'(?:i like it|not at all)',  # Survey-style outcomes
+        r'%$',                    # Ends with percent
+    ]
+    for pattern in outcome_patterns:
+        if re.search(pattern, name_lower):
+            return "outcome"
+
+    # Proper noun check: person names have multiple capitalized words
+    # where each word starts uppercase (e.g., "Donald Trump", "Kamala Harris")
     parts = canonical_name.split()
     if len(parts) >= 2:
-        # Multiple capitalized words likely means a person's name
-        return "person"
+        all_proper = all(p[0].isupper() for p in parts if p and p[0].isalpha())
+        if all_proper:
+            return "person"
+        # Mixed case or non-alpha starting chars → likely outcome
+        return "outcome"
 
-    return "person"  # Default
+    # Single word: if all-caps or starts lowercase, it's an outcome
+    if canonical_name.isupper() or (canonical_name and canonical_name[0].islower()):
+        return "outcome"
+
+    return "person"  # Default for single capitalized words (e.g., "Trump")
 
 
 @dataclass
@@ -1652,10 +1677,6 @@ Generate 3-8 aliases maximum."""
             # Use canonical_name (real entity) not yes_sub_title (might be "Above 2.0%")
             new_enriched_list = []
             for eid, ce in new_canonical_entities.items():
-                # Skip outcome entities in the enriched list - they won't help
-                # the LLM match Reddit posts to markets
-                if ce.entity_type == "outcome":
-                    continue
                 for m in ce.markets:
                     keywords = self._keyword_cache.get(m.event_ticker, [])
                     new_enriched_list.append({

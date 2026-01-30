@@ -14,7 +14,7 @@ Key transformation rules:
 - WIN/CONFIRM/NOMINEE: Preserve sentiment direction
 
 The agent:
-1. Listens for new reddit_entities AND news_entities via Supabase Realtime
+1. Listens for new reddit_entities AND news_entities via Supabase Realtime (sole data path)
 2. Normalizes news_entities fields to common format via adapter
 3. Looks up entity → market mappings from EntityMarketIndex
 4. Applies transformation rules based on market type
@@ -275,11 +275,7 @@ class PriceImpactAgent(BaseAgent):
         # Start Realtime subscription
         self._subscription_task = asyncio.create_task(self._subscription_loop())
 
-        # Note: Event bus uses typed events (EventType enum), so we rely on
-        # direct PriceImpactStore ingestion from RedditEntityAgent instead
-        # of event bus subscription for cross-agent communication
-
-        logger.info("[price_impact] Started listening for entity signals")
+        logger.info("[price_impact] Started listening for entity signals via Supabase Realtime")
 
     async def _on_stop(self) -> None:
         """Cleanup resources on agent stop."""
@@ -666,13 +662,6 @@ Guidelines:
             asyncio.create_task(self._process_entity_record(record))
         except Exception as e:
             logger.error(f"[price_impact] Handle news insert error: {e}")
-
-    async def _handle_event_bus_signal(self, data: Dict[str, Any]) -> None:
-        """Handle entity signal from event bus (from RedditEntityAgent)."""
-        try:
-            await self._process_entity_record(data)
-        except Exception as e:
-            logger.error(f"[price_impact] Event bus signal error: {e}")
 
     async def _process_entity_record(self, record: Dict[str, Any]) -> None:
         """

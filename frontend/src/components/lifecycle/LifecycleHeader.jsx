@@ -2,12 +2,11 @@ import React from 'react';
 import { Link, useLocation } from 'react-router-dom';
 
 /**
- * NavTabs - Navigation between Trader, Events, and Discovery views
+ * NavTabs - Navigation between Trader and Discovery views
  */
 const NavTabs = () => {
   const location = useLocation();
   const isTrader = location.pathname === '/v3' || location.pathname === '/v3-trader';
-  const isEvents = location.pathname === '/v3-trader/events';
   const isDiscovery = location.pathname.includes('lifecycle');
 
   return (
@@ -21,16 +20,6 @@ const NavTabs = () => {
         }`}
       >
         Trader
-      </Link>
-      <Link
-        to="/v3-trader/events"
-        className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
-          isEvents
-            ? 'bg-emerald-500/30 text-emerald-300'
-            : 'text-gray-400 hover:text-white hover:bg-gray-700/50'
-        }`}
-      >
-        Events
       </Link>
       <Link
         to="/lifecycle"

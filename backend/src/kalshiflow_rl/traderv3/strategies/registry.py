@@ -87,19 +87,12 @@ class StrategyRegistry:
                 ...
         """
         def decorator(strategy_cls: Type[Strategy]) -> Type[Strategy]:
-            # Validate the class has required attributes
-            if not hasattr(strategy_cls, 'name'):
-                raise ValueError(
-                    f"Strategy class {strategy_cls.__name__} missing required 'name' attribute"
-                )
-            if not hasattr(strategy_cls, 'display_name'):
-                raise ValueError(
-                    f"Strategy class {strategy_cls.__name__} missing required 'display_name' attribute"
-                )
-            if not hasattr(strategy_cls, 'subscribed_events'):
-                raise ValueError(
-                    f"Strategy class {strategy_cls.__name__} missing required 'subscribed_events' attribute"
-                )
+            # Validate required class attributes
+            for attr_name in ('name', 'display_name', 'subscribed_events'):
+                if not hasattr(strategy_cls, attr_name):
+                    raise ValueError(
+                        f"Strategy class {strategy_cls.__name__} missing required '{attr_name}' attribute"
+                    )
 
             # Validate required methods exist
             required_methods = ['start', 'stop', 'is_healthy', 'get_stats']

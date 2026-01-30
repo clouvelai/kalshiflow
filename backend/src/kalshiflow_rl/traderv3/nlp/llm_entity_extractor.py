@@ -37,7 +37,7 @@ Body: "{body}"
 Return a JSON array. Each element:
 {{
   "name": "canonical name",
-  "type": "PERSON|ORG|GPE|EVENT|POLICY|NORP",
+  "type": "PERSON|ORG|GPE|EVENT|POLICY|NORP|OUTCOME",
   "sentiment": -100 to +100,
   "confidence": "low|medium|high",
   "context": "1-2 sentence summary of what the post says about this entity"
@@ -52,6 +52,7 @@ Rules:
 - Sentiment: Is the news good or bad for this entity? (-100 = catastrophic, +100 = triumph)
 - Confidence: how clearly is sentiment expressed? (low = ambiguous, medium = clear direction, high = unambiguous)
 - Context: What does the post say about this entity specifically? Be factual and concise.
+- OUTCOME: Use for prediction market outcome options (e.g., "More than 25 days", "Shut down", "Above 2.0%", numerical thresholds, survey answers). These are NOT people or organizations.
 
 If no named entities are found, return an empty array: []"""
 
@@ -69,7 +70,7 @@ ACTIVE KALSHI MARKETS (ticker | title | keywords):
 Return a JSON array. Each element:
 {{
   "name": "canonical name",
-  "type": "PERSON|ORG|GPE|EVENT|POLICY|NORP",
+  "type": "PERSON|ORG|GPE|EVENT|POLICY|NORP|OUTCOME",
   "sentiment": -100 to +100,
   "confidence": "low|medium|high",
   "market_tickers": ["TICKER1", "TICKER2"],
@@ -87,6 +88,7 @@ Rules:
 - An entity can match zero, one, or multiple markets
 - Only include tickers you are confident about - precision over recall
 - Context: What does the post say about this entity specifically? Be factual and concise.
+- OUTCOME: Use for prediction market outcome options (e.g., "More than 25 days", "Shut down", "Above 2.0%", numerical thresholds, survey answers). These are NOT people or organizations.
 - If no named entities found, return: []"""
 
 
