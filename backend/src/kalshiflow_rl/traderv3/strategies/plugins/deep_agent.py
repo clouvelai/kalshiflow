@@ -258,8 +258,6 @@ class DeepAgentStrategy:
                 config.cycle_interval_seconds = params["cycle_interval_seconds"]
             if "max_trades_per_cycle" in params:
                 config.max_trades_per_cycle = params["max_trades_per_cycle"]
-            if "max_positions" in params:
-                config.max_positions = params["max_positions"]
 
             # Target events
             if "target_events" in params:

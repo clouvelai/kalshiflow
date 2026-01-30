@@ -27,6 +27,7 @@ from anthropic import AsyncAnthropic
 from .tools import DeepAgentTools, set_global_tools
 from .reflection import ReflectionEngine, PendingTrade, ReflectionResult
 from .prompts import build_system_prompt
+from .signal_tracker import SignalEvaluationTracker
 
 if TYPE_CHECKING:
     from ..core.websocket_manager import V3WebSocketManager
@@ -44,12 +45,11 @@ class DeepAgentConfig:
     # Model settings
     model: str = "claude-sonnet-4-20250514"
     temperature: float = 0.7
-    max_tokens: int = 4096
+    max_tokens: int = 2048
 
     # Loop settings
-    cycle_interval_seconds: float = 60.0  # How often to run observe-act cycle
+    cycle_interval_seconds: float = 180.0  # How often to run observe-act cycle (3 minutes)
     max_trades_per_cycle: int = 3
-    max_positions: int = 5
 
     # Memory settings
     memory_dir: Optional[str] = None  # Defaults to ./memory
@@ -64,7 +64,8 @@ class DeepAgentConfig:
     target_events: List[str] = field(default_factory=list)
 
     # Safety settings
-    max_contracts_per_trade: int = 25
+    max_contracts_per_trade: int = 100  # Hard cap per single trade
+    max_event_exposure_cents: int = 10000  # $100 per-event dollar exposure cap
     min_spread_cents: int = 3  # Only trade if spread > this (inefficiency)
     require_fresh_news: bool = True
     max_news_age_hours: float = 2.0
@@ -74,6 +75,9 @@ class DeepAgentConfig:
     circuit_breaker_threshold: int = 3  # Failures before blacklisting
     circuit_breaker_window_seconds: float = 3600.0  # 1 hour window for failures
     circuit_breaker_cooldown_seconds: float = 1800.0  # 30 min blacklist duration
+
+    # Signal lifecycle settings
+    max_eval_cycles_per_signal: int = 3  # Max evaluations before auto-expire
 
     # Prompt settings (experimental)
     include_enders_game: bool = True  # Toggle Ender's Game framing for A/B testing
@@ -125,6 +129,11 @@ class SelfImprovingAgent:
         else:
             self._memory_dir = Path(__file__).parent / "memory"
 
+        # Initialize signal lifecycle tracker
+        self._signal_tracker = SignalEvaluationTracker(
+            max_eval_cycles=self._config.max_eval_cycles_per_signal,
+        )
+
         # Initialize tools
         self._tools = DeepAgentTools(
             trading_client=trading_client,
@@ -133,6 +142,7 @@ class SelfImprovingAgent:
             memory_dir=self._memory_dir,
             tracked_markets=tracked_markets,
             event_position_tracker=event_position_tracker,
+            signal_tracker=self._signal_tracker,
         )
         set_global_tools(self._tools)
 
@@ -163,7 +173,7 @@ class SelfImprovingAgent:
 
         # Conversation history for context
         self._conversation_history: List[Dict[str, Any]] = []
-        self._max_history_length = 40
+        self._max_history_length = 12  # ~2 cycles of history (saves tokens)
 
         # Background task
         self._cycle_task: Optional[asyncio.Task] = None
@@ -263,7 +273,7 @@ class SelfImprovingAgent:
             },
             {
                 "name": "trade",
-                "description": "Execute a trade. Only use when you have identified edge.",
+                "description": "Execute a trade. Choose execution_strategy based on signal quality: aggressive for STRONG signals (crosses spread, fastest fill), moderate for MODERATE signals (midpoint pricing, saves spread), passive for speculative entries (near bid, cheapest but may not fill).",
                 "input_schema": {
                     "type": "object",
                     "properties": {
@@ -283,6 +293,15 @@ class SelfImprovingAgent:
                         "reasoning": {
                             "type": "string",
                             "description": "Your reasoning for this trade (stored for reflection)"
+                        },
+                        "execution_strategy": {
+                            "type": "string",
+                            "enum": ["aggressive", "moderate", "passive"],
+                            "description": "Order pricing strategy. aggressive=cross spread (immediate fill, highest cost). moderate=midpoint+1c (saves ~half the spread, good fill probability). passive=near bid+1c (cheapest entry, may not fill). Default: aggressive."
+                        },
+                        "signal_id": {
+                            "type": "string",
+                            "description": "The signal_id of the price impact being traded on (from get_price_impacts). Always include this."
                         }
                     },
                     "required": ["ticker", "side", "contracts", "reasoning"]
@@ -373,9 +392,40 @@ class SelfImprovingAgent:
                         "reflection": {
                             "type": "string",
                             "description": "Optional: Any additional reasoning or notes for future learning"
+                        },
+                        "signal_id": {
+                            "type": "string",
+                            "description": "The signal_id of the price impact being evaluated (from get_price_impacts). Always include this."
                         }
                     },
                     "required": ["signal_analysis", "strategy_check", "risk_assessment", "decision"]
+                }
+            },
+            {
+                "name": "assess_trade_opportunity",
+                "description": "Quantitative edge and risk/reward assessment. Call AFTER get_price_impacts() with signal data. Returns: expected edge (cents), signal-implied fair price, priced-in verdict (with 24h candlestick history when available), risk/reward ratio, and overall trade quality (STRONG/MODERATE/WEAK/AVOID). Includes current bid/ask so you can skip a separate get_markets() call.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "market_ticker": {
+                            "type": "string",
+                            "description": "Market ticker to assess (e.g., 'KXGOVSHUT-26JAN31')"
+                        },
+                        "signal_impact_score": {
+                            "type": "integer",
+                            "description": "Price impact score from get_price_impacts() (-75 to +75)"
+                        },
+                        "signal_confidence": {
+                            "type": "number",
+                            "description": "Signal confidence from get_price_impacts() (0.5, 0.7, or 0.9)"
+                        },
+                        "suggested_side": {
+                            "type": "string",
+                            "enum": ["yes", "no"],
+                            "description": "Suggested side from get_price_impacts()"
+                        }
+                    },
+                    "required": ["market_ticker", "signal_impact_score", "signal_confidence", "suggested_side"]
                 }
             },
             {
@@ -754,15 +804,19 @@ Trade-by-trade insights are recorded here.
             "strategy.md": """# Trading Strategy
 
 ## Entry Rules
-- Trade when |impact| >= 40, confidence >= 0.7, gap > 5c
+- Use assess_trade_opportunity() as your quantitative backbone — it returns STRONG/MODERATE/WEAK/AVOID
+- Develop specific entry criteria through experience and record them here
+- Every trade is data: track what works, discard what doesn't
 
 ## Position Sizing
-- Strong signals (+75): 25 contracts
-- Moderate signals (+40): 15 contracts
+- **$100 max exposure per event** (cost = contracts x price_in_cents / 100)
+- Scale contracts based on conviction: stronger signal + higher confidence = larger position
+- Always calculate dollar cost before placing a trade
 
 ## Risk Rules
-- Max 5 positions
-- Check event context before correlated trades
+- Check event context before correlated trades (get_event_context)
+- Never exceed $100 total cost basis on any single event
+- Watch for mutual exclusivity risk in multi-candidate events
 
 ## Exit Rules
 - (Develop through experience)
@@ -835,8 +889,29 @@ Successful patterns go here.
                 "timestamp": time.strftime("%H:%M:%S"),
             })
 
-        # Build context message for this cycle
-        context = await self._build_cycle_context()
+        # PRE-CHECK: Are there actionable signals? (cheap Supabase query, ~50ms, zero API tokens)
+        pre_fetched_signals = await self._tools.get_price_impacts(
+            min_confidence=0.5, min_impact_magnitude=30, limit=20
+        )
+
+        # Also check if we have open positions to monitor (always run cycle if positions exist)
+        has_positions = (
+            self._state_container
+            and self._state_container.get_trading_summary().get("position_count", 0) > 0
+        )
+
+        if not pre_fetched_signals and not has_positions:
+            logger.info(f"[deep_agent.agent] Cycle {self._cycle_count}: No signals, no positions - skipping Claude call")
+            if self._ws_manager:
+                await self._ws_manager.broadcast_message("deep_agent_cycle", {
+                    "cycle": self._cycle_count,
+                    "phase": "skipped_no_signals",
+                    "timestamp": time.strftime("%H:%M:%S"),
+                })
+            return
+
+        # Signals exist OR we have positions to manage — run full cycle
+        context = await self._build_cycle_context(pre_fetched_signals=pre_fetched_signals)
 
         try:
             # Run the agent with streaming
@@ -852,7 +927,28 @@ Successful patterns go here.
                     "timestamp": time.strftime("%H:%M:%S"),
                 })
 
-    async def _build_cycle_context(self) -> str:
+        # Compact history between cycles to save tokens on next call
+        self._compact_history_between_cycles()
+
+    def _compact_history_between_cycles(self):
+        """Compact tool results between cycles to save tokens.
+
+        Replaces large JSON tool results with truncated summaries.
+        Preserves assistant reasoning text and tool call names/inputs.
+        """
+        for msg in self._conversation_history:
+            if msg.get("role") != "user":
+                continue
+            content = msg.get("content", [])
+            if not isinstance(content, list):
+                continue
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "tool_result":
+                    result_text = block.get("content", "")
+                    if isinstance(result_text, str) and len(result_text) > 500:
+                        block["content"] = result_text[:200] + "... [compacted for efficiency]"
+
+    async def _build_cycle_context(self, pre_fetched_signals=None) -> str:
         """Build the context message for a cycle."""
         # Get current session state
         session_state = await self._tools.get_session_state()
@@ -921,14 +1017,112 @@ Successful patterns go here.
         except Exception as e:
             logger.debug(f"[deep_agent.agent] Could not load patterns: {e}")
 
-        # Build performance scorecard from reflection engine
+        # Build open positions mark-to-market section (deep_agent positions only)
+        # Use pending trades as source of truth for which positions belong to this agent,
+        # then pull position-level P&L from state_container's positions_details.
+        open_positions_str = ""
+        agent_tickers = {
+            trade.ticker for trade in self._reflection._pending_trades.values()
+        }
+        if agent_tickers and self._state_container:
+            try:
+                summary = self._state_container.get_trading_summary()
+                all_positions = summary.get("positions_details", [])
+                agent_positions = [
+                    p for p in all_positions
+                    if p.get("ticker") in agent_tickers
+                ]
+
+                if agent_positions:
+                    # Sort by absolute unrealized P&L (largest impact first)
+                    agent_positions.sort(
+                        key=lambda p: abs(p.get("unrealized_pnl", 0)),
+                        reverse=True,
+                    )
+
+                    pos_lines = ["### Open Positions (Mark-to-Market)"]
+                    winning = 0
+                    losing = 0
+                    total_unrealized = 0
+
+                    for pos in agent_positions:
+                        ticker = pos.get("ticker", "???")
+                        side = pos.get("side", "?").upper()
+                        qty = abs(pos.get("position", 0))
+                        total_cost = pos.get("total_cost", 0)
+                        cost_per = total_cost // qty if qty > 0 else 0
+                        current_value = pos.get("current_value", 0)
+                        current_per = current_value // qty if qty > 0 else 0
+                        unrealized = pos.get("unrealized_pnl", 0)
+                        total_unrealized += unrealized
+                        pnl_dollars = unrealized / 100
+                        pct_change = (
+                            (unrealized / total_cost) * 100
+                            if total_cost > 0 else 0.0
+                        )
+                        sign = "+" if pnl_dollars >= 0 else ""
+                        pos_lines.append(
+                            f"- {ticker} {side} x{qty} @ {cost_per}c -> now {current_per}c "
+                            f"({sign}${pnl_dollars:.2f}, {sign}{pct_change:.1f}%)"
+                        )
+                        if unrealized >= 0:
+                            winning += 1
+                        else:
+                            losing += 1
+
+                    sign = "+" if total_unrealized >= 0 else ""
+                    pos_lines.append(
+                        f"Unrealized P&L: {sign}${total_unrealized / 100:.2f} across "
+                        f"{len(agent_positions)} position(s) "
+                        f"({winning} winning, {losing} losing)"
+                    )
+                    open_positions_str = "\n" + "\n".join(pos_lines) + "\n"
+            except Exception as e:
+                logger.debug(f"[deep_agent.agent] Could not build open positions section: {e}")
+
+        # Build performance scorecard every 10 cycles (~30 min at 3-min interval)
         scorecard_str = ""
-        try:
-            scorecard = self._reflection._build_performance_scorecard()
-            if scorecard:
-                scorecard_str = f"\n{scorecard}\n"
-        except Exception as e:
-            logger.debug(f"[deep_agent.agent] Could not build scorecard: {e}")
+        if self._cycle_count % 10 == 0:
+            try:
+                scorecard = self._reflection._build_performance_scorecard()
+                if scorecard:
+                    scorecard_str = f"\n{scorecard}\n"
+            except Exception as e:
+                logger.debug(f"[deep_agent.agent] Could not build scorecard: {e}")
+
+        # Build pre-loaded signals section
+        signals_section = ""
+        if pre_fetched_signals:
+            signals_lines = ["\n### Active Price Impact Signals (pre-loaded)"]
+            for s in pre_fetched_signals:
+                signals_lines.append(
+                    f"- **{s.market_ticker}** | {s.entity_name} | "
+                    f"impact={s.price_impact_score} conf={s.confidence} "
+                    f"side={s.suggested_side} | spread={s.market_spread}c "
+                    f"| signal_id={s.signal_id} | source={s.source_domain or 'reddit'}"
+                )
+            signals_lines.append(
+                "\nSignals above are pre-loaded. Proceed directly to assess_trade_opportunity() for promising ones."
+            )
+            signals_section = "\n".join(signals_lines) + "\n"
+
+            instructions = """### Instructions
+1. **Signals are provided above** — review them for tradeable opportunities
+2. For promising signals, call **assess_trade_opportunity()** to get a calibrated quality rating (STRONG/MODERATE/WEAK/AVOID)
+3. Use the quality rating + your strategy.md criteria to decide: TRADE, WAIT, or PASS
+4. **If you have event exposure above, use get_event_context() to understand risk**
+5. If your criteria are met: think() → trade() — execute decisively
+6. If no actionable signals, PASS and wait for next cycle
+7. You can still call get_price_impacts() to re-query with different filters if needed
+
+**IMPORTANT**: Use assess_trade_opportunity() to evaluate signals quantitatively. Apply your learned criteria from strategy.md — refine them after every trade."""
+        else:
+            signals_section = "\n### No new signals this cycle. Focus on managing existing positions.\n"
+            instructions = """### Instructions
+1. No new signals available — focus on managing existing positions
+2. Check open positions for exit opportunities or risk management
+3. You can call get_price_impacts() to re-query with different filters if needed
+4. If nothing actionable, PASS and wait for next cycle"""
 
         context = f"""
 ## New Trading Cycle - {datetime.now().strftime("%Y-%m-%d %H:%M")}
@@ -940,19 +1134,11 @@ Successful patterns go here.
 - Positions: {session_state.position_count}
 - Trade Count: {session_state.trade_count}
 - Win Rate: {session_state.win_rate:.1%}
-{event_exposure_str}{strategy_excerpt}{memory_context_str}{scorecard_str}
+{event_exposure_str}{open_positions_str}{strategy_excerpt}{memory_context_str}{scorecard_str}{signals_section}
 ### Target Events
 {target_events_str}
 
-### Instructions
-1. **FIRST: Call get_price_impacts()** to see Reddit entity signals (this is your PRIMARY data source)
-2. For signals with |impact| >= 40 and confidence >= 0.7, check market prices with get_markets()
-3. Compare signal direction with market prices - look for price gap > 5c
-4. **If you have event exposure above, use get_event_context() to understand risk**
-5. If edge exists (signal + gap + liquidity): EXECUTE A TRADE
-6. If no actionable signals, PASS and wait for next cycle
-
-**IMPORTANT**: Call get_price_impacts() every cycle. Strong signals (+/-75) with confidence >= 0.7 and gap > 5c = TRADE.
+{instructions}
 """
         return context
 
@@ -980,14 +1166,15 @@ Successful patterns go here.
 
         # Build system prompt using modular architecture
         system = build_system_prompt(
-            max_contracts=self._config.max_contracts_per_trade,
-            max_positions=self._config.max_positions,
             include_enders_game=self._config.include_enders_game,
         )
 
         # Track tool calls for this cycle
         tool_calls_this_cycle = 0
         max_tool_calls = 20  # Safety limit
+
+        # RF-2: Track conversation length at cycle start for mid-cycle trimming
+        cycle_start_msg_idx = len(self._conversation_history)
 
         # === PROMPT CACHING SETUP ===
         # Use Claude's prompt caching to reduce token usage by ~50-60%
@@ -1017,6 +1204,9 @@ Successful patterns go here.
                         system=system_blocks,
                         messages=self._conversation_history,
                         tools=cached_tools,
+                        extra_headers={
+                            "anthropic-beta": "token-efficient-tools-2025-02-19"
+                        },
                     ),
                     timeout=120.0,  # 2 minute timeout
                 )
@@ -1102,7 +1292,7 @@ Successful patterns go here.
 
             # Execute tool calls
             tool_results = []
-            for tool_block in tool_use_blocks:
+            for i, tool_block in enumerate(tool_use_blocks):
                 tool_calls_this_cycle += 1
                 result = await self._execute_tool(tool_block.name, tool_block.input)
 
@@ -1119,17 +1309,48 @@ Successful patterns go here.
                     # Store in history for session persistence
                     self._tool_call_history.append(tool_call_msg)
 
-                tool_results.append({
+                result_block = {
                     "type": "tool_result",
                     "tool_use_id": tool_block.id,
                     "content": json.dumps(result) if isinstance(result, (dict, list)) else str(result),
-                })
+                }
+                # Cache breakpoint on last tool result — enables prefix caching for next API call
+                if i == len(tool_use_blocks) - 1:
+                    result_block["cache_control"] = {"type": "ephemeral"}
+                tool_results.append(result_block)
 
             # Add tool results to conversation
             self._conversation_history.append({
                 "role": "user",
                 "content": tool_results
             })
+
+            # RF-2: Mid-cycle history safeguard — prevent unbounded token growth.
+            # Every 5 tool calls, compact old tool results and hard-trim if needed.
+            if tool_calls_this_cycle > 0 and tool_calls_this_cycle % 5 == 0:
+                # First: shrink large tool result payloads from before this cycle
+                self._compact_history_between_cycles()
+                # Second: hard-trim if message count still exceeds safe limit
+                hard_limit = self._max_history_length + 30  # ~42 messages max
+                if len(self._conversation_history) > hard_limit:
+                    keep_prefix = 2  # Session init messages
+                    # Keep all current-cycle messages + a few pre-cycle messages for context
+                    current_cycle_msgs = self._conversation_history[cycle_start_msg_idx:]
+                    pre_cycle = self._conversation_history[keep_prefix:cycle_start_msg_idx]
+                    keep_pre = pre_cycle[-4:] if len(pre_cycle) > 4 else pre_cycle
+                    dropped = len(pre_cycle) - len(keep_pre)
+                    if dropped > 0:
+                        logger.warning(
+                            f"[deep_agent.agent] Mid-cycle trim: dropped {dropped} "
+                            f"pre-cycle messages (history was {len(self._conversation_history)})"
+                        )
+                    self._conversation_history = (
+                        self._conversation_history[:keep_prefix]
+                        + keep_pre
+                        + current_cycle_msgs
+                    )
+                    # Update cycle start index after trim
+                    cycle_start_msg_idx = keep_prefix + len(keep_pre)
 
             # Check if we should stop (response indicates completion)
             if response.stop_reason == "end_turn":
@@ -1198,6 +1419,7 @@ Successful patterns go here.
                     side=tool_input["side"],
                     contracts=contracts,
                     reasoning=tool_input["reasoning"],
+                    execution_strategy=tool_input.get("execution_strategy", "aggressive"),
                 )
 
                 # === CIRCUIT BREAKER: Record failure if trade failed ===
@@ -1219,6 +1441,17 @@ Successful patterns go here.
                     # (require fresh think for next trade)
                     self._last_think_decision = None
                     self._last_think_timestamp = None
+
+                    # Mark signal as traded in lifecycle tracker
+                    trade_signal_id = tool_input.get("signal_id", "")
+                    if trade_signal_id and self._signal_tracker:
+                        self._signal_tracker.mark_traded(trade_signal_id)
+                        tracked = self._signal_tracker.get_signal_state(trade_signal_id)
+                        if tracked and self._ws_manager:
+                            await self._ws_manager.broadcast_message(
+                                "signal_lifecycle_update",
+                                tracked.to_dict(),
+                            )
 
                     # Get event_ticker from trading client
                     event_ticker = ""
@@ -1305,6 +1538,15 @@ Successful patterns go here.
                 else:
                     return {"error": f"Event {tool_input['event_ticker']} not found or no tracked markets"}
 
+            elif tool_name == "assess_trade_opportunity":
+                assessment = await self._tools.assess_trade_opportunity(
+                    market_ticker=tool_input["market_ticker"],
+                    signal_impact_score=tool_input["signal_impact_score"],
+                    signal_confidence=tool_input["signal_confidence"],
+                    suggested_side=tool_input["suggested_side"],
+                )
+                return assessment.to_dict()
+
             elif tool_name == "think":
                 # REQUIRED pre-trade analysis tool - forces structured reasoning
                 # All 4 fields are required; reflection is optional for additional notes
@@ -1315,6 +1557,7 @@ Successful patterns go here.
                 risk_assessment = tool_input.get("risk_assessment", "")
                 decision = tool_input.get("decision", "")
                 reflection = tool_input.get("reflection", "")  # Optional
+                signal_id = tool_input.get("signal_id", "")  # Optional but encouraged
 
                 # Validate required fields
                 missing = []
@@ -1368,6 +1611,23 @@ Successful patterns go here.
                 # Broadcast to connected WebSocket clients
                 if self._ws_manager:
                     await self._ws_manager.broadcast_message("deep_agent_thinking", thinking_msg)
+
+                # Record evaluation in signal lifecycle tracker
+                if signal_id and self._signal_tracker:
+                    reason_summary = signal_analysis[:100] if signal_analysis else decision
+                    self._signal_tracker.record_evaluation(
+                        signal_id=signal_id,
+                        cycle=self._cycle_count,
+                        decision=decision,
+                        reason=reason_summary,
+                    )
+                    # Broadcast lifecycle update
+                    tracked = self._signal_tracker.get_signal_state(signal_id)
+                    if tracked and self._ws_manager:
+                        await self._ws_manager.broadcast_message(
+                            "signal_lifecycle_update",
+                            tracked.to_dict(),
+                        )
 
                 return {
                     "recorded": True,
@@ -1768,4 +2028,5 @@ Be selective: only add rules with clear evidence from multiple trades.
             "settlements": self._reflection.get_recent_reflections(20),
             "tool_stats": self._tools.get_tool_stats(),
             "token_usage": stats["token_usage"],
+            "signal_lifecycle": self._signal_tracker.get_all_states(),
         }

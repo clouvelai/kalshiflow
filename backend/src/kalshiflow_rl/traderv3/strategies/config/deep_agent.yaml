@@ -9,20 +9,22 @@ params:
   # Model settings
   model: "claude-sonnet-4-20250514"  # or claude-3-opus-20240229 for better reasoning
   temperature: 0.7
-  max_tokens: 4096
+  max_tokens: 2048
 
   # Loop settings
-  cycle_interval_seconds: 60  # How often to run observe-act cycle
+  cycle_interval_seconds: 180  # How often to run observe-act cycle (3 minutes)
   max_trades_per_cycle: 3     # Max trades per cycle
-  max_positions: 5            # Max concurrent positions
 
   # Target events (empty = all available markets with price impact signals)
   target_events: []  # Empty = trade on ANY event with Reddit-derived signals
   # Restricted example: target_events: ["KXPRESNOMD", "KXNEXTSPEAKER"]
 
+  # Signal lifecycle settings
+  max_eval_cycles_per_signal: 3  # Max evaluations per signal before auto-expire
+
   # Safety settings
-  max_contracts_per_trade: 25
-  min_spread_cents: 3         # Only trade if spread > this
+  max_contracts_per_trade: 500  # Safety cap only; real sizing is $100/event in strategy.md
+  min_spread_cents: 3           # Only trade if spread > this
   require_fresh_news: true
   max_news_age_hours: 2.0
 

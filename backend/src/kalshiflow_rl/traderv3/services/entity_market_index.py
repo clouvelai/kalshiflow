@@ -21,6 +21,7 @@ import logging
 import os
 import re
 import time
+from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set, Tuple, TYPE_CHECKING
 
@@ -208,13 +209,16 @@ def detect_entity_type(canonical_name: str, event_title: str = "", market_ticker
     """
     Detect entity type from name and market context.
 
+    Note: This is a fallback heuristic. The primary classification path uses
+    LLM-based _classify_event() which is context-aware.
+
     Args:
         canonical_name: The canonical entity name
         event_title: Optional event title for context
         market_ticker: Optional market ticker for context
 
     Returns:
-        Entity type: "person", "organization", or "position"
+        Entity type: "person", "organization", "position", or "outcome"
     """
     name_lower = canonical_name.lower()
     combined_context = f"{event_title} {market_ticker}".lower()
@@ -355,6 +359,10 @@ class EntityMarketIndex:
         # Reverse ticker index: market_ticker -> (entity_id, MarketMapping)
         self._ticker_to_entity: Dict[str, Tuple[str, MarketMapping]] = {}
 
+        # Event entity cache: event_ticker -> {"canonical_name": str, "entity_type": str} or None
+        # Caches LLM-extracted entities from event titles for outcome-market events
+        self._event_entity_cache: Dict[str, Optional[Dict[str, str]]] = {}
+
         # Enriched market list (built once per refresh, not per-post)
         self._enriched_market_list: List[Dict[str, str]] = []
         self._enriched_market_prompt: str = ""
@@ -383,6 +391,7 @@ class EntityMarketIndex:
         # Load cached data from Supabase before building
         await self._load_cached_aliases()
         await self._load_cached_keywords()
+        await self._load_cached_event_entities()
 
         await self._refresh_index()
         logger.info(
@@ -408,6 +417,9 @@ class EntityMarketIndex:
 
         # Load cached event keywords from Supabase
         await self._load_cached_keywords()
+
+        # Load cached event entities from Supabase
+        await self._load_cached_event_entities()
 
         # Initial build
         await self._refresh_index()
@@ -637,6 +649,254 @@ Generate 5-10 keywords maximum."""
             return []
 
     # =========================================================================
+    # Event Entity Extraction (LLM-based, for outcome-market events)
+    # =========================================================================
+
+    async def _load_cached_event_entities(self) -> None:
+        """Load cached event classifications from Supabase into memory cache."""
+        try:
+            supabase = self._get_supabase_client()
+            if not supabase:
+                logger.debug("[entity_index] No Supabase client for event entity cache")
+                return
+
+            response = supabase.table("entity_event_entities").select("*").execute()
+            if response.data:
+                for row in response.data:
+                    event_ticker = row.get("event_ticker")
+                    if not event_ticker:
+                        continue
+
+                    classifications = row.get("classifications") or {}
+                    canonical_name = row.get("canonical_name")
+
+                    # Build the full classification result
+                    event_entity = None
+                    if canonical_name:
+                        event_entity = {
+                            "name": canonical_name,
+                            "type": row.get("entity_type", "person"),
+                        }
+
+                    self._event_entity_cache[event_ticker] = {
+                        "event_entity": event_entity,
+                        "classifications": classifications,
+                    }
+
+                logger.info(
+                    f"[entity_index] Loaded {len(self._event_entity_cache)} events "
+                    f"with cached classifications"
+                )
+        except Exception as e:
+            if "entity_event_entities" not in str(e):
+                logger.debug(f"[entity_index] Event entity cache load: {e}")
+
+    async def _save_event_classification_to_cache(
+        self,
+        event_ticker: str,
+        event_title: str,
+        classification: Dict[str, Any],
+    ) -> None:
+        """Save an event classification to Supabase for persistence."""
+        try:
+            supabase = self._get_supabase_client()
+            if not supabase:
+                return
+
+            event_entity = classification.get("event_entity")
+            supabase.table("entity_event_entities").upsert({
+                "event_ticker": event_ticker,
+                "event_title": event_title,
+                "canonical_name": event_entity["name"] if event_entity else None,
+                "entity_type": event_entity["type"] if event_entity else "person",
+                "classifications": classification.get("classifications", {}),
+                "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            }, on_conflict="event_ticker").execute()
+
+        except Exception as e:
+            logger.debug(f"[entity_index] Event classification cache save error: {e}")
+
+    async def _classify_event(
+        self,
+        event_ticker: str,
+        event_title: str,
+        event_subtitle: str,
+        yes_sub_titles: List[str],
+        category: str = "",
+    ) -> Dict[str, Any]:
+        """
+        Classify an entire event using LLM: type each yes_sub_title + generate aliases.
+
+        One LLM call per event that:
+        1. Classifies each yes_sub_title as person/organization/outcome
+        2. Generates 3-8 search aliases per entity
+        3. Extracts event-level entity if any (e.g., "Donald Trump" from tariff event)
+
+        Results are cached in Supabase per event_ticker.
+
+        Args:
+            event_ticker: Event ticker (e.g., "KXGOVSHUT")
+            event_title: Event title text
+            event_subtitle: Event subtitle text
+            yes_sub_titles: List of yes_sub_title values from all markets in the event
+            category: Event category (e.g., "Politics")
+
+        Returns:
+            {
+                "event_entity": {"name": "Donald Trump", "type": "person"} or None,
+                "classifications": {
+                    "Wind": {"type": "outcome", "aliases": ["wind energy", ...]},
+                    "Kamala Harris": {"type": "person", "aliases": ["VP Harris", ...]},
+                }
+            }
+        """
+        # Check in-memory cache first
+        if event_ticker in self._event_entity_cache:
+            return self._event_entity_cache[event_ticker]
+
+        try:
+            client = self._get_llm_client()
+
+            yst_list = "\n".join(f'- "{yst}"' for yst in yes_sub_titles)
+
+            prompt = f"""You are classifying prediction market entities. Given an event and its outcomes, classify each outcome and generate search aliases.
+
+Event title: "{event_title}"
+{f'Subtitle: "{event_subtitle}"' if event_subtitle else ''}
+Category: {category or "General"}
+
+Outcomes (yes_sub_titles):
+{yst_list}
+
+For EACH outcome, determine:
+1. **type**: "person", "organization", or "outcome"
+   - "person": Real human names (e.g., "Kamala Harris", "Pam Bondi")
+   - "organization": Organizations, agencies, parties (when used as entity names)
+   - "outcome": Everything else - numeric thresholds ("Above 2.0%"), generic values ("Shut down"), categories ("Wind", "Republican"), dates, etc.
+
+2. **aliases**: 3-8 lowercase search terms someone might use when discussing this entity/outcome on Reddit or news
+   - For persons: nicknames, abbreviations, titles (e.g., "AOC", "VP Harris", "governor newsom")
+   - For organizations: acronyms, short forms (e.g., "WHO", "world health org")
+   - For outcomes: contextual search terms (e.g., "government shutdown" for "Shut down", "wind energy" for "Wind")
+   - Do NOT include the exact original text as an alias
+
+3. **event_entity**: If the event title references a specific real-world entity (person or organization) that ALL outcomes relate to, extract it. Otherwise null.
+   - Example: "How many executive orders will Trump sign?" → {{"name": "Donald Trump", "type": "person"}}
+   - Example: "Government shutdown?" → null (no specific entity)
+   - Example: "What will be the largest energy source?" → null (no specific entity)
+
+Return ONLY valid JSON (no markdown):
+{{
+  "event_entity": {{"name": "Full Name", "type": "person"}} or null,
+  "classifications": {{
+    "outcome_text": {{"type": "person|organization|outcome", "aliases": ["alias1", "alias2"]}}
+  }}
+}}"""
+
+            response = await client.chat.completions.create(
+                model=self._llm_alias_model,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=800,
+                temperature=0.1,
+            )
+
+            content = response.choices[0].message.content.strip()
+            # Handle markdown code blocks
+            if content.startswith("```"):
+                content = content.split("```")[1]
+                if content.startswith("json"):
+                    content = content[4:]
+            content = content.strip()
+
+            result = json.loads(content)
+
+            # Validate and normalize the result
+            if not isinstance(result, dict):
+                result = {"event_entity": None, "classifications": {}}
+
+            # Normalize event_entity
+            event_entity = result.get("event_entity")
+            if event_entity and isinstance(event_entity, dict):
+                if not event_entity.get("name"):
+                    event_entity = None
+                else:
+                    event_entity = {
+                        "name": event_entity["name"].strip(),
+                        "type": event_entity.get("type", "person"),
+                    }
+            else:
+                event_entity = None
+            result["event_entity"] = event_entity
+
+            # Normalize classifications
+            classifications = result.get("classifications", {})
+            normalized_cls = {}
+            for yst in yes_sub_titles:
+                cls = classifications.get(yst, {})
+                if not isinstance(cls, dict):
+                    cls = {}
+                entity_type = cls.get("type", "person")
+                if entity_type not in ("person", "organization", "outcome"):
+                    entity_type = "person"
+                raw_aliases = cls.get("aliases", [])
+                if not isinstance(raw_aliases, list):
+                    raw_aliases = []
+                aliases = [a.lower().strip() for a in raw_aliases if isinstance(a, str) and a.strip()]
+                normalized_cls[yst] = {"type": entity_type, "aliases": aliases}
+            result["classifications"] = normalized_cls
+
+            # Cache in memory and Supabase
+            self._event_entity_cache[event_ticker] = result
+            await self._save_event_classification_to_cache(
+                event_ticker, event_title, result
+            )
+
+            # Log summary
+            type_counts: Dict[str, int] = defaultdict(int)
+            total_aliases = 0
+            for cls in normalized_cls.values():
+                type_counts[cls["type"]] += 1
+                total_aliases += len(cls["aliases"])
+
+            logger.info(
+                f"[entity_index] Classified event '{event_ticker}': "
+                f"entity={event_entity['name'] if event_entity else 'None'}, "
+                f"{type_counts.get('person', 0)} person, "
+                f"{type_counts.get('outcome', 0)} outcome, "
+                f"{type_counts.get('organization', 0)} org, "
+                f"{total_aliases} aliases"
+            )
+
+            return result
+
+        except json.JSONDecodeError as e:
+            logger.warning(
+                f"[entity_index] Event classification parse error for '{event_ticker}': {e}"
+            )
+            # Return safe default — treat all as person with no aliases
+            fallback = {
+                "event_entity": None,
+                "classifications": {
+                    yst: {"type": "person", "aliases": []} for yst in yes_sub_titles
+                },
+            }
+            self._event_entity_cache[event_ticker] = fallback
+            return fallback
+        except Exception as e:
+            logger.warning(
+                f"[entity_index] Event classification error for '{event_ticker}': {e}"
+            )
+            # Return safe default
+            fallback = {
+                "event_entity": None,
+                "classifications": {
+                    yst: {"type": "person", "aliases": []} for yst in yes_sub_titles
+                },
+            }
+            self._event_entity_cache[event_ticker] = fallback
+            return fallback
+
+    # =========================================================================
     # LLM Alias Generation
     # =========================================================================
 
@@ -791,6 +1051,121 @@ Generate 3-8 aliases maximum."""
 
         return extra_aliases
 
+    def _create_entity_entry(
+        self,
+        canonical_name: str,
+        entity_type: str,
+        mapping: MarketMapping,
+        event_title: str,
+        event_subtitle: str,
+        current_time: float,
+        new_index: Dict[str, EntityMarketEntry],
+        new_canonical_entities: Dict[str, CanonicalEntity],
+        new_reverse_index: Dict[str, List[str]],
+        new_name_variations: Dict[str, str],
+        new_alias_lookup: Dict[str, str],
+        new_ticker_to_entity: Dict[str, Tuple[str, MarketMapping]],
+        llm_aliases: Optional[Set[str]] = None,
+    ) -> str:
+        """
+        Create or update an entity entry across all index dicts.
+
+        This is the shared code path for all entity types (person, org, outcome).
+        LLM aliases are provided from _classify_event() results.
+
+        Args:
+            canonical_name: Entity display name
+            entity_type: "person", "organization", "position", or "outcome"
+            mapping: MarketMapping for this market
+            event_title: Event title text (for alias extraction)
+            event_subtitle: Event subtitle text
+            current_time: Current timestamp
+            new_index: Legacy index dict to populate
+            new_canonical_entities: Canonical entities dict to populate
+            new_reverse_index: Reverse index dict to populate
+            new_name_variations: Name variations dict to populate
+            new_alias_lookup: Alias lookup dict to populate
+            new_ticker_to_entity: Ticker-to-entity dict to populate
+            llm_aliases: LLM-generated aliases from _classify_event()
+
+        Returns:
+            The entity_id of the created/updated entity
+        """
+        entity_id = normalize_entity_id(canonical_name)
+        market_ticker = mapping.market_ticker
+
+        # Merge LLM aliases from classify_event + any cached entity-level aliases
+        merged_llm_aliases = set(llm_aliases or set())
+        cached_aliases = self._llm_alias_cache.get(entity_id, set())
+        if cached_aliases:
+            merged_llm_aliases.update(cached_aliases)
+
+        # Build comprehensive aliases (includes name parts, initials, LLM aliases)
+        aliases = build_aliases(canonical_name, entity_type, merged_llm_aliases)
+
+        # Extract additional aliases from event title/subtitle
+        extra_aliases = self._extract_aliases_from_text(
+            event_title, event_subtitle, canonical_name
+        )
+        aliases.update(extra_aliases)
+
+        # Add to legacy index
+        if entity_id not in new_index:
+            new_index[entity_id] = EntityMarketEntry(
+                entity_id=entity_id,
+                canonical_name=canonical_name,
+                markets=[mapping],
+                last_updated=current_time,
+            )
+        else:
+            existing_tickers = {
+                m.market_ticker for m in new_index[entity_id].markets
+            }
+            if market_ticker not in existing_tickers:
+                new_index[entity_id].markets.append(mapping)
+
+        # Add to CanonicalEntity index
+        if entity_id not in new_canonical_entities:
+            new_canonical_entities[entity_id] = CanonicalEntity(
+                entity_id=entity_id,
+                canonical_name=canonical_name,
+                entity_type=entity_type,
+                aliases=aliases,
+                markets=[mapping],
+                created_at=current_time,
+                last_seen_at=current_time,
+                llm_aliases=merged_llm_aliases,
+            )
+        else:
+            existing = new_canonical_entities[entity_id]
+            existing.aliases.update(aliases)
+            existing.llm_aliases.update(merged_llm_aliases)
+            existing.last_seen_at = current_time
+            existing_tickers = {m.market_ticker for m in existing.markets}
+            if market_ticker not in existing_tickers:
+                existing.markets.append(mapping)
+
+        # Build reverse index
+        if market_ticker not in new_reverse_index:
+            new_reverse_index[market_ticker] = []
+        if entity_id not in new_reverse_index[market_ticker]:
+            new_reverse_index[market_ticker].append(entity_id)
+
+        # Build name variations (legacy)
+        for variation in aliases:
+            new_name_variations[variation] = entity_id
+
+        # Build comprehensive alias lookup
+        for alias in aliases:
+            new_alias_lookup[alias.lower()] = entity_id
+
+        # Build reverse ticker -> entity index
+        # For outcome entities, only set if not already set by a real entity
+        if entity_type != "outcome" or market_ticker not in new_ticker_to_entity:
+            new_ticker_to_entity[market_ticker] = (entity_id, mapping)
+
+        return entity_id
+
     async def _refresh_loop(self) -> None:
         """Periodically refresh the index."""
         while self._running:
@@ -804,7 +1179,14 @@ Generate 3-8 aliases maximum."""
                 await asyncio.sleep(30.0)  # Brief pause on error
 
     async def _refresh_index(self) -> None:
-        """Refresh the entity-market index from Kalshi API using category-based discovery."""
+        """
+        Refresh the entity-market index from Kalshi API using category-based discovery.
+
+        Uses event-level grouping to properly distinguish:
+        - Person-market events: yes_sub_titles are entity names (e.g., "Pam Bondi")
+        - Outcome-market events: yes_sub_titles are outcome descriptions (e.g., "Above 2.0%")
+          For these, LLM extracts the real entity from the event title.
+        """
         if not self._trading_client:
             logger.warning("[entity_index] No trading client available")
             return
@@ -837,18 +1219,13 @@ Generate 3-8 aliases maximum."""
             current_time = time.time()
             markets_processed = 0
 
+            # ================================================================
+            # Phase A: Group markets by event_ticker
+            # ================================================================
+            event_groups: Dict[str, List[Dict]] = defaultdict(list)
             for market in markets:
                 market_ticker = market.get("ticker", "")
                 yes_sub_title = market.get("yes_sub_title", "")
-                event_ticker = market.get("event_ticker", "")
-                # Use event-level title/subtitle (propagated from get_open_markets)
-                # Fall back to market-level title/subtitle
-                event_title = (
-                    market.get("event_title", "")
-                    or market.get("title", "")
-                    or market.get("subtitle", "")
-                )
-                event_subtitle = market.get("event_subtitle", "")
 
                 if not yes_sub_title or not market_ticker:
                     continue
@@ -860,94 +1237,172 @@ Generate 3-8 aliases maximum."""
                 ):
                     continue
 
-                markets_processed += 1
+                event_ticker = market.get("event_ticker", "") or market_ticker
+                event_groups[event_ticker].append(market)
 
-                # Detect market type
-                market_type = detect_market_type(event_title, market_ticker)
+            # ================================================================
+            # Phase B: Classify events via LLM (cached per event_ticker)
+            # ================================================================
+            # Collect events that need LLM classification (not in cache)
+            events_needing_classification: List[Dict[str, Any]] = []
 
-                # Create entity from yes_sub_title
-                entity_id = normalize_entity_id(yes_sub_title)
+            for event_ticker, group_markets in event_groups.items():
+                if event_ticker in self._event_entity_cache:
+                    continue  # Already cached
 
-                # Detect entity type from context
-                entity_type = detect_entity_type(yes_sub_title, event_title, market_ticker)
-
-                # Create mapping
-                mapping = MarketMapping(
-                    market_ticker=market_ticker,
-                    event_ticker=event_ticker,
-                    market_type=market_type,
-                    yes_sub_title=yes_sub_title,
-                    confidence=0.9 if market_type != "UNKNOWN" else 0.7,
+                first_market = group_markets[0]
+                event_title = (
+                    first_market.get("event_title", "")
+                    or first_market.get("title", "")
+                    or first_market.get("subtitle", "")
                 )
+                event_subtitle = first_market.get("event_subtitle", "")
+                category = first_market.get("category", "")
+                yes_sub_titles = [
+                    m.get("yes_sub_title", "") for m in group_markets
+                    if m.get("yes_sub_title", "")
+                ]
 
-                # Get LLM-generated aliases (from cache or generate new)
-                # Note: This uses cached aliases if available, generates async if not
-                llm_aliases = self._llm_alias_cache.get(entity_id, set())
+                if yes_sub_titles:
+                    events_needing_classification.append({
+                        "event_ticker": event_ticker,
+                        "event_title": event_title,
+                        "event_subtitle": event_subtitle,
+                        "category": category,
+                        "yes_sub_titles": yes_sub_titles,
+                    })
 
-                # Build comprehensive aliases with LLM aliases included
-                aliases = build_aliases(yes_sub_title, entity_type, llm_aliases)
-
-                # Extract additional aliases from event title and subtitle
-                # This captures entity references in market questions
-                # e.g., "Will Amazon stock drop?" has "Amazon" in the title
-                extra_aliases = self._extract_aliases_from_text(
-                    event_title, event_subtitle, yes_sub_title
+            # Limit to 10 new events per refresh cycle to avoid rate limits
+            events_to_classify = events_needing_classification[:10]
+            if events_to_classify:
+                logger.info(
+                    f"[entity_index] Classifying {len(events_to_classify)} new events via LLM "
+                    f"({len(events_needing_classification) - len(events_to_classify)} deferred)"
                 )
-                aliases.update(extra_aliases)
-
-                # Add to legacy index (backward compatibility)
-                if entity_id not in new_index:
-                    new_index[entity_id] = EntityMarketEntry(
-                        entity_id=entity_id,
-                        canonical_name=yes_sub_title,
-                        markets=[mapping],
-                        last_updated=current_time,
+                classify_coros = [
+                    self._classify_event(
+                        event_ticker=info["event_ticker"],
+                        event_title=info["event_title"],
+                        event_subtitle=info["event_subtitle"],
+                        yes_sub_titles=info["yes_sub_titles"],
+                        category=info["category"],
                     )
-                else:
-                    # Check if market already exists
-                    existing_tickers = {
-                        m.market_ticker
-                        for m in new_index[entity_id].markets
+                    for info in events_to_classify
+                ]
+                await asyncio.gather(*classify_coros, return_exceptions=True)
+
+            # ================================================================
+            # Phase C: Process each event group using classification results
+            # ================================================================
+            for event_ticker, group_markets in event_groups.items():
+                first_market = group_markets[0]
+                event_title = (
+                    first_market.get("event_title", "")
+                    or first_market.get("title", "")
+                    or first_market.get("subtitle", "")
+                )
+                event_subtitle = first_market.get("event_subtitle", "")
+
+                # Get classification (from cache or default)
+                classification = self._event_entity_cache.get(event_ticker)
+                if not classification:
+                    # Not classified yet (deferred) — use fallback heuristic
+                    classification = {
+                        "event_entity": None,
+                        "classifications": {},
                     }
-                    if market_ticker not in existing_tickers:
-                        new_index[entity_id].markets.append(mapping)
 
-                # Add to CanonicalEntity index
-                if entity_id not in new_canonical_entities:
-                    new_canonical_entities[entity_id] = CanonicalEntity(
-                        entity_id=entity_id,
-                        canonical_name=yes_sub_title,
-                        entity_type=entity_type,
-                        aliases=aliases,
-                        markets=[mapping],
-                        created_at=current_time,
-                        last_seen_at=current_time,
+                classifications = classification.get("classifications", {})
+                event_entity = classification.get("event_entity")
+
+                for market in group_markets:
+                    market_ticker = market.get("ticker", "")
+                    yes_sub_title = market.get("yes_sub_title", "")
+                    m_event_title = (
+                        market.get("event_title", "")
+                        or market.get("title", "")
+                        or market.get("subtitle", "")
                     )
-                else:
-                    # Update existing canonical entity
-                    existing = new_canonical_entities[entity_id]
-                    existing.aliases.update(aliases)
-                    existing.last_seen_at = current_time
-                    existing_tickers = {m.market_ticker for m in existing.markets}
-                    if market_ticker not in existing_tickers:
-                        existing.markets.append(mapping)
+                    m_event_subtitle = market.get("event_subtitle", "")
 
-                # Build reverse index
-                if market_ticker not in new_reverse_index:
-                    new_reverse_index[market_ticker] = []
-                if entity_id not in new_reverse_index[market_ticker]:
-                    new_reverse_index[market_ticker].append(entity_id)
+                    markets_processed += 1
 
-                # Build name variations (legacy)
-                for variation in aliases:
-                    new_name_variations[variation] = entity_id
+                    # Detect market type
+                    market_type = detect_market_type(m_event_title or event_title, market_ticker)
 
-                # Build comprehensive alias lookup
-                for alias in aliases:
-                    new_alias_lookup[alias.lower()] = entity_id
+                    # Create mapping
+                    mapping = MarketMapping(
+                        market_ticker=market_ticker,
+                        event_ticker=event_ticker,
+                        market_type=market_type,
+                        yes_sub_title=yes_sub_title,
+                        confidence=0.9 if market_type != "UNKNOWN" else 0.7,
+                    )
 
-                # Build reverse ticker -> entity index
-                new_ticker_to_entity[market_ticker] = (entity_id, mapping)
+                    # Get LLM classification for this yes_sub_title
+                    cls = classifications.get(yes_sub_title, {})
+                    yst_type = cls.get("type", "person")
+                    if yst_type not in ("person", "organization", "outcome"):
+                        yst_type = detect_entity_type(
+                            yes_sub_title, m_event_title or event_title, market_ticker
+                        )
+                    yst_aliases = set(cls.get("aliases", []))
+
+                    # Create entity entry with LLM type + aliases
+                    self._create_entity_entry(
+                        canonical_name=yes_sub_title,
+                        entity_type=yst_type,
+                        mapping=mapping,
+                        event_title=m_event_title or event_title,
+                        event_subtitle=m_event_subtitle or event_subtitle,
+                        current_time=current_time,
+                        new_index=new_index,
+                        new_canonical_entities=new_canonical_entities,
+                        new_reverse_index=new_reverse_index,
+                        new_name_variations=new_name_variations,
+                        new_alias_lookup=new_alias_lookup,
+                        new_ticker_to_entity=new_ticker_to_entity,
+                        llm_aliases=yst_aliases,
+                    )
+
+                # If event has a real entity, also create that entity linked to all markets
+                if event_entity and event_entity.get("name"):
+                    for market in group_markets:
+                        m_ticker = market.get("ticker", "")
+                        m_event_title = (
+                            market.get("event_title", "")
+                            or market.get("title", "")
+                            or market.get("subtitle", "")
+                        )
+                        m_event_subtitle = market.get("event_subtitle", "")
+                        market_type = detect_market_type(
+                            m_event_title or event_title, m_ticker
+                        )
+                        mapping = MarketMapping(
+                            market_ticker=m_ticker,
+                            event_ticker=event_ticker,
+                            market_type=market_type,
+                            yes_sub_title=market.get("yes_sub_title", ""),
+                            confidence=0.85,
+                        )
+                        self._create_entity_entry(
+                            canonical_name=event_entity["name"],
+                            entity_type=event_entity["type"],
+                            mapping=mapping,
+                            event_title=m_event_title or event_title,
+                            event_subtitle=m_event_subtitle or event_subtitle,
+                            current_time=current_time,
+                            new_index=new_index,
+                            new_canonical_entities=new_canonical_entities,
+                            new_reverse_index=new_reverse_index,
+                            new_name_variations=new_name_variations,
+                            new_alias_lookup=new_alias_lookup,
+                            new_ticker_to_entity=new_ticker_to_entity,
+                        )
+
+            # ================================================================
+            # Phase D: Post-processing (atomic swap, LLM aliases, KB sync)
+            # ================================================================
 
             # Update indices atomically
             self._index = new_index
@@ -963,49 +1418,60 @@ Generate 3-8 aliases maximum."""
             self._total_entities = len(new_index)
             self._total_markets = sum(len(e.markets) for e in new_index.values())
 
+            # Count entity types for logging
+            type_counts: Dict[str, int] = defaultdict(int)
+            for ce in new_canonical_entities.values():
+                type_counts[ce.entity_type] += 1
+
             logger.info(
-                f"[entity_index] Refresh complete: {self._total_entities} entities, "
+                f"[entity_index] Refresh complete: {self._total_entities} entities "
+                f"({type_counts.get('person', 0)} person, "
+                f"{type_counts.get('outcome', 0)} outcome, "
+                f"{type_counts.get('organization', 0)} org, "
+                f"{type_counts.get('position', 0)} position), "
                 f"{self._total_markets} market mappings, {self._total_aliases} aliases "
-                f"(from {markets_processed} politics markets)"
+                f"(from {markets_processed} markets)"
             )
 
-            # CRITICAL: Generate LLM aliases BEFORE KB sync (not after!)
-            # Otherwise new entities miss NER matching for 1 refresh cycle
+            # Generate per-entity LLM aliases for event-extracted entities
+            # (e.g., "Donald Trump" from tariff event title). These entities
+            # don't get aliases from _classify_event() since they come from
+            # event_entity, not from yes_sub_title classifications.
+            # Also generate for any person/org entity missing cached aliases.
             entities_needing_aliases = [
-                (entity_id, ce.canonical_name, ce.entity_type)
-                for entity_id, ce in new_canonical_entities.items()
-                if entity_id not in self._llm_alias_cache
+                (eid, ce.canonical_name, ce.entity_type)
+                for eid, ce in new_canonical_entities.items()
+                if eid not in self._llm_alias_cache
+                and ce.entity_type in ("person", "organization", "position")
+                and not ce.llm_aliases  # No aliases from _classify_event()
             ]
             if entities_needing_aliases:
-                # Limit to first 10 new entities per refresh to avoid rate limits
                 entities_to_generate = entities_needing_aliases[:10]
                 logger.info(
-                    f"[entity_index] Generating LLM aliases for {len(entities_to_generate)} "
-                    f"new entities BEFORE KB sync"
+                    f"[entity_index] Generating per-entity LLM aliases for "
+                    f"{len(entities_to_generate)} entities BEFORE KB sync"
                 )
-                # Generate aliases SYNCHRONOUSLY (await) before KB sync
-                tasks = [
+                alias_tasks = [
                     self._generate_llm_aliases(canonical_name, entity_type)
                     for _, canonical_name, entity_type in entities_to_generate
                 ]
-                if tasks:
-                    await asyncio.gather(*tasks, return_exceptions=True)
-                    # Update alias lookups with newly generated aliases
-                    for entity_id, ce in new_canonical_entities.items():
-                        if entity_id in self._llm_alias_cache:
-                            ce.aliases.update(self._llm_alias_cache[entity_id])
-                            for alias in self._llm_alias_cache[entity_id]:
-                                self._alias_lookup[alias.lower()] = entity_id
-                    # Update total aliases count after LLM generation
+                if alias_tasks:
+                    await asyncio.gather(*alias_tasks, return_exceptions=True)
+                    for eid, ce in new_canonical_entities.items():
+                        if eid in self._llm_alias_cache:
+                            ce.aliases.update(self._llm_alias_cache[eid])
+                            ce.llm_aliases.update(self._llm_alias_cache[eid])
+                            for alias in self._llm_alias_cache[eid]:
+                                self._alias_lookup[alias.lower()] = eid
                     self._total_aliases = len(self._alias_lookup)
 
             # Generate event keywords for enriched market context
             # Collect unique event tickers that need keywords
             events_needing_keywords = set()
             for market in markets:
-                event_ticker = market.get("event_ticker", "")
-                if event_ticker and event_ticker not in self._keyword_cache:
-                    events_needing_keywords.add(event_ticker)
+                evt_ticker = market.get("event_ticker", "")
+                if evt_ticker and evt_ticker not in self._keyword_cache:
+                    events_needing_keywords.add(evt_ticker)
 
             if events_needing_keywords:
                 # Limit to first 10 new events per refresh to avoid rate limits
@@ -1016,7 +1482,6 @@ Generate 3-8 aliases maximum."""
                 )
                 keyword_tasks = []
                 for evt_ticker in events_to_generate:
-                    # Find a market with this event ticker for metadata
                     evt_market = next(
                         (m for m in markets if m.get("event_ticker") == evt_ticker), None
                     )
@@ -1034,13 +1499,18 @@ Generate 3-8 aliases maximum."""
                     await asyncio.gather(*keyword_tasks, return_exceptions=True)
 
             # Build enriched market list (for LLM market-aware extraction)
+            # Use canonical_name (real entity) not yes_sub_title (might be "Above 2.0%")
             new_enriched_list = []
-            for entity_id, ce in new_canonical_entities.items():
+            for eid, ce in new_canonical_entities.items():
+                # Skip outcome entities in the enriched list - they won't help
+                # the LLM match Reddit posts to markets
+                if ce.entity_type == "outcome":
+                    continue
                 for m in ce.markets:
                     keywords = self._keyword_cache.get(m.event_ticker, [])
                     new_enriched_list.append({
                         "ticker": m.market_ticker,
-                        "title": m.yes_sub_title,
+                        "title": ce.canonical_name,
                         "keywords": ", ".join(keywords[:8]),
                     })
             self._enriched_market_list = new_enriched_list[:200]
@@ -1277,12 +1747,18 @@ Generate 3-8 aliases maximum."""
             # Build market data for KB population
             markets_for_kb = self._get_markets_for_kb()
 
-            # Create alias builder that includes LLM aliases from cache
-            # This is critical - without LLM aliases, the KB won't match Reddit entities!
-            def alias_builder_with_llm(name: str, entity_type: str) -> Set[str]:
+            # Create alias builder that merges LLM aliases from:
+            # 1. MarketData.llm_aliases (from _classify_event per-yst aliases)
+            # 2. Entity-level LLM alias cache (from _generate_llm_aliases)
+            def alias_builder_with_llm(
+                name: str, entity_type: str, llm_aliases: Optional[Set[str]] = None
+            ) -> Set[str]:
                 entity_id = normalize_entity_id(name)
-                llm_aliases = self._llm_alias_cache.get(entity_id, set())
-                return build_aliases(name, entity_type, llm_aliases)
+                merged = set(llm_aliases or set())
+                cached = self._llm_alias_cache.get(entity_id, set())
+                if cached:
+                    merged.update(cached)
+                return build_aliases(name, entity_type, merged)
 
             # Populate new KB with LLM-enhanced alias builder
             new_kb.populate_from_markets(markets_for_kb, alias_builder=alias_builder_with_llm)
@@ -1305,6 +1781,10 @@ Generate 3-8 aliases maximum."""
         """
         Build MarketData list for KB population from current index.
 
+        ALL entities go into the KB — both person and outcome types.
+        Outcome entities rely on LLM-generated aliases (e.g., "government shutdown"
+        for "Shut down") to match Reddit mentions.
+
         Returns:
             List of MarketData objects for KB.populate_from_markets()
         """
@@ -1317,7 +1797,8 @@ Generate 3-8 aliases maximum."""
                     event_ticker=mapping.event_ticker,
                     yes_sub_title=canonical_entity.canonical_name,
                     market_type=mapping.market_type,
-                    volume_24h=None,  # Could enhance with real volume data
+                    volume_24h=None,
+                    llm_aliases=canonical_entity.llm_aliases or None,
                 ))
 
         return markets

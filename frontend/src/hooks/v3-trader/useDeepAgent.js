@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { useSignalLifecycle } from './useSignalLifecycle';
 
 /**
  * Initial state for deep agent
@@ -37,6 +38,15 @@ const INITIAL_THINKING = {
  * - Price impacts (entity → market transformation)
  */
 export const useDeepAgent = ({ useV3WebSocketState }) => {
+  // Signal lifecycle tracking
+  const {
+    handleLifecycleUpdate,
+    handleLifecycleSnapshot,
+    getLifecycle,
+    summaryCounts: lifecycleSummary,
+    getStatusSortPriority,
+  } = useSignalLifecycle();
+
   // Deep agent state
   const [agentState, setAgentState] = useState(INITIAL_DEEP_AGENT_STATE);
   const [thinking, setThinking] = useState(INITIAL_THINKING);
@@ -349,8 +359,13 @@ export const useDeepAgent = ({ useV3WebSocketState }) => {
       })));
     }
 
-    console.log(`[useDeepAgent] Snapshot restored: cycle ${data.cycle_count}, ${data.trades_executed} trades, ${data.recent_thinking?.length || 0} thinking, ${data.recent_learnings?.length || 0} learnings`);
-  }, []);
+    // Restore signal lifecycle state
+    if (data.signal_lifecycle?.length > 0) {
+      handleLifecycleSnapshot(data.signal_lifecycle);
+    }
+
+    console.log(`[useDeepAgent] Snapshot restored: cycle ${data.cycle_count}, ${data.trades_executed} trades, ${data.recent_thinking?.length || 0} thinking, ${data.recent_learnings?.length || 0} learnings, ${data.signal_lifecycle?.length || 0} lifecycle`);
+  }, [handleLifecycleSnapshot]);
 
   /**
    * Handle price_impact message - Entity sentiment transformed to market-specific impact
@@ -373,8 +388,8 @@ export const useDeepAgent = ({ useV3WebSocketState }) => {
       // Source context fields
       sourceTitle: data.source_title || '',
       contextSnippet: data.context_snippet || '',
-      // Timestamps
-      timestamp: data.created_at || Date.now(),
+      // Timestamps (Unix seconds)
+      timestamp: data.created_at || (Date.now() / 1000),
       sourceCreatedAt: data.source_created_at || null, // Original Reddit post time
       // Source type (text/video/article)
       sourceType: data.source_type || 'reddit_text',
@@ -433,6 +448,9 @@ export const useDeepAgent = ({ useV3WebSocketState }) => {
       case 'price_impacts_snapshot':
         handlePriceImpactsSnapshot(data);
         break;
+      case 'signal_lifecycle_update':
+        handleLifecycleUpdate(data);
+        break;
       default:
         // Ignore other message types
         break;
@@ -451,6 +469,7 @@ export const useDeepAgent = ({ useV3WebSocketState }) => {
     handleError,
     handleSnapshot,
     handlePriceImpactsSnapshot,
+    handleLifecycleUpdate,
   ]);
 
   /**
@@ -503,6 +522,10 @@ export const useDeepAgent = ({ useV3WebSocketState }) => {
     learnings,
     settlements,
     errors,
+    // Signal lifecycle
+    getSignalLifecycle: getLifecycle,
+    lifecycleSummary,
+    getStatusSortPriority,
     // Actions
     processMessage,
     resetState,

@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
@@ -593,7 +594,10 @@ class RedditEntityAgent(BaseAgent):
                 "author": post_data.get("author"),
                 "score": post_data.get("score", 0),
                 "num_comments": post_data.get("num_comments", 0),
-                "post_created_utc": None,  # Would need conversion from Unix timestamp
+                "post_created_utc": (
+                    datetime.fromtimestamp(post_data["created_utc"], tz=timezone.utc).isoformat()
+                    if post_data.get("created_utc") else None
+                ),
                 "entities": entities,
                 "aggregate_sentiment": aggregate_sentiment,
                 # Content extraction metadata
@@ -971,6 +975,12 @@ class RedditEntityAgent(BaseAgent):
             for llm_ent in llm_entities:
                 llm_sentiment_map[llm_ent.name.lower()] = llm_ent.sentiment
 
+            # Build context map from LLM entities (name -> per-entity context summary)
+            llm_context_map = {}
+            for llm_ent in llm_entities:
+                if llm_ent.context:
+                    llm_context_map[llm_ent.name.lower()] = llm_ent.context
+
             # Score Phase 1 market entities using LLM sentiment or fallback
             sentiments = {}
             if phase1_market_entities_for_sentiment:
@@ -1046,7 +1056,7 @@ class RedditEntityAgent(BaseAgent):
                     "entity_type": metadata.entity_type,
                     "sentiment_score": sentiment,
                     "confidence": 1.0,
-                    "context_snippet": text[:200],
+                    "context_snippet": llm_context_map.get(e["text"].lower()) or llm_context_map.get(e["matched_text"].lower()) or text[:200],
                     "post_id": post_data.get("post_id"),
                     "subreddit": post_data.get("subreddit"),
                     "was_normalized": True,
@@ -1099,7 +1109,7 @@ class RedditEntityAgent(BaseAgent):
                                 "entity_type": entity_type,
                                 "sentiment_score": llm_ent.sentiment,
                                 "confidence": llm_ent.confidence_float,
-                                "context_snippet": text[:200],
+                                "context_snippet": llm_ent.context or text[:200],
                                 "post_id": post_data.get("post_id"),
                                 "subreddit": post_data.get("subreddit"),
                                 "was_normalized": True,
@@ -1126,7 +1136,7 @@ class RedditEntityAgent(BaseAgent):
                             "confidence": llm_ent.confidence_float,
                             "source_post_id": post_data.get("post_id"),
                             "source_subreddit": post_data.get("subreddit"),
-                            "context_snippet": text[:200],
+                            "context_snippet": llm_ent.context or text[:200],
                             "co_occurring_market_entities": market_entity_ids.copy(),
                             "source": "llm_extracted",
                         }

@@ -12,7 +12,7 @@ The agent trades EXCLUSIVELY on Reddit entity signals transformed into
 price impact scores. The get_price_impacts() tool queries the
 market_price_impacts table populated by the entity pipeline.
 
-These tools are designed to be used with LangChain's tool calling
+These tools are designed for use with Claude's native tool calling
 and provide structured outputs for the agent to reason about.
 """
 
@@ -70,19 +70,6 @@ class TradeResult:
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
 
-
-@dataclass
-class NewsItem:
-    """A news item from search."""
-    title: str
-    url: str
-    snippet: str
-    source: str
-    published_at: Optional[str] = None
-    relevance_score: float = 0.5
-
-    def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
 
 
 @dataclass
@@ -197,6 +184,55 @@ class EventContextInfo:
         }
 
 
+@dataclass
+class TradeOpportunityAssessment:
+    """Quantitative assessment of a trade opportunity.
+
+    Combines signal data with current market prices to compute:
+    - Expected edge (how much the market should move per signal)
+    - Signal-implied fair price
+    - Priced-in assessment (has the market already moved?)
+    - Risk/reward analysis (max profit, max loss, expected profit)
+    - Overall trade quality verdict
+    """
+    market_ticker: str
+
+    # Current market state
+    current_yes_bid: int
+    current_yes_ask: int
+    current_spread: int
+
+    # Signal analysis
+    signal_impact: int
+    signal_confidence: float
+    suggested_side: str               # "yes" or "no"
+    expected_edge_cents: int          # Signal-implied price move
+    signal_implied_fair_price: int    # Where price "should" be per signal
+
+    # Entry price
+    entry_price_cents: int            # What you'd actually pay
+
+    # Priced-in assessment
+    price_24h_ago: Optional[int]          # Historical price (None if unavailable)
+    price_move_since_signal: Optional[int]  # How much market already moved
+    priced_in_pct: Optional[float]        # % of expected move already realized
+    priced_in_verdict: str                # NOT_PRICED_IN | PARTIALLY_PRICED_IN | FULLY_PRICED_IN
+
+    # Risk/reward
+    max_profit_cents: int             # Best case per contract
+    max_loss_cents: int               # Worst case per contract
+    expected_profit_cents: int        # Remaining edge per contract
+    reward_risk_ratio: float          # expected_profit / max_loss
+    risk_reward_verdict: str          # FAVORABLE | MARGINAL | UNFAVORABLE
+
+    # Overall
+    trade_quality: str                # STRONG | MODERATE | WEAK | AVOID
+    reasoning: str                    # Human-readable summary
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
 class DeepAgentTools:
     """
     Container for all deep agent tools with shared state.
@@ -214,6 +250,7 @@ class DeepAgentTools:
         price_impact_store: Optional[Any] = None,
         tracked_markets: Optional['TrackedMarketsState'] = None,
         event_position_tracker: Optional['EventPositionTracker'] = None,
+        signal_tracker: Optional[Any] = None,
     ):
         """
         Initialize tools with shared dependencies.
@@ -226,6 +263,7 @@ class DeepAgentTools:
             price_impact_store: Store for querying price impact signals
             tracked_markets: State container for tracked markets (for event context)
             event_position_tracker: Tracker for event-level position risk
+            signal_tracker: Lifecycle tracker for signal evaluation state
         """
         self._trading_client = trading_client
         self._state_container = state_container
@@ -234,7 +272,15 @@ class DeepAgentTools:
         self._price_impact_store = price_impact_store
         self._tracked_markets = tracked_markets
         self._event_position_tracker = event_position_tracker
+        self._signal_tracker = signal_tracker
         self._supabase_client = None
+
+        # RF-1: Per-event dollar exposure tracking (resets on restart)
+        self._event_exposure_cents: Dict[str, int] = {}
+        self._max_event_exposure_cents: int = 10000  # $100 cap
+
+        # RF-5: Startup timestamp for marking pre-existing signals as historical
+        self._startup_time: float = time.time()
 
         # Ensure memory directory exists
         self._memory_dir.mkdir(parents=True, exist_ok=True)
@@ -246,6 +292,7 @@ class DeepAgentTools:
         self._tool_calls = {
             "get_price_impacts": 0,
             "get_markets": 0,
+            "assess_trade_opportunity": 0,
             "trade": 0,
             "get_session_state": 0,
             "read_memory": 0,
@@ -253,6 +300,7 @@ class DeepAgentTools:
             "append_memory": 0,
             "get_event_context": 0,
         }
+
 
     def _get_supabase(self):
         """Get or create cached Supabase client."""
@@ -504,6 +552,47 @@ class DeepAgentTools:
             # Apply limit to filtered results
             items = filtered_items[:limit]
 
+        # === SIGNAL LIFECYCLE FILTERING ===
+        # Register signals with tracker and filter out terminal/exhausted ones
+        if items and self._signal_tracker:
+            for item in items:
+                # RF-5: Signals that predate this session are marked historical
+                # so they aren't re-evaluated after a restart.
+                is_historical = False
+                if item.created_at:
+                    try:
+                        signal_dt = datetime.fromisoformat(
+                            item.created_at.replace("Z", "+00:00")
+                        )
+                        is_historical = signal_dt.timestamp() < self._startup_time
+                    except (ValueError, AttributeError):
+                        pass
+                self._signal_tracker.register_signal(
+                    signal_id=item.signal_id,
+                    market_ticker=item.market_ticker,
+                    entity_name=item.entity_name,
+                    is_historical=is_historical,
+                )
+
+            all_ids = [item.signal_id for item in items]
+            actionable_ids = set(self._signal_tracker.get_actionable_signals(all_ids))
+
+            lifecycle_filtered = 0
+            filtered_items = []
+            for item in items:
+                if item.signal_id in actionable_ids:
+                    filtered_items.append(item)
+                else:
+                    lifecycle_filtered += 1
+
+            if lifecycle_filtered > 0:
+                logger.info(
+                    f"[deep_agent.tools.get_price_impacts] Filtered {lifecycle_filtered} "
+                    f"terminal/historical signals via lifecycle tracker"
+                )
+
+            items = filtered_items
+
         logger.info(f"[deep_agent.tools.get_price_impacts] Returning {len(items)} tradeable signals")
         return items
 
@@ -646,63 +735,244 @@ class DeepAgentTools:
         logger.warning("[deep_agent.tools.get_markets] No market data source available")
         return []
 
-    # === News Search ===
+    # === Trade Opportunity Assessment ===
 
-    async def search_news(
+    async def _fetch_price_history(
         self,
-        query: str,
-        max_results: int = 10,
-        max_age_hours: float = 24.0,
-    ) -> List[NewsItem]:
+        market_ticker: str,
+        event_ticker: str,
+    ) -> Optional[int]:
         """
-        Search for price-moving news.
+        Fetch the YES price from ~24 hours ago using candlestick data.
 
-        Uses DuckDuckGo search for finding relevant news articles.
+        Uses hourly candles (period_interval=60) for the last 24 hours.
+        Returns the close price of the earliest candle found.
 
         Args:
-            query: Search query (e.g., "Newsom 2028 presidential polls")
-            max_results: Maximum number of results to return
-            max_age_hours: Maximum age of news in hours
+            market_ticker: Market ticker (e.g., "KXGOVSHUT-26JAN31")
+            event_ticker: Event ticker for series extraction
 
         Returns:
-            List of NewsItem objects with title, URL, and snippet
+            YES price in cents from ~24h ago, or None if unavailable
         """
-        self._tool_calls["search_news"] += 1
-        logger.info(f"[deep_agent.tools.search_news] query='{query}', max_results={max_results}")
-
-        news_items = []
+        if not self._trading_client:
+            return None
 
         try:
-            # Import DDGS for search
-            from duckduckgo_search import DDGS
+            # Extract series_ticker: use event_ticker prefix or market_ticker prefix
+            # event_ticker like "KXGOVSHUT" stays as-is
+            # event_ticker like "KXTRUMPSAY-26FEB02" -> "KXTRUMPSAY"
+            series_ticker = event_ticker.split("-")[0] if event_ticker else market_ticker.split("-")[0]
 
-            with DDGS() as ddgs:
-                # Use news search for fresher results
-                results = list(ddgs.news(
-                    query,
-                    max_results=max_results,
-                    timelimit="d" if max_age_hours <= 24 else "w",
-                ))
+            now = int(time.time())
+            start_ts = now - (24 * 3600)  # 24 hours ago
 
-            for r in results:
-                news_items.append(NewsItem(
-                    title=r.get("title", ""),
-                    url=r.get("url", ""),
-                    snippet=r.get("body", "")[:500],  # Truncate long snippets
-                    source=r.get("source", ""),
-                    published_at=r.get("date"),
-                    relevance_score=0.5,  # Default, could be enhanced with scoring
-                ))
+            # Access the underlying demo client via the integration
+            client = getattr(self._trading_client, '_client', None)
+            if client is None:
+                return None
 
-            logger.info(f"[deep_agent.tools.search_news] Found {len(news_items)} results")
-            return news_items
+            response = await client.get_market_candlesticks(
+                series_ticker=series_ticker,
+                ticker=market_ticker,
+                start_ts=start_ts,
+                end_ts=now,
+                period_interval=60,  # Hourly candles
+            )
 
-        except ImportError:
-            logger.error("[deep_agent.tools.search_news] duckduckgo_search not installed")
-            return []
+            candlesticks = response.get("candlesticks", [])
+            if not candlesticks:
+                return None
+
+            # Get the earliest candle's close price as "price 24h ago"
+            for candle in candlesticks:
+                price_data = candle.get("price", {})
+                close_price = price_data.get("close")
+                if close_price is not None and close_price > 0:
+                    return int(close_price)
+
+            return None
+
         except Exception as e:
-            logger.error(f"[deep_agent.tools.search_news] Error: {e}")
-            return []
+            logger.debug(f"[deep_agent.tools._fetch_price_history] Failed for {market_ticker}: {e}")
+            return None
+
+    async def assess_trade_opportunity(
+        self,
+        market_ticker: str,
+        signal_impact_score: int,
+        signal_confidence: float,
+        suggested_side: str,
+    ) -> TradeOpportunityAssessment:
+        """
+        Quantitative assessment of a trade opportunity.
+
+        Combines signal data with current market prices to compute expected
+        edge, priced-in status, and risk/reward ratio. Call this after
+        get_price_impacts() to evaluate whether a signal is worth trading.
+
+        Args:
+            market_ticker: Market to assess
+            signal_impact_score: Price impact from signal (-75 to +75)
+            signal_confidence: Signal confidence (0.5, 0.7, 0.9)
+            suggested_side: "yes" or "no"
+
+        Returns:
+            TradeOpportunityAssessment with edge, risk/reward, and quality verdict
+        """
+        self._tool_calls["assess_trade_opportunity"] += 1
+        logger.info(
+            f"[deep_agent.tools.assess_trade_opportunity] ticker={market_ticker}, "
+            f"impact={signal_impact_score}, conf={signal_confidence}, side={suggested_side}"
+        )
+
+        # --- Step 1: Get current market prices ---
+        yes_bid = 0
+        yes_ask = 100
+        event_ticker = ""
+
+        if self._tracked_markets:
+            market = self._tracked_markets.get(market_ticker)
+            if market:
+                yes_bid = market.yes_bid if hasattr(market, 'yes_bid') else 0
+                yes_ask = market.yes_ask if hasattr(market, 'yes_ask') else 100
+                event_ticker = market.event_ticker if hasattr(market, 'event_ticker') else ""
+
+        # Fallback to API if tracked_markets didn't have data
+        if yes_bid == 0 and yes_ask == 100 and self._trading_client:
+            try:
+                market_data = await self._trading_client.get_market(market_ticker)
+                if market_data:
+                    yes_bid = market_data.get("yes_bid", 0) or 0
+                    yes_ask = market_data.get("yes_ask", 100) or 100
+                    event_ticker = market_data.get("event_ticker", "") or event_ticker
+            except Exception as e:
+                logger.warning(f"[deep_agent.tools.assess_trade_opportunity] API fallback failed: {e}")
+
+        spread = yes_ask - yes_bid
+        midpoint = (yes_bid + yes_ask) // 2
+
+        # --- Step 2: Expected edge model ---
+        # Base edge in cents per impact level (how much price should move)
+        BASE_EDGE = {75: 25, 40: 12}
+        abs_impact = abs(signal_impact_score)
+        base_edge = BASE_EDGE.get(abs_impact, max(1, abs_impact // 3))
+        expected_edge = int(base_edge * signal_confidence)
+
+        # --- Step 3: Signal-implied fair price ---
+        if suggested_side == "yes":
+            fair_price = midpoint + expected_edge
+        else:
+            fair_price = midpoint - expected_edge
+        fair_price = max(3, min(97, fair_price))
+
+        # --- Step 4: Entry price and risk/reward ---
+        if suggested_side == "yes":
+            entry = yes_ask                          # Buying YES at ask
+            max_profit = 100 - entry                 # YES resolves at 100
+            max_loss = entry                         # YES resolves at 0
+            expected_profit = fair_price - entry     # Signal says it'll reach fair_price
+        else:
+            entry = 100 - yes_bid if yes_bid > 0 else 100  # Buying NO
+            max_profit = 100 - entry                 # NO resolves at 100
+            max_loss = entry                         # NO resolves at 0
+            expected_profit = (100 - fair_price) - entry
+
+        reward_risk = round(expected_profit / max_loss, 2) if max_loss > 0 else 0.0
+
+        # Risk/reward verdict
+        if reward_risk >= 1.5:
+            rr_verdict = "FAVORABLE"
+        elif reward_risk >= 0.5:
+            rr_verdict = "MARGINAL"
+        else:
+            rr_verdict = "UNFAVORABLE"
+
+        # --- Step 5: Priced-in assessment ---
+        price_24h_ago: Optional[int] = None
+        price_move: Optional[int] = None
+        priced_in_pct: Optional[float] = None
+
+        # Try candlestick-based assessment
+        if event_ticker:
+            price_24h_ago = await self._fetch_price_history(market_ticker, event_ticker)
+
+        if price_24h_ago is not None and expected_edge > 0:
+            # Compute how much the market already moved toward the signal direction
+            if suggested_side == "yes":
+                price_move = midpoint - price_24h_ago
+            else:
+                price_move = price_24h_ago - midpoint
+            priced_in_pct = round(abs(price_move) / expected_edge * 100, 1) if expected_edge > 0 else 0.0
+
+        # Determine priced-in verdict
+        if priced_in_pct is not None:
+            if priced_in_pct >= 80:
+                priced_in_verdict = "FULLY_PRICED_IN"
+            elif priced_in_pct >= 40:
+                priced_in_verdict = "PARTIALLY_PRICED_IN"
+            else:
+                priced_in_verdict = "NOT_PRICED_IN"
+        else:
+            # Fallback: use expected_profit vs expected_edge
+            if expected_profit < 3:
+                priced_in_verdict = "FULLY_PRICED_IN"
+            elif expected_edge > 0 and expected_profit < expected_edge * 0.5:
+                priced_in_verdict = "PARTIALLY_PRICED_IN"
+            else:
+                priced_in_verdict = "NOT_PRICED_IN"
+
+        # --- Step 6: Trade quality ---
+        if (expected_profit >= 15 and reward_risk >= 1.5
+                and priced_in_verdict != "FULLY_PRICED_IN"):
+            quality = "STRONG"
+        elif (expected_profit >= 8 and reward_risk >= 1.0
+              and priced_in_verdict != "FULLY_PRICED_IN"):
+            quality = "MODERATE"
+        elif expected_profit >= 3 and reward_risk >= 0.5:
+            quality = "WEAK"
+        else:
+            quality = "AVOID"
+
+        # --- Step 7: Human-readable reasoning ---
+        reasoning_parts = [
+            f"Signal: impact={signal_impact_score}, conf={signal_confidence}, side={suggested_side}.",
+            f"Market: bid={yes_bid}c, ask={yes_ask}c, spread={spread}c.",
+            f"Edge model: {expected_edge}c expected move -> fair_price={fair_price}c.",
+            f"Entry at {entry}c: expected_profit={expected_profit}c, max_loss={max_loss}c, R:R={reward_risk:.1f}x.",
+        ]
+        if price_24h_ago is not None:
+            reasoning_parts.append(
+                f"24h ago: {price_24h_ago}c, moved {price_move}c ({priced_in_pct:.0f}% priced in)."
+            )
+        reasoning_parts.append(f"Verdict: {quality} ({rr_verdict}, {priced_in_verdict}).")
+        reasoning = " ".join(reasoning_parts)
+
+        logger.info(f"[deep_agent.tools.assess_trade_opportunity] {market_ticker}: quality={quality}, edge={expected_profit}c, R:R={reward_risk}")
+
+        return TradeOpportunityAssessment(
+            market_ticker=market_ticker,
+            current_yes_bid=yes_bid,
+            current_yes_ask=yes_ask,
+            current_spread=spread,
+            signal_impact=signal_impact_score,
+            signal_confidence=signal_confidence,
+            suggested_side=suggested_side,
+            expected_edge_cents=expected_edge,
+            signal_implied_fair_price=fair_price,
+            entry_price_cents=entry,
+            price_24h_ago=price_24h_ago,
+            price_move_since_signal=price_move,
+            priced_in_pct=priced_in_pct,
+            priced_in_verdict=priced_in_verdict,
+            max_profit_cents=max_profit,
+            max_loss_cents=max_loss,
+            expected_profit_cents=expected_profit,
+            reward_risk_ratio=reward_risk,
+            risk_reward_verdict=rr_verdict,
+            trade_quality=quality,
+            reasoning=reasoning,
+        )
 
     # === Event Context ===
 
@@ -880,18 +1150,22 @@ class DeepAgentTools:
         side: Literal["yes", "no"],
         contracts: int,
         reasoning: str,
+        execution_strategy: Literal["aggressive", "moderate", "passive"] = "aggressive",
     ) -> TradeResult:
         """
         Execute a trade on the market.
 
-        Places a limit order at the current ask price to cross the spread
-        and fill immediately. All Kalshi orders are limit orders.
+        Places a limit order with pricing determined by execution_strategy:
+        - aggressive: Cross the spread (buy at ask). Fastest fill, highest cost.
+        - moderate: Place at midpoint + 1c. Saves ~half the spread, decent fill probability.
+        - passive: Place near the bid + 1c. Cheapest entry, may not fill.
 
         Args:
             ticker: Market ticker to trade
             side: "yes" or "no"
             contracts: Number of contracts (1-100)
             reasoning: Why you're making this trade (stored for reflection)
+            execution_strategy: How aggressively to price the order (default: aggressive)
 
         Returns:
             TradeResult with success status and fill details
@@ -940,17 +1214,61 @@ class DeepAgentTools:
                     error=f"Could not fetch market data for {ticker}",
                 )
 
-            # Step 2: Calculate limit price - use ask price to cross spread and fill
+            # Step 2: Calculate limit price based on execution strategy
             # Kalshi markets have yes_bid/yes_ask. NO price = 100 - YES price.
             yes_ask = market_data.get("yes_ask", 0)
             yes_bid = market_data.get("yes_bid", 0)
+            midpoint = (yes_bid + yes_ask) // 2 if yes_bid > 0 else 0
 
-            if side == "yes":
-                # Buying YES: pay the yes_ask to fill immediately
-                limit_price = yes_ask
+            if execution_strategy == "aggressive":
+                # Cross the spread: buy at ask for immediate fill
+                if side == "yes":
+                    limit_price = yes_ask
+                else:
+                    limit_price = 100 - yes_bid if yes_bid > 0 else 0
+            elif execution_strategy == "moderate":
+                # Place near midpoint: save ~half the spread, decent fill probability
+                if side == "yes":
+                    limit_price = midpoint + 1 if midpoint > 0 else yes_ask
+                else:
+                    # NO midpoint = 100 - YES midpoint, place slightly above
+                    limit_price = (100 - midpoint) + 1 if midpoint > 0 else (100 - yes_bid if yes_bid > 0 else 0)
+            elif execution_strategy == "passive":
+                # Place near the bid: cheapest entry, may not fill
+                if side == "yes":
+                    limit_price = yes_bid + 1 if yes_bid > 0 else yes_ask
+                else:
+                    # NO bid = 100 - YES ask, place just inside
+                    limit_price = (100 - yes_ask) + 1 if yes_ask > 0 else (100 - yes_bid if yes_bid > 0 else 0)
             else:
-                # Buying NO: NO ask = 100 - YES bid
-                limit_price = 100 - yes_bid if yes_bid > 0 else 0
+                # Fallback to aggressive
+                if side == "yes":
+                    limit_price = yes_ask
+                else:
+                    limit_price = 100 - yes_bid if yes_bid > 0 else 0
+
+            # Clamp to valid range
+            limit_price = max(1, min(99, limit_price))
+
+            # RF-1: Enforce per-event dollar exposure cap
+            event_ticker = market_data.get("event_ticker", "")
+            if event_ticker:
+                new_cost_cents = contracts * limit_price
+                existing_cents = self._event_exposure_cents.get(event_ticker, 0)
+                if existing_cents + new_cost_cents > self._max_event_exposure_cents:
+                    max_dollars = self._max_event_exposure_cents / 100
+                    return TradeResult(
+                        success=False,
+                        ticker=ticker,
+                        side=side,
+                        contracts=contracts,
+                        error=(
+                            f"Blocked: trade would exceed ${max_dollars:.0f}/event cap. "
+                            f"Existing: ${existing_cents/100:.2f}, "
+                            f"New: ${new_cost_cents/100:.2f}, "
+                            f"Total: ${(existing_cents + new_cost_cents)/100:.2f}"
+                        ),
+                    )
 
             # Validate we have a valid price
             if limit_price <= 0 or limit_price >= 100:
@@ -962,7 +1280,10 @@ class DeepAgentTools:
                     error=f"Invalid price calculated: {limit_price}c (yes_bid={yes_bid}, yes_ask={yes_ask})",
                 )
 
-            logger.info(f"[deep_agent.tools.trade] Using limit price {limit_price}c for {side} (yes_bid={yes_bid}, yes_ask={yes_ask})")
+            logger.info(
+                f"[deep_agent.tools.trade] Using limit price {limit_price}c for {side} "
+                f"(strategy={execution_strategy}, yes_bid={yes_bid}, yes_ask={yes_ask}, mid={midpoint})"
+            )
 
             # Step 3: Place limit order through trading client
             # For buying YES/NO contracts: action is always "buy"
@@ -999,6 +1320,18 @@ class DeepAgentTools:
                     })
 
                 logger.info(f"[deep_agent.tools.trade] Order placed successfully: {order_id} @ {avg_price}c")
+
+                # RF-1: Record event exposure for dollar cap enforcement
+                if event_ticker:
+                    cost = contracts * limit_price
+                    self._event_exposure_cents[event_ticker] = (
+                        self._event_exposure_cents.get(event_ticker, 0) + cost
+                    )
+                    logger.info(
+                        f"[deep_agent.tools.trade] Event {event_ticker} exposure: "
+                        f"${self._event_exposure_cents[event_ticker]/100:.2f} / "
+                        f"${self._max_event_exposure_cents/100:.0f}"
+                    )
 
                 # Record order fill in session tracker for P&L metrics
                 if self._state_container:
@@ -1201,12 +1534,18 @@ class DeepAgentTools:
             logger.error(f"[deep_agent.tools.read_memory] Error reading {safe_name}: {e}")
             return ""
 
+    # Files that must NOT be fully replaced (use append_memory instead)
+    _APPEND_ONLY_FILES = {"learnings.md", "mistakes.md", "patterns.md"}
+
     async def write_memory(self, filename: str, content: str) -> bool:
         """
-        Write to a memory file.
+        Write to a memory file (full replacement).
+
+        Only strategy.md should be fully replaced. For learnings.md, mistakes.md,
+        and patterns.md, use append_memory() to avoid accidental data loss.
 
         Args:
-            filename: Name of memory file (e.g., "learnings.md")
+            filename: Name of memory file (e.g., "strategy.md")
             content: Content to write
 
         Returns:
@@ -1217,6 +1556,14 @@ class DeepAgentTools:
         # Sanitize filename
         safe_name = Path(filename).name
         file_path = self._memory_dir / safe_name
+
+        # Guard: prevent full replacement of append-only memory files
+        if safe_name in self._APPEND_ONLY_FILES:
+            logger.warning(
+                f"[deep_agent.tools.write_memory] BLOCKED full replace of {safe_name}. "
+                f"Use append_memory() instead to avoid data loss."
+            )
+            return False
 
         logger.info(f"[deep_agent.tools.write_memory] Writing {len(content)} chars to {safe_name}")
 
@@ -1299,7 +1646,7 @@ class DeepAgentTools:
 
 
 # === Module-level convenience functions ===
-# These are used when tools need to be passed to LangChain without a class instance
+# These wrap the class-based tools for use without a class instance
 
 _global_tools: Optional[DeepAgentTools] = None
 
@@ -1336,10 +1683,10 @@ async def get_markets(event_ticker: Optional[str] = None, limit: int = 20) -> Li
     return []
 
 
-async def trade(ticker: str, side: str, contracts: int, reasoning: str) -> Dict:
+async def trade(ticker: str, side: str, contracts: int, reasoning: str, execution_strategy: str = "aggressive") -> Dict:
     """Execute a trade."""
     if _global_tools:
-        result = await _global_tools.trade(ticker, side, contracts, reasoning)
+        result = await _global_tools.trade(ticker, side, contracts, reasoning, execution_strategy=execution_strategy)
         return result.to_dict()
     return {"success": False, "error": "Tools not initialized"}
 
@@ -1364,3 +1711,10 @@ async def write_memory(filename: str, content: str) -> bool:
     if _global_tools:
         return await _global_tools.write_memory(filename, content)
     return False
+
+
+async def append_memory(filename: str, content: str) -> dict:
+    """Append to memory file with automatic size management."""
+    if _global_tools:
+        return await _global_tools.append_memory(filename, content)
+    return {"success": False, "error": "Tools not initialized"}

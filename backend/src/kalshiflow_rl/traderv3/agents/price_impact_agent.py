@@ -1,19 +1,26 @@
 """
 Price Impact Agent - Transforms entity sentiment into market price impact.
 
-Subscribes to Supabase Realtime INSERT events on the reddit_entities table,
-transforming raw entity sentiment into market-specific price impact signals.
+Subscribes to Supabase Realtime INSERT events on both the reddit_entities
+and news_entities tables, transforming raw entity sentiment into
+market-specific price impact signals.
+
+Data flow:
+  Reddit:  Reddit stream → LLMEntityExtractor → reddit_entities → Realtime → _handle_entity_insert → _process_entity_record()
+  News:    DDGS search   → LLMEntityExtractor → news_entities   → Realtime → _handle_news_insert  → _process_entity_record()
 
 Key transformation rules:
 - OUT markets: Invert sentiment (scandal = more likely OUT)
 - WIN/CONFIRM/NOMINEE: Preserve sentiment direction
 
 The agent:
-1. Listens for new reddit_entities via Supabase Realtime
-2. Looks up entity → market mappings from EntityMarketIndex
-3. Applies transformation rules based on market type
-4. Inserts PriceImpactSignal into market_price_impacts table
-5. Broadcasts signals to frontend via WebSocket
+1. Listens for new reddit_entities AND news_entities via Supabase Realtime
+2. Normalizes news_entities fields to common format via adapter
+3. Looks up entity → market mappings from EntityMarketIndex
+4. Applies transformation rules based on market type
+5. Inserts PriceImpactSignal into market_price_impacts table
+6. Broadcasts signals to frontend via WebSocket
+7. Strong Reddit signals trigger DDGS news search → news_entities pipeline
 """
 
 from __future__ import annotations
@@ -69,7 +76,93 @@ class PriceImpactAgentConfig:
     # Nuclear reconnect: full client recreation after this many seconds unhealthy
     nuclear_reconnect_threshold: float = 600.0  # 10 minutes
 
+    # LLM impact assessment
+    llm_assessment_enabled: bool = True
+    llm_assessment_model: str = "gpt-4o-mini"
+    llm_assessment_timeout: float = 8.0  # seconds
+
+    # News corroboration search
+    news_search_enabled: bool = True
+    news_search_min_impact: int = 40  # Minimum |price_impact_score| to trigger search
+    news_search_min_confidence: float = 0.7  # Minimum confidence to trigger search
+    news_search_cooldown_minutes: float = 15.0  # Cooldown per entity_id
+    news_search_max_per_hour: int = 20  # Global rate limit
+    news_search_max_age_minutes: int = 60  # Only consider articles within this window
+    news_search_max_results: int = 8  # Max DDGS results per search
+    news_search_model: str = "gpt-4o-mini"  # Model for corroboration scoring
+    news_search_timeout: float = 10.0  # Timeout for LLM corroboration call
+
     enabled: bool = True
+
+
+class NewsSearchCache:
+    """Deduplication, rate limiting, and DDGS result caching for news searches."""
+
+    def __init__(
+        self,
+        cooldown_minutes: float = 15.0,
+        max_per_hour: int = 20,
+        query_cache_ttl_seconds: float = 300.0,
+    ):
+        self._cooldown_seconds = cooldown_minutes * 60
+        self._max_per_hour = max_per_hour
+        self._query_cache_ttl = query_cache_ttl_seconds
+        # entity_id -> last search timestamp
+        self._entity_last_search: Dict[str, float] = {}
+        # Timestamps of all searches in the last hour (for rate limiting)
+        self._search_timestamps: List[float] = []
+        # DDGS query -> (results, timestamp) for deduplication
+        self._query_cache: Dict[str, tuple] = {}
+
+    def can_search(self, entity_id: str) -> bool:
+        """Check if a search is allowed for this entity (cooldown + rate limit)."""
+        now = time.time()
+
+        # Entity cooldown check
+        last_search = self._entity_last_search.get(entity_id)
+        if last_search is not None and (now - last_search) < self._cooldown_seconds:
+            return False
+
+        # Global rate limit check (prune old timestamps first)
+        hour_ago = now - 3600
+        self._search_timestamps = [t for t in self._search_timestamps if t > hour_ago]
+        if len(self._search_timestamps) >= self._max_per_hour:
+            return False
+
+        return True
+
+    def record_search(self, entity_id: str) -> None:
+        """Record that a search was performed."""
+        now = time.time()
+        self._entity_last_search[entity_id] = now
+        self._search_timestamps.append(now)
+
+    def get_cached_results(self, query: str) -> Optional[List[dict]]:
+        """Get cached DDGS results if still fresh."""
+        entry = self._query_cache.get(query)
+        if entry is None:
+            return None
+        results, cached_at = entry
+        if (time.time() - cached_at) > self._query_cache_ttl:
+            del self._query_cache[query]
+            return None
+        return results
+
+    def cache_results(self, query: str, results: List[dict]) -> None:
+        """Cache DDGS results for a query."""
+        self._query_cache[query] = (results, time.time())
+
+    def get_stats(self) -> Dict[str, Any]:
+        """Get cache statistics."""
+        now = time.time()
+        hour_ago = now - 3600
+        self._search_timestamps = [t for t in self._search_timestamps if t > hour_ago]
+        return {
+            "entities_tracked": len(self._entity_last_search),
+            "searches_this_hour": len(self._search_timestamps),
+            "max_per_hour": self._max_per_hour,
+            "query_cache_size": len(self._query_cache),
+        }
 
 
 class PriceImpactAgent(BaseAgent):
@@ -124,6 +217,20 @@ class PriceImpactAgent(BaseAgent):
         self._subscription_healthy: bool = False
         self._subscription_state: str = "disconnected"
         self._last_healthy_time: Optional[float] = None
+
+        # LLM client for impact assessment
+        self._llm_client = None
+        self._llm_assessments = 0
+        self._llm_failures = 0
+
+        # News search cache and stats
+        self._news_search_cache = NewsSearchCache(
+            cooldown_minutes=self._config.news_search_cooldown_minutes,
+            max_per_hour=self._config.news_search_max_per_hour,
+        )
+        self._news_searches_total = 0
+        self._news_searches_enriched = 0
+        self._news_searches_failed = 0
 
         # Callback for external signal handling
         self._signal_callback: Optional[Callable[[PriceImpactSignal], None]] = None
@@ -187,6 +294,109 @@ class PriceImpactAgent(BaseAgent):
             f"Created: {self._impacts_created}, Skipped: {self._entities_skipped}"
         )
 
+    def _get_llm_client(self):
+        """Get or create async OpenAI client for impact assessment."""
+        if self._llm_client is None:
+            import os
+            from openai import AsyncOpenAI
+            self._llm_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        return self._llm_client
+
+    def _get_or_create_extractor(self):
+        """Lazy-init LLMEntityExtractor for news article entity extraction."""
+        if not hasattr(self, "_entity_extractor") or self._entity_extractor is None:
+            from ..nlp.llm_entity_extractor import LLMEntityExtractor
+            self._entity_extractor = LLMEntityExtractor(
+                model=self._config.news_search_model,
+                timeout=self._config.news_search_timeout,
+            )
+        return self._entity_extractor
+
+    async def _assess_price_impact(
+        self,
+        entity_name: str,
+        sentiment_score: int,
+        context_snippet: str,
+        source_title: str,
+        market_ticker: str,
+        market_type: str,
+    ) -> Optional[tuple]:
+        """
+        Use LLM to assess how entity news impacts a specific market.
+
+        Returns: (price_impact_score, transformation_logic, suggested_side)
+                 or None if LLM fails (signal should be skipped).
+        """
+        if not self._config.llm_assessment_enabled:
+            impact = compute_price_impact(sentiment_score, market_type)
+            logic = IMPACT_RULES.get(market_type, {}).get("description", "")
+            side = "YES" if impact > 0 else "NO"
+            return impact, logic, side
+
+        try:
+            import json as json_mod
+            client = self._get_llm_client()
+
+            news_context = context_snippet or source_title
+            prompt = f"""Assess how this news impacts this specific prediction market.
+
+Entity: {entity_name}
+News context: {news_context}
+Source headline: {source_title}
+
+Market: {market_ticker}
+Market type: {market_type}
+
+Return JSON:
+{{
+  "price_impact": <integer -100 to +100>,
+  "reasoning": "<1 sentence explaining the causal link between this news and this market>",
+  "side": "<YES or NO>",
+  "confidence": "<low|medium|high>"
+}}
+
+Guidelines:
+- price_impact: How much does this news shift the market probability?
+  * ±5-15: Tangentially related, weak signal
+  * ±15-40: Relevant but not decisive
+  * ±40-70: Directly relevant, clear directional impact
+  * ±70-100: Major breaking news directly about this market
+- For "OUT" markets (e.g. KXBONDIOUT): negative news about the person = positive impact (more likely ousted)
+- For other markets: positive news = positive impact, negative news = negative impact
+- If the news is NOT meaningfully connected to this market, return price_impact: 0
+- confidence: how certain are you about the direction and magnitude?
+- Return valid JSON only."""
+
+            response = await asyncio.wait_for(
+                client.chat.completions.create(
+                    model=self._config.llm_assessment_model,
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=150,
+                    temperature=0,
+                ),
+                timeout=self._config.llm_assessment_timeout,
+            )
+
+            content = response.choices[0].message.content.strip()
+            # Strip markdown code blocks
+            if content.startswith("```"):
+                lines = content.split("\n")
+                content = "\n".join(l for l in lines if not l.strip().startswith("```"))
+
+            result = json_mod.loads(content)
+
+            impact = max(-100, min(100, int(result.get("price_impact", 0))))
+            reasoning = result.get("reasoning", "")
+            side = result.get("side", "YES" if impact > 0 else "NO").upper()
+
+            self._llm_assessments += 1
+            return impact, reasoning, side
+
+        except Exception as e:
+            logger.error(f"[price_impact] LLM assessment failed for {entity_name}/{market_ticker}: {e}")
+            self._llm_failures += 1
+            return None  # Signal to caller: skip this market
+
     def _get_agent_stats(self) -> Dict[str, Any]:
         """Get agent-specific statistics."""
         # Calculate seconds since last signal for health monitoring
@@ -207,6 +417,13 @@ class PriceImpactAgent(BaseAgent):
             "last_healthy_time": self._last_healthy_time,
             "seconds_since_signal": seconds_since_signal,
             "signal_timeout_seconds": self._signal_timeout_seconds,
+            "llm_assessments": self._llm_assessments,
+            "llm_failures": self._llm_failures,
+            "news_search_enabled": self._config.news_search_enabled,
+            "news_searches_total": self._news_searches_total,
+            "news_searches_enriched": self._news_searches_enriched,
+            "news_searches_failed": self._news_searches_failed,
+            "news_search_cache": self._news_search_cache.get_stats(),
         }
 
     async def _init_supabase(self) -> bool:
@@ -335,11 +552,12 @@ class PriceImpactAgent(BaseAgent):
         self._last_healthy_time = time.time()  # Reset timer to avoid immediate re-trigger
 
     async def _subscribe_to_entities(self) -> None:
-        """Subscribe to reddit_entities table INSERT events.
+        """Subscribe to reddit_entities and news_entities INSERT events.
 
-        Uses the SDK's subscribe(callback=...) form to track subscription
-        state transitions (SUBSCRIBED, TIMED_OUT, CHANNEL_ERROR). The SDK's
-        built-in rejoin_timer handles transient failures automatically.
+        Uses a single Realtime channel with two table listeners. The SDK's
+        subscribe(callback=...) form tracks subscription state transitions
+        (SUBSCRIBED, TIMED_OUT, CHANNEL_ERROR). The SDK's built-in
+        rejoin_timer handles transient failures automatically.
         """
         if not self._supabase:
             logger.warning("[price_impact] No Supabase client for subscription")
@@ -348,13 +566,22 @@ class PriceImpactAgent(BaseAgent):
         try:
             from realtime.types import RealtimeSubscribeStates
 
-            self._channel = self._supabase.channel("reddit-entities-price-impact")
+            self._channel = self._supabase.channel("entities-price-impact")
 
-            channel_with_listener = self._channel.on_postgres_changes(
+            # Reddit entities (existing)
+            self._channel.on_postgres_changes(
                 event="INSERT",
                 schema="public",
                 table="reddit_entities",
                 callback=self._handle_entity_insert,
+            )
+
+            # News entities (new - same channel, different table)
+            self._channel.on_postgres_changes(
+                event="INSERT",
+                schema="public",
+                table="news_entities",
+                callback=self._handle_news_insert,
             )
 
             def on_subscribe_state(state: RealtimeSubscribeStates, error=None):
@@ -364,7 +591,7 @@ class PriceImpactAgent(BaseAgent):
                     self._subscription_healthy = True
                     self._last_healthy_time = time.time()
                     self._reconnect_attempts = 0
-                    logger.info("[price_impact] Subscribed to reddit_entities Realtime")
+                    logger.info("[price_impact] Subscribed to reddit_entities + news_entities Realtime")
                 elif state == RealtimeSubscribeStates.TIMED_OUT:
                     self._subscription_healthy = False
                     logger.warning(
@@ -377,7 +604,7 @@ class PriceImpactAgent(BaseAgent):
                     self._subscription_healthy = False
                     logger.info("[price_impact] Channel closed")
 
-            await channel_with_listener.subscribe(callback=on_subscribe_state)
+            await self._channel.subscribe(callback=on_subscribe_state)
 
         except Exception as e:
             logger.error(f"[price_impact] Subscription setup error: {e}")
@@ -404,6 +631,29 @@ class PriceImpactAgent(BaseAgent):
         except Exception as e:
             logger.error(f"[price_impact] Handle insert error: {e}")
 
+    def _handle_news_insert(self, payload: Dict[str, Any]) -> None:
+        """
+        Handle INSERT from news_entities — normalize to common format.
+
+        Adapts news_entities fields to the field names _process_entity_record() expects,
+        then schedules the same async processing path as Reddit entities.
+        """
+        try:
+            record = payload.get("data", {}).get("record", {})
+            if not record:
+                return
+            # Normalize to the format _process_entity_record() expects
+            record["post_id"] = record.get("article_url", "")
+            record["title"] = record.get("headline", "")
+            record["subreddit"] = ""
+            record["post_created_utc"] = record.get("published_at")
+            record["source_type"] = "news_article"
+            record["content_type"] = record.get("content_type", "news")
+            record["source_domain"] = record.get("source_domain", "news")
+            asyncio.create_task(self._process_entity_record(record))
+        except Exception as e:
+            logger.error(f"[price_impact] Handle news insert error: {e}")
+
     async def _handle_event_bus_signal(self, data: Dict[str, Any]) -> None:
         """Handle entity signal from event bus (from RedditEntityAgent)."""
         try:
@@ -429,7 +679,19 @@ class PriceImpactAgent(BaseAgent):
             post_id = record.get("post_id", "")
             subreddit = record.get("subreddit", "")
             title = record.get("title", "")
-            post_created_utc = record.get("post_created_utc")  # Original Reddit timestamp
+            # Original Reddit timestamp - may be Unix float (event bus) or ISO string (Supabase Realtime)
+            raw_created_utc = record.get("post_created_utc")
+            post_created_utc = None
+            if raw_created_utc is not None:
+                if isinstance(raw_created_utc, (int, float)):
+                    post_created_utc = float(raw_created_utc)
+                elif isinstance(raw_created_utc, str):
+                    try:
+                        from datetime import datetime, timezone
+                        dt = datetime.fromisoformat(raw_created_utc.replace("Z", "+00:00"))
+                        post_created_utc = dt.timestamp()
+                    except (ValueError, TypeError):
+                        post_created_utc = None
             entities_data = record.get("entities", [])
 
             if not entities_data:
@@ -492,11 +754,21 @@ class PriceImpactAgent(BaseAgent):
 
                 # Create price impact for each market
                 for mapping in markets:
-                    # Compute price impact based on market type
-                    price_impact = compute_price_impact(sentiment_score, mapping.market_type)
+                    # Assess price impact using LLM (skips market on failure)
+                    result = await self._assess_price_impact(
+                        entity_name=canonical_name,
+                        sentiment_score=sentiment_score,
+                        context_snippet=context_snippet,
+                        source_title=title,
+                        market_ticker=mapping.market_ticker,
+                        market_type=mapping.market_type,
+                    )
 
-                    # Determine suggested side
-                    suggested_side = "YES" if price_impact > 0 else "NO"
+                    if result is None:
+                        # LLM failed — skip this market rather than producing low-quality signal
+                        continue
+
+                    price_impact, transformation_logic, suggested_side = result
 
                     # Create signal data
                     signal_data = {
@@ -508,7 +780,7 @@ class PriceImpactAgent(BaseAgent):
                         "sentiment_score": sentiment_score,
                         "price_impact_score": price_impact,
                         "market_type": mapping.market_type,
-                        "transformation_logic": IMPACT_RULES.get(mapping.market_type, {}).get("description", ""),
+                        "transformation_logic": transformation_logic,
                         "confidence": confidence,
                         "suggested_side": suggested_side,
                         "source_post_id": post_id,
@@ -582,6 +854,10 @@ class PriceImpactAgent(BaseAgent):
                                 },
                             )
 
+                    # Trigger background news corroboration search if signal is strong enough
+                    if self._should_search_news(signal_data):
+                        asyncio.create_task(self._search_and_enrich(signal_data))
+
                     impacts_created += 1
                     self._impacts_created += 1
 
@@ -593,6 +869,219 @@ class PriceImpactAgent(BaseAgent):
         except Exception as e:
             logger.error(f"[price_impact] Process error: {e}")
             self._record_error(str(e))
+
+    def _should_search_news(self, signal_data: Dict[str, Any]) -> bool:
+        """Check if a signal meets the threshold for news corroboration search."""
+        if not self._config.news_search_enabled:
+            return False
+
+        # Loop prevention: news-sourced signals must not trigger further searches
+        if signal_data.get("content_type") == "news":
+            return False
+
+        impact = abs(signal_data.get("price_impact_score", 0))
+        confidence = signal_data.get("confidence", 0.0)
+        entity_id = signal_data.get("entity_id", "")
+
+        # Strong signal threshold
+        if impact < self._config.news_search_min_impact:
+            return False
+        if confidence < self._config.news_search_min_confidence:
+            return False
+
+        # Dedup + rate limit
+        if not self._news_search_cache.can_search(entity_id):
+            return False
+
+        return True
+
+    @staticmethod
+    def _build_news_query(entity_name: str, market_type: str) -> str:
+        """Build a targeted DDGS query from entity name and market type context."""
+        context_terms = {
+            "OUT": "resign fired removed",
+            "CONFIRM": "confirmation senate vote",
+            "WIN": "election polls",
+            "NOMINEE": "nomination candidate",
+            "PRESIDENT": "president executive",
+        }
+        suffix_words = context_terms.get(market_type, "")
+        suffix = suffix_words.split()[0] if suffix_words else ""
+        return f"{entity_name} {suffix}".strip()
+
+    async def _search_and_enrich(self, signal_data: Dict[str, Any]) -> None:
+        """
+        Background task: search DDGS for news, extract entities with
+        LLMEntityExtractor, and INSERT into news_entities table.
+
+        The Realtime subscription on news_entities handles the rest:
+        _handle_news_insert() → _process_entity_record() → price impact signals.
+
+        Flow: DDGS fetch → age filter → LLMEntityExtractor.extract() → INSERT news_entities
+        """
+        entity_id = signal_data.get("entity_id", "")
+        entity_name = signal_data.get("entity_name", "")
+        market_type = signal_data.get("market_type", "")
+        signal_id = signal_data.get("signal_id", "")
+
+        try:
+            self._news_searches_total += 1
+            self._news_search_cache.record_search(entity_id)
+
+            # Step 1: Build query and search DDGS (with cache)
+            query = self._build_news_query(entity_name, market_type)
+            logger.info(f"[price_impact] News search for '{query}' (signal={signal_id})")
+
+            cached = self._news_search_cache.get_cached_results(query)
+            if cached is not None:
+                articles = cached
+                logger.info(f"[price_impact] Using cached DDGS results for '{query}' ({len(articles)} articles)")
+            else:
+                from duckduckgo_search import DDGS
+
+                with DDGS() as ddgs:
+                    raw_results = list(ddgs.news(
+                        query,
+                        max_results=self._config.news_search_max_results,
+                        timelimit="d",  # 24h minimum granularity
+                    ))
+
+                # Step 2: Post-filter by age (enforce stricter window)
+                from datetime import datetime, timezone, timedelta
+                now = datetime.now(timezone.utc)
+                max_age = timedelta(minutes=self._config.news_search_max_age_minutes)
+
+                articles = []
+                for r in raw_results:
+                    published_str = r.get("date", "")
+                    if published_str:
+                        try:
+                            published = datetime.fromisoformat(published_str.replace("Z", "+00:00"))
+                            if (now - published) > max_age:
+                                continue
+                        except (ValueError, TypeError):
+                            pass  # Include articles with unparseable dates
+
+                    articles.append({
+                        "title": r.get("title", ""),
+                        "source": r.get("source", ""),
+                        "snippet": r.get("body", "")[:300],
+                        "url": r.get("url", ""),
+                        "published_at": published_str,
+                    })
+
+                self._news_search_cache.cache_results(query, articles)
+
+            logger.info(
+                f"[price_impact] News search found {len(articles)} articles "
+                f"within {self._config.news_search_max_age_minutes}min for '{query}'"
+            )
+
+            if not articles:
+                logger.info(f"[price_impact] No articles found for '{query}', skipping")
+                return
+
+            # Step 3: Extract entities from articles using LLMEntityExtractor
+            extractor = self._get_or_create_extractor()
+
+            # Combine article titles + snippets for extraction
+            combined_title = " | ".join(a["title"] for a in articles[:5] if a.get("title"))
+            combined_body = "\n".join(
+                f"[{a.get('source', '')}] {a.get('title', '')} — {a.get('snippet', '')}"
+                for a in articles[:5]
+            )
+
+            entities = await extractor.extract(
+                title=combined_title,
+                subreddit="",  # Not Reddit
+                body=combined_body,
+            )
+
+            if not entities:
+                logger.info(f"[price_impact] No entities extracted from news for '{query}'")
+                return
+
+            # Step 4: Convert LLMExtractedEntity objects to JSONB format
+            from ..schemas.entity_schemas import normalize_entity_id
+            entities_jsonb = []
+            aggregate_sentiment = 0
+            for ent in entities:
+                entities_jsonb.append({
+                    "entity_id": normalize_entity_id(ent.name),
+                    "canonical_name": ent.name,
+                    "entity_type": ent.entity_type.lower(),
+                    "sentiment_score": ent.sentiment,
+                    "confidence": ent.confidence_float,
+                    "context_snippet": ent.context,
+                })
+                aggregate_sentiment += ent.sentiment
+            if entities_jsonb:
+                aggregate_sentiment = aggregate_sentiment // len(entities_jsonb)
+
+            # Step 5: INSERT into news_entities (upsert on article_url for dedup)
+            if not self._supabase:
+                logger.warning("[price_impact] No Supabase client for news entity insert")
+                return
+
+            # Use first article's URL as the dedup key
+            primary_url = articles[0].get("url", f"news_{entity_id}_{int(time.time())}")
+            primary_headline = articles[0].get("title", combined_title[:200])
+            primary_source = articles[0].get("source", "")
+            primary_published = articles[0].get("published_at", "")
+
+            # Parse source_domain from URL
+            source_domain = "news"
+            try:
+                from urllib.parse import urlparse
+                parsed = urlparse(primary_url)
+                if parsed.netloc:
+                    source_domain = parsed.netloc.replace("www.", "")
+            except Exception:
+                pass
+
+            insert_data = {
+                "article_url": primary_url,
+                "headline": primary_headline,
+                "publisher": primary_source,
+                "source_domain": source_domain,
+                "entities": entities_jsonb,
+                "aggregate_sentiment": aggregate_sentiment,
+                "search_query": query,
+                "triggered_by_entity": entity_id,
+                "triggered_by_signal": signal_id,
+                "content_type": "news",
+                "extraction_source": "llm_extraction",
+                "extraction_success": True,
+            }
+
+            # Parse published_at if available
+            if primary_published:
+                try:
+                    insert_data["published_at"] = primary_published
+                except Exception:
+                    pass
+
+            try:
+                await self._supabase.table("news_entities") \
+                    .upsert(insert_data, on_conflict="article_url") \
+                    .execute()
+                logger.info(
+                    f"[price_impact] Inserted news entity: {primary_headline[:60]}... "
+                    f"({len(entities_jsonb)} entities, triggered by {entity_name})"
+                )
+            except Exception as e:
+                logger.error(f"[price_impact] news_entities upsert failed: {e}")
+                self._news_searches_failed += 1
+                return
+
+            self._news_searches_enriched += 1
+
+        except ImportError:
+            logger.warning("[price_impact] duckduckgo_search not installed, news search disabled")
+            self._news_searches_failed += 1
+        except Exception as e:
+            logger.error(f"[price_impact] News search/enrich error for {signal_id}: {e}")
+            self._news_searches_failed += 1
 
     async def _insert_price_impact(
         self,

@@ -62,6 +62,9 @@ class PriceImpactStore:
         # signal_id -> (CachedPriceImpact, ingested_at_timestamp)
         self._signals: Dict[str, Tuple[CachedPriceImpact, float]] = {}
 
+        # Session start time - signals loaded before this are "historical"
+        self._session_start_time: Optional[float] = None
+
         # Stats
         self._total_ingested = 0
         self._total_pruned = 0
@@ -282,6 +285,9 @@ class PriceImpactStore:
                         except (ValueError, TypeError):
                             pass
 
+                    # Mark pre-restart signals as "historical"
+                    agent_status = "historical" if self._session_start_time else row.get("agent_status", "pending")
+
                     signal_data = {
                         "signal_id": signal_id,
                         "market_ticker": row.get("market_ticker", ""),
@@ -301,7 +307,7 @@ class PriceImpactStore:
                         "source_type": row.get("source_type", "reddit_text"),
                         "content_type": row.get("content_type", "text"),
                         "source_domain": row.get("source_domain", "reddit.com"),
-                        "agent_status": row.get("agent_status", "pending"),
+                        "agent_status": agent_status,
                     }
 
                     # Ingest into store (skip if already exists)
@@ -319,6 +325,19 @@ class PriceImpactStore:
         except Exception as e:
             logger.error(f"[price_impact_store] Error loading from Supabase: {e}")
             return 0
+
+    def set_session_start_time(self, start_time: float) -> None:
+        """
+        Set the session start time for historical signal detection.
+
+        Signals loaded from Supabase before this time are marked "historical".
+        Called by the deep agent on startup.
+
+        Args:
+            start_time: Unix timestamp of session start
+        """
+        self._session_start_time = start_time
+        logger.info(f"[price_impact_store] Session start time set: {start_time}")
 
     def get_stats(self) -> dict:
         """Get store statistics."""
@@ -348,7 +367,13 @@ class PriceImpactStore:
         # Convert to dicts for JSON serialization
         result = []
         for signal in signals[:limit]:
-            result.append({
+            # Determine if signal is historical (created before session start)
+            is_historical = (
+                self._session_start_time is not None
+                and signal.created_at < self._session_start_time
+            ) or signal.agent_status == "historical"
+
+            d = {
                 "signal_id": signal.signal_id,
                 "market_ticker": signal.market_ticker,
                 "entity_id": signal.entity_id,
@@ -368,7 +393,9 @@ class PriceImpactStore:
                 "content_type": signal.content_type,
                 "source_domain": signal.source_domain,
                 "agent_status": signal.agent_status,
-            })
+                "is_historical": is_historical,
+            }
+            result.append(d)
 
         return result
 
@@ -391,7 +418,7 @@ class PriceImpactStore:
 
         old_signal, added_at = self._signals[signal_id]
 
-        # Create new signal with updated status
+        # Create new signal with updated status (preserve all other fields)
         new_signal = CachedPriceImpact(
             signal_id=old_signal.signal_id,
             market_ticker=old_signal.market_ticker,

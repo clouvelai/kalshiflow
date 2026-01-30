@@ -7,8 +7,8 @@ This module implements a self-improving agent that:
 3. Reflects on outcomes and learns
 4. Persists learnings to memory files
 
-The agent uses LangChain for tool calling and streaming, with
-custom tools for market data, price impacts, and trade execution.
+The agent uses the Anthropic Claude API directly for tool calling,
+with custom tools for market data, price impacts, and trade execution.
 """
 
 from .agent import SelfImprovingAgent, DeepAgentConfig
@@ -19,6 +19,7 @@ from .tools import (
     get_session_state,
     read_memory,
     write_memory,
+    append_memory,
 )
 from .reflection import ReflectionEngine
 
@@ -32,4 +33,5 @@ __all__ = [
     "get_session_state",
     "read_memory",
     "write_memory",
+    "append_memory",
 ]

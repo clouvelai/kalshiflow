@@ -108,9 +108,6 @@ class ReflectionEngine:
         self._check_interval_seconds = 30.0
         self._max_pending_trades = 100
 
-        # File lock to prevent race conditions on memory file writes
-        self._file_lock = asyncio.Lock()
-
         # Queue for background reflection processing (prevents blocking main loop)
         self._reflection_queue: asyncio.Queue = asyncio.Queue()
         self._reflection_worker_task: Optional[asyncio.Task] = None
@@ -377,91 +374,86 @@ class ReflectionEngine:
         # Remove from pending
         del self._pending_trades[trade.trade_id]
 
-    async def _store_learning(self, reflection: ReflectionResult) -> None:
-        """Store a learning in the appropriate memory file."""
-        try:
-            # Format the learning entry
-            date_str = datetime.now().strftime("%Y-%m-%d")
-            time_str = datetime.now().strftime("%H:%M")
-
-            entry = (
-                f"\n## {date_str} {time_str} - {reflection.ticker} ({reflection.result})\n"
-                f"- P&L: ${reflection.pnl_cents / 100:.2f}\n"
-                f"- Learning: {reflection.learning}\n"
-            )
-
-            # Use lock to prevent race conditions on concurrent file writes
-            async with self._file_lock:
-                # Append to learnings.md
-                learnings_path = self._memory_dir / "learnings.md"
-                self._append_to_file(learnings_path, entry)
-
-                # If mistake identified, add to mistakes.md
-                if reflection.mistake_identified:
-                    mistake_entry = f"\n- {reflection.mistake_identified} (from {reflection.ticker} {reflection.result})\n"
-                    mistakes_path = self._memory_dir / "mistakes.md"
-                    self._append_to_file(mistakes_path, mistake_entry)
-
-                # If pattern identified, add to patterns.md
-                if reflection.pattern_identified:
-                    pattern_entry = f"\n- {reflection.pattern_identified}\n"
-                    patterns_path = self._memory_dir / "patterns.md"
-                    self._append_to_file(patterns_path, pattern_entry)
-
-            logger.info(f"[deep_agent.reflection] Stored learning from {reflection.ticker}")
-
-        except Exception as e:
-            logger.error(f"[deep_agent.reflection] Error storing learning: {e}")
-
-    def _append_to_file(self, path: Path, content: str) -> None:
-        """Append content to a file, creating if needed. Must be called under _file_lock."""
-        if path.exists():
-            existing = path.read_text(encoding="utf-8")
-            path.write_text(existing + content, encoding="utf-8")
-        else:
-            path.write_text(content, encoding="utf-8")
-
     def _build_performance_scorecard(self) -> str:
         """
         Build a quantitative performance scorecard for injection into reflections.
 
         Returns a compact summary of all-time stats, recent trend (last 5 trades),
-        and P&L trajectory to give the agent concrete feedback on improvement.
+        P&L trajectory, and open position summary to give the agent concrete
+        feedback on improvement — including unsettled trades.
         """
-        if not self._reflections:
+        if not self._reflections and not self._state_container:
             return ""
 
-        total = len(self._reflections)
-        wins = sum(1 for r in self._reflections if r.result == "win")
-        losses = sum(1 for r in self._reflections if r.result == "loss")
-        total_pnl = sum(r.pnl_cents for r in self._reflections)
-        win_rate = wins / total if total > 0 else 0.0
+        lines = ["### Performance Scorecard"]
 
-        # Last 5 trades trend
-        recent = self._reflections[-5:]
-        recent_wins = sum(1 for r in recent if r.result == "win")
-        recent_pnl = sum(r.pnl_cents for r in recent)
-        recent_win_rate = recent_wins / len(recent) if recent else 0.0
+        # Settled trade stats (only if we have reflections)
+        if self._reflections:
+            total = len(self._reflections)
+            wins = sum(1 for r in self._reflections if r.result == "win")
+            losses = sum(1 for r in self._reflections if r.result == "loss")
+            total_pnl = sum(r.pnl_cents for r in self._reflections)
+            win_rate = wins / total if total > 0 else 0.0
 
-        # Strategy update count
-        strategy_updates = sum(1 for r in self._reflections if r.should_update_strategy)
-        mistakes_found = sum(1 for r in self._reflections if r.mistake_identified)
+            # Last 5 trades trend
+            recent = self._reflections[-5:]
+            recent_wins = sum(1 for r in recent if r.result == "win")
+            recent_pnl = sum(r.pnl_cents for r in recent)
+            recent_win_rate = recent_wins / len(recent) if recent else 0.0
 
-        # Trend arrow
-        if len(self._reflections) >= 5:
-            first_half_pnl = sum(r.pnl_cents for r in self._reflections[:total // 2])
-            second_half_pnl = sum(r.pnl_cents for r in self._reflections[total // 2:])
-            trend = "IMPROVING" if second_half_pnl > first_half_pnl else "DECLINING" if second_half_pnl < first_half_pnl else "FLAT"
-        else:
-            trend = "TOO_EARLY"
+            # Strategy update count
+            strategy_updates = sum(1 for r in self._reflections if r.should_update_strategy)
+            mistakes_found = sum(1 for r in self._reflections if r.mistake_identified)
 
-        lines = [
-            "### Performance Scorecard",
-            f"- **All-Time**: {wins}W/{losses}L ({win_rate:.0%} win rate), P&L: ${total_pnl / 100:.2f}",
-            f"- **Last 5 Trades**: {recent_wins}W/{len(recent) - recent_wins}L ({recent_win_rate:.0%}), P&L: ${recent_pnl / 100:.2f}",
-            f"- **Trend**: {trend}",
-            f"- **Strategy Updates**: {strategy_updates} | **Mistakes Found**: {mistakes_found}",
-        ]
+            # Trend arrow
+            if len(self._reflections) >= 5:
+                first_half_pnl = sum(r.pnl_cents for r in self._reflections[:total // 2])
+                second_half_pnl = sum(r.pnl_cents for r in self._reflections[total // 2:])
+                trend = "IMPROVING" if second_half_pnl > first_half_pnl else "DECLINING" if second_half_pnl < first_half_pnl else "FLAT"
+            else:
+                trend = "TOO_EARLY"
+
+            lines.extend([
+                f"- **All-Time**: {wins}W/{losses}L ({win_rate:.0%} win rate), P&L: ${total_pnl / 100:.2f}",
+                f"- **Last 5 Trades**: {recent_wins}W/{len(recent) - recent_wins}L ({recent_win_rate:.0%}), P&L: ${recent_pnl / 100:.2f}",
+                f"- **Trend**: {trend}",
+                f"- **Strategy Updates**: {strategy_updates} | **Mistakes Found**: {mistakes_found}",
+            ])
+
+        # Open position summary (deep_agent positions only)
+        # Use pending trades as source of truth for agent's positions
+        agent_tickers = {trade.ticker for trade in self._pending_trades.values()}
+        if agent_tickers and self._state_container:
+            try:
+                summary = self._state_container.get_trading_summary()
+                all_positions = summary.get("positions_details", [])
+                agent_positions = [
+                    p for p in all_positions
+                    if p.get("ticker") in agent_tickers
+                ]
+                if agent_positions:
+                    open_count = len(agent_positions)
+                    total_unrealized = sum(
+                        p.get("unrealized_pnl", 0) for p in agent_positions
+                    )
+                    winning = sum(
+                        1 for p in agent_positions if p.get("unrealized_pnl", 0) > 0
+                    )
+                    losing = sum(
+                        1 for p in agent_positions if p.get("unrealized_pnl", 0) < 0
+                    )
+                    sign = "+" if total_unrealized >= 0 else ""
+                    lines.append(
+                        f"- **Open Positions**: {open_count} open, "
+                        f"unrealized {sign}${total_unrealized / 100:.2f} "
+                        f"({winning} winning, {losing} losing)"
+                    )
+            except Exception as e:
+                logger.debug(f"[deep_agent.reflection] Could not get open positions for scorecard: {e}")
+
+        # Only return content if we have more than just the header
+        if len(lines) <= 1:
+            return ""
 
         return "\n".join(lines)
 

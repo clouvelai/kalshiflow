@@ -244,16 +244,23 @@ RedditSignalRow.displayName = 'RedditSignalRow';
  * transformed into market-specific price impact signals.
  *
  * Displays:
- * - Dual timestamp bar (Posted / Detected / Lag)
+ * - Dual timestamp bar (Posted / Signal / Lag)
  * - Contextual subtitles for sentiment, impact, and confidence
  * - Source context (Reddit post title and entity context snippet)
  * - Agent status and market type badges
  * - Sentiment → Impact transformation pipeline
  */
-const PriceImpactRow = memo(({ impact, isNew = false, freshnessTier = 'normal' }) => {
+const PriceImpactRow = memo(({ impact, isNew = false, freshnessTier = 'normal', lifecycle = null }) => {
   const sentimentIsPositive = impact.sentimentScore > 0;
   const impactIsPositive = impact.priceImpactScore > 0;
   const wasInverted = sentimentIsPositive !== impactIsPositive;
+
+  // Lifecycle state
+  const lcStatus = lifecycle?.status || 'new';
+  const lcEvalCount = lifecycle?.evaluationCount || 0;
+  const lcMaxEvals = lifecycle?.maxEvaluations || 3;
+  const lcEvals = lifecycle?.evaluations || [];
+  const isTerminal = ['traded', 'passed', 'expired', 'historical'].includes(lcStatus);
 
   // Color schemes based on impact direction
   const impactBg = impactIsPositive
@@ -279,15 +286,16 @@ const PriceImpactRow = memo(({ impact, isNew = false, freshnessTier = 'normal' }
   };
   const marketType = marketTypeConfig[impact.marketType] || marketTypeConfig.UNKNOWN;
 
-  // Agent status badge configuration
-  const agentStatusConfig = {
-    pending: { style: 'bg-gray-800/40 text-gray-400 border-gray-600/30', label: 'Pending', icon: Clock },
-    viewed: { style: 'bg-blue-900/30 text-blue-400 border-blue-600/30', label: 'Viewed', icon: Activity },
+  // Lifecycle status badge configuration
+  const lifecycleStatusConfig = {
+    new: { style: 'bg-blue-900/30 text-blue-400 border-blue-600/30', label: 'New', icon: Clock },
+    evaluating: { style: 'bg-cyan-900/30 text-cyan-400 border-cyan-600/30', label: `Eval ${lcEvalCount}/${lcMaxEvals}`, icon: Activity },
     traded: { style: 'bg-emerald-900/30 text-emerald-400 border-emerald-600/30', label: 'Traded', icon: CheckCircle },
-    observed: { style: 'bg-amber-900/30 text-amber-400 border-amber-600/30', label: 'Watching', icon: AlertCircle },
-    rejected: { style: 'bg-red-900/30 text-red-400 border-red-600/30', label: 'Rejected', icon: XCircle },
+    passed: { style: 'bg-gray-700/40 text-gray-400 border-gray-600/30', label: 'Passed', icon: XCircle },
+    expired: { style: 'bg-gray-800/40 text-gray-500 border-gray-700/30', label: `Expired (${lcMaxEvals}/${lcMaxEvals})`, icon: Clock },
+    historical: { style: 'bg-gray-800/30 text-gray-600 border-gray-700/20', label: 'Historical', icon: Clock },
   };
-  const agentStatus = agentStatusConfig[impact.agentStatus] || agentStatusConfig.pending;
+  const agentStatus = lifecycleStatusConfig[lcStatus] || lifecycleStatusConfig.new;
   const StatusIcon = agentStatus.icon;
 
   // Source type badge configuration
@@ -301,7 +309,7 @@ const PriceImpactRow = memo(({ impact, isNew = false, freshnessTier = 'normal' }
 
   // Live-updating timestamps
   const postedAgo = formatRelativeTimestamp(impact.sourceCreatedAt);
-  const detectedAgo = formatRelativeTimestamp(impact.timestamp);
+  const signalAgo = formatRelativeTimestamp(impact.timestamp);
   const lag = formatLatency(impact.sourceCreatedAt, impact.timestamp);
 
   // Contextual subtitles
@@ -326,23 +334,35 @@ const PriceImpactRow = memo(({ impact, isNew = false, freshnessTier = 'normal' }
     freshnessTier === 'recent' ? 'animate-signal-recent' : '',
   ].filter(Boolean).join(' ');
 
+  // Visual de-emphasis for terminal/historical signals
+  const opacityClass = lcStatus === 'historical' ? 'opacity-40'
+    : (lcStatus === 'expired' || lcStatus === 'passed') ? 'opacity-60'
+    : '';
+  const borderAccent = lcStatus === 'traded' ? 'border-l-2 border-l-emerald-400' : '';
+  const hoverClass = isTerminal ? '' : 'hover:border-gray-600/50 hover:shadow-lg';
+  const borderStyle = lcStatus === 'historical' ? 'border-gray-800/20' : 'border-gray-700/40';
+
   return (
     <div className={`
       relative overflow-hidden
-      rounded-xl border border-gray-700/40
+      rounded-xl border ${borderStyle}
       ${impactBg}
       backdrop-blur-sm
       p-3 mb-2
       transition-all duration-300
-      hover:border-gray-600/50 hover:shadow-lg
+      ${hoverClass}
       group
       ${animationClasses}
+      ${opacityClass}
+      ${borderAccent}
     `}>
       {/* Subtle glow effect */}
-      <div className={`
-        absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-500
-        ${impactIsPositive ? 'bg-emerald-500/5' : 'bg-rose-500/5'}
-      `} />
+      {!isTerminal && (
+        <div className={`
+          absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-500
+          ${impactIsPositive ? 'bg-emerald-500/5' : 'bg-rose-500/5'}
+        `} />
+      )}
 
       {/* Header: Entity + Badges Row */}
       <div className="relative flex items-center justify-between mb-2">
@@ -386,8 +406,23 @@ const PriceImpactRow = memo(({ impact, isNew = false, freshnessTier = 'normal' }
         </div>
       </div>
 
-      {/* Dual Timestamp Bar: Posted | Detected | Lag */}
-      {(postedAgo || detectedAgo) && (
+      {/* Evaluation Progress Bar */}
+      {lcMaxEvals > 0 && (lcEvalCount > 0 || lcStatus !== 'new') && (
+        <div className="flex gap-0.5 h-1 mt-1.5 mb-1">
+          {Array.from({ length: lcMaxEvals }, (_, i) => (
+            <div key={i} className={`flex-1 rounded-full ${
+              i < lcEvalCount
+                ? lcEvals[i]?.decision === 'TRADE' ? 'bg-emerald-400'
+                  : lcEvals[i]?.decision === 'WAIT' ? 'bg-amber-400'
+                  : 'bg-gray-500'
+                : 'bg-gray-800'
+            }`} />
+          ))}
+        </div>
+      )}
+
+      {/* Dual Timestamp Bar: Posted | Signal | Lag */}
+      {(postedAgo || signalAgo) && (
         <div className="relative flex items-center gap-3 mb-2 px-2 py-1.5 bg-gray-900/50 rounded-lg border border-gray-800/30 text-[10px]">
           {postedAgo && (
             <span className="flex items-center gap-1">
@@ -396,14 +431,14 @@ const PriceImpactRow = memo(({ impact, isNew = false, freshnessTier = 'normal' }
               <span className="text-orange-400 font-medium">{postedAgo}</span>
             </span>
           )}
-          {postedAgo && detectedAgo && (
+          {postedAgo && signalAgo && (
             <span className="text-gray-700">|</span>
           )}
-          {detectedAgo && (
+          {signalAgo && (
             <span className="flex items-center gap-1">
               <Zap className="w-3 h-3 text-gray-500" />
-              <span className="text-gray-500">Detected</span>
-              <span className="text-cyan-400 font-medium">{detectedAgo}</span>
+              <span className="text-gray-500">Signal</span>
+              <span className="text-cyan-400 font-medium">{signalAgo}</span>
             </span>
           )}
           {lag && (
@@ -558,6 +593,9 @@ const DeepAgentPanel = ({
   isRunning = false,
   isLearning = false,
   statsOnly = false,
+  getSignalLifecycle = null,
+  lifecycleSummary = null,
+  getStatusSortPriority = null,
 }) => {
   const [isExpanded, setIsExpanded] = useState(true);
   const [showTools, setShowTools] = useState(false);
@@ -568,6 +606,16 @@ const DeepAgentPanel = ({
   useRelativeTime(30000);
   // Track new signal arrivals + freshness tiers
   const { newSignalIds, getFreshnessTier } = useSignalFreshness(priceImpacts);
+
+  // Sort price impacts by lifecycle status priority
+  const sortedPriceImpacts = useMemo(() => {
+    if (!getStatusSortPriority) return priceImpacts;
+    return [...priceImpacts].sort((a, b) => {
+      const aId = a.id || a.signal_id || '';
+      const bId = b.id || b.signal_id || '';
+      return getStatusSortPriority(aId) - getStatusSortPriority(bId);
+    });
+  }, [priceImpacts, getStatusSortPriority]);
 
   // Calculate session P&L from settlements
   const sessionPnL = useMemo(() => {
@@ -743,6 +791,15 @@ const DeepAgentPanel = ({
                   <span className="text-[9px] text-gray-500 ml-1">
                     Entity → Market
                   </span>
+                  {lifecycleSummary && (
+                    <span className="text-[9px] text-gray-500 ml-2">
+                      {lifecycleSummary.evaluating > 0 && `${lifecycleSummary.evaluating} evaluating`}
+                      {lifecycleSummary.evaluating > 0 && lifecycleSummary.traded > 0 && ' \u00B7 '}
+                      {lifecycleSummary.traded > 0 && `${lifecycleSummary.traded} traded`}
+                      {(lifecycleSummary.evaluating > 0 || lifecycleSummary.traded > 0) && lifecycleSummary.historical > 0 && ' \u00B7 '}
+                      {lifecycleSummary.historical > 0 && `${lifecycleSummary.historical} historical`}
+                    </span>
+                  )}
                 </div>
                 <div className="flex items-center gap-2">
                   {priceImpacts.length > 0 && (
@@ -761,12 +818,13 @@ const DeepAgentPanel = ({
               </button>
               {showPriceImpacts && (
                 <div className="mt-3 max-h-[400px] overflow-y-auto pr-1 space-y-0">
-                  {priceImpacts.slice(0, 10).map((impact) => (
+                  {sortedPriceImpacts.slice(0, 10).map((impact) => (
                     <PriceImpactRow
                       key={impact.id}
                       impact={impact}
                       isNew={newSignalIds.has(impact.id)}
                       freshnessTier={getFreshnessTier(impact)}
+                      lifecycle={getSignalLifecycle ? getSignalLifecycle(impact.id) : null}
                     />
                   ))}
                 </div>

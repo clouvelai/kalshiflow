@@ -76,13 +76,26 @@ const PipelineStage = memo(({
 PipelineStage.displayName = 'PipelineStage';
 
 /**
- * Price Impact Card - Full visualization of entity → market transformation
- * (Full-page variant using snake_case field names)
+ * Price Impact Card - Full visualization of entity → market transformation.
+ *
+ * DATA CONTRACT: This component receives data from useV3WebSocket.entityPriceImpacts
+ * which provides RAW snake_case fields from the backend (e.g. impact.sentiment_score,
+ * impact.price_impact_score, impact.source_created_at).
+ *
+ * NOTE: DeepAgentPanel's PriceImpactRow uses DIFFERENT camelCase fields from
+ * useDeepAgent (e.g. impact.sentimentScore). Do NOT mix these data sources.
  */
-const PriceImpactCard = memo(({ impact, isNew = false, freshnessTier = 'normal' }) => {
+const PriceImpactCard = memo(({ impact, isNew = false, freshnessTier = 'normal', lifecycle = null }) => {
   const sentimentIsPositive = impact.sentiment_score > 0;
   const impactIsPositive = impact.price_impact_score > 0;
   const wasInverted = sentimentIsPositive !== impactIsPositive;
+
+  // Lifecycle state
+  const lcStatus = lifecycle?.status || 'new';
+  const lcEvalCount = lifecycle?.evaluationCount || 0;
+  const lcMaxEvals = lifecycle?.maxEvaluations || 3;
+  const lcEvals = lifecycle?.evaluations || [];
+  const isTerminal = ['traded', 'passed', 'expired', 'historical'].includes(lcStatus);
 
   const impactBg = impactIsPositive
     ? 'from-emerald-950/50 via-emerald-900/30 to-gray-900/50'
@@ -112,7 +125,7 @@ const PriceImpactCard = memo(({ impact, isNew = false, freshnessTier = 'normal' 
 
   // Live-updating timestamps (snake_case fields)
   const postedAgo = formatRelativeTimestamp(impact.source_created_at);
-  const detectedAgo = formatRelativeTimestamp(impact.timestamp || impact.created_at);
+  const signalAgo = formatRelativeTimestamp(impact.timestamp || impact.created_at);
   const lag = formatLatency(impact.source_created_at, impact.timestamp || impact.created_at);
 
   // Contextual subtitles
@@ -137,20 +150,43 @@ const PriceImpactCard = memo(({ impact, isNew = false, freshnessTier = 'normal' 
     freshnessTier === 'recent' ? 'animate-signal-recent' : '',
   ].filter(Boolean).join(' ');
 
+  // Visual de-emphasis for terminal/historical signals
+  const opacityClass = lcStatus === 'historical' ? 'opacity-40'
+    : (lcStatus === 'expired' || lcStatus === 'passed') ? 'opacity-60'
+    : '';
+  const borderAccent = lcStatus === 'traded' ? 'border-l-2 border-l-emerald-400' : '';
+  const hoverClass = isTerminal ? '' : 'hover:border-gray-600/60';
+  const borderStyle = lcStatus === 'historical' ? 'border-gray-800/20' : 'border-gray-700/50';
+
+  // Lifecycle status badge
+  const lifecycleBadgeConfig = {
+    new: { style: 'bg-blue-900/30 text-blue-400 border-blue-600/30', label: 'New' },
+    evaluating: { style: 'bg-cyan-900/30 text-cyan-400 border-cyan-600/30', label: `Eval ${lcEvalCount}/${lcMaxEvals}` },
+    traded: { style: 'bg-emerald-900/30 text-emerald-400 border-emerald-600/30', label: 'Traded' },
+    passed: { style: 'bg-gray-700/40 text-gray-400 border-gray-600/30', label: 'Passed' },
+    expired: { style: 'bg-gray-800/40 text-gray-500 border-gray-700/30', label: `Expired (${lcMaxEvals}/${lcMaxEvals})` },
+    historical: { style: 'bg-gray-800/30 text-gray-600 border-gray-700/20', label: 'Historical' },
+  };
+  const lcBadge = lifecycleBadgeConfig[lcStatus] || lifecycleBadgeConfig.new;
+
   return (
     <div className={`
-      relative overflow-hidden rounded-2xl border border-gray-700/50
+      relative overflow-hidden rounded-2xl border ${borderStyle}
       bg-gradient-to-br ${impactBg}
       backdrop-blur-sm p-5
-      transition-all duration-300 hover:border-gray-600/60
+      transition-all duration-300 ${hoverClass}
       group
       ${animationClasses}
+      ${opacityClass}
+      ${borderAccent}
     `}>
       {/* Glow effect */}
-      <div className={`
-        absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-500
-        ${impactIsPositive ? 'bg-emerald-500/5' : 'bg-rose-500/5'}
-      `} />
+      {!isTerminal && (
+        <div className={`
+          absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-500
+          ${impactIsPositive ? 'bg-emerald-500/5' : 'bg-rose-500/5'}
+        `} />
+      )}
 
       {/* Header */}
       <div className="relative flex items-start justify-between mb-3">
@@ -172,6 +208,10 @@ const PriceImpactCard = memo(({ impact, isNew = false, freshnessTier = 'normal' 
         </div>
 
         <div className="flex items-center gap-2">
+          {/* Lifecycle Badge */}
+          <span className={`px-2 py-0.5 rounded-lg text-[10px] font-bold border ${lcBadge.style}`}>
+            {lcBadge.label}
+          </span>
           <span className={`px-2.5 py-1 rounded-lg text-[10px] font-bold border ${marketTypeBadge}`}>
             {impact.market_type}
           </span>
@@ -183,8 +223,23 @@ const PriceImpactCard = memo(({ impact, isNew = false, freshnessTier = 'normal' 
         </div>
       </div>
 
-      {/* Dual Timestamp Bar: Posted | Detected | Lag */}
-      {(postedAgo || detectedAgo) && (
+      {/* Evaluation Progress Bar */}
+      {lcMaxEvals > 0 && (lcEvalCount > 0 || lcStatus !== 'new') && (
+        <div className="flex gap-0.5 h-1 mb-3">
+          {Array.from({ length: lcMaxEvals }, (_, i) => (
+            <div key={i} className={`flex-1 rounded-full ${
+              i < lcEvalCount
+                ? lcEvals[i]?.decision === 'TRADE' ? 'bg-emerald-400'
+                  : lcEvals[i]?.decision === 'WAIT' ? 'bg-amber-400'
+                  : 'bg-gray-500'
+                : 'bg-gray-800'
+            }`} />
+          ))}
+        </div>
+      )}
+
+      {/* Dual Timestamp Bar: Posted | Signal | Lag */}
+      {(postedAgo || signalAgo) && (
         <div className="relative flex items-center gap-4 mb-4 px-3 py-2 bg-gray-900/50 rounded-lg border border-gray-800/30 text-xs">
           {postedAgo && (
             <span className="flex items-center gap-1.5">
@@ -193,14 +248,14 @@ const PriceImpactCard = memo(({ impact, isNew = false, freshnessTier = 'normal' 
               <span className="text-orange-400 font-medium">{postedAgo}</span>
             </span>
           )}
-          {postedAgo && detectedAgo && (
+          {postedAgo && signalAgo && (
             <span className="text-gray-700">|</span>
           )}
-          {detectedAgo && (
+          {signalAgo && (
             <span className="flex items-center gap-1.5">
               <Zap className="w-3.5 h-3.5 text-gray-500" />
-              <span className="text-gray-500">Detected</span>
-              <span className="text-cyan-400 font-medium">{detectedAgo}</span>
+              <span className="text-gray-500">Signal</span>
+              <span className="text-cyan-400 font-medium">{signalAgo}</span>
             </span>
           )}
           {lag && (
@@ -811,6 +866,9 @@ const AgentPage = () => {
     memoryUpdates,
     processMessage,
     isRunning: agentIsRunning,
+    getSignalLifecycle,
+    lifecycleSummary,
+    getStatusSortPriority,
   } = useDeepAgent({ useV3WebSocketState: true });
 
   // Wire deep agent message processing to WebSocket
@@ -840,6 +898,18 @@ const AgentPage = () => {
 
   // Track new signal arrivals + freshness tiers for price impact cards
   const { newSignalIds, getFreshnessTier } = useSignalFreshness(entityPriceImpacts);
+
+  // Sort price impacts by lifecycle priority (evaluating > new > traded > passed/expired > historical)
+  const sortedPriceImpacts = useMemo(() => {
+    if (!entityPriceImpacts || entityPriceImpacts.length === 0) return [];
+    return [...entityPriceImpacts].sort((a, b) => {
+      const pa = getStatusSortPriority(a.signal_id);
+      const pb = getStatusSortPriority(b.signal_id);
+      if (pa !== pb) return pa - pb;
+      // Within same priority, sort by timestamp (newest first)
+      return (b.timestamp || 0) - (a.timestamp || 0);
+    });
+  }, [entityPriceImpacts, getStatusSortPriority]);
 
   // Pipeline stats
   const pipelineStats = useMemo(() => ({
@@ -1120,13 +1190,24 @@ const AgentPage = () => {
                     <p className="text-xs text-gray-500">Entity sentiment → Market-specific trading signals</p>
                   </div>
                 </div>
-                <span className="px-3 py-1 bg-orange-900/30 text-orange-400 text-sm font-bold rounded-lg border border-orange-700/30">
-                  {entityPriceImpacts.length} signals
-                </span>
+                <div className="flex items-center gap-3">
+                  {(lifecycleSummary.evaluating > 0 || lifecycleSummary.traded > 0 || lifecycleSummary.historical > 0) && (
+                    <span className="text-[10px] text-gray-500">
+                      {[
+                        lifecycleSummary.evaluating > 0 && `${lifecycleSummary.evaluating} evaluating`,
+                        lifecycleSummary.traded > 0 && `${lifecycleSummary.traded} traded`,
+                        lifecycleSummary.historical > 0 && `${lifecycleSummary.historical} historical`,
+                      ].filter(Boolean).join(' \u00b7 ')}
+                    </span>
+                  )}
+                  <span className="px-3 py-1 bg-orange-900/30 text-orange-400 text-sm font-bold rounded-lg border border-orange-700/30">
+                    {entityPriceImpacts.length} signals
+                  </span>
+                </div>
               </div>
 
               <div className="space-y-4 max-h-[400px] overflow-y-auto pr-2">
-                {entityPriceImpacts.length === 0 ? (
+                {sortedPriceImpacts.length === 0 ? (
                   <div className="text-center py-12">
                     <Sparkles className="w-10 h-10 text-gray-700 mx-auto mb-3" />
                     <div className="text-gray-500 text-sm font-medium mb-1">No price impacts yet</div>
@@ -1135,12 +1216,13 @@ const AgentPage = () => {
                     </div>
                   </div>
                 ) : (
-                  entityPriceImpacts.slice(0, 20).map((impact) => (
+                  sortedPriceImpacts.slice(0, 20).map((impact) => (
                     <PriceImpactCard
                       key={impact.signal_id}
                       impact={impact}
                       isNew={newSignalIds.has(impact.signal_id)}
                       freshnessTier={getFreshnessTier(impact)}
+                      lifecycle={getSignalLifecycle(impact.signal_id)}
                     />
                   ))
                 )}

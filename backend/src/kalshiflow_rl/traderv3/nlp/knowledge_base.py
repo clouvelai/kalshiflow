@@ -17,9 +17,11 @@ from __future__ import annotations
 import hashlib
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, TYPE_CHECKING
+from typing import Any, Callable, Dict, Iterator, List, Optional, Set, Tuple, TYPE_CHECKING
 
 import numpy as np
+
+from ..schemas.entity_schemas import normalize_entity_id
 
 if TYPE_CHECKING:
     from spacy.vocab import Vocab
@@ -59,24 +61,7 @@ class MarketData:
     yes_sub_title: str
     market_type: str
     volume_24h: Optional[float] = None
-
-
-def normalize_entity_id(name: str) -> str:
-    """
-    Normalize an entity name to a consistent ID format.
-
-    Args:
-        name: Entity name (e.g., "Pam Bondi", "Pete Hegseth")
-
-    Returns:
-        Normalized ID (e.g., "pam_bondi", "pete_hegseth")
-    """
-    import re
-
-    normalized = name.lower().strip()
-    normalized = re.sub(r"[^\w\s]", "", normalized)  # Remove punctuation
-    normalized = re.sub(r"\s+", "_", normalized)  # Spaces to underscores
-    return normalized
+    llm_aliases: Optional[Set[str]] = None  # LLM-generated aliases to pass to build_aliases()
 
 
 class KalshiKnowledgeBase:
@@ -127,7 +112,7 @@ class KalshiKnowledgeBase:
     def populate_from_markets(
         self,
         markets: List[MarketData],
-        alias_builder: Optional[Callable[[str, str], set]] = None,
+        alias_builder: Optional[Callable] = None,
     ) -> None:
         """
         Populate KB from Kalshi market data.
@@ -139,13 +124,15 @@ class KalshiKnowledgeBase:
 
         Args:
             markets: List of MarketData objects to populate from
-            alias_builder: Optional function to build aliases (name, type) -> set
+            alias_builder: Optional function to build aliases.
+                Signature: (name, type, llm_aliases) -> set
         """
         from ..services.entity_market_index import build_aliases, detect_entity_type
 
         # Use provided alias builder or default
         if alias_builder is None:
-            alias_builder = build_aliases
+            def alias_builder(name, entity_type, llm_aliases=None):
+                return build_aliases(name, entity_type, llm_aliases)
 
         entities_added = 0
         aliases_added = 0
@@ -190,8 +177,8 @@ class KalshiKnowledgeBase:
                 volume_24h=market.volume_24h,
             )
 
-            # Build and add aliases
-            aliases = alias_builder(market.yes_sub_title, entity_type)
+            # Build and add aliases (pass LLM aliases from MarketData)
+            aliases = alias_builder(market.yes_sub_title, entity_type, market.llm_aliases)
             for alias in aliases:
                 alias_lower = alias.lower()
                 prior = self._compute_alias_prior(alias_lower, market.yes_sub_title)

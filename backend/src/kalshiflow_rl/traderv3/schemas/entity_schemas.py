@@ -17,7 +17,7 @@ import re
 import time
 import uuid
 from dataclasses import dataclass, field, asdict
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 
 # ============================================================================
@@ -109,6 +109,7 @@ class LLMExtractedEntity:
     sentiment: int  # -100 to +100
     confidence: str  # "low", "medium", "high"
     market_tickers: Tuple[str, ...] = ()  # LLM-matched market tickers (from extract_with_markets)
+    context: str = ""  # Per-entity summary from LLM
 
     @property
     def name_normalized(self) -> str:
@@ -128,6 +129,7 @@ class LLMExtractedEntity:
             "sentiment": self.sentiment,
             "confidence": self.confidence,
             "market_tickers": list(self.market_tickers),
+            "context": self.context,
         }
 
     @classmethod
@@ -138,6 +140,7 @@ class LLMExtractedEntity:
             sentiment=int(data.get("sentiment", 0)),
             confidence=data.get("confidence", "low"),
             market_tickers=tuple(data.get("market_tickers", [])),
+            context=data.get("context", ""),
         )
 
 
@@ -277,11 +280,12 @@ class CanonicalEntity:
 
     entity_id: str  # "donald_trump"
     canonical_name: str  # "Donald Trump"
-    entity_type: str  # "person" | "organization" | "position"
+    entity_type: str  # "person" | "organization" | "position" | "outcome"
     aliases: set  # {"trump", "donald", "donald j trump", "djt", "potus"}
     markets: List[MarketMapping]  # All linked markets
     created_at: float
     last_seen_at: float
+    llm_aliases: Set[str] = field(default_factory=set)  # LLM-generated aliases (e.g., "government shutdown")
 
     # Aggregated signals (populated at runtime)
     reddit_mentions: int = 0
@@ -294,6 +298,7 @@ class CanonicalEntity:
             "canonical_name": self.canonical_name,
             "entity_type": self.entity_type,
             "aliases": list(self.aliases),
+            "llm_aliases": list(self.llm_aliases),
             "markets": [m.to_dict() for m in self.markets],
             "created_at": self.created_at,
             "last_seen_at": self.last_seen_at,
@@ -312,6 +317,7 @@ class CanonicalEntity:
             markets=[MarketMapping(**m) for m in data.get("markets", [])],
             created_at=data.get("created_at", time.time()),
             last_seen_at=data.get("last_seen_at", time.time()),
+            llm_aliases=set(data.get("llm_aliases", [])),
             reddit_mentions=data.get("reddit_mentions", 0),
             aggregate_sentiment=data.get("aggregate_sentiment", 0.0),
             last_reddit_signal=data.get("last_reddit_signal"),

@@ -39,7 +39,8 @@ Return a JSON array. Each element:
   "name": "canonical name",
   "type": "PERSON|ORG|GPE|EVENT|POLICY|NORP",
   "sentiment": -100 to +100,
-  "confidence": "low|medium|high"
+  "confidence": "low|medium|high",
+  "context": "1-2 sentence summary of what the post says about this entity"
 }}
 
 Rules:
@@ -50,6 +51,7 @@ Rules:
 - If an acronym is used, expand it if possible (e.g., "AWS" stays "AWS" since that's the canonical name)
 - Sentiment: Is the news good or bad for this entity? (-100 = catastrophic, +100 = triumph)
 - Confidence: how clearly is sentiment expressed? (low = ambiguous, medium = clear direction, high = unambiguous)
+- Context: What does the post say about this entity specifically? Be factual and concise.
 
 If no named entities are found, return an empty array: []"""
 
@@ -70,7 +72,8 @@ Return a JSON array. Each element:
   "type": "PERSON|ORG|GPE|EVENT|POLICY|NORP",
   "sentiment": -100 to +100,
   "confidence": "low|medium|high",
-  "market_tickers": ["TICKER1", "TICKER2"]
+  "market_tickers": ["TICKER1", "TICKER2"],
+  "context": "1-2 sentence summary of what the post says about this entity"
 }}
 
 Rules:
@@ -83,6 +86,7 @@ Rules:
 - Use the keywords to help match entities to markets
 - An entity can match zero, one, or multiple markets
 - Only include tickers you are confident about - precision over recall
+- Context: What does the post say about this entity specifically? Be factual and concise.
 - If no named entities found, return: []"""
 
 
@@ -152,7 +156,7 @@ class LLMEntityExtractor:
                 client.chat.completions.create(
                     model=self._model,
                     messages=[{"role": "user", "content": prompt}],
-                    max_tokens=500,
+                    max_tokens=700,
                     temperature=0,
                 ),
                 timeout=self._timeout,
@@ -228,7 +232,7 @@ class LLMEntityExtractor:
                 client.chat.completions.create(
                     model=self._model,
                     messages=[{"role": "user", "content": prompt}],
-                    max_tokens=800,
+                    max_tokens=1200,
                     temperature=0,
                 ),
                 timeout=self._timeout,
@@ -322,6 +326,7 @@ class LLMEntityExtractor:
                         sentiment=sentiment,
                         confidence=entity.confidence,
                         market_tickers=entity.market_tickers,
+                        context=entity.context,
                     )
                 entities.append(entity)
             except Exception as e:
