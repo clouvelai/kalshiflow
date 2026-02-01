@@ -32,7 +32,6 @@ from .websocket_manager import V3WebSocketManager
 from .state_container import V3StateContainer
 from .health_monitor import V3HealthMonitor, CRITICAL_COMPONENTS
 from .status_reporter import V3StatusReporter
-from .trading_flow_orchestrator import TradingFlowOrchestrator
 from ..clients.orderbook_integration import V3OrderbookIntegration
 from ..config.environment import V3Config
 from ..services.trading_decision_service import TradingDecisionService, TradingStrategy
@@ -138,7 +137,6 @@ class V3Coordinator:
 
         # Initialize trading decision service (if trading client available)
         self._trading_service = None
-        self._trading_orchestrator = None
         if trading_client_integration:
             # Get trading strategy from config (default: HOLD for safety)
             strategy = config.trading_strategy
@@ -157,23 +155,6 @@ class V3Coordinator:
 
             # Set state container for immediate trading state on client connect
             self._websocket_manager.set_state_container(self._state_container)
-
-            # Initialize trading flow orchestrator only for non-event-driven strategies
-            # RLM_NO and HOLD are event-driven, use dedicated services instead
-            event_driven_strategies = {TradingStrategy.RLM_NO, TradingStrategy.HOLD}
-            if strategy not in event_driven_strategies:
-                self._trading_orchestrator = TradingFlowOrchestrator(
-                    config=config,
-                    trading_client=trading_client_integration,
-                    orderbook_integration=orderbook_integration,
-                    trading_service=self._trading_service,
-                    state_container=self._state_container,
-                    event_bus=event_bus,
-                    state_machine=state_machine
-                )
-                logger.info(f"Trading flow orchestrator enabled for {strategy.value} strategy")
-            else:
-                logger.info(f"Skipping orchestrator for event-driven {strategy.value} strategy")
 
         # Strategy coordinator (plugin-based strategy management)
         # Replaces direct RLMService instantiation with multi-strategy architecture
@@ -1503,15 +1484,8 @@ class V3Coordinator:
 
                 # State-specific handlers
                 if current_state == V3State.READY:
-                    # Use orchestrator for trading flow if available
-                    if self._trading_orchestrator:
-                        # Orchestrator handles its own sync and trading cycles
-                        cycle_run = await self._trading_orchestrator.check_and_run_cycle()
-
-                        # Broadcast state after orchestrator cycle (it syncs internally)
-                        if cycle_run:
-                            await self._status_reporter.emit_trading_state()
-                    # Note: No else branch needed - TradingStateSyncer handles periodic sync
+                    # TradingStateSyncer handles periodic sync
+                    pass
 
                 elif current_state == V3State.ERROR:
                     # In ERROR state, just sleep to prevent CPU spinning
@@ -1676,7 +1650,6 @@ class V3Coordinator:
         # Add optional components that may or may not be configured
         _OPTIONAL_STATUS_COMPONENTS = [
             ("_trading_service", "trading_service", "get_stats"),
-            ("_trading_orchestrator", "trading_orchestrator", "get_stats"),
             ("_trading_client_integration", "trading_client", "get_health_details"),
             ("_trades_integration", "trades_integration", "get_health_details"),
             ("_strategy_coordinator", "strategy_coordinator", "get_all_stats"),

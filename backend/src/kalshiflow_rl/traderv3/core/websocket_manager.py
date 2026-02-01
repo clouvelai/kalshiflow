@@ -34,7 +34,6 @@ if TYPE_CHECKING:
     from ..services.trading_decision_service import TradingDecisionService
     from ..services.upcoming_markets_syncer import UpcomingMarketsSyncer
     from ..state.tracked_markets import TrackedMarketsState
-    from ..state.event_research_context import EventResearchResult
     from .state_container import V3StateContainer
     from ..strategies import StrategyCoordinator
     from ..deep_agent import SelfImprovingAgent
@@ -977,111 +976,6 @@ class V3WebSocketManager:
             "timestamp": time.time(),
         }
         await self.broadcast_message("market_info_update", update_data)
-
-    async def broadcast_event_research(
-        self,
-        event_ticker: str,
-        result: 'EventResearchResult'
-    ) -> None:
-        """
-        Broadcast event research results to all connected clients.
-
-        Called by AgenticResearchStrategy after completing event-first research.
-        Provides AI-generated probability assessments and recommendations
-        for all markets in an event.
-
-        Args:
-            event_ticker: Event ticker that was researched
-            result: EventResearchResult containing event context and market assessments
-        """
-        if not result.success:
-            logger.debug(f"Skipping broadcast for failed research: {event_ticker}")
-            return
-
-        # Build market assessments data (with backward-compatible v2 field handling)
-        markets_data = []
-        for assessment in result.assessments:
-            market_data = {
-                "ticker": assessment.market_ticker,
-                "title": assessment.market_title,
-                "evidence_probability": assessment.evidence_probability,
-                "market_probability": assessment.market_probability,
-                "mispricing_magnitude": assessment.mispricing_magnitude,
-                "recommendation": assessment.recommendation,
-                "confidence": assessment.confidence.value if hasattr(assessment.confidence, 'value') else assessment.confidence,
-                "edge_explanation": assessment.edge_explanation,
-                # v2 calibration fields (with hasattr checks for backward compatibility)
-                "evidence_cited": getattr(assessment, 'evidence_cited', []),
-                "what_would_change_mind": getattr(assessment, 'what_would_change_mind', ""),
-                "assumption_flags": getattr(assessment, 'assumption_flags', []),
-                "calibration_notes": getattr(assessment, 'calibration_notes', ""),
-                "evidence_quality": getattr(assessment, 'evidence_quality', "medium"),
-                # V4 calibration field
-                "base_rate_used": getattr(assessment, 'base_rate_used', 0.5),
-                # Additional useful fields
-                "specific_question": getattr(assessment, 'specific_question', ""),
-                "driver_application": getattr(assessment, 'driver_application', ""),
-            }
-            markets_data.append(market_data)
-
-        # Build event context data
-        event_context = result.event_context
-
-        # Build semantic frame data if available
-        semantic_frame_data = None
-        if event_context.semantic_frame:
-            sf = event_context.semantic_frame
-            semantic_frame_data = {
-                "frame_type": sf.frame_type.value if hasattr(sf.frame_type, 'value') else sf.frame_type,
-                "question_template": sf.question_template or "",
-                "actors": [a.to_dict() for a in sf.actors] if sf.actors else [],
-                "objects": [o.to_dict() for o in sf.objects] if sf.objects else [],
-                "candidates": [c.to_dict() for c in sf.candidates] if sf.candidates else [],
-                "resolution_trigger": sf.resolution_trigger or "",
-            }
-
-        research_data = {
-            "event_ticker": event_ticker,
-            "event_title": event_context.event_title,
-            "event_category": event_context.event_category,
-            "event_description": event_context.context.event_description if event_context.context else "",
-            "primary_driver": event_context.driver_analysis.primary_driver if event_context.driver_analysis else "",
-            "primary_driver_reasoning": event_context.driver_analysis.primary_driver_reasoning if event_context.driver_analysis else "",
-            "base_rate": event_context.driver_analysis.base_rate if event_context.driver_analysis else 0.5,
-            "evidence_summary": event_context.evidence.evidence_summary if event_context.evidence else "",
-            "evidence_reliability": event_context.evidence.reliability.value if event_context.evidence and hasattr(event_context.evidence.reliability, 'value') else "medium",
-            "markets": markets_data,
-            "researched_at": event_context.researched_at,
-            "research_duration_seconds": result.total_research_seconds,
-            "markets_evaluated": result.markets_evaluated,
-            "markets_with_edge": result.markets_with_edge,
-            # Additional fields for Events tab
-            "semantic_frame": semantic_frame_data,
-            "resolution_criteria": event_context.context.resolution_criteria if event_context.context else "",
-            "time_horizon": event_context.context.time_horizon if event_context.context else "",
-            "secondary_factors": event_context.driver_analysis.secondary_factors if event_context.driver_analysis else [],
-            "tail_risks": event_context.driver_analysis.tail_risks if event_context.driver_analysis else [],
-            "causal_chain": event_context.driver_analysis.causal_chain if event_context.driver_analysis else "",
-            "key_evidence": (event_context.evidence.key_evidence[:5]
-                           if event_context.evidence and event_context.evidence.key_evidence
-                           else []),
-            # Edge hypothesis (v2 profit-focused)
-            "edge_hypothesis": event_context.driver_analysis.edge_hypothesis if event_context.driver_analysis else "",
-            # Evidence metadata (includes Truth Social posts, engagement metrics)
-            "evidence_metadata": event_context.evidence.metadata if event_context.evidence else {},
-        }
-
-        await self.broadcast_message("event_research", research_data)
-
-        # Store in state_container for initial snapshot (Events tab persistence)
-        # This ensures new clients see research that was broadcast before they connected
-        if self._state_container:
-            self._state_container.store_event_research(event_ticker, research_data)
-
-        logger.info(
-            f"Broadcast event_research for {event_ticker}: "
-            f"{len(markets_data)} markets, {result.markets_with_edge} with edge"
-        )
 
     # ========== Trading Strategies Panel Heartbeat ==========
 
