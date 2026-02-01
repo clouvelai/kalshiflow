@@ -56,7 +56,6 @@ export const useDeepAgent = ({ useV3WebSocketState }) => {
   const [memoryUpdates, setMemoryUpdates] = useState([]);
   const [redditPosts, setRedditPosts] = useState([]);
   const [redditSignals, setRedditSignals] = useState([]);
-  const [priceImpacts, setPriceImpacts] = useState([]);
   const [learnings, setLearnings] = useState([]);
   const [settlements, setSettlements] = useState([]);
   const [errors, setErrors] = useState([]);
@@ -71,7 +70,6 @@ export const useDeepAgent = ({ useV3WebSocketState }) => {
   const maxMemoryUpdates = 20;
   const maxRedditPosts = 30;
   const maxRedditSignals = 30;
-  const maxPriceImpacts = 30;
   const maxLearnings = 50;
   const maxSettlements = 20;
   const maxErrors = 10;
@@ -221,30 +219,6 @@ export const useDeepAgent = ({ useV3WebSocketState }) => {
   }, []);
 
   /**
-   * Handle reddit_signal message
-   */
-  const handleRedditSignal = useCallback((data) => {
-    const signal = {
-      id: data.post_id,
-      subreddit: data.subreddit,
-      title: data.title,
-      url: data.url,
-      direction: data.direction,
-      strength: data.strength,
-      reason: data.reason,
-      relevantMarkets: data.relevant_markets,
-      confidence: data.confidence,
-      timestamp: data.extracted_at,
-    };
-
-    setRedditSignals(prev => [signal, ...prev].slice(0, maxRedditSignals));
-    setAgentState(prev => ({
-      ...prev,
-      redditSignals: prev.redditSignals + 1,
-    }));
-  }, []);
-
-  /**
    * Handle deep_agent_error message
    */
   const handleError = useCallback((data) => {
@@ -327,35 +301,6 @@ export const useDeepAgent = ({ useV3WebSocketState }) => {
   /**
    * Handle price_impacts_snapshot message - Restore price impacts after page refresh
    */
-  const handlePriceImpactsSnapshot = useCallback((data) => {
-    const impacts = data.price_impacts || [];
-    if (impacts.length === 0) return;
-
-    // Transform backend format to frontend format
-    const transformedImpacts = impacts.map(pi => ({
-      id: pi.signal_id || `${Date.now()}-${pi.market_ticker}`,
-      marketTicker: pi.market_ticker,
-      eventTicker: pi.event_ticker,
-      entityId: pi.entity_id,
-      entityName: pi.entity_name,
-      sentimentScore: pi.sentiment_score,
-      priceImpactScore: pi.price_impact_score,
-      marketType: pi.market_type || 'UNKNOWN',
-      transformationLogic: pi.transformation_logic,
-      confidence: pi.confidence,
-      subreddit: pi.source_subreddit,
-      sourceTitle: pi.source_title || '',
-      contextSnippet: pi.context_snippet || '',
-      timestamp: pi.created_at || Date.now(),
-      sourceCreatedAt: pi.source_created_at || null,
-      sourceType: pi.source_type || 'reddit_text',
-      agentStatus: pi.agent_status || 'pending',
-    }));
-
-    setPriceImpacts(transformedImpacts.slice(0, maxPriceImpacts));
-    console.log(`[useDeepAgent] Restored ${transformedImpacts.length} price impacts from snapshot`);
-  }, []);
-
   /**
    * Handle deep_agent_snapshot message - Restore state after page refresh
    */
@@ -485,43 +430,6 @@ export const useDeepAgent = ({ useV3WebSocketState }) => {
   }, [handleLifecycleSnapshot]);
 
   /**
-   * Handle price_impact message - Entity sentiment transformed to market-specific impact
-   */
-  const handlePriceImpact = useCallback((data) => {
-    const impact = {
-      id: data.signal_id || `${Date.now()}-${data.market_ticker}`,
-      marketTicker: data.market_ticker,
-      eventTicker: data.event_ticker,
-      entityId: data.entity_id,
-      entityName: data.entity_name,
-      sentimentScore: data.sentiment_score,
-      priceImpactScore: data.price_impact_score,
-      marketType: data.market_type || 'UNKNOWN',
-      transformationLogic: data.transformation_logic,
-      confidence: data.confidence,
-      suggestedSide: data.suggested_side,
-      subreddit: data.source_subreddit,
-      postId: data.source_post_id,
-      // Source context fields
-      sourceTitle: data.source_title || '',
-      contextSnippet: data.context_snippet || '',
-      // Timestamps (Unix seconds)
-      timestamp: data.created_at || (Date.now() / 1000),
-      sourceCreatedAt: data.source_created_at || null, // Original Reddit post time
-      // Source type (text/video/article)
-      sourceType: data.source_type || 'reddit_text',
-      // Agent status (pending/viewed/traded/observed/rejected)
-      agentStatus: data.agent_status || 'pending',
-    };
-
-    setPriceImpacts(prev => [impact, ...prev].slice(0, maxPriceImpacts));
-    setAgentState(prev => ({
-      ...prev,
-      priceImpactsReceived: (prev.priceImpactsReceived || 0) + 1,
-    }));
-  }, []);
-
-  /**
    * Process incoming WebSocket message
    */
   const processMessage = useCallback((type, data) => {
@@ -550,12 +458,6 @@ export const useDeepAgent = ({ useV3WebSocketState }) => {
       case 'reddit_submission':
         handleRedditSubmission(data);
         break;
-      case 'reddit_signal':
-        handleRedditSignal(data);
-        break;
-      case 'price_impact':
-        handlePriceImpact(data);
-        break;
       case 'deep_agent_cost':
         handleCost(data);
         break;
@@ -567,12 +469,6 @@ export const useDeepAgent = ({ useV3WebSocketState }) => {
         break;
       case 'deep_agent_snapshot':
         handleSnapshot(data);
-        break;
-      case 'price_impacts_snapshot':
-        handlePriceImpactsSnapshot(data);
-        break;
-      case 'signal_lifecycle_update':
-        handleLifecycleUpdate(data);
         break;
       default:
         // Ignore other message types
@@ -587,14 +483,10 @@ export const useDeepAgent = ({ useV3WebSocketState }) => {
     handleSettlement,
     handleMemoryUpdate,
     handleRedditSubmission,
-    handleRedditSignal,
-    handlePriceImpact,
     handleCost,
     handleGdeltResult,
     handleError,
     handleSnapshot,
-    handlePriceImpactsSnapshot,
-    handleLifecycleUpdate,
   ]);
 
   /**
@@ -632,7 +524,6 @@ export const useDeepAgent = ({ useV3WebSocketState }) => {
     winRate: agentState.winRate,
     pendingTrades: trades.filter(t => t.status === 'pending').length,
     redditSignals: agentState.redditSignals,
-    priceImpacts: agentState.priceImpactsReceived || 0,
     errors: errors.length,
   }), [agentState, trades, errors]);
 
@@ -645,7 +536,6 @@ export const useDeepAgent = ({ useV3WebSocketState }) => {
     memoryUpdates,
     redditPosts,
     redditSignals,
-    priceImpacts,
     learnings,
     settlements,
     errors,
@@ -662,7 +552,6 @@ export const useDeepAgent = ({ useV3WebSocketState }) => {
     // Status helpers
     isRunning: agentState.status === 'active' || agentState.status === 'started',
     isLearning: thinking.text.length > 0,
-    hasPriceImpacts: priceImpacts.length > 0,
     hasGdeltResults: gdeltResults.length > 0,
   };
 };
