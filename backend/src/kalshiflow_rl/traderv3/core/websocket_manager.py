@@ -35,7 +35,7 @@ if TYPE_CHECKING:
     from ..services.upcoming_markets_syncer import UpcomingMarketsSyncer
     from ..state.tracked_markets import TrackedMarketsState
     from .state_container import V3StateContainer
-    from ..strategies import StrategyCoordinator
+    from ..strategies import DeepAgentStrategy
     from ..deep_agent import SelfImprovingAgent
     from ..agents.reddit_entity_agent import RedditEntityAgent
 
@@ -80,7 +80,7 @@ class V3WebSocketManager:
         self._state_machine = state_machine
         self._state_container: Optional['V3StateContainer'] = None
         self._trading_service: Optional['TradingDecisionService'] = None
-        self._strategy_coordinator: Optional['StrategyCoordinator'] = None  # Set via set_strategy_coordinator()
+        self._deep_agent_strategy: Optional['DeepAgentStrategy'] = None  # Set via set_deep_agent_strategy()
         self._trade_flow_service = None  # Set via set_trade_flow_service()
         self._market_price_syncer = None  # Set via set_market_price_syncer()
         self._tracked_markets_state: Optional['TrackedMarketsState'] = None  # Set via set_tracked_markets_state()
@@ -106,7 +106,7 @@ class V3WebSocketManager:
         self._coalesce_task: Optional[asyncio.Task] = None
         self._coalesce_interval = 0.1  # 100ms batching window
 
-        # Trade processing heartbeat for RLM mode
+        # Trade processing heartbeat
         self._trade_processing_task: Optional[asyncio.Task] = None
         self._trade_processing_interval = 1.5  # 1.5 seconds
 
@@ -171,18 +171,15 @@ class V3WebSocketManager:
         self._tracked_markets_state = tracked_markets_state
         logger.info("TrackedMarketsState set on WebSocket manager")
 
-    def set_strategy_coordinator(self, coordinator: 'StrategyCoordinator') -> None:
+    def set_deep_agent_strategy(self, strategy: 'DeepAgentStrategy') -> None:
         """
-        Set the strategy coordinator for multi-strategy trade processing.
-
-        When set, the WebSocketManager will use the coordinator's aggregation
-        methods to combine stats/trades/decisions from all running strategies.
+        Set the deep agent strategy for trade processing broadcasts.
 
         Args:
-            coordinator: StrategyCoordinator instance managing multiple strategies
+            strategy: DeepAgentStrategy instance
         """
-        self._strategy_coordinator = coordinator
-        logger.info("StrategyCoordinator set on WebSocket manager (multi-strategy mode)")
+        self._deep_agent_strategy = strategy
+        logger.info("DeepAgentStrategy set on WebSocket manager")
 
         # Start trade processing heartbeat if manager is already running
         if self._running and (not self._trade_processing_task or self._trade_processing_task.done()):
@@ -198,9 +195,8 @@ class V3WebSocketManager:
         """
         Set the trade flow service for providing trade state snapshots.
 
-        When set, the WebSocketManager will prefer this service over
-        StrategyCoordinator for trade flow market states, decoupling
-        the live trade feed from the strategy pipeline.
+        When set, the WebSocketManager will prefer this service for
+        trade flow market states.
 
         Args:
             service: TradeFlowService instance
@@ -288,13 +284,13 @@ class V3WebSocketManager:
         # Start periodic tasks
         self._ping_task = asyncio.create_task(self._ping_clients())
 
-        # Start trade processing heartbeat if strategy coordinator is available
-        if self._strategy_coordinator:
+        # Start trade processing heartbeat if deep agent strategy is available
+        if self._deep_agent_strategy:
             self._trade_processing_task = asyncio.create_task(self._trade_processing_heartbeat())
             logger.info("Started trade processing heartbeat (1.5s interval)")
 
-        # Start strategy panel heartbeat if strategy coordinator is available
-        if self._strategy_coordinator:
+        # Start strategy panel heartbeat if deep agent strategy is available
+        if self._deep_agent_strategy:
             self._strategy_panel_task = asyncio.create_task(self._strategy_panel_heartbeat())
             logger.info("Started strategy panel heartbeat (5s interval)")
 
@@ -470,15 +466,15 @@ class V3WebSocketManager:
             if self._tracked_markets_state and client_id in self._clients:
                 await self._send_tracked_markets_snapshot(client_id)
 
-            # Send trade flow market states snapshot if trade flow service or strategy coordinator is available
-            if (self._trade_flow_service or self._strategy_coordinator) and client_id in self._clients:
+            # Send trade flow market states snapshot if trade flow service or deep agent is available
+            if (self._trade_flow_service or self._deep_agent_strategy) and client_id in self._clients:
                 await self._send_trade_flow_states_snapshot(client_id)
-                # Also send initial trade_processing snapshot (only if strategy coordinator)
-                if self._strategy_coordinator:
+                # Also send initial trade_processing snapshot
+                if self._deep_agent_strategy:
                     await self._send_trade_processing_snapshot(client_id)
 
-            # Send trading strategies panel snapshot if strategy coordinator is available
-            if self._strategy_coordinator and client_id in self._clients:
+            # Send trading strategies panel snapshot if deep agent is available
+            if self._deep_agent_strategy and client_id in self._clients:
                 await self._send_trading_strategies_snapshot(client_id)
 
             # Send upcoming markets snapshot if syncer is available
@@ -755,13 +751,8 @@ class V3WebSocketManager:
         Broadcast trade processing state to all connected clients.
 
         Sends recent tracked trades, stats, and decision breakdown.
-        Provides trade processing stats for the trade flow UI.
-
-        Uses StrategyCoordinator for multi-strategy aggregation.
-        Uses _build_trade_processing_data() to ensure consistency with snapshots.
         """
-        if not self._strategy_coordinator:
-            # No strategy configured - nothing to broadcast
+        if not self._deep_agent_strategy:
             return
 
         data = self._build_trade_processing_data()
@@ -996,24 +987,13 @@ class V3WebSocketManager:
                 logger.error(f"Error in strategy panel heartbeat: {e}")
 
     async def _broadcast_trading_strategies(self) -> None:
-        """
-        Broadcast trading strategies panel data to all connected clients.
-
-        Uses StrategyCoordinator.get_strategy_panel_data() to aggregate
-        comprehensive strategy information including performance metrics,
-        skip breakdowns, and recent decision history.
-        """
-        if not self._strategy_coordinator:
+        """Broadcast deep agent strategy panel data to all connected clients."""
+        if not self._deep_agent_strategy:
             return
 
         try:
-            panel_data = self._strategy_coordinator.get_strategy_panel_data(decision_limit=15)
-
-            await self.broadcast_message("trading_strategies", {
-                **panel_data,
-                "last_updated": time.time(),
-                "timestamp": time.strftime("%H:%M:%S"),
-            })
+            panel_data = self._build_trading_strategies_data()
+            await self.broadcast_message("trading_strategies", panel_data)
         except Exception as e:
             logger.error(f"Error broadcasting trading strategies: {e}")
 
@@ -1075,8 +1055,7 @@ class V3WebSocketManager:
 
     async def _send_trade_flow_states_snapshot(self, client_id: str) -> None:
         """Send trade flow market states snapshot to a specific client."""
-        # Use TradeFlowService if available, otherwise fall back to StrategyCoordinator
-        data_source = self._trade_flow_service or self._strategy_coordinator
+        data_source = self._trade_flow_service or self._deep_agent_strategy
         await self._send_snapshot(
             client_id,
             "trade_flow_states_snapshot",
@@ -1089,12 +1068,12 @@ class V3WebSocketManager:
         """Build trade flow market states snapshot data.
 
         Prefers TradeFlowService (dedicated trade feed) over
-        StrategyCoordinator (legacy path).
+        DeepAgentStrategy (fallback).
         """
         if self._trade_flow_service:
             market_states = self._trade_flow_service.get_market_states(limit=100)
-        elif self._strategy_coordinator:
-            market_states = self._strategy_coordinator.get_market_states(limit=100)
+        elif self._deep_agent_strategy:
+            market_states = self._deep_agent_strategy.get_market_states(limit=100)
         else:
             market_states = []
         return {
@@ -1108,16 +1087,16 @@ class V3WebSocketManager:
         await self._send_snapshot(
             client_id,
             "trade_processing",
-            self._strategy_coordinator,
+            self._deep_agent_strategy,
             lambda: self._build_trade_processing_data(),
             log_name="trade_processing"
         )
 
     def _build_trade_processing_data(self) -> dict:
         """Build trade processing snapshot data."""
-        stats = self._strategy_coordinator.get_trade_processing_stats()
-        recent_trades = self._strategy_coordinator.get_recent_tracked_trades(limit=20)
-        decision_history = self._strategy_coordinator.get_decision_history(limit=20)
+        stats = self._deep_agent_strategy.get_trade_processing_stats()
+        recent_trades = self._deep_agent_strategy.get_recent_tracked_trades(limit=20)
+        decision_history = self._deep_agent_strategy.get_decision_history(limit=20)
 
         total = stats.get("trades_processed", 0) + stats.get("trades_filtered", 0)
         filter_rate = round(stats.get("trades_filtered", 0) / total * 100, 1) if total > 0 else 0.0
@@ -1154,16 +1133,32 @@ class V3WebSocketManager:
         await self._send_snapshot(
             client_id,
             "trading_strategies",
-            self._strategy_coordinator,
+            self._deep_agent_strategy,
             lambda: self._build_trading_strategies_data(),
             log_name="trading_strategies"
         )
 
     def _build_trading_strategies_data(self) -> dict:
-        """Build trading strategies panel snapshot data."""
-        panel_data = self._strategy_coordinator.get_strategy_panel_data(decision_limit=15)
+        """Build trading strategies panel data from deep agent."""
+        stats = self._deep_agent_strategy.get_stats()
+        consolidated = self._deep_agent_strategy.get_consolidated_view()
         return {
-            **panel_data,
+            "strategies": {
+                "deep_agent": {
+                    "status": {
+                        "running": stats.get("running", False),
+                        "healthy": stats.get("healthy", False),
+                        "uptime_seconds": stats.get("uptime_seconds", 0),
+                    },
+                    "performance": {
+                        "cycles_run": stats.get("cycles_run", 0),
+                        "trades_executed": stats.get("trades_executed", 0),
+                        "win_rate": stats.get("win_rate", 0.0),
+                    },
+                    "consolidated_view": consolidated,
+                }
+            },
+            "recent_decisions": self._deep_agent_strategy.get_decision_history(limit=15),
             "last_updated": time.time(),
             "timestamp": time.strftime("%H:%M:%S"),
         }

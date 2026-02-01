@@ -38,7 +38,7 @@ from ..services.trading_decision_service import TradingDecisionService
 from ..services.listener_bootstrap_service import ListenerBootstrapService
 from ..services.order_cleanup_service import OrderCleanupService
 from ..services.event_position_tracker import EventPositionTracker
-from ..strategies import StrategyCoordinator, StrategyContext
+from ..strategies import DeepAgentStrategy
 
 # Entity trading agents (optional, for Reddit entity-based trading)
 from ..agents import (
@@ -151,9 +151,8 @@ class V3Coordinator:
             # Set state container for immediate trading state on client connect
             self._websocket_manager.set_state_container(self._state_container)
 
-        # Strategy coordinator (plugin-based strategy management)
-        # Replaces direct RLMService instantiation with multi-strategy architecture
-        self._strategy_coordinator: Optional[StrategyCoordinator] = None
+        # Deep agent strategy (sole trading strategy)
+        self._deep_agent_strategy: Optional[DeepAgentStrategy] = None
 
         # Event position tracker (initialized in _connect_lifecycle when TrackedMarketsState is available)
         # Tracks positions grouped by event_ticker to detect correlated exposure
@@ -432,11 +431,11 @@ class V3Coordinator:
 
     async def _connect_lifecycle(self) -> None:
         """
-        Initialize TrackedMarketsState, StrategyCoordinator, and optionally lifecycle WebSocket.
+        Initialize TrackedMarketsState, DeepAgentStrategy, and optionally lifecycle WebSocket.
 
         This method ALWAYS creates:
         - TrackedMarketsState for market state tracking
-        - StrategyCoordinator for plugin-based strategies (e.g., agent_pipeline)
+        - DeepAgentStrategy for trading
         - Component wiring (WebSocketManager, StateContainer, StatusReporter)
 
         Only when market_mode == "lifecycle" does it also create:
@@ -493,11 +492,10 @@ class V3Coordinator:
             )
             raise  # Fatal: system cannot function without market tracking
 
-        # --- Block 2: StrategyCoordinator + EventPositionTracker (degraded if fails) ---
+        # --- Block 2: DeepAgentStrategy + EventPositionTracker (degraded if fails) ---
         # These are important but non-fatal. Log error and continue in degraded mode.
         try:
             # 4. Initialize Truth Social cache service (for evidence gathering)
-            # This must happen before Strategy Coordinator because strategies may use EventResearchService
             try:
                 from ..services.truth_social_cache import initialize_truth_social_cache
                 truth_cache = await initialize_truth_social_cache()
@@ -508,34 +506,12 @@ class V3Coordinator:
             except Exception as e:
                 logger.warning(f"Failed to initialize TruthSocialCacheService: {e} - continuing without Truth Social evidence")
 
-            # 5. Initialize Strategy Coordinator (plugin-based strategy management)
-            # The StrategyCoordinator loads strategies from YAML configs in strategies/config/
-            # agent_pipeline strategy will self-discover its target events via REST API
-            if self._trading_service:
-                # Create strategy context with all required dependencies
-                strategy_context = StrategyContext(
-                    event_bus=self._event_bus,
-                    trading_service=self._trading_service,
-                    state_container=self._state_container,
-                    orderbook_integration=self._orderbook_integration,
-                    tracked_markets=self._tracked_markets_state,
-                    trading_client_integration=self._trading_client_integration,
-                    websocket_manager=self._websocket_manager,
-                )
-
-                # Create and initialize the strategy coordinator
-                self._strategy_coordinator = StrategyCoordinator(
-                    context=strategy_context,
-                    global_rate_limit=20,  # 20 trades per minute across all strategies
-                )
-
-                # Load strategy configs from YAML files
-                configs_loaded = await self._strategy_coordinator.load_configs()
-                logger.info(f"StrategyCoordinator loaded {configs_loaded} strategy configs")
-
+            # 5. Initialize DeepAgentStrategy (sole trading strategy)
+            if self._trading_client_integration:
+                self._deep_agent_strategy = DeepAgentStrategy()
                 # Register with health monitor for health tracking
-                self._health_monitor.set_strategy_coordinator(self._strategy_coordinator)
-                logger.info("StrategyCoordinator initialized for plugin-based strategy management")
+                self._health_monitor.set_deep_agent_strategy(self._deep_agent_strategy)
+                logger.info("DeepAgentStrategy initialized")
 
             # 6. Initialize EventPositionTracker (for event-level position tracking)
             if self._config.event_tracking_enabled and self._trading_service:
@@ -551,8 +527,8 @@ class V3Coordinator:
                 logger.info("EventPositionTracker initialized for event-level position tracking")
 
         except Exception as e:
-            logger.error(f"StrategyCoordinator/EventPositionTracker init failed (degraded): {e}")
-            self._degraded_subsystems.add("strategy_coordinator")
+            logger.error(f"DeepAgentStrategy/EventPositionTracker init failed (degraded): {e}")
+            self._degraded_subsystems.add("deep_agent_strategy")
             await self._event_bus.emit_system_activity(
                 activity_type="connection",
                 message=f"Strategy subsystem degraded: {str(e)}",
@@ -1373,52 +1349,48 @@ class V3Coordinator:
         if self._trading_client_integration and self._state_container.trading_state:
             await self._status_reporter.emit_trading_state()
         
-        # Start strategy coordinator (plugin-based strategy management)
-        if self._strategy_coordinator:
-            started_count = await self._strategy_coordinator.start_all()
-            running_strategies = self._strategy_coordinator.list_running()
-            if started_count > 0:
-                logger.info(f"StrategyCoordinator started {started_count} strategies: {', '.join(running_strategies)}")
+        # Start deep agent strategy (sole trading strategy)
+        if self._deep_agent_strategy and self._trading_client_integration:
+            try:
+                await self._deep_agent_strategy.start(
+                    trading_client=self._trading_client_integration,
+                    state_container=self._state_container,
+                    websocket_manager=self._websocket_manager,
+                    tracked_markets=self._tracked_markets_state,
+                )
+                logger.info("DeepAgentStrategy started")
                 await self._event_bus.emit_system_activity(
                     activity_type="strategy_active",
-                    message=f"Started {started_count} trading strategies: {', '.join(running_strategies)}",
-                    metadata={
-                        "strategies": running_strategies,
-                        "strategy_count": started_count,
-                        "severity": "info"
-                    }
+                    message="Started deep agent trading strategy",
+                    metadata={"strategies": ["deep_agent"], "severity": "info"}
                 )
-            else:
-                logger.info("StrategyCoordinator started with no enabled strategies")
 
-            # Wire StrategyCoordinator to WebSocket manager for trade processing broadcasts
-            # This enables multi-strategy aggregation of stats, trades, and decisions
-            self._websocket_manager.set_strategy_coordinator(self._strategy_coordinator)
-            logger.info("StrategyCoordinator wired to WebSocket manager for trade processing broadcasts")
+                # Wire deep agent to WebSocket manager for trade processing broadcasts
+                self._websocket_manager.set_deep_agent_strategy(self._deep_agent_strategy)
 
-            # Wire Reddit Historic Agent to deep agent tools for daily digest access
-            if self._reddit_historic_agent:
-                try:
-                    deep_strategy = self._strategy_coordinator.get_strategy("deep_agent")
-                    if deep_strategy and hasattr(deep_strategy, '_agent') and deep_strategy._agent:
-                        deep_strategy._agent._tools._reddit_historic_agent = self._reddit_historic_agent
+                # Wire Reddit Historic Agent to deep agent tools for daily digest access
+                if self._reddit_historic_agent and self._deep_agent_strategy._agent:
+                    try:
+                        self._deep_agent_strategy._agent._tools._reddit_historic_agent = self._reddit_historic_agent
                         logger.info("Reddit Historic Agent wired to deep agent tools")
-                except Exception as e:
-                    logger.warning(f"Failed to wire Reddit Historic Agent to deep agent: {e}")
+                    except Exception as e:
+                        logger.warning(f"Failed to wire Reddit Historic Agent to deep agent: {e}")
 
-            # Wire GDELT clients to deep agent tools for news intelligence
-            if self._gdelt_client or self._gdelt_doc_client:
-                try:
-                    deep_strategy = self._strategy_coordinator.get_strategy("deep_agent")
-                    if deep_strategy and hasattr(deep_strategy, '_agent') and deep_strategy._agent:
+                # Wire GDELT clients to deep agent tools for news intelligence
+                if self._deep_agent_strategy._agent and (self._gdelt_client or self._gdelt_doc_client):
+                    try:
                         if self._gdelt_client:
-                            deep_strategy._agent._tools._gdelt_client = self._gdelt_client
+                            self._deep_agent_strategy._agent._tools._gdelt_client = self._gdelt_client
                             logger.info("GDELT GKG client wired to deep agent tools")
                         if self._gdelt_doc_client:
-                            deep_strategy._agent._tools._gdelt_doc_client = self._gdelt_doc_client
+                            self._deep_agent_strategy._agent._tools._gdelt_doc_client = self._gdelt_doc_client
                             logger.info("GDELT DOC API client wired to deep agent tools (free)")
-                except Exception as e:
-                    logger.warning(f"Failed to wire GDELT clients to deep agent: {e}")
+                    except Exception as e:
+                        logger.warning(f"Failed to wire GDELT clients to deep agent: {e}")
+
+            except Exception as e:
+                logger.error(f"Failed to start DeepAgentStrategy: {e}", exc_info=True)
+                self._degraded_subsystems.add("deep_agent_strategy")
 
         # Start TradeFlowService for live trade feed to UX
         if self._trades_integration and self._tracked_markets_state:
@@ -1544,7 +1516,7 @@ class V3Coordinator:
         # Order matters - stop in reverse of startup order
         # Note: stop_all() for strategy coordinator, stop() for others
         shutdown_sequence = [
-            (self._strategy_coordinator, "Strategy Coordinator", lambda c: c.stop_all()),
+            (self._deep_agent_strategy, "Deep Agent Strategy", lambda c: c.stop()),
             # Entity trading agents (stop before strategy coordinator dependencies)
             (self._reddit_entity_agent, "Reddit Entity Agent", lambda c: c.stop()),
             (self._reddit_historic_agent, "Reddit Historic Agent", lambda c: c.stop()),
@@ -1627,7 +1599,7 @@ class V3Coordinator:
             ("_trading_service", "trading_service", "get_stats"),
             ("_trading_client_integration", "trading_client", "get_health_details"),
             ("_trades_integration", "trades_integration", "get_health_details"),
-            ("_strategy_coordinator", "strategy_coordinator", "get_all_stats"),
+            ("_deep_agent_strategy", "deep_agent_strategy", "get_stats"),
             ("_api_discovery_syncer", "api_discovery_syncer", "get_health_details"),
             ("_position_listener", "position_listener", "get_metrics"),
             ("_market_ticker_listener", "market_ticker_listener", "get_metrics"),

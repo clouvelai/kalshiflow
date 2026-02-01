@@ -26,7 +26,7 @@ if TYPE_CHECKING:
     from ..clients.fill_listener import FillListener
     from ..services.market_price_syncer import MarketPriceSyncer
     from ..services.trading_state_syncer import TradingStateSyncer
-    from ..strategies import StrategyCoordinator
+    from ..strategies import DeepAgentStrategy
     from ..config.environment import V3Config
 
 logger = logging.getLogger("kalshiflow_rl.traderv3.core.health_monitor")
@@ -49,7 +49,7 @@ NON_CRITICAL_COMPONENTS: Set[str] = {
     # Services
     "market_price_syncer",
     "trading_state_syncer",
-    "strategy_coordinator",  # Plugin-based strategy management
+    "deep_agent_strategy",  # Deep agent trading strategy
 }
 
 
@@ -108,7 +108,7 @@ class V3HealthMonitor:
         self._fill_listener: Optional['FillListener'] = None  # Set via setter during startup
         self._market_price_syncer = market_price_syncer
         self._trading_state_syncer = None  # Set via setter during startup
-        self._strategy_coordinator: Optional['StrategyCoordinator'] = None  # Set via setter during lifecycle startup
+        self._deep_agent_strategy: Optional['DeepAgentStrategy'] = None  # Set via setter during lifecycle startup
 
         # Component registration for dynamic health monitoring
         # Allows new components to be registered without modifying _check_components_health()
@@ -177,10 +177,10 @@ class V3HealthMonitor:
         self._trading_state_syncer = syncer
         self.register_component("trading_state_syncer", syncer, critical=False)
 
-    def set_strategy_coordinator(self, coordinator: Optional['StrategyCoordinator']) -> None:
-        """Set strategy coordinator reference (created during lifecycle startup)."""
-        self._strategy_coordinator = coordinator
-        self.register_component("strategy_coordinator", coordinator, critical=False)
+    def set_deep_agent_strategy(self, strategy: Optional['DeepAgentStrategy']) -> None:
+        """Set deep agent strategy reference (created during lifecycle startup)."""
+        self._deep_agent_strategy = strategy
+        self.register_component("deep_agent_strategy", strategy, critical=False)
 
     async def start(self) -> None:
         """Start health monitoring."""

@@ -35,17 +35,6 @@ const INITIAL_TRADE_PROCESSING = {
  * Initial state for strategy status (Trading Strategies Panel)
  */
 const INITIAL_STRATEGY_STATUS = {
-  coordinator: {
-    running: false,
-    uptime_seconds: 0,
-    strategies_running: 0,
-    rate_limiter: {
-      tokens_available: 0,
-      capacity: 0,
-      refill_rate_per_minute: 0,
-      utilization_percent: 0
-    }
-  },
   strategies: {},
   recent_decisions: [],
   last_updated: null,
@@ -472,7 +461,6 @@ export const useV3WebSocket = ({ onMessage }) => {
       case 'trading_strategies':
         if (data.data) {
           setStrategyStatus({
-            coordinator: data.data.coordinator || INITIAL_STRATEGY_STATUS.coordinator,
             strategies: data.data.strategies || {},
             recent_decisions: data.data.recent_decisions || [],
             last_updated: data.data.last_updated || null,

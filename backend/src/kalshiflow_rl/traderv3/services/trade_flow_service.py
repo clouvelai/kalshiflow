@@ -25,8 +25,8 @@ class TradeFlowService:
     accumulates per-market state (YES/NO counts, price movement), and emits
     events that the WebSocket manager already handles.
 
-    This replaces the need for StrategyCoordinator to provide trade flow
-    state, decoupling the UI trade feed from the strategy pipeline.
+    This provides trade flow state, decoupling the UI trade feed
+    from the strategy pipeline.
     """
 
     def __init__(
