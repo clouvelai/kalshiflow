@@ -6,15 +6,9 @@ Loads from environment variables with sensible defaults.
 """
 
 import os
-from typing import List, Optional, TYPE_CHECKING
+from typing import List, Optional
 from dataclasses import dataclass, field
-from enum import Enum
 import logging
-
-# Import TradingStrategy for type annotation
-# Use string annotation to avoid circular import
-if TYPE_CHECKING:
-    from ..services.trading_decision_service import TradingStrategy as TradingStrategyType
 
 logger = logging.getLogger("kalshiflow_rl.traderv3.config.environment")
 
@@ -53,22 +47,6 @@ class V3Config:
     trading_max_orders: int = 1000
     trading_max_position_size: int = 500
     trading_mode: str = "paper"  # paper or production
-    trading_strategy_str: str = "hold"  # Strategy string: "hold", "rlm_no"
-
-    # RLM (Reverse Line Movement) Strategy Configuration (for RLM_NO strategy)
-    # High reliability config: YES>70%, min_trades=25 gives 2.2% false positive rate
-    # S-001 optimization: min_price_drop=5 skips weak signals (<5c has nearly zero edge)
-    rlm_yes_threshold: float = 0.70  # Minimum YES trade ratio to trigger signal
-    rlm_min_trades: int = 25  # Minimum trades before evaluating signal
-    rlm_min_price_drop: int = 5  # Minimum YES price drop in cents (research: <5c has ~2% edge, skip)
-    rlm_min_no_price: int = 35  # Minimum NO entry price in cents (backtest: <35c NO has -32% edge)
-    rlm_contracts: int = 10  # Base contracts per trade (scaled by signal strength)
-    rlm_max_concurrent: int = 1000  # Maximum concurrent positions
-    rlm_allow_reentry: bool = True  # Allow adding to position on stronger signal
-    rlm_orderbook_timeout: float = 2.0  # Timeout for orderbook fetch (seconds)
-    rlm_tight_spread: int = 2  # Spread <= this: aggressive fill (ask - 1c)
-    rlm_normal_spread: int = 4  # Spread <= this: price improvement (midpoint)
-    rlm_max_spread: int = 10  # Spread > this: skip signal (protect from bad fills)
 
     # Balance Protection Configuration
     min_trader_cash: int = 1000  # Minimum balance in cents ($10.00 default). Set to 0 to disable.
@@ -231,10 +209,6 @@ class V3Config:
         else:
             trading_mode = os.environ.get("V3_TRADING_MODE", "paper")
 
-        # Trading strategy configuration
-        # Options: "hold", "rlm_no"
-        trading_strategy_str = os.environ.get("V3_TRADING_STRATEGY", "hold").lower()
-
         # Balance protection configuration - minimum cash to continue trading
         min_trader_cash = int(os.environ.get("MIN_TRADER_CASH", "1000"))  # Default $10.00 in cents
 
@@ -256,21 +230,6 @@ class V3Config:
         event_exposure_action = os.environ.get("V3_EVENT_EXPOSURE_ACTION", "alert").lower()
         event_loss_threshold_cents = int(os.environ.get("V3_EVENT_LOSS_THRESHOLD", "100"))
         event_risk_threshold_cents = int(os.environ.get("V3_EVENT_RISK_THRESHOLD", "95"))
-
-        # RLM (Reverse Line Movement) strategy configuration
-        # High reliability config: YES>70%, min_trades=25 (2.2% false positive rate)
-        # See RLM_IMPROVEMENTS.md Section 10 for full reliability analysis
-        rlm_yes_threshold = float(os.environ.get("RLM_YES_THRESHOLD", "0.70"))
-        rlm_min_trades = int(os.environ.get("RLM_MIN_TRADES", "25"))
-        rlm_min_price_drop = int(os.environ.get("RLM_MIN_PRICE_DROP", "5"))
-        rlm_min_no_price = int(os.environ.get("RLM_MIN_NO_PRICE", "35"))
-        rlm_contracts = int(os.environ.get("RLM_CONTRACTS", "3"))
-        rlm_max_concurrent = int(os.environ.get("RLM_MAX_CONCURRENT", "1000"))
-        rlm_allow_reentry = os.environ.get("RLM_ALLOW_REENTRY", "true").lower() == "true"
-        rlm_orderbook_timeout = float(os.environ.get("RLM_ORDERBOOK_TIMEOUT", "2.0"))
-        rlm_tight_spread = int(os.environ.get("RLM_TIGHT_SPREAD", "2"))
-        rlm_normal_spread = int(os.environ.get("RLM_NORMAL_SPREAD", "4"))
-        rlm_max_spread = int(os.environ.get("RLM_MAX_SPREAD", "10"))
 
         # Lifecycle discovery mode configuration
         lifecycle_categories_str = os.environ.get("LIFECYCLE_CATEGORIES", ",".join(DEFAULT_LIFECYCLE_CATEGORIES))
@@ -346,18 +305,6 @@ class V3Config:
             trading_max_orders=trading_max_orders,
             trading_max_position_size=trading_max_position_size,
             trading_mode=trading_mode,
-            trading_strategy_str=trading_strategy_str,
-            rlm_yes_threshold=rlm_yes_threshold,
-            rlm_min_trades=rlm_min_trades,
-            rlm_min_price_drop=rlm_min_price_drop,
-            rlm_min_no_price=rlm_min_no_price,
-            rlm_contracts=rlm_contracts,
-            rlm_max_concurrent=rlm_max_concurrent,
-            rlm_allow_reentry=rlm_allow_reentry,
-            rlm_orderbook_timeout=rlm_orderbook_timeout,
-            rlm_tight_spread=rlm_tight_spread,
-            rlm_normal_spread=rlm_normal_spread,
-            rlm_max_spread=rlm_max_spread,
             min_trader_cash=min_trader_cash,
             cleanup_on_startup=cleanup_on_startup,
             allow_multiple_positions_per_market=allow_multiple_positions_per_market,
@@ -430,7 +377,6 @@ class V3Config:
         logger.info(f"  - Log level: {log_level}")
         if enable_trading_client:
             logger.info(f"  - Trading enabled: {trading_mode} mode")
-            logger.info(f"  - Trading strategy: {trading_strategy_str.upper()}")
             logger.info(f"  - Max orders: {trading_max_orders}, Max position: {trading_max_position_size}")
             logger.info(f"  - Cleanup on startup: {cleanup_on_startup}")
             if min_trader_cash > 0:
@@ -467,18 +413,6 @@ class V3Config:
         else:
             logger.info(f"  - Event tracking: DISABLED")
 
-        # Log RLM config if strategy is enabled
-        if trading_strategy_str == "rlm_no":
-            logger.info(f"  - RLM (Reverse Line Movement) Strategy: ENABLED")
-            logger.info(f"    - YES threshold: {rlm_yes_threshold:.0%}")
-            logger.info(f"    - Min trades: {rlm_min_trades}")
-            logger.info(f"    - Min price drop: {rlm_min_price_drop}c")
-            logger.info(f"    - Contracts: {rlm_contracts}")
-            logger.info(f"    - Max concurrent: {rlm_max_concurrent} positions")
-            logger.info(f"    - Re-entry: {'ENABLED' if rlm_allow_reentry else 'DISABLED'}")
-            logger.info(f"    - Orderbook timeout: {rlm_orderbook_timeout}s")
-            logger.info(f"    - Spread thresholds: tight={rlm_tight_spread}c, normal={rlm_normal_spread}c, max={rlm_max_spread}c")
-
         return config
     
     def is_demo_environment(self) -> bool:
@@ -491,27 +425,6 @@ class V3Config:
             return "DEMO (Paper Trading)"
         else:
             return "PRODUCTION"
-
-    @property
-    def trading_strategy(self):
-        """
-        Get the trading strategy as an enum.
-
-        Converts the string trading_strategy_str to TradingStrategy enum.
-        Import is done here to avoid circular imports.
-
-        Returns:
-            TradingStrategy enum value
-        """
-        # Import here to avoid circular import
-        from ..services.trading_decision_service import TradingStrategy
-
-        strategy_map = {
-            "hold": TradingStrategy.HOLD,
-            "rlm_no": TradingStrategy.RLM_NO,
-        }
-
-        return strategy_map.get(self.trading_strategy_str, TradingStrategy.HOLD)
 
     def validate(self) -> bool:
         """

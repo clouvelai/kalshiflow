@@ -34,8 +34,7 @@ from .health_monitor import V3HealthMonitor, CRITICAL_COMPONENTS
 from .status_reporter import V3StatusReporter
 from ..clients.orderbook_integration import V3OrderbookIntegration
 from ..config.environment import V3Config
-from ..services.trading_decision_service import TradingDecisionService, TradingStrategy
-from ..services.tmo_fetcher import TrueMarketOpenFetcher
+from ..services.trading_decision_service import TradingDecisionService
 from ..services.listener_bootstrap_service import ListenerBootstrapService
 from ..services.order_cleanup_service import OrderCleanupService
 from ..services.event_position_tracker import EventPositionTracker
@@ -138,14 +137,10 @@ class V3Coordinator:
         # Initialize trading decision service (if trading client available)
         self._trading_service = None
         if trading_client_integration:
-            # Get trading strategy from config (default: HOLD for safety)
-            strategy = config.trading_strategy
-
             self._trading_service = TradingDecisionService(
                 trading_client=trading_client_integration,
                 state_container=self._state_container,
                 event_bus=event_bus,
-                strategy=strategy,
                 config=config,
                 orderbook_integration=orderbook_integration
             )
@@ -163,9 +158,6 @@ class V3Coordinator:
         # Event position tracker (initialized in _connect_lifecycle when TrackedMarketsState is available)
         # Tracks positions grouped by event_ticker to detect correlated exposure
         self._event_position_tracker: Optional[EventPositionTracker] = None
-
-        # TMO fetcher (initialized in _connect_lifecycle when TrackedMarketsState is available)
-        self._tmo_fetcher: Optional[TrueMarketOpenFetcher] = None
 
         # Position listener for real-time position updates (initialized later if trading client available)
         self._position_listener: Optional['PositionListener'] = None
@@ -501,7 +493,7 @@ class V3Coordinator:
             )
             raise  # Fatal: system cannot function without market tracking
 
-        # --- Block 2: StrategyCoordinator + TMO + EventPositionTracker (degraded if fails) ---
+        # --- Block 2: StrategyCoordinator + EventPositionTracker (degraded if fails) ---
         # These are important but non-fatal. Log error and continue in degraded mode.
         try:
             # 4. Initialize Truth Social cache service (for evidence gathering)
@@ -545,18 +537,7 @@ class V3Coordinator:
                 self._health_monitor.set_strategy_coordinator(self._strategy_coordinator)
                 logger.info("StrategyCoordinator initialized for plugin-based strategy management")
 
-            # 6. Initialize TrueMarketOpenFetcher (for accurate price drop calculation)
-            if self._trading_client_integration:
-                self._tmo_fetcher = TrueMarketOpenFetcher(
-                    event_bus=self._event_bus,
-                    trading_client_integration=self._trading_client_integration,
-                    tracked_markets=self._tracked_markets_state,
-                    max_retries=3,
-                    rate_limit=10.0,  # Kalshi API limit: 10 req/s
-                )
-                logger.info("TrueMarketOpenFetcher initialized for candlestick-based price tracking")
-
-            # 7. Initialize EventPositionTracker (for event-level position tracking)
+            # 6. Initialize EventPositionTracker (for event-level position tracking)
             if self._config.event_tracking_enabled and self._trading_service:
                 self._event_position_tracker = EventPositionTracker(
                     tracked_markets=self._tracked_markets_state,
@@ -570,7 +551,7 @@ class V3Coordinator:
                 logger.info("EventPositionTracker initialized for event-level position tracking")
 
         except Exception as e:
-            logger.error(f"StrategyCoordinator/TMO/EventPositionTracker init failed (degraded): {e}")
+            logger.error(f"StrategyCoordinator/EventPositionTracker init failed (degraded): {e}")
             self._degraded_subsystems.add("strategy_coordinator")
             await self._event_bus.emit_system_activity(
                 activity_type="connection",
@@ -1454,11 +1435,6 @@ class V3Coordinator:
                 logger.error(f"TradeFlowService failed to start: {e}")
                 self._degraded_subsystems.add("trade_flow_service")
 
-        # Start TMO fetcher if configured (for accurate price drop calculation)
-        if self._tmo_fetcher:
-            await self._tmo_fetcher.start()
-            logger.info("TrueMarketOpenFetcher started - fetching market open prices from candlestick API")
-
         # Emit ready status
         status_msg = f"System ready with {len(self._config.market_tickers)} markets"
         if self._trading_client_integration:
@@ -1574,7 +1550,6 @@ class V3Coordinator:
             (self._reddit_historic_agent, "Reddit Historic Agent", lambda c: c.stop()),
             (self._price_impact_agent, "Price Impact Agent", lambda c: c.stop()),
             (self._trade_flow_service, "Trade Flow Service", lambda c: c.stop()),
-            (self._tmo_fetcher, "TMO Fetcher", lambda c: c.stop()),
             (self._trades_integration, "Trades Integration", lambda c: c.stop()),
             (self._upcoming_markets_syncer, "Upcoming Markets Syncer", lambda c: c.stop()),
             (self._lifecycle_syncer, "Lifecycle Syncer", lambda c: c.stop()),
@@ -1741,12 +1716,10 @@ class V3Coordinator:
             "metrics": metrics
         }
         
-        # Add trading mode and strategy if configured
+        # Add trading mode if configured
         if self._trading_client_integration:
             status["trading_mode"] = self._trading_client_integration._client.mode
-            if self._trading_service:
-                status["trading_strategy"] = self._trading_service.get_stats()["strategy"]
-        
+
         return status
     
     def is_healthy(self) -> bool:
@@ -1806,11 +1779,3 @@ class V3Coordinator:
         """Get trading service for external access."""
         return self._trading_service
     
-    def set_trading_strategy(self, strategy: TradingStrategy) -> None:
-        """Set the trading strategy."""
-        if not self._trading_service:
-            logger.warning("No trading service configured")
-            return
-        
-        self._trading_service.set_strategy(strategy)
-        logger.info(f"Trading strategy set to: {strategy.value}")

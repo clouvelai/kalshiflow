@@ -6,7 +6,6 @@ Services that provide specific functionality for the V3 trader.
 
 from .trading_decision_service import (
     TradingDecisionService,
-    TradingStrategy,
     TradingDecision
 )
 from .tracked_markets_syncer import TrackedMarketsSyncer
@@ -17,7 +16,6 @@ from .order_cleanup_service import OrderCleanupService
 
 __all__ = [
     "TradingDecisionService",
-    "TradingStrategy",
     "TradingDecision",
     "TrackedMarketsSyncer",
     "UpcomingMarketsSyncer",
