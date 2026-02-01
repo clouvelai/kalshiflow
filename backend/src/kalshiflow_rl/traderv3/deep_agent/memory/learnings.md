@@ -1,3 +1,3 @@
 # Trading Learnings
 
-Trade-by-trade insights are recorded here.
+_Day 0. No entries yet._
