@@ -46,10 +46,11 @@ from ..strategies import StrategyCoordinator, StrategyContext
 from ..agents import (
     RedditEntityAgent,
     RedditEntityAgentConfig,
+    RedditHistoricAgent,
+    RedditHistoricAgentConfig,
     PriceImpactAgent,
     PriceImpactAgentConfig,
 )
-from ..services.entity_market_index import EntityMarketIndex, get_entity_market_index
 
 logger = logging.getLogger("kalshiflow_rl.traderv3.core.coordinator")
 
@@ -208,12 +209,16 @@ class V3Coordinator:
         self._lifecycle_syncer: Optional['TrackedMarketsSyncer'] = None
         self._upcoming_markets_syncer: Optional['UpcomingMarketsSyncer'] = None
         self._api_discovery_syncer: Optional['ApiDiscoverySyncer'] = None
+        self._deep_agent_discovery = None  # DeepAgentDiscoveryService for non-lifecycle mode
+        self._trade_flow_service = None  # TradeFlowService for live trade feed to UX
 
-        # Entity trading agents (Reddit entity-based trading)
+        # Extraction-based entity trading system
         self._entity_system_enabled = config.entity_system_enabled if hasattr(config, 'entity_system_enabled') else False
-        self._entity_market_index: Optional[EntityMarketIndex] = None
         self._reddit_entity_agent: Optional[RedditEntityAgent] = None
-        self._price_impact_agent: Optional[PriceImpactAgent] = None
+        self._reddit_historic_agent: Optional[RedditHistoricAgent] = None
+        self._price_impact_agent: Optional[PriceImpactAgent] = None  # Actually ExtractionSignalRelay
+        self._gdelt_client = None       # GDELTClient (BigQuery GKG), initialized if enabled
+        self._gdelt_doc_client = None   # GDELTDocClient (free DOC API), always available
 
         self._started_at: Optional[float] = None
         self._running = False
@@ -236,12 +241,16 @@ class V3Coordinator:
         try:
             # Phase 1: Initialize components
             await self._initialize_components()
-            
+
+            # Mark running BEFORE Phase 2 so stop() can clean up Phase 1
+            # components (event_bus, websocket_manager, state_machine) if
+            # Phase 2 fails and the except block calls stop().
+            self._running = True
+
             # Phase 2: Establish connections
             await self._establish_connections()
-            
+
             # Phase 3: Start event loop
-            self._running = True
             self._event_loop_task = asyncio.create_task(self._run_event_loop())
             
             logger.info("=" * 60)
@@ -468,12 +477,11 @@ class V3Coordinator:
 
         logger.info(f"Starting {mode_description}...")
 
+        # --- Block 1: TrackedMarketsState creation + wiring (FATAL if fails) ---
+        # The system cannot function without market tracking, so re-raise on failure.
+        from ..state.tracked_markets import TrackedMarketsState
+
         try:
-            # Import here to avoid circular imports
-            from ..state.tracked_markets import TrackedMarketsState
-
-            # === ALWAYS NEEDED (all modes) ===
-
             # 1. Create TrackedMarketsState
             self._tracked_markets_state = TrackedMarketsState(
                 max_markets=self._config.lifecycle_max_markets
@@ -503,6 +511,18 @@ class V3Coordinator:
             await self._event_bus.subscribe_to_market_determined(self._handle_market_determined_cleanup)
             logger.info("Subscribed to MARKET_DETERMINED for state cleanup")
 
+        except Exception as e:
+            logger.error(f"FATAL: TrackedMarketsState initialization failed: {e}")
+            await self._event_bus.emit_system_activity(
+                activity_type="connection",
+                message=f"FATAL: TrackedMarketsState init failed: {str(e)}",
+                metadata={"error": str(e), "severity": "error"}
+            )
+            raise  # Fatal: system cannot function without market tracking
+
+        # --- Block 2: StrategyCoordinator + TMO + EventPositionTracker (degraded if fails) ---
+        # These are important but non-fatal. Log error and continue in degraded mode.
+        try:
             # 4. Initialize Truth Social cache service (for evidence gathering)
             # This must happen before Strategy Coordinator because strategies may use EventResearchService
             try:
@@ -568,31 +588,53 @@ class V3Coordinator:
                 self._status_reporter.set_event_position_tracker(self._event_position_tracker)
                 logger.info("EventPositionTracker initialized for event-level position tracking")
 
-            # === LIFECYCLE MODE ONLY ===
-            if is_lifecycle_mode:
-                await self._start_lifecycle_websocket()
+        except Exception as e:
+            logger.error(f"StrategyCoordinator/TMO/EventPositionTracker init failed (degraded): {e}")
+            self._degraded_subsystems.add("strategy_coordinator")
+            await self._event_bus.emit_system_activity(
+                activity_type="connection",
+                message=f"Strategy subsystem degraded: {str(e)}",
+                metadata={"error": str(e), "severity": "error", "degraded": True}
+            )
+
+        # --- Block 3: Lifecycle/Discovery services (already have own error handling) ---
+        if is_lifecycle_mode:
+            await self._start_lifecycle_websocket()
+        else:
+            logger.info(
+                f"Non-lifecycle mode active - starting DeepAgentDiscoveryService "
+                f"for REST-based market discovery."
+            )
+            # Start lightweight REST discovery for the deep agent
+            if self._trading_client_integration and self._tracked_markets_state:
+                try:
+                    from ..services.deep_agent_discovery import DeepAgentDiscoveryService
+                    self._deep_agent_discovery = DeepAgentDiscoveryService(
+                        tracked_markets=self._tracked_markets_state,
+                        trading_client=self._trading_client_integration,
+                        event_bus=self._event_bus,
+                        categories=self._config.lifecycle_categories,
+                        websocket_manager=self._websocket_manager,
+                    )
+                    await self._deep_agent_discovery.start()
+                except Exception as e:
+                    logger.error(f"Failed to start DeepAgentDiscoveryService: {e}")
+                    self._degraded_subsystems.add("deep_agent_discovery")
+                    await self._event_bus.emit_system_activity(
+                        activity_type="connection",
+                        message=f"Deep Agent Discovery failed: {e}",
+                        metadata={"error": str(e), "severity": "warning"}
+                    )
             else:
-                logger.info(
-                    f"Config mode active - strategies will self-discover their target markets. "
-                    f"No broad lifecycle discovery."
-                )
                 await self._event_bus.emit_system_activity(
                     activity_type="connection",
-                    message="Config mode: agent_pipeline will fetch target events directly",
+                    message="Config mode: no trading client or tracked markets for discovery",
                     metadata={
                         "feature": "config_mode",
                         "market_mode": self._config.market_mode,
                         "severity": "info"
                     }
                 )
-
-        except Exception as e:
-            logger.error(f"Failed to initialize core components: {e}")
-            await self._event_bus.emit_system_activity(
-                activity_type="connection",
-                message=f"Core initialization failed: {str(e)}",
-                metadata={"error": str(e), "severity": "error"}
-            )
 
     async def _start_lifecycle_websocket(self) -> None:
         """
@@ -699,6 +741,7 @@ class V3Coordinator:
 
         except Exception as e:
             logger.error(f"Failed to start lifecycle WebSocket: {e}")
+            self._degraded_subsystems.add("lifecycle_websocket")
             await self._event_bus.emit_system_activity(
                 activity_type="connection",
                 message=f"Lifecycle WebSocket failed: {str(e)}",
@@ -707,126 +750,124 @@ class V3Coordinator:
 
     async def _start_entity_system(self) -> None:
         """
-        Start the Reddit entity trading system.
+        Start the extraction-based entity trading system.
 
         Initializes:
-        1. EntityMarketIndex - maps entities to Kalshi markets
-        2. RedditEntityAgent - streams Reddit posts, extracts entities
-        3. PriceImpactAgent - transforms sentiment to price impact signals
+        1. RedditEntityAgent - streams Reddit posts, extracts via KalshiExtractor
+        2. Extraction Signal Relay (PriceImpactAgent) - subscribes to extractions Realtime,
+           broadcasts to frontend, refreshes engagement scores
 
-        Requires trading client to be connected for REST API access.
+        The extraction pipeline replaces the old EntityMarketIndex + spaCy approach.
+        Market linking, direction assessment, and multi-class extraction are all
+        handled by langextract with merged event specs from understand_event.
         """
         if not self._entity_system_enabled:
             logger.debug("Entity system disabled")
             return
 
         try:
-            logger.info("Starting entity trading system...")
+            logger.info("Starting extraction-based entity system...")
 
-            # 1. Build Entity-Market Index from Kalshi API
-            self._entity_market_index = get_entity_market_index()
-            if self._entity_market_index is None:
-                self._entity_market_index = EntityMarketIndex()
-
-            if self._trading_client_integration:
-                await self._entity_market_index.build_index(
-                    trading_client=self._trading_client_integration,
-                    categories=self._config.lifecycle_categories,
-                )
-                logger.info(
-                    f"EntityMarketIndex built: {self._entity_market_index.get_stats()['total_entities']} entities"
-                )
-
-                # Wire entity index to websocket manager for client snapshots
-                self._websocket_manager.set_entity_market_index(self._entity_market_index)
-
-                # Broadcast index stats to frontend
-                await self._websocket_manager.broadcast_message("entity_index_update", {
-                    "entity_count": self._entity_market_index.get_stats()["total_entities"],
-                    "market_count": self._entity_market_index.get_stats()["total_markets"],
-                })
-            else:
-                logger.warning(
-                    "No trading client available - entity index will be EMPTY. "
-                    "Entity-based trading signals will not be generated."
-                )
-
-            # 2. Initialize Entity Accumulator (sliding-window mention tracking + Supabase KB sync)
-            from ..services.entity_accumulator import (
-                EntityAccumulator, EntityAccumulatorConfig, set_entity_accumulator
-            )
-
-            accumulator_config = EntityAccumulatorConfig(
-                window_seconds=7200.0,
-                signal_threshold=0.4,
-                re_emit_threshold=0.2,
-            )
-            self._entity_accumulator = EntityAccumulator(config=accumulator_config)
-            set_entity_accumulator(self._entity_accumulator)
-            logger.info("EntityAccumulator initialized and registered as global singleton")
-
-            # 3. Initialize Reddit Entity Agent
+            # 1. Initialize Reddit Entity Agent (streams Reddit, runs KalshiExtractor)
             reddit_config = RedditEntityAgentConfig(
                 subreddits=self._config.entity_subreddits,
                 skip_existing=False,  # Get historical 100 items
                 enabled=True,
-                extract_related_entities=True,  # Track all entities including non-market related ones
-                llm_entity_extraction_enabled=getattr(
-                    self._config, "llm_entity_extraction_enabled", True
-                ),
             )
             self._reddit_entity_agent = RedditEntityAgent(
                 config=reddit_config,
                 websocket_manager=self._websocket_manager,
                 event_bus=self._event_bus,
-                entity_index=self._entity_market_index,  # For market-led normalization
             )
-            # Wire reddit agent to websocket manager for entity snapshots
-            self._websocket_manager.set_reddit_agent(self._reddit_entity_agent)
 
-            # 4. Initialize Price Impact Agent
-            impact_config = PriceImpactAgentConfig(
-                min_confidence=0.5,
-                min_sentiment_magnitude=20,
+            # 2. Initialize Extraction Signal Relay (Realtime subscription + WebSocket broadcast)
+            relay_config = PriceImpactAgentConfig(
                 enabled=True,
             )
             self._price_impact_agent = PriceImpactAgent(
-                config=impact_config,
+                config=relay_config,
                 websocket_manager=self._websocket_manager,
                 event_bus=self._event_bus,
-                entity_index=self._entity_market_index,
             )
 
-            # 5. Enable Supabase Realtime on entity tables (required for PriceImpactAgent)
+            # 3. Enable Supabase Realtime on extractions table
             await self._enable_entity_realtime()
 
-            # 6. Start agents
+            # 4. Start agents
             await self._reddit_entity_agent.start()
             await self._price_impact_agent.start()
 
-            # 7. Broadcast system status
+            # 4b. Initialize Reddit Historic Agent (daily digest)
+            if self._config.reddit_historic_enabled:
+                try:
+                    historic_config = RedditHistoricAgentConfig(
+                        subreddits=self._config.entity_subreddits,
+                        posts_limit=self._config.reddit_historic_posts_limit,
+                        comments_per_post=self._config.reddit_historic_comments_per_post,
+                        digest_cooldown_seconds=self._config.reddit_historic_cooldown_hours * 3600,
+                    )
+                    self._reddit_historic_agent = RedditHistoricAgent(
+                        config=historic_config,
+                        websocket_manager=self._websocket_manager,
+                        event_bus=self._event_bus,
+                    )
+                    await self._reddit_historic_agent.start()
+                    logger.info("[coordinator] Reddit Historic Agent started for daily digest")
+                except Exception as e:
+                    logger.warning(f"[coordinator] Reddit Historic Agent failed (non-fatal): {e}")
+
+            # 4c. Initialize GDELT BigQuery client (news intelligence)
+            if getattr(self._config, 'gdelt_enabled', False) and getattr(self._config, 'gdelt_gcp_project_id', ''):
+                try:
+                    from ..services.gdelt_client import GDELTClient
+                    self._gdelt_client = GDELTClient(
+                        gcp_project_id=self._config.gdelt_gcp_project_id,
+                        cache_ttl_seconds=self._config.gdelt_cache_ttl_seconds,
+                        max_results=self._config.gdelt_max_results,
+                        default_window_hours=self._config.gdelt_default_window_hours,
+                        max_bytes_per_session=getattr(self._config, 'gdelt_max_bytes_per_session', 500 * 1024 * 1024),
+                    )
+                    logger.info("[coordinator] GDELT client initialized")
+                except ImportError:
+                    logger.warning("[coordinator] GDELT client not available (google-cloud-bigquery not installed)")
+                except Exception as e:
+                    logger.warning(f"[coordinator] GDELT client failed (non-fatal): {e}")
+
+            # 4d. Initialize GDELT DOC API client (free, no BigQuery needed)
+            if getattr(self._config, 'gdelt_enabled', False):
+                try:
+                    from ..services.gdelt_client import GDELTDocClient
+                    self._gdelt_doc_client = GDELTDocClient(
+                        cache_ttl_seconds=getattr(self._config, 'gdelt_cache_ttl_seconds', 300),
+                        max_records=min(getattr(self._config, 'gdelt_max_results', 75), 250),
+                        default_timespan=f"{int(getattr(self._config, 'gdelt_default_window_hours', 4))}h",
+                    )
+                    logger.info("[coordinator] GDELT DOC API client initialized (free)")
+                except Exception as e:
+                    logger.warning(f"[coordinator] GDELT DOC client failed (non-fatal): {e}")
+
+            # 5. Broadcast system status
             await self._websocket_manager.broadcast_message("entity_system_status", {
                 "is_active": True,
+                "pipeline": "extraction",
                 "stats": {
-                    "indexSize": self._entity_market_index.get_stats()["total_entities"] if self._entity_market_index else 0,
                     "postsProcessed": 0,
-                    "entitiesExtracted": 0,
-                    "signalsGenerated": 0,
+                    "extractionsCreated": 0,
+                    "marketSignals": 0,
                 },
             })
 
             subreddit_display = ", ".join(f"r/{s}" for s in self._config.entity_subreddits)
             await self._event_bus.emit_system_activity(
                 activity_type="entity_system",
-                message=f"Entity trading system active - streaming {subreddit_display}",
+                message=f"Extraction pipeline active - streaming {subreddit_display}",
                 metadata={
-                    "feature": "entity_trading",
+                    "feature": "extraction_pipeline",
                     "subreddits": self._config.entity_subreddits,
-                    "entity_count": self._entity_market_index.get_stats()["total_entities"] if self._entity_market_index else 0,
                     "severity": "info"
                 }
             )
-            logger.info("Entity trading system started successfully")
+            logger.info("Extraction-based entity system started successfully")
 
         except Exception as e:
             logger.error(f"Failed to start entity system: {e}")
@@ -838,11 +879,14 @@ class V3Coordinator:
 
     async def _enable_entity_realtime(self) -> None:
         """
-        Enable Supabase Realtime on entity tables.
+        Enable Supabase Realtime on the extractions table.
 
-        PriceImpactAgent subscribes to INSERT events via Supabase Realtime.
-        The tables must be added to the supabase_realtime publication for
+        The Extraction Signal Relay subscribes to INSERT events via Supabase Realtime.
+        The table must be added to the supabase_realtime publication for
         Realtime to deliver change events.
+
+        Note: The extractions migration already includes ALTER PUBLICATION,
+        but this ensures it's enabled even if the migration was partial.
         """
         try:
             from ...data.database import rl_db
@@ -853,21 +897,20 @@ class V3Coordinator:
                 return
 
             async with db._pool.acquire() as conn:
-                for table in ("reddit_entities", "news_entities"):
+                for table in ("extractions",):
                     try:
                         await conn.execute(
                             f"ALTER PUBLICATION supabase_realtime ADD TABLE {table}"
                         )
                         logger.info(f"Enabled Supabase Realtime for {table}")
                     except Exception as e:
-                        # "relation already member" is expected on subsequent starts
                         if "already member" in str(e).lower():
                             logger.debug(f"Realtime already enabled for {table}")
                         else:
                             logger.warning(f"Failed to enable Realtime for {table}: {e}")
 
         except Exception as e:
-            logger.warning(f"Could not enable Supabase Realtime on entity tables: {e}")
+            logger.warning(f"Could not enable Supabase Realtime on extractions table: {e}")
 
     async def _connect_trading_client(self) -> None:
         """Connect to trading API."""
@@ -1391,6 +1434,45 @@ class V3Coordinator:
             self._websocket_manager.set_strategy_coordinator(self._strategy_coordinator)
             logger.info("StrategyCoordinator wired to WebSocket manager for trade processing broadcasts")
 
+            # Wire Reddit Historic Agent to deep agent tools for daily digest access
+            if self._reddit_historic_agent:
+                try:
+                    deep_strategy = self._strategy_coordinator.get_strategy("deep_agent")
+                    if deep_strategy and hasattr(deep_strategy, '_agent') and deep_strategy._agent:
+                        deep_strategy._agent._tools._reddit_historic_agent = self._reddit_historic_agent
+                        logger.info("Reddit Historic Agent wired to deep agent tools")
+                except Exception as e:
+                    logger.warning(f"Failed to wire Reddit Historic Agent to deep agent: {e}")
+
+            # Wire GDELT clients to deep agent tools for news intelligence
+            if self._gdelt_client or self._gdelt_doc_client:
+                try:
+                    deep_strategy = self._strategy_coordinator.get_strategy("deep_agent")
+                    if deep_strategy and hasattr(deep_strategy, '_agent') and deep_strategy._agent:
+                        if self._gdelt_client:
+                            deep_strategy._agent._tools._gdelt_client = self._gdelt_client
+                            logger.info("GDELT GKG client wired to deep agent tools")
+                        if self._gdelt_doc_client:
+                            deep_strategy._agent._tools._gdelt_doc_client = self._gdelt_doc_client
+                            logger.info("GDELT DOC API client wired to deep agent tools (free)")
+                except Exception as e:
+                    logger.warning(f"Failed to wire GDELT clients to deep agent: {e}")
+
+        # Start TradeFlowService for live trade feed to UX
+        if self._trades_integration and self._tracked_markets_state:
+            try:
+                from ..services.trade_flow_service import TradeFlowService
+                self._trade_flow_service = TradeFlowService(
+                    event_bus=self._event_bus,
+                    tracked_markets=self._tracked_markets_state,
+                )
+                await self._trade_flow_service.start()
+                self._websocket_manager.set_trade_flow_service(self._trade_flow_service)
+                logger.info("TradeFlowService started - live trades will stream to UX")
+            except Exception as e:
+                logger.error(f"TradeFlowService failed to start: {e}")
+                self._degraded_subsystems.add("trade_flow_service")
+
         # Start TMO fetcher if configured (for accurate price drop calculation)
         if self._tmo_fetcher:
             await self._tmo_fetcher.start()
@@ -1515,12 +1597,15 @@ class V3Coordinator:
             (self._strategy_coordinator, "Strategy Coordinator", lambda c: c.stop_all()),
             # Entity trading agents (stop before strategy coordinator dependencies)
             (self._reddit_entity_agent, "Reddit Entity Agent", lambda c: c.stop()),
+            (self._reddit_historic_agent, "Reddit Historic Agent", lambda c: c.stop()),
             (self._price_impact_agent, "Price Impact Agent", lambda c: c.stop()),
+            (self._trade_flow_service, "Trade Flow Service", lambda c: c.stop()),
             (self._tmo_fetcher, "TMO Fetcher", lambda c: c.stop()),
             (self._trades_integration, "Trades Integration", lambda c: c.stop()),
             (self._upcoming_markets_syncer, "Upcoming Markets Syncer", lambda c: c.stop()),
             (self._lifecycle_syncer, "Lifecycle Syncer", lambda c: c.stop()),
             (self._api_discovery_syncer, "API Discovery Syncer", lambda c: c.stop()),
+            (self._deep_agent_discovery, "Deep Agent Discovery", lambda c: c.stop()),
             (self._event_lifecycle_service, "Event Lifecycle Service", lambda c: c.stop()),
             (self._lifecycle_integration, "Lifecycle Integration", lambda c: c.stop()),
             (self._position_listener, "Position Listener", lambda c: c.stop()),
@@ -1603,6 +1688,7 @@ class V3Coordinator:
             ("_trading_state_syncer", "trading_state_syncer", "get_health_details"),
             ("_tracked_markets_state", "tracked_markets_state", "get_stats"),
             ("_event_lifecycle_service", "event_lifecycle_service", "get_stats"),
+            ("_trade_flow_service", "trade_flow_service", "get_trade_processing_stats"),
         ]
         for attr, key, method in _OPTIONAL_STATUS_COMPONENTS:
             comp = getattr(self, attr, None)
@@ -1623,15 +1709,17 @@ class V3Coordinator:
         # Add entity system components if enabled
         components["entity_system"] = {
             "enabled": self._entity_system_enabled,
+            "pipeline": "extraction",
             "reddit_agent_running": self._reddit_entity_agent is not None and self._reddit_entity_agent.is_running,
-            "price_impact_agent_running": self._price_impact_agent is not None and self._price_impact_agent.is_running,
-            "entity_index_size": self._entity_market_index.get_stats()["total_entities"] if self._entity_market_index else 0,
-            "entity_market_count": self._entity_market_index.get_stats()["total_markets"] if self._entity_market_index else 0,
+            "reddit_historic_running": self._reddit_historic_agent is not None and self._reddit_historic_agent.is_running,
+            "extraction_relay_running": self._price_impact_agent is not None and self._price_impact_agent.is_running,
         }
         if self._reddit_entity_agent:
             components["reddit_entity_agent"] = self._reddit_entity_agent.get_health_details()
+        if self._reddit_historic_agent:
+            components["reddit_historic_agent"] = self._reddit_historic_agent.get_health_details()
         if self._price_impact_agent:
-            components["price_impact_agent"] = self._price_impact_agent.get_health_details()
+            components["extraction_relay"] = self._price_impact_agent.get_health_details()
 
         # Get metrics from various sources
         orderbook_metrics = self._orderbook_integration.get_metrics()

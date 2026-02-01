@@ -53,6 +53,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger("kalshiflow_rl.traderv3")
 
+# Suppress noisy third-party loggers
+for _noisy_logger in ("httpx", "httpcore", "hpack", "websockets", "asyncio"):
+    logging.getLogger(_noisy_logger).setLevel(logging.WARNING)
+
 # Global coordinator instance
 coordinator: V3Coordinator = None
 
@@ -160,7 +164,12 @@ async def lifespan(app):
         # Enable trades stream for:
         # 1. RLM strategy (legacy - needs trade data for signal detection)
         # 2. Lifecycle mode (strategies like agentic_research need PUBLIC_TRADE_RECEIVED events)
-        needs_trades_stream = config.trading_strategy_str == "rlm_no" or config.market_mode == "lifecycle"
+        # 3. Any mode with trading enabled (TradeFlowService streams trades to UX)
+        needs_trades_stream = (
+            config.trading_strategy_str == "rlm_no"
+            or config.market_mode == "lifecycle"
+            or config.enable_trading_client
+        )
 
         if needs_trades_stream:
             logger.info(f"Creating trades client (strategy={config.trading_strategy_str}, mode={config.market_mode})...")
@@ -442,46 +451,30 @@ async def export_order_contexts_endpoint(request: Request):
         )
 
 
-async def entity_index_endpoint(request: Request) -> JSONResponse:
-    """Debug endpoint to expose entity market index contents."""
+async def event_configs_endpoint(request: Request) -> JSONResponse:
+    """Debug endpoint to expose active event configs from Supabase."""
     if not coordinator:
         return JSONResponse({"error": "Coordinator not initialized"}, status_code=503)
 
     try:
-        # Get the entity market index from coordinator
-        entity_index = coordinator._entity_market_index
-        if not entity_index:
-            return JSONResponse({"error": "Entity index not available"}, status_code=404)
+        import os
+        from supabase import create_client
+        url = os.environ.get("SUPABASE_URL") or os.environ.get("DATABASE_URL_POOLED", "").replace("postgresql://", "https://").split("@")[-1].split("/")[0]
+        key = os.environ.get("SUPABASE_ANON_KEY") or os.environ.get("SUPABASE_KEY", "")
+        if not url or not key:
+            return JSONResponse({"error": "Supabase credentials not configured"}, status_code=404)
 
-        # Get all entities with their market mappings
-        entities = []
-        for entry in entity_index.get_all_entities():
-            entities.append({
-                "entity_id": entry.entity_id,
-                "canonical_name": entry.canonical_name,
-                "market_count": len(entry.markets),
-                "markets": [
-                    {
-                        "ticker": m.market_ticker,
-                        "event_ticker": m.event_ticker,
-                        "market_type": m.market_type,
-                    }
-                    for m in entry.markets
-                ],
-            })
-
-        # Sort by market count (most relevant entities first)
-        entities.sort(key=lambda x: x["market_count"], reverse=True)
+        supabase = create_client(url, key)
+        result = supabase.table("event_configs").select("*").eq("is_active", True).execute()
+        configs = result.data or []
 
         return JSONResponse({
-            "total_entities": len(entities),
-            "total_markets": sum(e["market_count"] for e in entities),
-            "entities": entities,
-            "stats": entity_index.get_stats(),
+            "total_configs": len(configs),
+            "configs": configs,
         })
 
     except Exception as e:
-        logger.error(f"Entity index endpoint error: {e}")
+        logger.error(f"Event configs endpoint error: {e}")
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
@@ -493,7 +486,7 @@ app = Starlette(
         Route("/v3/status", status_endpoint),
         Route("/v3/cleanup", cleanup_endpoint, methods=["POST"]),
         Route("/v3/export/order-contexts", export_order_contexts_endpoint),
-        Route("/v3/entity-index", entity_index_endpoint),
+        Route("/v3/event-configs", event_configs_endpoint),
         WebSocketRoute("/v3/ws", websocket_endpoint)
     ]
 )

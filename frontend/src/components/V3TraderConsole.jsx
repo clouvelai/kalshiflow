@@ -7,7 +7,6 @@ import {
   SettlementsPanel,
   TradeProcessingPanel,
   DeepAgentPanel,
-  EntityTradesFeedPanel,
 } from './v3-trader/panels';
 
 // UI components
@@ -51,7 +50,7 @@ const V3TraderConsole = () => {
   // Message handler that routes to both console AND deep agent processor
   const handleWebSocketMessage = useCallback((type, message, context) => {
     // Route deep_agent_* messages to the deep agent processor
-    if (type.startsWith('deep_agent_') || type === 'price_impact' || type === 'reddit_signal') {
+    if (type.startsWith('deep_agent_')) {
       processDeepAgentMessage(type, message);
     }
     // Always add to console messages
@@ -76,14 +75,11 @@ const V3TraderConsole = () => {
     newResearchAlert,
     dismissResearchAlert,
     metrics,
-    entityIndex,
-    // Entity trading data (Reddit → Entities → Price Impacts)
+    // Extraction data
+    extractions,
+    marketSignals,
+    eventConfigs,
     entityRedditPosts,
-    entityPriceImpacts,
-    entityStats,
-    // Trade flow for entity trades feed
-    eventTrades,
-    tradePulses,
   } = useV3WebSocket({ onMessage: handleWebSocketMessage });
 
   return (
@@ -135,16 +131,13 @@ const V3TraderConsole = () => {
             statsOnly={true}
             agentState={{
               ...agentState,
-              // Merge entity stats into agent state for display
-              redditPostsProcessed: entityStats?.postsProcessed || 0,
-              entitiesExtracted: entityStats?.entitiesExtracted || 0,
-              signalsGenerated: entityStats?.signalsGenerated || 0,
-              indexSize: entityStats?.indexSize || 0,
+              postsProcessed: entityRedditPosts?.length || 0,
+              extractionsTotal: extractions?.length || 0,
+              extractionsMarketSignals: marketSignals?.length || 0,
+              eventsTracked: eventConfigs?.length || 0,
             }}
             trades={deepAgentTrades}
             settlements={deepAgentSettlements}
-            redditSignals={entityRedditPosts}
-            priceImpacts={entityPriceImpacts}
             isRunning={deepAgentIsRunning || (strategyStatus?.strategies?.deep_agent?.running ?? false)}
             isLearning={deepAgentIsLearning}
             costData={agentState.costData}
@@ -162,15 +155,6 @@ const V3TraderConsole = () => {
         <div className="mb-6">
           <SettlementsPanel settlements={settlements} />
         </div>
-
-        {/* Entity Trades Feed Panel - Live trades filtered to entity-tracked markets */}
-        {entityIndex?.entities?.length > 0 && (
-          <EntityTradesFeedPanel
-            entityIndex={entityIndex}
-            eventTrades={eventTrades}
-            tradePulses={tradePulses}
-          />
-        )}
 
         <div className="grid grid-cols-12 gap-6">
           {/* Metrics Panel */}

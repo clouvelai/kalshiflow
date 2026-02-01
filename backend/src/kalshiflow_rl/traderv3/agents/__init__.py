@@ -9,6 +9,7 @@ Contains agents for the entity-based trading pipeline:
 
 from .base_agent import BaseAgent, AgentStatus
 from .reddit_entity_agent import RedditEntityAgent, RedditEntityAgentConfig
+from .reddit_historic_agent import RedditHistoricAgent, RedditHistoricAgentConfig
 from .price_impact_agent import PriceImpactAgent, PriceImpactAgentConfig
 
 __all__ = [
@@ -18,6 +19,8 @@ __all__ = [
     # Agents
     "RedditEntityAgent",
     "RedditEntityAgentConfig",
+    "RedditHistoricAgent",
+    "RedditHistoricAgentConfig",
     "PriceImpactAgent",
     "PriceImpactAgentConfig",
 ]

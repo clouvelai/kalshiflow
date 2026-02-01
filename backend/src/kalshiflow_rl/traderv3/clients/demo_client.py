@@ -990,6 +990,43 @@ class KalshiDemoTradingClient:
                 f"Failed to get event candlesticks for {event_ticker}: {e}"
             )
 
+    async def get_series(
+        self,
+        category: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Get series list with optional category filter.
+
+        GET /trade-api/v2/series
+
+        The series endpoint supports category as a first-class query parameter,
+        making it the correct way to discover markets by category.
+
+        Args:
+            category: Filter series by category (e.g., "Politics", "Economics")
+
+        Returns:
+            List of series dicts with series_ticker, title, category, etc.
+
+        Raises:
+            KalshiDemoTradingClientError: If request fails
+        """
+        try:
+            params = []
+            if category:
+                params.append(f"category={category}")
+
+            query_string = "&".join(params) if params else ""
+            path = f"/series?{query_string}" if query_string else "/series"
+            response = await self._make_request("GET", path)
+
+            series_list = response.get("series", [])
+            logger.debug(f"Retrieved {len(series_list)} series (category={category})")
+            return series_list
+
+        except Exception as e:
+            raise KalshiDemoTradingClientError(f"Failed to get series: {e}")
+
     async def get_events(
         self,
         status: Optional[str] = None,
@@ -997,6 +1034,7 @@ class KalshiDemoTradingClient:
         limit: int = 200,
         cursor: Optional[str] = None,
         min_close_ts: Optional[int] = None,
+        series_ticker: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Get events with optional filtering and pagination.
@@ -1004,8 +1042,7 @@ class KalshiDemoTradingClient:
         GET /trade-api/v2/events
 
         This is the efficient batch endpoint for fetching multiple events
-        with their markets in a single call. Much more efficient than
-        individual get_event() calls when category filtering is needed.
+        with their markets in a single call.
 
         Args:
             status: Filter by 'open', 'closed', or 'settled'
@@ -1013,6 +1050,7 @@ class KalshiDemoTradingClient:
             limit: Max results per page (1-200, default 200)
             cursor: Pagination cursor from previous response
             min_close_ts: Filter events with at least one market closing after this Unix timestamp
+            series_ticker: Filter events by series ticker (API-level filter)
 
         Returns:
             {"events": [...], "cursor": "..."} where cursor is empty if no more pages
@@ -1030,6 +1068,8 @@ class KalshiDemoTradingClient:
                 params.append(f"cursor={cursor}")
             if min_close_ts:
                 params.append(f"min_close_ts={min_close_ts}")
+            if series_ticker:
+                params.append(f"series_ticker={series_ticker}")
 
             query_string = "&".join(params)
             response = await self._make_request("GET", f"/events?{query_string}")
@@ -1038,7 +1078,8 @@ class KalshiDemoTradingClient:
             has_more = bool(response.get("cursor"))
             logger.debug(
                 f"Retrieved {events_count} events "
-                f"(status={status}, nested_markets={with_nested_markets}, has_more={has_more})"
+                f"(status={status}, nested_markets={with_nested_markets}, "
+                f"series_ticker={series_ticker}, has_more={has_more})"
             )
             return response
 

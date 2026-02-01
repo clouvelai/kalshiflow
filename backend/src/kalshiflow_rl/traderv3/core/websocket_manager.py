@@ -33,7 +33,6 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from ..services.trading_decision_service import TradingDecisionService
     from ..services.upcoming_markets_syncer import UpcomingMarketsSyncer
-    from ..services.entity_market_index import EntityMarketIndex
     from ..state.tracked_markets import TrackedMarketsState
     from ..state.event_research_context import EventResearchResult
     from .state_container import V3StateContainer
@@ -83,10 +82,10 @@ class V3WebSocketManager:
         self._state_container: Optional['V3StateContainer'] = None
         self._trading_service: Optional['TradingDecisionService'] = None
         self._strategy_coordinator: Optional['StrategyCoordinator'] = None  # Set via set_strategy_coordinator()
+        self._trade_flow_service = None  # Set via set_trade_flow_service()
         self._market_price_syncer = None  # Set via set_market_price_syncer()
         self._tracked_markets_state: Optional['TrackedMarketsState'] = None  # Set via set_tracked_markets_state()
         self._upcoming_markets_syncer: Optional['UpcomingMarketsSyncer'] = None  # Set via set_upcoming_markets_syncer()
-        self._entity_market_index: Optional['EntityMarketIndex'] = None  # Set via set_entity_market_index()
         self._deep_agent: Optional['SelfImprovingAgent'] = None  # Set via set_deep_agent()
         self._reddit_agent: Optional['RedditEntityAgent'] = None  # Set via set_reddit_agent()
         self._clients: Dict[str, WebSocketClient] = {}
@@ -196,6 +195,20 @@ class V3WebSocketManager:
             self._strategy_panel_task = asyncio.create_task(self._strategy_panel_heartbeat())
             logger.info("Started strategy panel heartbeat (5s interval)")
 
+    def set_trade_flow_service(self, service) -> None:
+        """
+        Set the trade flow service for providing trade state snapshots.
+
+        When set, the WebSocketManager will prefer this service over
+        StrategyCoordinator for trade flow market states, decoupling
+        the live trade feed from the strategy pipeline.
+
+        Args:
+            service: TradeFlowService instance
+        """
+        self._trade_flow_service = service
+        logger.info("TradeFlowService set on WebSocket manager")
+
     def set_upcoming_markets_syncer(self, syncer: 'UpcomingMarketsSyncer') -> None:
         """
         Set the upcoming markets syncer for sending snapshots on connect.
@@ -208,19 +221,6 @@ class V3WebSocketManager:
         """
         self._upcoming_markets_syncer = syncer
         logger.info("UpcomingMarketsSyncer set on WebSocket manager")
-
-    def set_entity_market_index(self, entity_index: 'EntityMarketIndex') -> None:
-        """
-        Set the entity market index for entity index snapshots.
-
-        This enables sending entity index snapshots to new clients and
-        broadcasting entity signal updates when reddit signals arrive.
-
-        Args:
-            entity_index: EntityMarketIndex instance
-        """
-        self._entity_market_index = entity_index
-        logger.info("EntityMarketIndex set on WebSocket manager")
 
     def set_deep_agent(self, agent: 'SelfImprovingAgent') -> None:
         """
@@ -471,11 +471,12 @@ class V3WebSocketManager:
             if self._tracked_markets_state and client_id in self._clients:
                 await self._send_tracked_markets_snapshot(client_id)
 
-            # Send trade flow market states snapshot if strategy coordinator is available
-            if self._strategy_coordinator and client_id in self._clients:
+            # Send trade flow market states snapshot if trade flow service or strategy coordinator is available
+            if (self._trade_flow_service or self._strategy_coordinator) and client_id in self._clients:
                 await self._send_trade_flow_states_snapshot(client_id)
-                # Also send initial trade_processing snapshot
-                await self._send_trade_processing_snapshot(client_id)
+                # Also send initial trade_processing snapshot (only if strategy coordinator)
+                if self._strategy_coordinator:
+                    await self._send_trade_processing_snapshot(client_id)
 
             # Send trading strategies panel snapshot if strategy coordinator is available
             if self._strategy_coordinator and client_id in self._clients:
@@ -494,21 +495,17 @@ class V3WebSocketManager:
             if self._activity_feed_history and client_id in self._clients:
                 await self._send_activity_feed_history(client_id)
 
-            # Send entity index snapshot if entity market index is available
-            if self._entity_market_index and client_id in self._clients:
-                await self._send_entity_index_snapshot(client_id)
-
             # Send deep agent snapshot for session persistence (Agent tab)
             if self._deep_agent and client_id in self._clients:
                 await self._send_deep_agent_snapshot(client_id)
 
-            # Send entity snapshot for session persistence (Reddit posts, entities, price impacts)
+            # Send entity snapshot for session persistence (Reddit posts, extractions)
             if self._reddit_agent and client_id in self._clients:
                 await self._send_entity_snapshot(client_id)
 
-            # Send price impacts snapshot for deep agent (ensures signals visible after refresh)
-            if client_id in self._clients:
-                await self._send_price_impacts_snapshot(client_id)
+            # Send event configs snapshot (active event configurations)
+            if self._reddit_agent and client_id in self._clients:
+                await self._send_event_configs_snapshot(client_id)
 
             # Now handle incoming messages
             # (Current state is already included in the historical transitions replay)
@@ -981,95 +978,6 @@ class V3WebSocketManager:
         }
         await self.broadcast_message("market_info_update", update_data)
 
-    # ========== Entity Index Methods ==========
-
-    async def broadcast_entity_index_snapshot(self) -> None:
-        """
-        Broadcast full entity index snapshot to all connected clients.
-
-        Called after entity index refresh to provide visibility into
-        all canonical entities with their aliases and market mappings.
-        """
-        if not self._entity_market_index:
-            return
-
-        # Use the centralized builder to ensure consistency
-        snapshot_data = self._build_entity_index_data()
-        await self.broadcast_message("entity_index_snapshot", snapshot_data)
-
-        logger.info(f"Broadcast entity_index_snapshot: {snapshot_data['total_entities']} entities")
-
-    async def broadcast_entity_signal_update(
-        self,
-        entity_id: str,
-        canonical_name: str,
-        reddit_stats: Dict[str, Any]
-    ) -> None:
-        """
-        Broadcast entity signal update when new reddit signal received.
-
-        Called by PriceImpactAgent when processing new entity signals.
-
-        Args:
-            entity_id: Entity ID that received signal
-            canonical_name: Entity's canonical name
-            reddit_stats: Updated reddit signal stats
-        """
-        from ..services.entity_accumulator import get_entity_accumulator
-
-        update_data = {
-            "entity_id": entity_id,
-            "canonical_name": canonical_name,
-            "reddit_signals": reddit_stats,
-            "timestamp": time.time(),
-        }
-
-        # Include accumulated signal data if available
-        accumulator = get_entity_accumulator()
-        if accumulator:
-            signal = accumulator.get_signal(entity_id)
-            if signal:
-                relations = accumulator.get_entity_relations(entity_id, limit=5)
-                update_data["accumulated"] = {
-                    "signal_strength": signal.signal_strength,
-                    "mention_count": signal.mention_count,
-                    "unique_sources": signal.unique_sources,
-                    "weighted_sentiment": signal.weighted_sentiment,
-                    "max_reddit_score": signal.max_reddit_score,
-                    "total_reddit_comments": signal.total_reddit_comments,
-                    "source_types": signal.source_types,
-                    "categories": signal.categories,
-                    "latest_context": signal.latest_context[:200] if signal.latest_context else "",
-                    "first_mention_at": signal.first_mention_at,
-                    "last_mention_at": signal.last_mention_at,
-                    "relations": [
-                        {
-                            "subject": r.subject_name,
-                            "relation": r.relation,
-                            "object": r.object_name,
-                            "confidence": round(r.confidence, 2),
-                            "context": r.context_snippet[:120] if r.context_snippet else "",
-                        }
-                        for r in relations
-                    ],
-                }
-
-        await self.broadcast_message("entity_signal_update", update_data)
-
-    async def broadcast_entity_linked(self, entity_data: Dict[str, Any]) -> None:
-        """
-        Broadcast when a new entity is linked from market discovery.
-
-        Called when entity index discovers a new market entity.
-
-        Args:
-            entity_data: Full canonical entity data
-        """
-        await self.broadcast_message("entity_linked", {
-            **entity_data,
-            "timestamp": time.time(),
-        })
-
     async def broadcast_event_research(
         self,
         event_ticker: str,
@@ -1273,17 +1181,28 @@ class V3WebSocketManager:
 
     async def _send_trade_flow_states_snapshot(self, client_id: str) -> None:
         """Send trade flow market states snapshot to a specific client."""
+        # Use TradeFlowService if available, otherwise fall back to StrategyCoordinator
+        data_source = self._trade_flow_service or self._strategy_coordinator
         await self._send_snapshot(
             client_id,
             "trade_flow_states_snapshot",
-            self._strategy_coordinator,
+            data_source,
             lambda: self._build_trade_flow_states_data(),
             log_name="trade flow states"
         )
 
     def _build_trade_flow_states_data(self) -> dict:
-        """Build trade flow market states snapshot data."""
-        market_states = self._strategy_coordinator.get_market_states(limit=100)
+        """Build trade flow market states snapshot data.
+
+        Prefers TradeFlowService (dedicated trade feed) over
+        StrategyCoordinator (legacy path).
+        """
+        if self._trade_flow_service:
+            market_states = self._trade_flow_service.get_market_states(limit=100)
+        elif self._strategy_coordinator:
+            market_states = self._strategy_coordinator.get_market_states(limit=100)
+        else:
+            market_states = []
         return {
             "markets": market_states,
             "count": len(market_states),
@@ -1408,79 +1327,6 @@ class V3WebSocketManager:
             "count": len(history_list)
         }
 
-    async def _send_entity_index_snapshot(self, client_id: str) -> None:
-        """Send entity index snapshot to a specific client."""
-        await self._send_snapshot(
-            client_id,
-            "entity_index_snapshot",
-            self._entity_market_index,
-            lambda: self._build_entity_index_data(),
-            log_name="entity_index"
-        )
-
-    def _build_entity_index_data(self) -> dict:
-        """Build entity index snapshot data with accumulated signals."""
-        from ..services.entity_accumulator import get_entity_accumulator
-
-        accumulator = get_entity_accumulator()
-        entities = []
-        for entity in self._entity_market_index.get_all_canonical_entities():
-            # Extract market tickers as simple strings for frontend compatibility
-            market_tickers = [m.market_ticker for m in entity.markets]
-
-            entity_data = {
-                "entity_id": entity.entity_id,
-                "canonical_name": entity.canonical_name,
-                "entity_type": entity.entity_type,
-                "aliases": list(entity.aliases),
-                # Full market objects for detailed display
-                "markets": [m.to_dict() for m in entity.markets],
-                # Simple ticker list for quick access
-                "market_tickers": market_tickers,
-                "reddit_signals": {
-                    # Session-level aggregated stats
-                    "mention_count": entity.reddit_mentions,
-                    "aggregate_sentiment": entity.aggregate_sentiment,
-                    "last_signal_at": entity.last_reddit_signal,
-                },
-            }
-
-            # Enrich with accumulated signal data from EntityAccumulator
-            if accumulator:
-                signal = accumulator.get_signal(entity.entity_id)
-                if signal:
-                    relations = accumulator.get_entity_relations(entity.entity_id, limit=5)
-                    entity_data["accumulated"] = {
-                        "signal_strength": signal.signal_strength,
-                        "mention_count": signal.mention_count,
-                        "unique_sources": signal.unique_sources,
-                        "weighted_sentiment": signal.weighted_sentiment,
-                        "max_reddit_score": signal.max_reddit_score,
-                        "total_reddit_comments": signal.total_reddit_comments,
-                        "source_types": signal.source_types,
-                        "categories": signal.categories,
-                        "latest_context": signal.latest_context[:200] if signal.latest_context else "",
-                        "first_mention_at": signal.first_mention_at,
-                        "last_mention_at": signal.last_mention_at,
-                        "relations": [
-                            {
-                                "subject": r.subject_name,
-                                "relation": r.relation,
-                                "object": r.object_name,
-                                "confidence": round(r.confidence, 2),
-                                "context": r.context_snippet[:120] if r.context_snippet else "",
-                            }
-                            for r in relations
-                        ],
-                    }
-
-            entities.append(entity_data)
-        return {
-            "total_entities": len(entities),
-            "entities": entities,
-            "timestamp": time.time(),
-        }
-
     async def _send_deep_agent_snapshot(self, client_id: str) -> None:
         """
         Send deep agent snapshot to a specific client.
@@ -1510,11 +1356,9 @@ class V3WebSocketManager:
 
     async def _send_entity_snapshot(self, client_id: str) -> None:
         """
-        Send entity pipeline snapshot to a specific client.
+        Send extraction pipeline snapshot to a specific client.
 
-        This enables session persistence for the Deep Agent page,
-        restoring Reddit posts, entity extractions, and price impacts
-        after a page refresh.
+        Restores Reddit posts and extraction signals after a page refresh.
         """
         if not self._reddit_agent:
             return
@@ -1522,33 +1366,18 @@ class V3WebSocketManager:
             return
 
         try:
-            # Get snapshot from reddit agent (posts + entities)
+            # Get snapshot from reddit agent (posts + extractions)
             entity_snapshot = self._reddit_agent.get_entity_snapshot()
 
-            # Get price impacts from the global store
-            from ..services.price_impact_store import get_price_impact_store
-            price_impact_store = get_price_impact_store()
-            price_impacts = price_impact_store.get_recent_for_snapshot(limit=30)
-
-            # Get entity index size if available
-            index_size = 0
-            if self._entity_market_index:
-                try:
-                    index_stats = self._entity_market_index.get_stats()
-                    index_size = index_stats.get("total_entities", 0)
-                except Exception:
-                    pass
-
-            # Build stats with all required fields (camelCase for frontend)
+            # Build stats (camelCase for frontend)
             stats = entity_snapshot.get("stats", {})
-            stats["signalsGenerated"] = len(price_impacts)
-            stats["indexSize"] = index_size
 
             # Build combined snapshot
             snapshot_data = {
                 "reddit_posts": entity_snapshot.get("reddit_posts", []),
-                "entities": entity_snapshot.get("entities", []),
-                "price_impacts": price_impacts,
+                "extractions": entity_snapshot.get("extractions", []),
+                # Legacy field: frontend may still read "entities"
+                "entities": entity_snapshot.get("extractions", []),
                 "stats": stats,
                 "is_active": entity_snapshot.get("is_active", False),
             }
@@ -1558,49 +1387,33 @@ class V3WebSocketManager:
                 "data": snapshot_data
             })
             logger.info(
-                f"Sent entity snapshot to {client_id}: "
+                f"Sent extraction snapshot to {client_id}: "
                 f"{len(snapshot_data['reddit_posts'])} posts, "
-                f"{len(snapshot_data['entities'])} entities, "
-                f"{len(snapshot_data['price_impacts'])} price impacts, "
+                f"{len(snapshot_data['extractions'])} extractions, "
                 f"stats={stats}"
             )
         except Exception as e:
             logger.warning(f"Could not send entity snapshot to {client_id}: {e}")
 
-    async def _send_price_impacts_snapshot(self, client_id: str) -> None:
-        """
-        Send price impacts snapshot to a specific client.
-
-        This ensures the Deep Agent page shows existing price impact signals
-        after a page refresh, without waiting for new signals to arrive.
-        """
-        if client_id not in self._clients:
+    async def _send_event_configs_snapshot(self, client_id: str) -> None:
+        """Send active event configs to a new client."""
+        if not self._reddit_agent or client_id not in self._clients:
             return
 
         try:
-            from ..services.price_impact_store import get_price_impact_store
-            price_impact_store = get_price_impact_store()
-            price_impacts = price_impact_store.get_recent_for_snapshot(limit=30)
-
-            if not price_impacts:
-                logger.debug(f"No price impacts to send to {client_id}")
+            configs = self._reddit_agent.get_event_configs()
+            if not configs:
                 return
 
             await self._send_to_client(client_id, {
-                "type": "price_impacts_snapshot",
-                "data": {
-                    "price_impacts": price_impacts,
-                    "count": len(price_impacts),
-                    "timestamp": time.time(),
-                }
+                "type": "event_configs_snapshot",
+                "data": {"configs": configs}
             })
-            logger.info(
-                f"Sent price_impacts_snapshot to {client_id}: "
-                f"{len(price_impacts)} signals"
+            logger.debug(
+                f"Sent event configs snapshot to {client_id}: {len(configs)} configs"
             )
-
         except Exception as e:
-            logger.warning(f"Could not send price impacts snapshot to {client_id}: {e}")
+            logger.warning(f"Could not send event configs snapshot to {client_id}: {e}")
 
     def get_stats(self) -> Dict[str, Any]:
         """Get WebSocket manager statistics."""

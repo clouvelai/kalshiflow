@@ -65,7 +65,7 @@ class V3TradingClientIntegration:
         trading_client: KalshiDemoTradingClient,
         event_bus: EventBus,
         max_orders: int = 10,
-        max_position_size: int = 100
+        max_position_size: int = 500
     ):
         """
         Initialize trading client integration.
@@ -1216,6 +1216,12 @@ class V3TradingClientIntegration:
             return None
 
         except Exception as e:
+            error_str = str(e)
+            # 404 means market is settled/expired - return None instead of raising
+            if "404" in error_str:
+                logger.info(f"Market {ticker} not found (404) - likely settled/expired")
+                self._metrics.api_calls += 1
+                return None
             logger.error(f"Failed to get market {ticker}: {e}")
             self._metrics.api_errors += 1
             self._consecutive_api_errors += 1
@@ -1252,7 +1258,49 @@ class V3TradingClientIntegration:
             return event
 
         except Exception as e:
+            error_str = str(e)
+            # 404 means event is settled/expired - return empty dict instead of raising
+            if "404" in error_str:
+                logger.info(f"Event {event_ticker} not found (404) - likely settled/expired")
+                self._metrics.api_calls += 1
+                return {}
             logger.error(f"Failed to get event {event_ticker}: {e}")
+            self._metrics.api_errors += 1
+            self._consecutive_api_errors += 1
+            raise
+
+    async def get_series(
+        self,
+        category: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Fetch series list with optional category filter.
+
+        GET /trade-api/v2/series
+
+        Uses the API's native category parameter for server-side filtering.
+
+        Args:
+            category: Filter by category (e.g., "Politics", "Economics")
+
+        Returns:
+            List of series dicts with series_ticker, title, category, etc.
+
+        Raises:
+            RuntimeError: If not connected
+        """
+        if not self._connected:
+            raise RuntimeError("Cannot fetch series - not connected")
+
+        try:
+            result = await self._client.get_series(category=category)
+            self._metrics.api_calls += 1
+            self._consecutive_api_errors = 0
+            logger.debug(f"Retrieved {len(result)} series (category={category})")
+            return result
+
+        except Exception as e:
+            logger.error(f"Failed to get series: {e}")
             self._metrics.api_errors += 1
             self._consecutive_api_errors += 1
             raise
@@ -1269,12 +1317,8 @@ class V3TradingClientIntegration:
 
         GET /trade-api/v2/events
 
-        Note: The Kalshi API doesn't support series_ticker filtering directly,
-        so we fetch all events and filter client-side if series_ticker is provided.
-
         Args:
-            series_ticker: Filter events by series ticker prefix (e.g., "KXCABINET")
-                          This is filtered client-side since API doesn't support it.
+            series_ticker: Filter events by series ticker (API-level filter)
             status: Filter by status ("open", "closed", etc.)
             cursor: Pagination cursor for next page
             limit: Maximum events to return (default 100)
@@ -1295,20 +1339,15 @@ class V3TradingClientIntegration:
                 with_nested_markets=True,
                 cursor=cursor,
                 limit=limit,
+                series_ticker=series_ticker,
             )
             self._metrics.api_calls += 1
             self._consecutive_api_errors = 0
 
             events = result.get("events", [])
-
-            # Client-side filter by series_ticker prefix if provided
             if series_ticker:
-                events = [
-                    e for e in events
-                    if e.get("event_ticker", "").startswith(series_ticker)
-                ]
                 logger.debug(
-                    f"Filtered events by series '{series_ticker}': {len(events)} matches"
+                    f"Retrieved {len(events)} events for series '{series_ticker}'"
                 )
 
             return events

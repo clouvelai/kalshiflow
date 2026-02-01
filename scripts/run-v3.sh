@@ -56,11 +56,14 @@ set +a
 # Set default V3 configuration
 export ENVIRONMENT="${ENVIRONMENT}"
 export V3_ENABLE_TRADING_CLIENT="${V3_ENABLE_TRADING_CLIENT:-true}"
-export RL_MODE="${RL_MODE:-lifecycle}"
+export RL_MODE="${RL_MODE:-discovery}"
 export LIFECYCLE_MAX_MARKETS="${LIFECYCLE_MAX_MARKETS:-1000}"
 
 # Enable entity system for Deep Agent (Reddit → Entities → Price Impacts)
 export V3_ENTITY_SYSTEM_ENABLED="${V3_ENTITY_SYSTEM_ENABLED:-true}"
+
+# Enable GDELT News Intelligence (BigQuery-powered mainstream news analysis)
+export GDELT_ENABLED="${GDELT_ENABLED:-true}"
 
 # Validate we're not accidentally using production API for paper mode
 if [ "$ENVIRONMENT" = "paper" ]; then
@@ -92,6 +95,8 @@ echo "  - Trading Client: ${V3_ENABLE_TRADING_CLIENT}"
 echo "  - Market Mode: ${RL_MODE}"
 echo "  - Max Markets: ${LIFECYCLE_MAX_MARKETS}"
 echo "  - Entity System: ${V3_ENTITY_SYSTEM_ENABLED} (Reddit → Entities → Price Impacts)"
+echo "  - GDELT News: ${GDELT_ENABLED} (BigQuery mainstream news intelligence)"
+echo "  - GDELT Project: $([ -n \"$GDELT_GCP_PROJECT_ID\" ] && echo "$GDELT_GCP_PROJECT_ID" || echo 'NOT SET - set GDELT_GCP_PROJECT_ID')"
 echo "  - Strategy: deep_agent (self-improving agent)"
 echo "  - Anthropic API: $([ -n \"$ANTHROPIC_API_KEY\" ] && echo 'configured' || echo 'NOT SET!')"
 echo ""

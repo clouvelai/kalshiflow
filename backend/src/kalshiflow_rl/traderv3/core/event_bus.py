@@ -1015,7 +1015,6 @@ class EventBus:
         subscribers = list(self._subscribers.get(event.event_type, []))
         
         if not subscribers:
-            logger.debug(f"No subscribers for event type: {event.event_type.value}")
             return
         
         logger.debug(f"Notifying {len(subscribers)} subscribers for {event.event_type.value}")

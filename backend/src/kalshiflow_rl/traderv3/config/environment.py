@@ -23,7 +23,7 @@ logger = logging.getLogger("kalshiflow_rl.traderv3.config.environment")
 # All 13 Kalshi categories: Climate and Weather, Companies, Crypto, Economics,
 # Elections, Entertainment, Financials, Mentions, Politics, Science and Technology,
 # Social, Sports, World
-DEFAULT_LIFECYCLE_CATEGORIES = ["politics", "economics", "mentions", "entertainment", "world"]
+DEFAULT_LIFECYCLE_CATEGORIES = ["politics", "economics"]
 
 
 @dataclass
@@ -51,7 +51,7 @@ class V3Config:
     # Trading Client Configuration (optional, only for paper/live trading)
     enable_trading_client: bool = False
     trading_max_orders: int = 1000
-    trading_max_position_size: int = 100
+    trading_max_position_size: int = 500
     trading_mode: str = "paper"  # paper or production
     trading_strategy_str: str = "hold"  # Strategy string: "hold", "rlm_no"
 
@@ -128,8 +128,22 @@ class V3Config:
     # Entity Trading System Configuration
     # Reddit entity-based trading (PRAW + GLiNER + sentiment → price impact)
     entity_system_enabled: bool = False  # Enable Reddit entity trading pipeline
-    entity_subreddits: List[str] = field(default_factory=lambda: ["politics", "news", "Conservative", "worldnews", "entertainment", "popculture", "television", "economics", "finance", "economy", "stocks", "wallstreetbets", "investing"])
+    entity_subreddits: List[str] = field(default_factory=lambda: ["politics", "news", "Conservative", "worldnews", "economics", "finance", "economy"])
     llm_entity_extraction_enabled: bool = True  # Use LLM for entity extraction (Phase 2)
+
+    # Reddit Historic Agent (daily digest)
+    reddit_historic_enabled: bool = True
+    reddit_historic_posts_limit: int = 25
+    reddit_historic_comments_per_post: int = 20
+    reddit_historic_cooldown_hours: float = 6.0
+
+    # GDELT BigQuery News Intelligence
+    gdelt_enabled: bool = True
+    gdelt_gcp_project_id: str = ""
+    gdelt_cache_ttl_seconds: float = 300.0
+    gdelt_max_results: int = 100
+    gdelt_default_window_hours: float = 4.0
+    gdelt_max_bytes_per_session: int = 500 * 1024 * 1024  # 500MB default (~$0.003)
 
     # State Machine Configuration
     sync_duration: float = 10.0  # seconds for Kalshi data sync
@@ -209,7 +223,7 @@ class V3Config:
         # Trading client configuration
         enable_trading_client = os.environ.get("V3_ENABLE_TRADING_CLIENT", "false").lower() == "true"
         trading_max_orders = int(os.environ.get("V3_TRADING_MAX_ORDERS", "1000"))
-        trading_max_position_size = int(os.environ.get("V3_TRADING_MAX_POSITION_SIZE", "100"))
+        trading_max_position_size = int(os.environ.get("V3_TRADING_MAX_POSITION_SIZE", "500"))
         # Determine trading mode based on environment or explicit setting
         environment = os.environ.get("ENVIRONMENT", "local")
         if environment == "paper" or "demo-api" in ws_url.lower():
@@ -287,9 +301,23 @@ class V3Config:
         # Entity Trading System configuration
         # Reddit entity-based trading (PRAW + GLiNER + sentiment → price impact)
         entity_system_enabled = os.environ.get("V3_ENTITY_SYSTEM_ENABLED", "false").lower() == "true"
-        entity_subreddits_str = os.environ.get("V3_ENTITY_SUBREDDITS", "politics,news,Conservative,worldnews,entertainment,popculture,television,economics,finance,economy,stocks,wallstreetbets,investing")
+        entity_subreddits_str = os.environ.get("V3_ENTITY_SUBREDDITS", "politics,news,Conservative,worldnews,economics,finance,economy")
         entity_subreddits = [s.strip() for s in entity_subreddits_str.split(",") if s.strip()]
         llm_entity_extraction_enabled = os.environ.get("V3_LLM_ENTITY_EXTRACTION_ENABLED", "true").lower() == "true"
+
+        # Reddit Historic Agent (daily digest) configuration
+        reddit_historic_enabled = os.environ.get("V3_REDDIT_HISTORIC_ENABLED", "true").lower() == "true"
+        reddit_historic_posts_limit = int(os.environ.get("V3_REDDIT_HISTORIC_POSTS_LIMIT", "25"))
+        reddit_historic_comments_per_post = int(os.environ.get("V3_REDDIT_HISTORIC_COMMENTS_PER_POST", "20"))
+        reddit_historic_cooldown_hours = float(os.environ.get("V3_REDDIT_HISTORIC_COOLDOWN_HOURS", "6.0"))
+
+        # GDELT BigQuery News Intelligence configuration
+        gdelt_enabled = os.environ.get("GDELT_ENABLED", "true").lower() == "true"
+        gdelt_gcp_project_id = os.environ.get("GDELT_GCP_PROJECT_ID", "")
+        gdelt_cache_ttl_seconds = float(os.environ.get("GDELT_CACHE_TTL_SECONDS", "300.0"))
+        gdelt_max_results = int(os.environ.get("GDELT_MAX_RESULTS", "100"))
+        gdelt_default_window_hours = float(os.environ.get("GDELT_DEFAULT_WINDOW_HOURS", "4.0"))
+        gdelt_max_bytes_per_session = int(os.environ.get("GDELT_MAX_BYTES_PER_SESSION", str(500 * 1024 * 1024)))
 
         sync_duration = float(os.environ.get("V3_SYNC_DURATION", os.environ.get("V3_CALIBRATION_DURATION", "10.0")))
         health_check_interval = float(os.environ.get("V3_HEALTH_CHECK_INTERVAL", "5.0"))
@@ -355,6 +383,16 @@ class V3Config:
             entity_system_enabled=entity_system_enabled,
             entity_subreddits=entity_subreddits,
             llm_entity_extraction_enabled=llm_entity_extraction_enabled,
+            reddit_historic_enabled=reddit_historic_enabled,
+            reddit_historic_posts_limit=reddit_historic_posts_limit,
+            reddit_historic_comments_per_post=reddit_historic_comments_per_post,
+            reddit_historic_cooldown_hours=reddit_historic_cooldown_hours,
+            gdelt_enabled=gdelt_enabled,
+            gdelt_gcp_project_id=gdelt_gcp_project_id,
+            gdelt_cache_ttl_seconds=gdelt_cache_ttl_seconds,
+            gdelt_max_results=gdelt_max_results,
+            gdelt_default_window_hours=gdelt_default_window_hours,
+            gdelt_max_bytes_per_session=gdelt_max_bytes_per_session,
             sync_duration=sync_duration,
             health_check_interval=health_check_interval,
             error_recovery_delay=error_recovery_delay,
@@ -414,6 +452,14 @@ class V3Config:
             logger.info(f"    - Subreddits: r/{', r/'.join(entity_subreddits)}")
         else:
             logger.info(f"  - Entity trading: DISABLED")
+
+        # Log GDELT config
+        if gdelt_enabled and gdelt_gcp_project_id:
+            logger.info(f"  - GDELT news intelligence: ENABLED (project={gdelt_gcp_project_id}, cache={gdelt_cache_ttl_seconds}s)")
+        elif gdelt_enabled:
+            logger.warning(f"  - GDELT news intelligence: ENABLED but no GCP project ID set (will fail)")
+        else:
+            logger.info(f"  - GDELT news intelligence: DISABLED")
 
         # Log event tracking config
         if event_tracking_enabled:

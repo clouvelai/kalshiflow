@@ -197,6 +197,8 @@ class TrueMarketOpenFetcher:
                 continue
             if market.true_market_open is not None:
                 continue
+            if getattr(market, 'tmo_fetch_failed', False):
+                continue
 
             task = TMOFetchTask(
                 ticker=ticker,
@@ -249,10 +251,12 @@ class TrueMarketOpenFetcher:
             logger.debug(f"TMO already pending for {ticker}")
             return
 
-        # Skip if TMO already fetched
+        # Skip if TMO already fetched or permanently failed
         market = self._tracked_markets.get_market(ticker)
         if market and market.true_market_open is not None:
             logger.debug(f"TMO already fetched for {ticker}")
+            return
+        if market and getattr(market, 'tmo_fetch_failed', False):
             return
 
         # Queue for fetch

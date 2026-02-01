@@ -1,87 +1,35 @@
 """
-NLP Pipeline Module for Entity Extraction and Sentiment Analysis.
+NLP Extraction Module for Kalshi Market Signal Extraction.
 
-This module provides a spaCy-based NLP pipeline backed by a Knowledge Base (KB)
-for entity extraction, disambiguation, and sentiment analysis.
+This module provides a langextract-based extraction pipeline for processing
+text content (Reddit posts, news articles, etc.) into structured market signals.
 
 Key Components:
-- KalshiKnowledgeBase: Wrapper around InMemoryLookupKB for market entities
-- create_hybrid_entity_pipeline: Factory for unified NLP pipeline
-- SentimentTask: Custom spacy-llm task for batched sentiment scoring
-- RelatedEntityStore: Storage for non-market entities (second-hand signals)
+- KalshiExtractor: Wrapper around langextract with merged event-specific specs
+- EventConfig: Per-event extraction configuration from Supabase
+- ExtractionRow: Individual extraction result ready for Supabase insert
+- ExampleManager: Manages global + event-specific extraction examples
 
 Pipeline Flow:
-    Reddit Post
+    Reddit Post / News Article
         ↓
-    [sentencizer] → [EntityRuler: MARKET_ENTITY] → [LLM NER: PERSON/ORG/GPE/EVENT]
+    KalshiExtractor.extract(text, event_configs)
         ↓
-    [EntityLinker: link MARKET_ENTITY → KB]
+    langextract (Gemini) → ExtractionResult
         ↓
-    [LLM Sentiment: score ALL entities in one batched call]
+    Parse → ExtractionRow[] → Supabase extractions table
         ↓
-    Output: doc.ents with kb_id_, sentiment, entity_type
+    Supabase Realtime → PriceImpactAgent → Frontend WebSocket
 """
 
-from .knowledge_base import (
-    KalshiKnowledgeBase,
-    EntityMetadata,
-    get_kalshi_knowledge_base,
-    set_kalshi_knowledge_base,
-)
-from .extensions import (
-    register_custom_extensions,
-    EntityExtensions,
-)
-from .pipeline import (
-    create_hybrid_entity_pipeline,
-    build_patterns_from_kb,
-    get_shared_vocab,
-)
-from .sentiment_task import (
-    BatchedSentimentTask,
-)
-from .entity_store import (
-    RelatedEntityStore,
-    RelatedEntity,
-)
-from .market_impact_reasoner import (
-    MarketImpactReasoner,
-    MarketInfo,
-    should_analyze_for_market_impact,
-    analyze_market_impact,
-)
-from .llm_entity_extractor import (
-    LLMEntityExtractor,
-)
-from .relation_extractor import (
-    RelationExtractor,
+from .kalshi_extractor import (
+    KalshiExtractor,
+    EventConfig,
+    ExtractionRow,
 )
 
 __all__ = [
-    # Knowledge Base
-    "KalshiKnowledgeBase",
-    "EntityMetadata",
-    "get_kalshi_knowledge_base",
-    "set_kalshi_knowledge_base",
-    # Extensions
-    "register_custom_extensions",
-    "EntityExtensions",
-    # Pipeline
-    "create_hybrid_entity_pipeline",
-    "build_patterns_from_kb",
-    "get_shared_vocab",
-    # Sentiment
-    "BatchedSentimentTask",
-    # Related Entities
-    "RelatedEntityStore",
-    "RelatedEntity",
-    # Market Impact Reasoning
-    "MarketImpactReasoner",
-    "MarketInfo",
-    "should_analyze_for_market_impact",
-    "analyze_market_impact",
-    # LLM Entity Extraction
-    "LLMEntityExtractor",
-    # Relation Extraction
-    "RelationExtractor",
+    "KalshiExtractor",
+    "EventConfig",
+    "ExtractionRow",
 ]

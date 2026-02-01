@@ -69,57 +69,32 @@ const INITIAL_RESEARCH_FEED = {
 };
 
 /**
- * Initial state for entity trading (Reddit Entity Pipeline)
- */
-const INITIAL_ENTITY_STATE = {
-  redditPosts: [],
-  entities: [],
-  priceImpacts: [],
-  stats: {
-    postsProcessed: 0,
-    entitiesExtracted: 0,
-    signalsGenerated: 0,
-    indexSize: 0,
-  },
-  isActive: false,
-};
-
-/**
  * Initial state for Reddit agent health status
  */
 const INITIAL_REDDIT_AGENT_HEALTH = {
   health: 'unknown', // 'healthy', 'degraded', 'unhealthy', 'unknown'
   isRunning: false,
   prawAvailable: false,
-  nlpAvailable: false,
-  kbAvailable: false,
+  extractorAvailable: false,
   supabaseAvailable: false,
   subreddits: [],
   postsProcessed: 0,
   errorsCount: 0,
   lastError: null,
-  // Extraction stats
   extractionStats: {},
-  videoStats: {},
   contentExtractions: 0,
-};
-
-/**
- * Initial state for entity index (Canonical entities with aliases)
- */
-const INITIAL_ENTITY_INDEX = {
-  totalEntities: 0,
-  entities: [],
-  entityLookup: {}, // entity_id -> entity for quick lookups
-  timestamp: null,
 };
 
 /**
  * useV3WebSocket - Hook for managing V3 Trader WebSocket connection
  */
 export const useV3WebSocket = ({ onMessage }) => {
+  // Stable ref for onMessage to prevent WebSocket reconnections when callback changes
+  const onMessageRef = useRef(onMessage);
+  useEffect(() => { onMessageRef.current = onMessage; }, [onMessage]);
+
   const [wsStatus, setWsStatus] = useState('disconnected');
-  const [currentState, setCurrentState] = useState('UNKNOWN');
+  const [currentState, setCurrentState] = useState('initializing');
   const [tradingState, setTradingState] = useState(null);
   const [lastUpdateTime, setLastUpdateTime] = useState(null);
   const [tradeProcessing, setTradeProcessing] = useState(INITIAL_TRADE_PROCESSING);
@@ -136,17 +111,18 @@ export const useV3WebSocket = ({ onMessage }) => {
 
   // Entity Trading state (Reddit Entity Pipeline)
   const [entityRedditPosts, setEntityRedditPosts] = useState([]);
-  const [entityExtractions, setEntityExtractions] = useState([]);
-  const [entityPriceImpacts, setEntityPriceImpacts] = useState([]);
-  const [entityStats, setEntityStats] = useState(INITIAL_ENTITY_STATE.stats);
   const [entitySystemActive, setEntitySystemActive] = useState(false);
   const [redditAgentHealth, setRedditAgentHealth] = useState(INITIAL_REDDIT_AGENT_HEALTH);
 
-  // Entity Index state (Canonical entities with aliases)
-  const [entityIndex, setEntityIndex] = useState(INITIAL_ENTITY_INDEX);
+  // Extraction pipeline state (langextract system)
+  const [extractions, setExtractions] = useState([]);
+  const [marketSignals, setMarketSignals] = useState([]);
 
-  // Related Entities state (PERSON, ORG, GPE, EVENT from spaCy NER - not in KB)
-  const [relatedEntities, setRelatedEntities] = useState([]);
+  // Event configs state (active event configurations from Supabase)
+  const [eventConfigs, setEventConfigs] = useState([]);
+
+  // Tracked markets state (discovered markets from backend)
+  const [trackedMarkets, setTrackedMarkets] = useState([]);
 
   const [newSettlement, setNewSettlement] = useState(null);
   const [newOrderFill, setNewOrderFill] = useState(null);
@@ -208,7 +184,7 @@ export const useV3WebSocket = ({ onMessage }) => {
       };
 
       ws.onerror = (error) => {
-        onMessage?.('error', 'WebSocket error occurred', { error: error.message });
+        onMessageRef.current?.('error', 'WebSocket error occurred', { error: error.message });
         setWsStatus('error');
       };
 
@@ -216,7 +192,7 @@ export const useV3WebSocket = ({ onMessage }) => {
         setWsStatus('disconnected');
 
         if (event.code !== 1000) {
-          onMessage?.('warning', 'Disconnected from TRADER V3', {
+          onMessageRef.current?.('warning', 'Disconnected from TRADER V3', {
             icon: 'disconnect',
             code: event.code,
             reason: event.reason || 'Connection lost'
@@ -232,10 +208,10 @@ export const useV3WebSocket = ({ onMessage }) => {
 
       wsRef.current = ws;
     } catch (error) {
-      onMessage?.('error', `Failed to connect: ${error.message}`);
+      onMessageRef.current?.('error', `Failed to connect: ${error.message}`);
       setWsStatus('error');
     }
-  }, [onMessage]);
+  }, []);
 
   const handleMessage = useCallback((data, ws) => {
     switch (data.type) {
@@ -295,7 +271,7 @@ export const useV3WebSocket = ({ onMessage }) => {
             messageType = 'info';
           }
 
-          onMessage?.(messageType, message, {
+          onMessageRef.current?.(messageType, message, {
             activity_type,
             timestamp,
             metadata,
@@ -327,7 +303,8 @@ export const useV3WebSocket = ({ onMessage }) => {
               changes: data.data.changes,
               order_group: data.data.order_group,
               pnl: data.data.pnl,
-              positions_details: data.data.positions_details || []
+              positions_details: data.data.positions_details || [],
+              market_prices: data.data.market_prices || prev?.market_prices || {}
             };
           });
 
@@ -411,7 +388,7 @@ export const useV3WebSocket = ({ onMessage }) => {
             const fromState = transition.from_state || 'unknown';
             const toState = transition.to_state || transition.state;
             setCurrentState(toState);
-            onMessage?.('state', transition.message, {
+            onMessageRef.current?.('state', transition.message, {
               state: toState,
               from_state: fromState,
               to_state: toState,
@@ -444,7 +421,7 @@ export const useV3WebSocket = ({ onMessage }) => {
         }
 
         if (!data.data.is_current || data.data.message !== `Current state: ${toState}`) {
-          onMessage?.('state', data.data.message, {
+          onMessageRef.current?.('state', data.data.message, {
             state: toState,
             from_state: fromState,
             to_state: toState,
@@ -628,7 +605,7 @@ export const useV3WebSocket = ({ onMessage }) => {
           data.data.events.forEach(item => {
             if (item.type === 'system_activity') {
               const activityData = item.data;
-              onMessage?.('activity', activityData.message, {
+              onMessageRef.current?.('activity', activityData.message, {
                 activity_type: activityData.activity_type,
                 timestamp: activityData.timestamp,
                 metadata: activityData.metadata,
@@ -723,82 +700,44 @@ export const useV3WebSocket = ({ onMessage }) => {
             if (prev.some(p => p.post_id === data.data.post_id)) return prev;
             return [data.data, ...prev].slice(0, 50); // Keep max 50
           });
-          setEntityStats(prev => ({
-            ...prev,
-            postsProcessed: prev.postsProcessed + 1,
-          }));
         }
         break;
 
-      case 'entity_extracted':
-        // Entity extracted from a post with sentiment (MARKET_ENTITY - in KB)
-        if (data.data?.entity_id) {
-          setEntityExtractions(prev => {
-            // Check for duplicates
-            const key = `${data.data.post_id}_${data.data.entity_id}`;
-            if (prev.some(e => `${e.post_id}_${e.entity_id}` === key)) return prev;
-            return [data.data, ...prev].slice(0, 100); // Keep max 100
+      case 'extraction':
+        // Extraction from langextract pipeline (all classes)
+        if (data.data?.extraction_class) {
+          setExtractions(prev => {
+            // Dedup by source_id + extraction_class + extraction_text
+            const key = `${data.data.source_id}_${data.data.extraction_class}_${data.data.extraction_text?.slice(0, 50)}`;
+            if (prev.some(e => `${e.source_id}_${e.extraction_class}_${e.extraction_text?.slice(0, 50)}` === key)) return prev;
+            return [data.data, ...prev].slice(0, 200);
           });
-          setEntityStats(prev => ({
-            ...prev,
-            entitiesExtracted: prev.entitiesExtracted + 1,
-          }));
+
+          // Also track market_signal class separately for quick access
+          if (data.data.extraction_class === 'market_signal') {
+            setMarketSignals(prev => {
+              const key = `${data.data.source_id}_${data.data.extraction_text?.slice(0, 50)}`;
+              if (prev.some(e => `${e.source_id}_${e.extraction_text?.slice(0, 50)}` === key)) return prev;
+              return [data.data, ...prev].slice(0, 100);
+            });
+          }
         }
         break;
 
-      case 'related_entity':
-        // Related entity from spaCy NER (PERSON, ORG, GPE, EVENT - NOT in KB)
-        // These are entities detected but not linked to any Kalshi market
-        if (data.data?.normalized_id) {
-          setRelatedEntities(prev => {
-            // Check for duplicates using source_post_id + normalized_id
-            const key = `${data.data.source_post_id}_${data.data.normalized_id}`;
-            if (prev.some(e => `${e.source_post_id}_${e.normalized_id}` === key)) return prev;
-            return [data.data, ...prev].slice(0, 100); // Keep max 100
+      case 'market_signal':
+        // market_signal class extraction (typed with direction/magnitude)
+        if (data.data?.extraction_class === 'market_signal' || data.data?.market_tickers) {
+          setMarketSignals(prev => {
+            const key = `${data.data.source_id}_${data.data.extraction_text?.slice(0, 50)}`;
+            if (prev.some(e => `${e.source_id}_${e.extraction_text?.slice(0, 50)}` === key)) return prev;
+            return [data.data, ...prev].slice(0, 100);
           });
-          console.log(
-            `[useV3WebSocket] Related entity: ${data.data.entity_text} (${data.data.entity_type})`
-          );
-        }
-        break;
-
-      case 'price_impact':
-        // Transformed price impact signal for trading
-        if (data.data?.signal_id) {
-          setEntityPriceImpacts(prev => {
-            // Check for duplicates
-            if (prev.some(i => i.signal_id === data.data.signal_id)) return prev;
-            return [data.data, ...prev].slice(0, 50); // Keep max 50
+          // Also add to general extractions
+          setExtractions(prev => {
+            const key = `${data.data.source_id}_${data.data.extraction_class}_${data.data.extraction_text?.slice(0, 50)}`;
+            if (prev.some(e => `${e.source_id}_${e.extraction_class}_${e.extraction_text?.slice(0, 50)}` === key)) return prev;
+            return [data.data, ...prev].slice(0, 200);
           });
-          setEntityStats(prev => ({
-            ...prev,
-            signalsGenerated: prev.signalsGenerated + 1,
-          }));
-          console.log(
-            `[useV3WebSocket] Price impact: ${data.data.entity_name} → ${data.data.market_ticker}`,
-            `sentiment: ${data.data.sentiment_score} → impact: ${data.data.price_impact_score}`
-          );
-        }
-        break;
-
-      case 'entity_index_update':
-        // Entity-market index stats update
-        if (data.data?.entity_count !== undefined) {
-          setEntityStats(prev => ({
-            ...prev,
-            indexSize: data.data.entity_count,
-          }));
-        }
-        break;
-
-      case 'entity_system_status':
-        // Entity system status update
-        setEntitySystemActive(data.data?.is_active || false);
-        if (data.data?.stats) {
-          setEntityStats(prev => ({
-            ...prev,
-            ...data.data.stats,
-          }));
         }
         break;
 
@@ -806,130 +745,85 @@ export const useV3WebSocket = ({ onMessage }) => {
         // Reddit agent health status update (periodic broadcast)
         if (data.data) {
           setRedditAgentHealth({
-            health: data.data.health || 'unknown',
+            health: data.data.health || data.data.startup_health || 'unknown',
             isRunning: data.data.is_running || false,
             prawAvailable: data.data.praw_available || false,
-            nlpAvailable: data.data.nlp_available || false,
-            kbAvailable: data.data.kb_available || false,
+            extractorAvailable: data.data.extractor_available || false,
             supabaseAvailable: data.data.supabase_available || false,
-            entityIndexAvailable: data.data.entity_index_available || false,
             subreddits: data.data.subreddits || [],
             postsProcessed: data.data.posts_processed || 0,
-            entitiesExtracted: data.data.entities_extracted || 0,
             errorsCount: data.data.errors_count || 0,
             lastError: data.data.last_error || null,
-            // Extraction stats for visibility panel
             extractionStats: data.data.extraction_stats || {},
-            videoStats: data.data.video_stats || {},
             contentExtractions: data.data.content_extractions || 0,
           });
         }
         break;
 
       case 'entity_snapshot':
-        // Initial snapshot with recent entity data
+        // Initial snapshot with recent entity data (langextract pipeline)
         if (data.data) {
           if (data.data.reddit_posts) {
             setEntityRedditPosts(data.data.reddit_posts);
           }
-          if (data.data.entities) {
-            setEntityExtractions(data.data.entities);
-          }
-          if (data.data.price_impacts) {
-            setEntityPriceImpacts(data.data.price_impacts);
-          }
-          if (data.data.stats) {
-            setEntityStats(data.data.stats);
+          // Populate extractions from snapshot
+          if (data.data.extractions) {
+            setExtractions(data.data.extractions);
+            // Also populate market signals subset
+            setMarketSignals(
+              data.data.extractions.filter(e => e.extraction_class === 'market_signal')
+            );
           }
           setEntitySystemActive(data.data.is_active || false);
           console.log(
-            `[useV3WebSocket] Entity snapshot loaded:`,
+            `[useV3WebSocket] Extraction snapshot loaded:`,
             `${data.data.reddit_posts?.length || 0} posts,`,
-            `${data.data.entities?.length || 0} entities,`,
-            `${data.data.price_impacts?.length || 0} impacts`
+            `${data.data.extractions?.length || 0} extractions`
           );
         }
         break;
 
-      // === Entity Index Messages (Canonical entities with aliases) ===
+      case 'tracked_markets':
+        if (data.data?.markets) {
+          setTrackedMarkets(data.data.markets);
+        }
+        break;
 
-      case 'entity_index_snapshot':
-        // Full entity index with canonical entities, aliases, and market mappings
-        if (data.data?.entities) {
-          const lookup = {};
-          data.data.entities.forEach(entity => {
-            lookup[entity.entity_id] = entity;
-          });
-          setEntityIndex({
-            totalEntities: data.data.total_entities || data.data.entities.length,
-            entities: data.data.entities,
-            entityLookup: lookup,
-            timestamp: data.data.timestamp,
-          });
+      case 'market_info_update':
+        if (data.data?.ticker) {
+          setTrackedMarkets(prev => prev.map(m =>
+            m.ticker === data.data.ticker
+              ? { ...m, price: data.data.price, volume: data.data.volume,
+                  yes_bid: data.data.yes_bid ?? m.yes_bid,
+                  yes_ask: data.data.yes_ask ?? m.yes_ask,
+                  open_interest: data.data.open_interest ?? m.open_interest }
+              : m
+          ));
+        }
+        break;
+
+      case 'event_configs_snapshot':
+        // Event configs from backend on client connect
+        if (data.data?.configs) {
+          setEventConfigs(data.data.configs);
           console.log(
-            `[useV3WebSocket] Entity index snapshot: ${data.data.entities.length} canonical entities`
+            `[useV3WebSocket] Event configs loaded: ${data.data.configs.length} active events`
           );
         }
         break;
 
-      case 'entity_signal_update':
-        // Reddit signal update for a specific entity (with accumulated data)
-        if (data.data?.entity_id) {
-          setEntityIndex(prev => {
-            const entityId = data.data.entity_id;
-            const existingEntity = prev.entityLookup[entityId];
-            if (!existingEntity) return prev;
-
-            // Update the entity's reddit signals + accumulated data
-            const updatedEntity = {
-              ...existingEntity,
-              reddit_signals: data.data.reddit_signals,
-            };
-            // Merge accumulated signal data if present
-            if (data.data.accumulated) {
-              updatedEntity.accumulated = data.data.accumulated;
+      case 'event_understood':
+        // Deep agent understood a new event - update/add event config
+        if (data.data?.event_ticker) {
+          setEventConfigs(prev => {
+            const idx = prev.findIndex(c => c.event_ticker === data.data.event_ticker);
+            if (idx >= 0) {
+              const updated = [...prev];
+              updated[idx] = { ...updated[idx], ...data.data };
+              return updated;
             }
-
-            const updatedLookup = {
-              ...prev.entityLookup,
-              [entityId]: updatedEntity,
-            };
-
-            // Update entities array
-            const updatedEntities = prev.entities.map(e =>
-              e.entity_id === entityId ? updatedEntity : e
-            );
-
-            return {
-              ...prev,
-              entities: updatedEntities,
-              entityLookup: updatedLookup,
-            };
+            return [...prev, data.data];
           });
-        }
-        break;
-
-      case 'entity_linked':
-        // New entity linked from market discovery
-        if (data.data?.entity_id) {
-          setEntityIndex(prev => {
-            // Check if entity already exists
-            if (prev.entityLookup[data.data.entity_id]) return prev;
-
-            const newEntity = data.data;
-            return {
-              ...prev,
-              totalEntities: prev.totalEntities + 1,
-              entities: [...prev.entities, newEntity],
-              entityLookup: {
-                ...prev.entityLookup,
-                [newEntity.entity_id]: newEntity,
-              },
-            };
-          });
-          console.log(
-            `[useV3WebSocket] New entity linked: ${data.data.canonical_name}`
-          );
         }
         break;
 
@@ -946,7 +840,7 @@ export const useV3WebSocket = ({ onMessage }) => {
       case 'deep_agent_snapshot':
         // Pass deep agent messages to the onMessage callback
         // useDeepAgent.processMessage() handles these
-        onMessage?.(data.type, data.data, { timestamp: data.data?.timestamp });
+        onMessageRef.current?.(data.type, data.data, { timestamp: data.data?.timestamp });
         break;
 
       default:
@@ -956,7 +850,7 @@ export const useV3WebSocket = ({ onMessage }) => {
         }
         break;
     }
-  }, [onMessage]);
+  }, []);
 
   // Connect on mount
   useEffect(() => {
@@ -1061,15 +955,15 @@ export const useV3WebSocket = ({ onMessage }) => {
     researchBatches,
     // Entity Trading state (Reddit Entity Pipeline)
     entityRedditPosts,
-    entityExtractions,
-    entityPriceImpacts,
-    entityStats,
     entitySystemActive,
     redditAgentHealth,
-    // Related Entities (spaCy NER - not in KB)
-    relatedEntities,
-    // Entity Index (Canonical entities with aliases)
-    entityIndex,
+    // Extraction pipeline (langextract)
+    extractions,
+    marketSignals,
+    // Event configs
+    eventConfigs,
+    // Tracked markets (discovered from backend)
+    trackedMarkets,
   };
 };
 

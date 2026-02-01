@@ -586,7 +586,7 @@ async def initialize_truth_social_cache() -> Optional[TruthSocialCacheService]:
         return _global_cache
 
     # Check if enabled
-    truth_flag = (os.getenv("TRUTHSOCIAL_EVIDENCE_ENABLED", "auto") or "auto").strip().lower()
+    truth_flag = (os.getenv("TRUTHSOCIAL_EVIDENCE_ENABLED", "false") or "false").strip().lower()
     has_creds = bool(os.getenv("TRUTHSOCIAL_USERNAME")) and bool(os.getenv("TRUTHSOCIAL_PASSWORD"))
 
     if truth_flag in ("0", "false", "no", "n", "off"):

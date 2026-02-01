@@ -1,7 +1,5 @@
 import React, { useState, memo, useMemo } from 'react';
-import { formatRelativeTimestamp, formatLatency } from '../../../utils/v3-trader/formatters';
 import useRelativeTime from '../../../hooks/v3-trader/useRelativeTime';
-import useSignalFreshness from '../../../hooks/v3-trader/useSignalFreshness';
 import {
   ChevronRight,
   ChevronDown,
@@ -22,10 +20,8 @@ import {
   Target,
   BookOpen,
   AlertCircle,
-  ArrowRight,
   Sparkles,
-  User,
-  BarChart3,
+  Newspaper,
 } from 'lucide-react';
 import renderThinkingMarkdown from '../../../utils/renderThinkingMarkdown';
 
@@ -81,6 +77,14 @@ const ToolCallRow = memo(({ toolCall }) => {
         return <Sparkles className="w-3 h-3 text-orange-400" />;
       case 'search_news':
         return <MessageSquare className="w-3 h-3 text-amber-400" />;
+      case 'query_gdelt_news':
+        return <Newspaper className="w-3 h-3 text-blue-400" />;
+      case 'query_gdelt_events':
+        return <Activity className="w-3 h-3 text-red-400" />;
+      case 'search_gdelt_articles':
+        return <Newspaper className="w-3 h-3 text-blue-300" />;
+      case 'get_gdelt_volume_timeline':
+        return <TrendingUp className="w-3 h-3 text-purple-400" />;
       case 'trade':
         return <DollarSign className="w-3 h-3 text-green-400" />;
       case 'get_session_state':
@@ -122,11 +126,17 @@ ToolCallRow.displayName = 'ToolCallRow';
 const TradeRow = memo(({ trade }) => {
   const sideColor = trade.side === 'yes' ? 'text-green-400' : 'text-red-400';
   const sideBg = trade.side === 'yes' ? 'bg-green-900/30 border-green-600/20' : 'bg-red-900/30 border-red-600/20';
+  const isSell = trade.action === 'sell';
 
   return (
     <div className="p-3 bg-gray-800/30 rounded-lg border border-gray-700/20 mb-2">
       <div className="flex items-center justify-between mb-2">
         <div className="flex items-center gap-2">
+          <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold border ${
+            isSell ? 'bg-amber-900/30 border-amber-600/20 text-amber-400' : 'bg-blue-900/30 border-blue-600/20 text-blue-400'
+          }`}>
+            {isSell ? 'SELL' : 'BUY'}
+          </span>
           <span className={`px-2 py-0.5 rounded text-[10px] font-bold border ${sideBg} ${sideColor}`}>
             {trade.side.toUpperCase()}
           </span>
@@ -204,347 +214,6 @@ const LearningRow = memo(({ learning }) => (
 ));
 
 LearningRow.displayName = 'LearningRow';
-
-/**
- * Reddit Signal Row - Shows a Reddit-derived trading signal
- */
-const RedditSignalRow = memo(({ signal }) => {
-  const directionStyle = signal.direction === 'yes'
-    ? 'bg-green-900/30 text-green-400 border-green-600/20'
-    : signal.direction === 'no'
-      ? 'bg-red-900/30 text-red-400 border-red-600/20'
-      : 'bg-gray-800/30 text-gray-400 border-gray-600/20';
-
-  return (
-    <div className="p-2 bg-gray-800/30 rounded border border-gray-700/20 mb-2">
-      <div className="flex items-center justify-between mb-1">
-        <div className="flex items-center gap-2">
-          <span className="text-[10px] text-orange-400">r/{signal.subreddit}</span>
-          <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold border ${directionStyle}`}>
-            {signal.direction.toUpperCase()}
-          </span>
-          <span className="text-[10px] text-gray-500">{signal.strength}</span>
-        </div>
-        <span className="text-[10px] text-amber-400">{(signal.confidence * 100).toFixed(0)}%</span>
-      </div>
-      <div className="text-[10px] text-gray-400 truncate" title={signal.title}>
-        {signal.title}
-      </div>
-      <div className="text-[10px] text-gray-500 mt-1">{signal.reason}</div>
-    </div>
-  );
-});
-
-RedditSignalRow.displayName = 'RedditSignalRow';
-
-/**
- * Price Impact Row - Shows the entity → sentiment → price impact transformation
- *
- * This is the key visualization showing how Reddit entity sentiment gets
- * transformed into market-specific price impact signals.
- *
- * Displays:
- * - Dual timestamp bar (Posted / Signal / Lag)
- * - Contextual subtitles for sentiment, impact, and confidence
- * - Source context (Reddit post title and entity context snippet)
- * - Agent status and market type badges
- * - Sentiment → Impact transformation pipeline
- */
-const PriceImpactRow = memo(({ impact, isNew = false, freshnessTier = 'normal', lifecycle = null }) => {
-  const sentimentIsPositive = impact.sentimentScore > 0;
-  const impactIsPositive = impact.priceImpactScore > 0;
-  const wasInverted = sentimentIsPositive !== impactIsPositive;
-
-  // Lifecycle state
-  const lcStatus = lifecycle?.status || 'new';
-  const lcEvalCount = lifecycle?.evaluationCount || 0;
-  const lcMaxEvals = lifecycle?.maxEvaluations || 3;
-  const lcEvals = lifecycle?.evaluations || [];
-  const isTerminal = ['traded', 'passed', 'expired', 'historical'].includes(lcStatus);
-
-  // Color schemes based on impact direction
-  const impactBg = impactIsPositive
-    ? 'bg-gradient-to-r from-emerald-950/40 via-emerald-900/30 to-transparent'
-    : 'bg-gradient-to-r from-rose-950/40 via-rose-900/30 to-transparent';
-
-  const sideBadge = impact.suggestedSide?.toUpperCase() === 'YES'
-    ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30 shadow-emerald-500/20'
-    : 'bg-rose-500/20 text-rose-400 border-rose-500/30 shadow-rose-500/20';
-
-  const sentimentColor = sentimentIsPositive ? 'text-emerald-400' : 'text-rose-400';
-  const impactColor = impactIsPositive ? 'text-emerald-400' : 'text-rose-400';
-
-  // Market type badge colors and labels
-  const marketTypeConfig = {
-    OUT: { style: 'bg-amber-900/30 text-amber-400 border-amber-600/30', label: 'OUT' },
-    CONFIRM: { style: 'bg-blue-900/30 text-blue-400 border-blue-600/30', label: 'CONFIRM' },
-    WIN: { style: 'bg-emerald-900/30 text-emerald-400 border-emerald-600/30', label: 'WIN' },
-    NOMINEE: { style: 'bg-violet-900/30 text-violet-400 border-violet-600/30', label: 'NOMINEE' },
-    PRESIDENT: { style: 'bg-cyan-900/30 text-cyan-400 border-cyan-600/30', label: 'PRES' },
-    MENTION: { style: 'bg-orange-900/30 text-orange-400 border-orange-600/30', label: 'MENTION' },
-    UNKNOWN: { style: 'bg-gray-800/30 text-gray-500 border-gray-600/30', label: 'SIGNAL' },
-  };
-  const marketType = marketTypeConfig[impact.marketType] || marketTypeConfig.UNKNOWN;
-
-  // Lifecycle status badge configuration
-  const lifecycleStatusConfig = {
-    new: { style: 'bg-blue-900/30 text-blue-400 border-blue-600/30', label: 'New', icon: Clock },
-    evaluating: { style: 'bg-cyan-900/30 text-cyan-400 border-cyan-600/30', label: `Eval ${lcEvalCount}/${lcMaxEvals}`, icon: Activity },
-    traded: { style: 'bg-emerald-900/30 text-emerald-400 border-emerald-600/30', label: 'Traded', icon: CheckCircle },
-    passed: { style: 'bg-gray-700/40 text-gray-400 border-gray-600/30', label: 'Passed', icon: XCircle },
-    expired: { style: 'bg-gray-800/40 text-gray-500 border-gray-700/30', label: `Expired (${lcMaxEvals}/${lcMaxEvals})`, icon: Clock },
-    historical: { style: 'bg-gray-800/30 text-gray-600 border-gray-700/20', label: 'Historical', icon: Clock },
-  };
-  const agentStatus = lifecycleStatusConfig[lcStatus] || lifecycleStatusConfig.new;
-  const StatusIcon = agentStatus.icon;
-
-  // Source type badge configuration
-  const sourceTypeConfig = {
-    reddit_text: { style: 'bg-orange-900/30 text-orange-400 border-orange-600/30', label: 'Text', icon: FileText },
-    video_transcript: { style: 'bg-rose-900/30 text-rose-400 border-rose-600/30', label: 'Video', icon: Activity },
-    article_extract: { style: 'bg-blue-900/30 text-blue-400 border-blue-600/30', label: 'Article', icon: BookOpen },
-  };
-  const sourceType = sourceTypeConfig[impact.sourceType] || sourceTypeConfig.reddit_text;
-  const SourceIcon = sourceType.icon;
-
-  // Live-updating timestamps
-  const postedAgo = formatRelativeTimestamp(impact.sourceCreatedAt);
-  const signalAgo = formatRelativeTimestamp(impact.timestamp);
-  const lag = formatLatency(impact.sourceCreatedAt, impact.timestamp);
-
-  // Contextual subtitles
-  const sentimentSubtitle = impact.contextSnippet
-    ? (impact.contextSnippet.length > 40 ? impact.contextSnippet.slice(0, 40) + '...' : impact.contextSnippet)
-    : `${impact.sourceType === 'reddit_text' ? 'Reddit' : 'Source'} discussion: ${sentimentIsPositive ? 'positive' : 'negative'} tone`;
-
-  const impactSubtitle = wasInverted
-    ? `${impact.marketType || 'OUT'}: negative news helps`
-    : `${impact.marketType === 'WIN' ? 'WIN' : 'Direct'}: sentiment aligns`;
-
-  const confidenceSubtitle = impact.confidence >= 0.9
-    ? 'High: strong match'
-    : impact.confidence >= 0.7
-      ? 'Medium: likely match'
-      : 'Low: uncertain match';
-
-  // Build animation classes
-  const animationClasses = [
-    isNew ? 'animate-signal-slide-in' : '',
-    freshnessTier === 'fresh' ? 'animate-signal-fresh' : '',
-    freshnessTier === 'recent' ? 'animate-signal-recent' : '',
-  ].filter(Boolean).join(' ');
-
-  // Visual de-emphasis for terminal/historical signals
-  const opacityClass = lcStatus === 'historical' ? 'opacity-40'
-    : (lcStatus === 'expired' || lcStatus === 'passed') ? 'opacity-60'
-    : '';
-  const borderAccent = lcStatus === 'traded' ? 'border-l-2 border-l-emerald-400' : '';
-  const hoverClass = isTerminal ? '' : 'hover:border-gray-600/50 hover:shadow-lg';
-  const borderStyle = lcStatus === 'historical' ? 'border-gray-800/20' : 'border-gray-700/40';
-
-  return (
-    <div className={`
-      relative overflow-hidden
-      rounded-xl border ${borderStyle}
-      ${impactBg}
-      backdrop-blur-sm
-      p-3 mb-2
-      transition-all duration-300
-      ${hoverClass}
-      group
-      ${animationClasses}
-      ${opacityClass}
-      ${borderAccent}
-    `}>
-      {/* Subtle glow effect */}
-      {!isTerminal && (
-        <div className={`
-          absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-500
-          ${impactIsPositive ? 'bg-emerald-500/5' : 'bg-rose-500/5'}
-        `} />
-      )}
-
-      {/* Header: Entity + Badges Row */}
-      <div className="relative flex items-center justify-between mb-2">
-        <div className="flex items-center gap-2 min-w-0 flex-1">
-          <div className="p-1.5 rounded-lg bg-gray-800/50 border border-gray-700/30">
-            <User className="w-3.5 h-3.5 text-gray-400" />
-          </div>
-          <div className="min-w-0 flex-1">
-            <div className="text-sm font-medium text-gray-200 truncate">
-              {impact.entityName}
-            </div>
-            {impact.subreddit && (
-              <span className="text-[10px] text-orange-400/80">r/{impact.subreddit}</span>
-            )}
-          </div>
-        </div>
-
-        {/* Right side badges: Agent Status + Market Type + Side */}
-        <div className="flex items-center gap-1.5 flex-shrink-0">
-          {/* Agent Status Badge */}
-          <span className={`
-            px-1.5 py-0.5 rounded text-[9px] font-medium border flex items-center gap-1
-            ${agentStatus.style}
-          `}>
-            <StatusIcon className="w-2.5 h-2.5" />
-            {agentStatus.label}
-          </span>
-          {/* Market Type Badge */}
-          <span className={`px-2 py-0.5 rounded text-[9px] font-bold border ${marketType.style}`}>
-            {marketType.label}
-          </span>
-          {/* Suggested Side Badge */}
-          {impact.suggestedSide && (
-            <span className={`
-              px-2 py-1 rounded-lg text-[10px] font-bold border shadow-sm
-              ${sideBadge}
-            `}>
-              {impact.suggestedSide}
-            </span>
-          )}
-        </div>
-      </div>
-
-      {/* Evaluation Progress Bar */}
-      {lcMaxEvals > 0 && (lcEvalCount > 0 || lcStatus !== 'new') && (
-        <div className="flex gap-0.5 h-1 mt-1.5 mb-1">
-          {Array.from({ length: lcMaxEvals }, (_, i) => (
-            <div key={i} className={`flex-1 rounded-full ${
-              i < lcEvalCount
-                ? lcEvals[i]?.decision === 'TRADE' ? 'bg-emerald-400'
-                  : lcEvals[i]?.decision === 'WAIT' ? 'bg-amber-400'
-                  : 'bg-gray-500'
-                : 'bg-gray-800'
-            }`} />
-          ))}
-        </div>
-      )}
-
-      {/* Dual Timestamp Bar: Posted | Signal | Lag */}
-      {(postedAgo || signalAgo) && (
-        <div className="relative flex items-center gap-3 mb-2 px-2 py-1.5 bg-gray-900/50 rounded-lg border border-gray-800/30 text-[10px]">
-          {postedAgo && (
-            <span className="flex items-center gap-1">
-              <Clock className="w-3 h-3 text-gray-500" />
-              <span className="text-gray-500">Posted</span>
-              <span className="text-orange-400 font-medium">{postedAgo}</span>
-            </span>
-          )}
-          {postedAgo && signalAgo && (
-            <span className="text-gray-700">|</span>
-          )}
-          {signalAgo && (
-            <span className="flex items-center gap-1">
-              <Zap className="w-3 h-3 text-gray-500" />
-              <span className="text-gray-500">Signal</span>
-              <span className="text-cyan-400 font-medium">{signalAgo}</span>
-            </span>
-          )}
-          {lag && (
-            <>
-              <span className="text-gray-700">|</span>
-              <span className="flex items-center gap-1">
-                <Activity className="w-3 h-3 text-gray-500" />
-                <span className="text-gray-500">{lag} lag</span>
-              </span>
-            </>
-          )}
-        </div>
-      )}
-
-      {/* Source Context: Reddit Post Title + Context Snippet - THE WHY */}
-      <div className="relative mb-2 p-2.5 bg-gray-900/60 rounded-lg border border-gray-800/40">
-        <div className="flex items-start gap-2">
-          <div className="flex-shrink-0 mt-0.5">
-            <SourceIcon className={`w-3 h-3 ${sourceType.style.includes('orange') ? 'text-orange-400/70' : sourceType.style.includes('rose') ? 'text-rose-400/70' : 'text-blue-400/70'}`} />
-          </div>
-          <div className="flex-1 min-w-0">
-            {impact.sourceTitle ? (
-              <>
-                <div className="text-xs font-medium text-gray-200 line-clamp-2 leading-relaxed" title={impact.sourceTitle}>
-                  "{impact.sourceTitle}"
-                </div>
-                {impact.contextSnippet && (
-                  <div className="text-[10px] text-gray-400 mt-1 line-clamp-3" title={impact.contextSnippet}>
-                    {impact.contextSnippet}
-                  </div>
-                )}
-              </>
-            ) : (
-              <div className="text-[10px] text-gray-500 italic">
-                No source context available
-              </div>
-            )}
-            {/* Source type label */}
-            <div className="mt-1">
-              <span className={`px-1.5 py-0.5 rounded text-[8px] font-medium border ${sourceType.style}`}>
-                {sourceType.label}
-              </span>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Transformation Pipeline: Sentiment → Impact */}
-      <div className="relative flex items-center gap-2 mb-2 py-2 px-2 bg-gray-900/40 rounded-lg border border-gray-800/50">
-        {/* Entity Sentiment Score */}
-        <div className="flex-1 text-center">
-          <div className="text-[9px] text-gray-500 uppercase tracking-wider mb-1">Entity Sentiment</div>
-          <div className={`text-lg font-mono font-bold ${sentimentColor}`}>
-            {impact.sentimentScore > 0 ? '+' : ''}{impact.sentimentScore}
-          </div>
-          <div className="text-[9px] text-gray-500 mt-0.5">
-            {sentimentSubtitle}
-          </div>
-        </div>
-
-        {/* Arrow with inversion indicator */}
-        <div className="flex flex-col items-center px-2">
-          <ArrowRight className={`w-4 h-4 ${wasInverted ? 'text-amber-400' : 'text-gray-500'}`} />
-          {wasInverted && (
-            <span className="text-[8px] text-amber-400 font-medium mt-0.5">INVERTED</span>
-          )}
-        </div>
-
-        {/* Price Impact Score */}
-        <div className="flex-1 text-center">
-          <div className="text-[9px] text-gray-500 uppercase tracking-wider mb-1">Price Impact</div>
-          <div className={`text-lg font-mono font-bold ${impactColor}`}>
-            {impact.priceImpactScore > 0 ? '+' : ''}{impact.priceImpactScore}
-          </div>
-          <div className="text-[9px] text-gray-500 mt-0.5" title={impact.transformationLogic}>
-            {impactSubtitle}
-          </div>
-        </div>
-
-        {/* Confidence */}
-        <div className="flex-1 text-center border-l border-gray-700/50 pl-2">
-          <div className="text-[9px] text-gray-500 uppercase tracking-wider mb-1">Confidence</div>
-          <div className="text-lg font-mono font-bold text-cyan-400">
-            {(impact.confidence * 100).toFixed(0)}%
-          </div>
-          <div className="text-[9px] text-gray-500 mt-0.5">
-            {confidenceSubtitle}
-          </div>
-        </div>
-      </div>
-
-      {/* Market Ticker + Transformation Logic */}
-      <div className="relative flex items-center justify-between border-t border-gray-800/30 pt-1">
-        <div className="flex items-center gap-2">
-          <BarChart3 className="w-3 h-3 text-gray-500" />
-          <span className="font-mono text-[11px] text-gray-400">{impact.marketTicker}</span>
-        </div>
-        <span className="text-[10px] text-gray-400 truncate max-w-[280px]" title={impact.transformationLogic}>
-          {impact.transformationLogic || (wasInverted ? 'Sentiment inverted for market type' : 'Direct sentiment correlation')}
-        </span>
-      </div>
-    </div>
-  );
-});
-
-PriceImpactRow.displayName = 'PriceImpactRow';
 
 /**
  * Stats Card - Compact stat display
@@ -678,22 +347,21 @@ CostPanel.displayName = 'CostPanel';
  * DeepAgentPanel - Main panel for the self-improving deep agent
  *
  * Props:
- * - statsOnly: When true, renders only header and 8-stat summary (for Trader tab)
+ * - statsOnly: When true, renders only header and stat summary (for Trader tab)
  * - agentState: Current agent state object
  * - thinking: Current thinking stream
  * - toolCalls: Array of tool call records
  * - trades: Array of trade records
  * - settlements: Array of settlement records
  * - learnings: Array of learning records
- * - redditSignals: Array of reddit signal records
- * - priceImpacts: Array of price impact records
  * - isRunning: Whether agent is currently running
  * - isLearning: Whether agent is in learning mode
+ * - costData: LLM cost tracking data
  *
  * When statsOnly={true}, displays:
  * - Agent status header with RUNNING/STOPPED badge
  * - Session stats (P&L, Trades, Win Rate, Cycles)
- * - Entity pipeline stats (Reddit, Entities, Signals, Index)
+ * - Extraction pipeline stats
  *
  * When statsOnly={false} (default), displays full view with all sections.
  */
@@ -704,35 +372,16 @@ const DeepAgentPanel = ({
   trades = [],
   settlements = [],
   learnings = [],
-  redditSignals = [],
-  priceImpacts = [],
   isRunning = false,
   isLearning = false,
   statsOnly = false,
-  getSignalLifecycle = null,
-  lifecycleSummary = null,
-  getStatusSortPriority = null,
   costData = null,
 }) => {
   const [isExpanded, setIsExpanded] = useState(true);
   const [showTools, setShowTools] = useState(false);
-  const [showReddit, setShowReddit] = useState(false);
-  const [showPriceImpacts, setShowPriceImpacts] = useState(true);
 
   // Live-updating timestamps: forces re-render every 30s
   useRelativeTime(30000);
-  // Track new signal arrivals + freshness tiers
-  const { newSignalIds, getFreshnessTier } = useSignalFreshness(priceImpacts);
-
-  // Sort price impacts by lifecycle status priority
-  const sortedPriceImpacts = useMemo(() => {
-    if (!getStatusSortPriority) return priceImpacts;
-    return [...priceImpacts].sort((a, b) => {
-      const aId = a.id || a.signal_id || '';
-      const bId = b.id || b.signal_id || '';
-      return getStatusSortPriority(aId) - getStatusSortPriority(bId);
-    });
-  }, [priceImpacts, getStatusSortPriority]);
 
   // Calculate session P&L from settlements
   const sessionPnL = useMemo(() => {
@@ -844,35 +493,42 @@ const DeepAgentPanel = ({
             />
           </div>
 
-          {/* Entity Pipeline Stats (Reddit → Entities → Signals) */}
-          <div className={statsOnly ? "grid grid-cols-5 gap-2" : "grid grid-cols-4 gap-2 mb-4"}>
+          {/* Extraction Pipeline Stats (Sources → Extractions → Signals → GDELT) */}
+          <div className={statsOnly ? "grid grid-cols-6 gap-2" : "grid grid-cols-5 gap-2 mb-4"}>
             <StatsCard
-              label="Reddit"
-              value={agentState?.redditPostsProcessed || redditSignals.length || 0}
+              label="Sources"
+              value={agentState?.redditPostsProcessed || agentState?.postsProcessed || 0}
               color="text-orange-400"
               bgColor="bg-orange-900/20"
               borderColor="border-orange-700/30"
             />
             <StatsCard
-              label="Entities"
-              value={agentState?.entitiesExtracted || 0}
-              color="text-amber-400"
-              bgColor="bg-amber-900/20"
-              borderColor="border-amber-700/30"
+              label="Extractions"
+              value={agentState?.extractionsTotal || 0}
+              color="text-violet-400"
+              bgColor="bg-violet-900/20"
+              borderColor="border-violet-700/30"
             />
             <StatsCard
               label="Signals"
-              value={agentState?.signalsGenerated || priceImpacts.length || 0}
-              color="text-rose-400"
-              bgColor="bg-rose-900/20"
-              borderColor="border-rose-700/30"
+              value={agentState?.extractionsMarketSignals || 0}
+              color="text-cyan-400"
+              bgColor="bg-cyan-900/20"
+              borderColor="border-cyan-700/30"
             />
             <StatsCard
-              label="Index"
-              value={agentState?.indexSize || 0}
+              label="Events"
+              value={agentState?.eventsTracked || 0}
               color="text-blue-400"
               bgColor="bg-blue-900/20"
               borderColor="border-blue-700/30"
+            />
+            <StatsCard
+              label="GDELT"
+              value={agentState?.gdeltQueries || 0}
+              color="text-blue-400"
+              bgColor="bg-blue-900/20"
+              borderColor="border-blue-800/30"
             />
             {statsOnly && (
               <StatsCard
@@ -903,67 +559,6 @@ const DeepAgentPanel = ({
             </div>
             <ThinkingStream thinking={thinking} isLearning={isLearning} />
           </div>
-
-          {/* Price Impacts - Entity → Market Transformation Pipeline */}
-          {priceImpacts.length > 0 && (
-            <div className="mb-4">
-              <button
-                onClick={() => setShowPriceImpacts(!showPriceImpacts)}
-                className="w-full flex items-center justify-between px-3 py-2.5 bg-gradient-to-r from-orange-900/20 via-amber-900/15 to-transparent hover:from-orange-900/30 rounded-lg transition-all duration-200 border border-orange-800/30"
-              >
-                <div className="flex items-center gap-2">
-                  <div className="p-1 rounded-md bg-orange-900/40">
-                    <Sparkles className="w-3.5 h-3.5 text-orange-400" />
-                  </div>
-                  <span className="text-[11px] text-orange-300 uppercase tracking-wider font-semibold">
-                    Price Impacts
-                  </span>
-                  <span className="px-2 py-0.5 bg-orange-900/40 text-orange-400 text-[10px] font-bold rounded-full border border-orange-700/30">
-                    {priceImpacts.length}
-                  </span>
-                  <span className="text-[9px] text-gray-500 ml-1">
-                    Entity → Market
-                  </span>
-                  {lifecycleSummary && (
-                    <span className="text-[9px] text-gray-500 ml-2">
-                      {lifecycleSummary.evaluating > 0 && `${lifecycleSummary.evaluating} evaluating`}
-                      {lifecycleSummary.evaluating > 0 && lifecycleSummary.traded > 0 && ' \u00B7 '}
-                      {lifecycleSummary.traded > 0 && `${lifecycleSummary.traded} traded`}
-                      {(lifecycleSummary.evaluating > 0 || lifecycleSummary.traded > 0) && lifecycleSummary.historical > 0 && ' \u00B7 '}
-                      {lifecycleSummary.historical > 0 && `${lifecycleSummary.historical} historical`}
-                    </span>
-                  )}
-                </div>
-                <div className="flex items-center gap-2">
-                  {priceImpacts.length > 0 && (
-                    <span className={`text-[10px] font-mono ${
-                      priceImpacts[0]?.priceImpactScore > 0 ? 'text-emerald-400' : 'text-rose-400'
-                    }`}>
-                      Latest: {priceImpacts[0]?.priceImpactScore > 0 ? '+' : ''}{priceImpacts[0]?.priceImpactScore}
-                    </span>
-                  )}
-                  {showPriceImpacts ? (
-                    <ChevronDown className="w-4 h-4 text-orange-400/60" />
-                  ) : (
-                    <ChevronRight className="w-4 h-4 text-orange-400/60" />
-                  )}
-                </div>
-              </button>
-              {showPriceImpacts && (
-                <div className="mt-3 max-h-[400px] overflow-y-auto pr-1 space-y-0">
-                  {sortedPriceImpacts.slice(0, 10).map((impact) => (
-                    <PriceImpactRow
-                      key={impact.id}
-                      impact={impact}
-                      isNew={newSignalIds.has(impact.id)}
-                      freshnessTier={getFreshnessTier(impact)}
-                      lifecycle={getSignalLifecycle ? getSignalLifecycle(impact.id) : null}
-                    />
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
 
           {/* Recent Activity */}
           <div className="mb-4">
@@ -1046,37 +641,6 @@ const DeepAgentPanel = ({
             </div>
           )}
 
-          {/* Reddit Signals */}
-          {redditSignals.length > 0 && (
-            <div>
-              <button
-                onClick={() => setShowReddit(!showReddit)}
-                className="w-full flex items-center justify-between px-3 py-2 bg-gray-800/30 hover:bg-gray-800/50 rounded-lg transition-colors"
-              >
-                <div className="flex items-center gap-2">
-                  <MessageSquare className="w-3.5 h-3.5 text-orange-400" />
-                  <span className="text-[10px] text-gray-400 uppercase tracking-wider font-medium">
-                    Reddit Signals
-                  </span>
-                  <span className="px-1.5 py-0.5 bg-orange-900/30 text-orange-400 text-[9px] rounded">
-                    {redditSignals.length}
-                  </span>
-                </div>
-                {showReddit ? (
-                  <ChevronDown className="w-3.5 h-3.5 text-gray-500" />
-                ) : (
-                  <ChevronRight className="w-3.5 h-3.5 text-gray-500" />
-                )}
-              </button>
-              {showReddit && (
-                <div className="mt-2 max-h-[200px] overflow-y-auto">
-                  {redditSignals.slice(0, 5).map((signal) => (
-                    <RedditSignalRow key={signal.id} signal={signal} />
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
           </>
           )}
         </>

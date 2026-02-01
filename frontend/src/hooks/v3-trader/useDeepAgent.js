@@ -61,8 +61,10 @@ export const useDeepAgent = ({ useV3WebSocketState }) => {
   const [settlements, setSettlements] = useState([]);
   const [errors, setErrors] = useState([]);
   const [costHistory, setCostHistory] = useState([]);
+  const [gdeltResults, setGdeltResults] = useState([]);
 
   // Refs for managing max items
+  const maxGdeltResults = 15;
   const maxCostHistory = 50;
   const maxToolCalls = 50;
   const maxTrades = 50;
@@ -118,6 +120,7 @@ export const useDeepAgent = ({ useV3WebSocketState }) => {
       outputPreview: data.output_preview,
       cycle: data.cycle,
       timestamp: data.timestamp,
+      durationMs: data.duration_ms || null,
     };
 
     setToolCalls(prev => [toolCall, ...prev].slice(0, maxToolCalls));
@@ -131,6 +134,7 @@ export const useDeepAgent = ({ useV3WebSocketState }) => {
       id: `${data.timestamp}-${data.ticker}`,
       ticker: data.ticker,
       side: data.side,
+      action: data.action || 'buy',
       contracts: data.contracts,
       priceCents: data.price_cents,
       reasoning: data.reasoning,
@@ -278,6 +282,49 @@ export const useDeepAgent = ({ useV3WebSocketState }) => {
   }, []);
 
   /**
+   * Handle deep_agent_gdelt_result message - GDELT news query result
+   */
+  const handleGdeltResult = useCallback((data) => {
+    const idTerms = data.search_terms || data.actor_names || [];
+    const result = {
+      id: `gdelt-${data.timestamp}-${idTerms.join('-').slice(0, 30)}`,
+      searchTerms: data.search_terms || [],
+      actorNames: data.actor_names || [],
+      windowHours: data.window_hours,
+      timespan: data.timespan,
+      toneFilter: data.tone_filter,
+      articleCount: data.article_count || 0,
+      sourceDiversity: data.source_diversity || 0,
+      toneSummary: data.tone_summary || {},
+      keyThemes: data.key_themes || [],
+      keyPersons: data.key_persons || [],
+      keyOrganizations: data.key_organizations || [],
+      topArticles: data.top_articles || [],
+      timeline: data.timeline || [],
+      dataPoints: data.data_points || 0,
+      cached: data.cached || false,
+      source: data.source || 'gkg', // 'gkg', 'doc_api', 'volume_timeline', or 'events'
+      cycle: data.cycle,
+      timestamp: data.timestamp,
+      durationMs: data.duration_ms || null,
+      // Events-specific fields
+      eventCount: data.event_count || 0,
+      quadClassSummary: data.quad_class_summary || null,
+      goldsteinSummary: data.goldstein_summary || null,
+      topEventTriples: data.top_event_triples || [],
+      topActors: data.top_actors || [],
+      eventCodeDistribution: data.event_code_distribution || [],
+      geoHotspots: data.geo_hotspots || [],
+    };
+
+    setGdeltResults(prev => [result, ...prev].slice(0, maxGdeltResults));
+    setAgentState(prev => ({
+      ...prev,
+      gdeltQueries: (prev.gdeltQueries || 0) + 1,
+    }));
+  }, []);
+
+  /**
    * Handle price_impacts_snapshot message - Restore price impacts after page refresh
    */
   const handlePriceImpactsSnapshot = useCallback((data) => {
@@ -342,6 +389,7 @@ export const useDeepAgent = ({ useV3WebSocketState }) => {
         id: `${t.timestamp}-${t.ticker}`,
         ticker: t.ticker,
         side: t.side,
+        action: t.action || 'buy',
         contracts: t.contracts,
         priceCents: t.price_cents,
         reasoning: t.reasoning,
@@ -406,7 +454,34 @@ export const useDeepAgent = ({ useV3WebSocketState }) => {
       handleLifecycleSnapshot(data.signal_lifecycle);
     }
 
-    console.log(`[useDeepAgent] Snapshot restored: cycle ${data.cycle_count}, ${data.trades_executed} trades, ${data.recent_thinking?.length || 0} thinking, ${data.recent_learnings?.length || 0} learnings, ${data.signal_lifecycle?.length || 0} lifecycle`);
+    // Restore GDELT results from snapshot
+    if (data.gdelt_results?.length > 0) {
+      setGdeltResults(data.gdelt_results.map((r, i) => ({
+        id: `gdelt-restored-${i}-${(r.search_terms || []).join('-').slice(0, 30)}`,
+        searchTerms: r.search_terms || [],
+        windowHours: r.window_hours,
+        toneFilter: r.tone_filter,
+        articleCount: r.article_count || 0,
+        sourceDiversity: r.source_diversity || 0,
+        toneSummary: r.tone_summary || {},
+        keyThemes: r.key_themes || [],
+        keyPersons: r.key_persons || [],
+        keyOrganizations: r.key_organizations || [],
+        topArticles: r.top_articles || [],
+        timeline: r.timeline || [],
+        cached: r.cached || false,
+        cycle: null,
+        timestamp: r.timestamp,
+        durationMs: null,
+      })));
+      // Update GDELT query count in agent state
+      setAgentState(prev => ({
+        ...prev,
+        gdeltQueries: data.gdelt_queries?.length || data.gdelt_results.length,
+      }));
+    }
+
+    console.log(`[useDeepAgent] Snapshot restored: cycle ${data.cycle_count}, ${data.trades_executed} trades, ${data.recent_thinking?.length || 0} thinking, ${data.recent_learnings?.length || 0} learnings, ${data.gdelt_results?.length || 0} GDELT results`);
   }, [handleLifecycleSnapshot]);
 
   /**
@@ -484,6 +559,9 @@ export const useDeepAgent = ({ useV3WebSocketState }) => {
       case 'deep_agent_cost':
         handleCost(data);
         break;
+      case 'deep_agent_gdelt_result':
+        handleGdeltResult(data);
+        break;
       case 'deep_agent_error':
         handleError(data);
         break;
@@ -512,6 +590,7 @@ export const useDeepAgent = ({ useV3WebSocketState }) => {
     handleRedditSignal,
     handlePriceImpact,
     handleCost,
+    handleGdeltResult,
     handleError,
     handleSnapshot,
     handlePriceImpactsSnapshot,
@@ -541,6 +620,7 @@ export const useDeepAgent = ({ useV3WebSocketState }) => {
     setSettlements([]);
     setErrors([]);
     setCostHistory([]);
+    setGdeltResults([]);
   }, []);
 
   /**
@@ -570,6 +650,7 @@ export const useDeepAgent = ({ useV3WebSocketState }) => {
     settlements,
     errors,
     costHistory,
+    gdeltResults,
     // Signal lifecycle
     getSignalLifecycle: getLifecycle,
     lifecycleSummary,
@@ -582,6 +663,7 @@ export const useDeepAgent = ({ useV3WebSocketState }) => {
     isRunning: agentState.status === 'active' || agentState.status === 'started',
     isLearning: thinking.text.length > 0,
     hasPriceImpacts: priceImpacts.length > 0,
+    hasGdeltResults: gdeltResults.length > 0,
   };
 };
 

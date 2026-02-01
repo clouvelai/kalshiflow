@@ -60,6 +60,12 @@ class DeepAgentStrategy:
         self._running = False
         self._started_at: Optional[float] = None
 
+        # Watchdog state
+        self._watchdog_task: Optional[asyncio.Task] = None
+        self._restart_timestamps: list = []  # Timestamps of recent restarts
+        self._max_restarts_per_hour = 5
+        self._permanently_stopped = False
+
         # Stats
         self._cycles_run = 0
         self._trades_executed = 0
@@ -128,6 +134,17 @@ class DeepAgentStrategy:
         )
         logger.info("[deep_agent] SelfImprovingAgent created")
 
+        # Bootstrap event configs for all tracked events before starting the agent loop.
+        # understand_event() has a 24h DB cache, so restarts are cheap.
+        try:
+            bootstrap_result = await self._agent.bootstrap_events()
+            logger.info(
+                f"[deep_agent] Event bootstrap: {bootstrap_result['new']} new, "
+                f"{bootstrap_result['cached']} cached, {bootstrap_result['errors']} errors"
+            )
+        except Exception as e:
+            logger.error(f"[deep_agent] Event bootstrap failed (non-fatal): {e}")
+
         # Start the agent
         logger.info("[deep_agent] About to call agent.start()")
         await self._agent.start()
@@ -138,11 +155,15 @@ class DeepAgentStrategy:
             context.websocket_manager.set_deep_agent(self._agent)
             logger.info("[deep_agent] Agent wired to websocket manager for session persistence")
 
-        # Note: Reddit monitoring is now handled by the entity pipeline:
-        # - RedditEntityAgent: Extracts entities from Reddit with market-led normalization
-        # - PriceImpactAgent: Transforms sentiment to price impact signals
-        # - PriceImpactStore: In-memory cache queried by DeepAgent tools
+        # Note: Reddit monitoring is handled by the extraction pipeline:
+        # - RedditEntityAgent: Extracts signals from Reddit via langextract → Supabase extractions table
+        # - PriceImpactAgent (Extraction Signal Relay): Subscribes to Supabase Realtime, broadcasts to frontend
+        # - DeepAgent tools query the extractions table directly (get_extraction_signals)
         # These agents are started by V3Coordinator when entity_system_enabled=True
+
+        # Start watchdog to resurrect cycle task on failure
+        self._watchdog_task = asyncio.create_task(self._watchdog_loop())
+        logger.info("[deep_agent] Watchdog started")
 
         logger.info("[deep_agent] Strategy started successfully")
 
@@ -153,6 +174,14 @@ class DeepAgentStrategy:
 
         logger.info("[deep_agent] Stopping Deep Agent Strategy")
         self._running = False
+
+        # Stop watchdog
+        if self._watchdog_task and not self._watchdog_task.done():
+            self._watchdog_task.cancel()
+            try:
+                await self._watchdog_task
+            except asyncio.CancelledError:
+                pass
 
         # Stop the agent
         if self._agent:
@@ -237,6 +266,92 @@ class DeepAgentStrategy:
             "event_tracker_enabled": stats["event_tracker_enabled"],
             "event_exposure": event_exposure,
         }
+
+    async def _watchdog_loop(self) -> None:
+        """
+        Monitor the agent's cycle task and restart it if it dies.
+
+        Checks every 60s. If the cycle task has exited with an exception,
+        logs the error, broadcasts an alert, and restarts the agent.
+        After 5 restarts in 1 hour, stops permanently.
+        """
+        while self._running and not self._permanently_stopped:
+            try:
+                await asyncio.sleep(60)
+
+                if not self._running or not self._agent:
+                    continue
+
+                if self._agent.is_cycle_running:
+                    continue
+
+                # Cycle task is dead — check if it had an exception
+                cycle_task = self._agent._cycle_task
+                if cycle_task is None:
+                    continue
+
+                exception = cycle_task.exception() if cycle_task.done() else None
+                error_msg = str(exception) if exception else "unknown (no exception)"
+
+                logger.error(
+                    f"[deep_agent.watchdog] Cycle task died: {error_msg}"
+                )
+
+                # Check restart budget (5 per hour)
+                now = time.time()
+                self._restart_timestamps = [
+                    ts for ts in self._restart_timestamps
+                    if now - ts < 3600
+                ]
+
+                if len(self._restart_timestamps) >= self._max_restarts_per_hour:
+                    self._permanently_stopped = True
+                    logger.error(
+                        f"[deep_agent.watchdog] PERMANENTLY STOPPED: "
+                        f"{self._max_restarts_per_hour} restarts in 1 hour exceeded"
+                    )
+                    if self._agent._ws_manager:
+                        await self._agent._ws_manager.broadcast_message("deep_agent_error", {
+                            "error": (
+                                f"Watchdog: Agent permanently stopped after "
+                                f"{self._max_restarts_per_hour} restarts in 1 hour. "
+                                f"Last error: {error_msg[:200]}"
+                            ),
+                            "severity": "critical",
+                            "timestamp": time.strftime("%H:%M:%S"),
+                        })
+                    break
+
+                # Restart the cycle task
+                self._restart_timestamps.append(now)
+                restart_count = len(self._restart_timestamps)
+
+                logger.warning(
+                    f"[deep_agent.watchdog] Restarting cycle task "
+                    f"(restart {restart_count}/{self._max_restarts_per_hour} this hour)"
+                )
+
+                if self._agent._ws_manager:
+                    await self._agent._ws_manager.broadcast_message("deep_agent_error", {
+                        "error": (
+                            f"Watchdog: Cycle task died ({error_msg[:100]}). "
+                            f"Restarting... ({restart_count}/{self._max_restarts_per_hour})"
+                        ),
+                        "severity": "warning",
+                        "timestamp": time.strftime("%H:%M:%S"),
+                    })
+
+                # Re-create the cycle task
+                self._agent._cycle_task = asyncio.create_task(self._agent._main_loop())
+                logger.info("[deep_agent.watchdog] Cycle task restarted successfully")
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"[deep_agent.watchdog] Error in watchdog loop: {e}")
+                await asyncio.sleep(10)
+
+        logger.info("[deep_agent.watchdog] Watchdog loop exited")
 
     def _load_config(self, strategy_config: Optional[Any]) -> DeepAgentConfig:
         """Load agent configuration from YAML config."""

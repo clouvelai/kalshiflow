@@ -13,6 +13,7 @@ Key responsibilities:
 """
 
 import asyncio
+import json
 import logging
 import time
 from dataclasses import dataclass, field, asdict
@@ -39,6 +40,14 @@ class PendingTrade:
     reasoning: str
     timestamp: float
     order_id: Optional[str] = None  # Kalshi order ID for precise matching
+    # Extraction snapshot at trade time (for learning loop feedback)
+    extraction_ids: List[str] = field(default_factory=list)
+    extraction_snapshot: List[Dict] = field(default_factory=list)
+    # GDELT query snapshot at trade time (for reflection on news confirmation)
+    gdelt_snapshot: List[Dict] = field(default_factory=list)
+    # Calibration fields (from think() tool)
+    estimated_probability: Optional[int] = None
+    what_could_go_wrong: Optional[str] = None
     # Filled after settlement
     settled: bool = False
     exit_price_cents: Optional[int] = None
@@ -108,6 +117,11 @@ class ReflectionEngine:
         self._check_interval_seconds = 30.0
         self._max_pending_trades = 100
 
+        # Persistent scorecard (survives restarts)
+        self._scorecard_path = self._memory_dir / "scorecard.json"
+        self._scorecard: List[Dict[str, Any]] = []
+        self._scorecard_max_entries = 500
+
         # Queue for background reflection processing (prevents blocking main loop)
         self._reflection_queue: asyncio.Queue = asyncio.Queue()
         self._reflection_worker_task: Optional[asyncio.Task] = None
@@ -132,6 +146,9 @@ class ReflectionEngine:
         if self._running:
             logger.warning("[deep_agent.reflection] Already running")
             return
+
+        # Load persistent scorecard from previous sessions
+        self._load_scorecard()
 
         self._running = True
         self._monitor_task = asyncio.create_task(self._settlement_monitor_loop())
@@ -171,6 +188,11 @@ class ReflectionEngine:
         entry_price_cents: int,
         reasoning: str,
         order_id: Optional[str] = None,
+        extraction_ids: Optional[List[str]] = None,
+        extraction_snapshot: Optional[List[Dict]] = None,
+        gdelt_snapshot: Optional[List[Dict]] = None,
+        estimated_probability: Optional[int] = None,
+        what_could_go_wrong: Optional[str] = None,
     ) -> None:
         """
         Record a trade for later reflection.
@@ -184,6 +206,9 @@ class ReflectionEngine:
             entry_price_cents: Entry price in cents
             reasoning: Agent's reasoning for the trade
             order_id: Kalshi order ID for precise settlement matching
+            extraction_ids: IDs of extractions that drove this trade
+            extraction_snapshot: Full extraction data at trade time
+            gdelt_snapshot: Recent GDELT queries at trade time (for reflection)
         """
         if len(self._pending_trades) >= self._max_pending_trades:
             # Remove oldest trade
@@ -203,10 +228,18 @@ class ReflectionEngine:
             reasoning=reasoning,
             timestamp=time.time(),
             order_id=order_id,
+            extraction_ids=extraction_ids or [],
+            extraction_snapshot=extraction_snapshot or [],
+            gdelt_snapshot=gdelt_snapshot or [],
+            estimated_probability=estimated_probability,
+            what_could_go_wrong=what_could_go_wrong,
         )
 
         self._pending_trades[trade_id] = trade
-        logger.info(f"[deep_agent.reflection] Recorded pending trade: {ticker} {side} @ {entry_price_cents}c (order_id={order_id})")
+        logger.info(
+            f"[deep_agent.reflection] Recorded pending trade: {ticker} {side} @ {entry_price_cents}c "
+            f"(order_id={order_id}, extractions={len(trade.extraction_ids)})"
+        )
 
     async def _settlement_monitor_loop(self) -> None:
         """Background loop to check for settled trades."""
@@ -369,6 +402,9 @@ class ReflectionEngine:
             f"P&L: ${pnl_cents / 100:.2f}"
         )
 
+        # Record to persistent scorecard
+        self._record_scorecard_entry(trade)
+
         # Broadcast settlement to WebSocket
         if self._ws_manager:
             await self._ws_manager.broadcast_message("deep_agent_settlement", {
@@ -415,9 +451,8 @@ class ReflectionEngine:
         """
         Build a quantitative performance scorecard for injection into reflections.
 
-        Returns a compact summary of all-time stats, recent trend (last 5 trades),
-        P&L trajectory, and open position summary to give the agent concrete
-        feedback on improvement — including unsettled trades.
+        Returns a compact summary of all-time stats (including rolled aggregates),
+        recent trend, P&L trajectory, per-event breakdown, and open position summary.
         """
         if not self._reflections and not self._state_container:
             return ""
@@ -427,11 +462,18 @@ class ReflectionEngine:
         # Settled trade stats (only if we have reflections)
         if self._reflections:
             agg = self._compute_reflection_aggregates()
-            total = agg["total"]
-            wins = agg["wins"]
-            losses = agg["losses"]
-            total_pnl = agg["total_pnl"]
-            win_rate = agg["win_rate"]
+            session_total = agg["total"]
+            session_wins = agg["wins"]
+            session_losses = agg["losses"]
+            session_pnl = agg["total_pnl"]
+
+            # Combined all-time stats (rolled aggregates + current window)
+            all_time = getattr(self, '_all_time_aggregates', self._empty_all_time_aggregates())
+            all_total = all_time.get("total_trades", 0) + len(self._scorecard)
+            all_wins = all_time.get("wins", 0) + sum(1 for t in self._scorecard if t.get("result") == "win")
+            all_losses = all_time.get("losses", 0) + sum(1 for t in self._scorecard if t.get("result") == "loss")
+            all_pnl = all_time.get("total_pnl_cents", 0) + sum(t.get("pnl_cents", 0) for t in self._scorecard)
+            all_win_rate = all_wins / all_total if all_total > 0 else 0.0
 
             # Last 5 trades trend
             recent = self._reflections[-5:]
@@ -444,18 +486,31 @@ class ReflectionEngine:
 
             # Trend arrow
             if len(self._reflections) >= 5:
-                first_half_pnl = sum(r.pnl_cents for r in self._reflections[:total // 2])
-                second_half_pnl = sum(r.pnl_cents for r in self._reflections[total // 2:])
+                first_half_pnl = sum(r.pnl_cents for r in self._reflections[:session_total // 2])
+                second_half_pnl = sum(r.pnl_cents for r in self._reflections[session_total // 2:])
                 trend = "IMPROVING" if second_half_pnl > first_half_pnl else "DECLINING" if second_half_pnl < first_half_pnl else "FLAT"
             else:
                 trend = "TOO_EARLY"
 
             lines.extend([
-                f"- **All-Time**: {wins}W/{losses}L ({win_rate:.0%} win rate), P&L: ${total_pnl / 100:.2f}",
+                f"- **All-Time**: {all_total} trades, {all_wins}W/{all_losses}L ({all_win_rate:.0%}), P&L: ${all_pnl / 100:.2f}",
+                f"- **This Session**: {session_wins}W/{session_losses}L, P&L: ${session_pnl / 100:.2f}",
                 f"- **Last 5 Trades**: {recent_wins}W/{len(recent) - recent_wins}L ({recent_win_rate:.0%}), P&L: ${recent_pnl / 100:.2f}",
                 f"- **Trend**: {trend}",
                 f"- **Strategy Updates**: {strategy_updates} | **Mistakes Found**: {mistakes_found}",
             ])
+
+            # Per-event breakdown (top 5 by trade count)
+            by_event = getattr(self, '_by_event', {})
+            if by_event:
+                sorted_events = sorted(by_event.items(), key=lambda x: x[1]["trades"], reverse=True)[:5]
+                event_lines = []
+                for et, ev in sorted_events:
+                    ew = ev.get("wins", 0)
+                    el = ev.get("losses", 0)
+                    ep = ev.get("pnl_cents", 0)
+                    event_lines.append(f"  {et}: {ev['trades']}T {ew}W/{el}L ${ep/100:.2f}")
+                lines.append("- **By Event**: " + " | ".join(event_lines))
 
         # Open position summary (deep_agent positions only)
         # Use pending trades as source of truth for agent's positions
@@ -488,6 +543,42 @@ class ReflectionEngine:
             except Exception as e:
                 logger.debug(f"[deep_agent.reflection] Could not get open positions for scorecard: {e}")
 
+        # True state from Kalshi API (strategy-filtered)
+        if self._state_container:
+            try:
+                summary = self._state_container.get_trading_summary()
+                settlements = summary.get("settlements", [])
+                agent_settlements = [s for s in settlements if s.get("strategy_id") == "deep_agent"]
+                if agent_settlements:
+                    true_wins = sum(1 for s in agent_settlements if s.get("net_pnl", 0) > 0)
+                    true_losses = len(agent_settlements) - true_wins
+                    true_realized = sum(s.get("net_pnl", 0) for s in agent_settlements)
+
+                    # Also get unrealized from open positions
+                    all_positions = summary.get("positions_details", [])
+                    agent_tickers_from_settlements = {s.get("ticker") for s in agent_settlements}
+                    agent_tickers_from_pending = {t.ticker for t in self._pending_trades.values()}
+                    combined_tickers = agent_tickers_from_settlements | agent_tickers_from_pending
+                    true_unrealized = sum(
+                        p.get("unrealized_pnl", 0) for p in all_positions
+                        if p.get("ticker") in combined_tickers
+                    )
+                    true_total = true_realized + true_unrealized
+
+                    unrealized_str = ""
+                    if true_unrealized != 0:
+                        sign = "+" if true_unrealized >= 0 else ""
+                        unrealized_str = f", unrealized: {sign}${true_unrealized/100:.2f}"
+
+                    lines.append(
+                        f"- **True State (Kalshi)**: {len(agent_settlements)} settled, "
+                        f"{true_wins}W/{true_losses}L, "
+                        f"realized: ${true_realized/100:.2f}{unrealized_str}, "
+                        f"total: ${true_total/100:.2f}"
+                    )
+            except Exception as e:
+                logger.debug(f"[deep_agent.reflection] Could not get true state for scorecard: {e}")
+
         # Only return content if we have more than just the header
         if len(lines) <= 1:
             return ""
@@ -512,6 +603,51 @@ class ReflectionEngine:
         scorecard = self._build_performance_scorecard()
         scorecard_section = f"\n{scorecard}\n" if scorecard else ""
 
+        # Build extraction snapshot section if available
+        extraction_section = ""
+        if trade.extraction_snapshot:
+            extraction_lines = ["### Extraction Signals That Drove This Trade"]
+            for ext in trade.extraction_snapshot[:10]:
+                ext_id = ext.get("id", "?")
+                ext_class = ext.get("extraction_class", "?")
+                ext_text = ext.get("extraction_text", "")[:150]
+                attrs = ext.get("attributes", {})
+                direction = attrs.get("direction", "?")
+                magnitude = attrs.get("magnitude", "?")
+                confidence = attrs.get("confidence", "?")
+                extraction_lines.append(
+                    f"- **[{ext_id}]** {ext_class}: \"{ext_text}\" "
+                    f"(direction={direction}, magnitude={magnitude}, confidence={confidence})"
+                )
+            extraction_section = "\n".join(extraction_lines) + "\n"
+
+        # Build GDELT snapshot section if available
+        gdelt_section = ""
+        if trade.gdelt_snapshot:
+            gdelt_lines = ["### GDELT News Context at Trade Time"]
+            for gq in trade.gdelt_snapshot[:5]:
+                terms = ", ".join(gq.get("search_terms", []))
+                articles = gq.get("article_count", 0)
+                sources = gq.get("source_diversity", 0)
+                tone = gq.get("avg_tone", 0)
+                gdelt_lines.append(
+                    f"- Query [{terms}]: {articles} articles, {sources} sources, tone={tone:.1f}"
+                )
+            gdelt_section = "\n".join(gdelt_lines) + "\n"
+
+        # Build evaluate instruction if we have extraction IDs
+        evaluate_instruction = ""
+        if trade.extraction_ids:
+            evaluate_instruction = f"""
+### Extraction Feedback (IMPORTANT)
+Call `evaluate_extractions()` to score each extraction's accuracy now that you know the outcome:
+- **trade_ticker**: "{trade.ticker}"
+- **trade_outcome**: "{trade.result}"
+- **evaluations**: Array of {{"extraction_id": "...", "accuracy": "accurate|partially_accurate|inaccurate|noise", "note": "..."}}
+
+Accurate extractions from winning trades are automatically promoted as examples for future extraction calls.
+"""
+
         return f"""
 ## Trade Settlement - Time to Reflect {result_emoji}
 
@@ -529,11 +665,14 @@ A trade you made has settled. Analyze the outcome and extract learnings.
 ### Your Original Reasoning
 {trade.reasoning}
 {scorecard_section}
+{extraction_section}{gdelt_section}
 ### Reflection Questions
 1. **Why did this trade {trade.result}?** What was the key factor?
 2. **Was your reasoning correct?** Did the market move as you expected?
 3. **What can you learn?** What would you do differently next time?
 4. **Should you update your strategy?** Is there a rule to add/modify?
+5. **Were the extraction signals accurate?** Did they correctly predict the direction?
+6. **Was GDELT confirmation useful?** Did mainstream news coverage align with the outcome?
 
 ### Instructions
 Use the `reflect()` tool to record your structured analysis. It auto-appends to the right memory files.
@@ -549,7 +688,7 @@ Call `reflect(trade_ticker, outcome_analysis, reasoning_accuracy, key_learning, 
 - **confidence_in_learning**: "high", "medium", or "low"
 
 If strategy_update_needed=true, also call `read_memory("strategy.md")` then `write_memory("strategy.md", ...)` with the updated version.
-
+{evaluate_instruction}
 Be specific and actionable in your learnings.
 """
 
@@ -597,4 +736,261 @@ Be specific and actionable in your learnings.
             "strategy_updates": agg["strategy_updates"],
             "mistakes_identified": agg["mistakes_found"],
             "patterns_identified": agg["patterns_found"],
+            "scorecard_entries": len(self._scorecard),
         }
+
+    # === Persistent Scorecard ===
+
+    def _load_scorecard(self) -> None:
+        """Load scorecard from disk on startup."""
+        if not self._scorecard_path.exists():
+            logger.info("[deep_agent.reflection] No scorecard.json found — starting fresh")
+            self._all_time_aggregates = self._empty_all_time_aggregates()
+            self._by_event = {}
+            self._weekly_pnl = []
+            return
+
+        try:
+            data = json.loads(self._scorecard_path.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                self._scorecard = data.get("trades", [])
+                self._all_time_aggregates = data.get(
+                    "all_time_aggregates", self._empty_all_time_aggregates()
+                )
+                self._by_event = data.get("by_event", {})
+                self._weekly_pnl = data.get("weekly_pnl", [])
+            elif isinstance(data, list):
+                self._scorecard = data
+                self._all_time_aggregates = self._empty_all_time_aggregates()
+                self._by_event = {}
+                self._weekly_pnl = []
+            else:
+                self._scorecard = []
+                self._all_time_aggregates = self._empty_all_time_aggregates()
+                self._by_event = {}
+                self._weekly_pnl = []
+
+            # Enforce max entries — roll overflow into all_time_aggregates first
+            if len(self._scorecard) > self._scorecard_max_entries:
+                overflow = self._scorecard[:-self._scorecard_max_entries]
+                self._roll_into_aggregates(overflow)
+                self._scorecard = self._scorecard[-self._scorecard_max_entries:]
+
+            logger.info(
+                f"[deep_agent.reflection] Loaded scorecard: {len(self._scorecard)} trades, "
+                f"all-time: {self._all_time_aggregates.get('total_trades', 0)} trades"
+            )
+        except Exception as e:
+            logger.warning(f"[deep_agent.reflection] Failed to load scorecard: {e}")
+            self._scorecard = []
+            self._all_time_aggregates = self._empty_all_time_aggregates()
+            self._by_event = {}
+            self._weekly_pnl = []
+
+    @staticmethod
+    def _empty_all_time_aggregates() -> dict:
+        return {
+            "total_trades": 0,
+            "wins": 0,
+            "losses": 0,
+            "total_pnl_cents": 0,
+            "first_trade_at": None,
+            "last_trade_at": None,
+        }
+
+    def _roll_into_aggregates(self, trades: list) -> None:
+        """Roll trade entries into all_time_aggregates before discarding them."""
+        agg = self._all_time_aggregates
+        for t in trades:
+            agg["total_trades"] += 1
+            if t.get("result") == "win":
+                agg["wins"] += 1
+            elif t.get("result") == "loss":
+                agg["losses"] += 1
+            agg["total_pnl_cents"] += t.get("pnl_cents", 0)
+
+            ts = t.get("timestamp")
+            if ts:
+                if agg["first_trade_at"] is None or ts < agg["first_trade_at"]:
+                    agg["first_trade_at"] = ts
+                if agg["last_trade_at"] is None or ts > agg["last_trade_at"]:
+                    agg["last_trade_at"] = ts
+
+            # Update by_event
+            event = t.get("event_ticker", "unknown")
+            if event:
+                if event not in self._by_event:
+                    self._by_event[event] = {"trades": 0, "wins": 0, "losses": 0, "pnl_cents": 0}
+                ev = self._by_event[event]
+                ev["trades"] += 1
+                if t.get("result") == "win":
+                    ev["wins"] += 1
+                elif t.get("result") == "loss":
+                    ev["losses"] += 1
+                ev["pnl_cents"] += t.get("pnl_cents", 0)
+
+        # Prune by_event to top 20 by trade count
+        if len(self._by_event) > 20:
+            sorted_events = sorted(self._by_event.items(), key=lambda x: x[1]["trades"], reverse=True)
+            self._by_event = dict(sorted_events[:20])
+
+    def _persist_scorecard(self) -> None:
+        """Write scorecard to disk after each settlement."""
+        try:
+            # Enforce cap — roll overflow into all_time_aggregates first
+            if len(self._scorecard) > self._scorecard_max_entries:
+                overflow = self._scorecard[:-self._scorecard_max_entries]
+                self._roll_into_aggregates(overflow)
+                self._scorecard = self._scorecard[-self._scorecard_max_entries:]
+
+            # Compute current window aggregates
+            total = len(self._scorecard)
+            wins = sum(1 for t in self._scorecard if t.get("result") == "win")
+            losses = sum(1 for t in self._scorecard if t.get("result") == "loss")
+            total_pnl = sum(t.get("pnl_cents", 0) for t in self._scorecard)
+
+            # Update weekly_pnl tracking
+            self._update_weekly_pnl()
+
+            data = {
+                "trades": self._scorecard,
+                "aggregates": {
+                    "total_trades": total,
+                    "wins": wins,
+                    "losses": losses,
+                    "total_pnl_cents": total_pnl,
+                    "win_rate": wins / total if total > 0 else 0.0,
+                    "updated_at": datetime.now().isoformat(),
+                },
+                "all_time_aggregates": self._all_time_aggregates,
+                "by_event": self._by_event,
+                "weekly_pnl": self._weekly_pnl,
+            }
+
+            self._scorecard_path.write_text(
+                json.dumps(data, indent=2), encoding="utf-8"
+            )
+            logger.info(
+                f"[deep_agent.reflection] Scorecard persisted: "
+                f"{total} trades, ${total_pnl/100:.2f} P&L"
+            )
+        except Exception as e:
+            logger.error(f"[deep_agent.reflection] Failed to persist scorecard: {e}")
+
+    def _update_weekly_pnl(self) -> None:
+        """Update weekly_pnl list with current week's data."""
+        now = datetime.now()
+        week_key = now.strftime("%Y-W%W")
+
+        # Sum PnL for current week from scorecard entries
+        week_pnl = 0
+        week_trades = 0
+        for t in self._scorecard:
+            ts = t.get("timestamp", "")
+            if isinstance(ts, str) and ts[:4].isdigit():
+                try:
+                    trade_date = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                    if trade_date.strftime("%Y-W%W") == week_key:
+                        week_pnl += t.get("pnl_cents", 0)
+                        week_trades += 1
+                except (ValueError, TypeError):
+                    pass
+
+        # Update or append current week entry
+        updated = False
+        for entry in self._weekly_pnl:
+            if entry.get("week") == week_key:
+                entry["pnl_cents"] = week_pnl
+                entry["trades"] = week_trades
+                updated = True
+                break
+        if not updated:
+            self._weekly_pnl.append({
+                "week": week_key,
+                "pnl_cents": week_pnl,
+                "trades": week_trades,
+            })
+
+        # Keep last 52 weeks
+        if len(self._weekly_pnl) > 52:
+            self._weekly_pnl = self._weekly_pnl[-52:]
+
+    def _record_scorecard_entry(self, trade: PendingTrade) -> None:
+        """Add a settled trade to the persistent scorecard."""
+        entry = {
+            "ticker": trade.ticker,
+            "event_ticker": trade.event_ticker,
+            "side": trade.side,
+            "contracts": trade.contracts,
+            "entry_cents": trade.entry_price_cents,
+            "exit_cents": trade.exit_price_cents,
+            "pnl_cents": trade.pnl_cents or 0,
+            "result": trade.result or "unknown",
+            "timestamp": datetime.now().isoformat(),
+            "reasoning": (trade.reasoning[:200] if trade.reasoning else ""),
+            "estimated_probability": trade.estimated_probability,
+            "what_could_go_wrong": (trade.what_could_go_wrong[:200] if trade.what_could_go_wrong else None),
+        }
+        self._scorecard.append(entry)
+
+        # Update by_event tracking for current trade
+        event = trade.event_ticker or "unknown"
+        if event not in self._by_event:
+            self._by_event[event] = {"trades": 0, "wins": 0, "losses": 0, "pnl_cents": 0}
+        ev = self._by_event[event]
+        ev["trades"] += 1
+        if trade.result == "win":
+            ev["wins"] += 1
+        elif trade.result == "loss":
+            ev["losses"] += 1
+        ev["pnl_cents"] += trade.pnl_cents or 0
+
+        # Update all_time_aggregates last_trade_at
+        self._all_time_aggregates["last_trade_at"] = entry["timestamp"]
+        if self._all_time_aggregates["first_trade_at"] is None:
+            self._all_time_aggregates["first_trade_at"] = entry["timestamp"]
+
+        self._persist_scorecard()
+
+    def get_scorecard_summary(self) -> str:
+        """
+        Build a scorecard summary combining all-time aggregates + current window.
+
+        Returns empty string if no historical data.
+        """
+        # Current window stats
+        window_total = len(self._scorecard)
+        window_wins = sum(1 for t in self._scorecard if t.get("result") == "win")
+        window_losses = sum(1 for t in self._scorecard if t.get("result") == "loss")
+        window_pnl = sum(t.get("pnl_cents", 0) for t in self._scorecard)
+
+        # Combined all-time + current window
+        agg = getattr(self, '_all_time_aggregates', self._empty_all_time_aggregates())
+        all_total = agg.get("total_trades", 0) + window_total
+        all_wins = agg.get("wins", 0) + window_wins
+        all_losses = agg.get("losses", 0) + window_losses
+        all_pnl = agg.get("total_pnl_cents", 0) + window_pnl
+
+        if all_total == 0:
+            return ""
+
+        win_rate = all_wins / all_total if all_total > 0 else 0.0
+
+        summary = (
+            f"All-Time: {all_total} trades, {all_wins}W/{all_losses}L "
+            f"({win_rate:.0%}), P&L: ${all_pnl/100:.2f}"
+        )
+
+        # Add weekly trend if available
+        weekly = getattr(self, '_weekly_pnl', [])
+        if len(weekly) >= 2:
+            last_week = weekly[-1].get("pnl_cents", 0)
+            prev_week = weekly[-2].get("pnl_cents", 0)
+            trend = "UP" if last_week > prev_week else "DOWN" if last_week < prev_week else "FLAT"
+            summary += f" | Week trend: {trend}"
+
+        return summary
+
+    def get_by_event_stats(self) -> dict:
+        """Get per-event statistics for distillation evidence."""
+        return getattr(self, '_by_event', {})
