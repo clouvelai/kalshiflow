@@ -247,7 +247,7 @@ class SelfImprovingAgent:
 
     def _build_tool_definitions(self) -> List[Dict]:
         """Build Claude tool definitions."""
-        return [
+        tools = [
             {
                 "name": "get_extraction_signals",
                 "description": "PRIMARY DATA SOURCE: Query aggregated extraction signals from the extraction pipeline. Returns signals grouped by market with occurrence count, unique sources, engagement metrics, directional consensus, and recent extraction snippets. Higher unique_sources and engagement = stronger signal. Use this as your first tool every cycle.",
@@ -675,132 +675,149 @@ class SelfImprovingAgent:
                     },
                     "required": []
                 }
-            },
-            {
-                "name": "query_gdelt_news",
-                "description": "Query GDELT Global Knowledge Graph for mainstream news coverage. Searches thousands of news sources worldwide (updated every 15 min). Use to CONFIRM Reddit signals with authoritative sources, or DISCOVER news Reddit hasn't caught yet. Returns article count, source diversity, tone analysis, key persons/orgs/themes, top articles with URLs and quotations, and a timeline. Complements get_extraction_signals() (Reddit) with mainstream media coverage.",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "search_terms": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "Terms to search for across persons, organizations, names, and themes. Use entity names from extraction signals or watchlists."
-                        },
-                        "window_hours": {
-                            "type": "number",
-                            "description": "How far back to search (default: 4 hours). Wider windows cost more BigQuery bytes.",
-                            "default": 4.0
-                        },
-                        "tone_filter": {
-                            "type": "string",
-                            "enum": ["positive", "negative"],
-                            "description": "Optional: filter articles by tone direction"
-                        },
-                        "source_filter": {
-                            "type": "string",
-                            "description": "Optional: filter by source name (partial match, e.g. 'reuters', 'bbc')"
-                        },
-                        "limit": {
-                            "type": "integer",
-                            "description": "Max articles to return (default: 100)",
-                            "default": 100
-                        }
-                    },
-                    "required": ["search_terms"]
-                }
-            },
-            {
-                "name": "query_gdelt_events",
-                "description": "Query GDELT Events Database for structured Actor-Event-Actor triples with CAMEO coding and GoldsteinScale conflict/cooperation scoring. Searches thousands of sources for HOW actors interact (investigate, threaten, cooperate, protest). Use to understand event dynamics beyond news coverage. Search by entity names — results include human-readable CAMEO labels, QuadClass conflict/cooperation categories, and Goldstein scores (-10 hostile to +10 cooperative).",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "actor_names": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "Entity names to search in both Actor1 and Actor2 positions (e.g., ['Pam Bondi', 'DOJ'])"
-                        },
-                        "country_filter": {
-                            "type": "string",
-                            "description": "Optional: 3-letter ISO country code filter (e.g., 'USA')"
-                        },
-                        "window_hours": {
-                            "type": "number",
-                            "description": "How far back to search (default: 4 hours)",
-                            "default": 4.0
-                        },
-                        "limit": {
-                            "type": "integer",
-                            "description": "Max events to return (default: 50)",
-                            "default": 50
-                        }
-                    },
-                    "required": ["actor_names"]
-                }
-            },
-            {
-                "name": "search_gdelt_articles",
-                "description": "Search GDELT for recent news articles (FREE, no BigQuery). Returns article titles, URLs, tone scores, and source diversity. Faster than query_gdelt_news but less structured (no entity/theme disaggregation). Best for quick article lookup, recent coverage checks, or when BigQuery is unavailable.",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "search_terms": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "Terms to search for in article text"
-                        },
-                        "timespan": {
-                            "type": "string",
-                            "description": "Time window: '4h', '1d', '2w', etc. Default: 4h",
-                            "default": "4h"
-                        },
-                        "tone_filter": {
-                            "type": "string",
-                            "enum": ["positive", "negative"],
-                            "description": "Optional: filter by sentiment direction"
-                        },
-                        "max_records": {
-                            "type": "integer",
-                            "description": "Max articles (default: 75, max: 250)",
-                            "default": 75
-                        },
-                        "sort": {
-                            "type": "string",
-                            "enum": ["datedesc", "dateasc", "tonedesc", "toneasc"],
-                            "description": "Sort order (default: datedesc)",
-                            "default": "datedesc"
-                        }
-                    },
-                    "required": ["search_terms"]
-                }
-            },
-            {
-                "name": "get_gdelt_volume_timeline",
-                "description": "Get media coverage volume timeline from GDELT (FREE). Shows how coverage of a topic changes over time. Use to detect breaking news surges, identify when stories peaked, or compare coverage trends. Returns array of {date, value} data points.",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "search_terms": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "Terms to search for"
-                        },
-                        "timespan": {
-                            "type": "string",
-                            "description": "Time window: '4h', '1d', '2w', etc. Default: 4h",
-                            "default": "4h"
-                        },
-                        "tone_filter": {
-                            "type": "string",
-                            "enum": ["positive", "negative"],
-                            "description": "Optional: filter by sentiment direction"
-                        }
-                    },
-                    "required": ["search_terms"]
-                }
             }
         ]
+
+        # Conditionally include GDELT tools only when clients are configured
+        has_gdelt = (
+            self._tools._gdelt_client is not None
+            or self._tools._gdelt_doc_client is not None
+        )
+        if has_gdelt:
+            # BigQuery tools (require _gdelt_client)
+            if self._tools._gdelt_client is not None:
+                tools.extend([
+                    {
+                        "name": "query_gdelt_news",
+                        "description": "Query GDELT Global Knowledge Graph for mainstream news coverage. Searches thousands of news sources worldwide (updated every 15 min). Use to CONFIRM Reddit signals with authoritative sources, or DISCOVER news Reddit hasn't caught yet. Returns article count, source diversity, tone analysis, key persons/orgs/themes, top articles with URLs and quotations, and a timeline. Complements get_extraction_signals() (Reddit) with mainstream media coverage.",
+                        "input_schema": {
+                            "type": "object",
+                            "properties": {
+                                "search_terms": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                    "description": "Terms to search for across persons, organizations, names, and themes. Use entity names from extraction signals or watchlists."
+                                },
+                                "window_hours": {
+                                    "type": "number",
+                                    "description": "How far back to search (default: 4 hours). Wider windows cost more BigQuery bytes.",
+                                    "default": 4.0
+                                },
+                                "tone_filter": {
+                                    "type": "string",
+                                    "enum": ["positive", "negative"],
+                                    "description": "Optional: filter articles by tone direction"
+                                },
+                                "source_filter": {
+                                    "type": "string",
+                                    "description": "Optional: filter by source name (partial match, e.g. 'reuters', 'bbc')"
+                                },
+                                "limit": {
+                                    "type": "integer",
+                                    "description": "Max articles to return (default: 100)",
+                                    "default": 100
+                                }
+                            },
+                            "required": ["search_terms"]
+                        }
+                    },
+                    {
+                        "name": "query_gdelt_events",
+                        "description": "Query GDELT Events Database for structured Actor-Event-Actor triples with CAMEO coding and GoldsteinScale conflict/cooperation scoring. Searches thousands of sources for HOW actors interact (investigate, threaten, cooperate, protest). Use to understand event dynamics beyond news coverage. Search by entity names — results include human-readable CAMEO labels, QuadClass conflict/cooperation categories, and Goldstein scores (-10 hostile to +10 cooperative).",
+                        "input_schema": {
+                            "type": "object",
+                            "properties": {
+                                "actor_names": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                    "description": "Entity names to search in both Actor1 and Actor2 positions (e.g., ['Pam Bondi', 'DOJ'])"
+                                },
+                                "country_filter": {
+                                    "type": "string",
+                                    "description": "Optional: 3-letter ISO country code filter (e.g., 'USA')"
+                                },
+                                "window_hours": {
+                                    "type": "number",
+                                    "description": "How far back to search (default: 4 hours)",
+                                    "default": 4.0
+                                },
+                                "limit": {
+                                    "type": "integer",
+                                    "description": "Max events to return (default: 50)",
+                                    "default": 50
+                                }
+                            },
+                            "required": ["actor_names"]
+                        }
+                    },
+                ])
+            # Free DOC API tools (require _gdelt_doc_client)
+            if self._tools._gdelt_doc_client is not None:
+                tools.extend([
+                    {
+                        "name": "search_gdelt_articles",
+                        "description": "Search GDELT for recent news articles (FREE, no BigQuery). Returns article titles, URLs, tone scores, and source diversity. Faster than query_gdelt_news but less structured (no entity/theme disaggregation). Best for quick article lookup, recent coverage checks, or when BigQuery is unavailable.",
+                        "input_schema": {
+                            "type": "object",
+                            "properties": {
+                                "search_terms": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                    "description": "Terms to search for in article text"
+                                },
+                                "timespan": {
+                                    "type": "string",
+                                    "description": "Time window: '4h', '1d', '2w', etc. Default: 4h",
+                                    "default": "4h"
+                                },
+                                "tone_filter": {
+                                    "type": "string",
+                                    "enum": ["positive", "negative"],
+                                    "description": "Optional: filter by sentiment direction"
+                                },
+                                "max_records": {
+                                    "type": "integer",
+                                    "description": "Max articles (default: 75, max: 250)",
+                                    "default": 75
+                                },
+                                "sort": {
+                                    "type": "string",
+                                    "enum": ["datedesc", "dateasc", "tonedesc", "toneasc"],
+                                    "description": "Sort order (default: datedesc)",
+                                    "default": "datedesc"
+                                }
+                            },
+                            "required": ["search_terms"]
+                        }
+                    },
+                    {
+                        "name": "get_gdelt_volume_timeline",
+                        "description": "Get media coverage volume timeline from GDELT (FREE). Shows how coverage of a topic changes over time. Use to detect breaking news surges, identify when stories peaked, or compare coverage trends. Returns array of {date, value} data points.",
+                        "input_schema": {
+                            "type": "object",
+                            "properties": {
+                                "search_terms": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                    "description": "Terms to search for"
+                                },
+                                "timespan": {
+                                    "type": "string",
+                                    "description": "Time window: '4h', '1d', '2w', etc. Default: 4h",
+                                    "default": "4h"
+                                },
+                                "tone_filter": {
+                                    "type": "string",
+                                    "enum": ["positive", "negative"],
+                                    "description": "Optional: filter by sentiment direction"
+                                }
+                            },
+                            "required": ["search_terms"]
+                        }
+                    },
+                ])
+
+        return tools
 
     # === Extraction Snapshot Helper ===
 

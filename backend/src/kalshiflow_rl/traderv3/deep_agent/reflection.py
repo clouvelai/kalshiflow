@@ -344,13 +344,8 @@ class ReflectionEngine:
                                     f"{trade.ticker} {trade.side} x{trade.contracts}"
                                 )
                                 break
-                        # If no exact contract match, take first match (backward compat)
-                        if matched_settlement is None and candidates:
-                            matched_settlement = candidates[0]
-                            logger.debug(
-                                f"[deep_agent.reflection] Matched by ticker+side (fallback): "
-                                f"{trade.ticker} {trade.side}"
-                            )
+                        # No fuzzy fallback - require order_id or ticker+side+contracts match
+                        # to avoid mismatching settlements across different trades
 
                     if matched_settlement:
                         await self._handle_settlement(trade, matched_settlement)

@@ -332,24 +332,6 @@ class V3StatusReporter:
                     "sync_errors": health.get("sync_errors", 0),
                 }
 
-            # Build Truth Social cache health info
-            truth_social_cache_health = None
-            try:
-                from ..services.truth_social_cache import get_truth_social_cache
-                truth_cache = get_truth_social_cache()
-                if truth_cache:
-                    ts_health = truth_cache.get_health_details()
-                    truth_social_cache_health = {
-                        "healthy": ts_health.get("healthy", False),
-                        "available": ts_health.get("available", False),
-                        "cached_posts_count": ts_health.get("cached_posts_count", 0),
-                        "followed_handles_count": ts_health.get("followed_handles_count", 0),
-                        "last_refresh_age_seconds": ts_health.get("last_refresh_age_seconds"),
-                        "refresh_errors": ts_health.get("refresh_errors", 0),
-                        "following_discovery_failed": ts_health.get("following_discovery_failed", False),
-                    }
-            except Exception:
-                pass  # Truth Social cache not available
 
             # Build event position tracker data
             event_exposure_data = None
@@ -383,8 +365,6 @@ class V3StatusReporter:
                 "market_ticker_listener": market_ticker_listener_health,
                 # Market price syncer health (REST API price refresh)
                 "market_price_syncer": market_price_syncer_health,
-                # Truth Social cache health (evidence gathering)
-                "truth_social_cache": truth_social_cache_health,
                 # Settlements history for UI display
                 "settlements": trading_summary.get("settlements", []),
                 "settlements_count": trading_summary.get("settlements_count", 0),

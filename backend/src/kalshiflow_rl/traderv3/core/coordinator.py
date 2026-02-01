@@ -495,18 +495,7 @@ class V3Coordinator:
         # --- Block 2: DeepAgentStrategy + EventPositionTracker (degraded if fails) ---
         # These are important but non-fatal. Log error and continue in degraded mode.
         try:
-            # 4. Initialize Truth Social cache service (for evidence gathering)
-            try:
-                from ..services.truth_social_cache import initialize_truth_social_cache
-                truth_cache = await initialize_truth_social_cache()
-                if truth_cache:
-                    logger.info("TruthSocialCacheService initialized successfully")
-                else:
-                    logger.info("TruthSocialCacheService not available (disabled or following discovery failed)")
-            except Exception as e:
-                logger.warning(f"Failed to initialize TruthSocialCacheService: {e} - continuing without Truth Social evidence")
-
-            # 5. Initialize DeepAgentStrategy (sole trading strategy)
+            # 4. Initialize DeepAgentStrategy (sole trading strategy)
             if self._trading_client_integration:
                 self._deep_agent_strategy = DeepAgentStrategy()
                 # Register with health monitor for health tracking
@@ -1502,22 +1491,11 @@ class V3Coordinator:
         await self._health_monitor.stop()
         await self._status_reporter.stop()
 
-        # Stop Truth Social cache service (non-critical, graceful degradation)
-        try:
-            from ..services.truth_social_cache import get_truth_social_cache
-            cache = get_truth_social_cache()
-            if cache:
-                logger.info("Stopping TruthSocialCacheService...")
-                await cache.stop()
-        except Exception as e:
-            logger.warning(f"Error stopping TruthSocialCacheService: {e}")
-
         # Define shutdown sequence: (component, name, stop_callable)
         # Order matters - stop in reverse of startup order
-        # Note: stop_all() for strategy coordinator, stop() for others
         shutdown_sequence = [
             (self._deep_agent_strategy, "Deep Agent Strategy", lambda c: c.stop()),
-            # Entity trading agents (stop before strategy coordinator dependencies)
+            # Entity trading agents
             (self._reddit_entity_agent, "Reddit Entity Agent", lambda c: c.stop()),
             (self._reddit_historic_agent, "Reddit Historic Agent", lambda c: c.stop()),
             (self._price_impact_agent, "Price Impact Agent", lambda c: c.stop()),
@@ -1614,17 +1592,6 @@ class V3Coordinator:
             comp = getattr(self, attr, None)
             if comp is not None:
                 components[key] = getattr(comp, method)()
-
-        # Add Truth Social cache service if available (for evidence gathering)
-        try:
-            from ..services.truth_social_cache import get_truth_social_cache
-            truth_cache = get_truth_social_cache()
-            if truth_cache:
-                components["truth_social_cache"] = truth_cache.get_health_details()
-            else:
-                logger.debug("Truth Social cache: get_truth_social_cache() returned None")
-        except Exception as e:
-            logger.warning(f"Truth Social cache status error: {e}")
 
         # Add entity system components if enabled
         components["entity_system"] = {
