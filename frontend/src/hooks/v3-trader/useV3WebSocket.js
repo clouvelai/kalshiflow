@@ -106,6 +106,8 @@ export const useV3WebSocket = ({ onMessage }) => {
   // Extraction pipeline state (langextract system)
   const [extractions, setExtractions] = useState([]);
   const [marketSignals, setMarketSignals] = useState([]);
+  const extractionKeysRef = useRef(new Set());
+  const marketSignalKeysRef = useRef(new Set());
 
   // Event configs state (active event configurations from Supabase)
   const [eventConfigs, setEventConfigs] = useState([]);
@@ -694,20 +696,19 @@ export const useV3WebSocket = ({ onMessage }) => {
       case 'extraction':
         // Extraction from langextract pipeline (all classes)
         if (data.data?.extraction_class) {
-          setExtractions(prev => {
-            // Dedup by source_id + extraction_class + extraction_text
-            const key = `${data.data.source_id}_${data.data.extraction_class}_${data.data.extraction_text?.slice(0, 50)}`;
-            if (prev.some(e => `${e.source_id}_${e.extraction_class}_${e.extraction_text?.slice(0, 50)}` === key)) return prev;
-            return [data.data, ...prev].slice(0, 200);
-          });
+          const extKey = `${data.data.source_id}_${data.data.extraction_class}_${data.data.extraction_text?.slice(0, 50)}`;
+          if (!extractionKeysRef.current.has(extKey)) {
+            extractionKeysRef.current.add(extKey);
+            setExtractions(prev => [data.data, ...prev].slice(0, 200));
+          }
 
           // Also track market_signal class separately for quick access
           if (data.data.extraction_class === 'market_signal') {
-            setMarketSignals(prev => {
-              const key = `${data.data.source_id}_${data.data.extraction_text?.slice(0, 50)}`;
-              if (prev.some(e => `${e.source_id}_${e.extraction_text?.slice(0, 50)}` === key)) return prev;
-              return [data.data, ...prev].slice(0, 100);
-            });
+            const sigKey = `${data.data.source_id}_${data.data.extraction_text?.slice(0, 50)}`;
+            if (!marketSignalKeysRef.current.has(sigKey)) {
+              marketSignalKeysRef.current.add(sigKey);
+              setMarketSignals(prev => [data.data, ...prev].slice(0, 100));
+            }
           }
         }
         break;
@@ -715,17 +716,17 @@ export const useV3WebSocket = ({ onMessage }) => {
       case 'market_signal':
         // market_signal class extraction (typed with direction/magnitude)
         if (data.data?.extraction_class === 'market_signal' || data.data?.market_tickers) {
-          setMarketSignals(prev => {
-            const key = `${data.data.source_id}_${data.data.extraction_text?.slice(0, 50)}`;
-            if (prev.some(e => `${e.source_id}_${e.extraction_text?.slice(0, 50)}` === key)) return prev;
-            return [data.data, ...prev].slice(0, 100);
-          });
+          const sigKey = `${data.data.source_id}_${data.data.extraction_text?.slice(0, 50)}`;
+          if (!marketSignalKeysRef.current.has(sigKey)) {
+            marketSignalKeysRef.current.add(sigKey);
+            setMarketSignals(prev => [data.data, ...prev].slice(0, 100));
+          }
           // Also add to general extractions
-          setExtractions(prev => {
-            const key = `${data.data.source_id}_${data.data.extraction_class}_${data.data.extraction_text?.slice(0, 50)}`;
-            if (prev.some(e => `${e.source_id}_${e.extraction_class}_${e.extraction_text?.slice(0, 50)}` === key)) return prev;
-            return [data.data, ...prev].slice(0, 200);
-          });
+          const extKey = `${data.data.source_id}_${data.data.extraction_class}_${data.data.extraction_text?.slice(0, 50)}`;
+          if (!extractionKeysRef.current.has(extKey)) {
+            extractionKeysRef.current.add(extKey);
+            setExtractions(prev => [data.data, ...prev].slice(0, 200));
+          }
         }
         break;
 
@@ -757,9 +758,15 @@ export const useV3WebSocket = ({ onMessage }) => {
           // Populate extractions from snapshot
           if (data.data.extractions) {
             setExtractions(data.data.extractions);
+            // Rebuild dedup Sets from snapshot
+            extractionKeysRef.current = new Set(
+              data.data.extractions.map(e => `${e.source_id}_${e.extraction_class}_${e.extraction_text?.slice(0, 50)}`)
+            );
             // Also populate market signals subset
-            setMarketSignals(
-              data.data.extractions.filter(e => e.extraction_class === 'market_signal')
+            const signals = data.data.extractions.filter(e => e.extraction_class === 'market_signal');
+            setMarketSignals(signals);
+            marketSignalKeysRef.current = new Set(
+              signals.map(e => `${e.source_id}_${e.extraction_text?.slice(0, 50)}`)
             );
           }
           setEntitySystemActive(data.data.is_active || false);
@@ -826,6 +833,8 @@ export const useV3WebSocket = ({ onMessage }) => {
       case 'deep_agent_memory_update':
       case 'deep_agent_error':
       case 'deep_agent_snapshot':
+      case 'deep_agent_cost':
+      case 'deep_agent_gdelt_result':
         // Pass deep agent messages to the onMessage callback
         // useDeepAgent.processMessage() handles these
         onMessageRef.current?.(data.type, data.data, { timestamp: data.data?.timestamp });

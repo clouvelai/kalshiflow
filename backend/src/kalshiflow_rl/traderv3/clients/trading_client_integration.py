@@ -1031,10 +1031,9 @@ class V3TradingClientIntegration:
         get markets closing after N hours. Results sorted by close_time ascending
         (soonest first), filtered to exclude markets settling too far out.
 
-        Time-to-settlement filter rationale (from quant research):
-        - Skip <4 hours: Not enough time for RLM pattern to form
+        Time-to-settlement filter rationale:
+        - Skip <4 hours: Too close to settlement for meaningful analysis
         - Skip >30 days: Capital inefficiency (long-dated markets tie up capital)
-        - Edge is HIGHER in short-dated markets (Sports +17.9%, Media +24.1%)
 
         Args:
             categories: Optional list of category substrings to filter by
@@ -1078,7 +1077,7 @@ class V3TradingClientIntegration:
 
             # Calculate time bounds for filtering
             now_ts = int(datetime.now(timezone.utc).timestamp())
-            # Min: skip markets settling too soon (need time for RLM pattern)
+            # Min: skip markets settling too soon
             min_close_ts = now_ts + int(min_hours_to_settlement * 3600) if min_hours_to_settlement > 0 else None
             # Max: skip markets settling too far out (capital efficiency)
             max_close_ts = now_ts + (max_days_to_settlement * 24 * 3600) if max_days_to_settlement > 0 else None

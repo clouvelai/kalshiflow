@@ -45,7 +45,7 @@ const V3TraderConsole = () => {
     processMessage: processDeepAgentMessage,
     isRunning: deepAgentIsRunning,
     isLearning: deepAgentIsLearning,
-  } = useDeepAgent({ useV3WebSocketState: true });
+  } = useDeepAgent();
 
   // Message handler that routes to both console AND deep agent processor
   const handleWebSocketMessage = useCallback((type, message, context) => {
@@ -83,7 +83,7 @@ const V3TraderConsole = () => {
   } = useV3WebSocket({ onMessage: handleWebSocketMessage });
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-gray-950 via-gray-900 to-gray-950">
+    <div className="min-h-screen bg-gradient-to-br from-gray-950 via-gray-900 to-gray-950" data-testid="v3-trader-page">
       {/* Settlement Toast - Fixed position notification */}
       <SettlementToast
         settlement={newSettlement}

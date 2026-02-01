@@ -8,7 +8,7 @@ export const StateBadge = memo(({ state }) => {
   if (!state) return null;
 
   return (
-    <span className={`px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider ${getStateColor(state)}`}>
+    <span data-testid="v3-state-badge" className={`px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider ${getStateColor(state)}`}>
       {state}
     </span>
   );

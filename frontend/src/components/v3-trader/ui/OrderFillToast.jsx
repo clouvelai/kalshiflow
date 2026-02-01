@@ -18,7 +18,7 @@ const OrderFillToast = ({ fill, onDismiss }) => {
 
   return (
     <div className="fixed bottom-20 right-4 p-4 rounded-lg shadow-lg z-50 border backdrop-blur-sm
-      bg-green-900/90 border-green-700 animate-pulse"
+      bg-green-900/90 border-green-700 animate-toast-enter"
     >
       <div className="flex items-center space-x-3">
         <CheckCircle className="w-5 h-5 text-green-400" />

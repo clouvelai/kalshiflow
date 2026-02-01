@@ -190,6 +190,14 @@ class TrackedMarketsSyncer:
                         except Exception as e:
                             logger.warning(f"Failed to cleanup closed market {ticker}: {e}")
 
+                    # Emit MARKET_DETERMINED so coordinator cleanup runs
+                    # (removes from TrackedMarketsState, preventing memory leak)
+                    await self._event_bus.emit_market_determined(
+                        market_ticker=ticker,
+                        result=result,
+                        determined_ts=int(time.time()),
+                    )
+
                     # Emit lifecycle event for Activity Feed
                     await self._event_bus.emit_system_activity(
                         activity_type="lifecycle_event",

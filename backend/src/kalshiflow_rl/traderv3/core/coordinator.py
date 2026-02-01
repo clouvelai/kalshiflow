@@ -173,7 +173,7 @@ class V3Coordinator:
         # Fill listener for real-time order fill notifications
         self._fill_listener: Optional['FillListener'] = None
 
-        # Lifecycle mode components (initialized when market_mode == "lifecycle")
+        # Lifecycle mode components (initialized when no target tickers specified)
         self._lifecycle_client: Optional['LifecycleClient'] = None
         self._lifecycle_integration: Optional['V3LifecycleIntegration'] = None
         self._tracked_markets_state: Optional['TrackedMarketsState'] = None
@@ -181,7 +181,6 @@ class V3Coordinator:
         self._lifecycle_syncer: Optional['TrackedMarketsSyncer'] = None
         self._upcoming_markets_syncer: Optional['UpcomingMarketsSyncer'] = None
         self._api_discovery_syncer: Optional['ApiDiscoverySyncer'] = None
-        self._deep_agent_discovery = None  # DeepAgentDiscoveryService for non-lifecycle mode
         self._trade_flow_service = None  # TradeFlowService for live trade feed to UX
 
         # Extraction-based entity trading system
@@ -431,21 +430,21 @@ class V3Coordinator:
 
     async def _connect_lifecycle(self) -> None:
         """
-        Initialize TrackedMarketsState, DeepAgentStrategy, and optionally lifecycle WebSocket.
+        Initialize TrackedMarketsState, DeepAgentStrategy, and lifecycle services.
 
         This method ALWAYS creates:
         - TrackedMarketsState for market state tracking
         - DeepAgentStrategy for trading
         - Component wiring (WebSocketManager, StateContainer, StatusReporter)
 
-        Only when market_mode == "lifecycle" does it also create:
+        When no target tickers are specified, also starts:
         - LifecycleClient for lifecycle WebSocket
         - V3LifecycleIntegration for EventBus integration
         - EventLifecycleService for event processing
         - TrackedMarketsSyncer for REST price updates
         """
-        is_lifecycle_mode = self._config.market_mode == "lifecycle"
-        mode_description = f"Lifecycle mode" if is_lifecycle_mode else f"Config mode (strategies self-discover)"
+        has_target_tickers = bool(self._config.market_tickers)
+        mode_description = "Target tickers mode" if has_target_tickers else "Lifecycle discovery mode"
 
         logger.info(f"Starting {mode_description}...")
 
@@ -524,50 +523,17 @@ class V3Coordinator:
                 metadata={"error": str(e), "severity": "error", "degraded": True}
             )
 
-        # --- Block 3: Lifecycle/Discovery services (already have own error handling) ---
-        if is_lifecycle_mode:
+        # --- Block 3: Lifecycle services (when no target tickers specified) ---
+        if not has_target_tickers:
             await self._start_lifecycle_websocket()
         else:
-            logger.info(
-                f"Non-lifecycle mode active - starting DeepAgentDiscoveryService "
-                f"for REST-based market discovery."
-            )
-            # Start lightweight REST discovery for the deep agent
-            if self._trading_client_integration and self._tracked_markets_state:
-                try:
-                    from ..services.deep_agent_discovery import DeepAgentDiscoveryService
-                    self._deep_agent_discovery = DeepAgentDiscoveryService(
-                        tracked_markets=self._tracked_markets_state,
-                        trading_client=self._trading_client_integration,
-                        event_bus=self._event_bus,
-                        categories=self._config.lifecycle_categories,
-                        websocket_manager=self._websocket_manager,
-                    )
-                    await self._deep_agent_discovery.start()
-                except Exception as e:
-                    logger.error(f"Failed to start DeepAgentDiscoveryService: {e}")
-                    self._degraded_subsystems.add("deep_agent_discovery")
-                    await self._event_bus.emit_system_activity(
-                        activity_type="connection",
-                        message=f"Deep Agent Discovery failed: {e}",
-                        metadata={"error": str(e), "severity": "warning"}
-                    )
-            else:
-                await self._event_bus.emit_system_activity(
-                    activity_type="connection",
-                    message="Config mode: no trading client or tracked markets for discovery",
-                    metadata={
-                        "feature": "config_mode",
-                        "market_mode": self._config.market_mode,
-                        "severity": "info"
-                    }
-                )
+            logger.info(f"Target tickers specified - skipping lifecycle discovery services")
 
     async def _start_lifecycle_websocket(self) -> None:
         """
         Start lifecycle WebSocket and broad discovery services.
 
-        Only called when market_mode == "lifecycle". This enables:
+        Only called when no target tickers are specified. This enables:
         - Lifecycle WebSocket for real-time market open/close events
         - EventLifecycleService for processing lifecycle events
         - TrackedMarketsSyncer for REST price updates
@@ -724,6 +690,9 @@ class V3Coordinator:
             await self._reddit_entity_agent.start()
             await self._price_impact_agent.start()
 
+            # Wire reddit agent to websocket manager for entity snapshots on reconnect
+            self._websocket_manager.set_reddit_agent(self._reddit_entity_agent)
+
             # 4b. Initialize Reddit Historic Agent (daily digest)
             if self._config.reddit_historic_enabled:
                 try:
@@ -772,17 +741,6 @@ class V3Coordinator:
                     logger.info("[coordinator] GDELT DOC API client initialized (free)")
                 except Exception as e:
                     logger.warning(f"[coordinator] GDELT DOC client failed (non-fatal): {e}")
-
-            # 5. Broadcast system status
-            await self._websocket_manager.broadcast_message("entity_system_status", {
-                "is_active": True,
-                "pipeline": "extraction",
-                "stats": {
-                    "postsProcessed": 0,
-                    "extractionsCreated": 0,
-                    "marketSignals": 0,
-                },
-            })
 
             subreddit_display = ", ".join(f"r/{s}" for s in self._config.entity_subreddits)
             await self._event_bus.emit_system_activity(
@@ -1101,9 +1059,9 @@ class V3Coordinator:
         REST API calls to fetch open markets. Called from _establish_connections()
         after _connect_trading_client().
         """
-        # Only start if lifecycle mode is active and config enables it
-        if self._config.market_mode != "lifecycle":
-            logger.debug("Skipping API discovery (not in lifecycle mode)")
+        # Skip if user specified target tickers (they chose specific markets)
+        if self._config.market_tickers:
+            logger.debug("Skipping API discovery (target tickers specified)")
             return
 
         if not self._config.api_discovery_enabled:
@@ -1346,6 +1304,7 @@ class V3Coordinator:
                     state_container=self._state_container,
                     websocket_manager=self._websocket_manager,
                     tracked_markets=self._tracked_markets_state,
+                    event_position_tracker=self._event_position_tracker,
                 )
                 logger.info("DeepAgentStrategy started")
                 await self._event_bus.emit_system_activity(
@@ -1374,6 +1333,8 @@ class V3Coordinator:
                         if self._gdelt_doc_client:
                             self._deep_agent_strategy._agent._tools._gdelt_doc_client = self._gdelt_doc_client
                             logger.info("GDELT DOC API client wired to deep agent tools (free)")
+                        # Rebuild tool definitions so GDELT tools are included
+                        self._deep_agent_strategy._agent.rebuild_tool_definitions()
                     except Exception as e:
                         logger.warning(f"Failed to wire GDELT clients to deep agent: {e}")
 
@@ -1392,6 +1353,16 @@ class V3Coordinator:
                 await self._trade_flow_service.start()
                 self._websocket_manager.set_trade_flow_service(self._trade_flow_service)
                 logger.info("TradeFlowService started - live trades will stream to UX")
+
+                # Wire microstructure services to deep agent tools
+                if self._deep_agent_strategy and self._deep_agent_strategy._agent:
+                    try:
+                        tools = self._deep_agent_strategy._agent._tools
+                        tools._trade_flow_service = self._trade_flow_service
+                        tools._orderbook_integration = self._orderbook_integration
+                        logger.info("Microstructure services wired to deep agent tools")
+                    except Exception as e:
+                        logger.warning(f"Failed to wire microstructure to deep agent: {e}")
             except Exception as e:
                 logger.error(f"TradeFlowService failed to start: {e}")
                 self._degraded_subsystems.add("trade_flow_service")
@@ -1504,7 +1475,6 @@ class V3Coordinator:
             (self._upcoming_markets_syncer, "Upcoming Markets Syncer", lambda c: c.stop()),
             (self._lifecycle_syncer, "Lifecycle Syncer", lambda c: c.stop()),
             (self._api_discovery_syncer, "API Discovery Syncer", lambda c: c.stop()),
-            (self._deep_agent_discovery, "Deep Agent Discovery", lambda c: c.stop()),
             (self._event_lifecycle_service, "Event Lifecycle Service", lambda c: c.stop()),
             (self._lifecycle_integration, "Lifecycle Integration", lambda c: c.stop()),
             (self._position_listener, "Position Listener", lambda c: c.stop()),

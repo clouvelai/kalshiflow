@@ -2,7 +2,7 @@
 API Discovery Syncer Service for Event Lifecycle Discovery Mode.
 
 REST API-based market discovery for already-open markets. Bootstraps lifecycle
-mode on startup by fetching status="open" markets filtered by RLM categories.
+mode on startup by fetching status="open" markets filtered by lifecycle categories.
 
 Pattern: Follows UpcomingMarketsSyncer and TrackedMarketsSyncer for consistency.
 """
@@ -186,7 +186,7 @@ class ApiDiscoverySyncer:
             # Fetch open markets from trading client via events API
             # Uses cursor pagination to fetch up to remaining capacity
             # Sorted by close_time ascending (soonest first)
-            # Time filter: 4h-30d window for capital efficiency (from quant research)
+            # Time filter: 4h-30d window for capital efficiency
             markets = await self._client.get_open_markets(
                 categories=self._categories,
                 sports_prefixes=self._sports_prefixes,
@@ -200,7 +200,7 @@ class ApiDiscoverySyncer:
             self._sync_count += 1
             self._markets_discovered = len(markets)
 
-            # Track new markets (sorted newest first from get_open_markets)
+            # Track new markets (sorted by close_time ascending - soonest first)
             tracked_count = 0
             for market in markets:
                 # Stop if at capacity
@@ -210,6 +210,11 @@ class ApiDiscoverySyncer:
 
                 ticker = market.get("ticker", "")
                 if not ticker:
+                    continue
+
+                # Skip zero-volume markets (no recent activity)
+                # They'll be picked up in later syncs if activity appears
+                if market.get("volume_24h", 0) <= 0:
                     continue
 
                 # Skip if already tracked

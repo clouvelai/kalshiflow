@@ -193,7 +193,8 @@ const ValueCard = memo(({
   accentColor = 'gray',
   valueClass = 'text-white',
   subtitle = null,
-  subtitleClass = 'text-gray-400'
+  subtitleClass = 'text-gray-400',
+  testId
 }) => {
   const { animClass, animKey } = useAnimatedValue(value);
   const accent = accentStyles[accentColor] || accentStyles.gray;
@@ -201,6 +202,7 @@ const ValueCard = memo(({
   return (
     <div
       key={animKey}
+      {...(testId ? { 'data-testid': testId } : {})}
       className={`
         rounded-xl p-4 border backdrop-blur-sm
         transition-all duration-300 ease-out
@@ -238,7 +240,8 @@ const FlowCard = memo(({
   icon: Icon,
   accentColor = 'gray',
   valueClass = 'text-white',
-  title = ''
+  title = '',
+  testId
 }) => {
   const { animClass, animKey } = useAnimatedValue(value);
   const accent = accentStyles[accentColor] || accentStyles.gray;
@@ -246,6 +249,7 @@ const FlowCard = memo(({
   return (
     <div
       key={animKey}
+      {...(testId ? { 'data-testid': testId } : {})}
       className={`
         rounded-lg p-3 border backdrop-blur-sm
         transition-all duration-300 ease-out
@@ -281,7 +285,8 @@ const MetricRow = memo(({
   value,
   icon: Icon,
   accentColor = 'gray',
-  children = null
+  children = null,
+  testId
 }) => {
   const { animClass, animKey } = useAnimatedValue(value);
   const accent = accentStyles[accentColor] || accentStyles.gray;
@@ -289,6 +294,7 @@ const MetricRow = memo(({
   return (
     <div
       key={animKey}
+      {...(testId ? { 'data-testid': testId } : {})}
       className={`
         rounded-lg p-3 border backdrop-blur-sm
         transition-all duration-300 ease-out
@@ -377,7 +383,7 @@ const TradingSessionPanel = ({ tradingState, lastUpdateTime }) => {
   const pnlValueClass = pnl && pnl.session_pnl >= 0 ? 'text-green-400' : 'text-red-400';
 
   return (
-    <div className="
+    <div data-testid="trading-session-panel" className="
       bg-gradient-to-br from-gray-900/70 via-gray-900/50 to-gray-950/70
       backdrop-blur-md rounded-2xl
       border border-gray-800/80
@@ -428,6 +434,7 @@ const TradingSessionPanel = ({ tradingState, lastUpdateTime }) => {
           icon={DollarSign}
           accentColor="green"
           valueClass="text-green-400"
+          testId="session-cash-available"
         />
 
         <ValueCard
@@ -437,6 +444,7 @@ const TradingSessionPanel = ({ tradingState, lastUpdateTime }) => {
           icon={Briefcase}
           accentColor="blue"
           valueClass="text-blue-400"
+          testId="session-in-positions"
         />
 
         <ValueCard
@@ -446,6 +454,7 @@ const TradingSessionPanel = ({ tradingState, lastUpdateTime }) => {
           icon={Database}
           accentColor="white"
           valueClass="text-white"
+          testId="session-total-value"
         />
 
         <ValueCard
@@ -455,6 +464,7 @@ const TradingSessionPanel = ({ tradingState, lastUpdateTime }) => {
           icon={pnl && pnl.session_pnl >= 0 ? TrendingUp : TrendingDown}
           accentColor={pnlAccent}
           valueClass={pnl ? pnlValueClass : 'text-gray-500'}
+          testId="session-pnl"
           subtitle={pnl?.session_pnl_percent !== undefined
             ? `(${pnl.session_pnl_percent >= 0 ? '+' : ''}${pnl.session_pnl_percent.toFixed(1)}%)`
             : null
@@ -535,6 +545,7 @@ const TradingSessionPanel = ({ tradingState, lastUpdateTime }) => {
           value={positionCount}
           icon={ShoppingCart}
           accentColor="purple"
+          testId="session-position-count"
         />
 
         <MetricRow
@@ -542,6 +553,7 @@ const TradingSessionPanel = ({ tradingState, lastUpdateTime }) => {
           value={orderCount}
           icon={FileText}
           accentColor="yellow"
+          testId="session-order-count"
         />
 
         <MetricRow

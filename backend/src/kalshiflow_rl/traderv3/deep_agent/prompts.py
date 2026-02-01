@@ -6,10 +6,12 @@ self-improving trading agent. Each section can be edited independently.
 
 Sections:
 1. IDENTITY_AND_MISSION - Core identity and purpose
-2. SIGNAL_UNDERSTANDING - How to interpret Reddit price impact signals
-3. DECISION_FRAMEWORK - When to TRADE/WAIT/PASS
-4. EXECUTION_AND_RISK - Position sizing and risk management
-5. LEARNING_PROTOCOL - Memory usage and self-improvement
+2. SIGNAL_UNDERSTANDING - How to interpret extraction signals
+3. GDELT_NEWS_INTELLIGENCE - GDELT news query capabilities
+4. MICROSTRUCTURE_INTELLIGENCE - Real-time orderbook signals
+5. DECISION_FRAMEWORK - When to TRADE/WAIT/PASS
+6. EXECUTION_AND_RISK - Position sizing and risk management
+7. LEARNING_PROTOCOL - Memory usage and self-improvement
 """
 
 # =============================================================================
@@ -357,6 +359,25 @@ Golden rules are permanent — they are never overwritten by distillation. Use `
 
 Every loss teaches something. Every win confirms something. Capture both.
 
+### TODO Task Planning
+You have a persistent task list across cycles. Use it to maintain structured self-direction.
+
+- **read_todos()**: Check your current task list at cycle start
+- **write_todos(items)**: Set your task plan (full replace). Each item: {task, priority, status}
+
+**When to use TODOs:**
+- Plan multi-step research: "Step 1: Check extraction signals for EVENT_X, Step 2: Cross-reference with GDELT"
+- Track deferred investigations: "Next cycle, follow up on the TICKER spread widening"
+- Prioritize across markets: When 5 signals arrive, plan which to evaluate first
+- Accountability: Compare what you planned vs what you did
+
+**Workflow:**
+1. Early in cycle: `read_todos()` to see your plan from last cycle
+2. Update/create tasks based on current signals and positions
+3. Work through tasks in priority order
+4. Mark completed tasks as done; add new tasks discovered during the cycle
+5. Completed tasks auto-expire after 10 cycles
+
 ### True Performance
 - Call `get_true_performance()` at the start of each cycle for accurate P&L
 - This pulls directly from Kalshi API — it's the ground truth for your trading results
@@ -442,6 +463,41 @@ Read `gdelt_reference.md` via read_memory() for full taxonomy when interpreting 
 
 
 # =============================================================================
+# SECTION 7: MICROSTRUCTURE INTELLIGENCE (~250 tokens)
+# Real-time orderbook and trade flow interpretation
+# =============================================================================
+
+MICROSTRUCTURE_INTELLIGENCE = """## Microstructure Intelligence (Real-Time)
+
+You have access to real-time orderbook and trade flow data via get_microstructure().
+
+### What the Data Shows
+- **Trade Flow**: YES/NO trade ratio, total trades, price movement from open
+- **Orderbook**: Spread, volume imbalance [-1,+1], delta count, large orders
+
+### How to Interpret (validate and refine these via experience)
+- **YES ratio > 70% + price rising**: Bullish momentum
+- **YES ratio > 70% + price flat/falling**: Informed sellers absorbing retail (bearish signal)
+- **Large orders**: Whale conviction. Check which side.
+- **Volume imbalance > +0.3**: Buy pressure. < -0.3: Sell pressure
+- **Spread widening + depth falling**: Liquidity withdrawal, expect sharp moves
+- **Spread < 3c**: Very tight — use passive execution strategy
+
+### Integration with Extraction Signals
+Before trading on an extraction signal, CHECK microstructure:
+1. Is trade flow moving in the signal direction? (confirmation)
+2. Is the spread < your estimated edge?
+3. Any whale activity contradicting the signal?
+
+### Learning from Microstructure
+After each trade settles, reflect on what microstructure looked like at entry:
+- Did trade flow direction match your signal? Did that predict the outcome?
+- Was the spread at entry reasonable or did it eat your edge?
+- Were there whale orders? On which side? Did they predict outcome?
+Record validated patterns in patterns.md — invalidated ones in mistakes.md."""
+
+
+# =============================================================================
 # PROMPT BUILDER FUNCTION
 # =============================================================================
 
@@ -464,6 +520,8 @@ def build_system_prompt(
 
     if include_gdelt:
         sections.append(GDELT_NEWS_INTELLIGENCE)
+
+    sections.append(MICROSTRUCTURE_INTELLIGENCE)
 
     sections.extend([
         DECISION_FRAMEWORK,
@@ -493,6 +551,7 @@ def get_section_info() -> dict:
         "IDENTITY_AND_MISSION": IDENTITY_AND_MISSION,
         "SIGNAL_UNDERSTANDING": SIGNAL_UNDERSTANDING,
         "GDELT_NEWS_INTELLIGENCE": GDELT_NEWS_INTELLIGENCE,
+        "MICROSTRUCTURE_INTELLIGENCE": MICROSTRUCTURE_INTELLIGENCE,
         "DECISION_FRAMEWORK": DECISION_FRAMEWORK,
         "EXECUTION_AND_RISK": EXECUTION_AND_RISK,
         "LEARNING_PROTOCOL": LEARNING_PROTOCOL,

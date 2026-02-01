@@ -69,7 +69,7 @@ StrategyBadge.displayName = 'StrategyBadge';
  * StatBox - Enhanced stat display component with gradient and icon
  * Matches TradeProcessingPanel styling
  */
-const StatBox = memo(({ label, value, subtitle, valueClass = 'text-white', icon: Icon, accentColor = 'gray' }) => {
+const StatBox = memo(({ label, value, subtitle, valueClass = 'text-white', icon: Icon, accentColor = 'gray', testId }) => {
   const accentStyles = {
     cyan: 'border-cyan-500/30 bg-gradient-to-br from-cyan-950/30 via-gray-900/50 to-gray-900/30',
     gray: 'border-gray-700/50 bg-gradient-to-br from-gray-800/40 via-gray-900/50 to-gray-900/30',
@@ -79,7 +79,7 @@ const StatBox = memo(({ label, value, subtitle, valueClass = 'text-white', icon:
   };
 
   return (
-    <div className={`
+    <div {...(testId ? { 'data-testid': testId } : {})} className={`
       rounded-xl p-4 border backdrop-blur-sm
       transition-all duration-300 ease-out
       hover:scale-[1.02] hover:shadow-lg hover:shadow-black/20
@@ -323,7 +323,7 @@ const SettlementsPanel = ({ settlements }) => {
   };
 
   return (
-    <div className="
+    <div data-testid="settlements-panel" className="
       bg-gradient-to-br from-gray-900/70 via-gray-900/50 to-gray-950/70
       backdrop-blur-md rounded-2xl
       border border-gray-800/80
@@ -342,7 +342,7 @@ const SettlementsPanel = ({ settlements }) => {
           <div>
             <h3 className="text-sm font-bold text-gray-200 uppercase tracking-wider">Settlements</h3>
             <div className="flex items-center space-x-2 mt-0.5">
-              <span className="font-mono text-[10px] text-gray-500">
+              <span className="font-mono text-[10px] text-gray-500" data-testid="settlements-count">
                 {settlementsData.length} trades
               </span>
             </div>
@@ -372,6 +372,7 @@ const SettlementsPanel = ({ settlements }) => {
                   icon={DollarSign}
                   accentColor={stats.totalPnL >= 0 ? 'green' : 'red'}
                   valueClass={stats.totalPnL >= 0 ? 'text-green-400' : 'text-red-400'}
+                  testId="settlements-net-pnl"
                 />
                 <StatBox
                   label="Win Rate"
@@ -380,6 +381,7 @@ const SettlementsPanel = ({ settlements }) => {
                   icon={TrendingUp}
                   accentColor={stats.winRate >= 50 ? 'green' : 'red'}
                   valueClass={stats.winRate >= 50 ? 'text-green-400' : 'text-red-400'}
+                  testId="settlements-win-rate"
                 />
                 <StatBox
                   label="Edge (ROI)"

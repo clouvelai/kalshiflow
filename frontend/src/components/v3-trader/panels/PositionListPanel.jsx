@@ -215,6 +215,7 @@ const PositionRow = memo(({ pos, index, isRecentlyChanged }) => {
 
   return (
     <tr
+      data-testid={`position-row-${pos.ticker}`}
       className={`border-b border-gray-700/30 transition-all duration-500
         ${marketClosed
           ? 'border-l-2 border-l-amber-500/40 opacity-60 bg-amber-900/5'
@@ -418,7 +419,7 @@ const PositionListPanel = ({ positions, positionListener, sessionUpdates }) => {
   const hasAnyLiveData = stats.liveCount > 0;
 
   return (
-    <div className="
+    <div data-testid="position-list-panel" className="
       bg-gradient-to-br from-gray-900/70 via-gray-900/50 to-gray-950/70
       backdrop-blur-md rounded-2xl
       border border-gray-800/80
@@ -437,7 +438,7 @@ const PositionListPanel = ({ positions, positionListener, sessionUpdates }) => {
           <div>
             <h3 className="text-sm font-bold text-gray-200 uppercase tracking-wider">Open Positions</h3>
             <div className="flex items-center space-x-2 mt-0.5">
-              <span className="font-mono text-[10px] text-gray-500">
+              <span className="font-mono text-[10px] text-gray-500" data-testid="positions-count">
                 {positions.length} positions
               </span>
               {/* Live ticker data indicator */}
@@ -456,7 +457,7 @@ const PositionListPanel = ({ positions, positionListener, sessionUpdates }) => {
           </div>
         </div>
         <div className="flex items-center space-x-3">
-          <div className={`px-3 py-1 rounded-lg text-sm font-bold font-mono ${getPnLColor(stats.totalPnL)}`}>
+          <div data-testid="positions-total-pnl" className={`px-3 py-1 rounded-lg text-sm font-bold font-mono ${getPnLColor(stats.totalPnL)}`}>
             {formatPnLCurrency(stats.totalPnL)}
           </div>
           {isExpanded ? (

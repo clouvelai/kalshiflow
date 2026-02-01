@@ -45,6 +45,8 @@ class PendingTrade:
     extraction_snapshot: List[Dict] = field(default_factory=list)
     # GDELT query snapshot at trade time (for reflection on news confirmation)
     gdelt_snapshot: List[Dict] = field(default_factory=list)
+    # Microstructure snapshot at trade time (orderbook + trade flow)
+    microstructure_snapshot: Optional[Dict[str, Any]] = None
     # Calibration fields (from think() tool)
     estimated_probability: Optional[int] = None
     what_could_go_wrong: Optional[str] = None
@@ -117,6 +119,9 @@ class ReflectionEngine:
         self._check_interval_seconds = 30.0
         self._max_pending_trades = 100
 
+        # Persistent pending trades (survives restarts for reflection continuity)
+        self._pending_trades_path = self._memory_dir / "pending_trades.json"
+
         # Persistent scorecard (survives restarts)
         self._scorecard_path = self._memory_dir / "scorecard.json"
         self._scorecard: List[Dict[str, Any]] = []
@@ -147,8 +152,9 @@ class ReflectionEngine:
             logger.warning("[deep_agent.reflection] Already running")
             return
 
-        # Load persistent scorecard from previous sessions
+        # Load persistent state from previous sessions
         self._load_scorecard()
+        self._load_pending_trades()
 
         self._running = True
         self._monitor_task = asyncio.create_task(self._settlement_monitor_loop())
@@ -176,6 +182,9 @@ class ReflectionEngine:
             except asyncio.CancelledError:
                 pass
 
+        # Persist pending trades so they survive restart
+        self._save_pending_trades()
+
         logger.info("[deep_agent.reflection] Stopped reflection engine")
 
     def record_trade(
@@ -193,6 +202,7 @@ class ReflectionEngine:
         gdelt_snapshot: Optional[List[Dict]] = None,
         estimated_probability: Optional[int] = None,
         what_could_go_wrong: Optional[str] = None,
+        microstructure_snapshot: Optional[Dict[str, Any]] = None,
     ) -> None:
         """
         Record a trade for later reflection.
@@ -231,11 +241,13 @@ class ReflectionEngine:
             extraction_ids=extraction_ids or [],
             extraction_snapshot=extraction_snapshot or [],
             gdelt_snapshot=gdelt_snapshot or [],
+            microstructure_snapshot=microstructure_snapshot,
             estimated_probability=estimated_probability,
             what_could_go_wrong=what_could_go_wrong,
         )
 
         self._pending_trades[trade_id] = trade
+        self._save_pending_trades()
         logger.info(
             f"[deep_agent.reflection] Recorded pending trade: {ticker} {side} @ {entry_price_cents}c "
             f"(order_id={order_id}, extractions={len(trade.extraction_ids)})"
@@ -419,8 +431,9 @@ class ReflectionEngine:
             await self._reflection_queue.put(trade)
             logger.info(f"[deep_agent.reflection] Queued reflection for {trade.ticker}")
 
-        # Remove from pending
+        # Remove from pending and persist
         del self._pending_trades[trade.trade_id]
+        self._save_pending_trades()
 
     def _compute_reflection_aggregates(self) -> Dict[str, Any]:
         """Compute win/loss/total/pnl aggregates over settled reflections."""
@@ -630,6 +643,26 @@ class ReflectionEngine:
                 )
             gdelt_section = "\n".join(gdelt_lines) + "\n"
 
+        # Build microstructure snapshot section if available
+        micro_section = ""
+        if trade.microstructure_snapshot:
+            ms = trade.microstructure_snapshot
+            micro_lines = ["### Microstructure at Trade Entry"]
+            if ms.get("total_trades"):
+                micro_lines.append(f"- Trade Flow: {ms.get('yes_ratio', 0):.0%} YES ({ms.get('total_trades', 0)} trades)")
+            if ms.get("price_drop") and ms["price_drop"] != 0:
+                micro_lines.append(f"- Price Move: {ms['price_drop']:+d}c from open")
+            ob = ms.get("orderbook", {})
+            if ob:
+                if ob.get("spread_close") is not None:
+                    micro_lines.append(f"- Spread: {ob['spread_close']}c")
+                imb = ob.get("imbalance_ratio")
+                if imb is not None and abs(imb) > 0.1:
+                    micro_lines.append(f"- Volume Imbalance: {imb:+.2f} ({'buy' if imb > 0 else 'sell'} pressure)")
+                if ob.get("large_order_count", 0) > 0:
+                    micro_lines.append(f"- Large Orders: {ob['large_order_count']} (whale activity)")
+            micro_section = "\n".join(micro_lines) + "\n"
+
         # Build evaluate instruction if we have extraction IDs
         evaluate_instruction = ""
         if trade.extraction_ids:
@@ -660,7 +693,7 @@ A trade you made has settled. Analyze the outcome and extract learnings.
 ### Your Original Reasoning
 {trade.reasoning}
 {scorecard_section}
-{extraction_section}{gdelt_section}
+{extraction_section}{gdelt_section}{micro_section}
 ### Reflection Questions
 1. **Why did this trade {trade.result}?** What was the key factor?
 2. **Was your reasoning correct?** Did the market move as you expected?
@@ -668,6 +701,7 @@ A trade you made has settled. Analyze the outcome and extract learnings.
 4. **Should you update your strategy?** Is there a rule to add/modify?
 5. **Were the extraction signals accurate?** Did they correctly predict the direction?
 6. **Was GDELT confirmation useful?** Did mainstream news coverage align with the outcome?
+7. **Did microstructure support the trade?** Was trade flow aligned? Was spread reasonable? Any whale contradiction?
 
 ### Instructions
 Use the `reflect()` tool to record your structured analysis. It auto-appends to the right memory files.
@@ -728,11 +762,76 @@ Be specific and actionable in your learnings.
             "wins": agg["wins"],
             "losses": agg["losses"],
             "win_rate": agg["win_rate"],
+            "session_pnl_cents": agg["total_pnl"],
             "strategy_updates": agg["strategy_updates"],
             "mistakes_identified": agg["mistakes_found"],
             "patterns_identified": agg["patterns_found"],
             "scorecard_entries": len(self._scorecard),
         }
+
+    # === Persistent Pending Trades ===
+
+    def _save_pending_trades(self) -> None:
+        """Persist pending trades to disk so they survive restarts."""
+        try:
+            data = {
+                trade_id: asdict(trade)
+                for trade_id, trade in self._pending_trades.items()
+                if not trade.settled
+            }
+            self._pending_trades_path.write_text(
+                json.dumps(data, indent=2, default=str), encoding="utf-8"
+            )
+            logger.debug(
+                f"[deep_agent.reflection] Persisted {len(data)} pending trades"
+            )
+        except Exception as e:
+            logger.error(f"[deep_agent.reflection] Failed to persist pending trades: {e}")
+
+    def _load_pending_trades(self) -> None:
+        """Load pending trades from disk on startup."""
+        if not self._pending_trades_path.exists():
+            logger.info("[deep_agent.reflection] No pending_trades.json found — starting fresh")
+            return
+
+        try:
+            data = json.loads(self._pending_trades_path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                logger.warning("[deep_agent.reflection] Invalid pending_trades.json format — skipping")
+                return
+
+            loaded = 0
+            for trade_id, trade_data in data.items():
+                try:
+                    trade = PendingTrade(
+                        trade_id=trade_data["trade_id"],
+                        ticker=trade_data["ticker"],
+                        event_ticker=trade_data["event_ticker"],
+                        side=trade_data["side"],
+                        contracts=trade_data["contracts"],
+                        entry_price_cents=trade_data["entry_price_cents"],
+                        reasoning=trade_data["reasoning"],
+                        timestamp=trade_data["timestamp"],
+                        order_id=trade_data.get("order_id"),
+                        extraction_ids=trade_data.get("extraction_ids", []),
+                        extraction_snapshot=trade_data.get("extraction_snapshot", []),
+                        gdelt_snapshot=trade_data.get("gdelt_snapshot", []),
+                        microstructure_snapshot=trade_data.get("microstructure_snapshot"),
+                        estimated_probability=trade_data.get("estimated_probability"),
+                        what_could_go_wrong=trade_data.get("what_could_go_wrong"),
+                    )
+                    self._pending_trades[trade_id] = trade
+                    loaded += 1
+                except (KeyError, TypeError) as e:
+                    logger.warning(
+                        f"[deep_agent.reflection] Skipping malformed pending trade {trade_id}: {e}"
+                    )
+
+            logger.info(
+                f"[deep_agent.reflection] Loaded {loaded} pending trades from previous session"
+            )
+        except Exception as e:
+            logger.warning(f"[deep_agent.reflection] Failed to load pending trades: {e}")
 
     # === Persistent Scorecard ===
 
@@ -925,6 +1024,7 @@ Be specific and actionable in your learnings.
             "reasoning": (trade.reasoning[:200] if trade.reasoning else ""),
             "estimated_probability": trade.estimated_probability,
             "what_could_go_wrong": (trade.what_could_go_wrong[:200] if trade.what_could_go_wrong else None),
+            "microstructure_snapshot": trade.microstructure_snapshot,
         }
         self._scorecard.append(entry)
 

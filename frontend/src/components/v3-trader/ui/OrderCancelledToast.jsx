@@ -19,7 +19,7 @@ const OrderCancelledToast = ({ cancellation, onDismiss }) => {
 
   return (
     <div className="fixed bottom-32 right-4 p-4 rounded-lg shadow-lg z-50 border backdrop-blur-sm
-      bg-amber-900/90 border-amber-500 animate-pulse"
+      bg-amber-900/90 border-amber-500 animate-toast-enter"
     >
       <div className="flex items-center space-x-3">
         <Clock className="w-5 h-5 text-amber-400" />

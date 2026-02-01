@@ -129,6 +129,13 @@ class TradeFlowService:
             state={**state, "market_ticker": ticker, "event_ticker": event_ticker},
         )
 
+    def get_market_state(self, ticker: str) -> Optional[Dict[str, Any]]:
+        """Get trade flow state for a single market (O(1) dict lookup)."""
+        state = self._market_states.get(ticker)
+        if not state:
+            return None
+        return {"market_ticker": ticker, **state}
+
     def get_market_states(self, limit: int = 100) -> list:
         """Return all market states for snapshot delivery to new clients."""
         states = []

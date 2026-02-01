@@ -11,19 +11,21 @@ Provides tools for:
 
 The agent trades on extraction signals from the langextract pipeline.
 The get_extraction_signals() tool queries the extractions table
-populated by KalshiExtractor via the Reddit entity agent.
+populated by KalshiExtractor via the entity extraction system.
 
 These tools are designed for use with Claude's native tool calling
 and provide structured outputs for the agent to reason about.
 """
 
 import asyncio
+import json
 import logging
 import os
+import re
 import time
 from collections import deque
 from dataclasses import dataclass, field, asdict
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Callable, Deque, Dict, List, Literal, Optional, TYPE_CHECKING
 
@@ -91,6 +93,7 @@ class SessionState:
     trade_count: int
     win_rate: float
     positions: List[Dict[str, Any]] = field(default_factory=list)
+    open_orders: List[Dict[str, Any]] = field(default_factory=list)
     recent_fills: List[Dict[str, Any]] = field(default_factory=list)
     is_valid: bool = True  # False when state container is unavailable or errored
     error: Optional[str] = None  # Error description when is_valid is False
@@ -220,6 +223,9 @@ class DeepAgentTools:
         self._event_position_tracker = event_position_tracker
         self._supabase_client = None
 
+        # Token usage callback (set by agent to accumulate tool API costs)
+        self._token_usage_callback = None
+
         # Reddit Historic Agent reference (set by coordinator after startup)
         self._reddit_historic_agent = None
 
@@ -227,11 +233,19 @@ class DeepAgentTools:
         self._gdelt_client = None       # BigQuery GKG (structured entities/themes)
         self._gdelt_doc_client = None   # Free DOC API (article search/timelines)
 
+        # Microstructure services (set by coordinator after startup)
+        self._orderbook_integration = None   # V3OrderbookIntegration
+        self._trade_flow_service = None      # TradeFlowService
+
         # RF-1: Per-event dollar exposure tracking (resets on restart)
         self._event_exposure_cents: Dict[str, int] = {}
         # $1,000 cap per event — limits single-event concentration risk.
         # Sized for paper trading; scale with bankroll for production.
         self._max_event_exposure_cents: int = 100_000
+
+        # Fresh news enforcement (wired from agent config)
+        self._require_fresh_news: bool = True
+        self._max_news_age_hours: float = 2.0
 
         # RF-5: Startup timestamp for marking pre-existing signals as historical
         self._startup_time: float = time.time()
@@ -282,6 +296,10 @@ class DeepAgentTools:
             "query_gdelt_events": 0,
             "search_gdelt_articles": 0,
             "get_gdelt_volume_timeline": 0,
+            "get_microstructure": 0,
+            "get_candlesticks": 0,
+            "read_todos": 0,
+            "write_todos": 0,
         }
 
 
@@ -326,8 +344,13 @@ class DeepAgentTools:
                 event_ticker = market.event_ticker
 
                 # Use total_cost as the exposure estimate (cost basis in cents)
-                exposure = total_cost if total_cost > 0 else position_count * 50  # fallback: 50c avg
-                reconstructed[event_ticker] = reconstructed.get(event_ticker, 0) + exposure
+                if total_cost <= 0:
+                    logger.warning(
+                        f"[deep_agent.tools] Skipping {ticker}: total_cost={total_cost}, "
+                        f"cannot reconstruct exposure without cost basis"
+                    )
+                    continue
+                reconstructed[event_ticker] = reconstructed.get(event_ticker, 0) + total_cost
 
             # Apply to state
             self._event_exposure_cents = reconstructed
@@ -363,6 +386,281 @@ class DeepAgentTools:
 
 
 
+
+    # === Microstructure Tools ===
+
+    async def get_microstructure(
+        self,
+        market_ticker: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Get real-time microstructure signals: orderbook + trade flow.
+
+        Single-market mode (ticker provided): Returns detailed orderbook and
+        trade flow data for one market.
+
+        Scan mode (no ticker): Returns a summary of all tracked markets with
+        trade activity, sorted by total trades descending.
+
+        Args:
+            market_ticker: Optional specific market ticker for detailed view.
+
+        Returns:
+            Dict with microstructure data or error message.
+        """
+        self._tool_calls["get_microstructure"] += 1
+
+        has_trade_flow = self._trade_flow_service is not None
+        has_orderbook = self._orderbook_integration is not None
+
+        if not has_trade_flow and not has_orderbook:
+            return {"error": "Microstructure services not available yet. They are wired after orderbook connects."}
+
+        if market_ticker:
+            # === Single-market detailed mode ===
+            data: Dict[str, Any] = {"ticker": market_ticker}
+            has_data = False
+
+            # Trade flow state
+            if has_trade_flow:
+                tf_state = self._trade_flow_service.get_market_state(market_ticker)
+                if tf_state:
+                    data["yes_trades"] = tf_state.get("yes_trades", 0)
+                    data["no_trades"] = tf_state.get("no_trades", 0)
+                    data["total_trades"] = tf_state.get("total_trades", 0)
+                    data["yes_ratio"] = tf_state.get("yes_ratio", 0.0)
+                    data["price_drop"] = tf_state.get("price_drop", 0)
+                    data["last_yes_price"] = tf_state.get("last_yes_price")
+                    has_data = True
+
+            # Orderbook signals
+            if has_orderbook:
+                ob_signals = self._orderbook_integration.get_orderbook_signals(market_ticker)
+                if ob_signals:
+                    data["orderbook"] = {
+                        "imbalance_ratio": ob_signals.get("imbalance_ratio"),
+                        "delta_count": ob_signals.get("delta_count", 0),
+                        "spread_open": ob_signals.get("spread_open"),
+                        "spread_close": ob_signals.get("spread_close"),
+                        "spread_high": ob_signals.get("spread_high"),
+                        "spread_low": ob_signals.get("spread_low"),
+                        "large_order_count": ob_signals.get("large_order_count", 0),
+                    }
+                    has_data = True
+
+            # L2 orderbook depth (top 5 price levels per side)
+            if market_ticker:
+                try:
+                    from ...data.orderbook_state import get_shared_orderbook_state
+                    ob_state = await get_shared_orderbook_state(market_ticker)
+                    top_levels = await ob_state.get_top_levels(5)
+                    # Convert {price: size} dicts to [[price, size], ...] for readability
+                    data["orderbook_depth"] = {
+                        "yes_bids": [[p, q] for p, q in top_levels.get("yes_bids", {}).items()],
+                        "yes_asks": [[p, q] for p, q in top_levels.get("yes_asks", {}).items()],
+                        "no_bids": [[p, q] for p, q in top_levels.get("no_bids", {}).items()],
+                        "no_asks": [[p, q] for p, q in top_levels.get("no_asks", {}).items()],
+                        "source": "websocket",
+                    }
+                    has_data = True
+                except Exception as e:
+                    logger.debug(f"Could not get orderbook depth for {market_ticker}: {e}")
+                    # REST fallback when WS data unavailable
+                    if self._trading_client:
+                        try:
+                            rest_book = await self._trading_client._client.get_orderbook(market_ticker, depth=5)
+                            ob_data = rest_book.get("orderbook", {})
+                            data["orderbook_depth"] = {
+                                "yes_bids": ob_data.get("yes", []),
+                                "no_bids": ob_data.get("no", []),
+                                "source": "rest_fallback",
+                            }
+                            has_data = True
+                        except Exception:
+                            pass
+
+            data["has_data"] = has_data
+
+            # Build human-readable summary
+            if has_data:
+                parts = []
+                if "total_trades" in data:
+                    parts.append(f"{data['total_trades']} trades ({data.get('yes_ratio', 0):.0%} YES)")
+                if "price_drop" in data and data["price_drop"] != 0:
+                    parts.append(f"price move {data['price_drop']:+d}c")
+                ob = data.get("orderbook", {})
+                if ob.get("imbalance_ratio") is not None:
+                    imb = ob["imbalance_ratio"]
+                    parts.append(f"imbalance {imb:+.2f}")
+                if ob.get("spread_close") is not None:
+                    parts.append(f"spread {ob['spread_close']}c")
+                if ob.get("large_order_count", 0) > 0:
+                    parts.append(f"{ob['large_order_count']} large orders")
+                data["summary"] = " | ".join(parts) if parts else "No activity"
+
+            return {"data": data, "has_data": has_data}
+
+        else:
+            # === Scan mode: all markets with activity ===
+            markets = []
+
+            # Get trade flow states
+            trade_flow_by_ticker: Dict[str, Dict] = {}
+            if has_trade_flow:
+                for s in self._trade_flow_service.get_market_states():
+                    ticker = s.get("market_ticker", "")
+                    if ticker:
+                        trade_flow_by_ticker[ticker] = s
+
+            # Merge with orderbook signals
+            all_tickers = set(trade_flow_by_ticker.keys())
+
+            for ticker in all_tickers:
+                tf = trade_flow_by_ticker.get(ticker, {})
+                total_trades = tf.get("total_trades", 0)
+                if total_trades == 0:
+                    continue
+
+                entry: Dict[str, Any] = {
+                    "ticker": ticker,
+                    "total_trades": total_trades,
+                    "yes_ratio": tf.get("yes_ratio", 0.0),
+                    "price_drop": tf.get("price_drop", 0),
+                }
+
+                # Merge orderbook signals if available
+                if has_orderbook:
+                    ob_signals = self._orderbook_integration.get_orderbook_signals(ticker)
+                    if ob_signals:
+                        entry["spread"] = ob_signals.get("spread_close")
+                        entry["imbalance"] = ob_signals.get("imbalance_ratio")
+                        entry["large_order_count"] = ob_signals.get("large_order_count", 0)
+
+                # Build one-line summary
+                parts = [f"{total_trades}T"]
+                parts.append(f"{entry.get('yes_ratio', 0):.0%}Y")
+                pd = entry.get("price_drop", 0)
+                if pd != 0:
+                    parts.append(f"{pd:+d}c")
+                if entry.get("spread") is not None:
+                    parts.append(f"sp={entry['spread']}c")
+                if entry.get("imbalance") is not None:
+                    parts.append(f"imb={entry['imbalance']:+.2f}")
+                if entry.get("large_order_count", 0) > 0:
+                    parts.append(f"{entry['large_order_count']}whale")
+                entry["summary"] = " ".join(parts)
+
+                markets.append(entry)
+
+            # Sort by total trades descending
+            markets.sort(key=lambda m: m.get("total_trades", 0), reverse=True)
+
+            return {
+                "markets": markets,
+                "total_tracked": len(markets),
+                "has_data": len(markets) > 0,
+            }
+
+    # === Candlestick / OHLC Tool ===
+
+    async def get_candlesticks(
+        self,
+        event_ticker: str,
+        period: str = "hourly",
+        hours_back: int = 24,
+    ) -> Dict[str, Any]:
+        """
+        Fetch OHLC candlestick data for all markets in an event.
+
+        Uses the efficient event-level endpoint (single API call for all markets).
+
+        Args:
+            event_ticker: Event ticker (e.g., "KXBONDIOUT-28")
+            period: Candle period - "1min", "hourly", or "daily"
+            hours_back: How many hours of history to fetch (default: 24)
+
+        Returns:
+            Dict with per-market OHLC summary and recent candles
+        """
+        self._tool_calls["get_candlesticks"] += 1
+
+        if not self._trading_client:
+            return {"error": "Trading client not available"}
+
+        # Map period to interval minutes
+        intervals = {"1min": 1, "hourly": 60, "daily": 1440}
+        interval = intervals.get(period, 60)
+
+        # Get event's markets to find series_ticker
+        if not self._tracked_markets:
+            return {"error": "No tracked markets available"}
+
+        markets_by_event = self._tracked_markets.get_markets_by_event()
+        event_markets = markets_by_event.get(event_ticker, [])
+        if not event_markets:
+            return {"error": f"No tracked markets for event {event_ticker}"}
+
+        # Extract series_ticker from first market's ticker
+        sample_ticker = event_markets[0].ticker
+        series_ticker = sample_ticker.split("-")[0] if "-" in sample_ticker else sample_ticker
+
+        # Time range
+        end_ts = int(time.time())
+        start_ts = end_ts - (hours_back * 3600)
+
+        try:
+            response = await self._trading_client.get_event_candlesticks(
+                series_ticker=series_ticker,
+                event_ticker=event_ticker,
+                start_ts=start_ts,
+                end_ts=end_ts,
+                period_interval=interval,
+            )
+        except Exception as e:
+            logger.error(f"[deep_agent.tools.get_candlesticks] API error: {e}")
+            return {"error": f"Failed to fetch candlesticks: {e}"}
+
+        # Format for agent consumption
+        result_markets = []
+        tickers = response.get("market_tickers", [])
+        all_candles = response.get("market_candlesticks", [])
+
+        for i, ticker in enumerate(tickers):
+            candles = all_candles[i] if i < len(all_candles) else []
+            if not candles:
+                continue
+
+            first = candles[0].get("price", {})
+            last = candles[-1].get("price", {})
+            all_highs = [c.get("price", {}).get("high", 0) for c in candles]
+            all_lows = [
+                c.get("price", {}).get("low", 0) for c in candles
+                if c.get("price", {}).get("low", 0) > 0
+            ]
+            total_vol = sum(c.get("volume", 0) for c in candles)
+
+            result_markets.append({
+                "ticker": ticker,
+                "candle_count": len(candles),
+                "open_price": first.get("open"),
+                "close_price": last.get("close"),
+                "high": max(all_highs) if all_highs else None,
+                "low": min(all_lows) if all_lows else None,
+                "total_volume": total_vol,
+                "candles": candles[-10:],  # Last 10 candles for detail
+            })
+
+        logger.info(
+            f"[deep_agent.tools.get_candlesticks] {event_ticker}: "
+            f"{len(result_markets)} markets, period={period}, hours_back={hours_back}"
+        )
+
+        return {
+            "event_ticker": event_ticker,
+            "period": period,
+            "hours_back": hours_back,
+            "markets": result_markets,
+        }
 
     # === Market Tools ===
 
@@ -470,7 +768,6 @@ class DeepAgentTools:
                         supabase = self._get_supabase()
 
                         if supabase:
-                            from datetime import timezone, timedelta
                             cutoff_time = datetime.now(timezone.utc) - timedelta(hours=2)
 
                             # Get market_tickers arrays from recent extraction signals
@@ -758,11 +1055,7 @@ class DeepAgentTools:
         market_data = None
         if self._tracked_markets:
             try:
-                all_markets = self._tracked_markets.get_all()
-                for m in all_markets:
-                    if m.ticker == ticker:
-                        market_data = m
-                        break
+                market_data = self._tracked_markets.get_market(ticker)
             except Exception as e:
                 logger.warning(f"[deep_agent.tools.preflight_check] Error reading tracked_markets: {e}")
 
@@ -773,16 +1066,15 @@ class DeepAgentTools:
                     api_market = await self._trading_client.get_market(ticker)
                     if api_market:
                         from ..state.tracked_markets import TrackedMarket, MarketStatus
-                        from datetime import datetime as _dt
 
                         open_ts, close_ts = 0, 0
                         try:
                             ot = api_market.get("open_time", "")
                             ct = api_market.get("close_time", "")
                             if ot and isinstance(ot, str):
-                                open_ts = int(_dt.fromisoformat(ot.replace("Z", "+00:00")).timestamp())
+                                open_ts = int(datetime.fromisoformat(ot.replace("Z", "+00:00")).timestamp())
                             if ct and isinstance(ct, str):
-                                close_ts = int(_dt.fromisoformat(ct.replace("Z", "+00:00")).timestamp())
+                                close_ts = int(datetime.fromisoformat(ct.replace("Z", "+00:00")).timestamp())
                         except (ValueError, TypeError):
                             pass
 
@@ -939,6 +1231,10 @@ class DeepAgentTools:
         """
         midpoint = (yes_bid + yes_ask) // 2 if yes_bid > 0 else 0
 
+        # Normalize unrecognized strategies to aggressive
+        if execution_strategy not in ("aggressive", "moderate", "passive"):
+            execution_strategy = "aggressive"
+
         if action == "sell":
             # SELL: price is the minimum you'll accept
             # aggressive = sell at bid (immediate fill, lowest price)
@@ -953,17 +1249,11 @@ class DeepAgentTools:
                     price = midpoint if midpoint > 0 else yes_bid
                 else:
                     price = (100 - midpoint) if midpoint > 0 else (100 - yes_ask if yes_ask > 0 else 0)
-            elif execution_strategy == "passive":
+            else:  # passive
                 if side == "yes":
                     price = yes_ask - 1 if yes_ask > 1 else (yes_bid if yes_bid > 0 else 1)
                 else:
                     price = (100 - yes_bid) - 1 if yes_bid > 0 else (100 - yes_ask if yes_ask > 0 else 0)
-            else:
-                # Fallback to aggressive
-                if side == "yes":
-                    price = yes_bid if yes_bid > 0 else yes_ask
-                else:
-                    price = 100 - yes_ask if yes_ask > 0 else (100 - yes_bid if yes_bid > 0 else 0)
         else:
             # BUY: price is the maximum you'll pay
             # aggressive = buy at ask (immediate fill, highest cost)
@@ -978,17 +1268,11 @@ class DeepAgentTools:
                     price = midpoint + 1 if midpoint > 0 else yes_ask
                 else:
                     price = (100 - midpoint) + 1 if midpoint > 0 else (100 - yes_bid if yes_bid > 0 else 0)
-            elif execution_strategy == "passive":
+            else:  # passive
                 if side == "yes":
                     price = yes_bid + 1 if yes_bid > 0 else yes_ask
                 else:
                     price = (100 - yes_ask) + 1 if yes_ask > 0 else (100 - yes_bid if yes_bid > 0 else 0)
-            else:
-                # Fallback to aggressive
-                if side == "yes":
-                    price = yes_ask
-                else:
-                    price = 100 - yes_bid if yes_bid > 0 else 0
 
         return max(1, min(99, price))
 
@@ -1327,6 +1611,35 @@ class DeepAgentTools:
         """
         return [fill.to_dict() for fill in list(self._recent_fills)[:limit]]
 
+    # === Strategy Filtering Helpers ===
+
+    def _filter_positions_by_strategy(self, positions_details: List[Dict]) -> List[Dict]:
+        """Filter position dicts to deep_agent strategy, _traded_tickers fallback.
+
+        Returns the raw position dicts (no transformation applied).
+        """
+        result = []
+        for pos in positions_details:
+            ticker = pos.get("ticker", "")
+            if pos.get("strategy_id") == "deep_agent":
+                result.append(pos)
+            elif ticker in self._traded_tickers:
+                result.append(pos)
+        return result
+
+    def _filter_settlements_by_strategy(self, settlements: List[Dict]) -> List[Dict]:
+        """Filter settlements to deep_agent strategy, _traded_tickers fallback."""
+        agent_settlements = [
+            s for s in settlements
+            if s.get("strategy_id") == "deep_agent"
+        ]
+        if not agent_settlements and self._traded_tickers:
+            agent_settlements = [
+                s for s in settlements
+                if s.get("ticker") in self._traded_tickers
+            ]
+        return agent_settlements
+
     # === Session State ===
 
     async def get_session_state(self) -> SessionState:
@@ -1359,17 +1672,12 @@ class DeepAgentTools:
             summary = self._state_container.get_trading_summary()
             pnl = summary.get("pnl", {})
 
-            # Get positions with details, filtered to only tickers the deep
-            # agent has traded. The Kalshi API returns ALL positions (including
-            # old ones from previous sessions), which pollutes the agent's view.
-            # If no trades have happened yet, show NO positions (empty list).
+            # Get positions with details, filtered to deep_agent strategy.
+            # Primary: strategy_id on TradingAttachment (survives restarts).
+            # Fallback: _traded_tickers set (current session only).
             positions = []
-            for pos in summary.get("positions_details", []):
+            for pos in self._filter_positions_by_strategy(summary.get("positions_details", [])):
                 ticker = pos.get("ticker")
-
-                # Filter: only show positions in tickers we've actually traded
-                if ticker not in self._traded_tickers:
-                    continue
 
                 # T1.5: Explicit position side determination
                 yes_c = pos.get("yes_contracts", 0) or 0
@@ -1393,18 +1701,32 @@ class DeepAgentTools:
                     "unrealized_pnl": pos.get("unrealized_pnl"),
                 })
 
+            # Collect open orders from TradingAttachments (deep_agent only)
+            open_orders = []
+            now = time.time()
+            if self._state_container:
+                for ticker in set(list(self._traded_tickers) + [p["ticker"] for p in positions]):
+                    attachment = self._state_container.get_trading_attachment(ticker)
+                    if not attachment:
+                        continue
+                    for order in attachment.orders.values():
+                        if (order.strategy_id == "deep_agent"
+                                and order.status in ("resting", "pending", "partial")):
+                            open_orders.append({
+                                "order_id": order.order_id,
+                                "ticker": ticker,
+                                "side": order.side,
+                                "action": order.action,
+                                "contracts": order.count,
+                                "price_cents": order.price,
+                                "status": order.status,
+                                "fill_count": order.fill_count,
+                                "placed_at": order.placed_at,
+                                "age_seconds": round(now - order.placed_at, 1),
+                            })
+
             # Calculate win rate from settlements — filtered to deep_agent strategy
-            settlements = summary.get("settlements", [])
-            agent_settlements = [
-                s for s in settlements
-                if s.get("strategy_id") == "deep_agent"
-            ]
-            # Fallback: if no strategy-attributed settlements yet, use _traded_tickers filter
-            if not agent_settlements and self._traded_tickers:
-                agent_settlements = [
-                    s for s in settlements
-                    if s.get("ticker") in self._traded_tickers
-                ]
+            agent_settlements = self._filter_settlements_by_strategy(summary.get("settlements", []))
             wins = sum(1 for s in agent_settlements if s.get("net_pnl", 0) > 0)
             total_settled = len(agent_settlements)
             win_rate = wins / total_settled if total_settled > 0 else 0.0
@@ -1423,10 +1745,11 @@ class DeepAgentTools:
                 unrealized_pnl_cents=int(agent_unrealized_pnl),
                 total_pnl_cents=int(agent_realized_pnl + agent_unrealized_pnl),
                 position_count=len(positions),  # Filtered count (this session only)
-                open_order_count=summary.get("order_count", 0),
+                open_order_count=len(open_orders),
                 trade_count=total_settled,
                 win_rate=win_rate,
                 positions=positions,
+                open_orders=open_orders,
                 recent_fills=self.get_recent_fills(limit=10),
             )
 
@@ -1462,7 +1785,7 @@ class DeepAgentTools:
         Returns:
             TruePerformance dataclass with all strategy-filtered metrics
         """
-        self._tool_calls["get_true_performance"] = self._tool_calls.get("get_true_performance", 0) + 1
+        self._tool_calls["get_true_performance"] += 1
         logger.info("[deep_agent.tools.get_true_performance] Fetching true performance")
 
         if not self._state_container:
@@ -1481,16 +1804,7 @@ class DeepAgentTools:
             portfolio_value_cents = int(summary.get("portfolio_value", 0) * 100)
 
             # --- Filter positions by strategy_id or _traded_tickers ---
-            all_positions = summary.get("positions_details", [])
-            agent_positions = []
-            for pos in all_positions:
-                ticker = pos.get("ticker", "")
-                # Primary filter: strategy_id on the position's attachment
-                if pos.get("strategy_id") == "deep_agent":
-                    agent_positions.append(pos)
-                # Fallback: if strategy_id not populated yet, use _traded_tickers
-                elif ticker in self._traded_tickers:
-                    agent_positions.append(pos)
+            agent_positions = self._filter_positions_by_strategy(summary.get("positions_details", []))
 
             # Build clean position list with unrealized P&L
             positions = []
@@ -1522,17 +1836,7 @@ class DeepAgentTools:
                 })
 
             # --- Filter settlements by strategy_id ---
-            all_settlements = summary.get("settlements", [])
-            agent_settlements = [
-                s for s in all_settlements
-                if s.get("strategy_id") == "deep_agent"
-            ]
-            # Fallback: if no strategy-attributed settlements yet, use _traded_tickers
-            if not agent_settlements and self._traded_tickers:
-                agent_settlements = [
-                    s for s in all_settlements
-                    if s.get("ticker") in self._traded_tickers
-                ]
+            agent_settlements = self._filter_settlements_by_strategy(summary.get("settlements", []))
 
             # Compute realized P&L from settlements
             realized_pnl_cents = sum(s.get("net_pnl", 0) for s in agent_settlements)
@@ -1655,6 +1959,15 @@ class DeepAgentTools:
     # Files that must NOT be fully replaced (use append_memory instead)
     _APPEND_ONLY_FILES = {"learnings.md", "mistakes.md", "patterns.md", "golden_rules.md", "cycle_journal.md"}
 
+    async def _broadcast_memory_update(self, filename: str, content: str) -> None:
+        """Broadcast memory file update to WebSocket clients."""
+        if self._ws_manager:
+            await self._ws_manager.broadcast_message("deep_agent_memory_update", {
+                "filename": filename,
+                "content_preview": content[:200] + "..." if len(content) > 200 else content,
+                "timestamp": time.strftime("%H:%M:%S"),
+            })
+
     # Strategy cap: hard limit on strategy.md to prevent bloat
     _STRATEGY_MAX_CHARS = 3000
 
@@ -1709,14 +2022,7 @@ class DeepAgentTools:
 
         try:
             file_path.write_text(content, encoding="utf-8")
-
-            # Broadcast memory update to WebSocket
-            if self._ws_manager:
-                await self._ws_manager.broadcast_message("deep_agent_memory_update", {
-                    "filename": safe_name,
-                    "content_preview": content[:200] + "..." if len(content) > 200 else content,
-                    "timestamp": time.strftime("%H:%M:%S"),
-                })
+            await self._broadcast_memory_update(safe_name, content)
 
             logger.info(f"[deep_agent.tools.write_memory] Successfully wrote {safe_name}")
             return True
@@ -1727,8 +2033,6 @@ class DeepAgentTools:
 
     def _apply_strategy_cap(self, file_path: Path, content: str) -> str:
         """Apply version counter and size cap to strategy.md content."""
-        import re
-
         # Extract and increment version counter
         version = 1
         if file_path.exists():
@@ -1820,14 +2124,7 @@ class DeepAgentTools:
         file_path = self._memory_dir / safe_name
         try:
             file_path.write_text(new_content, encoding="utf-8")
-
-            # Broadcast memory update to WebSocket
-            if self._ws_manager:
-                await self._ws_manager.broadcast_message("deep_agent_memory_update", {
-                    "filename": safe_name,
-                    "content_preview": new_content[:200] + "..." if len(new_content) > 200 else new_content,
-                    "timestamp": time.strftime("%H:%M:%S"),
-                })
+            await self._broadcast_memory_update(safe_name, new_content)
 
             logger.info(f"[deep_agent.tools.append_memory] Successfully wrote {len(new_content)} chars to {safe_name}")
             success = True
@@ -1841,6 +2138,113 @@ class DeepAgentTools:
             "archived": archived,
             "archive_path": archive_path if archived else None,
         }
+
+    # === TODO Task Planning Tools ===
+
+    TODOS_FILENAME = "todos.json"
+
+    async def read_todos(self) -> Dict[str, Any]:
+        """
+        Read the current TODO task list.
+
+        Returns:
+            Dict with 'items' (list of todo items) and metadata.
+            Each item has: task, priority (high/medium/low), status (pending/done),
+            created_cycle, completed_cycle (if done).
+        """
+        self._tool_calls["read_todos"] += 1
+        todos_path = self._memory_dir / self.TODOS_FILENAME
+
+        if not todos_path.exists():
+            return {"items": [], "total": 0, "pending": 0, "done": 0}
+
+        try:
+            data = json.loads(todos_path.read_text(encoding="utf-8"))
+            items = data.get("items", [])
+            pending = [i for i in items if i.get("status") != "done"]
+            done = [i for i in items if i.get("status") == "done"]
+            return {
+                "items": items,
+                "total": len(items),
+                "pending": len(pending),
+                "done": len(done),
+            }
+        except Exception as e:
+            logger.error(f"[deep_agent.tools.read_todos] Error reading todos: {e}")
+            return {"items": [], "total": 0, "pending": 0, "done": 0, "error": str(e)}
+
+    async def write_todos(
+        self,
+        items: List[Dict[str, Any]],
+        current_cycle: int = 0,
+    ) -> Dict[str, Any]:
+        """
+        Write the TODO task list (full replace).
+
+        Each item should have:
+        - task (str): Description of the task
+        - priority (str): "high", "medium", or "low"
+        - status (str): "pending" or "done"
+
+        Items marked "done" are auto-expired after 10 cycles from completion.
+
+        Args:
+            items: List of todo items
+            current_cycle: Current cycle number (for expiry tracking)
+
+        Returns:
+            Dict with success status and metadata
+        """
+        self._tool_calls["write_todos"] += 1
+        todos_path = self._memory_dir / self.TODOS_FILENAME
+
+        # Normalize items
+        normalized = []
+        for item in items:
+            entry = {
+                "task": item.get("task", ""),
+                "priority": item.get("priority", "medium"),
+                "status": item.get("status", "pending"),
+                "created_cycle": item.get("created_cycle", current_cycle),
+            }
+            if entry["status"] == "done":
+                entry["completed_cycle"] = item.get("completed_cycle", current_cycle)
+            normalized.append(entry)
+
+        # Auto-expire: remove done items older than 10 cycles
+        if current_cycle > 0:
+            normalized = [
+                item for item in normalized
+                if item.get("status") != "done"
+                or (current_cycle - item.get("completed_cycle", current_cycle)) < 10
+            ]
+
+        data = {
+            "items": normalized,
+            "last_updated_cycle": current_cycle,
+            "updated_at": datetime.now().isoformat(),
+        }
+
+        try:
+            todos_path.write_text(
+                json.dumps(data, indent=2, default=str),
+                encoding="utf-8",
+            )
+            pending = len([i for i in normalized if i.get("status") != "done"])
+            done = len([i for i in normalized if i.get("status") == "done"])
+            logger.info(
+                f"[deep_agent.tools.write_todos] Wrote {len(normalized)} todos "
+                f"({pending} pending, {done} done)"
+            )
+            return {
+                "success": True,
+                "total": len(normalized),
+                "pending": pending,
+                "done": done,
+            }
+        except Exception as e:
+            logger.error(f"[deep_agent.tools.write_todos] Error writing todos: {e}")
+            return {"success": False, "error": str(e)}
 
     # === Understand Event Tool ===
 
@@ -1866,7 +2270,7 @@ class DeepAgentTools:
         Returns:
             Dict with event understanding and langextract spec
         """
-        self._tool_calls["understand_event"] = self._tool_calls.get("understand_event", 0) + 1
+        self._tool_calls["understand_event"] += 1
         logger.info(f"[deep_agent.tools.understand_event] event={event_ticker}, force={force_refresh}")
 
         supabase = self._get_supabase()
@@ -1876,7 +2280,6 @@ class DeepAgentTools:
         # Check cache first (unless force_refresh)
         if not force_refresh:
             try:
-                from datetime import timezone, timedelta
                 cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
                 result = supabase.table("event_configs") \
                     .select("*") \
@@ -2014,8 +2417,17 @@ relevant information in Reddit posts and news articles that impact these specifi
                 messages=[{"role": "user", "content": prompt}],
             )
 
+            # Track token usage via callback
+            if self._token_usage_callback and hasattr(response, 'usage') and response.usage:
+                u = response.usage
+                self._token_usage_callback(
+                    input_tokens=getattr(u, 'input_tokens', 0) or 0,
+                    output_tokens=getattr(u, 'output_tokens', 0) or 0,
+                    cache_read=getattr(u, 'cache_read_input_tokens', 0) or 0,
+                    cache_created=getattr(u, 'cache_creation_input_tokens', 0) or 0,
+                )
+
             # Parse response
-            import json
             content = response.content[0].text.strip()
             # Strip markdown code blocks if present
             if content.startswith("```"):
@@ -2108,6 +2520,230 @@ relevant information in Reddit posts and news articles that impact these specifi
 
     # === Extraction Signal Tools ===
 
+    def _process_extraction_row(self, row: Dict, market_signals: Dict[str, Dict]) -> None:
+        """Process a single SQL RPC row into the per-market signals accumulator."""
+        ticker = row.get("market_ticker", "")
+        if not ticker:
+            return
+
+        extraction_class = row.get("extraction_class", "")
+        direction = row.get("direction", "")
+        occ_count = int(row.get("occurrence_count", 0))
+        unique_src = int(row.get("unique_sources", 0))
+        avg_eng = float(row.get("avg_engagement", 0) or 0)
+        max_eng = int(row.get("max_engagement", 0) or 0)
+        total_comments = int(row.get("total_comments", 0) or 0)
+        avg_mag = float(row.get("avg_magnitude", 0) or 0)
+        avg_sent = float(row.get("avg_sentiment", 0) or 0)
+        last_seen = row.get("last_seen_at", "")
+        first_seen = row.get("first_seen_at", "")
+        oldest_source = row.get("oldest_source_at", "")
+        newest_source = row.get("newest_source_at", "")
+
+        if ticker not in market_signals:
+            market_signals[ticker] = {
+                "market_ticker": ticker,
+                "event_tickers": [],
+                "occurrence_count": 0,
+                "unique_source_count": 0,
+                "total_engagement": 0,
+                "max_engagement": 0,
+                "total_comments": 0,
+                "directions": {"bullish": 0, "bearish": 0},
+                "avg_magnitude": 0,
+                "_magnitude_sum": 0.0,
+                "_magnitude_count": 0,
+                "last_seen_at": None,
+                "first_seen_at": None,
+                "oldest_source_at": None,
+                "newest_source_at": None,
+                "recent_extractions": [],
+                "entity_mentions": [],
+                "context_factors": [],
+                "_entity_agg": {},
+                "_context_agg": {},
+            }
+
+        sig = market_signals[ticker]
+
+        # Update last_seen / first_seen (extraction save time)
+        if last_seen and (not sig["last_seen_at"] or last_seen > sig["last_seen_at"]):
+            sig["last_seen_at"] = last_seen
+        if first_seen and (not sig["first_seen_at"] or first_seen < sig["first_seen_at"]):
+            sig["first_seen_at"] = first_seen
+
+        # Update oldest/newest source timestamps (original post publication time)
+        if oldest_source and (not sig["oldest_source_at"] or oldest_source < sig["oldest_source_at"]):
+            sig["oldest_source_at"] = oldest_source
+        if newest_source and (not sig["newest_source_at"] or newest_source > sig["newest_source_at"]):
+            sig["newest_source_at"] = newest_source
+
+        # Branch by extraction_class
+        if extraction_class == "market_signal":
+            sig["occurrence_count"] += occ_count
+            sig["unique_source_count"] = max(sig["unique_source_count"], unique_src)
+            sig["total_engagement"] += round(avg_eng * occ_count)
+            sig["max_engagement"] = max(sig["max_engagement"], max_eng)
+            sig["total_comments"] += total_comments
+
+            if direction in sig["directions"]:
+                sig["directions"][direction] += occ_count
+
+            if avg_mag:
+                sig["_magnitude_sum"] += avg_mag * occ_count
+                sig["_magnitude_count"] += occ_count
+
+        elif extraction_class == "entity_mention":
+            entity_key = direction or "unknown_entity"
+            agg = sig["_entity_agg"]
+            if entity_key not in agg:
+                agg[entity_key] = {
+                    "entity_name": entity_key,
+                    "mention_count": 0,
+                    "avg_sentiment": 0.0,
+                    "_sentiment_sum": 0.0,
+                    "unique_sources": 0,
+                }
+            ea = agg[entity_key]
+            ea["mention_count"] += occ_count
+            ea["_sentiment_sum"] += avg_sent * occ_count
+            ea["unique_sources"] = max(ea["unique_sources"], unique_src)
+
+        elif extraction_class == "context_factor":
+            ctx_key = direction or "unknown"
+            cagg = sig["_context_agg"]
+            if ctx_key not in cagg:
+                cagg[ctx_key] = {
+                    "category": ctx_key,
+                    "direction": direction,
+                    "mention_count": 0,
+                }
+            cagg[ctx_key]["mention_count"] += occ_count
+
+        # Custom per-event classes also contribute to occurrence counts
+        else:
+            sig["occurrence_count"] += occ_count
+
+    def _finalize_signal_aggregations(self, market_signals: Dict[str, Dict]) -> List[Dict]:
+        """Finalize per-market signal aggregations and return signal list."""
+        signals = []
+        for ticker, sig in market_signals.items():
+            # Compute avg_magnitude from accumulated values
+            if sig["_magnitude_count"] > 0:
+                sig["avg_magnitude"] = round(sig["_magnitude_sum"] / sig["_magnitude_count"], 1)
+            del sig["_magnitude_sum"]
+            del sig["_magnitude_count"]
+
+            # Compute directional consensus
+            total_dir = sig["directions"]["bullish"] + sig["directions"]["bearish"]
+            if total_dir > 0:
+                sig["consensus"] = "bullish" if sig["directions"]["bullish"] > sig["directions"]["bearish"] else "bearish"
+                sig["consensus_strength"] = round(max(sig["directions"].values()) / total_dir, 2)
+            else:
+                sig["consensus"] = "neutral"
+                sig["consensus_strength"] = 0.0
+
+            # Finalize entity_mentions
+            for ea in sig["_entity_agg"].values():
+                mc = ea["mention_count"]
+                sig["entity_mentions"].append({
+                    "entity_name": ea["entity_name"],
+                    "mention_count": mc,
+                    "avg_sentiment": round(ea["_sentiment_sum"] / mc, 1) if mc > 0 else 0.0,
+                    "unique_sources": ea["unique_sources"],
+                })
+            del sig["_entity_agg"]
+
+            # Sort entity_mentions by mention_count desc
+            sig["entity_mentions"].sort(key=lambda e: e["mention_count"], reverse=True)
+
+            # Finalize context_factors
+            sig["context_factors"] = list(sig["_context_agg"].values())
+            sig["context_factors"].sort(key=lambda c: c["mention_count"], reverse=True)
+            del sig["_context_agg"]
+
+            signals.append(sig)
+        return signals
+
+    def _filter_signals_by_scope(self, signals: List[Dict], event_ticker: Optional[str]) -> List[Dict]:
+        """Filter signals to tracked markets and optionally by event_ticker."""
+        # Filter to tracked markets only (belt-and-suspenders)
+        if self._tracked_markets:
+            tracked = {m.ticker for m in self._tracked_markets.get_all()}
+            before_count = len(signals)
+            signals = [s for s in signals if s["market_ticker"] in tracked]
+            filtered = before_count - len(signals)
+            if filtered > 0:
+                logger.info(
+                    f"[deep_agent.tools.get_extraction_signals] Filtered {filtered} signals "
+                    f"with non-tracked tickers"
+                )
+
+        # Event ticker filter (Python-side since SQL doesn't support it)
+        if event_ticker:
+            event_tickers_set: set = set()
+            if self._tracked_markets:
+                markets_by_event = self._tracked_markets.get_markets_by_event()
+                event_markets = markets_by_event.get(event_ticker, [])
+                event_tickers_set = {m.ticker for m in event_markets}
+
+            if event_tickers_set:
+                signals = [s for s in signals if s["market_ticker"] in event_tickers_set]
+                for s in signals:
+                    s["event_tickers"] = [event_ticker]
+
+        return signals
+
+    async def _attach_extraction_snippets(self, signals: List[Dict], window_hours: float, limit: int) -> None:
+        """Attach recent extraction snippets (top 3 by engagement per market)."""
+        top_tickers = [s["market_ticker"] for s in signals[:limit]]
+        if not top_tickers:
+            return
+
+        supabase = self._get_supabase()
+        if not supabase:
+            return
+
+        try:
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=window_hours)
+
+            snippets_result = supabase.table("extractions") \
+                .select("market_tickers, extraction_text, attributes, source_subreddit, engagement_score, extraction_class, source_created_at, created_at") \
+                .eq("extraction_class", "market_signal") \
+                .gte("created_at", cutoff.isoformat()) \
+                .order("engagement_score", desc=True) \
+                .limit(limit * 3) \
+                .execute()
+
+            # Build snippets lookup by ticker
+            snippets_by_ticker: Dict[str, List[Dict]] = {}
+            for row in (snippets_result.data or []):
+                tickers = row.get("market_tickers", [])
+                attrs = row.get("attributes", {})
+                for t in tickers:
+                    if t in top_tickers:
+                        if t not in snippets_by_ticker:
+                            snippets_by_ticker[t] = []
+                        if len(snippets_by_ticker[t]) < 3:
+                            snippets_by_ticker[t].append({
+                                "text": (row.get("extraction_text", "") or "")[:200],
+                                "direction": attrs.get("direction", ""),
+                                "magnitude": attrs.get("magnitude"),
+                                "confidence": attrs.get("confidence", ""),
+                                "reasoning": (attrs.get("reasoning", "") or "")[:150],
+                                "source_subreddit": row.get("source_subreddit", ""),
+                                "engagement": row.get("engagement_score", 0),
+                                "source_created_at": row.get("source_created_at"),
+                                "extracted_at": row.get("created_at"),
+                            })
+
+            # Attach snippets to signals
+            for sig in signals:
+                sig["recent_extractions"] = snippets_by_ticker.get(sig["market_ticker"], [])
+
+        except Exception as e:
+            logger.warning(f"[deep_agent.tools.get_extraction_signals] Snippets query failed: {e}")
+
     async def get_extraction_signals(
         self,
         market_ticker: Optional[str] = None,
@@ -2135,14 +2771,22 @@ relevant information in Reddit posts and news articles that impact these specifi
             Dict with aggregated signal data per market, including
             entity_mentions and context_factors lists
         """
-        self._tool_calls["get_extraction_signals"] = self._tool_calls.get("get_extraction_signals", 0) + 1
+        self._tool_calls["get_extraction_signals"] += 1
+
+        # Enforce max news age: cap window_hours to configured maximum
+        if self._require_fresh_news and window_hours > self._max_news_age_hours:
+            logger.info(
+                f"[deep_agent.tools.get_extraction_signals] Capping window_hours "
+                f"from {window_hours}h to {self._max_news_age_hours}h (require_fresh_news=True)"
+            )
+            window_hours = self._max_news_age_hours
 
         supabase = self._get_supabase()
         if not supabase:
             return {"signals": [], "message": "Supabase not available"}
 
         try:
-            # Step 1: Call SQL RPC for server-side aggregation across ALL extraction classes
+            # Step 1: Call SQL RPC for server-side aggregation
             rpc_params: Dict[str, Any] = {"p_window_hours": window_hours}
             if market_ticker:
                 rpc_params["p_market_ticker"] = market_ticker
@@ -2157,237 +2801,21 @@ relevant information in Reddit posts and news articles that impact these specifi
                     "window_hours": window_hours,
                 }
 
-            # Step 2: Post-process SQL rows into per-market enriched signals.
-            # SQL returns rows grouped by (market_ticker, extraction_class, direction).
-            # We merge these into a single signal dict per market_ticker.
+            # Step 2: Process rows into per-market signals
             market_signals: Dict[str, Dict] = {}
-
             for row in rpc_rows:
-                ticker = row.get("market_ticker", "")
-                if not ticker:
-                    continue
+                self._process_extraction_row(row, market_signals)
 
-                # Event filter: SQL doesn't filter by event_ticker, so do it here.
-                # We check membership lazily after building the signal.
+            # Step 3: Finalize aggregations
+            signals = self._finalize_signal_aggregations(market_signals)
 
-                extraction_class = row.get("extraction_class", "")
-                direction = row.get("direction", "")
-                occ_count = int(row.get("occurrence_count", 0))
-                unique_src = int(row.get("unique_sources", 0))
-                avg_eng = float(row.get("avg_engagement", 0) or 0)
-                max_eng = int(row.get("max_engagement", 0) or 0)
-                total_comments = int(row.get("total_comments", 0) or 0)
-                avg_mag = float(row.get("avg_magnitude", 0) or 0)
-                avg_sent = float(row.get("avg_sentiment", 0) or 0)
-                last_seen = row.get("last_seen_at", "")
-                first_seen = row.get("first_seen_at", "")
-                oldest_source = row.get("oldest_source_at", "")
-                newest_source = row.get("newest_source_at", "")
+            # Step 4: Filter by scope
+            signals = self._filter_signals_by_scope(signals, event_ticker)
 
-                if ticker not in market_signals:
-                    market_signals[ticker] = {
-                        "market_ticker": ticker,
-                        "event_tickers": [],
-                        "occurrence_count": 0,
-                        "unique_source_count": 0,
-                        "total_engagement": 0,
-                        "max_engagement": 0,
-                        "total_comments": 0,
-                        "directions": {"bullish": 0, "bearish": 0},
-                        "avg_magnitude": 0,
-                        "_magnitude_sum": 0.0,
-                        "_magnitude_count": 0,
-                        "last_seen_at": None,       # When extraction was last saved
-                        "first_seen_at": None,      # When extraction was first saved
-                        "oldest_source_at": None,   # When oldest source (Reddit post) was published
-                        "newest_source_at": None,   # When newest source (Reddit post) was published
-                        "recent_extractions": [],
-                        "entity_mentions": [],
-                        "context_factors": [],
-                        "_entity_agg": {},   # temp: entity_name -> accumulator
-                        "_context_agg": {},  # temp: category+direction -> accumulator
-                    }
+            # Step 5: Attach snippets
+            await self._attach_extraction_snippets(signals, window_hours, limit)
 
-                sig = market_signals[ticker]
-
-                # Update last_seen / first_seen (extraction save time)
-                if last_seen and (not sig["last_seen_at"] or last_seen > sig["last_seen_at"]):
-                    sig["last_seen_at"] = last_seen
-                if first_seen and (not sig["first_seen_at"] or first_seen < sig["first_seen_at"]):
-                    sig["first_seen_at"] = first_seen
-
-                # Update oldest/newest source timestamps (original post publication time)
-                if oldest_source and (not sig["oldest_source_at"] or oldest_source < sig["oldest_source_at"]):
-                    sig["oldest_source_at"] = oldest_source
-                if newest_source and (not sig["newest_source_at"] or newest_source > sig["newest_source_at"]):
-                    sig["newest_source_at"] = newest_source
-
-                # Branch by extraction_class
-                if extraction_class == "market_signal":
-                    sig["occurrence_count"] += occ_count
-                    sig["unique_source_count"] = max(sig["unique_source_count"], unique_src)
-                    sig["total_engagement"] += round(avg_eng * occ_count)
-                    sig["max_engagement"] = max(sig["max_engagement"], max_eng)
-                    sig["total_comments"] += total_comments
-
-                    if direction in sig["directions"]:
-                        sig["directions"][direction] += occ_count
-
-                    if avg_mag:
-                        sig["_magnitude_sum"] += avg_mag * occ_count
-                        sig["_magnitude_count"] += occ_count
-
-                elif extraction_class == "entity_mention":
-                    # Entity mentions: group by entity_name (via direction field from SQL,
-                    # which is attributes->>'direction'; for entity_mention, we use
-                    # attributes->>'entity_name' via a workaround — but the SQL groups
-                    # by direction. We'll aggregate entity data from the sentiment field.)
-                    # Since the SQL function groups by direction, and entity_mention
-                    # uses direction for entity_name isn't standard, we accumulate
-                    # using the row's avg_sentiment and occurrence data.
-                    entity_key = direction or "unknown_entity"
-                    agg = sig["_entity_agg"]
-                    if entity_key not in agg:
-                        agg[entity_key] = {
-                            "entity_name": entity_key,
-                            "mention_count": 0,
-                            "avg_sentiment": 0.0,
-                            "_sentiment_sum": 0.0,
-                            "unique_sources": 0,
-                        }
-                    ea = agg[entity_key]
-                    ea["mention_count"] += occ_count
-                    ea["_sentiment_sum"] += avg_sent * occ_count
-                    ea["unique_sources"] = max(ea["unique_sources"], unique_src)
-
-                elif extraction_class == "context_factor":
-                    # Context factors: group by category (via direction field from SQL)
-                    ctx_key = direction or "unknown"
-                    cagg = sig["_context_agg"]
-                    if ctx_key not in cagg:
-                        cagg[ctx_key] = {
-                            "category": ctx_key,
-                            "direction": direction,
-                            "mention_count": 0,
-                        }
-                    cagg[ctx_key]["mention_count"] += occ_count
-
-                # Custom per-event classes also contribute to occurrence counts
-                else:
-                    sig["occurrence_count"] += occ_count
-
-            # Step 3: Finalize aggregations and apply event_ticker filter
-            signals = []
-            for ticker, sig in market_signals.items():
-                # Compute avg_magnitude from accumulated values
-                if sig["_magnitude_count"] > 0:
-                    sig["avg_magnitude"] = round(sig["_magnitude_sum"] / sig["_magnitude_count"], 1)
-                del sig["_magnitude_sum"]
-                del sig["_magnitude_count"]
-
-                # Compute directional consensus
-                total_dir = sig["directions"]["bullish"] + sig["directions"]["bearish"]
-                if total_dir > 0:
-                    sig["consensus"] = "bullish" if sig["directions"]["bullish"] > sig["directions"]["bearish"] else "bearish"
-                    sig["consensus_strength"] = round(max(sig["directions"].values()) / total_dir, 2)
-                else:
-                    sig["consensus"] = "neutral"
-                    sig["consensus_strength"] = 0.0
-
-                # Finalize entity_mentions
-                for ea in sig["_entity_agg"].values():
-                    mc = ea["mention_count"]
-                    sig["entity_mentions"].append({
-                        "entity_name": ea["entity_name"],
-                        "mention_count": mc,
-                        "avg_sentiment": round(ea["_sentiment_sum"] / mc, 1) if mc > 0 else 0.0,
-                        "unique_sources": ea["unique_sources"],
-                    })
-                del sig["_entity_agg"]
-
-                # Sort entity_mentions by mention_count desc
-                sig["entity_mentions"].sort(key=lambda e: e["mention_count"], reverse=True)
-
-                # Finalize context_factors
-                sig["context_factors"] = list(sig["_context_agg"].values())
-                sig["context_factors"].sort(key=lambda c: c["mention_count"], reverse=True)
-                del sig["_context_agg"]
-
-                signals.append(sig)
-
-            # Step 3.5: Filter to tracked markets only (belt-and-suspenders)
-            if self._tracked_markets:
-                tracked = {m.ticker for m in self._tracked_markets.get_all()}
-                before_count = len(signals)
-                signals = [s for s in signals if s["market_ticker"] in tracked]
-                filtered = before_count - len(signals)
-                if filtered > 0:
-                    logger.info(
-                        f"[deep_agent.tools.get_extraction_signals] Filtered {filtered} signals "
-                        f"with non-tracked tickers"
-                    )
-
-            # Step 4: Event ticker filter (Python-side since SQL doesn't support it)
-            if event_ticker:
-                # Lookup which tickers belong to the target event via tracked_markets
-                event_tickers_set: set = set()
-                if self._tracked_markets:
-                    markets_by_event = self._tracked_markets.get_markets_by_event()
-                    event_markets = markets_by_event.get(event_ticker, [])
-                    event_tickers_set = {m.ticker for m in event_markets}
-
-                if event_tickers_set:
-                    signals = [s for s in signals if s["market_ticker"] in event_tickers_set]
-                    # Tag event_tickers on filtered signals
-                    for s in signals:
-                        s["event_tickers"] = [event_ticker]
-
-            # Step 5: Fetch recent extraction snippets (top 3 by engagement per market)
-            # This is a supplementary query for the most impactful recent extractions.
-            top_tickers = [s["market_ticker"] for s in signals[:limit]]
-            if top_tickers:
-                try:
-                    from datetime import timezone, timedelta
-                    cutoff = datetime.now(timezone.utc) - timedelta(hours=window_hours)
-
-                    snippets_result = supabase.table("extractions") \
-                        .select("market_tickers, extraction_text, attributes, source_subreddit, engagement_score, extraction_class, source_created_at, created_at") \
-                        .eq("extraction_class", "market_signal") \
-                        .gte("created_at", cutoff.isoformat()) \
-                        .order("engagement_score", desc=True) \
-                        .limit(limit * 3) \
-                        .execute()
-
-                    # Build snippets lookup by ticker
-                    snippets_by_ticker: Dict[str, List[Dict]] = {}
-                    for row in (snippets_result.data or []):
-                        tickers = row.get("market_tickers", [])
-                        attrs = row.get("attributes", {})
-                        for t in tickers:
-                            if t in top_tickers:
-                                if t not in snippets_by_ticker:
-                                    snippets_by_ticker[t] = []
-                                if len(snippets_by_ticker[t]) < 3:
-                                    snippets_by_ticker[t].append({
-                                        "text": (row.get("extraction_text", "") or "")[:200],
-                                        "direction": attrs.get("direction", ""),
-                                        "magnitude": attrs.get("magnitude"),
-                                        "confidence": attrs.get("confidence", ""),
-                                        "reasoning": (attrs.get("reasoning", "") or "")[:150],
-                                        "source_subreddit": row.get("source_subreddit", ""),
-                                        "engagement": row.get("engagement_score", 0),
-                                        "source_created_at": row.get("source_created_at"),
-                                        "extracted_at": row.get("created_at"),
-                                    })
-
-                    # Attach snippets to signals
-                    for sig in signals:
-                        sig["recent_extractions"] = snippets_by_ticker.get(sig["market_ticker"], [])
-
-                except Exception as e:
-                    logger.warning(f"[deep_agent.tools.get_extraction_signals] Snippets query failed: {e}")
-
-            # Sort by occurrence count
+            # Step 6: Sort and return
             signals.sort(key=lambda s: s["occurrence_count"], reverse=True)
 
             return {
@@ -2409,7 +2837,7 @@ relevant information in Reddit posts and news articles that impact these specifi
         Never blocks the agent cycle. Returns cached data immediately or
         kicks off a background refresh and returns a pending status.
         """
-        self._tool_calls["get_reddit_daily_digest"] = self._tool_calls.get("get_reddit_daily_digest", 0) + 1
+        self._tool_calls["get_reddit_daily_digest"] += 1
 
         if not self._reddit_historic_agent:
             return {"status": "unavailable", "message": "Reddit historic agent not initialized."}
@@ -2457,7 +2885,7 @@ relevant information in Reddit posts and news articles that impact these specifi
             Dict with article_count, source_diversity, tone_summary,
             key_themes, key_persons, key_organizations, top_articles, timeline
         """
-        self._tool_calls["query_gdelt_news"] = self._tool_calls.get("query_gdelt_news", 0) + 1
+        self._tool_calls["query_gdelt_news"] += 1
 
         if not self._gdelt_client:
             return {"status": "unavailable", "message": "GDELT client not initialized. Set GDELT_ENABLED=true and GDELT_GCP_PROJECT_ID."}
@@ -2531,7 +2959,7 @@ relevant information in Reddit posts and news articles that impact these specifi
             Dict with event_count, quad_class_summary, goldstein_summary,
             top_event_triples, top_actors, event_code_distribution, geo_hotspots
         """
-        self._tool_calls["query_gdelt_events"] = self._tool_calls.get("query_gdelt_events", 0) + 1
+        self._tool_calls["query_gdelt_events"] += 1
 
         if not self._gdelt_client:
             return {"status": "unavailable", "message": "GDELT client not initialized. Set GDELT_ENABLED=true and GDELT_GCP_PROJECT_ID."}
@@ -2605,7 +3033,7 @@ relevant information in Reddit posts and news articles that impact these specifi
         Returns:
             Dict with article_count, source_diversity, tone_summary, articles (with title, url, tone)
         """
-        self._tool_calls["search_gdelt_articles"] = self._tool_calls.get("search_gdelt_articles", 0) + 1
+        self._tool_calls["search_gdelt_articles"] += 1
 
         if not self._gdelt_doc_client:
             return {"status": "unavailable", "message": "GDELT DOC client not initialized."}
@@ -2656,7 +3084,7 @@ relevant information in Reddit posts and news articles that impact these specifi
         Returns:
             Dict with timeline array of {date, value} points
         """
-        self._tool_calls["get_gdelt_volume_timeline"] = self._tool_calls.get("get_gdelt_volume_timeline", 0) + 1
+        self._tool_calls["get_gdelt_volume_timeline"] += 1
 
         if not self._gdelt_doc_client:
             return {"status": "unavailable", "message": "GDELT DOC client not initialized."}

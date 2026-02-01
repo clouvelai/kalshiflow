@@ -52,8 +52,7 @@ async def test_trading_client_integration():
     os.environ["V3_ENABLE_TRADING_CLIENT"] = "true"
     os.environ["V3_TRADING_MAX_ORDERS"] = "5"
     os.environ["V3_TRADING_MAX_POSITION_SIZE"] = "50"
-    os.environ["RL_MODE"] = "config"  # Use specific markets, not discovery
-    os.environ["RL_MARKET_TICKERS"] = "INXD-25JAN03"  # Single market for testing
+    os.environ["V3_MARKET_TICKERS"] = "INXD-25JAN03"  # Single market for testing
     
     logger.info("=" * 60)
     logger.info("TESTING V3 TRADING CLIENT INTEGRATION")

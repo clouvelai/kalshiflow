@@ -71,6 +71,7 @@ class DeepAgentStrategy:
         state_container: 'V3StateContainer',
         websocket_manager: Optional['V3WebSocketManager'] = None,
         tracked_markets: Optional['TrackedMarketsState'] = None,
+        event_position_tracker: Optional[EventPositionTracker] = None,
     ) -> None:
         """
         Start the deep agent strategy.
@@ -80,6 +81,7 @@ class DeepAgentStrategy:
             state_container: State container for positions/orders
             websocket_manager: WebSocket manager for frontend broadcasting
             tracked_markets: Tracked markets state for market discovery
+            event_position_tracker: Shared tracker from coordinator (preferred)
         """
         if self._running:
             logger.warning("[deep_agent] Already running")
@@ -92,8 +94,11 @@ class DeepAgentStrategy:
         # Build config from DeepAgentConfig defaults (env var overrides handled there)
         config = DeepAgentConfig()
 
-        # Create EventPositionTracker for event-level risk awareness
-        if tracked_markets and state_container:
+        # Use shared EventPositionTracker if provided, else create local fallback
+        if event_position_tracker:
+            self._event_position_tracker = event_position_tracker
+            logger.info("[deep_agent] Using shared EventPositionTracker from coordinator")
+        elif tracked_markets and state_container:
             try:
                 from ...config.environment import load_config
                 v3_config = load_config()
@@ -102,7 +107,7 @@ class DeepAgentStrategy:
                     state_container=state_container,
                     config=v3_config,
                 )
-                logger.info("[deep_agent] EventPositionTracker created for event awareness")
+                logger.info("[deep_agent] Created local EventPositionTracker (fallback)")
             except Exception as e:
                 logger.warning(f"[deep_agent] Could not create EventPositionTracker: {e}")
                 self._event_position_tracker = None
@@ -221,7 +226,7 @@ class DeepAgentStrategy:
             "status": "active" if self._running else "stopped",
             "strategy_name": self.display_name,
             # Session metrics
-            "session_pnl_cents": 0,  # TODO: Get from agent
+            "session_pnl_cents": self._agent._reflection.get_stats().get("session_pnl_cents", 0) if self._agent else 0,
             "trades_count": stats["trades_executed"],
             "win_rate": stats["win_rate"],
             # Cycle info

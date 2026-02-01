@@ -15,7 +15,7 @@ const V3MetricsPanel = ({ metrics }) => {
   const signalStats = metrics.signal_aggregator || {};
 
   return (
-    <div className="bg-gray-900/50 backdrop-blur-sm rounded-xl border border-gray-800 p-6 space-y-5">
+    <div className="bg-gray-900/50 backdrop-blur-sm rounded-xl border border-gray-800 p-6 space-y-5" data-testid="v3-metrics-panel">
       <h3 className="text-sm font-bold text-gray-300 uppercase tracking-wider">System Metrics</h3>
 
       <div className="space-y-4">
@@ -23,7 +23,7 @@ const V3MetricsPanel = ({ metrics }) => {
         <div className="space-y-3">
           <div className="flex justify-between items-center">
             <span className="text-sm text-gray-500">Tracked Markets</span>
-            <span className="text-lg font-mono font-bold text-white">
+            <span className="text-lg font-mono font-bold text-white" data-testid="v3-tracked-markets">
               {metrics.tracked_markets ?? metrics.markets_connected ?? 0}
             </span>
           </div>
@@ -54,7 +54,7 @@ const V3MetricsPanel = ({ metrics }) => {
         <div className="pt-4 border-t border-gray-700 space-y-3">
           <div className="flex justify-between items-center">
             <span className="text-sm text-gray-500">Ping Health</span>
-            <div className={`px-3 py-1 rounded-full text-xs font-bold ${getPingHealthColor(metrics.ping_health)}`}>
+            <div className={`px-3 py-1 rounded-full text-xs font-bold ${getPingHealthColor(metrics.ping_health)}`} data-testid="v3-ping-health">
               {metrics.ping_health?.toUpperCase() || 'UNKNOWN'}
             </div>
           </div>
@@ -78,7 +78,7 @@ const V3MetricsPanel = ({ metrics }) => {
         <div className="pt-4 border-t border-gray-700">
           <div className="flex justify-between items-center">
             <span className="text-sm text-gray-500">Health Status</span>
-            <div className={`px-3 py-1 rounded-full text-xs font-bold ${
+            <div data-testid="v3-health-status" className={`px-3 py-1 rounded-full text-xs font-bold ${
               metrics.health === 'healthy' ? 'bg-green-900/30 text-green-400' :
               metrics.health === 'unhealthy' ? 'bg-red-900/30 text-red-400' :
               'bg-gray-900/30 text-gray-400'
@@ -93,7 +93,7 @@ const V3MetricsPanel = ({ metrics }) => {
       <div className="pt-4 border-t border-gray-700">
         <div className="flex items-center justify-between mb-2">
           <span className="text-xs text-gray-500 uppercase tracking-wider">API Status</span>
-          <div className={`px-3 py-1 rounded-full text-xs font-bold ${
+          <div data-testid="v3-api-status" className={`px-3 py-1 rounded-full text-xs font-bold ${
             metrics.api_connected ? 'bg-green-900/30 text-green-400' : 'bg-red-900/30 text-red-400'
           }`}>
             {metrics.api_connected ? 'CONNECTED' : 'DISCONNECTED'}

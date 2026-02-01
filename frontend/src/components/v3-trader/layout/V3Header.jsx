@@ -12,9 +12,10 @@ const NavTabs = () => {
   const isAgent = location.pathname === '/v3-trader/agent';
 
   return (
-    <div className="flex items-center bg-gray-800/50 rounded-lg p-1">
+    <div className="flex items-center bg-gray-800/50 rounded-lg p-1" data-testid="v3-nav-tabs">
       <Link
         to="/v3"
+        data-testid="v3-nav-trader"
         className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
           isTrader
             ? 'bg-cyan-500/30 text-cyan-300'
@@ -25,6 +26,7 @@ const NavTabs = () => {
       </Link>
       <Link
         to="/v3-trader/agent"
+        data-testid="v3-nav-agent"
         className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors flex items-center gap-1.5 ${
           isAgent
             ? 'bg-violet-500/30 text-violet-300'
@@ -45,7 +47,7 @@ const V3Header = ({ wsStatus, currentState, balance = 0, minTraderCash = 0 }) =>
   const isLowBalance = minTraderCash > 0 && balance < minTraderCash;
 
   return (
-    <div className="border-b border-gray-800 bg-black/30 backdrop-blur-sm sticky top-0 z-10">
+    <div className="border-b border-gray-800 bg-black/30 backdrop-blur-sm sticky top-0 z-10" data-testid="v3-header">
       <div className="max-w-7xl mx-auto px-6 py-4">
         <div className="flex items-center justify-between">
           <div className="flex items-center space-x-4">
@@ -73,22 +75,22 @@ const V3Header = ({ wsStatus, currentState, balance = 0, minTraderCash = 0 }) =>
 
           <div className="flex items-center space-x-6">
             {/* Connection Status */}
-            <div className="flex items-center space-x-2">
+            <div className="flex items-center space-x-2" data-testid="v3-connection-status">
               {wsStatus === 'connected' ? (
                 <>
                   <Wifi className="w-5 h-5 text-green-400" />
-                  <span className="text-sm text-green-400 font-medium">Connected</span>
+                  <span className="text-sm text-green-400 font-medium" data-testid="v3-connection-text">Connected</span>
                 </>
               ) : (
                 <>
                   <WifiOff className="w-5 h-5 text-red-400" />
-                  <span className="text-sm text-red-400 font-medium">Disconnected</span>
+                  <span className="text-sm text-red-400 font-medium" data-testid="v3-connection-text">Disconnected</span>
                 </>
               )}
             </div>
 
             {/* Current State Badge */}
-            <StateBadge state={currentState} />
+            <span data-testid="v3-trader-state"><StateBadge state={currentState} /></span>
           </div>
         </div>
       </div>

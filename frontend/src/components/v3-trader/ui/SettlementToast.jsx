@@ -13,7 +13,7 @@ const SettlementToast = ({ settlement, onDismiss }) => {
   return (
     <div className={`fixed bottom-4 right-4 p-4 rounded-lg shadow-lg z-50 border backdrop-blur-sm
       ${isProfit ? 'bg-green-900/90 border-green-700' : 'bg-red-900/90 border-red-700'}
-      animate-pulse`}
+      animate-toast-enter`}
     >
       <div className="flex items-center space-x-3">
         <CheckCircle className={`w-5 h-5 ${isProfit ? 'text-green-400' : 'text-red-400'}`} />

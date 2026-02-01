@@ -15,8 +15,7 @@ Key Responsibilities:
     2. **REST Enrichment** - Lookup market info via trading client (category not in WS)
     3. **Category Filtering** - Accept/reject based on configured categories
     4. **State Management** - Add/update markets in TrackedMarketsState
-    5. **Subscription Coordination** - Trigger orderbook subscribe/unsubscribe callbacks
-    6. **Audit Trail** - Store ALL lifecycle events to database
+    5. **Audit Trail** - Store ALL lifecycle events to database
 
 Architecture Position:
     Used by:
@@ -34,7 +33,7 @@ import asyncio
 import logging
 import os
 import time
-from typing import Dict, Any, List, Optional, Callable, Awaitable, TYPE_CHECKING
+from typing import Dict, Any, List, Optional, TYPE_CHECKING
 
 from ..config.environment import DEFAULT_LIFECYCLE_CATEGORIES
 from ..core.event_bus import EventBus, EventType, MarketLifecycleEvent
@@ -64,22 +63,21 @@ class EventLifecycleService:
     - REST lookup via trading client for market info (includes category)
     - Category filtering with configurable allowed categories
     - Capacity management via TrackedMarketsState
-    - Triggers orderbook subscription on tracking, unsubscription on determination
     - Stores all events to lifecycle_events table for audit
+
+    Orderbook subscriptions are managed by TrackedMarketsState's on_added/on_removed
+    callbacks, not by this service directly.
 
     Processing Flow (on 'created' event):
         1. Check capacity (fast fail)
         2. REST lookup GET /markets/{ticker}
         3. Category filter
-        4. Persist to TrackedMarketsState and DB
+        4. Persist to TrackedMarketsState (triggers orderbook subscribe via on_added)
         5. Emit MARKET_TRACKED event
-        6. Call orderbook subscribe callback
 
     Processing Flow (on 'determined' event):
         1. Update TrackedMarketsState status
-        2. Update DB status
-        3. Emit MARKET_DETERMINED event
-        4. Call orderbook unsubscribe callback
+        2. Emit MARKET_DETERMINED event (coordinator handles cleanup + unsubscribe)
     """
 
     def __init__(
@@ -110,11 +108,6 @@ class EventLifecycleService:
         self._categories = [c.strip().lower() for c in (categories or DEFAULT_LIFECYCLE_CATEGORIES)]
         self._sports_prefixes = sports_prefixes if sports_prefixes is not None else SPORTS_ALLOWED_PREFIXES
 
-        # Callbacks for orderbook subscription management
-        # Set by coordinator after initialization
-        self._on_subscribe: Optional[Callable[[str], Awaitable[bool]]] = None
-        self._on_unsubscribe: Optional[Callable[[str], Awaitable[bool]]] = None
-
         # Statistics
         self._events_received = 0
         self._events_by_type: Dict[str, int] = {}
@@ -133,36 +126,6 @@ class EventLifecycleService:
         logger.info(
             f"EventLifecycleService initialized with categories: {self._categories}"
         )
-
-    def set_subscribe_callback(
-        self,
-        callback: Callable[[str], Awaitable[bool]]
-    ) -> None:
-        """
-        Set callback for orderbook subscription.
-
-        Called when a market is tracked and needs orderbook subscription.
-
-        Args:
-            callback: Async function(ticker: str) -> bool
-        """
-        self._on_subscribe = callback
-        logger.debug("Subscribe callback registered")
-
-    def set_unsubscribe_callback(
-        self,
-        callback: Callable[[str], Awaitable[bool]]
-    ) -> None:
-        """
-        Set callback for orderbook unsubscription.
-
-        Called when a market is determined and needs orderbook unsubscription.
-
-        Args:
-            callback: Async function(ticker: str) -> bool
-        """
-        self._on_unsubscribe = callback
-        logger.debug("Unsubscribe callback registered")
 
     async def _handle_lifecycle_event(self, event: MarketLifecycleEvent) -> None:
         """
@@ -243,9 +206,8 @@ class EventLifecycleService:
         1. Check capacity (fast fail)
         2. REST lookup for market info (includes category)
         3. Category filter
-        4. Persist to state and DB
-        5. Emit MARKET_TRACKED event
-        6. Request orderbook subscription
+        4. Persist to state
+        5. Emit MARKET_TRACKED event (triggers orderbook subscription via TrackedMarketsState callback)
 
         Args:
             market_ticker: Market ticker that was created
@@ -294,6 +256,9 @@ class EventLifecycleService:
             tracked_at=time.time(),
             market_info=market_info,
             discovery_source="lifecycle_ws",
+            volume=market_info.get("volume", 0),
+            volume_24h=market_info.get("volume_24h", 0),
+            open_interest=market_info.get("open_interest", 0),
             yes_bid=market_info.get("yes_bid", 0) or 0,
             yes_ask=market_info.get("yes_ask", 0) or 0,
             price=market_info.get("last_price", 0) or 0,
@@ -316,18 +281,7 @@ class EventLifecycleService:
             market_info=market_info,
         )
 
-        # Step 6: Request orderbook subscription
-        if self._on_subscribe:
-            try:
-                success = await self._on_subscribe(market_ticker)
-                if success:
-                    logger.info(f"Tracked and subscribed to {market_ticker} ({category})")
-                else:
-                    logger.warning(f"Tracked {market_ticker} but orderbook subscription failed")
-            except Exception as e:
-                logger.error(f"Error subscribing to {market_ticker}: {e}")
-        else:
-            logger.info(f"Tracked {market_ticker} ({category}) - no subscribe callback")
+        logger.info(f"Tracked {market_ticker} ({category}) via lifecycle WS")
 
     async def _handle_determined(self, market_ticker: str, payload: Dict[str, Any]) -> None:
         """
@@ -335,9 +289,7 @@ class EventLifecycleService:
 
         Processing flow:
         1. Update state to DETERMINED
-        2. Update DB status
-        3. Emit MARKET_DETERMINED event
-        4. Request orderbook unsubscription
+        2. Emit MARKET_DETERMINED event (coordinator handles cleanup)
 
         Args:
             market_ticker: Market ticker that was determined
@@ -362,6 +314,7 @@ class EventLifecycleService:
             market_ticker,
             MarketStatus.DETERMINED,
             determined_ts=determined_ts,
+            result=result,
         )
 
         # Step 2: Emit MARKET_DETERMINED event
@@ -371,18 +324,7 @@ class EventLifecycleService:
             determined_ts=determined_ts,
         )
 
-        # Step 3: Request orderbook unsubscription
-        if self._on_unsubscribe:
-            try:
-                success = await self._on_unsubscribe(market_ticker)
-                if success:
-                    logger.info(f"Unsubscribed from determined market: {market_ticker}")
-                else:
-                    logger.warning(f"Failed to unsubscribe from {market_ticker}")
-            except Exception as e:
-                logger.error(f"Error unsubscribing from {market_ticker}: {e}")
-        else:
-            logger.info(f"Market determined: {market_ticker} - no unsubscribe callback")
+        logger.info(f"Market determined: {market_ticker} (result={result})")
 
     async def _handle_settled(self, market_ticker: str, payload: Dict[str, Any]) -> None:
         """
@@ -505,11 +447,10 @@ class EventLifecycleService:
         Flow:
             1. Capacity check (fast fail)
             2. Duplicate check
-            3. Category filter using _is_allowed_category()
+            3. Category filter using _is_allowed_market()
             4. Create TrackedMarket with discovery_source="api"
-            5. Persist to state and DB
-            6. Emit MARKET_TRACKED event
-            7. Call orderbook subscribe callback
+            5. Persist to state
+            6. Emit MARKET_TRACKED event (triggers orderbook subscription via TrackedMarketsState callback)
 
         Args:
             market_info: Full market data dict from REST API
@@ -610,18 +551,7 @@ class EventLifecycleService:
             market_info=market_info,
         )
 
-        # Step 7: Request orderbook subscription
-        if self._on_subscribe:
-            try:
-                success = await self._on_subscribe(market_ticker)
-                if success:
-                    logger.info(f"API discovered and subscribed to {market_ticker} ({category})")
-                else:
-                    logger.warning(f"API discovered {market_ticker} but orderbook subscription failed")
-            except Exception as e:
-                logger.error(f"Error subscribing to {market_ticker}: {e}")
-        else:
-            logger.info(f"API discovered {market_ticker} ({category}) - no subscribe callback")
+        logger.info(f"API discovered {market_ticker} ({category})")
 
         return True
 
@@ -712,6 +642,4 @@ class EventLifecycleService:
             "categories": stats["categories"],
             "uptime_seconds": stats["uptime_seconds"],
             "time_since_event": time_since_event,
-            "has_subscribe_callback": self._on_subscribe is not None,
-            "has_unsubscribe_callback": self._on_unsubscribe is not None,
         }

@@ -6,7 +6,7 @@ import { formatAge } from '../../../utils/v3-trader';
  * LiveIndicator - Pulsing live status indicator
  */
 const LiveIndicator = memo(({ isLive }) => (
-  <div className="flex items-center space-x-1.5">
+  <div className="flex items-center space-x-1.5" data-testid="trade-processing-live">
     <div className="relative">
       <div className={`w-2 h-2 rounded-full ${isLive ? 'bg-cyan-400' : 'bg-gray-600'}`} />
       {isLive && (
@@ -212,7 +212,7 @@ const TradeProcessingPanel = ({ tradeProcessing }) => {
   const isLive = lastSyncAge !== null && lastSyncAge < 10;
 
   return (
-    <div className="
+    <div data-testid="trade-processing-panel" className="
       bg-gradient-to-br from-gray-900/70 via-gray-900/50 to-gray-950/70
       backdrop-blur-md rounded-2xl
       border border-gray-800/80

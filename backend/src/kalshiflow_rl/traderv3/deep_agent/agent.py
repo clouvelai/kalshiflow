@@ -52,6 +52,12 @@ MODEL_PRICING = {
         "cache_write": 1.25 / 1_000_000,
         "cache_read": 0.10 / 1_000_000,
     },
+    "claude-3-5-haiku": {
+        "input": 0.80 / 1_000_000,
+        "output": 4.0 / 1_000_000,
+        "cache_write": 1.0 / 1_000_000,
+        "cache_read": 0.08 / 1_000_000,
+    },
 }
 
 
@@ -170,6 +176,8 @@ class SelfImprovingAgent:
         # (the callback is set after circuit breaker state is initialized below)
         self._tools._min_spread_cents = self._config.min_spread_cents
         self._tools._max_event_exposure_cents = self._config.max_event_exposure_cents
+        self._tools._require_fresh_news = self._config.require_fresh_news
+        self._tools._max_news_age_hours = self._config.max_news_age_hours
 
         # Initialize reflection engine
         self._reflection = ReflectionEngine(
@@ -218,6 +226,9 @@ class SelfImprovingAgent:
         # Wire circuit breaker checker callback into tools for preflight_check
         self._tools._circuit_breaker_checker = self._is_ticker_blacklisted
 
+        # Wire token usage callback so tools can report their own API calls
+        self._tools._token_usage_callback = self._accumulate_external_tokens
+
         # Think enforcement tracking (soft enforcement - warn if trade without think)
         self._last_think_decision: Optional[str] = None
         self._last_think_timestamp: Optional[float] = None
@@ -244,6 +255,18 @@ class SelfImprovingAgent:
 
         # Tool definitions for Claude
         self._tool_definitions = self._build_tool_definitions()
+
+    def rebuild_tool_definitions(self) -> None:
+        """Rebuild tool definitions after external clients are wired to tools.
+
+        Called by coordinator after GDELT/microstructure clients are attached,
+        so that tool availability reflects the actual wired state.
+        """
+        old_count = len(self._tool_definitions)
+        self._tool_definitions = self._build_tool_definitions()
+        new_count = len(self._tool_definitions)
+        if new_count != old_count:
+            logger.info(f"Tool definitions rebuilt: {old_count} → {new_count} tools")
 
     def _build_tool_definitions(self) -> List[Dict]:
         """Build Claude tool definitions."""
@@ -575,6 +598,49 @@ class SelfImprovingAgent:
                 }
             },
             {
+                "name": "read_todos",
+                "description": "Read your current TODO task list. Returns pending and completed tasks with priorities. Use at cycle start to check your plan, and after completing tasks to update the list.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }
+            },
+            {
+                "name": "write_todos",
+                "description": "Write your TODO task list (full replace). Use to plan multi-step research, track investigation goals, and prioritize across markets. Completed items auto-expire after 10 cycles. Call with all current items (pending + done) — this replaces the entire list.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "items": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "task": {
+                                        "type": "string",
+                                        "description": "What needs to be done"
+                                    },
+                                    "priority": {
+                                        "type": "string",
+                                        "enum": ["high", "medium", "low"],
+                                        "description": "Task priority"
+                                    },
+                                    "status": {
+                                        "type": "string",
+                                        "enum": ["pending", "done"],
+                                        "description": "Task status"
+                                    }
+                                },
+                                "required": ["task", "priority", "status"]
+                            },
+                            "description": "Complete task list (replaces existing)"
+                        }
+                    },
+                    "required": ["items"]
+                }
+            },
+            {
                 "name": "evaluate_extractions",
                 "description": "Score extraction accuracy after trade settlement. Updates quality_score on extractions and auto-promotes accurate extractions from winning trades as examples for future extraction calls. Call this during reflection after a trade settles.",
                 "input_schema": {
@@ -816,6 +882,49 @@ class SelfImprovingAgent:
                         }
                     },
                 ])
+
+        # Microstructure tool (always available — gracefully degrades if services not wired)
+        tools.append({
+            "name": "get_microstructure",
+            "description": "Get real-time microstructure signals: orderbook (spread, imbalance, large orders) and trade flow (YES/NO ratio, price movement, trade count). Single-market mode (with ticker) also returns L2 orderbook depth — top 5 price levels per side (yes_bids, yes_asks, no_bids, no_asks) as [price, quantity] pairs. Call with a ticker for detailed view or without to scan all markets. Use to detect whale activity, liquidity shifts, thin books, and momentum.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "market_ticker": {
+                        "type": "string",
+                        "description": "Optional: specific market ticker. Omit to scan all tracked markets."
+                    }
+                },
+                "required": []
+            }
+        })
+
+        # Candlestick / OHLC tool
+        tools.append({
+            "name": "get_candlesticks",
+            "description": "Fetch historical OHLC candlestick data for ALL markets in an event (single API call). Returns open/close/high/low prices, volume, and last 10 candles per market. Use to see price history, detect trends, and identify support/resistance levels.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "event_ticker": {
+                        "type": "string",
+                        "description": "Event ticker (e.g., 'KXBONDIOUT-28')"
+                    },
+                    "period": {
+                        "type": "string",
+                        "enum": ["1min", "hourly", "daily"],
+                        "description": "Candle period (default: hourly)",
+                        "default": "hourly"
+                    },
+                    "hours_back": {
+                        "type": "integer",
+                        "description": "Hours of history to fetch (default: 24)",
+                        "default": 24
+                    }
+                },
+                "required": ["event_ticker"]
+            }
+        })
 
         return tools
 
@@ -1615,6 +1724,18 @@ Return ONLY the updated strategy.md content, nothing else."""
                 timeout=45.0,
             )
 
+            # Track distillation token usage
+            if hasattr(response, 'usage') and response.usage:
+                u = response.usage
+                self._total_input_tokens += getattr(u, 'input_tokens', 0) or 0
+                self._total_output_tokens += getattr(u, 'output_tokens', 0) or 0
+                self._total_cache_read_tokens += getattr(u, 'cache_read_input_tokens', 0) or 0
+                self._total_cache_created_tokens += getattr(u, 'cache_creation_input_tokens', 0) or 0
+                logger.info(
+                    f"[deep_agent.agent] Distillation tokens: "
+                    f"input={getattr(u, 'input_tokens', 0)}, output={getattr(u, 'output_tokens', 0)}"
+                )
+
             updated_strategy = response.content[0].text.strip()
 
             # Sanity check: must be non-empty and contain key markers
@@ -1865,6 +1986,17 @@ Return ONLY the updated strategy.md content, nothing else."""
         # Compact history between cycles to save tokens on next call
         self._compact_history_between_cycles()
 
+        # Periodic full history reset every 5 cycles to prevent context pollution.
+        # Memory files (strategy.md, cycle_journal.md, todos.json, etc.) provide
+        # cross-cycle continuity, so conversation history is largely redundant.
+        if self._cycle_count > 0 and self._cycle_count % 5 == 0:
+            old_len = len(self._conversation_history)
+            self._conversation_history.clear()
+            logger.info(
+                f"[deep_agent.agent] Periodic history reset at cycle {self._cycle_count}: "
+                f"cleared {old_len} messages (memory files provide continuity)"
+            )
+
         # Persist session state for crash recovery
         self._save_session_state()
 
@@ -1984,6 +2116,23 @@ Return ONLY the updated strategy.md content, nothing else."""
                 journal_str = f"\n### Recent Cycle Journal (Your Reasoning Trail)\n{journal_preview}\n"
         except Exception as e:
             logger.debug(f"[deep_agent.agent] Could not load cycle journal: {e}")
+
+        # Load TODO task list (agent's forward-looking plan)
+        todos_str = ""
+        try:
+            todos_data = await self._tools.read_todos()
+            pending_todos = [
+                i for i in todos_data.get("items", [])
+                if i.get("status") != "done"
+            ]
+            if pending_todos:
+                todo_lines = ["### Your TODO List (Pending Tasks)"]
+                for item in pending_todos:
+                    priority_tag = f"[{item.get('priority', 'medium')}]"
+                    todo_lines.append(f"- {priority_tag} {item.get('task', '')}")
+                todos_str = "\n" + "\n".join(todo_lines) + "\n"
+        except Exception as e:
+            logger.debug(f"[deep_agent.agent] Could not load todos: {e}")
 
         # Load mistakes and patterns EVERY cycle, priority-ordered by confidence tags
         # Char limits scale down after cycle 10 to save tokens on mature sessions
@@ -2150,6 +2299,20 @@ Return ONLY the updated strategy.md content, nothing else."""
 3. You can call get_extraction_signals() to re-query with different filters if needed
 4. If nothing actionable, PASS and wait for next cycle"""
 
+        # Build microstructure summary (trade flow + orderbook scan)
+        microstructure_str = ""
+        if self._tools._trade_flow_service or self._tools._orderbook_integration:
+            try:
+                micro_result = await self._tools.get_microstructure()
+                active = [m for m in micro_result.get("markets", []) if m.get("total_trades", 0) > 0]
+                if active:
+                    micro_lines = ["\n### Market Microstructure (Real-Time)"]
+                    for m in active[:8]:
+                        micro_lines.append(f"- **{m['ticker']}**: {m['summary']}")
+                    microstructure_str = "\n".join(micro_lines) + "\n"
+            except Exception as e:
+                logger.debug(f"[deep_agent.agent] Microstructure context failed: {e}")
+
         context = f"""
 ## New Trading Cycle - {datetime.now().strftime("%Y-%m-%d %H:%M")}
 
@@ -2160,7 +2323,7 @@ Return ONLY the updated strategy.md content, nothing else."""
 - Positions: {session_state.position_count}
 - Trade Count: {session_state.trade_count}
 - Win Rate: {session_state.win_rate:.1%}
-{event_exposure_str}{open_positions_str}{strategy_excerpt}{golden_rules_str}{market_knowledge_str}{journal_str}{memory_context_str}{scorecard_str}{signals_section}
+{event_exposure_str}{open_positions_str}{strategy_excerpt}{golden_rules_str}{market_knowledge_str}{journal_str}{todos_str}{memory_context_str}{scorecard_str}{signals_section}{microstructure_str}
 ### Target Events
 {target_events_str}
 
@@ -2431,10 +2594,18 @@ Return ONLY the updated strategy.md content, nothing else."""
                         }
                         await self._ws_manager.broadcast_message("deep_agent_gdelt_result", gdelt_msg)
 
+                # Cap tool result size to prevent any single result from
+                # dominating the context window. 4K chars is enough for the
+                # model to extract key information; raw JSON from tools like
+                # get_extraction_signals can be 5-15K chars.
+                _MAX_TOOL_RESULT_CHARS = 4000
+                raw_content = json.dumps(result) if isinstance(result, (dict, list)) else str(result)
+                if len(raw_content) > _MAX_TOOL_RESULT_CHARS:
+                    raw_content = raw_content[:_MAX_TOOL_RESULT_CHARS] + "... [truncated]"
                 result_block = {
                     "type": "tool_result",
                     "tool_use_id": tool_block.id,
-                    "content": json.dumps(result) if isinstance(result, (dict, list)) else str(result),
+                    "content": raw_content,
                 }
                 # NOTE: Do NOT add cache_control to tool results. The API allows
                 # a maximum of 4 blocks with cache_control. We already use 2
@@ -2506,16 +2677,42 @@ Return ONLY the updated strategy.md content, nothing else."""
             elif tool_name == "trade":
                 ticker = tool_input["ticker"]
 
-                # === THINK ENFORCEMENT (SOFT - WARN ONLY) ===
+                # === THINK ENFORCEMENT (HARD BLOCK) ===
+                # Requires a recent think() call with TRADE decision before executing
                 think_warning = None
                 if self._last_think_decision is None:
-                    think_warning = "No think() call before trade - you should always call think() first!"
-                    logger.warning(f"[deep_agent.agent] {think_warning}")
+                    error_msg = (
+                        "BLOCKED: You must call think() before trade(). "
+                        "Structured pre-trade analysis is required."
+                    )
+                    logger.warning(f"[deep_agent.agent] {error_msg}")
+                    return {
+                        "success": False,
+                        "ticker": ticker,
+                        "side": tool_input.get("side", ""),
+                        "contracts": tool_input.get("contracts", 0),
+                        "error": error_msg,
+                        "think_required": True,
+                    }
                 elif self._last_think_decision != "TRADE":
-                    think_warning = f"Last think() decision was {self._last_think_decision}, not TRADE"
-                    logger.warning(f"[deep_agent.agent] {think_warning}")
-                elif self._last_think_timestamp and time.time() - self._last_think_timestamp > 120:
-                    think_warning = "think() decision is stale (>2min) - consider calling think() again"
+                    error_msg = (
+                        f"BLOCKED: Last think() decision was '{self._last_think_decision}', not 'TRADE'. "
+                        f"Call think() again with decision='TRADE' if you want to proceed."
+                    )
+                    logger.warning(f"[deep_agent.agent] {error_msg}")
+                    return {
+                        "success": False,
+                        "ticker": ticker,
+                        "side": tool_input.get("side", ""),
+                        "contracts": tool_input.get("contracts", 0),
+                        "error": error_msg,
+                        "think_required": True,
+                    }
+                elif self._last_think_timestamp and time.time() - self._last_think_timestamp > 60:
+                    think_warning = (
+                        "WARNING: think() decision is stale (>60s). "
+                        "Trade proceeding but consider calling think() again for fresh analysis."
+                    )
                     logger.warning(f"[deep_agent.agent] {think_warning}")
 
                 # NOTE: Think state is cleared ONLY after successful trade execution
@@ -2562,8 +2759,11 @@ Return ONLY the updated strategy.md content, nothing else."""
                 if result.success:
                     self._trades_executed += 1
 
-                    # Clear think state only after successful execution
-                    # (require fresh think for next trade)
+                    # Capture calibration data before clearing think state
+                    trade_estimated_probability = self._last_think_estimated_probability
+                    trade_what_could_go_wrong = self._last_think_what_could_go_wrong
+
+                    # Clear think state (require fresh think for next trade)
                     self._last_think_decision = None
                     self._last_think_timestamp = None
                     self._last_think_estimated_probability = None
@@ -2584,6 +2784,16 @@ Return ONLY the updated strategy.md content, nothing else."""
                     # Snapshot extractions + GDELT queries that drove this trade (for learning loop)
                     extraction_ids, extraction_snapshot, gdelt_snapshot = await self._snapshot_trade_extractions(ticker)
 
+                    # Snapshot microstructure at trade time for reflection
+                    microstructure_snapshot = None
+                    if self._tools._trade_flow_service or self._tools._orderbook_integration:
+                        try:
+                            micro = await self._tools.get_microstructure(market_ticker=ticker)
+                            if micro.get("has_data"):
+                                microstructure_snapshot = micro.get("data")
+                        except Exception:
+                            pass  # Non-fatal
+
                     self._reflection.record_trade(
                         trade_id=result.order_id or str(uuid.uuid4()),
                         ticker=ticker,
@@ -2595,8 +2805,9 @@ Return ONLY the updated strategy.md content, nothing else."""
                         extraction_ids=extraction_ids,
                         extraction_snapshot=extraction_snapshot,
                         gdelt_snapshot=gdelt_snapshot,
-                        estimated_probability=self._last_think_estimated_probability,
-                        what_could_go_wrong=self._last_think_what_could_go_wrong,
+                        estimated_probability=trade_estimated_probability,
+                        what_could_go_wrong=trade_what_could_go_wrong,
+                        microstructure_snapshot=microstructure_snapshot,
                     )
 
                     # Store in trade history for session persistence
@@ -3105,6 +3316,17 @@ Return ONLY the updated strategy.md content, nothing else."""
                     logger.error(f"[deep_agent.agent] get_extraction_quality error: {e}")
                     return {"error": str(e)}
 
+            elif tool_name == "read_todos":
+                result = await self._tools.read_todos()
+                return result
+
+            elif tool_name == "write_todos":
+                result = await self._tools.write_todos(
+                    items=tool_input.get("items", []),
+                    current_cycle=self._cycle_count,
+                )
+                return result
+
             elif tool_name == "get_reddit_daily_digest":
                 result = await self._tools.get_reddit_daily_digest(
                     force_refresh=tool_input.get("force_refresh", False),
@@ -3145,6 +3367,20 @@ Return ONLY the updated strategy.md content, nothing else."""
                     search_terms=tool_input.get("search_terms", []),
                     timespan=tool_input.get("timespan"),
                     tone_filter=tool_input.get("tone_filter"),
+                )
+                return result
+
+            elif tool_name == "get_microstructure":
+                result = await self._tools.get_microstructure(
+                    market_ticker=tool_input.get("market_ticker"),
+                )
+                return result
+
+            elif tool_name == "get_candlesticks":
+                result = await self._tools.get_candlesticks(
+                    event_ticker=tool_input.get("event_ticker", ""),
+                    period=tool_input.get("period", "hourly"),
+                    hours_back=tool_input.get("hours_back", 24),
                 )
                 return result
 
@@ -3302,8 +3538,14 @@ Time to distill your learnings into actionable strategy updates.
 7. **Abstraction check**: Can any specific trade learnings be generalized into broader principles?
    Example: "KXBONDIOUT signals at 5+ sources profitable" → "Political personnel markets respond well to 5+ source signals"
    Record abstractions in `patterns.md` via `append_memory("patterns.md", ...)`
-8. Check extraction quality: call `get_extraction_quality()` for events with poor accuracy
-9. For events with avg_quality < 0.6, call `refine_event()` with learnings
+8. **Microstructure pattern review**: Call `get_microstructure()` to see current market state.
+   Review your recent trades: did microstructure conditions (trade flow ratio, spread, whale orders) correlate with outcomes?
+   Example patterns to look for:
+   - "Trades where whale orders contradicted my signal → always lost"
+   - "Wide spreads (>6c) at entry → worse outcomes even when direction correct"
+   Record any discovered patterns in patterns.md.
+9. Check extraction quality: call `get_extraction_quality()` for events with poor accuracy
+10. For events with avg_quality < 0.6, call `refine_event()` with learnings
 
 ### Focus Areas
 - New entry/exit rules discovered (with trade evidence)
@@ -3431,6 +3673,22 @@ Be selective: only add rules with clear evidence. Remove weak rules as much as a
                 return False
 
         return True
+
+    def _accumulate_external_tokens(
+        self, input_tokens: int, output_tokens: int,
+        cache_read: int = 0, cache_created: int = 0,
+    ) -> None:
+        """Accumulate token usage from external API calls (tools, distillation)."""
+        self._total_input_tokens += input_tokens
+        self._total_output_tokens += output_tokens
+        self._total_cache_read_tokens += cache_read
+        self._total_cache_created_tokens += cache_created
+        # Also accumulate into cycle counters if we're mid-cycle
+        self._cycle_input_tokens += input_tokens
+        self._cycle_output_tokens += output_tokens
+        self._cycle_cache_read_tokens += cache_read
+        self._cycle_cache_created_tokens += cache_created
+        self._cycle_api_calls += 1
 
     def _calculate_cost(self, input_tokens: int, output_tokens: int,
                         cache_read_tokens: int, cache_created_tokens: int) -> Dict[str, float]:

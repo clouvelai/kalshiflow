@@ -101,18 +101,12 @@ async def lifespan(app):
         # 3. WebSocket manager for frontend
         websocket_manager = V3WebSocketManager(event_bus=event_bus, state_machine=state_machine)
         
-        # 4. Select market tickers (discovery or config mode)
-        if config.market_tickers == ["DISCOVERY"]:
-            # Discovery/Lifecycle mode - start with EMPTY tickers
-            # TrackedMarketsState will manage subscriptions via callbacks
-            # This prevents duplicate subscription tracking
-            logger.info("Discovery/Lifecycle mode: starting with empty orderbook subscriptions")
-            logger.info("TrackedMarketsState will control subscriptions via callbacks")
-            market_tickers = []
+        # 4. Select market tickers
+        market_tickers = config.market_tickers
+        if market_tickers:
+            logger.info(f"Using {len(market_tickers)} target tickers")
         else:
-            # Config mode - use specified tickers
-            market_tickers = config.market_tickers
-            logger.info(f"Config mode: using {len(market_tickers)} configured markets")
+            logger.info("No target tickers - lifecycle discovery will manage subscriptions")
         
         # 5. Create orderbook client with selected markets and V3 event bus
         # Pass V3's event bus to OrderbookClient for direct integration
@@ -161,16 +155,9 @@ async def lifespan(app):
         # 8. Create trades client (required for strategies that need PUBLIC_TRADE_RECEIVED events)
         trades_integration = None
 
-        # Enable trades stream for:
-        # 1. Lifecycle mode (strategies like agentic_research need PUBLIC_TRADE_RECEIVED events)
-        # 2. Any mode with trading enabled (TradeFlowService streams trades to UX)
-        needs_trades_stream = (
-            config.market_mode == "lifecycle"
-            or config.enable_trading_client
-        )
-
-        if needs_trades_stream:
-            logger.info(f"Creating trades client (mode={config.market_mode})...")
+        # Trades stream always enabled (TradeFlowService + deep agent need it)
+        if config.enable_trading_client:
+            logger.info("Creating trades client...")
 
             # Create KalshiAuth for trades WebSocket
             auth = KalshiAuth.from_env()
@@ -189,7 +176,7 @@ async def lifespan(app):
 
             logger.info("Trades stream ENABLED - strategies will receive PUBLIC_TRADE_RECEIVED events")
         else:
-            logger.info(f"Trades stream disabled (mode={config.market_mode})")
+            logger.info("Trades stream disabled (trading client disabled)")
 
         # 9. Create coordinator with discovered/configured markets
         # Update config with the actual markets being used

@@ -7,20 +7,16 @@ import {
   Zap,
   CheckCircle,
   XCircle,
-  AlertTriangle,
   TrendingUp,
   TrendingDown,
   Clock,
   Activity,
   FileText,
-  MessageSquare,
   RefreshCw,
-  Loader2,
   DollarSign,
   Target,
   BookOpen,
   AlertCircle,
-  Sparkles,
   Newspaper,
 } from 'lucide-react';
 import renderThinkingMarkdown from '../../../utils/renderThinkingMarkdown';
@@ -73,10 +69,6 @@ const ToolCallRow = memo(({ toolCall }) => {
     switch (tool) {
       case 'get_markets':
         return <Target className="w-3 h-3 text-cyan-400" />;
-      case 'get_price_impacts':
-        return <Sparkles className="w-3 h-3 text-orange-400" />;
-      case 'search_news':
-        return <MessageSquare className="w-3 h-3 text-amber-400" />;
       case 'query_gdelt_news':
         return <Newspaper className="w-3 h-3 text-blue-400" />;
       case 'query_gdelt_events':
@@ -176,7 +168,7 @@ const SettlementRow = memo(({ settlement }) => {
       <div className="flex items-center gap-2">
         <span className={`flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold border ${resultStyle}`}>
           <ResultIcon className="w-3 h-3" />
-          {settlement.result.toUpperCase()}
+          {(settlement.result || 'unknown').toUpperCase()}
         </span>
         <span className="font-mono text-xs text-gray-300">{settlement.ticker}</span>
       </div>
@@ -187,7 +179,7 @@ const SettlementRow = memo(({ settlement }) => {
           </span>
         )}
         <span className={`font-mono text-xs font-bold ${isWin ? 'text-green-400' : isLoss ? 'text-red-400' : 'text-gray-400'}`}>
-          ${(settlement.pnlCents / 100).toFixed(2)}
+          ${((settlement.pnlCents || 0) / 100).toFixed(2)}
         </span>
       </div>
     </div>
@@ -218,8 +210,8 @@ LearningRow.displayName = 'LearningRow';
 /**
  * Stats Card - Compact stat display
  */
-const StatsCard = memo(({ label, value, color = 'text-gray-300', bgColor = 'bg-gray-800/30', borderColor = 'border-gray-700/20' }) => (
-  <div className={`rounded-lg p-2 border text-center ${bgColor} ${borderColor}`}>
+const StatsCard = memo(({ label, value, color = 'text-gray-300', bgColor = 'bg-gray-800/30', borderColor = 'border-gray-700/20', testId }) => (
+  <div className={`rounded-lg p-2 border text-center ${bgColor} ${borderColor}`} {...(testId ? { 'data-testid': testId } : {})}>
     <div className="text-[9px] text-gray-500 uppercase tracking-wider font-medium mb-0.5">{label}</div>
     <div className={`text-sm font-mono font-bold ${color}`}>{value}</div>
   </div>
@@ -253,7 +245,7 @@ const CostPanel = memo(({ costData }) => {
   };
 
   return (
-    <div className="rounded-lg border border-amber-800/30 overflow-hidden mb-4">
+    <div className="rounded-xl border border-amber-800/30 overflow-hidden mb-4">
       {/* Collapsed bar - always visible */}
       <button
         onClick={() => setIsExpanded(!isExpanded)}
@@ -399,7 +391,7 @@ const DeepAgentPanel = ({
   const statusBg = isRunning ? 'bg-emerald-900/40 border-emerald-600/30' : 'bg-gray-800/50 border-gray-700/30';
 
   return (
-    <div className="
+    <div data-testid="deep-agent-panel" className="
       bg-gradient-to-br from-gray-900/70 via-gray-900/50 to-gray-950/70
       backdrop-blur-md rounded-2xl
       border border-violet-800/30
@@ -435,7 +427,7 @@ const DeepAgentPanel = ({
           </div>
         </div>
         <div className="flex items-center space-x-3">
-          <div className={`
+          <div data-testid="deep-agent-status" className={`
             inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold border
             ${statusBg} ${statusColor}
           `}>
@@ -469,6 +461,7 @@ const DeepAgentPanel = ({
               color={sessionPnL >= 0 ? 'text-green-400' : 'text-red-400'}
               bgColor={sessionPnL >= 0 ? 'bg-green-900/20' : 'bg-red-900/20'}
               borderColor={sessionPnL >= 0 ? 'border-green-700/30' : 'border-red-700/30'}
+              testId="deep-agent-pnl"
             />
             <StatsCard
               label="Trades"
@@ -476,6 +469,7 @@ const DeepAgentPanel = ({
               color="text-cyan-400"
               bgColor="bg-cyan-900/20"
               borderColor="border-cyan-700/30"
+              testId="deep-agent-trades"
             />
             <StatsCard
               label="Win Rate"
@@ -483,6 +477,7 @@ const DeepAgentPanel = ({
               color={parseInt(winRate) >= 50 ? 'text-emerald-400' : 'text-amber-400'}
               bgColor={parseInt(winRate) >= 50 ? 'bg-emerald-900/20' : 'bg-amber-900/20'}
               borderColor={parseInt(winRate) >= 50 ? 'border-emerald-700/30' : 'border-amber-700/30'}
+              testId="deep-agent-win-rate"
             />
             <StatsCard
               label="Cycles"
@@ -490,6 +485,7 @@ const DeepAgentPanel = ({
               color="text-violet-400"
               bgColor="bg-violet-900/20"
               borderColor="border-violet-700/30"
+              testId="deep-agent-cycles"
             />
           </div>
 

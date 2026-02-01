@@ -19,3 +19,12 @@
 - Information speed (react to news before market absorbs)
 - Longshot bias exploitation (systematic NO at extreme YES)
 - What does NOT work: pure forecasting, gut feel, high-volume low-conviction
+
+## Microstructure Interpretation (Hypotheses — Validate via Experience)
+- YES ratio > 70% + price rising = bullish momentum (HYPOTHESIS: validate)
+- YES ratio > 70% + price flat = informed selling into retail flow (HYPOTHESIS: validate)
+- Large orders on one side = whale conviction signal
+- Volume imbalance > +0.3 = strong buy pressure
+- Spread widening + depth falling = liquidity withdrawal (sharp move incoming)
+- Wide spread at entry (>6c) erases edge even on correct direction (HYPOTHESIS: validate)
+- Whale orders contradicting extraction signal = strong countervailing signal (HYPOTHESIS: validate)

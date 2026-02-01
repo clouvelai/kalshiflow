@@ -43,7 +43,7 @@ class V3Config:
     snapshot_interval: float = 1.0  # seconds
     
     # Trading Client Configuration (optional, only for paper/live trading)
-    enable_trading_client: bool = False
+    enable_trading_client: bool = True
     trading_max_orders: int = 1000
     trading_max_position_size: int = 500
     trading_mode: str = "paper"  # paper or production
@@ -71,13 +71,7 @@ class V3Config:
     event_loss_threshold_cents: int = 100  # NO_sum > this = GUARANTEED_LOSS (block)
     event_risk_threshold_cents: int = 95   # NO_sum > this = HIGH_RISK (alert/warn)
 
-    # Market selection mode: "config", "discovery", or "lifecycle" (default)
-    # - config: Use static market_tickers list
-    # - discovery: Auto-discover from REST API
-    # - lifecycle: Market lifecycle events via WebSocket (NEW - default)
-    market_mode: str = "lifecycle"
-
-    # Lifecycle Mode Configuration (RL_MODE=lifecycle)
+    # Lifecycle Mode Configuration
     lifecycle_categories: List[str] = field(default_factory=lambda: list(DEFAULT_LIFECYCLE_CATEGORIES))
     # Sports prefix filter - only allow sports markets with these event_ticker prefixes
     # Set to empty list to allow ALL sports markets
@@ -91,10 +85,7 @@ class V3Config:
     api_discovery_batch_size: int = 200  # Maximum markets to fetch per API call
 
     # Discovery Filtering Configuration
-    # Time-to-settlement filter: Focus on short-dated markets for capital efficiency
-    # Research shows: Sports (+17.9% edge), Media (+24.1%), Crypto (+12.8%) are all short-dated
-    # Politics (+10.1% weak edge) is mostly long-dated - naturally excluded by time filter
-    discovery_min_hours_to_settlement: float = 4.0  # Skip markets closing <4 hours (need time for RLM pattern)
+    discovery_min_hours_to_settlement: float = 0.5  # Skip markets closing <30min
     discovery_max_days_to_settlement: int = 30  # Skip markets settling >30 days out (capital efficiency)
 
     # Dormant Market Detection Configuration
@@ -104,10 +95,9 @@ class V3Config:
     dormant_grace_period_hours: float = 1.0  # Minimum hours tracked before considering dormant
 
     # Entity Trading System Configuration
-    # Reddit entity-based trading (PRAW + GLiNER + sentiment → price impact)
-    entity_system_enabled: bool = False  # Enable Reddit entity trading pipeline
-    entity_subreddits: List[str] = field(default_factory=lambda: ["politics", "news", "Conservative", "worldnews", "economics", "finance", "economy"])
-    llm_entity_extraction_enabled: bool = True  # Use LLM for entity extraction (Phase 2)
+    # Reddit entity-based trading (PRAW + langextract extraction pipeline)
+    entity_system_enabled: bool = True  # Enable Reddit entity trading pipeline
+    entity_subreddits: List[str] = field(default_factory=lambda: ["politics", "news"])
 
     # Reddit Historic Agent (daily digest)
     reddit_historic_enabled: bool = True
@@ -171,35 +161,22 @@ class V3Config:
         if missing:
             raise ValueError(f"Missing required environment variables: {', '.join(missing)}")
         
-        # Market configuration - use same variables as RL trader
-        # Mode options: "config", "discovery", "lifecycle" (default)
-        market_mode = os.environ.get("RL_MODE", "lifecycle")
-        market_limit = int(os.environ.get("RL_ORDERBOOK_MARKET_LIMIT", "10"))
-
-        # Handle market selection based on mode
-        if market_mode == "lifecycle":
-            # Lifecycle mode - markets discovered via lifecycle WebSocket events
-            market_tickers = []  # Empty - lifecycle events will populate
-            logger.info(f"Lifecycle mode enabled - markets will be discovered via lifecycle events")
-        elif market_mode == "discovery":
-            # Discovery mode - OrderbookClient will auto-discover markets
-            market_tickers = ["DISCOVERY"]  # Special marker for discovery mode
-            logger.info(f"Discovery mode enabled with limit of {market_limit} markets")
-        else:
-            # Config mode - use specific market tickers
-            market_tickers_str = os.environ.get("RL_MARKET_TICKERS", "INXD-25JAN03")
+        # Market configuration
+        market_tickers_str = os.environ.get("V3_MARKET_TICKERS", "")
+        if market_tickers_str.strip():
             market_tickers = [t.strip() for t in market_tickers_str.split(",") if t.strip()]
-            if not market_tickers:
-                logger.warning("No market tickers configured, using default: INXD-25JAN03")
-                market_tickers = ["INXD-25JAN03"]
-        
+            logger.info(f"Target tickers specified: {', '.join(market_tickers)}")
+        else:
+            market_tickers = []  # Lifecycle discovery will populate
+            logger.info("No target tickers - lifecycle discovery will populate markets")
+
         # Optional configuration with defaults
-        max_markets = market_limit  # Use the market limit as max markets
+        max_markets = int(os.environ.get("V3_MAX_MARKETS", "10"))
         orderbook_depth = int(os.environ.get("V3_ORDERBOOK_DEPTH", "5"))
         snapshot_interval = float(os.environ.get("V3_SNAPSHOT_INTERVAL", "1.0"))
         
         # Trading client configuration
-        enable_trading_client = os.environ.get("V3_ENABLE_TRADING_CLIENT", "false").lower() == "true"
+        enable_trading_client = os.environ.get("V3_ENABLE_TRADING_CLIENT", "true").lower() == "true"
         trading_max_orders = int(os.environ.get("V3_TRADING_MAX_ORDERS", "1000"))
         trading_max_position_size = int(os.environ.get("V3_TRADING_MAX_POSITION_SIZE", "500"))
         # Determine trading mode based on environment or explicit setting
@@ -247,8 +224,8 @@ class V3Config:
         api_discovery_batch_size = int(os.environ.get("API_DISCOVERY_BATCH_SIZE", "200"))
 
         # Discovery Filtering configuration - time-to-settlement filter
-        # Focus on short-dated markets for capital efficiency (4h to 30d window)
-        discovery_min_hours_to_settlement = float(os.environ.get("DISCOVERY_MIN_HOURS_TO_SETTLEMENT", "4.0"))
+        # Focus on short-dated markets for capital efficiency (0.5h to 30d window)
+        discovery_min_hours_to_settlement = float(os.environ.get("DISCOVERY_MIN_HOURS_TO_SETTLEMENT", "0.5"))
         discovery_max_days_to_settlement = int(os.environ.get("DISCOVERY_MAX_DAYS_TO_SETTLEMENT", "30"))
 
         # Dormant Market Detection configuration
@@ -258,11 +235,10 @@ class V3Config:
         dormant_grace_period_hours = float(os.environ.get("DORMANT_GRACE_PERIOD_HOURS", "1.0"))
 
         # Entity Trading System configuration
-        # Reddit entity-based trading (PRAW + GLiNER + sentiment → price impact)
-        entity_system_enabled = os.environ.get("V3_ENTITY_SYSTEM_ENABLED", "false").lower() == "true"
-        entity_subreddits_str = os.environ.get("V3_ENTITY_SUBREDDITS", "politics,news,Conservative,worldnews,economics,finance,economy")
+        # Reddit entity-based trading (PRAW + langextract extraction pipeline)
+        entity_system_enabled = os.environ.get("V3_ENTITY_SYSTEM_ENABLED", "true").lower() == "true"
+        entity_subreddits_str = os.environ.get("V3_ENTITY_SUBREDDITS", "politics,news")
         entity_subreddits = [s.strip() for s in entity_subreddits_str.split(",") if s.strip()]
-        llm_entity_extraction_enabled = os.environ.get("V3_LLM_ENTITY_EXTRACTION_ENABLED", "true").lower() == "true"
 
         # Reddit Historic Agent (daily digest) configuration
         reddit_historic_enabled = os.environ.get("V3_REDDIT_HISTORIC_ENABLED", "true").lower() == "true"
@@ -298,7 +274,6 @@ class V3Config:
             private_key_content=private_key_content,
             market_tickers=market_tickers,
             max_markets=max_markets,
-            market_mode=market_mode,
             orderbook_depth=orderbook_depth,
             snapshot_interval=snapshot_interval,
             enable_trading_client=enable_trading_client,
@@ -329,7 +304,6 @@ class V3Config:
             dormant_grace_period_hours=dormant_grace_period_hours,
             entity_system_enabled=entity_system_enabled,
             entity_subreddits=entity_subreddits,
-            llm_entity_extraction_enabled=llm_entity_extraction_enabled,
             reddit_historic_enabled=reddit_historic_enabled,
             reddit_historic_posts_limit=reddit_historic_posts_limit,
             reddit_historic_comments_per_post=reddit_historic_comments_per_post,
@@ -354,23 +328,14 @@ class V3Config:
         logger.info(f"Loaded V3 configuration:")
         logger.info(f"  - API URL: {api_url}")
         logger.info(f"  - WebSocket URL: {ws_url}")
-        logger.info(f"  - Market mode: {market_mode.upper()}")
-        if market_mode == "lifecycle":
-            logger.info(f"    - Categories: {', '.join(lifecycle_categories)}")
-            if "sports" in [c.lower() for c in lifecycle_categories] and sports_allowed_prefixes:
-                logger.info(f"    - Sports filter: {', '.join(sports_allowed_prefixes)} prefixes only")
-            logger.info(f"    - Max tracked: {lifecycle_max_markets}")
+        if market_tickers:
+            logger.info(f"  - Target tickers: {', '.join(market_tickers[:3])}{'...' if len(market_tickers) > 3 else ''} ({len(market_tickers)} total)")
+        else:
+            logger.info(f"  - Discovery: lifecycle (categories={', '.join(lifecycle_categories)}, max={lifecycle_max_markets})")
             if api_discovery_enabled:
-                logger.info(f"    - API discovery: ENABLED (interval={api_discovery_interval}s, batch={api_discovery_batch_size})")
-                logger.info(f"    - Time filter: {discovery_min_hours_to_settlement}h to {discovery_max_days_to_settlement}d (capital efficiency)")
-            else:
-                logger.info(f"    - API discovery: DISABLED")
+                logger.info(f"    - API discovery: interval={api_discovery_interval}s, time={discovery_min_hours_to_settlement}h-{discovery_max_days_to_settlement}d")
             if dormant_detection_enabled:
-                logger.info(f"    - Dormant detection: ENABLED (volume<={dormant_volume_threshold}, grace={dormant_grace_period_hours}h)")
-            else:
-                logger.info(f"    - Dormant detection: DISABLED")
-        elif market_tickers:
-            logger.info(f"  - Markets: {', '.join(market_tickers[:3])}{'...' if len(market_tickers) > 3 else ''} ({len(market_tickers)} total)")
+                logger.info(f"    - Dormant detection: volume<={dormant_volume_threshold}, grace={dormant_grace_period_hours}h")
         logger.info(f"  - Max markets: {max_markets}")
         logger.info(f"  - Sync duration: {sync_duration}s")
         logger.info(f"  - Server: {host}:{port}")
@@ -436,9 +401,7 @@ class V3Config:
         Raises:
             ValueError: If configuration is invalid
         """
-        # Validate market configuration (skip for lifecycle mode which uses empty tickers)
-        if not self.market_tickers and self.market_mode != "lifecycle":
-            raise ValueError("No market tickers configured")
+        # market_tickers can be empty (lifecycle discovery populates)
         
         if self.max_markets < 1:
             raise ValueError(f"Invalid max_markets: {self.max_markets}")

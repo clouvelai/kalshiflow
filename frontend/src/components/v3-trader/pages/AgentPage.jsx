@@ -21,7 +21,6 @@ import {
   XCircle,
   Clock,
   DollarSign,
-  Filter,
   Layers,
   Newspaper,
   Globe,
@@ -48,7 +47,8 @@ const PipelineStage = memo(({
   count,
   color = 'gray',
   isActive = false,
-  description
+  description,
+  testId
 }) => {
   const colorClasses = {
     orange: 'from-orange-900/30 to-orange-950/20 border-orange-700/30 text-orange-400',
@@ -59,7 +59,7 @@ const PipelineStage = memo(({
   };
 
   return (
-    <div className={`
+    <div {...(testId ? { 'data-testid': testId } : {})} className={`
       flex-1 min-w-[140px] p-4 rounded-xl border
       bg-gradient-to-br ${colorClasses[color]}
       ${isActive ? 'ring-1 ring-offset-1 ring-offset-gray-950' : ''}
@@ -120,7 +120,7 @@ const ExtractionCard = memo(({ extraction }) => {
       {/* Class-specific attributes */}
       {cls === 'market_signal' && attrs.direction && (
         <div className="flex items-center gap-2 mb-1">
-          <span className={`text-[10px] font-bold ${attrs.direction === 'BULLISH' || attrs.direction === 'bullish' ? 'text-emerald-400' : attrs.direction === 'BEARISH' || attrs.direction === 'bearish' ? 'text-rose-400' : 'text-gray-400'}`}>
+          <span className={`text-[10px] font-bold ${{ bullish: 'text-emerald-400', bearish: 'text-rose-400' }[attrs.direction.toLowerCase()] || 'text-gray-400'}`}>
             {attrs.direction?.toUpperCase()}
           </span>
           {attrs.magnitude != null && (
@@ -166,16 +166,29 @@ const ExtractionFeedPanel = memo(({ extractions }) => {
     return extractions;
   }, [extractions, filter]);
 
+  const filterCounts = useMemo(() => {
+    let signals = 0, entities = 0, context = 0, custom = 0;
+    for (const e of extractions) {
+      switch (e.extraction_class) {
+        case 'market_signal': signals++; break;
+        case 'entity_mention': entities++; break;
+        case 'context_factor': context++; break;
+        default: custom++; break;
+      }
+    }
+    return { signals, entities, context, custom };
+  }, [extractions]);
+
   const filterTabs = [
     { key: 'all', label: 'All', count: extractions.length },
-    { key: 'signals', label: 'Signals', count: extractions.filter(e => e.extraction_class === 'market_signal').length },
-    { key: 'entities', label: 'Entities', count: extractions.filter(e => e.extraction_class === 'entity_mention').length },
-    { key: 'context', label: 'Context', count: extractions.filter(e => e.extraction_class === 'context_factor').length },
-    { key: 'custom', label: 'Custom', count: extractions.filter(e => !['market_signal', 'entity_mention', 'context_factor'].includes(e.extraction_class)).length },
+    { key: 'signals', label: 'Signals', count: filterCounts.signals },
+    { key: 'entities', label: 'Entities', count: filterCounts.entities },
+    { key: 'context', label: 'Context', count: filterCounts.context },
+    { key: 'custom', label: 'Custom', count: filterCounts.custom },
   ];
 
   return (
-    <div className="bg-gray-900/50 rounded-2xl border border-gray-800/50 overflow-hidden">
+    <div data-testid="extraction-feed-panel" className="bg-gray-900/50 rounded-2xl border border-gray-800/50 overflow-hidden">
       <button
         onClick={() => setExpanded(!expanded)}
         className="w-full flex items-center justify-between p-4 hover:bg-gray-800/30 transition-colors"
@@ -208,7 +221,7 @@ const ExtractionFeedPanel = memo(({ extractions }) => {
             ))}
           </div>
           {/* Feed */}
-          <div className="space-y-2 max-h-[400px] overflow-y-auto">
+          <div className="space-y-2 max-h-[400px] overflow-y-auto scrollbar-dark">
             {filtered.length === 0 ? (
               <div className="text-center py-6 text-gray-500 text-sm">
                 No extractions yet...
@@ -232,8 +245,7 @@ ExtractionFeedPanel.displayName = 'ExtractionFeedPanel';
  */
 const EventMarketRow = memo(({ market, marketPrices, signalAgg, position, isQuiet }) => {
   const ticker = typeof market === 'string' ? market : market.ticker;
-  const displayTitle = typeof market === 'string' ? null : (market.yes_sub_title || market.title);
-  const title = displayTitle;
+  const title = typeof market === 'string' ? null : (market.yes_sub_title || market.title);
   const prices = marketPrices?.[ticker];
 
   const yesBid = prices?.yes_bid;
@@ -249,19 +261,17 @@ const EventMarketRow = memo(({ market, marketPrices, signalAgg, position, isQuie
     if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
     if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`;
     return `${Math.floor(seconds / 86400)}d`;
-  }, [market]);
+  }, [typeof market === 'string' ? market : market.time_to_close_seconds]);
 
   // Consensus badge
   const consensus = signalAgg?.consensus;
-  const consensusBg = consensus === 'BULLISH' || consensus === 'bullish'
-    ? 'bg-emerald-900/30 text-emerald-400 border-emerald-600/30'
-    : consensus === 'BEARISH' || consensus === 'bearish'
-      ? 'bg-rose-900/30 text-rose-400 border-rose-600/30'
-      : 'bg-gray-700/40 text-gray-400 border-gray-600/30';
+  const consensusStyles = {
+    bullish: 'bg-emerald-900/30 text-emerald-400 border-emerald-600/30',
+    bearish: 'bg-rose-900/30 text-rose-400 border-rose-600/30',
+  };
+  const consensusBg = consensusStyles[consensus?.toLowerCase()] || 'bg-gray-700/40 text-gray-400 border-gray-600/30';
 
-  // Position info
-  const posData = position;
-  const hasPosData = posData && (posData.total_contracts || posData.market_exposure);
+  const hasPosData = position && (position.total_contracts || position.market_exposure);
 
   if (isQuiet && !hasPosData) {
     return (
@@ -284,7 +294,7 @@ const EventMarketRow = memo(({ market, marketPrices, signalAgg, position, isQuie
   }
 
   return (
-    <div className="px-3 py-2.5 bg-gray-800/30 rounded-lg border border-gray-700/30 hover:border-gray-600/40 transition-colors">
+    <div data-testid={`market-row-${ticker}`} className="px-3 py-2.5 bg-gray-800/30 rounded-lg border border-gray-700/30 hover:border-gray-600/40 transition-colors">
       {/* Market header row */}
       <div className="flex items-center justify-between mb-1.5">
         <div className="flex items-center gap-2">
@@ -351,12 +361,12 @@ const EventMarketRow = memo(({ market, marketPrices, signalAgg, position, isQuie
       {hasPosData && (
         <div className="flex items-center gap-2 mt-1.5 pt-1.5 border-t border-gray-700/20 text-[10px]">
           <span className="text-gray-500">Position:</span>
-          <span className={`font-bold ${posData.market_position > 0 ? 'text-emerald-400' : posData.market_position < 0 ? 'text-rose-400' : 'text-gray-400'}`}>
-            {posData.total_contracts || Math.abs(posData.market_position || 0)} {posData.position_side || (posData.market_position > 0 ? 'YES' : 'NO')}
+          <span className={`font-bold ${position.market_position > 0 ? 'text-emerald-400' : position.market_position < 0 ? 'text-rose-400' : 'text-gray-400'}`}>
+            {position.total_contracts || Math.abs(position.market_position || 0)} {position.position_side || (position.market_position > 0 ? 'YES' : 'NO')}
           </span>
-          {posData.realized_pnl != null && (
-            <span className={`font-mono ${posData.realized_pnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-              {posData.realized_pnl >= 0 ? '+' : ''}${(posData.realized_pnl / 100).toFixed(2)}
+          {position.realized_pnl != null && (
+            <span className={`font-mono ${position.realized_pnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+              {position.realized_pnl >= 0 ? '+' : ''}${(position.realized_pnl / 100).toFixed(2)}
             </span>
           )}
         </div>
@@ -440,7 +450,7 @@ const EventCard = memo(({ config, eventExtractions, aggregatedSignals, marketPri
   }, [markets, marketPrices]);
 
   return (
-    <div className="bg-gray-900/50 rounded-xl border border-gray-800/50 overflow-hidden">
+    <div data-testid={`event-card-${eventTicker}`} className="bg-gray-900/50 rounded-xl border border-gray-800/50 overflow-hidden">
       {/* Event header */}
       <button
         onClick={() => setCollapsed(!collapsed)}
@@ -540,7 +550,7 @@ const EventIntelligenceBoard = memo(({ eventConfigs, byEvent, aggregatedSignals,
   const totalSignals = Object.values(aggregatedSignals).reduce((s, a) => s + (a.occurrence_count || 0), 0);
 
   return (
-    <div className="bg-gray-900/50 rounded-2xl border border-gray-800/50 p-6">
+    <div data-testid="event-intelligence-board" className="bg-gray-900/50 rounded-2xl border border-gray-800/50 p-6">
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-3">
           <div className="p-2 rounded-lg bg-gradient-to-br from-cyan-900/40 to-blue-900/30 border border-cyan-700/30">
@@ -561,7 +571,7 @@ const EventIntelligenceBoard = memo(({ eventConfigs, byEvent, aggregatedSignals,
         </div>
       </div>
 
-      <div className="space-y-3 max-h-[600px] overflow-y-auto pr-1">
+      <div className="space-y-3 max-h-[600px] overflow-y-auto pr-1 scrollbar-dark">
         {sortedConfigs.length === 0 ? (
           <div className="text-center py-12">
             <Layers className="w-10 h-10 text-gray-700 mx-auto mb-3" />
@@ -662,7 +672,7 @@ const AgentStatusHeader = memo(({ agentState, settlements, trades }) => {
   const pnlBg = totalPnL >= 0 ? 'bg-emerald-900/20' : 'bg-rose-900/20';
 
   return (
-    <div className="flex items-center justify-between p-3 bg-gray-800/50 rounded-xl border border-gray-700/40">
+    <div data-testid="agent-status-header" className="flex items-center justify-between p-3 bg-gray-800/50 rounded-xl border border-gray-700/40">
       <div className="flex items-center gap-4">
         <div className={`
           flex items-center gap-2 px-3 py-1.5 rounded-lg border
@@ -683,18 +693,18 @@ const AgentStatusHeader = memo(({ agentState, settlements, trades }) => {
           )}
         </div>
 
-        <div className="flex items-center gap-2 text-xs text-gray-400">
+        <div className="flex items-center gap-2 text-xs text-gray-400" data-testid="agent-cycle-count">
           <Clock className="w-3.5 h-3.5" />
           <span>Cycle <span className="font-mono text-white">{agentState.cycleCount}</span></span>
         </div>
 
-        <div className="flex items-center gap-2 text-xs text-gray-400">
+        <div className="flex items-center gap-2 text-xs text-gray-400" data-testid="agent-trade-count">
           <BarChart3 className="w-3.5 h-3.5" />
           <span>Trades <span className="font-mono text-white">{trades.length}</span></span>
         </div>
       </div>
 
-      <div className={`flex items-center gap-2 px-3 py-1.5 rounded-lg ${pnlBg}`}>
+      <div data-testid="agent-pnl-value" className={`flex items-center gap-2 px-3 py-1.5 rounded-lg ${pnlBg}`}>
         <DollarSign className="w-3.5 h-3.5 text-gray-400" />
         <span className={`text-sm font-mono font-bold ${pnlColor}`}>
           {totalPnL >= 0 ? '+' : ''}{totalPnL.toFixed(2)}
@@ -713,7 +723,7 @@ AgentStatusHeader.displayName = 'AgentStatusHeader';
 const ThinkingStream = memo(({ thinking, isRunning }) => {
   if (!thinking.text) {
     return (
-      <div className="p-4 bg-gray-800/30 rounded-xl border border-gray-700/30">
+      <div data-testid="agent-thinking-stream" className="p-4 bg-gray-800/30 rounded-xl border border-gray-700/30">
         <div className="flex items-center gap-2 mb-2">
           <Brain className="w-4 h-4 text-violet-400" />
           <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Thinking</span>
@@ -726,13 +736,13 @@ const ThinkingStream = memo(({ thinking, isRunning }) => {
   }
 
   return (
-    <div className="p-4 bg-gradient-to-br from-violet-900/20 to-violet-950/10 rounded-xl border border-violet-700/30">
+    <div data-testid="agent-thinking-stream" className="p-4 bg-gradient-to-br from-violet-900/20 to-violet-950/10 rounded-xl border border-violet-700/30">
       <div className="flex items-center gap-2 mb-2">
         <Brain className="w-4 h-4 text-violet-400 animate-pulse" />
         <span className="text-xs font-semibold text-violet-300 uppercase tracking-wider">Thinking</span>
         <span className="ml-auto text-[10px] text-gray-500 font-mono">Cycle {thinking.cycle}</span>
       </div>
-      <div className="text-sm text-gray-200 leading-relaxed">
+      <div data-testid="agent-thinking-text" className="text-sm text-gray-200 leading-relaxed">
         {renderThinkingMarkdown(thinking.text)}
       </div>
       {isRunning && (
@@ -752,7 +762,6 @@ ThinkingStream.displayName = 'ThinkingStream';
  */
 const ToolCallCard = memo(({ toolCall }) => {
   const toolIcons = {
-    get_price_impacts: Sparkles,
     get_markets: BarChart3,
     trade: TrendingUp,
     read_memory: BookOpen,
@@ -796,7 +805,7 @@ const ToolCallsPanel = memo(({ toolCalls, defaultCollapsed = true }) => {
   const [collapsed, setCollapsed] = useState(defaultCollapsed);
 
   return (
-    <div className="bg-gray-900/50 rounded-xl border border-gray-800/50 overflow-hidden">
+    <div data-testid="agent-tool-calls-panel" className="bg-gray-900/50 rounded-xl border border-gray-800/50 overflow-hidden">
       <button
         onClick={() => setCollapsed(!collapsed)}
         className="w-full flex items-center justify-between p-3 hover:bg-gray-800/30 transition-colors"
@@ -804,7 +813,7 @@ const ToolCallsPanel = memo(({ toolCalls, defaultCollapsed = true }) => {
         <div className="flex items-center gap-2">
           <Wrench className="w-4 h-4 text-cyan-400" />
           <span className="text-xs font-semibold text-gray-300">Tool Calls</span>
-          <span className="px-2 py-0.5 bg-cyan-900/30 text-cyan-400 text-[10px] font-bold rounded-full">
+          <span data-testid="agent-tool-calls-count" className="px-2 py-0.5 bg-cyan-900/30 text-cyan-400 text-[10px] font-bold rounded-full">
             {toolCalls.length}
           </span>
         </div>
@@ -889,7 +898,7 @@ const TradesPanel = memo(({ trades, settlements }) => {
   const [collapsed, setCollapsed] = useState(false);
 
   return (
-    <div className="bg-gray-900/50 rounded-xl border border-gray-800/50 overflow-hidden">
+    <div data-testid="agent-trades-panel" className="bg-gray-900/50 rounded-xl border border-gray-800/50 overflow-hidden">
       <button
         onClick={() => setCollapsed(!collapsed)}
         className="w-full flex items-center justify-between p-3 hover:bg-gray-800/30 transition-colors"
@@ -929,7 +938,7 @@ const LearningsPanel = memo(({ learnings }) => {
   const [collapsed, setCollapsed] = useState(true);
 
   return (
-    <div className="bg-gray-900/50 rounded-xl border border-gray-800/50 overflow-hidden">
+    <div data-testid="agent-learnings-panel" className="bg-gray-900/50 rounded-xl border border-gray-800/50 overflow-hidden">
       <button
         onClick={() => setCollapsed(!collapsed)}
         className="w-full flex items-center justify-between p-3 hover:bg-gray-800/30 transition-colors"
@@ -1070,12 +1079,11 @@ const GdeltQueryCard = memo(({ result }) => {
         className="w-full flex items-center justify-between px-3 py-2.5 hover:bg-gray-800/50 transition-colors"
       >
         <div className="flex items-center gap-2 min-w-0">
-          {isEvents
-            ? <Activity className="w-3.5 h-3.5 text-red-400 flex-shrink-0" />
-            : isTimeline
-              ? <TrendingUp className="w-3.5 h-3.5 text-purple-400 flex-shrink-0" />
-              : <Globe className="w-3.5 h-3.5 text-blue-400 flex-shrink-0" />
-          }
+          {(() => {
+            const iconMap = { events: [Activity, 'text-red-400'], volume_timeline: [TrendingUp, 'text-purple-400'] };
+            const [Icon, color] = iconMap[result.source] || [Globe, 'text-blue-400'];
+            return <Icon className={`w-3.5 h-3.5 ${color} flex-shrink-0`} />;
+          })()}
           <span className="text-[11px] text-gray-300 truncate">
             {(result.actorNames?.length > 0 ? result.actorNames : result.searchTerms).join(', ')}
           </span>
@@ -1365,7 +1373,7 @@ const GdeltNewsPanel = memo(({ gdeltResults }) => {
   if (gdeltResults.length === 0) return null;
 
   return (
-    <div className="bg-gray-900/50 rounded-2xl border border-blue-800/30 overflow-hidden">
+    <div data-testid="agent-gdelt-panel" className="bg-gray-900/50 rounded-2xl border border-blue-800/30 overflow-hidden">
       <button
         onClick={() => setCollapsed(!collapsed)}
         className="w-full flex items-center justify-between p-4 hover:bg-gray-800/30 transition-colors"
@@ -1431,7 +1439,7 @@ const AgentPage = () => {
     processMessage,
     isRunning: agentIsRunning,
     gdeltResults,
-  } = useDeepAgent({ useV3WebSocketState: true });
+  } = useDeepAgent();
 
   // Wire deep agent message processing to WebSocket
   const handleMessage = useCallback((type, message, context) => {
@@ -1520,7 +1528,7 @@ const AgentPage = () => {
   const isAgentRunning = agentIsRunning || deepAgentStrategy?.running || entitySystemActive;
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-gray-950 via-gray-900 to-gray-950">
+    <div data-testid="agent-page" className="min-h-screen bg-gradient-to-br from-gray-950 via-gray-900 to-gray-950">
       <V3Header
         wsStatus={wsStatus}
         currentState={currentState}
@@ -1543,7 +1551,7 @@ const AgentPage = () => {
               </div>
             </div>
 
-            <div className={`
+            <div data-testid="agent-running-status" className={`
               flex items-center gap-2 px-4 py-2 rounded-lg border
               ${isAgentRunning
                 ? 'bg-emerald-900/30 border-emerald-600/40 text-emerald-400'
@@ -1573,7 +1581,7 @@ const AgentPage = () => {
             </h2>
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 overflow-x-auto pb-2">
             <PipelineStage
               icon={MessageSquare}
               title="Sources"
@@ -1581,6 +1589,7 @@ const AgentPage = () => {
               color="orange"
               isActive={entityRedditPosts.length > 0}
               description="Posts ingested"
+              testId="pipeline-sources"
             />
             <ArrowRight className="w-5 h-5 text-gray-600 flex-shrink-0" />
             <PipelineStage
@@ -1590,6 +1599,7 @@ const AgentPage = () => {
               color="violet"
               isActive={extractions.length > 0}
               description={`${extractionStats.marketSignalCount} signals, ${extractionStats.entityMentionCount} entities`}
+              testId="pipeline-extractions"
             />
             <ArrowRight className="w-5 h-5 text-gray-600 flex-shrink-0" />
             <PipelineStage
@@ -1617,6 +1627,7 @@ const AgentPage = () => {
               color="cyan"
               isActive={trackedMarkets.length > 0}
               description={`${mergedEventConfigs.length} events`}
+              testId="pipeline-markets"
             />
             <ArrowRight className="w-5 h-5 text-gray-600 flex-shrink-0" />
             <PipelineStage
@@ -1626,6 +1637,7 @@ const AgentPage = () => {
               color="emerald"
               isActive={isAgentRunning}
               description="Deep agent cycles"
+              testId="pipeline-agent-cycles"
             />
           </div>
         </div>
@@ -1647,61 +1659,65 @@ const AgentPage = () => {
                     {entityRedditPosts.length}
                   </span>
                   {/* Health Status */}
-                  {redditAgentHealth.health === 'healthy' ? (
-                    <span className="flex items-center gap-1 px-1.5 py-0.5 bg-emerald-900/30 text-emerald-400 text-[9px] rounded-full border border-emerald-700/30">
-                      <CheckCircle className="w-3 h-3" />
-                      <span className="font-medium">Live</span>
-                    </span>
-                  ) : redditAgentHealth.health === 'degraded' ? (
-                    <span className="flex items-center gap-1 px-1.5 py-0.5 bg-amber-900/30 text-amber-400 text-[9px] rounded-full border border-amber-700/30">
-                      <AlertCircle className="w-3 h-3" />
-                      <span className="font-medium">Partial</span>
-                    </span>
-                  ) : redditAgentHealth.health === 'unhealthy' ? (
-                    <span className="flex items-center gap-1 px-1.5 py-0.5 bg-red-900/30 text-red-400 text-[9px] rounded-full border border-red-700/30">
-                      <XCircle className="w-3 h-3" />
-                      <span className="font-medium">Offline</span>
-                    </span>
-                  ) : (
-                    <span className="flex items-center gap-1 px-1.5 py-0.5 bg-gray-800/50 text-gray-500 text-[9px] rounded-full border border-gray-700/30">
-                      <Clock className="w-3 h-3" />
-                      <span className="font-medium">...</span>
-                    </span>
-                  )}
+                  {(() => {
+                    const healthBadges = {
+                      healthy: { bg: 'bg-emerald-900/30 text-emerald-400 border-emerald-700/30', Icon: CheckCircle, label: 'Live' },
+                      degraded: { bg: 'bg-amber-900/30 text-amber-400 border-amber-700/30', Icon: AlertCircle, label: 'Partial' },
+                      unhealthy: { bg: 'bg-red-900/30 text-red-400 border-red-700/30', Icon: XCircle, label: 'Offline' },
+                    };
+                    const badge = healthBadges[redditAgentHealth.health] || { bg: 'bg-gray-800/50 text-gray-500 border-gray-700/30', Icon: Clock, label: '...' };
+                    return (
+                      <span className={`flex items-center gap-1 px-1.5 py-0.5 text-[9px] rounded-full border ${badge.bg}`}>
+                        <badge.Icon className="w-3 h-3" />
+                        <span className="font-medium">{badge.label}</span>
+                      </span>
+                    );
+                  })()}
                 </div>
                 {showPosts ? <ChevronDown className="w-4 h-4 text-gray-500" /> : <ChevronRight className="w-4 h-4 text-gray-500" />}
               </button>
               {showPosts && (
-                <div className="px-4 pb-4 space-y-2 max-h-[300px] overflow-y-auto">
+                <div className="px-4 pb-4 space-y-2 max-h-[300px] overflow-y-auto scrollbar-dark">
                   {entityRedditPosts.length === 0 ? (
                     <div className="text-center py-6 text-gray-500 text-sm">
-                      {redditAgentHealth.health === 'unhealthy' ? (
-                        <div className="space-y-2">
-                          <XCircle className="w-8 h-8 text-red-500 mx-auto" />
-                          <div className="text-red-400 font-medium">Reddit API not connected</div>
-                          <div className="text-[11px] text-gray-600">
-                            {redditAgentHealth.lastError || 'Check REDDIT_CLIENT_ID and REDDIT_CLIENT_SECRET env vars'}
-                          </div>
-                        </div>
-                      ) : redditAgentHealth.health === 'degraded' ? (
-                        <div className="space-y-2">
-                          <AlertCircle className="w-8 h-8 text-amber-500 mx-auto" />
-                          <div className="text-amber-400 font-medium">Partially connected</div>
-                          <div className="text-[11px] text-gray-600">
-                            Reddit: yes | Extractor: {redditAgentHealth.extractorAvailable ? 'yes' : 'no'} | Supabase: {redditAgentHealth.supabaseAvailable ? 'yes' : 'no'}
-                          </div>
-                        </div>
-                      ) : redditAgentHealth.health === 'healthy' ? (
-                        <div className="space-y-2">
-                          <RefreshCw className="w-6 h-6 text-orange-400 mx-auto animate-spin" />
-                          <div>Listening to r/{redditAgentHealth.subreddits?.join(', r/') || 'politics, news'}...</div>
-                        </div>
-                      ) : (
-                        <div className="space-y-2">
-                          <Clock className="w-6 h-6 text-gray-500 mx-auto" />
-                          <div>Waiting for Reddit posts...</div>
-                        </div>
-                      )}
+                      {(() => {
+                        switch (redditAgentHealth.health) {
+                          case 'unhealthy':
+                            return (
+                              <div className="space-y-2">
+                                <XCircle className="w-8 h-8 text-red-500 mx-auto" />
+                                <div className="text-red-400 font-medium">Reddit API not connected</div>
+                                <div className="text-[11px] text-gray-600">
+                                  {redditAgentHealth.lastError || 'Check REDDIT_CLIENT_ID and REDDIT_CLIENT_SECRET env vars'}
+                                </div>
+                              </div>
+                            );
+                          case 'degraded':
+                            return (
+                              <div className="space-y-2">
+                                <AlertCircle className="w-8 h-8 text-amber-500 mx-auto" />
+                                <div className="text-amber-400 font-medium">Partially connected</div>
+                                <div className="text-[11px] text-gray-600">
+                                  Reddit: yes | Extractor: {redditAgentHealth.extractorAvailable ? 'yes' : 'no'} | Supabase: {redditAgentHealth.supabaseAvailable ? 'yes' : 'no'}
+                                </div>
+                              </div>
+                            );
+                          case 'healthy':
+                            return (
+                              <div className="space-y-2">
+                                <RefreshCw className="w-6 h-6 text-orange-400 mx-auto animate-spin" />
+                                <div>Listening to r/{redditAgentHealth.subreddits?.join(', r/') || 'politics, news'}...</div>
+                              </div>
+                            );
+                          default:
+                            return (
+                              <div className="space-y-2">
+                                <Clock className="w-6 h-6 text-gray-500 mx-auto" />
+                                <div>Waiting for Reddit posts...</div>
+                              </div>
+                            );
+                        }
+                      })()}
                     </div>
                   ) : (
                     entityRedditPosts.slice(0, 10).map((post) => (
@@ -1723,7 +1739,7 @@ const AgentPage = () => {
           {/* Right Column - Agent + Event Intelligence */}
           <div className="col-span-8 space-y-4">
             {/* Agent Status Header - Sticky */}
-            <div className="sticky top-0 z-10">
+            <div className="sticky top-0 z-10 backdrop-blur-sm bg-gray-950/80 rounded-xl">
               <AgentStatusHeader
                 agentState={agentState}
                 settlements={settlements}

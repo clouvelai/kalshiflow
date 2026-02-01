@@ -664,6 +664,46 @@
     -webkit-box-orient: vertical;
     overflow: hidden;
   }
+
+  /* Toast entrance animation - one-shot fade-in + subtle scale */
+  @keyframes toastEnter {
+    0% {
+      opacity: 0;
+      transform: translateY(8px) scale(0.96);
+    }
+    100% {
+      opacity: 1;
+      transform: translateY(0) scale(1);
+    }
+  }
+
+  .animate-toast-enter {
+    animation: toastEnter 0.3s ease-out;
+  }
+
+  /* Dark scrollbar for overflow-y-auto panels in dark UI */
+  .scrollbar-dark {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(55, 65, 81, 0.6) transparent;
+  }
+
+  .scrollbar-dark::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  .scrollbar-dark::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .scrollbar-dark::-webkit-scrollbar-thumb {
+    background-color: rgba(55, 65, 81, 0.6);
+    border-radius: 3px;
+  }
+
+  .scrollbar-dark::-webkit-scrollbar-thumb:hover {
+    background-color: rgba(75, 85, 99, 0.8);
+  }
 }
 
 /* Base styles */

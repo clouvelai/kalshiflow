@@ -1,5 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
-import { useSignalLifecycle } from './useSignalLifecycle';
+import { useState, useCallback } from 'react';
 
 /**
  * Initial state for deep agent
@@ -13,8 +12,6 @@ const INITIAL_DEEP_AGENT_STATE = {
   recentReflections: [],
   toolStats: {},
   targetEvents: [],
-  redditEnabled: false,
-  redditSignals: 0,
   costData: null,
 };
 
@@ -35,27 +32,14 @@ const INITIAL_THINKING = {
  * - Tool calls and results
  * - Trade executions and settlements
  * - Memory updates (learnings, strategy, mistakes)
- * - Reddit signals (if enabled)
- * - Price impacts (entity → market transformation)
  */
-export const useDeepAgent = ({ useV3WebSocketState }) => {
-  // Signal lifecycle tracking
-  const {
-    handleLifecycleUpdate,
-    handleLifecycleSnapshot,
-    getLifecycle,
-    summaryCounts: lifecycleSummary,
-    getStatusSortPriority,
-  } = useSignalLifecycle();
-
+export const useDeepAgent = () => {
   // Deep agent state
   const [agentState, setAgentState] = useState(INITIAL_DEEP_AGENT_STATE);
   const [thinking, setThinking] = useState(INITIAL_THINKING);
   const [toolCalls, setToolCalls] = useState([]);
   const [trades, setTrades] = useState([]);
   const [memoryUpdates, setMemoryUpdates] = useState([]);
-  const [redditPosts, setRedditPosts] = useState([]);
-  const [redditSignals, setRedditSignals] = useState([]);
   const [learnings, setLearnings] = useState([]);
   const [settlements, setSettlements] = useState([]);
   const [errors, setErrors] = useState([]);
@@ -68,8 +52,6 @@ export const useDeepAgent = ({ useV3WebSocketState }) => {
   const maxToolCalls = 50;
   const maxTrades = 50;
   const maxMemoryUpdates = 20;
-  const maxRedditPosts = 30;
-  const maxRedditSignals = 30;
   const maxLearnings = 50;
   const maxSettlements = 20;
   const maxErrors = 10;
@@ -203,22 +185,6 @@ export const useDeepAgent = ({ useV3WebSocketState }) => {
   }, []);
 
   /**
-   * Handle reddit_submission message
-   */
-  const handleRedditSubmission = useCallback((data) => {
-    const post = {
-      id: data.id,
-      subreddit: data.subreddit,
-      title: data.title,
-      url: data.url,
-      score: data.score,
-      timestamp: data.timestamp,
-    };
-
-    setRedditPosts(prev => [post, ...prev].slice(0, maxRedditPosts));
-  }, []);
-
-  /**
    * Handle deep_agent_error message
    */
   const handleError = useCallback((data) => {
@@ -298,9 +264,6 @@ export const useDeepAgent = ({ useV3WebSocketState }) => {
     }));
   }, []);
 
-  /**
-   * Handle price_impacts_snapshot message - Restore price impacts after page refresh
-   */
   /**
    * Handle deep_agent_snapshot message - Restore state after page refresh
    */
@@ -394,11 +357,6 @@ export const useDeepAgent = ({ useV3WebSocketState }) => {
       }));
     }
 
-    // Restore signal lifecycle state
-    if (data.signal_lifecycle?.length > 0) {
-      handleLifecycleSnapshot(data.signal_lifecycle);
-    }
-
     // Restore GDELT results from snapshot
     if (data.gdelt_results?.length > 0) {
       setGdeltResults(data.gdelt_results.map((r, i) => ({
@@ -427,7 +385,7 @@ export const useDeepAgent = ({ useV3WebSocketState }) => {
     }
 
     console.log(`[useDeepAgent] Snapshot restored: cycle ${data.cycle_count}, ${data.trades_executed} trades, ${data.recent_thinking?.length || 0} thinking, ${data.recent_learnings?.length || 0} learnings, ${data.gdelt_results?.length || 0} GDELT results`);
-  }, [handleLifecycleSnapshot]);
+  }, []);
 
   /**
    * Process incoming WebSocket message
@@ -455,9 +413,6 @@ export const useDeepAgent = ({ useV3WebSocketState }) => {
       case 'deep_agent_memory_update':
         handleMemoryUpdate(data);
         break;
-      case 'reddit_submission':
-        handleRedditSubmission(data);
-        break;
       case 'deep_agent_cost':
         handleCost(data);
         break;
@@ -482,19 +437,11 @@ export const useDeepAgent = ({ useV3WebSocketState }) => {
     handleTrade,
     handleSettlement,
     handleMemoryUpdate,
-    handleRedditSubmission,
     handleCost,
     handleGdeltResult,
     handleError,
     handleSnapshot,
   ]);
-
-  /**
-   * Track last thinking for display persistence
-   * We DON'T clear thinking between cycles - user wants to see the last thought
-   * The UI will show "Waiting for next cycle..." only on initial load (text === '')
-   */
-  // Removed auto-clear timeout - preserve last thinking for visibility
 
   /**
    * Reset state
@@ -505,9 +452,6 @@ export const useDeepAgent = ({ useV3WebSocketState }) => {
     setToolCalls([]);
     setTrades([]);
     setMemoryUpdates([]);
-    setRedditPosts([]);
-    setRedditSignals([]);
-    setPriceImpacts([]);
     setLearnings([]);
     setSettlements([]);
     setErrors([]);
@@ -523,7 +467,6 @@ export const useDeepAgent = ({ useV3WebSocketState }) => {
     tradesExecuted: agentState.tradesExecuted,
     winRate: agentState.winRate,
     pendingTrades: trades.filter(t => t.status === 'pending').length,
-    redditSignals: agentState.redditSignals,
     errors: errors.length,
   }), [agentState, trades, errors]);
 
@@ -534,17 +477,11 @@ export const useDeepAgent = ({ useV3WebSocketState }) => {
     toolCalls,
     trades,
     memoryUpdates,
-    redditPosts,
-    redditSignals,
     learnings,
     settlements,
     errors,
     costHistory,
     gdeltResults,
-    // Signal lifecycle
-    getSignalLifecycle: getLifecycle,
-    lifecycleSummary,
-    getStatusSortPriority,
     // Actions
     processMessage,
     resetState,
