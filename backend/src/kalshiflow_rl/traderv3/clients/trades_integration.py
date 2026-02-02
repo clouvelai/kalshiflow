@@ -3,16 +3,42 @@ TRADER V3 Trades Integration.
 
 Integration layer between V3 and the TradesClient for public trades monitoring.
 Provides clean abstraction for trade data flow and whale detection.
+
+Purpose:
+    Bridges the Kalshi public trades WebSocket stream into the V3 event bus,
+    emitting PUBLIC_TRADE_RECEIVED events for downstream consumers.
+
+Key Responsibilities:
+    1. **Trade Ingestion** - Receives all public trades from Kalshi WebSocket
+    2. **Market Filtering** - Pre-filters trades to tracked markets BEFORE
+       they enter the event bus queue, preventing queue saturation
+    3. **Event Emission** - Emits PUBLIC_TRADE_RECEIVED for tracked-market trades
+    4. **Metrics Tracking** - Tracks received, emitted, and filtered counts
+
+Architecture Position:
+    TradesClient (WebSocket) -> V3TradesIntegration (filter) -> EventBus -> TradeFlowService
+
+Design Principles:
+    - **Pre-filter at source**: Only tracked-market trades enter the event bus.
+      The public trades stream covers hundreds of markets but the deep agent
+      and TradeFlowService only care about 10-20 tracked markets. Filtering
+      here prevents ~76% of event bus drops that previously saturated the queue.
+    - **Set-based lookup**: O(1) market membership check via TrackedMarketsState
+    - **Dynamic tracking**: The tracked markets set changes as lifecycle
+      discovery adds/removes markets; filtering adapts automatically.
 """
 
 import asyncio
 import logging
 import time
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, TYPE_CHECKING
 from dataclasses import dataclass
 
 from .trades_client import TradesClient
 from ..core.event_bus import EventBus, EventType
+
+if TYPE_CHECKING:
+    from ..state.tracked_markets import TrackedMarketsState
 
 logger = logging.getLogger("kalshiflow_rl.traderv3.clients.trades_integration")
 
@@ -21,6 +47,8 @@ logger = logging.getLogger("kalshiflow_rl.traderv3.clients.trades_integration")
 class TradesMetrics:
     """Metrics for trades data flow."""
     trades_received: int = 0
+    trades_emitted: int = 0
+    trades_filtered: int = 0
     errors: int = 0
     last_trade_time: Optional[float] = None
 
@@ -32,9 +60,10 @@ class V3TradesIntegration:
     Features:
     - Wrapper around TradesClient for public trades stream
     - Event bus integration for trade data distribution
+    - Pre-filters trades to tracked markets before event bus emission
     - Metrics tracking for monitoring
     - Clean start/stop lifecycle
-    - Emits PUBLIC_TRADE_RECEIVED events for whale detection
+    - Emits PUBLIC_TRADE_RECEIVED events for tracked markets only
     """
 
     def __init__(
@@ -52,6 +81,12 @@ class V3TradesIntegration:
         self._client = trades_client
         self._event_bus = event_bus
 
+        # Market filter: when set, only trades for tracked markets are emitted.
+        # Injected after construction via set_tracked_markets() because
+        # TrackedMarketsState is created in _connect_lifecycle() which runs
+        # before _connect_trades() in the coordinator startup sequence.
+        self._tracked_markets: Optional['TrackedMarketsState'] = None
+
         self._metrics = TradesMetrics()
         self._running = False
         self._started_at: Optional[float] = None
@@ -65,12 +100,32 @@ class V3TradesIntegration:
 
         logger.info("V3 Trades Integration initialized")
 
+    def set_tracked_markets(self, tracked_markets: 'TrackedMarketsState') -> None:
+        """
+        Inject TrackedMarketsState for pre-filtering trades.
+
+        When set, only trades for markets present in TrackedMarketsState
+        are emitted to the event bus. This prevents queue saturation from
+        the hundreds of untracked markets on the public trades stream.
+
+        Args:
+            tracked_markets: TrackedMarketsState instance for market lookup
+        """
+        self._tracked_markets = tracked_markets
+        logger.info("TrackedMarketsState injected - trades will be pre-filtered to tracked markets")
+
     async def _handle_trade(self, trade_data: Dict[str, Any]) -> None:
         """
         Handle incoming trade from TradesClient.
 
-        Emits PUBLIC_TRADE_RECEIVED event to EventBus for downstream
-        processing (whale detection, etc.)
+        Pre-filters to tracked markets, then emits PUBLIC_TRADE_RECEIVED
+        event to EventBus for downstream processing (TradeFlowService, etc.)
+
+        Filtering rationale:
+            The public trades stream covers ALL Kalshi markets (180+), but
+            downstream consumers (TradeFlowService, deep agent) only care about
+            the 10-20 tracked markets. Pre-filtering here prevents ~76% of
+            event bus queue saturation that previously caused ~1,773 drops/min.
 
         Args:
             trade_data: Normalized trade data from TradesClient
@@ -79,7 +134,7 @@ class V3TradesIntegration:
             return
 
         try:
-            # Update metrics
+            # Update total received counter (all markets, before filtering)
             self._metrics.trades_received += 1
             self._metrics.last_trade_time = time.time()
 
@@ -88,13 +143,27 @@ class V3TradesIntegration:
                 self._first_trade_time = time.time()
                 logger.info(f"First trade received: {trade_data.get('market_ticker')}")
 
-            # Emit PUBLIC_TRADE_RECEIVED event
-            await self._event_bus.emit_public_trade(trade_data)
+            # Pre-filter: skip trades for markets we are not tracking.
+            # This is an O(1) dict lookup on TrackedMarketsState._markets.
+            if self._tracked_markets is not None:
+                market_ticker = trade_data.get("market_ticker", "")
+                if not self._tracked_markets.is_tracked(market_ticker):
+                    self._metrics.trades_filtered += 1
+                    return
 
-            # Log periodically
-            if self._metrics.trades_received % 500 == 0:
-                logger.debug(
-                    f"V3 Trades Integration: {self._metrics.trades_received} trades processed"
+            # Emit PUBLIC_TRADE_RECEIVED event (only for tracked markets)
+            await self._event_bus.emit_public_trade(trade_data)
+            self._metrics.trades_emitted += 1
+
+            # Log periodically with filter stats
+            if self._metrics.trades_emitted % 500 == 0:
+                filter_pct = (
+                    (self._metrics.trades_filtered / max(self._metrics.trades_received, 1)) * 100
+                )
+                logger.info(
+                    f"Trades: {self._metrics.trades_emitted} emitted, "
+                    f"{self._metrics.trades_filtered} filtered ({filter_pct:.0f}% pre-filtered), "
+                    f"{self._metrics.trades_received} total received"
                 )
 
         except Exception as e:
@@ -190,14 +259,22 @@ class V3TradesIntegration:
     def get_metrics(self) -> Dict[str, Any]:
         """Get trades integration metrics."""
         uptime = time.time() - self._started_at if self._started_at else 0
+        filter_pct = (
+            (self._metrics.trades_filtered / max(self._metrics.trades_received, 1)) * 100
+        )
 
         return {
             "running": self._running,
             "trades_received": self._metrics.trades_received,
+            "trades_emitted": self._metrics.trades_emitted,
+            "trades_filtered": self._metrics.trades_filtered,
+            "filter_percentage": round(filter_pct, 1),
             "errors": self._metrics.errors,
             "last_trade_time": self._metrics.last_trade_time,
             "uptime_seconds": uptime,
             "trades_per_second": self._metrics.trades_received / max(uptime, 1),
+            "emitted_per_second": self._metrics.trades_emitted / max(uptime, 1),
+            "market_filter_active": self._tracked_markets is not None,
         }
 
     def is_healthy(self) -> bool:
@@ -253,6 +330,10 @@ class V3TradesIntegration:
             "healthy": self.is_healthy(),
             "running": self._running,
             "trades_received": metrics["trades_received"],
+            "trades_emitted": metrics["trades_emitted"],
+            "trades_filtered": metrics["trades_filtered"],
+            "filter_percentage": metrics["filter_percentage"],
+            "market_filter_active": metrics["market_filter_active"],
             "errors": metrics["errors"],
             "time_since_trade": time_since_trade,
             "uptime_seconds": metrics["uptime_seconds"],

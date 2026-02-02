@@ -10,7 +10,7 @@ import {
 } from './v3-trader/panels';
 
 // UI components
-import { SettlementToast, OrderFillToast, OrderCancelledToast, ResearchAlertToast } from './v3-trader/ui';
+import { SettlementToast, OrderFillToast, OrderCancelledToast, ResearchAlertToast, WatchdogToast } from './v3-trader/ui';
 
 // Layout components
 import { V3Header, V3MetricsPanel, V3ConsoleOutput } from './v3-trader/layout';
@@ -45,6 +45,10 @@ const V3TraderConsole = () => {
     processMessage: processDeepAgentMessage,
     isRunning: deepAgentIsRunning,
     isLearning: deepAgentIsLearning,
+    watchdog,
+    newWatchdogEvent,
+    dismissWatchdogEvent,
+    cycleCountdown,
   } = useDeepAgent();
 
   // Message handler that routes to both console AND deep agent processor
@@ -108,6 +112,12 @@ const V3TraderConsole = () => {
         onDismiss={dismissResearchAlert}
       />
 
+      {/* Watchdog Toast - Shows when deep agent watchdog detects issues */}
+      <WatchdogToast
+        event={newWatchdogEvent}
+        onDismiss={dismissWatchdogEvent}
+      />
+
       {/* Header */}
       <V3Header
         wsStatus={wsStatus}
@@ -141,6 +151,8 @@ const V3TraderConsole = () => {
             isRunning={deepAgentIsRunning || (strategyStatus?.strategies?.deep_agent?.running ?? false)}
             isLearning={deepAgentIsLearning}
             costData={agentState.costData}
+            watchdog={watchdog}
+            cycleCountdown={cycleCountdown}
           />
         )}
 

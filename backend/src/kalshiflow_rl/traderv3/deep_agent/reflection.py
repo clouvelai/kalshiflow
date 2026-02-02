@@ -314,12 +314,10 @@ class ReflectionEngine:
             summary = self._state_container.get_trading_summary()
             settlements = summary.get("settlements", [])
 
-            # Build lookup structures for matching
-            # Primary: order_id -> settlement
-            settlements_by_order_id = {
-                s.get("order_id"): s for s in settlements if s.get("order_id")
-            }
-            # Secondary: (ticker, side) -> list of settlements
+            # Filter to deep_agent settlements only (avoid matching other strategies' settlements)
+            settlements = [s for s in settlements if s.get("strategy_id") == "deep_agent"]
+
+            # Build lookup: (ticker, side) -> list of settlements
             settlements_by_ticker_side: Dict[tuple, List] = {}
             for s in settlements:
                 key = (s.get("ticker"), s.get("side", "").lower())
@@ -335,29 +333,27 @@ class ReflectionEngine:
                 try:
                     matched_settlement = None
 
-                    # Primary match: by order_id (most precise)
-                    if trade.order_id and trade.order_id in settlements_by_order_id:
-                        matched_settlement = settlements_by_order_id[trade.order_id]
-                        logger.debug(
-                            f"[deep_agent.reflection] Matched by order_id: {trade.order_id}"
-                        )
+                    # Match by ticker + side + contract count (primary path)
+                    key = (trade.ticker, trade.side.lower())
+                    candidates = settlements_by_ticker_side.get(key, [])
+                    for settlement in candidates:
+                        # Use "position" field (not "contracts") - that's what state_container stores
+                        settlement_contracts = settlement.get("position", 0)
+                        if settlement_contracts == trade.contracts:
+                            matched_settlement = settlement
+                            logger.debug(
+                                f"[deep_agent.reflection] Matched by ticker+side+contracts: "
+                                f"{trade.ticker} {trade.side} x{trade.contracts}"
+                            )
+                            break
 
-                    # Secondary match: by ticker + side + contracts (fallback)
-                    if matched_settlement is None:
-                        key = (trade.ticker, trade.side.lower())
-                        candidates = settlements_by_ticker_side.get(key, [])
-                        for settlement in candidates:
-                            # Match by contract count for disambiguation
-                            settlement_contracts = settlement.get("contracts", 0)
-                            if settlement_contracts == trade.contracts:
-                                matched_settlement = settlement
-                                logger.debug(
-                                    f"[deep_agent.reflection] Matched by ticker+side+contracts: "
-                                    f"{trade.ticker} {trade.side} x{trade.contracts}"
-                                )
-                                break
-                        # No fuzzy fallback - require order_id or ticker+side+contracts match
-                        # to avoid mismatching settlements across different trades
+                    # Fallback: match by ticker + side only (if only one candidate)
+                    if matched_settlement is None and len(candidates) == 1:
+                        matched_settlement = candidates[0]
+                        logger.debug(
+                            f"[deep_agent.reflection] Matched by ticker+side (single candidate): "
+                            f"{trade.ticker} {trade.side}"
+                        )
 
                     if matched_settlement:
                         await self._handle_settlement(trade, matched_settlement)
@@ -377,8 +373,8 @@ class ReflectionEngine:
         settlement: Dict[str, Any],
     ) -> None:
         """Handle a trade that has settled."""
-        # Calculate result
-        pnl_cents = int(settlement.get("pnl", 0) * 100)
+        # Calculate result — net_pnl is already in cents from state_container
+        pnl_cents = int(settlement.get("net_pnl", 0))
 
         if pnl_cents > 0:
             result = "win"
@@ -1085,6 +1081,113 @@ Be specific and actionable in your learnings.
             summary += f" | Week trend: {trend}"
 
         return summary
+
+    def get_trade_log(self, limit: int = 10, event_ticker: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Return settled trades from scorecard + pending trades summary.
+
+        Args:
+            limit: Maximum number of settled trades to return (most recent first)
+            event_ticker: Optional filter by event ticker
+
+        Returns:
+            Dict with settled trades, pending count, and summary stats
+        """
+        # Get settled trades from scorecard (most recent first)
+        settled = list(reversed(self._scorecard))
+        if event_ticker:
+            settled = [t for t in settled if t.get("event_ticker") == event_ticker]
+        settled = settled[:limit]
+
+        # Format for readability
+        formatted_trades = []
+        for t in settled:
+            pnl = t.get("pnl_cents", 0)
+            result_tag = "W" if t.get("result") == "win" else "L" if t.get("result") == "loss" else "BE"
+            formatted_trades.append({
+                "ticker": t.get("ticker", "?"),
+                "event_ticker": t.get("event_ticker", "?"),
+                "side": t.get("side", "?"),
+                "contracts": t.get("contracts", 0),
+                "entry_cents": t.get("entry_cents", 0),
+                "exit_cents": t.get("exit_cents"),
+                "pnl_cents": pnl,
+                "pnl_dollars": f"${pnl / 100:.2f}",
+                "result": t.get("result", "unknown"),
+                "result_tag": result_tag,
+                "reasoning": t.get("reasoning", ""),
+                "timestamp": t.get("timestamp", ""),
+                "estimated_probability": t.get("estimated_probability"),
+                "what_could_go_wrong": t.get("what_could_go_wrong"),
+            })
+
+        # Pending trades summary
+        pending = list(self._pending_trades.values())
+        if event_ticker:
+            pending = [p for p in pending if p.event_ticker == event_ticker]
+
+        pending_summary = [
+            {
+                "ticker": p.ticker,
+                "event_ticker": p.event_ticker,
+                "side": p.side,
+                "contracts": p.contracts,
+                "entry_price_cents": p.entry_price_cents,
+                "age_minutes": round((time.time() - p.timestamp) / 60, 1),
+            }
+            for p in pending
+        ]
+
+        # Quick stats
+        total_settled = len(self._scorecard)
+        total_pnl = sum(t.get("pnl_cents", 0) for t in self._scorecard)
+        wins = sum(1 for t in self._scorecard if t.get("result") == "win")
+        losses = sum(1 for t in self._scorecard if t.get("result") == "loss")
+
+        return {
+            "settled_trades": formatted_trades,
+            "settled_count": len(formatted_trades),
+            "total_settled_all_time": total_settled,
+            "pending_trades": pending_summary,
+            "pending_count": len(pending_summary),
+            "summary": {
+                "total_pnl_cents": total_pnl,
+                "total_pnl_dollars": f"${total_pnl / 100:.2f}",
+                "wins": wins,
+                "losses": losses,
+                "win_rate": f"{wins / total_settled:.0%}" if total_settled > 0 else "N/A",
+            },
+            "filter": {"event_ticker": event_ticker} if event_ticker else None,
+        }
+
+    def get_recent_outcomes_summary(self, limit: int = 3) -> str:
+        """
+        Build a compact one-liner summary of recent settled trades for cycle context injection.
+
+        Returns empty string if no settled trades exist.
+        """
+        if not self._scorecard:
+            return ""
+
+        recent = list(reversed(self._scorecard))[:limit]
+        lines = ["### Recent Trade Outcomes"]
+        for t in recent:
+            pnl = t.get("pnl_cents", 0)
+            result_tag = "W" if t.get("result") == "win" else "L" if t.get("result") == "loss" else "BE"
+            sign = "+" if pnl >= 0 else ""
+            ticker = t.get("ticker", "?")
+            side = t.get("side", "?").upper()
+            contracts = t.get("contracts", 0)
+            entry = t.get("entry_cents", 0)
+            exit_c = t.get("exit_cents")
+            exit_str = f" -> {exit_c}c" if exit_c is not None else ""
+            reasoning = t.get("reasoning", "")[:80]
+            lines.append(
+                f"- [{result_tag}] {ticker} {side} x{contracts} @ {entry}c{exit_str} "
+                f"({sign}${pnl / 100:.2f}) - {reasoning}"
+            )
+        lines.append("Use get_trade_log() for full details.")
+        return "\n".join(lines)
 
     def get_by_event_stats(self) -> dict:
         """Get per-event statistics for distillation evidence."""

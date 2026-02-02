@@ -28,6 +28,12 @@ import {
   ThumbsUp,
   ThumbsDown,
   Minus,
+  ShieldOff,
+  Target,
+  FileText,
+  ListChecks,
+  Circle,
+  CheckCircle2,
 } from 'lucide-react';
 import V3Header from '../layout/V3Header';
 import renderThinkingMarkdown from '../../../utils/renderThinkingMarkdown';
@@ -35,6 +41,7 @@ import { useV3WebSocket } from '../../../hooks/v3-trader/useV3WebSocket';
 import { useDeepAgent } from '../../../hooks/v3-trader/useDeepAgent';
 import { useExtractions } from '../../../hooks/v3-trader/useExtractions';
 import { CostPanel } from '../panels/DeepAgentPanel';
+import { WatchdogToast } from '../ui';
 
 const EMPTY_POSITIONS = [];
 
@@ -243,7 +250,7 @@ ExtractionFeedPanel.displayName = 'ExtractionFeedPanel';
 /**
  * EventMarketRow - One market within an event showing live prices + signals
  */
-const EventMarketRow = memo(({ market, marketPrices, signalAgg, position, isQuiet }) => {
+const EventMarketRow = memo(({ market, marketPrices, signalAgg, position, tradeFlow }) => {
   const ticker = typeof market === 'string' ? market : market.ticker;
   const title = typeof market === 'string' ? null : (market.yes_sub_title || market.title);
   const prices = marketPrices?.[ticker];
@@ -254,14 +261,21 @@ const EventMarketRow = memo(({ market, marketPrices, signalAgg, position, isQuie
   const volume = prices?.volume_24h || prices?.volume;
   const volume24h = typeof market === 'string' ? null : market.volume_24h;
 
+  const hasSignals = signalAgg && signalAgg.occurrence_count > 0;
+
   // Time-to-close formatting
+  const timeToCloseSeconds = typeof market === 'string' ? null : market.time_to_close_seconds;
   const timeToClose = useMemo(() => {
-    const seconds = typeof market === 'string' ? null : market.time_to_close_seconds;
-    if (seconds == null || seconds <= 0) return null;
-    if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
-    if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`;
-    return `${Math.floor(seconds / 86400)}d`;
-  }, [typeof market === 'string' ? market : market.time_to_close_seconds]);
+    if (timeToCloseSeconds == null || timeToCloseSeconds <= 0) return null;
+    if (timeToCloseSeconds < 3600) return `${Math.floor(timeToCloseSeconds / 60)}m`;
+    if (timeToCloseSeconds < 86400) return `${Math.floor(timeToCloseSeconds / 3600)}h`;
+    return `${Math.floor(timeToCloseSeconds / 86400)}d`;
+  }, [timeToCloseSeconds]);
+
+  // Trade flow metrics
+  const totalTrades = tradeFlow?.total_trades || 0;
+  const yesRatio = totalTrades > 0 ? (tradeFlow?.yes_trades || 0) / totalTrades : 0;
+  const priceDrop = tradeFlow?.price_drop || 0;
 
   // Consensus badge
   const consensus = signalAgg?.consensus;
@@ -273,58 +287,87 @@ const EventMarketRow = memo(({ market, marketPrices, signalAgg, position, isQuie
 
   const hasPosData = position && (position.total_contracts || position.market_exposure);
 
-  if (isQuiet && !hasPosData) {
-    return (
-      <div className="flex items-center justify-between px-3 py-1.5 bg-gray-800/20 rounded-lg border border-gray-800/30 opacity-60">
-        <div className="flex items-center gap-2">
-          <span className="text-[10px] font-mono text-gray-400">{ticker}</span>
-          {title && <span className="text-[9px] text-gray-600 truncate max-w-[200px]">{title}</span>}
-        </div>
-        <div className="flex items-center gap-3 text-[10px] text-gray-600">
-          {yesBid != null && <span>YES {yesBid}c/{yesAsk}c</span>}
-          {spread != null && <span>Sp {spread}c</span>}
-          {timeToClose && <span className="text-gray-500">{timeToClose}</span>}
-          {volume24h != null && volume24h > 0 && (
-            <span className="text-gray-600 font-mono">{volume24h > 1000 ? `${(volume24h / 1000).toFixed(1)}k` : volume24h}</span>
-          )}
-          <span className="text-gray-700 italic">Awaiting signals...</span>
-        </div>
-      </div>
-    );
-  }
+  // Visual hierarchy: signal markets are brighter with cyan accent
+  const tickerColor = hasSignals ? 'text-gray-200' : 'text-gray-400';
+  const metricColor = hasSignals ? 'text-gray-300' : 'text-gray-500';
+  const metricDimColor = hasSignals ? 'text-gray-400' : 'text-gray-600';
+  const displayVol = volume || volume24h || 0;
 
   return (
-    <div data-testid={`market-row-${ticker}`} className="px-3 py-2.5 bg-gray-800/30 rounded-lg border border-gray-700/30 hover:border-gray-600/40 transition-colors">
-      {/* Market header row */}
-      <div className="flex items-center justify-between mb-1.5">
-        <div className="flex items-center gap-2">
-          <span className="text-xs font-mono text-gray-200">{ticker}</span>
-          {title && <span className="text-[9px] text-gray-500 truncate max-w-[200px]">{title}</span>}
+    <div
+      data-testid={`market-row-${ticker}`}
+      className={`px-3 py-2 rounded-lg border transition-colors ${
+        hasSignals
+          ? 'bg-gray-800/30 border-gray-700/30 border-l-2 border-l-cyan-500 hover:border-gray-600/40'
+          : 'bg-gray-800/15 border-gray-800/20 hover:border-gray-700/30'
+      }`}
+    >
+      {/* Vitals row - always shown for ALL markets */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2 min-w-0">
+          <span className={`text-[10px] font-mono font-semibold ${tickerColor} shrink-0`}>{ticker}</span>
+          {title && <span className={`text-[9px] ${hasSignals ? 'text-gray-500' : 'text-gray-600'} truncate max-w-[200px]`}>{title}</span>}
         </div>
-        <div className="flex items-center gap-3 text-[10px]">
+        <div className="flex items-center gap-2.5 text-[10px] shrink-0">
+          {/* YES / NO prices */}
           {yesBid != null && (
-            <span className="text-gray-300">
-              YES <span className="font-mono text-emerald-400">{yesBid}c</span>/<span className="font-mono">{yesAsk}c</span>
+            <span className={metricColor}>
+              Y <span className="font-mono text-emerald-400">{yesBid}c</span>
             </span>
           )}
           {yesBid != null && (
-            <span className="text-gray-400">
-              NO <span className="font-mono text-rose-400">{100 - (yesAsk || 0)}c</span>/<span className="font-mono">{100 - (yesBid || 0)}c</span>
+            <span className={metricDimColor}>
+              N <span className="font-mono text-rose-400">{100 - (yesAsk || 0)}c</span>
             </span>
           )}
-          {spread != null && <span className="text-gray-500">Spread {spread}c</span>}
-          {volume != null && <span className="text-gray-600">{volume > 1000 ? `${(volume / 1000).toFixed(1)}k` : volume} vol</span>}
+          {/* Spread */}
+          {spread != null && (
+            <span className={`font-mono ${
+              spread <= 3 ? 'text-emerald-500/70' : spread <= 7 ? 'text-amber-500/70' : 'text-rose-500/70'
+            }`}>
+              Sp {spread}c
+            </span>
+          )}
+          {/* Flow ratio mini-bar */}
+          {totalTrades > 0 && (
+            <div className="flex items-center gap-1">
+              <div className="w-8 h-1.5 rounded-full overflow-hidden bg-gray-700/50 flex">
+                <div
+                  className="h-full bg-emerald-500/70"
+                  style={{ width: `${yesRatio * 100}%` }}
+                />
+                <div
+                  className="h-full bg-rose-500/70"
+                  style={{ width: `${(1 - yesRatio) * 100}%` }}
+                />
+              </div>
+              <span className={`font-mono ${metricDimColor}`}>{totalTrades}</span>
+            </div>
+          )}
+          {/* Price movement */}
+          {priceDrop !== 0 && (
+            <span className={`font-mono ${priceDrop > 0 ? 'text-rose-400/70' : 'text-emerald-400/70'}`}>
+              {priceDrop > 0 ? '-' : '+'}{Math.abs(priceDrop)}c
+            </span>
+          )}
+          {/* Volume */}
+          {displayVol > 0 && (
+            <span className={`font-mono ${metricDimColor}`}>
+              {displayVol > 1000 ? `${(displayVol / 1000).toFixed(1)}k` : displayVol}
+            </span>
+          )}
+          {/* Time to close */}
           {timeToClose && (
-            <span className="text-gray-500 flex items-center gap-0.5">
-              <Clock className="w-3 h-3" />{timeToClose}
+            <span className={`${metricDimColor} flex items-center gap-0.5`}>
+              <Clock className="w-2.5 h-2.5" />{timeToClose}
             </span>
           )}
         </div>
       </div>
 
-      {/* Signal summary */}
-      {signalAgg && signalAgg.occurrence_count > 0 && (
-        <div className="flex items-center gap-2 mb-1.5">
+      {/* Signal summary - only for markets with signals */}
+      {hasSignals && (
+        <div className="flex items-center gap-2 mt-1.5">
           <span className={`px-1.5 py-0.5 text-[9px] font-bold rounded border ${consensusBg}`}>
             {consensus?.toUpperCase() || 'MIXED'}
           </span>
@@ -337,7 +380,7 @@ const EventMarketRow = memo(({ market, marketPrices, signalAgg, position, isQuie
         </div>
       )}
 
-      {/* Recent extraction snippets */}
+      {/* Recent extraction snippets - only for markets with signals */}
       {signalAgg?.recent_extractions?.length > 0 && (
         <div className="space-y-1 mt-1">
           {signalAgg.recent_extractions.slice(0, 2).map((ext, i) => (
@@ -380,7 +423,7 @@ EventMarketRow.displayName = 'EventMarketRow';
 /**
  * EventCard - Event header + list of EventMarketRows
  */
-const EventCard = memo(({ config, eventExtractions, aggregatedSignals, marketPrices, positionsDetails }) => {
+const EventCard = memo(({ config, eventExtractions, aggregatedSignals, marketPrices, positionsDetails, tradeFlowStates }) => {
   const [collapsed, setCollapsed] = useState(false);
 
   const markets = config.markets || [];
@@ -449,6 +492,27 @@ const EventCard = memo(({ config, eventExtractions, aggregatedSignals, marketPri
     }, 0);
   }, [markets, marketPrices]);
 
+  // Event-level flow stats from tradeFlowStates
+  const eventFlowStats = useMemo(() => {
+    let yesTrades = 0, noTrades = 0, activeCount = 0;
+    const spreads = [];
+    for (const m of markets) {
+      const ticker = typeof m === 'string' ? m : m.ticker;
+      const flow = tradeFlowStates?.[ticker];
+      if (flow && flow.total_trades > 0) {
+        yesTrades += flow.yes_trades || 0;
+        noTrades += flow.no_trades || 0;
+        activeCount++;
+      }
+      const sp = marketPrices?.[ticker]?.spread;
+      if (sp != null) spreads.push(sp);
+    }
+    const total = yesTrades + noTrades;
+    const yesRatio = total > 0 ? yesTrades / total : 0;
+    const avgSpread = spreads.length > 0 ? Math.round(spreads.reduce((a, b) => a + b, 0) / spreads.length) : null;
+    return { yesTrades, noTrades, total, yesRatio, activeCount, avgSpread };
+  }, [markets, tradeFlowStates, marketPrices]);
+
   return (
     <div data-testid={`event-card-${eventTicker}`} className="bg-gray-900/50 rounded-xl border border-gray-800/50 overflow-hidden">
       {/* Event header */}
@@ -495,10 +559,59 @@ const EventCard = memo(({ config, eventExtractions, aggregatedSignals, marketPri
 
       {!collapsed && (
         <div className="px-4 pb-4 space-y-2">
+          {/* Event Summary Bar */}
+          <div className="flex items-center gap-3 px-3 py-1.5 bg-gray-800/20 rounded-lg border border-gray-800/30 text-[10px]">
+            {/* YES sum + risk badge */}
+            {yesSum > 0 && (
+              <span className="text-gray-500">
+                Sum <span className="font-mono text-gray-400">{yesSum}c</span>
+                {' '}<span className={`font-bold ${riskColor}`}>[{riskLevel}]</span>
+              </span>
+            )}
+            <span className="text-gray-700">|</span>
+            {/* Total volume */}
+            <span className="text-gray-500">
+              Vol <span className="font-mono text-gray-400">
+                {totalVolume > 1000 ? `${(totalVolume / 1000).toFixed(1)}k` : totalVolume || '0'}
+              </span>
+            </span>
+            <span className="text-gray-700">|</span>
+            {/* Flow ratio bar */}
+            <span className="flex items-center gap-1 text-gray-500">
+              Flow
+              {eventFlowStats.total > 0 ? (
+                <>
+                  <div className="w-12 h-1.5 rounded-full overflow-hidden bg-gray-700/50 flex">
+                    <div className="h-full bg-emerald-500/70" style={{ width: `${eventFlowStats.yesRatio * 100}%` }} />
+                    <div className="h-full bg-rose-500/70" style={{ width: `${(1 - eventFlowStats.yesRatio) * 100}%` }} />
+                  </div>
+                  <span className="font-mono text-gray-400">{Math.round(eventFlowStats.yesRatio * 100)}%Y</span>
+                </>
+              ) : (
+                <span className="text-gray-600">--</span>
+              )}
+            </span>
+            <span className="text-gray-700">|</span>
+            {/* Active markets */}
+            <span className="text-gray-500">
+              Active <span className="font-mono text-gray-400">{eventFlowStats.activeCount}/{markets.length}</span>
+            </span>
+            {/* Avg spread */}
+            {eventFlowStats.avgSpread != null && (
+              <>
+                <span className="text-gray-700">|</span>
+                <span className="text-gray-500">
+                  Avg Sp <span className={`font-mono ${
+                    eventFlowStats.avgSpread <= 3 ? 'text-emerald-500/70' : eventFlowStats.avgSpread <= 7 ? 'text-amber-500/70' : 'text-rose-500/70'
+                  }`}>{eventFlowStats.avgSpread}c</span>
+                </span>
+              </>
+            )}
+          </div>
+
           {sortedMarkets.map((market) => {
             const ticker = typeof market === 'string' ? market : market.ticker;
             const sig = aggregatedSignals[ticker];
-            const isQuiet = !sig || sig.occurrence_count === 0;
             return (
               <EventMarketRow
                 key={ticker}
@@ -506,20 +619,10 @@ const EventCard = memo(({ config, eventExtractions, aggregatedSignals, marketPri
                 marketPrices={marketPrices}
                 signalAgg={sig}
                 position={positionLookup[ticker]}
-                isQuiet={isQuiet}
+                tradeFlow={tradeFlowStates?.[ticker]}
               />
             );
           })}
-
-          {/* Event-level risk footer */}
-          {markets.length > 1 && yesSum > 0 && (
-            <div className="flex items-center justify-between px-3 py-1.5 mt-1 border-t border-gray-800/30 text-[10px]">
-              <span className="text-gray-600">
-                Event Risk: YES_sum = <span className="font-mono text-gray-400">{yesSum}c</span>
-              </span>
-              <span className={`font-bold ${riskColor}`}>{riskLevel}</span>
-            </div>
-          )}
         </div>
       )}
     </div>
@@ -531,7 +634,7 @@ EventCard.displayName = 'EventCard';
 /**
  * EventIntelligenceBoard - Scrollable list of EventCards
  */
-const EventIntelligenceBoard = memo(({ eventConfigs, byEvent, aggregatedSignals, marketPrices, positionsDetails }) => {
+const EventIntelligenceBoard = memo(({ eventConfigs, byEvent, aggregatedSignals, marketPrices, positionsDetails, tradeFlowStates }) => {
   // Sort events by total signal count (most active first)
   const sortedConfigs = useMemo(() => {
     return [...eventConfigs].sort((a, b) => {
@@ -589,6 +692,7 @@ const EventIntelligenceBoard = memo(({ eventConfigs, byEvent, aggregatedSignals,
               aggregatedSignals={aggregatedSignals}
               marketPrices={marketPrices}
               positionsDetails={positionsDetails}
+              tradeFlowStates={tradeFlowStates}
             />
           ))
         )}
@@ -661,12 +765,52 @@ RedditPostCard.displayName = 'RedditPostCard';
 /**
  * Agent Status Header - Shows running state, cycle count, P&L
  */
-const AgentStatusHeader = memo(({ agentState, settlements, trades }) => {
+const AgentStatusHeader = memo(({ agentState, settlements, trades, watchdog, errors = [], cycleCountdown }) => {
   const isRunning = agentState.status === 'active' || agentState.status === 'started';
 
   const totalPnL = useMemo(() => {
-    return settlements.reduce((sum, s) => sum + (s.pnlCents || 0), 0) / 100;
-  }, [settlements]);
+    // 1. Settlement P&L (from market settlements / reflections)
+    const settlementPnl = settlements.reduce((sum, s) => sum + (s.pnlCents || 0), 0);
+
+    // 2. Trade-based realized P&L: match SELL trades to BUY trades on same ticker.
+    //    For each SELL, find the most recent BUY on the same ticker+side to compute
+    //    the entry-to-exit price difference. Skip tickers already counted in settlements.
+    const settledTickers = new Set(settlements.map(s => s.ticker));
+    const buysByTickerSide = {};
+    const sellTrades = [];
+
+    for (const t of trades) {
+      const key = `${t.ticker}_${t.side}`;
+      if (t.action === 'sell') {
+        sellTrades.push(t);
+      } else {
+        // BUY trade - store for matching
+        if (!buysByTickerSide[key]) buysByTickerSide[key] = [];
+        buysByTickerSide[key].push(t);
+      }
+    }
+
+    let tradePnl = 0;
+    for (const sell of sellTrades) {
+      if (settledTickers.has(sell.ticker)) continue; // Already counted in settlements
+      const key = `${sell.ticker}_${sell.side}`;
+      const buys = buysByTickerSide[key];
+      if (!buys || buys.length === 0) continue;
+
+      // Match with the earliest unmatched BUY for this ticker+side
+      const buy = buys.shift();
+      const buyPrice = buy.priceCents || buy.limitPriceCents || 0;
+      const sellPrice = sell.priceCents || sell.limitPriceCents || 0;
+      const matchedContracts = Math.min(sell.contracts || 0, buy.contracts || 0);
+
+      if (buyPrice > 0 && sellPrice > 0 && matchedContracts > 0) {
+        // P&L = (sell_price - buy_price) * contracts for long positions
+        tradePnl += (sellPrice - buyPrice) * matchedContracts;
+      }
+    }
+
+    return (settlementPnl + tradePnl) / 100;
+  }, [settlements, trades]);
 
   const pnlColor = totalPnL >= 0 ? 'text-emerald-400' : 'text-rose-400';
   const pnlBg = totalPnL >= 0 ? 'bg-emerald-900/20' : 'bg-rose-900/20';
@@ -696,12 +840,38 @@ const AgentStatusHeader = memo(({ agentState, settlements, trades }) => {
         <div className="flex items-center gap-2 text-xs text-gray-400" data-testid="agent-cycle-count">
           <Clock className="w-3.5 h-3.5" />
           <span>Cycle <span className="font-mono text-white">{agentState.cycleCount}</span></span>
+          {cycleCountdown != null && cycleCountdown > 0 && (
+            <span className="font-mono text-gray-500">
+              ({Math.floor(cycleCountdown / 60)}:{String(cycleCountdown % 60).padStart(2, '0')})
+            </span>
+          )}
         </div>
 
         <div className="flex items-center gap-2 text-xs text-gray-400" data-testid="agent-trade-count">
           <BarChart3 className="w-3.5 h-3.5" />
           <span>Trades <span className="font-mono text-white">{trades.length}</span></span>
         </div>
+
+        {/* Watchdog indicators */}
+        {watchdog?.permanentlyStopped && (
+          <div className="flex items-center gap-1.5 px-2 py-1 rounded-lg bg-rose-900/30 border border-rose-600/40">
+            <ShieldOff className="w-3.5 h-3.5 text-rose-400" />
+            <span className="text-[10px] font-bold text-rose-400">CIRCUIT BREAK</span>
+          </div>
+        )}
+        {watchdog && !watchdog.permanentlyStopped && watchdog.restartsThisHour > 0 && (
+          <div className="flex items-center gap-1.5 px-2 py-1 rounded-lg bg-amber-900/30 border border-amber-600/40">
+            <AlertCircle className="w-3.5 h-3.5 text-amber-400" />
+            <span className="text-[10px] font-bold text-amber-400">
+              {watchdog.restartsThisHour}/{watchdog.maxRestartsPerHour}
+            </span>
+          </div>
+        )}
+        {errors.length > 0 && !watchdog?.permanentlyStopped && !(watchdog?.restartsThisHour > 0) && (
+          <div className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-rose-900/20 border border-rose-700/30">
+            <span className="text-[9px] font-bold text-rose-400">{errors.length} err</span>
+          </div>
+        )}
       </div>
 
       <div data-testid="agent-pnl-value" className={`flex items-center gap-2 px-3 py-1.5 rounded-lg ${pnlBg}`}>
@@ -720,8 +890,24 @@ AgentStatusHeader.displayName = 'AgentStatusHeader';
 /**
  * Thinking Stream - Real-time agent reasoning with pulse animation
  */
-const ThinkingStream = memo(({ thinking, isRunning }) => {
+const ThinkingStream = memo(({ thinking, isRunning, activeToolCall }) => {
+  // No thinking text — show active tool or idle state
   if (!thinking.text) {
+    if (activeToolCall) {
+      return (
+        <div data-testid="agent-thinking-stream" className="p-4 bg-gradient-to-br from-cyan-900/20 to-cyan-950/10 rounded-xl border border-cyan-700/30">
+          <div className="flex items-center gap-2 mb-2">
+            <Wrench className="w-4 h-4 text-cyan-400 animate-pulse" />
+            <span className="text-xs font-semibold text-cyan-300 uppercase tracking-wider">Executing Tool</span>
+            <span className="ml-auto text-[10px] text-gray-500 font-mono">Cycle {activeToolCall.cycle}</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <RefreshCw className="w-3.5 h-3.5 text-cyan-400 animate-spin" />
+            <span className="text-sm font-mono text-cyan-300">{activeToolCall.tool}()</span>
+          </div>
+        </div>
+      );
+    }
     return (
       <div data-testid="agent-thinking-stream" className="p-4 bg-gray-800/30 rounded-xl border border-gray-700/30">
         <div className="flex items-center gap-2 mb-2">
@@ -744,8 +930,15 @@ const ThinkingStream = memo(({ thinking, isRunning }) => {
       </div>
       <div data-testid="agent-thinking-text" className="text-sm text-gray-200 leading-relaxed">
         {renderThinkingMarkdown(thinking.text)}
+        {thinking.streaming && <span className="inline-block w-0.5 h-4 bg-violet-400 ml-0.5 animate-pulse align-middle" />}
       </div>
-      {isRunning && (
+      {activeToolCall && (
+        <div className="mt-2 flex items-center gap-2 px-2 py-1.5 bg-cyan-900/20 rounded-lg border border-cyan-800/30">
+          <RefreshCw className="w-3 h-3 text-cyan-400 animate-spin" />
+          <span className="text-[10px] font-mono text-cyan-300">{activeToolCall.tool}()</span>
+        </div>
+      )}
+      {isRunning && !activeToolCall && !thinking.streaming && (
         <div className="mt-2 flex items-center gap-2">
           <div className="w-2 h-2 bg-violet-400 rounded-full animate-pulse" />
           <span className="text-[10px] text-violet-400">Processing...</span>
@@ -844,6 +1037,9 @@ const TradeCard = memo(({ trade }) => {
   const isSell = trade.action === 'sell';
   const sideColor = isYes ? 'text-emerald-400' : 'text-rose-400';
   const sideBg = isYes ? 'bg-emerald-900/20' : 'bg-rose-900/20';
+  // Use priceCents (avg fill price) when available, fall back to limitPriceCents
+  const displayPrice = trade.priceCents || trade.limitPriceCents || 0;
+  const notionalCost = displayPrice > 0 ? ((trade.contracts * displayPrice) / 100).toFixed(2) : '—';
 
   return (
     <div className={`flex items-center justify-between p-2.5 rounded-lg border ${sideBg} border-gray-700/30`}>
@@ -855,9 +1051,9 @@ const TradeCard = memo(({ trade }) => {
         </span>
         <div className={`text-xs font-bold ${sideColor}`}>{isYes ? 'YES' : 'NO'}</div>
         <span className="text-xs font-mono text-gray-300">{trade.ticker}</span>
-        <span className="text-[10px] text-gray-500">{trade.contracts}x @ {trade.priceCents}c</span>
+        <span className="text-[10px] text-gray-500">{trade.contracts}x @ {displayPrice}c</span>
       </div>
-      <span className="text-[10px] text-gray-500">${((trade.contracts * trade.priceCents) / 100).toFixed(2)}</span>
+      <span className="text-[10px] text-gray-500">${notionalCost}</span>
     </div>
   );
 });
@@ -897,6 +1093,21 @@ SettlementCard.displayName = 'SettlementCard';
 const TradesPanel = memo(({ trades, settlements }) => {
   const [collapsed, setCollapsed] = useState(false);
 
+  // Filter out trades that already have a corresponding settlement to avoid visual duplicates
+  const settledTickers = useMemo(() => {
+    const set = new Set();
+    for (const s of settlements) {
+      set.add(s.ticker);
+    }
+    return set;
+  }, [settlements]);
+
+  // Show unsettled trades only when there are settlements to avoid confusion
+  const displayTrades = useMemo(() => {
+    if (settlements.length === 0) return trades;
+    return trades.filter(t => !settledTickers.has(t.ticker));
+  }, [trades, settlements, settledTickers]);
+
   return (
     <div data-testid="agent-trades-panel" className="bg-gray-900/50 rounded-xl border border-gray-800/50 overflow-hidden">
       <button
@@ -920,7 +1131,7 @@ const TradesPanel = memo(({ trades, settlements }) => {
           ) : (
             <>
               {settlements.slice(0, 5).map((s) => (<SettlementCard key={s.id} settlement={s} />))}
-              {trades.slice(0, 10).map((t) => (<TradeCard key={t.id} trade={t} />))}
+              {displayTrades.slice(0, 10).map((t) => (<TradeCard key={t.id} trade={t} />))}
             </>
           )}
         </div>
@@ -932,42 +1143,206 @@ const TradesPanel = memo(({ trades, settlements }) => {
 TradesPanel.displayName = 'TradesPanel';
 
 /**
- * Learnings Panel
+ * Memory Panel - Tabbed view of all memory file updates
  */
-const LearningsPanel = memo(({ learnings }) => {
-  const [collapsed, setCollapsed] = useState(true);
+const MEMORY_TABS = [
+  { key: 'learnings.md', label: 'Learnings', icon: BookOpen, color: 'amber' },
+  { key: 'strategy.md', label: 'Strategy', icon: Target, color: 'violet' },
+  { key: 'mistakes.md', label: 'Mistakes', icon: AlertCircle, color: 'rose' },
+  { key: 'patterns.md', label: 'Patterns', icon: TrendingUp, color: 'emerald' },
+  { key: 'cycle_journal.md', label: 'Journal', icon: FileText, color: 'blue' },
+  { key: 'golden_rules.md', label: 'Rules', icon: Zap, color: 'yellow' },
+];
+
+const TAB_COLORS = {
+  amber:   { active: 'bg-amber-900/40 text-amber-300 border-amber-600/40', badge: 'bg-amber-900/30 text-amber-400' },
+  violet:  { active: 'bg-violet-900/40 text-violet-300 border-violet-600/40', badge: 'bg-violet-900/30 text-violet-400' },
+  rose:    { active: 'bg-rose-900/40 text-rose-300 border-rose-600/40', badge: 'bg-rose-900/30 text-rose-400' },
+  emerald: { active: 'bg-emerald-900/40 text-emerald-300 border-emerald-600/40', badge: 'bg-emerald-900/30 text-emerald-400' },
+  blue:    { active: 'bg-blue-900/40 text-blue-300 border-blue-600/40', badge: 'bg-blue-900/30 text-blue-400' },
+  yellow:  { active: 'bg-yellow-900/40 text-yellow-300 border-yellow-600/40', badge: 'bg-yellow-900/30 text-yellow-400' },
+};
+
+/**
+ * TodoPanel - Agent's self-managed task list
+ */
+const PRIORITY_STYLES = {
+  high: { dot: 'text-rose-400', bg: 'bg-rose-900/20 text-rose-300 border-rose-700/30' },
+  medium: { dot: 'text-amber-400', bg: 'bg-amber-900/20 text-amber-300 border-amber-700/30' },
+  low: { dot: 'text-gray-500', bg: 'bg-gray-800/30 text-gray-400 border-gray-700/30' },
+};
+
+const TodoPanel = memo(({ todos }) => {
+  if (!todos || todos.length === 0) return null;
+
+  const pending = todos.filter(t => t.status !== 'done');
+  const done = todos.filter(t => t.status === 'done');
 
   return (
-    <div data-testid="agent-learnings-panel" className="bg-gray-900/50 rounded-xl border border-gray-800/50 overflow-hidden">
+    <div className="bg-gray-900/50 rounded-xl border border-gray-800/50 p-4">
+      <div className="flex items-center gap-2 mb-3">
+        <ListChecks className="w-4 h-4 text-cyan-400" />
+        <span className="text-sm font-semibold text-gray-300">Agent TODO List</span>
+        <span className="px-2 py-0.5 bg-cyan-900/30 text-cyan-400 text-[10px] font-bold rounded-full">
+          {pending.length} pending
+        </span>
+        {done.length > 0 && (
+          <span className="px-2 py-0.5 bg-emerald-900/30 text-emerald-400 text-[10px] font-bold rounded-full">
+            {done.length} done
+          </span>
+        )}
+      </div>
+      <div className="space-y-1.5">
+        {pending.map((item, i) => {
+          const style = PRIORITY_STYLES[item.priority] || PRIORITY_STYLES.medium;
+          return (
+            <div key={`todo-${i}`} className="flex items-start gap-2 group">
+              <Circle className={`w-3.5 h-3.5 mt-0.5 flex-shrink-0 ${style.dot}`} />
+              <span className="text-xs text-gray-300 leading-relaxed flex-1">{item.task}</span>
+              <span className={`text-[9px] px-1.5 py-0.5 rounded border flex-shrink-0 ${style.bg}`}>
+                {item.priority}
+              </span>
+            </div>
+          );
+        })}
+        {done.map((item, i) => (
+          <div key={`done-${i}`} className="flex items-start gap-2 opacity-50">
+            <CheckCircle2 className="w-3.5 h-3.5 mt-0.5 flex-shrink-0 text-emerald-500" />
+            <span className="text-xs text-gray-500 leading-relaxed line-through flex-1">{item.task}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+});
+
+const MemoryPanel = memo(({ memoryByFile }) => {
+  const [collapsed, setCollapsed] = useState(true);
+  const [activeTab, setActiveTab] = useState('learnings.md');
+
+  const totalCount = useMemo(() =>
+    Object.values(memoryByFile).reduce((sum, arr) => sum + arr.length, 0),
+    [memoryByFile],
+  );
+
+  const entries = memoryByFile[activeTab] || [];
+  const activeTabMeta = MEMORY_TABS.find(t => t.key === activeTab);
+
+  return (
+    <div data-testid="agent-memory-panel" className="bg-gray-900/50 rounded-xl border border-gray-800/50 overflow-hidden">
       <button
         onClick={() => setCollapsed(!collapsed)}
         className="w-full flex items-center justify-between p-3 hover:bg-gray-800/30 transition-colors"
       >
         <div className="flex items-center gap-2">
-          <BookOpen className="w-4 h-4 text-amber-400" />
-          <span className="text-xs font-semibold text-gray-300">Learnings</span>
-          <span className="px-2 py-0.5 bg-amber-900/30 text-amber-400 text-[10px] font-bold rounded-full">{learnings.length}</span>
+          <BookOpen className="w-4 h-4 text-violet-400" />
+          <span className="text-xs font-semibold text-gray-300">Memory</span>
+          {totalCount > 0 && (
+            <span className="px-2 py-0.5 bg-violet-900/30 text-violet-400 text-[10px] font-bold rounded-full">{totalCount}</span>
+          )}
         </div>
         {collapsed ? <ChevronRight className="w-4 h-4 text-gray-500" /> : <ChevronDown className="w-4 h-4 text-gray-500" />}
       </button>
       {!collapsed && (
-        <div className="px-3 pb-3 space-y-2 max-h-[200px] overflow-y-auto">
-          {learnings.length === 0 ? (
-            <div className="text-center py-4 text-gray-500 text-xs">No learnings recorded yet...</div>
-          ) : (
-            learnings.slice(0, 10).map((learning) => (
-              <div key={learning.id} className="p-2 bg-gray-800/40 rounded-lg">
-                <div className="text-xs text-gray-300">{learning.content}</div>
-              </div>
-            ))
-          )}
+        <div className="px-3 pb-3">
+          {/* Tab bar */}
+          <div className="flex gap-1 mb-3 overflow-x-auto pb-1">
+            {MEMORY_TABS.map(tab => {
+              const count = (memoryByFile[tab.key] || []).length;
+              const isActive = activeTab === tab.key;
+              const colors = TAB_COLORS[tab.color];
+              const Icon = tab.icon;
+              return (
+                <button
+                  key={tab.key}
+                  onClick={() => setActiveTab(tab.key)}
+                  className={`flex items-center gap-1 px-2 py-1 text-[10px] font-medium rounded-md whitespace-nowrap transition-colors border ${
+                    isActive
+                      ? colors.active
+                      : 'border-transparent text-gray-500 hover:text-gray-300 hover:bg-gray-800/50'
+                  }`}
+                >
+                  <Icon className="w-3 h-3" />
+                  {tab.label}
+                  {count > 0 && (
+                    <span className={`ml-0.5 px-1 py-px text-[9px] font-mono rounded ${isActive ? colors.badge : 'text-gray-500'}`}>
+                      {count}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+          {/* Tab content */}
+          <div className="space-y-2 max-h-[250px] overflow-y-auto scrollbar-dark">
+            {entries.length === 0 ? (
+              <div className="text-center py-4 text-gray-500 text-xs">No updates this session</div>
+            ) : (
+              entries.slice(0, 20).map(entry => (
+                <div key={entry.id} className="p-2 bg-gray-800/40 rounded-lg">
+                  <div className="text-xs text-gray-300">{entry.contentPreview || entry.content}</div>
+                  {entry.timestamp && (
+                    <div className="text-[9px] text-gray-600 mt-1">
+                      {new Date(entry.timestamp).toLocaleTimeString()}
+                    </div>
+                  )}
+                </div>
+              ))
+            )}
+          </div>
         </div>
       )}
     </div>
   );
 });
 
-LearningsPanel.displayName = 'LearningsPanel';
+MemoryPanel.displayName = 'MemoryPanel';
+
+/**
+ * ErrorHistoryPanel - Collapsible list of recent agent errors
+ */
+const ErrorHistoryPanel = memo(({ errors }) => {
+  const [collapsed, setCollapsed] = useState(true);
+
+  if (errors.length === 0) return null;
+
+  return (
+    <div data-testid="agent-error-history-panel" className="bg-gray-900/50 rounded-xl border border-rose-800/30 overflow-hidden">
+      <button
+        onClick={() => setCollapsed(!collapsed)}
+        className="w-full flex items-center justify-between p-3 hover:bg-gray-800/30 transition-colors"
+      >
+        <div className="flex items-center gap-2">
+          <AlertCircle className="w-4 h-4 text-rose-400" />
+          <span className="text-xs font-semibold text-gray-300">Errors</span>
+          <span className="px-2 py-0.5 bg-rose-900/30 text-rose-400 text-[10px] font-bold rounded-full">{errors.length}</span>
+        </div>
+        {collapsed ? <ChevronRight className="w-4 h-4 text-gray-500" /> : <ChevronDown className="w-4 h-4 text-gray-500" />}
+      </button>
+      {!collapsed && (
+        <div className="px-3 pb-3 space-y-1.5 max-h-[200px] overflow-y-auto">
+          {errors.map((error) => (
+            <div key={error.id} className="flex items-start gap-2 p-2 bg-gray-800/40 rounded-lg">
+              <span className={`px-1 py-0.5 text-[8px] font-bold rounded border flex-shrink-0 mt-0.5 ${
+                error.severity === 'critical'
+                  ? 'bg-rose-900/30 text-rose-400 border-rose-600/30'
+                  : 'bg-amber-900/30 text-amber-400 border-amber-600/30'
+              }`}>
+                {error.severity === 'critical' ? 'CRIT' : 'WARN'}
+              </span>
+              <div className="min-w-0 flex-1">
+                <div className="text-[11px] text-gray-300 break-words">{error.message}</div>
+                <div className="text-[9px] text-gray-600 mt-0.5">{error.timestamp}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+});
+
+ErrorHistoryPanel.displayName = 'ErrorHistoryPanel';
 
 /**
  * GdeltArticleRow - Single GDELT article with link
@@ -1063,24 +1438,54 @@ const GdeltQueryCard = memo(({ result }) => {
   const [expanded, setExpanded] = useState(false);
   const isTimeline = result.source === 'volume_timeline';
   const isEvents = result.source === 'events';
+  const isIntel = result.source === 'news_intelligence';
   const tone = result.toneSummary;
   const avgTone = tone?.avg_tone || 0;
   const toneColor = avgTone > 1.5 ? 'text-emerald-400' : avgTone < -1.5 ? 'text-rose-400' : 'text-gray-400';
   const toneBg = avgTone > 1.5 ? 'bg-emerald-900/20' : avgTone < -1.5 ? 'bg-rose-900/20' : 'bg-gray-800/30';
 
+  // News intelligence data (only populated for source === 'news_intelligence')
+  const intel = result.intelligence || {};
+  const intelSentiment = intel.sentiment || {};
+  const intelFreshness = intel.freshness || {};
+  const intelSources = intel.source_analysis || {};
+  const intelDevs = intel.key_developments || [];
+
+  // Sentiment label and styling for news_intelligence collapsed row
+  const sentimentLabel = {
+    strongly_positive: 'Positive', positive: 'Positive',
+    strongly_negative: 'Negative', negative: 'Negative',
+    mixed: 'Mixed', neutral: 'Neutral',
+  }[intelSentiment.overall] || '';
+  const sentimentColor = {
+    strongly_positive: 'text-emerald-400', positive: 'text-emerald-400',
+    strongly_negative: 'text-rose-400', negative: 'text-rose-400',
+    mixed: 'text-amber-400', neutral: 'text-gray-400',
+  }[intelSentiment.overall] || 'text-gray-400';
+  const sentimentBg = {
+    strongly_positive: 'bg-emerald-900/20', positive: 'bg-emerald-900/20',
+    strongly_negative: 'bg-rose-900/20', negative: 'bg-rose-900/20',
+    mixed: 'bg-amber-900/20', neutral: 'bg-gray-800/30',
+  }[intelSentiment.overall] || 'bg-gray-800/30';
+  const trendArrow = { improving: '\u2197', stable: '\u2192', deteriorating: '\u2198' }[intelSentiment.trend] || '';
+
   // Source label mapping
-  const sourceLabel = { gkg: 'GKG', doc_api: 'DOC', volume_timeline: 'TREND', events: 'EVENTS' }[result.source] || '';
-  const sourceColor = { gkg: 'text-amber-500 border-amber-700/30', doc_api: 'text-blue-400 border-blue-700/30', volume_timeline: 'text-purple-400 border-purple-700/30', events: 'text-red-400 border-red-700/30' }[result.source] || 'text-gray-400 border-gray-600/30';
+  const sourceLabel = { gkg: 'GKG', doc_api: 'DOC', volume_timeline: 'TREND', events: 'EVENTS', news_intelligence: 'INTEL' }[result.source] || '';
+  const sourceColor = { gkg: 'text-amber-500 border-amber-700/30', doc_api: 'text-blue-400 border-blue-700/30', volume_timeline: 'text-purple-400 border-purple-700/30', events: 'text-red-400 border-red-700/30', news_intelligence: 'text-teal-400 border-teal-700/30' }[result.source] || 'text-gray-400 border-gray-600/30';
 
   return (
-    <div className="bg-gray-800/30 rounded-lg border border-gray-700/30 overflow-hidden">
+    <div className={`bg-gray-800/30 rounded-lg border overflow-hidden ${isIntel ? 'border-teal-800/30' : 'border-gray-700/30'}`}>
       <button
         onClick={() => setExpanded(!expanded)}
         className="w-full flex items-center justify-between px-3 py-2.5 hover:bg-gray-800/50 transition-colors"
       >
         <div className="flex items-center gap-2 min-w-0">
           {(() => {
-            const iconMap = { events: [Activity, 'text-red-400'], volume_timeline: [TrendingUp, 'text-purple-400'] };
+            const iconMap = {
+              events: [Activity, 'text-red-400'],
+              volume_timeline: [TrendingUp, 'text-purple-400'],
+              news_intelligence: [Sparkles, 'text-teal-400'],
+            };
             const [Icon, color] = iconMap[result.source] || [Globe, 'text-blue-400'];
             return <Icon className={`w-3.5 h-3.5 ${color} flex-shrink-0`} />;
           })()}
@@ -1097,7 +1502,41 @@ const GdeltQueryCard = memo(({ result }) => {
           )}
         </div>
         <div className="flex items-center gap-2 flex-shrink-0 ml-2">
-          {isTimeline ? (
+          {isIntel ? (
+            /* --- News Intelligence collapsed badges --- */
+            <>
+              {/* Article count */}
+              <span className={`px-1.5 py-0.5 text-[9px] font-bold rounded ${
+                result.articleCount >= 5
+                  ? 'bg-teal-900/30 text-teal-400 border border-teal-600/30'
+                  : result.articleCount > 0
+                    ? 'bg-gray-700/50 text-gray-300 border border-gray-600/30'
+                    : 'bg-gray-800/50 text-gray-500 border border-gray-700/30'
+              }`}>
+                {result.articleCount} articles
+              </span>
+              {/* Sentiment + trend arrow */}
+              {sentimentLabel && (
+                <span className={`flex items-center gap-0.5 px-1.5 py-0.5 text-[9px] rounded ${sentimentBg} ${sentimentColor}`}>
+                  {sentimentLabel}
+                  {trendArrow && <span className="ml-0.5">{trendArrow}</span>}
+                </span>
+              )}
+              {/* Freshness: breaking or age */}
+              {intelFreshness.is_breaking ? (
+                <span className="px-1.5 py-0.5 text-[9px] font-bold rounded bg-rose-900/30 text-rose-400 border border-rose-600/30 animate-pulse">
+                  BREAKING
+                </span>
+              ) : intelFreshness.newest_article_age_minutes != null && (
+                <span className="text-[9px] text-gray-500 flex items-center gap-0.5">
+                  <Clock className="w-2.5 h-2.5" />
+                  {intelFreshness.newest_article_age_minutes < 60
+                    ? `${intelFreshness.newest_article_age_minutes}m ago`
+                    : `${Math.round(intelFreshness.newest_article_age_minutes / 60)}h ago`}
+                </span>
+              )}
+            </>
+          ) : isTimeline ? (
             /* Timeline data points badge */
             <span className={`px-1.5 py-0.5 text-[9px] font-bold rounded ${
               result.dataPoints >= 10
@@ -1161,6 +1600,123 @@ const GdeltQueryCard = memo(({ result }) => {
 
       {expanded && (
         <div className="px-3 pb-3 pt-1 border-t border-gray-700/20 space-y-3">
+
+          {/* === News Intelligence expanded content === */}
+          {isIntel && (
+            <>
+              {/* Narrative summary */}
+              {intel.narrative_summary && (
+                <div className="text-[11px] text-gray-300 leading-relaxed">
+                  {intel.narrative_summary}
+                </div>
+              )}
+
+              {/* Key developments */}
+              {intelDevs.length > 0 && (
+                <div>
+                  <span className="text-[9px] text-gray-500 uppercase tracking-wider">Key Developments</span>
+                  <div className="mt-1.5 space-y-1.5">
+                    {intelDevs.slice(0, 5).map((dev, i) => {
+                      const recencyStyle = {
+                        breaking: 'bg-rose-900/30 text-rose-400 border-rose-600/30',
+                        recent: 'bg-amber-900/30 text-amber-400 border-amber-600/30',
+                        developing: 'bg-blue-900/30 text-blue-400 border-blue-600/30',
+                        stale: 'bg-gray-700/50 text-gray-500 border-gray-600/30',
+                      }[dev.recency] || 'bg-gray-700/50 text-gray-500 border-gray-600/30';
+                      return (
+                        <div key={i} className="flex items-start gap-2">
+                          <span className={`px-1.5 py-0.5 text-[8px] font-bold rounded border flex-shrink-0 mt-0.5 ${recencyStyle}`}>
+                            {(dev.recency || 'unknown').toUpperCase()}
+                          </span>
+                          <div className="flex-1 min-w-0">
+                            <span className="text-[10px] text-gray-300">{dev.headline}</span>
+                            {dev.source_count > 0 && (
+                              <span className="text-[9px] text-gray-600 ml-1.5">
+                                {dev.source_count} sources
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* Source analysis */}
+              {(intelSources.total_articles > 0 || intelSources.notable_sources?.length > 0) && (
+                <div>
+                  <span className="text-[9px] text-gray-500 uppercase tracking-wider">Sources</span>
+                  <div className="mt-1 flex items-center flex-wrap gap-1.5">
+                    {intelSources.total_articles > 0 && (
+                      <span className="text-[10px] text-gray-400">
+                        {intelSources.total_articles} articles from {intelSources.unique_sources || 0} sources
+                      </span>
+                    )}
+                    {intelSources.geographic_spread && intelSources.geographic_spread !== 'domestic' && (
+                      <span className="px-1.5 py-0.5 text-[8px] bg-blue-900/20 text-blue-400 rounded border border-blue-700/30">
+                        {intelSources.geographic_spread}
+                      </span>
+                    )}
+                  </div>
+                  {intelSources.notable_sources?.length > 0 && (
+                    <div className="mt-1 flex flex-wrap gap-1">
+                      {intelSources.notable_sources.slice(0, 6).map((src, i) => (
+                        <span key={i} className="px-1.5 py-0.5 text-[8px] bg-gray-700/50 text-gray-400 rounded">
+                          {src}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Freshness detail */}
+              <div className="flex items-center gap-3 text-[10px]">
+                {intelFreshness.newest_article_age_minutes != null && (
+                  <span className="text-gray-400 flex items-center gap-1">
+                    <Clock className="w-3 h-3 text-gray-500" />
+                    Newest: {intelFreshness.newest_article_age_minutes < 60
+                      ? `${intelFreshness.newest_article_age_minutes}m ago`
+                      : `${Math.round(intelFreshness.newest_article_age_minutes / 60)}h ago`}
+                  </span>
+                )}
+                {intelFreshness.volume_trend && (
+                  <span className={`flex items-center gap-0.5 ${
+                    intelFreshness.volume_trend === 'surging' ? 'text-emerald-400'
+                    : intelFreshness.volume_trend === 'declining' ? 'text-amber-400'
+                    : 'text-gray-500'
+                  }`}>
+                    {intelFreshness.volume_trend === 'surging' ? '\u2191' : intelFreshness.volume_trend === 'declining' ? '\u2193' : '\u2192'}
+                    {' '}{intelFreshness.volume_trend}
+                  </span>
+                )}
+                {intelFreshness.coverage_window_hours > 0 && (
+                  <span className="text-gray-600">
+                    {intelFreshness.coverage_window_hours}h window
+                  </span>
+                )}
+                {intelSentiment.confidence && (
+                  <span className={`flex items-center gap-1 ${
+                    intelSentiment.confidence === 'high' ? 'text-emerald-400'
+                    : intelSentiment.confidence === 'low' ? 'text-gray-600'
+                    : 'text-gray-400'
+                  }`}>
+                    <Circle className={`w-1.5 h-1.5 fill-current`} />
+                    {intelSentiment.confidence} confidence
+                  </span>
+                )}
+              </div>
+
+              {/* Duration */}
+              {result.durationMs != null && (
+                <div className="text-[9px] text-gray-600">
+                  Analysis took {result.durationMs >= 1000 ? `${(result.durationMs / 1000).toFixed(1)}s` : `${result.durationMs}ms`}
+                </div>
+              )}
+            </>
+          )}
+
           {/* Volume timeline visualization */}
           {isTimeline && result.timeline?.length > 0 && (
             <div>
@@ -1274,10 +1830,10 @@ const GdeltQueryCard = memo(({ result }) => {
             </>
           )}
 
-          {/* === News-specific expanded content (non-events, non-timeline) === */}
+          {/* === News-specific expanded content (non-events, non-timeline, non-intel) === */}
 
           {/* Tone breakdown */}
-          {!isTimeline && !isEvents && (tone?.positive_count > 0 || tone?.negative_count > 0) && (
+          {!isTimeline && !isEvents && !isIntel && (tone?.positive_count > 0 || tone?.negative_count > 0) && (
             <div className="flex items-center gap-3">
               <div className="flex items-center gap-1">
                 <ThumbsUp className="w-3 h-3 text-emerald-400" />
@@ -1295,7 +1851,7 @@ const GdeltQueryCard = memo(({ result }) => {
           )}
 
           {/* Key entities row */}
-          {!isEvents && (result.keyPersons?.length > 0 || result.keyOrganizations?.length > 0) && (
+          {!isEvents && !isIntel && (result.keyPersons?.length > 0 || result.keyOrganizations?.length > 0) && (
             <div className="space-y-1.5">
               {result.keyPersons?.length > 0 && (
                 <div className="flex flex-wrap gap-1">
@@ -1321,7 +1877,7 @@ const GdeltQueryCard = memo(({ result }) => {
           )}
 
           {/* Key themes */}
-          {!isEvents && result.keyThemes?.length > 0 && (
+          {!isEvents && !isIntel && result.keyThemes?.length > 0 && (
             <div className="flex flex-wrap gap-1">
               <span className="text-[9px] text-gray-500 mr-1">Themes:</span>
               {result.keyThemes.slice(0, 8).map((t, i) => (
@@ -1333,7 +1889,7 @@ const GdeltQueryCard = memo(({ result }) => {
           )}
 
           {/* Top articles */}
-          {!isEvents && result.topArticles?.length > 0 && (
+          {!isEvents && !isIntel && result.topArticles?.length > 0 && (
             <div>
               <span className="text-[9px] text-gray-500 uppercase tracking-wider">Top Articles</span>
               <div className="mt-1">
@@ -1344,8 +1900,8 @@ const GdeltQueryCard = memo(({ result }) => {
             </div>
           )}
 
-          {/* Duration */}
-          {result.durationMs != null && (
+          {/* Duration (for non-intel sources) */}
+          {!isIntel && result.durationMs != null && (
             <div className="text-[9px] text-gray-600">
               Query took {result.durationMs >= 1000 ? `${(result.durationMs / 1000).toFixed(1)}s` : `${result.durationMs}ms`}
             </div>
@@ -1431,14 +1987,23 @@ const AgentPage = () => {
   const {
     agentState,
     thinking,
+    activeToolCall,
     toolCalls,
     trades,
     settlements,
     learnings,
+    memoryByFile,
+    errors,
     memoryUpdates,
     processMessage,
     isRunning: agentIsRunning,
     gdeltResults,
+    todos,
+    redditHistoricDigest,
+    watchdog,
+    newWatchdogEvent,
+    dismissWatchdogEvent,
+    cycleCountdown,
   } = useDeepAgent();
 
   // Wire deep agent message processing to WebSocket
@@ -1458,6 +2023,7 @@ const AgentPage = () => {
     marketSignals,
     eventConfigs,
     trackedMarkets,
+    tradeFlowStates,
   } = useV3WebSocket({ onMessage: handleMessage });
 
   // Extraction-centric derived views
@@ -1529,6 +2095,8 @@ const AgentPage = () => {
 
   return (
     <div data-testid="agent-page" className="min-h-screen bg-gradient-to-br from-gray-950 via-gray-900 to-gray-950">
+      <WatchdogToast event={newWatchdogEvent} onDismiss={dismissWatchdogEvent} />
+
       <V3Header
         wsStatus={wsStatus}
         currentState={currentState}
@@ -1646,6 +2214,30 @@ const AgentPage = () => {
         <div className="grid grid-cols-12 gap-6">
           {/* Left Column - Source Feed + Extraction Stream */}
           <div className="col-span-4 space-y-6">
+            {/* Reddit Historic Digest Summary */}
+            {redditHistoricDigest && redditHistoricDigest.status === 'completed' && (
+              <div className="bg-gray-900/50 rounded-2xl border border-orange-800/30 p-4">
+                <div className="flex items-center gap-2 mb-2">
+                  <Newspaper className="w-4 h-4 text-orange-400" />
+                  <span className="text-sm font-semibold text-gray-300">Reddit Daily Digest</span>
+                  <span className="px-2 py-0.5 bg-orange-900/30 text-orange-400 text-[10px] font-bold rounded-full border border-orange-600/30">
+                    {redditHistoricDigest.posts_processed} posts
+                  </span>
+                  <span className="px-2 py-0.5 bg-cyan-900/30 text-cyan-400 text-[10px] font-bold rounded-full border border-cyan-600/30">
+                    {redditHistoricDigest.extractions_created} extractions
+                  </span>
+                </div>
+                <div className="text-[10px] text-gray-500">
+                  Completed in {redditHistoricDigest.duration_seconds}s
+                  {redditHistoricDigest.timestamp && (
+                    <span className="ml-2">
+                      at {new Date(redditHistoricDigest.timestamp).toLocaleTimeString()}
+                    </span>
+                  )}
+                </div>
+              </div>
+            )}
+
             {/* Reddit Posts */}
             <div className="bg-gray-900/50 rounded-2xl border border-gray-800/50 overflow-hidden">
               <button
@@ -1744,8 +2336,14 @@ const AgentPage = () => {
                 agentState={agentState}
                 settlements={settlements}
                 trades={trades}
+                watchdog={watchdog}
+                errors={errors}
+                cycleCountdown={cycleCountdown}
               />
             </div>
+
+            {/* Agent TODO List */}
+            <TodoPanel todos={todos} />
 
             {/* Event Intelligence Board */}
             <EventIntelligenceBoard
@@ -1754,6 +2352,7 @@ const AgentPage = () => {
               aggregatedSignals={aggregatedSignals}
               marketPrices={mergedMarketPrices}
               positionsDetails={tradingState?.positions_details || EMPTY_POSITIONS}
+              tradeFlowStates={tradeFlowStates}
             />
 
             {/* GDELT News Intelligence */}
@@ -1765,7 +2364,7 @@ const AgentPage = () => {
             <CostPanel costData={agentState.costData} />
 
             {/* Thinking Stream */}
-            <ThinkingStream thinking={thinking} isRunning={isAgentRunning} />
+            <ThinkingStream thinking={thinking} isRunning={isAgentRunning} activeToolCall={activeToolCall} />
 
             {/* Tool Calls */}
             <ToolCallsPanel toolCalls={toolCalls} defaultCollapsed={true} />
@@ -1773,8 +2372,11 @@ const AgentPage = () => {
             {/* Trades & Settlements */}
             <TradesPanel trades={trades} settlements={settlements} />
 
-            {/* Learnings */}
-            <LearningsPanel learnings={learnings} />
+            {/* Error History */}
+            <ErrorHistoryPanel errors={errors} />
+
+            {/* Memory */}
+            <MemoryPanel memoryByFile={memoryByFile} />
           </div>
         </div>
       </div>
@@ -1782,4 +2384,62 @@ const AgentPage = () => {
   );
 };
 
-export default memo(AgentPage);
+/**
+ * Error Boundary for AgentPage - catches render errors and displays fallback UI
+ * instead of crashing the entire application.
+ */
+class AgentPageErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error, errorInfo) {
+    console.error('[AgentPage] Render error caught by boundary:', error, errorInfo);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="min-h-screen bg-gray-950 flex items-center justify-center">
+          <div className="max-w-lg mx-auto p-8 bg-gray-900/80 rounded-2xl border border-rose-700/40">
+            <div className="flex items-center gap-3 mb-4">
+              <AlertCircle className="w-6 h-6 text-rose-400" />
+              <h2 className="text-lg font-bold text-white">Agent Page Error</h2>
+            </div>
+            <p className="text-sm text-gray-400 mb-4">
+              The Deep Agent page encountered a rendering error. This is typically caused by
+              unexpected data shapes from the WebSocket connection.
+            </p>
+            <pre className="text-xs text-rose-300 bg-gray-950/50 p-3 rounded-lg overflow-x-auto mb-4">
+              {this.state.error?.message || 'Unknown error'}
+            </pre>
+            <button
+              onClick={() => {
+                this.setState({ hasError: false, error: null });
+              }}
+              className="px-4 py-2 bg-violet-600 hover:bg-violet-500 text-white text-sm font-semibold rounded-lg transition-colors"
+            >
+              Retry
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+const AgentPageWithBoundary = memo(() => (
+  <AgentPageErrorBoundary>
+    <AgentPage />
+  </AgentPageErrorBoundary>
+));
+
+AgentPageWithBoundary.displayName = 'AgentPageWithBoundary';
+
+export default AgentPageWithBoundary;

@@ -100,6 +100,9 @@ class LifecycleClient:
         # Connection tracking
         self._connection_established = asyncio.Event()
 
+        # Deduplication: track (market_ticker, event_type) -> sid to skip duplicates
+        self._last_event_sid: Dict[str, int] = {}
+
         # Client task for cleanup
         self._client_task: Optional[asyncio.Task] = None
 
@@ -322,6 +325,29 @@ class LifecycleClient:
             if not event_type or not market_ticker:
                 logger.warning(f"Lifecycle event missing required fields: {msg_data}")
                 return
+
+            # Filter out high-volume QUICKSETTLE markets before they hit the
+            # event bus. These generate ~12% of all dropped events and carry
+            # no value for trading decisions.
+            ticker_upper = market_ticker.upper()
+            if "QUICKSETTLE" in ticker_upper:
+                return
+
+            # Deduplicate: skip if same (market_ticker, event_type) with same sid
+            sid = message.get("sid")
+            dedup_key = f"{market_ticker}:{event_type}"
+            if sid is not None:
+                last_sid = self._last_event_sid.get(dedup_key)
+                if last_sid == sid:
+                    logger.debug(f"Duplicate lifecycle event skipped: {dedup_key} sid={sid}")
+                    return
+                self._last_event_sid[dedup_key] = sid
+                # Prune dedup cache to prevent unbounded growth (keep last 2000 entries)
+                if len(self._last_event_sid) > 2000:
+                    # Remove oldest half
+                    keys = list(self._last_event_sid.keys())
+                    for k in keys[:1000]:
+                        del self._last_event_sid[k]
 
             # Track event counts by type
             self._events_received += 1

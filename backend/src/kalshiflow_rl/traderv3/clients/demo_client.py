@@ -113,14 +113,7 @@ class KalshiDemoTradingClient:
         
         # Initialize authentication using proven KalshiAuth class
         try:
-            # Create a temporary environment with demo credentials for KalshiAuth
             self._setup_demo_auth_env()
-            
-            # Create KalshiAuth instance with demo credentials
-            self.auth = KalshiAuth(
-                api_key_id=self.api_key_id,
-                private_key_path=self._temp_key_file
-            )
             logger.info("Demo account authentication initialized successfully")
         except Exception as e:
             raise KalshiDemoAuthError(f"Failed to initialize demo auth: {e}")
@@ -147,76 +140,20 @@ class KalshiDemoTradingClient:
         await self.disconnect()
     
     def _setup_demo_auth_env(self) -> None:
-        """
-        Set up temporary authentication environment for demo credentials.
-        
-        Creates a temporary private key file that KalshiAuth can use.
-        """
+        """Set up temporary authentication environment for demo credentials."""
+        from .auth_utils import setup_kalshi_auth
+
         try:
-            # Create temporary file for private key
-            temp_fd, temp_path = tempfile.mkstemp(suffix='.pem', prefix='kalshi_demo_key_')
-            self._temp_key_file = temp_path
-            
-            with os.fdopen(temp_fd, 'w') as temp_file:
-                # Ensure proper key format with line breaks
-                private_key_content = config.KALSHI_PRIVATE_KEY_CONTENT
-                
-                if not private_key_content:
-                    raise KalshiDemoAuthError("KALSHI_PRIVATE_KEY_CONTENT is empty or None")
-                
-                if not private_key_content.startswith('-----BEGIN'):
-                    # Add PKCS8 headers if missing
-                    formatted_key = f"-----BEGIN PRIVATE KEY-----\n{private_key_content}\n-----END PRIVATE KEY-----"
-                else:
-                    # Key already has headers - ensure proper PEM format with newlines
-                    # Handle case where newlines might be lost by dotenv
-                    formatted_key = private_key_content
-                    
-                    # Replace escaped newlines with actual newlines (dotenv may escape them)
-                    formatted_key = formatted_key.replace('\\n', '\n')
-                    
-                    # If key doesn't have newlines but has headers, normalize the format
-                    # PEM format requires: BEGIN line\ncontent\nEND line
-                    if '\n' not in formatted_key and '-----BEGIN' in formatted_key:
-                        # Find BEGIN and END markers
-                        begin_marker = '-----BEGIN'
-                        end_marker = '-----END'
-                        begin_idx = formatted_key.find(begin_marker)
-                        end_idx = formatted_key.find(end_marker)
-                        
-                        if begin_idx != -1 and end_idx != -1:
-                            # Find where BEGIN line ends (after the second '-----')
-                            begin_end = formatted_key.find('-----', begin_idx + len(begin_marker))
-                            if begin_end != -1:
-                                begin_end += 5  # Length of '-----'
-                                # Extract content between headers
-                                content = formatted_key[begin_end:end_idx].strip()
-                                # Reconstruct with proper newlines
-                                formatted_key = (
-                                    formatted_key[:begin_end] + '\n' +
-                                    content + '\n' +
-                                    formatted_key[end_idx:]
-                                )
-                    
-                temp_file.write(formatted_key)
-                
+            self.auth, self._temp_key_file = setup_kalshi_auth(prefix="kalshi_demo_key_")
         except Exception as e:
-            # Clean up temp file if creation fails
-            if hasattr(self, '_temp_key_file'):
-                try:
-                    os.unlink(self._temp_key_file)
-                except:
-                    pass
             raise KalshiDemoAuthError(f"Failed to create temporary demo key file: {e}")
-    
+
     def _cleanup_demo_auth_env(self) -> None:
         """Clean up temporary authentication files."""
-        if hasattr(self, '_temp_key_file'):
-            try:
-                os.unlink(self._temp_key_file)
-                logger.debug("Cleaned up temporary demo key file")
-            except Exception as e:
-                logger.warning(f"Failed to clean up temporary demo key file: {e}")
+        from .auth_utils import cleanup_kalshi_auth
+
+        cleanup_kalshi_auth(getattr(self, '_temp_key_file', None))
+        self._temp_key_file = None
     
     def _create_auth_headers(self, method: str, path: str) -> Dict[str, str]:
         """
@@ -299,43 +236,61 @@ class KalshiDemoTradingClient:
     async def _make_request(self, method: str, path: str, data: Optional[Dict] = None) -> Dict[str, Any]:
         """
         Make authenticated request to demo API.
-        
+
+        Includes a single retry with 1-second backoff for 502 errors, which
+        are common transient failures on the demo API.
+
         Args:
             method: HTTP method
             path: API path (without base URL)
-            data: Request body data (for POST/PUT requests)
-            
+            data: Request body data (for POST/PUT/DELETE requests)
+
         Returns:
             Response JSON data
-            
+
         Raises:
             KalshiDemoTradingClientError: If request fails
         """
         if not self.session:
             raise KalshiDemoTradingClientError("Not connected to demo account")
-        
+
         url = f"{self.rest_base_url}{path}"
-        headers = self._create_auth_headers(method, path)
-        
-        try:
-            async with self.session.request(method, url, headers=headers, json=data) as response:
-                response_text = await response.text()
-                
-                if response.status >= 400:
-                    error_msg = f"Demo API error {response.status}: {response_text}"
-                    logger.error(f"Request failed: {error_msg}")
-                    raise KalshiDemoTradingClientError(error_msg)
-                
-                # Parse JSON response
-                try:
-                    return json.loads(response_text) if response_text else {}
-                except json.JSONDecodeError:
-                    logger.error(f"Invalid JSON response: {response_text}")
-                    raise KalshiDemoTradingClientError(f"Invalid JSON response from demo API")
-                    
-        except aiohttp.ClientError as e:
-            logger.error(f"HTTP request failed: {e}")
-            raise KalshiDemoTradingClientError(f"HTTP request failed: {e}")
+
+        max_attempts = 2  # 1 initial + 1 retry for 502
+        for attempt in range(1, max_attempts + 1):
+            headers = self._create_auth_headers(method, path)
+
+            try:
+                async with self.session.request(method, url, headers=headers, json=data) as response:
+                    response_text = await response.text()
+
+                    # Retry once on 502 Bad Gateway (common transient demo API error)
+                    if response.status == 502 and attempt < max_attempts:
+                        logger.warning(f"Demo API 502 on {method} {path} (attempt {attempt}/{max_attempts}), retrying in 1s")
+                        await asyncio.sleep(1)
+                        continue
+
+                    if response.status >= 400:
+                        error_msg = f"Demo API error {response.status}: {response_text}"
+                        if response.status == 502:
+                            logger.warning(f"Demo API 502 on {method} {path} after {attempt} attempt(s): {response_text[:200]}")
+                        else:
+                            logger.error(f"Request failed: {error_msg}")
+                        raise KalshiDemoTradingClientError(error_msg)
+
+                    # Parse JSON response
+                    try:
+                        return json.loads(response_text) if response_text else {}
+                    except json.JSONDecodeError:
+                        logger.error(f"Invalid JSON response: {response_text}")
+                        raise KalshiDemoTradingClientError(f"Invalid JSON response from demo API")
+
+            except aiohttp.ClientError as e:
+                logger.error(f"HTTP request failed: {e}")
+                raise KalshiDemoTradingClientError(f"HTTP request failed: {e}")
+
+        # Should not be reached, but safety net
+        raise KalshiDemoTradingClientError(f"Request failed after {max_attempts} attempts")
     
     def _validate_balance_response(self, response: Dict[str, Any]) -> None:
         """
@@ -627,99 +582,64 @@ class KalshiDemoTradingClient:
     
     async def batch_cancel_orders(self, order_ids: List[str]) -> Dict[str, Any]:
         """
-        Cancel multiple orders in batch.
-        
-        According to Kalshi API docs, this should use POST /portfolio/orders/batched
-        with a list of order IDs to cancel.
-        
+        Cancel multiple orders individually.
+
+        The demo API (demo-api.kalshi.co) does not support the batch cancel
+        endpoint (DELETE /portfolio/orders returns 404). This method skips the
+        batch attempt entirely and cancels each order individually.
+
         Args:
             order_ids: List of order IDs to cancel
-            
+
         Returns:
             Dictionary with cancellation results
-            
+
         Raises:
-            KalshiDemoOrderError: If batch cancellation fails
+            KalshiDemoOrderError: If all cancellations fail
         """
         if not order_ids:
             return {"cancelled": [], "errors": [], "total": 0}
-            
+
         try:
-            logger.info(f"Batch cancelling {len(order_ids)} demo orders")
-            
-            # Try batch cancel endpoint first
-            try:
-                request_data = {
-                    "order_ids": order_ids
-                }
-                
-                response = await self._make_request(
-                    "POST", 
-                    "/portfolio/orders/batched",
-                    json=request_data
-                )
-                
-                # Process response
-                cancelled = response.get("cancelled", [])
-                errors = response.get("errors", [])
-                
-                # Update local tracking
-                for cancelled_id in cancelled:
-                    if cancelled_id in self.orders:
-                        del self.orders[cancelled_id]
-                
-                logger.info(f"Batch cancel complete: {len(cancelled)} cancelled, {len(errors)} errors")
-                
-                return {
-                    "cancelled": cancelled,
-                    "errors": errors,
-                    "total": len(order_ids),
-                    "success_count": len(cancelled),
-                    "error_count": len(errors)
-                }
-                
-            except Exception as batch_error:
-                # If batch endpoint fails, fall back to individual cancellations
-                logger.warning(f"Batch cancel endpoint failed: {batch_error}. Falling back to individual cancellations")
+            logger.info(f"Cancelling {len(order_ids)} demo orders individually (batch not supported on demo API)")
 
-                cancelled = []
-                already_gone = []
-                errors = []
+            cancelled = []
+            already_gone = []
+            errors = []
 
-                for order_id in order_ids:
-                    try:
-                        await self.cancel_order(order_id)
-                        cancelled.append(order_id)
-                    except Exception as e:
-                        error_str = str(e).lower()
-                        # 404 means order is already gone - count as success
-                        if "404" in error_str or "not found" in error_str:
-                            already_gone.append(order_id)
-                            # Remove from local tracking if present
-                            if order_id in self.orders:
-                                del self.orders[order_id]
-                        else:
-                            errors.append({"order_id": order_id, "error": str(e)})
+            for order_id in order_ids:
+                try:
+                    await self.cancel_order(order_id)
+                    cancelled.append(order_id)
+                except Exception as e:
+                    error_str = str(e).lower()
+                    # 404 means order is already gone (filled or cancelled) - count as success
+                    if "404" in error_str or "not found" in error_str:
+                        already_gone.append(order_id)
+                        # Remove from local tracking if present
+                        if order_id in self.orders:
+                            del self.orders[order_id]
+                    else:
+                        errors.append({"order_id": order_id, "error": str(e)})
 
-                # Combine cancelled and already_gone as successful outcomes
-                all_cleared = cancelled + already_gone
-                logger.info(
-                    f"Individual cancel fallback complete: {len(cancelled)} cancelled, "
-                    f"{len(already_gone)} already gone, {len(errors)} errors"
-                )
-                
-                return {
-                    "cancelled": all_cleared,  # Include both cancelled and already_gone
-                    "errors": errors,
-                    "total": len(order_ids),
-                    "success_count": len(all_cleared),
-                    "error_count": len(errors),
-                    "fallback_used": True,
-                    "already_gone": len(already_gone)
-                }
-                
+            # Combine cancelled and already_gone as successful outcomes
+            all_cleared = cancelled + already_gone
+            logger.info(
+                f"Individual cancel complete: {len(cancelled)} cancelled, "
+                f"{len(already_gone)} already gone, {len(errors)} errors"
+            )
+
+            return {
+                "cancelled": all_cleared,
+                "errors": errors,
+                "total": len(order_ids),
+                "success_count": len(all_cleared),
+                "error_count": len(errors),
+                "already_gone": len(already_gone),
+            }
+
         except Exception as e:
-            raise KalshiDemoOrderError(f"Failed to batch cancel orders: {e}")
+            raise KalshiDemoOrderError(f"Failed to cancel orders: {e}")
     
     async def get_fills(self, ticker: Optional[str] = None) -> Dict[str, Any]:
         """

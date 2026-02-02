@@ -14,6 +14,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import shutil
 import time
 import uuid
@@ -23,9 +24,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING
 
-from anthropic import AsyncAnthropic
+from anthropic import AsyncAnthropic, BadRequestError
 
 from .tools import DeepAgentTools
+from .trade_executor import TradeExecutor, TradeIntent
 from .reflection import ReflectionEngine, PendingTrade, ReflectionResult
 from .prompts import build_system_prompt
 
@@ -70,15 +72,41 @@ def _get_model_pricing(model: str) -> Dict[str, float]:
 
 
 @dataclass
+class EventRanking:
+    """A ranked event for the deep agent to focus on."""
+    event_ticker: str
+    score: float
+    market_count: int
+    signal_count: int
+    max_consensus_strength: float
+    has_position: bool
+    has_thesis: bool
+    top_market_ticker: str = ""
+    top_consensus: str = ""
+
+
+@dataclass
+class EventFocus:
+    """Tracks an ongoing thesis the agent has about an event."""
+    event_ticker: str
+    thesis: str
+    confidence: str      # low/medium/high
+    researched_at: float
+    last_evaluated: float
+    cycles_watched: int
+    intent_submitted: bool
+
+
+@dataclass
 class DeepAgentConfig:
     """Configuration for the deep agent."""
     # Model settings
     model: str = "claude-sonnet-4-20250514"
     temperature: float = 0.7
-    max_tokens: int = 2048
+    max_tokens: int = 4096
 
     # Loop settings
-    cycle_interval_seconds: float = 180.0  # How often to run observe-act cycle (3 minutes)
+    cycle_interval_seconds: float = 120.0  # How often to run observe-act cycle (2 minutes)
     max_trades_per_cycle: int = 3
 
     # Memory settings
@@ -101,9 +129,8 @@ class DeepAgentConfig:
     max_contracts_per_trade: int = 500  # Hard cap per single trade
     max_event_exposure_cents: int = 100_000  # $1,000 per-event dollar exposure cap
     distillation_model: str = ""  # Empty = use main model. Override with e.g. "claude-haiku-4-5-20250514"
-    min_spread_cents: int = 3  # Only trade if spread > this (inefficiency)
     require_fresh_news: bool = True
-    max_news_age_hours: float = 2.0
+    max_news_age_hours: float = 4.0
 
     # Circuit breaker settings (prevents repeated failures on same market)
     circuit_breaker_enabled: bool = True
@@ -114,10 +141,6 @@ class DeepAgentConfig:
     # Signal lifecycle settings
     max_eval_cycles_per_signal: int = 3  # Max evaluations before auto-expire
 
-
-
-# System prompt is now built dynamically via build_system_prompt() from prompts.py
-# This allows modular editing of prompt sections
 
 
 class SelfImprovingAgent:
@@ -156,6 +179,10 @@ class SelfImprovingAgent:
         self._tracked_markets = tracked_markets
         self._event_position_tracker = event_position_tracker
 
+        # Vector memory (initialized properly in start(), but set here for safety)
+        self._vector_memory = None
+        self._cycles_since_consolidation = 0
+
         # Memory directory
         if self._config.memory_dir:
             self._memory_dir = Path(self._config.memory_dir)
@@ -174,7 +201,6 @@ class SelfImprovingAgent:
 
         # Wire circuit breaker callback and config into tools for preflight_check
         # (the callback is set after circuit breaker state is initialized below)
-        self._tools._min_spread_cents = self._config.min_spread_cents
         self._tools._max_event_exposure_cents = self._config.max_event_exposure_cents
         self._tools._require_fresh_news = self._config.require_fresh_news
         self._tools._max_news_age_hours = self._config.max_news_age_hours
@@ -202,11 +228,18 @@ class SelfImprovingAgent:
         self._started_at: Optional[float] = None
         self._cycle_count = 0
         self._trades_executed = 0
+        self._cycles_since_last_trade = 0  # Anti-stagnation: tracks consecutive tradeless cycles
         self._last_cycle_at: Optional[float] = None
 
         # Conversation history for context
         self._conversation_history: List[Dict[str, Any]] = []
         self._max_history_length = 40  # ~8-10 cycles of history (expanded for reasoning continuity)
+
+        # Trade executor (set by plugin after start)
+        self._trade_executor: Optional[TradeExecutor] = None
+
+        # Event focus tracker (theses across cycles)
+        self._event_focus: Dict[str, EventFocus] = {}
 
         # Background task
         self._cycle_task: Optional[asyncio.Task] = None
@@ -216,6 +249,10 @@ class SelfImprovingAgent:
         self._tool_call_history: deque = deque(maxlen=50)
         self._trade_history: deque = deque(maxlen=50)
         self._learnings_history: deque = deque(maxlen=50)
+
+        # Cached extraction signals for snapshot persistence
+        # Updated every cycle from get_extraction_signals() pre-fetch
+        self._cached_extraction_signals: List[Dict] = []
 
         # Circuit breaker state (prevents repeated failures on same market)
         # Maps ticker -> list of failure timestamps
@@ -249,12 +286,41 @@ class SelfImprovingAgent:
         self._cycle_api_calls = 0
         self._model_pricing = _get_model_pricing(self._config.model)
 
+        # Per-cycle memory-write tracking (reset each cycle, checked by _auto_memory_fallback)
+        self._cycle_journal_written = False
+        self._cycle_learnings_written = False
+
         # Reflection count for consolidation trigger
         self._reflection_count = 0
         self._consecutive_losses = 0  # Track loss streaks for urgent consolidation
 
+        # Subagent registry (task() delegation targets)
+        from .subagents import SUBAGENT_REGISTRY
+        self._subagent_registry = SUBAGENT_REGISTRY
+        self._subagent_instances: Dict[str, Any] = {}  # Lazy-initialized
+
         # Tool definitions for Claude
         self._tool_definitions = self._build_tool_definitions()
+
+    def _build_task_tool_description(self) -> str:
+        """Build the task() tool description from registered subagents."""
+        parts = ["Delegate a task to a specialized subagent. The subagent runs its own LLM conversation and returns a concise summary. Available agents:"]
+        for name, cls in self._subagent_registry.items():
+            parts.append(f"- **{name}**: {cls.description}")
+        return "\n".join(parts)
+
+    def _get_subagent(self, name: str):
+        """Lazy-initialize and return a subagent instance."""
+        if name not in self._subagent_instances:
+            cls = self._subagent_registry.get(name)
+            if not cls:
+                return None
+            self._subagent_instances[name] = cls(
+                client=self._client,
+                memory_dir=self._tools._memory_dir,
+                ws_manager=self._ws_manager,
+            )
+        return self._subagent_instances[name]
 
     def rebuild_tool_definitions(self) -> None:
         """Rebuild tool definitions after external clients are wired to tools.
@@ -333,42 +399,14 @@ class SelfImprovingAgent:
                 }
             },
             {
-                "name": "preflight_check",
-                "description": "RECOMMENDED before trade(). Bundled pre-trade safety check that combines market data + event context + all safety validations in ONE call. Returns prices, spread, estimated limit price, event risk, exposure cap status, circuit breaker status, and a tradeable go/no-go flag. Saves 2 API round-trips vs calling get_markets() + get_event_context() separately.",
+                "name": "submit_trade_intent",
+                "description": "Submit a trade intent to the executor. The executor handles preflight checks, pricing, and fill verification. You focus on WHAT to trade and WHY. Include exit criteria so the executor knows when to close. Use action='sell' to exit existing positions.",
                 "input_schema": {
                     "type": "object",
                     "properties": {
-                        "ticker": {
+                        "market_ticker": {
                             "type": "string",
-                            "description": "Market ticker to check (e.g., 'KXBONDIOUT-25FEB07-T42.5')"
-                        },
-                        "side": {
-                            "type": "string",
-                            "enum": ["yes", "no"],
-                            "description": "Intended trade side"
-                        },
-                        "contracts": {
-                            "type": "integer",
-                            "description": "Intended number of contracts"
-                        },
-                        "execution_strategy": {
-                            "type": "string",
-                            "enum": ["aggressive", "moderate", "passive"],
-                            "description": "Pricing strategy for limit price computation (default: aggressive)"
-                        }
-                    },
-                    "required": ["ticker", "side", "contracts"]
-                }
-            },
-            {
-                "name": "trade",
-                "description": "Execute a trade (buy to open, sell to close). Choose execution_strategy based on signal quality: aggressive for STRONG signals (crosses spread, fastest fill), moderate for MODERATE signals (midpoint pricing, saves spread), passive for speculative entries (near bid, cheapest but may not fill). Use action='sell' to exit positions you own.",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "ticker": {
-                            "type": "string",
-                            "description": "Market ticker to trade"
+                            "description": "Market ticker to trade (e.g., 'KXBONDIOUT-25FEB07-T42.5')"
                         },
                         "side": {
                             "type": "string",
@@ -379,40 +417,35 @@ class SelfImprovingAgent:
                             "type": "integer",
                             "description": f"Number of contracts (1-{self._config.max_contracts_per_trade})"
                         },
-                        "reasoning": {
+                        "thesis": {
                             "type": "string",
-                            "description": "Your reasoning for this trade (stored for reflection)"
+                            "description": "Your thesis for this trade — why you believe the market is mispriced (stored for reflection)"
+                        },
+                        "confidence": {
+                            "type": "string",
+                            "enum": ["low", "medium", "high"],
+                            "description": "Confidence in your thesis (default: medium)"
+                        },
+                        "exit_criteria": {
+                            "type": "string",
+                            "description": "When should the executor close this position? (e.g., 'price reaches 80c', 'thesis invalidated if funding bill passes')"
+                        },
+                        "max_price_cents": {
+                            "type": "integer",
+                            "description": "Maximum acceptable price in cents (default: 99). Executor won't pay more than this."
                         },
                         "execution_strategy": {
                             "type": "string",
                             "enum": ["aggressive", "moderate", "passive"],
-                            "description": "Order pricing strategy. aggressive=cross spread (immediate fill, highest cost). moderate=midpoint+1c (saves ~half the spread, good fill probability). passive=near bid+1c (cheapest entry, may not fill). Default: aggressive."
+                            "description": "aggressive=cross spread (immediate fill), moderate=midpoint, passive=near bid. Default: aggressive."
                         },
                         "action": {
                             "type": "string",
                             "enum": ["buy", "sell"],
-                            "description": "buy=open new position (default), sell=close existing position by selling contracts you own."
-                        },
+                            "description": "buy=open new position (default), sell=close existing position."
+                        }
                     },
-                    "required": ["ticker", "side", "contracts", "reasoning"]
-                }
-            },
-            {
-                "name": "get_session_state",
-                "description": "Get current trading session state including positions, P&L, and balance.",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {},
-                    "required": []
-                }
-            },
-            {
-                "name": "get_true_performance",
-                "description": "Get TRUE trading performance from Kalshi API. Returns strategy-filtered P&L (realized + unrealized), positions with live unrealized P&L, settlements, win rate, and per-event breakdown. Use this instead of scorecard for performance assessment — it's the ground truth. Includes unrealized P&L from open positions for immediate feedback before settlement. Idempotent — safe to call anytime.",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {},
-                    "required": []
+                    "required": ["market_ticker", "side", "contracts", "thesis"]
                 }
             },
             {
@@ -641,90 +674,22 @@ class SelfImprovingAgent:
                 }
             },
             {
-                "name": "evaluate_extractions",
-                "description": "Score extraction accuracy after trade settlement. Updates quality_score on extractions and auto-promotes accurate extractions from winning trades as examples for future extraction calls. Call this during reflection after a trade settles.",
+                "name": "task",
+                "description": self._build_task_tool_description(),
                 "input_schema": {
                     "type": "object",
                     "properties": {
-                        "trade_ticker": {
+                        "agent": {
                             "type": "string",
-                            "description": "Market ticker of the settled trade"
+                            "enum": list(self._subagent_registry.keys()),
+                            "description": "Which subagent to delegate to"
                         },
-                        "trade_outcome": {
+                        "input": {
                             "type": "string",
-                            "enum": ["win", "loss", "break_even"],
-                            "description": "Outcome of the trade"
-                        },
-                        "evaluations": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "extraction_id": {
-                                        "type": "string",
-                                        "description": "ID of the extraction to evaluate"
-                                    },
-                                    "accuracy": {
-                                        "type": "string",
-                                        "enum": ["accurate", "partially_accurate", "inaccurate", "noise"],
-                                        "description": "How accurate was this extraction signal?"
-                                    },
-                                    "note": {
-                                        "type": "string",
-                                        "description": "Optional note about why this accuracy rating"
-                                    }
-                                },
-                                "required": ["extraction_id", "accuracy"]
-                            },
-                            "description": "Array of extraction evaluations"
+                            "description": "Natural language task description with enough context for the subagent to act"
                         }
                     },
-                    "required": ["trade_ticker", "trade_outcome", "evaluations"]
-                }
-            },
-            {
-                "name": "refine_event",
-                "description": "Push learnings back to the extraction pipeline for a specific event. Updates event_configs with prompt refinements and watchlist additions. Call during consolidation when you've identified what works/fails for an event's extractions.",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "event_ticker": {
-                            "type": "string",
-                            "description": "Event ticker to refine extraction config for"
-                        },
-                        "what_works": {
-                            "type": "string",
-                            "description": "What extraction patterns have been accurate for this event"
-                        },
-                        "what_fails": {
-                            "type": "string",
-                            "description": "What extraction patterns have been inaccurate or noisy"
-                        },
-                        "suggested_watchlist_additions": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "Optional: new entities/keywords to add to the watchlist"
-                        },
-                        "suggested_prompt_refinement": {
-                            "type": "string",
-                            "description": "Optional: additional extraction instructions to append to the event's prompt"
-                        }
-                    },
-                    "required": ["event_ticker", "what_works", "what_fails"]
-                }
-            },
-            {
-                "name": "get_extraction_quality",
-                "description": "Get extraction quality metrics per event. Shows total evaluated, average quality, accurate/inaccurate counts. Use during consolidation to identify events with poor extraction accuracy that need refine_event().",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "event_ticker": {
-                            "type": "string",
-                            "description": "Optional: filter by specific event ticker"
-                        }
-                    },
-                    "required": []
+                    "required": ["agent", "input"]
                 }
             },
             {
@@ -883,46 +848,59 @@ class SelfImprovingAgent:
                     },
                 ])
 
-        # Microstructure tool (always available — gracefully degrades if services not wired)
-        tools.append({
-            "name": "get_microstructure",
-            "description": "Get real-time microstructure signals: orderbook (spread, imbalance, large orders) and trade flow (YES/NO ratio, price movement, trade count). Single-market mode (with ticker) also returns L2 orderbook depth — top 5 price levels per side (yes_bids, yes_asks, no_bids, no_asks) as [price, quantity] pairs. Call with a ticker for detailed view or without to scan all markets. Use to detect whale activity, liquidity shifts, thin books, and momentum.",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "market_ticker": {
-                        "type": "string",
-                        "description": "Optional: specific market ticker. Omit to scan all tracked markets."
-                    }
-                },
-                "required": []
-            }
-        })
+        # News Intelligence sub-agent tool (requires news_analyzer to be wired)
+        if self._tools._news_analyzer is not None:
+            tools.append({
+                "name": "get_news_intelligence",
+                "description": "PREFERRED for news analysis. Analyzes FULL GDELT data via a fast sub-agent and returns structured trading intelligence: narrative summary, sentiment with trend, market signals with evidence, source diversity, freshness assessment, and a trading recommendation (act_now/monitor/wait/no_signal). Cached for 15 min. Use this INSTEAD of search_gdelt_articles() for better, cheaper results. Raw GDELT tools remain available as fallback.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "search_terms": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Terms to search for in news articles (e.g., ['government shutdown', 'funding bill'])"
+                        },
+                        "context_hint": {
+                            "type": "string",
+                            "description": "Optional context about what you're investigating (e.g., 'Evaluating KXGOVTFUND-25FEB14 NO position'). Helps the analyzer focus on trading-relevant aspects."
+                        }
+                    },
+                    "required": ["search_terms"]
+                }
+            })
 
-        # Candlestick / OHLC tool
+
+        # search_memory: semantic search across all historical vector memories
         tools.append({
-            "name": "get_candlesticks",
-            "description": "Fetch historical OHLC candlestick data for ALL markets in an event (single API call). Returns open/close/high/low prices, volume, and last 10 candles per market. Use to see price history, detect trends, and identify support/resistance levels.",
+            "name": "search_memory",
+            "description": (
+                "Semantic search across ALL historical memories (weeks/months). "
+                "Returns the most relevant memories by meaning, not just recency. "
+                "Use when you need past experience with a specific market, event, or situation."
+            ),
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "event_ticker": {
+                    "query": {
                         "type": "string",
-                        "description": "Event ticker (e.g., 'KXBONDIOUT-28')"
+                        "description": "What to search for (natural language)"
                     },
-                    "period": {
-                        "type": "string",
-                        "enum": ["1min", "hourly", "daily"],
-                        "description": "Candle period (default: hourly)",
-                        "default": "hourly"
+                    "types": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "enum": ["learning", "mistake", "pattern", "journal", "signal", "research", "thesis"]
+                        },
+                        "description": "Filter by memory type(s). Omit to search all."
                     },
-                    "hours_back": {
+                    "limit": {
                         "type": "integer",
-                        "description": "Hours of history to fetch (default: 24)",
-                        "default": 24
+                        "description": "Max results (default 8)",
+                        "default": 8
                     }
                 },
-                "required": ["event_ticker"]
+                "required": ["query"]
             }
         })
 
@@ -1014,6 +992,51 @@ class SelfImprovingAgent:
             ]
             if not self._failed_attempts[ticker]:
                 del self._failed_attempts[ticker]
+
+    @staticmethod
+    def _parse_probability(value) -> Optional[int]:
+        """
+        Robustly parse an estimated probability from agent output.
+
+        The agent sometimes returns reasoning text instead of a bare number
+        (e.g., "Based on the evidence, I estimate around 75%").  This method
+        extracts the first numeric value from such strings and clamps it to 0-100.
+
+        Args:
+            value: Raw probability value -- int, float, str, or None.
+
+        Returns:
+            Integer in [0, 100], or None if parsing fails.
+        """
+        if value is None:
+            return None
+        # Fast path: already numeric
+        if isinstance(value, (int, float)):
+            try:
+                return max(0, min(100, int(value)))
+            except (ValueError, OverflowError):
+                return None
+        # String path: try direct conversion first
+        s = str(value).strip()
+        if not s:
+            return None
+        # Handle "N/A", "n/a", "NA", "none" -- valid for PASS decisions
+        if s.lower() in ("n/a", "na", "none", "null", "n.a.", "-"):
+            return None
+        try:
+            return max(0, min(100, int(float(s))))
+        except (ValueError, TypeError):
+            pass
+        # Extract first number from text (handles "about 75%", "I estimate 80", etc.)
+        match = re.search(r"(\d+(?:\.\d+)?)\s*%?", s)
+        if match:
+            try:
+                parsed = int(float(match.group(1)))
+                return max(0, min(100, parsed))
+            except (ValueError, OverflowError):
+                pass
+        logger.warning(f"[deep_agent.agent] Could not parse estimated_probability: {s[:100]}")
+        return None
 
     def _is_ticker_blacklisted(self, ticker: str) -> tuple[bool, Optional[str]]:
         """
@@ -1131,6 +1154,7 @@ class SelfImprovingAgent:
         self._conversation_history.clear()
         self._cycle_count = 0
         self._trades_executed = 0
+        self._cycles_since_last_trade = 0
 
         # Reset token usage counters
         self._total_input_tokens = 0
@@ -1156,7 +1180,31 @@ class SelfImprovingAgent:
         # Prune old archive directories (keep max 10)
         self._prune_archives()
 
+        # Initialize vector memory BEFORE distillation so _distill_archived_learnings()
+        # can use it for vector-enhanced distillation (fixes AttributeError on startup)
+        self._vector_memory = None
+        self._cycles_since_consolidation = 0
+        openai_key = os.environ.get("OPENAI_API_KEY")
+        if openai_key and self._tools._get_supabase():
+            try:
+                from .vector_memory import VectorMemoryService
+                self._vector_memory = VectorMemoryService(
+                    self._tools._get_supabase, openai_key
+                )
+                self._tools._vector_memory = self._vector_memory
+                logger.info("[deep_agent.agent] Vector memory service initialized")
+                # Background backfill from flat files (non-blocking)
+                asyncio.create_task(self._safe_vector_backfill())
+            except Exception as e:
+                logger.warning(f"[deep_agent.agent] Vector memory init failed (non-fatal): {e}")
+        else:
+            if not openai_key:
+                logger.info("[deep_agent.agent] OPENAI_API_KEY not set - vector memory disabled")
+            else:
+                logger.info("[deep_agent.agent] Supabase not available - vector memory disabled")
+
         # Distill learnings from previous sessions into strategy
+        # (must be after vector memory init so it can use vector-enhanced distillation)
         try:
             await self._distill_archived_learnings()
         except Exception as e:
@@ -1300,11 +1348,11 @@ This is your last chance to capture insights before the session ends.
             # Temporarily re-enable running for this final cycle
             self._running = True
             await self._run_agent_cycle("")
-            self._running = False
             logger.info("[deep_agent.agent] Session summary completed")
         except Exception as e:
-            self._running = False
             logger.error(f"[deep_agent.agent] Error in session summary: {e}")
+        finally:
+            self._running = False
 
     def _archive_session_memory(self) -> None:
         """
@@ -1440,6 +1488,41 @@ Agent reasoning trail - each cycle's observations, decisions, and hypotheses.
             if not filepath.exists():
                 filepath.write_text(content, encoding="utf-8")
                 logger.info(f"[deep_agent.agent] Created initial memory file: {filename}")
+
+    async def _load_memory_section(
+        self,
+        filename: str,
+        recall_types: List[str],
+        header: str,
+        char_limit: int,
+        recall_query: Optional[str],
+    ) -> str:
+        """Load a memory file with vector recall + tail fallback, returning a formatted section.
+
+        Returns empty string if the file is empty or unreadable.
+        """
+        try:
+            content = await self._tools.read_memory(filename)
+            if not content or len(content) <= 50:
+                return ""
+
+            if recall_query and self._vector_memory:
+                try:
+                    vec_limit = char_limit - 200
+                    vector_text = await self._vector_memory.recall_for_context(
+                        query=recall_query, types=recall_types, char_limit=vec_limit
+                    )
+                    tail_text = self._tail_entries(content, n=3, max_chars=200)
+                    preview = vector_text + ("\n" + tail_text if tail_text else "")
+                except Exception:
+                    preview = self._priority_load_memory(content, char_limit)
+            else:
+                preview = self._priority_load_memory(content, char_limit)
+
+            return f"\n### {header}\n{preview}\n"
+        except Exception as e:
+            logger.debug(f"[deep_agent.agent] Could not load {filename}: {e}")
+            return ""
 
     def _priority_load_memory(self, content: str, char_limit: int) -> str:
         """Load memory content prioritized by confidence tags.
@@ -1619,45 +1702,79 @@ Agent reasoning trail - each cycle's observations, decisions, and hypotheses.
         """
         Distill learnings from previous sessions into the current strategy.
 
-        Reads up to 10 most recent archived sessions (bounded by _prune_archives),
-        includes scorecard by_event stats as evidence, and preserves golden rules.
-        Uses Claude to update strategy.md with evidence-backed rules.
+        When vector memory is available, supplements archive distillation with
+        high-value memories (access_count >= 3) for evidence-backed strategy updates.
+        Falls back to flat-file archives when vector memory is unavailable.
         """
+        # Try vector-enhanced distillation source (high-value memories from full history)
+        vector_distill_source = ""
+        if self._vector_memory:
+            try:
+                supabase = self._vector_memory._get_supabase()
+                if supabase:
+                    high_value = (
+                        supabase.table("agent_memories")
+                        .select(
+                            "content, memory_type, access_count, trade_result, pnl_cents"
+                        )
+                        .eq("is_active", True)
+                        .gte("access_count", 3)
+                        .order("access_count", desc=True)
+                        .limit(30)
+                        .execute()
+                    )
+                    if high_value.data and len(high_value.data) >= 5:
+                        vector_distill_source = "\n---\n".join(
+                            f"[{m['memory_type']}, accessed {m['access_count']}x"
+                            f"{', ' + m['trade_result'] if m.get('trade_result') else ''}]"
+                            f"\n{m['content']}"
+                            for m in high_value.data
+                        )
+                        logger.info(
+                            f"[deep_agent.agent] Vector distillation: {len(high_value.data)} "
+                            f"high-value memories available"
+                        )
+            except Exception as e:
+                logger.debug(f"[deep_agent.agent] Vector distillation source failed: {e}")
+
         archive_dir = self._memory_dir / "memory_archive"
-        if not archive_dir.exists():
-            logger.info("[deep_agent.agent] No memory_archive/ — skipping distillation")
-            return
 
-        # Find up to 10 most recent archive directories (bounded by pruning)
-        archive_dirs = sorted(
-            [d for d in archive_dir.iterdir() if d.is_dir()],
-            key=lambda d: d.name,
-            reverse=True,
-        )[:10]
-
-        if not archive_dirs:
-            logger.info("[deep_agent.agent] No archived sessions — skipping distillation")
-            return
-
-        # Collect archived content
+        # Collect archived content from flat files
         archived_content = []
-        for ad in archive_dirs:
-            session_parts = []
-            for filename in ["learnings.md", "patterns.md", "mistakes.md"]:
-                filepath = ad / filename
-                if filepath.exists():
-                    content = filepath.read_text(encoding="utf-8").strip()
-                    if content and len(content) > 50:
-                        # Limit per file — more archives but less per archive
-                        char_limit = 1200 if len(archive_dirs) > 5 else 2000
-                        session_parts.append(f"### {filename}\n{content[:char_limit]}")
-            if session_parts:
-                archived_content.append(
-                    f"## Session: {ad.name}\n" + "\n\n".join(session_parts)
-                )
+        archive_dirs = []
+        if archive_dir.exists():
+            # Find up to 10 most recent archive directories (bounded by pruning)
+            archive_dirs = sorted(
+                [d for d in archive_dir.iterdir() if d.is_dir()],
+                key=lambda d: d.name,
+                reverse=True,
+            )[:10]
 
-        if not archived_content:
-            logger.info("[deep_agent.agent] Archived files are empty — skipping distillation")
+            for ad in archive_dirs:
+                session_parts = []
+                for filename in ["learnings.md", "patterns.md", "mistakes.md"]:
+                    filepath = ad / filename
+                    if filepath.exists():
+                        content = filepath.read_text(encoding="utf-8").strip()
+                        if content and len(content) > 50:
+                            # Limit per file — more archives but less per archive
+                            char_limit = 1200 if len(archive_dirs) > 5 else 2000
+                            session_parts.append(f"### {filename}\n{content[:char_limit]}")
+                if session_parts:
+                    archived_content.append(
+                        f"## Session: {ad.name}\n" + "\n\n".join(session_parts)
+                    )
+
+        # Need at least archives or vector source to proceed
+        total_archive_chars = sum(len(c) for c in archived_content)
+        if not archived_content and not vector_distill_source:
+            logger.info("[deep_agent.agent] No archives and no vector memories — skipping distillation")
+            return
+        if total_archive_chars < 500 and not vector_distill_source:
+            logger.info(
+                f"[deep_agent.agent] Archived content too thin ({total_archive_chars} chars) "
+                f"and no vector memories — skipping distillation"
+            )
             return
 
         # Read current strategy
@@ -1693,11 +1810,19 @@ Agent reasoning trail - each cycle's observations, decisions, and hypotheses.
         except Exception:
             pass
 
+        # Include high-value vector memories if available
+        vector_section = ""
+        if vector_distill_source:
+            vector_section = f"""
+## High-Value Memories (proven by repeated recall)
+{vector_distill_source[:3000]}
+"""
+
         distill_prompt = f"""You are updating a trading strategy based on learnings from previous sessions.
 
 ## Current Strategy
 {current_strategy}
-{golden_section}{by_event_section}
+{golden_section}{by_event_section}{vector_section}
 ## Archived Learnings ({len(archive_dirs)} sessions)
 {"---".join(archived_content)}
 
@@ -1738,8 +1863,13 @@ Return ONLY the updated strategy.md content, nothing else."""
 
             updated_strategy = response.content[0].text.strip()
 
-            # Sanity check: must be non-empty and contain key markers
-            if len(updated_strategy) > 100 and "strategy" in updated_strategy.lower():
+            # Sanity check: must be non-empty, contain key markers, and not regress significantly
+            is_valid = (
+                len(updated_strategy) > 100
+                and "strategy" in updated_strategy.lower()
+                and len(updated_strategy) >= len(current_strategy) * 0.5
+            )
+            if is_valid:
                 # Apply version counter and cap via tools helper
                 updated_strategy = self._tools._apply_strategy_cap(strategy_path, updated_strategy)
                 strategy_path.write_text(updated_strategy, encoding="utf-8")
@@ -1748,12 +1878,90 @@ Return ONLY the updated strategy.md content, nothing else."""
                     f"({len(updated_strategy)} chars)"
                 )
             else:
-                logger.warning("[deep_agent.agent] Distillation returned suspicious output, keeping current strategy")
+                logger.warning(
+                    f"[deep_agent.agent] Distillation returned suspicious output "
+                    f"({len(updated_strategy)} chars vs {len(current_strategy)} current), "
+                    f"keeping current strategy"
+                )
 
         except asyncio.TimeoutError:
             logger.warning("[deep_agent.agent] Distillation timed out after 45s, keeping current strategy")
         except Exception as e:
             logger.warning(f"[deep_agent.agent] Distillation failed (non-fatal): {e}")
+
+    # =========================================================================
+    # Vector Memory Helpers
+    # =========================================================================
+
+    async def _safe_vector_backfill(self) -> None:
+        """Background backfill of flat-file memories into vector store."""
+        try:
+            if self._vector_memory:
+                await self._vector_memory.backfill_from_files(
+                    self._memory_dir,
+                    str(self._started_at),
+                    llm_callable=self._consolidation_llm_call,
+                )
+        except Exception as e:
+            logger.warning(f"[deep_agent.agent] Vector memory backfill failed (non-fatal): {e}")
+
+    async def _consolidation_llm_call(self, prompt: str) -> str:
+        """Lightweight LLM call for memory consolidation and extraction.
+        Uses a small/cheap model to keep costs minimal."""
+        try:
+            response = await self._client.messages.create(
+                model="claude-haiku-4-20250414",
+                max_tokens=500,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            return response.content[0].text
+        except Exception as e:
+            logger.debug(f"[deep_agent.agent] Consolidation LLM call failed: {e}")
+            return ""
+
+    def _build_recall_query(self, signals) -> str:
+        """Build semantic probe from current cycle context for vector recall."""
+        parts = []
+        for s in (signals or [])[:5]:
+            ticker = s.get("market_ticker", "")
+            consensus = s.get("consensus", "")
+            if ticker:
+                parts.append(f"{ticker} {consensus}".strip())
+        for ticker in list(self._tools._traded_tickers)[:5]:
+            parts.append(ticker)
+        if self._config.target_events:
+            parts.extend(self._config.target_events[:3])
+        return " ".join(filter(None, parts))
+
+    def _tail_entries(self, content: str, n: int = 3, max_chars: int = 200) -> str:
+        """Return last N entries from a markdown file within max_chars."""
+        if not content:
+            return ""
+        entries = re.split(r"\n(?=## )", content)
+        tail = entries[-n:] if len(entries) > n else entries
+        result = "\n".join(e.strip() for e in tail)
+        return result[-max_chars:] if len(result) > max_chars else result
+
+    async def _run_consolidation(self) -> None:
+        """Periodic background task: consolidate similar memories + enforce retention."""
+        try:
+            for mem_type in ["learning", "mistake", "pattern"]:
+                consolidated = await self._vector_memory.consolidate(
+                    mem_type, self._consolidation_llm_call
+                )
+                if consolidated > 0:
+                    logger.info(
+                        f"[deep_agent.agent] Consolidated {consolidated} {mem_type} memories"
+                    )
+
+            # Enforce retention policy
+            retention_result = await self._vector_memory.enforce_retention()
+            if retention_result:
+                logger.info(f"[deep_agent.agent] Retention cleanup: {retention_result}")
+        except Exception as e:
+            logger.warning(
+                f"[deep_agent.agent] Consolidation/retention failed (non-fatal): {e}"
+            )
 
     async def _main_loop(self) -> None:
         """Main observe-act-reflect loop."""
@@ -1896,6 +2104,10 @@ Return ONLY the updated strategy.md content, nothing else."""
         self._cycle_cache_created_tokens = 0
         self._cycle_api_calls = 0
 
+        # Reset per-cycle memory-write tracking
+        self._cycle_journal_written = False
+        self._cycle_learnings_written = False
+
         logger.info(f"[deep_agent.agent] === Starting cycle {self._cycle_count} ===")
 
         # Broadcast cycle start
@@ -1904,23 +2116,49 @@ Return ONLY the updated strategy.md content, nothing else."""
                 "cycle": self._cycle_count,
                 "phase": "starting",
                 "timestamp": time.strftime("%H:%M:%S"),
+                "cycle_interval": self._config.cycle_interval_seconds,
             })
 
         # PRE-CHECK: Are there actionable signals? (cheap Supabase query, ~50ms, zero API tokens)
-        pre_check_result = await self._tools.get_extraction_signals(window_hours=4.0, limit=20)
-        pre_fetched_signals = pre_check_result.get("signals", [])
+        try:
+            pre_check_result = await self._tools.get_extraction_signals(window_hours=4.0, limit=20)
+            pre_fetched_signals = pre_check_result.get("signals", [])
+        except Exception as e:
+            logger.warning(f"[deep_agent.agent] Pre-check signal fetch failed (non-fatal): {e}")
+            pre_fetched_signals = []
+
+        # Cache signals for snapshot persistence (survives page refresh)
+        if pre_fetched_signals:
+            self._cached_extraction_signals = pre_fetched_signals
 
         # Also check if we have open positions to monitor (always run cycle if positions exist)
         has_positions = (
             self._state_container
             and self._state_container.get_trading_summary().get("position_count", 0) > 0
         )
+        # Fallback: also check pending trades (covers cases where order_id is null
+        # and the state_container position sync hasn't picked up the trade yet)
+        if not has_positions and self._reflection:
+            unsettled = [
+                t for t in self._reflection._pending_trades.values()
+                if not t.settled
+            ]
+            if unsettled:
+                has_positions = True
 
         # Bootstrap any newly discovered events (cheap DB check, creates event_configs for new events)
-        await self._bootstrap_new_events()
+        try:
+            await self._bootstrap_new_events()
+        except Exception as e:
+            logger.warning(f"[deep_agent.agent] Event bootstrap failed (non-fatal): {e}")
 
-        if not pre_fetched_signals and not has_positions:
+        # Periodic scan: run Claude every 5th cycle even without extraction signals
+        # so microstructure and GDELT can still be evaluated
+        is_periodic_scan = (self._cycle_count % 5 == 0)
+
+        if not pre_fetched_signals and not has_positions and not is_periodic_scan:
             logger.info(f"[deep_agent.agent] Cycle {self._cycle_count}: No signals, no positions - skipping Claude call")
+            self._cycles_since_last_trade += 1
             if self._ws_manager:
                 await self._ws_manager.broadcast_message("deep_agent_cycle", {
                     "cycle": self._cycle_count,
@@ -1929,7 +2167,13 @@ Return ONLY the updated strategy.md content, nothing else."""
                 })
             return
 
-        # Signals exist OR positions to manage — run full cycle
+        if is_periodic_scan and not pre_fetched_signals and not has_positions:
+            logger.info(f"[deep_agent.agent] Cycle {self._cycle_count}: Periodic scan (no signals) — running Claude for microstructure/GDELT evaluation")
+
+        # Track tradeless cycles (incremented here, reset to 0 in trade execution)
+        self._cycles_since_last_trade += 1
+
+        # Signals exist OR positions to manage OR periodic scan — run full cycle
         context = await self._build_cycle_context(
             pre_fetched_signals=pre_fetched_signals,
         )
@@ -1977,14 +2221,16 @@ Return ONLY the updated strategy.md content, nothing else."""
                     "timestamp": time.strftime("%H:%M:%S"),
                 })
 
-        # Auto-journal fallback: if agent didn't call write_cycle_summary, generate minimal entry
+        # Post-cycle housekeeping (all non-fatal — errors here must not kill the loop)
         try:
-            await self._auto_journal_fallback()
+            await self._auto_memory_fallback()
         except Exception as e:
-            logger.debug(f"[deep_agent.agent] Auto-journal fallback failed: {e}")
+            logger.debug(f"[deep_agent.agent] Auto-memory fallback failed: {e}")
 
-        # Compact history between cycles to save tokens on next call
-        self._compact_history_between_cycles()
+        try:
+            self._compact_history_between_cycles()
+        except Exception as e:
+            logger.warning(f"[deep_agent.agent] History compaction failed (non-fatal): {e}")
 
         # Periodic full history reset every 5 cycles to prevent context pollution.
         # Memory files (strategy.md, cycle_journal.md, todos.json, etc.) provide
@@ -1997,30 +2243,146 @@ Return ONLY the updated strategy.md content, nothing else."""
                 f"cleared {old_len} messages (memory files provide continuity)"
             )
 
-        # Persist session state for crash recovery
-        self._save_session_state()
+        try:
+            self._save_session_state()
+        except Exception as e:
+            logger.warning(f"[deep_agent.agent] Session state save failed (non-fatal): {e}")
 
-    async def _auto_journal_fallback(self) -> None:
-        """Auto-generate a minimal journal entry if agent didn't call write_cycle_summary."""
-        # Check if write_cycle_summary was called this cycle by scanning recent history
-        for msg in reversed(self._conversation_history[-20:]):
-            if msg.get("role") == "assistant":
-                content = msg.get("content", [])
-                if isinstance(content, list):
-                    for block in content:
-                        if (isinstance(block, dict) and block.get("type") == "tool_use"
-                                and block.get("name") == "write_cycle_summary"):
-                            return  # Agent already wrote journal
+        # Periodic consolidation + retention (every 50 cycles)
+        if self._vector_memory:
+            self._cycles_since_consolidation += 1
+            if self._cycles_since_consolidation >= 50:
+                self._cycles_since_consolidation = 0
+                asyncio.create_task(self._run_consolidation())
 
-        # Generate minimal entry from available state
+    async def _auto_memory_fallback(self) -> None:
+        """Auto-generate journal + learnings entries if agent didn't write them.
+
+        Uses per-cycle tracking flags instead of fragile history scanning.
+        This guarantees memory accumulation even when Claude's output is truncated.
+        """
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
         decision = self._last_think_decision or "no_think"
-        entry = (
-            f"\n## Cycle {self._cycle_count} - {timestamp} [auto]\n"
-            f"- **Decision**: {decision}\n"
-            f"- **Trades this session**: {self._trades_executed}\n"
-        )
-        await self._tools.append_memory("cycle_journal.md", entry)
+
+        # --- Journal fallback ---
+        if not self._cycle_journal_written:
+            # Build a richer auto-entry using cached cycle state
+            signal_count = len(self._cached_extraction_signals)
+            signal_tickers = [s.get("market_ticker", "?") for s in self._cached_extraction_signals[:5]]
+            tickers_str = ", ".join(signal_tickers) if signal_tickers else "none"
+
+            entry = (
+                f"\n## Cycle {self._cycle_count} - {timestamp} [auto]\n"
+                f"- **Decision**: {decision}\n"
+                f"- **Signals**: {signal_count} ({tickers_str})\n"
+                f"- **Trades this session**: {self._trades_executed}\n"
+            )
+            await self._tools.append_memory("cycle_journal.md", entry)
+            logger.info(f"[deep_agent.agent] Auto-journal fallback wrote cycle {self._cycle_count} entry")
+
+        # --- Learnings fallback ---
+        if not self._cycle_learnings_written:
+            # Auto-generate a minimal observation from cycle state
+            signal_count = len(self._cached_extraction_signals)
+            parts = [f"Cycle {self._cycle_count} observation:"]
+
+            if signal_count > 0:
+                tickers = [s.get("market_ticker", "?") for s in self._cached_extraction_signals[:3]]
+                consensuses = [
+                    f"{s.get('market_ticker', '?')}={s.get('consensus', '?')}"
+                    for s in self._cached_extraction_signals[:3]
+                ]
+                parts.append(f"{signal_count} signals active ({', '.join(tickers)})")
+                parts.append(f"Consensus: {', '.join(consensuses)}")
+            else:
+                parts.append("No signals this cycle")
+
+            parts.append(f"Decision: {decision}")
+            if self._trades_executed > 0:
+                parts.append(f"Session trades so far: {self._trades_executed}")
+
+            learning_entry = f"\n### {timestamp} [auto]\n- " + "\n- ".join(parts) + "\n"
+            await self._tools.append_memory("learnings.md", learning_entry)
+            logger.info(f"[deep_agent.agent] Auto-learnings fallback wrote cycle {self._cycle_count} entry")
+
+    def _fix_orphaned_tool_pairs(self):
+        """Remove orphaned tool_use/tool_result messages after history trimming.
+
+        The Anthropic API requires that every assistant message with tool_use
+        blocks is immediately followed by a user message containing the matching
+        tool_result blocks. History trimming can split these pairs, causing
+        400 errors ('tool_use ids found without tool_result blocks').
+
+        This method scans the history and removes any messages that would
+        violate the pairing constraint.
+        """
+        if len(self._conversation_history) < 2:
+            return
+
+        to_remove = set()
+        for i, msg in enumerate(self._conversation_history):
+            content = msg.get("content", [])
+            if not isinstance(content, list):
+                continue
+
+            if msg.get("role") == "assistant":
+                # Check if this assistant message has tool_use blocks
+                tool_use_ids = {
+                    b["id"] for b in content
+                    if isinstance(b, dict) and b.get("type") == "tool_use" and "id" in b
+                }
+                if not tool_use_ids:
+                    continue
+
+                # The next message must be a user message with matching tool_result blocks
+                if i + 1 < len(self._conversation_history):
+                    next_msg = self._conversation_history[i + 1]
+                    next_content = next_msg.get("content", [])
+                    if next_msg.get("role") == "user" and isinstance(next_content, list):
+                        result_ids = {
+                            b.get("tool_use_id") for b in next_content
+                            if isinstance(b, dict) and b.get("type") == "tool_result"
+                        }
+                        if tool_use_ids.issubset(result_ids):
+                            continue  # Valid pair, skip
+
+                # Orphaned tool_use — mark for removal (and its result if present)
+                to_remove.add(i)
+
+            elif msg.get("role") == "user":
+                # Check if this user message has tool_result blocks
+                result_ids = {
+                    b.get("tool_use_id") for b in content
+                    if isinstance(b, dict) and b.get("type") == "tool_result"
+                }
+                if not result_ids:
+                    continue
+
+                # The previous message must be an assistant message whose
+                # tool_use ids are a superset of this message's tool_result ids.
+                if i > 0:
+                    prev_msg = self._conversation_history[i - 1]
+                    prev_content = prev_msg.get("content", [])
+                    if prev_msg.get("role") == "assistant" and isinstance(prev_content, list):
+                        prev_tool_use_ids = {
+                            b["id"] for b in prev_content
+                            if isinstance(b, dict) and b.get("type") == "tool_use" and "id" in b
+                        }
+                        if result_ids.issubset(prev_tool_use_ids) and (i - 1) not in to_remove:
+                            continue  # Valid pair — all result ids match a tool_use
+
+                # Orphaned tool_result — mark for removal
+                to_remove.add(i)
+
+        if to_remove:
+            logger.warning(
+                f"[deep_agent.agent] Removing {len(to_remove)} orphaned tool messages "
+                f"from history (indices: {sorted(to_remove)})"
+            )
+            self._conversation_history = [
+                msg for i, msg in enumerate(self._conversation_history)
+                if i not in to_remove
+            ]
 
     def _compact_history_between_cycles(self):
         """Compact tool results between cycles to save tokens.
@@ -2039,6 +2401,88 @@ Return ONLY the updated strategy.md content, nothing else."""
                     result_text = block.get("content", "")
                     if isinstance(result_text, str) and len(result_text) > 500:
                         block["content"] = result_text[:200] + "... [compacted for efficiency]"
+
+    def _rank_events(self, pre_fetched_signals: List[Dict]) -> List[EventRanking]:
+        """Rank events by signal strength for focused deep agent analysis.
+
+        Pure Python, zero LLM cost. Groups signals by event, scores them,
+        and returns the top 5 for the deep agent to focus on.
+        """
+        if not self._tracked_markets:
+            return []
+
+        markets_by_event = self._tracked_markets.get_markets_by_event()
+        if not markets_by_event:
+            return []
+
+        # Build signal lookup: market_ticker -> signal dict
+        signal_by_ticker = {}
+        for s in pre_fetched_signals:
+            ticker = s.get("market_ticker", "")
+            if ticker:
+                signal_by_ticker[ticker] = s
+
+        # Check which events have open positions
+        agent_tickers = set()
+        if self._reflection:
+            agent_tickers = {
+                t.ticker for t in self._reflection._pending_trades.values()
+            }
+
+        # Score each event
+        event_rankings = []
+        for event_ticker, tracked_markets in markets_by_event.items():
+            # Extract ticker strings from TrackedMarket objects
+            market_ticker_strs = {m.ticker for m in tracked_markets}
+
+            event_signals = [
+                signal_by_ticker[t] for t in market_ticker_strs
+                if t in signal_by_ticker
+            ]
+            if not event_signals and event_ticker not in {
+                f.event_ticker for f in self._event_focus.values()
+            }:
+                # No signals and no existing thesis - skip
+                has_pos = bool(agent_tickers & market_ticker_strs)
+                if not has_pos:
+                    continue
+
+            signal_count = len(event_signals)
+            max_strength = max(
+                (s.get("consensus_strength", 0) for s in event_signals),
+                default=0,
+            )
+            total_sources = sum(
+                s.get("unique_source_count", 0) for s in event_signals
+            )
+            has_position = bool(agent_tickers & market_ticker_strs)
+            has_thesis = event_ticker in self._event_focus
+
+            # Score: signal_strength * 0.4 + freshness * 0.2 + has_position * 0.25 + has_thesis * 0.15
+            signal_score = min(total_sources / 10.0, 1.0) * 0.4
+            freshness_score = min(signal_count / 5.0, 1.0) * 0.2
+            position_score = 0.25 if has_position else 0.0
+            thesis_score = 0.15 if has_thesis else 0.0
+            score = signal_score + freshness_score + position_score + thesis_score
+
+            # Find top signal market for display
+            top_signal = max(event_signals, key=lambda s: s.get("consensus_strength", 0)) if event_signals else {}
+
+            event_rankings.append(EventRanking(
+                event_ticker=event_ticker,
+                score=score,
+                market_count=len(market_ticker_strs),
+                signal_count=signal_count,
+                max_consensus_strength=max_strength,
+                has_position=has_position,
+                has_thesis=has_thesis,
+                top_market_ticker=top_signal.get("market_ticker", ""),
+                top_consensus=top_signal.get("consensus", ""),
+            ))
+
+        # Sort by score descending, return top 5
+        event_rankings.sort(key=lambda r: r.score, reverse=True)
+        return event_rankings[:5]
 
     async def _build_cycle_context(self, pre_fetched_signals=None) -> str:
         """Build the context message for a cycle."""
@@ -2134,26 +2578,50 @@ Return ONLY the updated strategy.md content, nothing else."""
         except Exception as e:
             logger.debug(f"[deep_agent.agent] Could not load todos: {e}")
 
-        # Load mistakes and patterns EVERY cycle, priority-ordered by confidence tags
-        # Char limits scale down after cycle 10 to save tokens on mature sessions
-        memory_context_str = ""
+        # Check for RALPH patches (fixes applied by the coding agent)
+        ralph_patches_str = ""
         try:
-            mistakes = await self._tools.read_memory("mistakes.md")
-            if mistakes and len(mistakes) > 50:
-                mistakes_limit = 800 if self._cycle_count <= 10 else 400
-                mistakes_preview = self._priority_load_memory(mistakes, mistakes_limit)
-                memory_context_str += f"\n### Mistakes to Avoid (from memory)\n{mistakes_preview}\n"
+            issue_reporter = self._get_subagent("issue_reporter")
+            if issue_reporter:
+                patches_result = await issue_reporter._check_patches()
+                patches = patches_result.get("patches", [])
+                if patches:
+                    patch_lines = ["### RALPH Patches (Code Fixes Applied)"]
+                    patch_lines.append("The RALPH coding agent has applied the following fixes. **Validate these are working:**")
+                    for p in patches[-5:]:  # Show last 5
+                        status = p.get("fix_status", "applied")
+                        desc = p.get("description", "")[:150]
+                        issue_id = p.get("issue_id", "?")
+                        patch_lines.append(f"- [{status}] {issue_id}: {desc}")
+                    patch_lines.append("If the issue persists, use task(agent='issue_reporter') to re-report it.")
+                    ralph_patches_str = "\n" + "\n".join(patch_lines) + "\n"
         except Exception as e:
-            logger.debug(f"[deep_agent.agent] Could not load mistakes: {e}")
+            logger.debug(f"[deep_agent.agent] Could not load RALPH patches: {e}")
 
-        try:
-            patterns = await self._tools.read_memory("patterns.md")
-            if patterns and len(patterns) > 50:
-                patterns_limit = 800 if self._cycle_count <= 10 else 400
-                patterns_preview = self._priority_load_memory(patterns, patterns_limit)
-                memory_context_str += f"\n### Winning Patterns (from memory)\n{patterns_preview}\n"
-        except Exception as e:
-            logger.debug(f"[deep_agent.agent] Could not load patterns: {e}")
+        # Load mistakes, patterns, and learnings EVERY cycle
+        # Uses vector recall (semantic similarity + access boost) when available,
+        # with flat-file tail for freshness, falling back to priority_load_memory.
+        memory_context_str = ""
+
+        # Build recall query from current signals for vector search
+        recall_query = None
+        if self._vector_memory and pre_fetched_signals:
+            recall_query = self._build_recall_query(pre_fetched_signals)
+
+        memory_sections = [
+            ("mistakes.md", ["mistake"], "Mistakes to Avoid (from memory)",
+             800 if self._cycle_count <= 10 else 400),
+            ("patterns.md", ["pattern"], "Winning Patterns (from memory)",
+             800 if self._cycle_count <= 10 else 400),
+            ("learnings.md", ["learning"], "Learnings (from memory)",
+             1000 if self._cycle_count <= 10 else 500),
+        ]
+        for filename, recall_types, header, char_limit in memory_sections:
+            section = await self._load_memory_section(
+                filename, recall_types, header, char_limit, recall_query
+            )
+            if section:
+                memory_context_str += section
 
         # Build open positions mark-to-market section (deep_agent positions only)
         # Use pending trades as source of truth for which positions belong to this agent,
@@ -2218,7 +2686,7 @@ Return ONLY the updated strategy.md content, nothing else."""
             except Exception as e:
                 logger.debug(f"[deep_agent.agent] Could not build open positions section: {e}")
 
-        # Build performance scorecard every 10 cycles (~30 min at 3-min interval)
+        # Build performance scorecard every 3 cycles (~9 min at 3-min interval)
         scorecard_str = ""
         # Always include persistent cross-session summary (one line, cheap)
         try:
@@ -2227,14 +2695,98 @@ Return ONLY the updated strategy.md content, nothing else."""
                 scorecard_str = f"\n### Cross-Session Performance\n{historical_summary}\n"
         except Exception as e:
             logger.debug(f"[deep_agent.agent] Could not build historical scorecard: {e}")
-        # Add detailed session scorecard every 10 cycles
-        if self._cycle_count % 10 == 0:
+        # Add detailed session scorecard every 3 cycles
+        if self._cycle_count % 3 == 0:
             try:
                 scorecard = self._reflection._build_performance_scorecard()
                 if scorecard:
                     scorecard_str += f"\n{scorecard}\n"
             except Exception as e:
                 logger.debug(f"[deep_agent.agent] Could not build scorecard: {e}")
+
+        # Inject recent trade outcomes every cycle (zero cost when scorecard is empty)
+        try:
+            recent_outcomes = self._reflection.get_recent_outcomes_summary(limit=3)
+            if recent_outcomes:
+                scorecard_str += f"\n{recent_outcomes}\n"
+        except Exception as e:
+            logger.debug(f"[deep_agent.agent] Could not build recent outcomes: {e}")
+
+        # Build ranked events section (replaces showing all 81 markets)
+        focus_events_str = ""
+        focus_events = self._rank_events(pre_fetched_signals or [])
+        if focus_events:
+            focus_lines = ["### Top Events (Ranked by Signal Strength)"]
+            for i, evt in enumerate(focus_events, 1):
+                pos_tag = " [POSITION]" if evt.has_position else ""
+                thesis_tag = ""
+                if evt.has_thesis and evt.event_ticker in self._event_focus:
+                    thesis = self._event_focus[evt.event_ticker].thesis
+                    thesis_tag = f" | Thesis: {thesis[:60]}"
+                focus_lines.append(
+                    f"{i}. **{evt.event_ticker}** (score={evt.score:.2f}) | "
+                    f"{evt.signal_count} signals, {evt.market_count} markets | "
+                    f"top={evt.top_market_ticker} consensus={evt.top_consensus} "
+                    f"strength={evt.max_consensus_strength:.0%}{pos_tag}{thesis_tag}"
+                )
+
+            # Add vector recall context per focused event
+            for evt in focus_events[:3]:
+                if self._vector_memory:
+                    try:
+                        thesis_summary = ""
+                        if evt.event_ticker in self._event_focus:
+                            thesis_summary = self._event_focus[evt.event_ticker].thesis
+                        event_context = await self._vector_memory.recall_for_context(
+                            query=f"{evt.event_ticker} {thesis_summary}",
+                            types=["signal", "research", "thesis", "learning", "pattern"],
+                            char_limit=400,
+                        )
+                        if event_context:
+                            focus_lines.append(f"\n**{evt.event_ticker} memories:**\n{event_context}")
+                    except Exception as e:
+                        logger.debug(f"[deep_agent.agent] Vector recall for {evt.event_ticker} failed: {e}")
+
+            focus_events_str = "\n" + "\n".join(focus_lines) + "\n"
+
+            # Broadcast focus events
+            if self._ws_manager:
+                await self._ws_manager.broadcast_message("deep_agent_cycle", {
+                    "cycle": self._cycle_count,
+                    "phase": "focus_events",
+                    "focus_events": [asdict(e) for e in focus_events],
+                    "timestamp": time.strftime("%H:%M:%S"),
+                })
+
+        # Build executor status section
+        executor_status_str = ""
+        if self._trade_executor:
+            try:
+                exec_status = self._trade_executor.get_status_summary()
+                active = exec_status.get("active_intents", [])
+                recent = exec_status.get("recent_completed", [])
+                totals = exec_status.get("totals", {})
+
+                if active or recent or totals.get("intents_received", 0) > 0:
+                    exec_lines = ["### Trade Executor Status"]
+                    exec_lines.append(
+                        f"Fills: {totals.get('fills', 0)} | "
+                        f"Failures: {totals.get('failures', 0)} | "
+                        f"Pending: {exec_status.get('pending_in_queue', 0)}"
+                    )
+                    for a in active:
+                        exec_lines.append(
+                            f"- ACTIVE: {a['market_ticker']} {a['side']} x{a['contracts']} "
+                            f"({a['status']}, cycle {a['cycles_alive']})"
+                        )
+                    for r in recent[-3:]:
+                        exec_lines.append(
+                            f"- COMPLETED: {r['market_ticker']} {r['side']} -> {r['status']}"
+                            + (f" ({r['failure_reason'][:60]})" if r.get('failure_reason') else "")
+                        )
+                    executor_status_str = "\n" + "\n".join(exec_lines) + "\n"
+            except Exception as e:
+                logger.debug(f"[deep_agent.agent] Executor status failed: {e}")
 
         # Build pre-loaded signals section (enriched with entity + context data)
         signals_section = ""
@@ -2277,41 +2829,80 @@ Return ONLY the updated strategy.md content, nothing else."""
                     signals_lines.append(f"  Context: {', '.join(ctx_strs)}")
 
             signals_lines.append(
-                "\nSignals above are pre-loaded. Use preflight_check() + think() before trading."
+                "\nSignals above are pre-loaded. Use think() to analyze, then submit_trade_intent() for actionable theses."
             )
             signals_section = "\n".join(signals_lines) + "\n"
 
-            instructions = """### Instructions
-1. **Signals are provided above** — review them for tradeable opportunities
-2. For promising signals, call **preflight_check(ticker, side, contracts)** for bundled safety check
-3. If preflight returns `tradeable: true`, call **think()** for structured pre-trade analysis
-4. Use your strategy.md criteria to decide: TRADE, WAIT, or PASS
-5. If your criteria are met: trade() — execute decisively
-6. If no actionable signals, PASS and wait for next cycle
-7. You can call get_extraction_signals() to re-query with different filters if needed
+            # Determine GDELT availability for instruction tailoring
+            has_gdelt_tools = (
+                self._tools._gdelt_client is not None
+                or self._tools._gdelt_doc_client is not None
+                or self._tools._news_analyzer is not None
+            )
 
-**IMPORTANT**: Apply your learned criteria from strategy.md — refine them after every trade."""
+            if has_gdelt_tools:
+                instructions = """### Instructions
+1. **FIRST** — call `append_memory("learnings.md", ...)` with at least ONE observation from the signals/context above
+2. Review **Top Events** above — focus on the top 3 ranked events
+3. For events with strong signals: call `get_news_intelligence(search_terms, context_hint)` to cross-reference
+4. For unfamiliar events: call `understand_event(event_ticker)` to build deep understanding
+5. Call **think()** to structure your analysis before any trade intent
+6. If thesis is actionable: **submit_trade_intent()** with exit criteria — the executor handles execution
+7. If existing thesis invalidated: submit_trade_intent(action="sell") to exit
+8. **END** — call `write_cycle_summary()` with your reasoning
+
+**The executor handles order mechanics.** Focus on WHAT to trade and WHY."""
+            else:
+                instructions = """### Instructions
+1. **FIRST** — call `append_memory("learnings.md", ...)` with at least ONE observation
+2. Review **Top Events** above — focus on the top 3 ranked events
+3. For unfamiliar events: call `understand_event(event_ticker)` to build understanding
+4. Call **think()** to structure your analysis before any trade intent
+5. If thesis is actionable: **submit_trade_intent()** with exit criteria
+6. If no actionable signals, PASS and wait for next cycle
+7. **END** — call `write_cycle_summary()` with your reasoning
+
+**The executor handles order mechanics.** Focus on WHAT to trade and WHY."""
         else:
             signals_section = "\n### No new signals this cycle. Focus on managing existing positions — check if any should be exited (sell) or held.\n"
-            instructions = """### Instructions
-1. No new signals available — focus on managing existing positions
-2. Check open positions: should any be exited via trade(action="sell")? Look for contradicting signals or profit-taking opportunities.
-3. You can call get_extraction_signals() to re-query with different filters if needed
-4. If nothing actionable, PASS and wait for next cycle"""
 
-        # Build microstructure summary (trade flow + orderbook scan)
-        microstructure_str = ""
-        if self._tools._trade_flow_service or self._tools._orderbook_integration:
-            try:
-                micro_result = await self._tools.get_microstructure()
-                active = [m for m in micro_result.get("markets", []) if m.get("total_trades", 0) > 0]
-                if active:
-                    micro_lines = ["\n### Market Microstructure (Real-Time)"]
-                    for m in active[:8]:
-                        micro_lines.append(f"- **{m['ticker']}**: {m['summary']}")
-                    microstructure_str = "\n".join(micro_lines) + "\n"
-            except Exception as e:
-                logger.debug(f"[deep_agent.agent] Microstructure context failed: {e}")
+            has_gdelt_tools = (
+                self._tools._gdelt_client is not None
+                or self._tools._gdelt_doc_client is not None
+                or self._tools._news_analyzer is not None
+            )
+
+            if has_gdelt_tools:
+                instructions = """### Instructions
+1. **FIRST** — call `append_memory("learnings.md", ...)` with at least ONE observation (e.g. no new signals, position status, market conditions)
+2. **GDELT news scan** — call `get_news_intelligence(search_terms)` with topics relevant to your tracked markets to discover breaking news or emerging signals that Reddit hasn't captured yet.
+3. Check open positions: should any be exited via `submit_trade_intent(action="sell")`?
+4. You can call get_extraction_signals() to re-query with different filters if needed
+5. If nothing actionable, PASS and wait for next cycle
+6. **END** — call `write_cycle_summary()` with your reasoning
+
+**The executor handles order mechanics.** Focus on WHAT to trade and WHY."""
+            else:
+                instructions = """### Instructions
+1. **FIRST** — call `append_memory("learnings.md", ...)` with at least ONE observation (e.g. no new signals, position status, market conditions)
+2. No new signals available — focus on managing existing positions
+3. Check open positions: should any be exited via `submit_trade_intent(action="sell")`?
+4. You can call get_extraction_signals() to re-query with different filters if needed
+5. If nothing actionable, PASS and wait for next cycle
+6. **END** — call `write_cycle_summary()` with your reasoning
+
+**The executor handles order mechanics.** Focus on WHAT to trade and WHY."""
+
+        # Anti-stagnation nudge: after 3+ cycles with no trade, push the agent to act
+        anti_stagnation_str = ""
+        if self._cycles_since_last_trade >= 3:
+            anti_stagnation_str = (
+                "\n### ANTI-STAGNATION ALERT\n"
+                f"**{self._cycles_since_last_trade} consecutive cycles without a trade.** "
+                "You MUST submit at least one trade intent this cycle. Paper trading = free education. "
+                "Submit a speculative $25-50 intent on your best signal. "
+                "Inaction produces zero learning.\n"
+            )
 
         context = f"""
 ## New Trading Cycle - {datetime.now().strftime("%Y-%m-%d %H:%M")}
@@ -2323,10 +2914,7 @@ Return ONLY the updated strategy.md content, nothing else."""
 - Positions: {session_state.position_count}
 - Trade Count: {session_state.trade_count}
 - Win Rate: {session_state.win_rate:.1%}
-{event_exposure_str}{open_positions_str}{strategy_excerpt}{golden_rules_str}{market_knowledge_str}{journal_str}{todos_str}{memory_context_str}{scorecard_str}{signals_section}{microstructure_str}
-### Target Events
-{target_events_str}
-
+{event_exposure_str}{open_positions_str}{executor_status_str}{strategy_excerpt}{golden_rules_str}{market_knowledge_str}{journal_str}{todos_str}{ralph_patches_str}{memory_context_str}{scorecard_str}{focus_events_str}{signals_section}{anti_stagnation_str}
 {instructions}
 """
         return context
@@ -2356,6 +2944,8 @@ Return ONLY the updated strategy.md content, nothing else."""
             prefix = self._conversation_history[:keep_prefix]
             suffix = self._conversation_history[-keep_suffix:]
             self._conversation_history = prefix + suffix
+            # Fix any tool_use/tool_result pairs broken by the trim
+            self._fix_orphaned_tool_pairs()
 
         # Build system prompt using modular architecture
         system = build_system_prompt(
@@ -2399,10 +2989,15 @@ Return ONLY the updated strategy.md content, nothing else."""
             cached_tools[-1] = {**cached_tools[-1], "cache_control": {"type": "ephemeral"}}
 
         while tool_calls_this_cycle < max_tool_calls:
-            # Call Claude with tools (with timeout to prevent hung cycles)
+            # Call Claude with tools using streaming for real-time frontend updates
             try:
-                response = await asyncio.wait_for(
-                    self._client.messages.create(
+                # --- Streaming state ---
+                _text_accum = ""          # Accumulated text for current text block
+                _last_emit_ts = 0.0       # Timestamp of last thinking emit
+                _DEBOUNCE_S = 0.3         # Emit thinking every 300ms
+
+                async with asyncio.timeout(120.0):
+                    async with self._client.messages.stream(
                         model=self._config.model,
                         max_tokens=self._config.max_tokens,
                         temperature=self._config.temperature,
@@ -2412,9 +3007,48 @@ Return ONLY the updated strategy.md content, nothing else."""
                         extra_headers={
                             "anthropic-beta": "token-efficient-tools-2025-02-19"
                         },
-                    ),
-                    timeout=120.0,  # 2 minute timeout
-                )
+                    ) as stream:
+                        async for event in stream:
+                            # --- Text deltas: accumulate and debounce emit ---
+                            if event.type == "content_block_delta" and hasattr(event.delta, "text"):
+                                _text_accum += event.delta.text
+                                now = time.monotonic()
+                                if now - _last_emit_ts >= _DEBOUNCE_S and self._ws_manager:
+                                    thinking_msg = {
+                                        "text": _text_accum,
+                                        "cycle": self._cycle_count,
+                                        "timestamp": time.strftime("%H:%M:%S"),
+                                        "streaming": True,
+                                    }
+                                    await self._ws_manager.broadcast_message("deep_agent_thinking", thinking_msg)
+                                    _last_emit_ts = now
+
+                            # --- Tool use start: emit tool_start event ---
+                            elif event.type == "content_block_start" and hasattr(event.content_block, "type") and event.content_block.type == "tool_use":
+                                if self._ws_manager:
+                                    await self._ws_manager.broadcast_message("deep_agent_tool_start", {
+                                        "tool": event.content_block.name,
+                                        "id": event.content_block.id,
+                                        "cycle": self._cycle_count,
+                                        "timestamp": time.strftime("%H:%M:%S"),
+                                    })
+
+                            # --- Text block finished: flush remaining text ---
+                            elif event.type == "content_block_stop":
+                                if _text_accum and self._ws_manager:
+                                    thinking_msg = {
+                                        "text": _text_accum,
+                                        "cycle": self._cycle_count,
+                                        "timestamp": time.strftime("%H:%M:%S"),
+                                        "streaming": False,
+                                    }
+                                    await self._ws_manager.broadcast_message("deep_agent_thinking", thinking_msg)
+                                    self._thinking_history.append(thinking_msg)
+                                    _text_accum = ""
+                                    _last_emit_ts = 0.0
+
+                    # Get the complete response (provides usage stats for cache metrics)
+                    response = await stream.get_final_message()
 
                 # === CACHE METRICS LOGGING ===
                 # Track prompt caching effectiveness for cost optimization
@@ -2455,7 +3089,7 @@ Return ONLY the updated strategy.md content, nothing else."""
                             f"[deep_agent.agent] No cache: input={input_tokens}, output={output_tokens}"
                         )
 
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 logger.error("[deep_agent.agent] Claude API call timed out after 120s")
                 if self._ws_manager:
                     await self._ws_manager.broadcast_message("deep_agent_error", {
@@ -2465,22 +3099,39 @@ Return ONLY the updated strategy.md content, nothing else."""
                     })
                 return
 
-            # Process response
+            except BadRequestError as e:
+                # History is corrupted (e.g., orphaned tool_use/tool_result pairs).
+                # Clear it — memory files provide cross-cycle continuity.
+                old_len = len(self._conversation_history)
+                self._conversation_history.clear()
+                logger.error(
+                    f"[deep_agent.agent] Claude API 400 error — cleared {old_len} "
+                    f"history messages to recover: {e}"
+                )
+                if self._ws_manager:
+                    await self._ws_manager.broadcast_message("deep_agent_error", {
+                        "error": f"Claude API error (history reset to recover): {str(e)[:150]}",
+                        "cycle": self._cycle_count,
+                        "timestamp": time.strftime("%H:%M:%S"),
+                    })
+                return
+
+            except Exception as e:
+                logger.error(f"[deep_agent.agent] Stream error: {e}")
+                if self._ws_manager:
+                    await self._ws_manager.broadcast_message("deep_agent_error", {
+                        "error": f"Stream error: {str(e)[:150]}",
+                        "cycle": self._cycle_count,
+                        "timestamp": time.strftime("%H:%M:%S"),
+                    })
+                return
+
+            # Build assistant content and tool blocks from final response
             assistant_content = []
             tool_use_blocks = []
 
             for block in response.content:
                 if block.type == "text":
-                    # Stream thinking to WebSocket
-                    if self._ws_manager and block.text.strip():
-                        thinking_msg = {
-                            "text": block.text,
-                            "cycle": self._cycle_count,
-                            "timestamp": time.strftime("%H:%M:%S"),
-                        }
-                        await self._ws_manager.broadcast_message("deep_agent_thinking", thinking_msg)
-                        # Store in history for session persistence
-                        self._thinking_history.append(thinking_msg)
                     assistant_content.append({"type": "text", "text": block.text})
 
                 elif block.type == "tool_use":
@@ -2594,6 +3245,20 @@ Return ONLY the updated strategy.md content, nothing else."""
                         }
                         await self._ws_manager.broadcast_message("deep_agent_gdelt_result", gdelt_msg)
 
+                    # Emit news intelligence sub-agent result
+                    elif tool_block.name == "get_news_intelligence" and isinstance(result, dict) and result.get("status") not in ("error", "unavailable"):
+                        news_msg = {
+                            "search_terms": tool_block.input.get("search_terms", []),
+                            "context_hint": tool_block.input.get("context_hint", ""),
+                            "status": result.get("status", "unknown"),
+                            "intelligence": result.get("intelligence", {}),
+                            "metadata": result.get("metadata", {}),
+                            "cycle": self._cycle_count,
+                            "timestamp": time.strftime("%H:%M:%S"),
+                            "duration_ms": tool_duration_ms,
+                        }
+                        await self._ws_manager.broadcast_message("deep_agent_news_intelligence", news_msg)
+
                 # Cap tool result size to prevent any single result from
                 # dominating the context window. 4K chars is enough for the
                 # model to extract key information; raw JSON from tools like
@@ -2644,6 +3309,8 @@ Return ONLY the updated strategy.md content, nothing else."""
                         + keep_pre
                         + current_cycle_msgs
                     )
+                    # Fix any tool_use/tool_result pairs broken by the trim
+                    self._fix_orphaned_tool_pairs()
                     # Update cycle start index after trim
                     cycle_start_msg_idx = keep_prefix + len(keep_pre)
 
@@ -2654,735 +3321,40 @@ Return ONLY the updated strategy.md content, nothing else."""
         logger.info(f"[deep_agent.agent] Cycle {self._cycle_count} completed with {tool_calls_this_cycle} tool calls")
 
     async def _execute_tool(self, tool_name: str, tool_input: Dict) -> Any:
-        """Execute a tool and return the result."""
+        """Execute a tool and return the result.
+
+        Dispatches to:
+        1. Simple pass-through tools (direct delegation to self._tools)
+        2. Medium-complexity tools with side effects (write_memory, append_memory, etc.)
+        3. Complex tool handlers (_execute_trade, _execute_think, etc.)
+        """
         logger.info(f"[deep_agent.agent] Executing tool: {tool_name}")
 
         try:
-            if tool_name == "get_extraction_signals":
-                result = await self._tools.get_extraction_signals(
-                    market_ticker=tool_input.get("market_ticker"),
-                    event_ticker=tool_input.get("event_ticker"),
-                    window_hours=tool_input.get("hours", 4),
-                    limit=tool_input.get("limit", 20),
-                )
-                return result
+            # --- Simple pass-through tools ---
+            handler = self._SIMPLE_TOOL_DISPATCH.get(tool_name)
+            if handler:
+                return await handler(self, tool_input)
 
-            elif tool_name == "get_markets":
-                markets = await self._tools.get_markets(
-                    event_ticker=tool_input.get("event_ticker"),
-                    limit=tool_input.get("limit", 20),
-                )
-                return [m.to_dict() for m in markets]
-
-            elif tool_name == "trade":
-                ticker = tool_input["ticker"]
-
-                # === THINK ENFORCEMENT (HARD BLOCK) ===
-                # Requires a recent think() call with TRADE decision before executing
-                think_warning = None
-                if self._last_think_decision is None:
-                    error_msg = (
-                        "BLOCKED: You must call think() before trade(). "
-                        "Structured pre-trade analysis is required."
-                    )
-                    logger.warning(f"[deep_agent.agent] {error_msg}")
-                    return {
-                        "success": False,
-                        "ticker": ticker,
-                        "side": tool_input.get("side", ""),
-                        "contracts": tool_input.get("contracts", 0),
-                        "error": error_msg,
-                        "think_required": True,
-                    }
-                elif self._last_think_decision != "TRADE":
-                    error_msg = (
-                        f"BLOCKED: Last think() decision was '{self._last_think_decision}', not 'TRADE'. "
-                        f"Call think() again with decision='TRADE' if you want to proceed."
-                    )
-                    logger.warning(f"[deep_agent.agent] {error_msg}")
-                    return {
-                        "success": False,
-                        "ticker": ticker,
-                        "side": tool_input.get("side", ""),
-                        "contracts": tool_input.get("contracts", 0),
-                        "error": error_msg,
-                        "think_required": True,
-                    }
-                elif self._last_think_timestamp and time.time() - self._last_think_timestamp > 60:
-                    think_warning = (
-                        "WARNING: think() decision is stale (>60s). "
-                        "Trade proceeding but consider calling think() again for fresh analysis."
-                    )
-                    logger.warning(f"[deep_agent.agent] {think_warning}")
-
-                # NOTE: Think state is cleared ONLY after successful trade execution
-                # (moved to the success block below to prevent clearing on blocked trades)
-
-                # === CIRCUIT BREAKER CHECK ===
-                # Prevent repeated failures on the same market
-                is_blacklisted, blacklist_reason = self._is_ticker_blacklisted(ticker)
-                if is_blacklisted:
-                    logger.warning(f"[deep_agent.agent] Trade blocked by circuit breaker: {ticker}")
-                    return {
-                        "success": False,
-                        "ticker": ticker,
-                        "side": tool_input["side"],
-                        "contracts": tool_input["contracts"],
-                        "error": blacklist_reason,
-                        "circuit_breaker_blocked": True,
-                    }
-
-                # Validate contracts
-                contracts = min(tool_input["contracts"], self._config.max_contracts_per_trade)
-
-                result = await self._tools.trade(
-                    ticker=ticker,
-                    side=tool_input["side"],
-                    contracts=contracts,
-                    reasoning=tool_input["reasoning"],
-                    execution_strategy=tool_input.get("execution_strategy", "aggressive"),
-                    action=tool_input.get("action", "buy"),
-                )
-
-                # === CIRCUIT BREAKER: Record failure if trade failed ===
-                if not result.success and result.error:
-                    was_blacklisted = self._record_trade_failure(ticker, result.error)
-                    if was_blacklisted:
-                        # Add note to result so agent knows about the blacklist
-                        result.error = (
-                            f"{result.error} | CIRCUIT BREAKER: Market now blacklisted "
-                            f"after {self._config.circuit_breaker_threshold} failures. "
-                            f"Try other markets instead."
-                        )
-
-                # Record for reflection if successful
-                if result.success:
-                    self._trades_executed += 1
-
-                    # Capture calibration data before clearing think state
-                    trade_estimated_probability = self._last_think_estimated_probability
-                    trade_what_could_go_wrong = self._last_think_what_could_go_wrong
-
-                    # Clear think state (require fresh think for next trade)
-                    self._last_think_decision = None
-                    self._last_think_timestamp = None
-                    self._last_think_estimated_probability = None
-                    self._last_think_what_could_go_wrong = None
-
-                    # Get event_ticker from trading client
-                    event_ticker = ""
-                    try:
-                        if self._trading_client:
-                            market = await self._trading_client.get_market(ticker)
-                            event_ticker = market.get("event_ticker", "") if market else ""
-                    except Exception as e:
-                        logger.warning(f"[deep_agent.agent] Could not fetch event_ticker: {e}")
-
-                    # T1.2: Use limit_price_cents as fallback instead of fabricated 50c
-                    entry_price = result.price_cents or result.limit_price_cents or 50
-
-                    # Snapshot extractions + GDELT queries that drove this trade (for learning loop)
-                    extraction_ids, extraction_snapshot, gdelt_snapshot = await self._snapshot_trade_extractions(ticker)
-
-                    # Snapshot microstructure at trade time for reflection
-                    microstructure_snapshot = None
-                    if self._tools._trade_flow_service or self._tools._orderbook_integration:
-                        try:
-                            micro = await self._tools.get_microstructure(market_ticker=ticker)
-                            if micro.get("has_data"):
-                                microstructure_snapshot = micro.get("data")
-                        except Exception:
-                            pass  # Non-fatal
-
-                    self._reflection.record_trade(
-                        trade_id=result.order_id or str(uuid.uuid4()),
-                        ticker=ticker,
-                        event_ticker=event_ticker,
-                        side=tool_input["side"],
-                        contracts=contracts,
-                        entry_price_cents=entry_price,
-                        reasoning=tool_input["reasoning"],
-                        extraction_ids=extraction_ids,
-                        extraction_snapshot=extraction_snapshot,
-                        gdelt_snapshot=gdelt_snapshot,
-                        estimated_probability=trade_estimated_probability,
-                        what_could_go_wrong=trade_what_could_go_wrong,
-                        microstructure_snapshot=microstructure_snapshot,
-                    )
-
-                    # Store in trade history for session persistence
-                    trade_msg = {
-                        "ticker": ticker,
-                        "side": tool_input["side"],
-                        "action": tool_input.get("action", "buy"),
-                        "contracts": contracts,
-                        "price_cents": entry_price,
-                        "reasoning": tool_input["reasoning"][:200],
-                        "timestamp": time.strftime("%H:%M:%S"),
-                    }
-                    self._trade_history.append(trade_msg)
-
-                # Include think warning in result if present
-                trade_result = result.to_dict()
-                if think_warning:
-                    trade_result["think_warning"] = think_warning
-                return trade_result
-
-            elif tool_name == "get_session_state":
-                state = await self._tools.get_session_state()
-                return state.to_dict()
-
-            elif tool_name == "get_true_performance":
-                perf = await self._tools.get_true_performance()
-                return perf.to_dict()
-
-            elif tool_name == "read_memory":
-                content = await self._tools.read_memory(tool_input["filename"])
-                return content
-
-            elif tool_name == "write_memory":
-                filename = tool_input["filename"]
-                content = tool_input["content"]
-                success = await self._tools.write_memory(filename, content)
-
-                # Track learnings for session persistence
-                if success and filename == "learnings.md":
-                    learning_entry = {
-                        "id": f"learning-{time.strftime('%H:%M:%S')}",
-                        "content": content[:200] + "..." if len(content) > 200 else content,
-                        "timestamp": time.strftime("%H:%M:%S"),
-                    }
-                    self._learnings_history.append(learning_entry)
-
-                return {"success": success}
-
+            # --- Medium-complexity tools with side effects ---
+            if tool_name == "write_memory":
+                return await self._execute_write_memory(tool_input)
             elif tool_name == "append_memory":
-                filename = tool_input["filename"]
-                content = tool_input["content"]
-                result = await self._tools.append_memory(filename, content)
-
-                # Track learnings for session persistence
-                if result.get("success") and filename == "learnings.md":
-                    learning_entry = {
-                        "id": f"learning-{time.strftime('%H:%M:%S')}",
-                        "content": content[:200] + "..." if len(content) > 200 else content,
-                        "timestamp": time.strftime("%H:%M:%S"),
-                    }
-                    self._learnings_history.append(learning_entry)
-
-                return result
-
-            elif tool_name == "get_event_context":
-                context = await self._tools.get_event_context(
-                    event_ticker=tool_input["event_ticker"],
-                )
-                if context:
-                    return context.to_dict()
-                else:
-                    return {"error": f"Event {tool_input['event_ticker']} not found or no tracked markets"}
-
-            elif tool_name == "preflight_check":
-                result = await self._tools.preflight_check(
-                    ticker=tool_input["ticker"],
-                    side=tool_input["side"],
-                    contracts=min(tool_input["contracts"], self._config.max_contracts_per_trade),
-                    execution_strategy=tool_input.get("execution_strategy", "aggressive"),
-                )
-                return result
-
-            elif tool_name == "understand_event":
-                result = await self._tools.understand_event(
-                    event_ticker=tool_input["event_ticker"],
-                    force_refresh=tool_input.get("force_refresh", False),
-                )
-                return result
-
-            elif tool_name == "think":
-                # REQUIRED pre-trade analysis tool - forces structured reasoning
-                # All 4 fields are required; reflection is optional for additional notes
-
-                # Extract structured fields
-                signal_analysis = tool_input.get("signal_analysis", "")
-                strategy_check = tool_input.get("strategy_check", "")
-                risk_assessment = tool_input.get("risk_assessment", "")
-                decision = tool_input.get("decision", "")
-                reflection = tool_input.get("reflection", "")  # Optional
-                signal_id = tool_input.get("signal_id", "")  # Optional but encouraged
-                estimated_probability = tool_input.get("estimated_probability")  # 0-100 or None
-                what_could_go_wrong = tool_input.get("what_could_go_wrong", "")  # Required for TRADE
-
-                # Validate required fields
-                missing = []
-                if not signal_analysis.strip():
-                    missing.append("signal_analysis")
-                if not strategy_check.strip():
-                    missing.append("strategy_check")
-                if not risk_assessment.strip():
-                    missing.append("risk_assessment")
-                if decision not in ("TRADE", "WAIT", "PASS"):
-                    missing.append("decision (must be TRADE, WAIT, or PASS)")
-
-                if missing:
-                    return {"recorded": False, "error": f"Missing required fields: {', '.join(missing)}"}
-
-                # Format structured analysis for display
-                formatted_analysis = (
-                    f"**Signal**: {signal_analysis}\n"
-                    f"**Strategy**: {strategy_check}\n"
-                    f"**Risks**: {risk_assessment}\n"
-                    f"**Decision**: {decision}"
-                )
-                if estimated_probability is not None:
-                    formatted_analysis += f"\n**Est. Probability (YES)**: {estimated_probability}%"
-                if what_could_go_wrong:
-                    formatted_analysis += f"\n**What Could Go Wrong**: {what_could_go_wrong}"
-                if reflection:
-                    formatted_analysis += f"\n**Notes**: {reflection}"
-
-                logger.info(f"[deep_agent.agent] Think: decision={decision}, signal={signal_analysis[:100]}...")
-
-                # Build thinking message with structured data
-                thinking_msg = {
-                    "text": f"[Pre-Trade Analysis]\n{formatted_analysis}",
-                    "cycle": self._cycle_count,
-                    "timestamp": time.strftime("%H:%M:%S"),
-                    "is_structured_reflection": True,
-                    "decision": decision,
-                    "structured_data": {
-                        "signal_analysis": signal_analysis,
-                        "strategy_check": strategy_check,
-                        "risk_assessment": risk_assessment,
-                        "decision": decision,
-                        "reflection": reflection,
-                        "estimated_probability": estimated_probability,
-                        "what_could_go_wrong": what_could_go_wrong,
-                    }
-                }
-
-                # Store in history for session persistence
-                self._thinking_history.append(thinking_msg)
-
-                # Update think enforcement tracking
-                self._last_think_decision = decision
-                self._last_think_timestamp = time.time()
-                self._last_think_estimated_probability = int(estimated_probability) if estimated_probability is not None else None
-                self._last_think_what_could_go_wrong = what_could_go_wrong or None
-
-                # Broadcast to connected WebSocket clients
-                if self._ws_manager:
-                    await self._ws_manager.broadcast_message("deep_agent_thinking", thinking_msg)
-
-                return {
-                    "recorded": True,
-                    "decision": decision,
-                    "proceed_to_trade": decision == "TRADE",
-                }
-
-            elif tool_name == "reflect":
-                # Structured post-trade reflection tool
-                trade_ticker = tool_input["trade_ticker"]
-                outcome_analysis = tool_input["outcome_analysis"]
-                reasoning_accuracy = tool_input["reasoning_accuracy"]
-                key_learning = tool_input["key_learning"]
-                mistake = tool_input.get("mistake", "")
-                pattern = tool_input.get("pattern", "")
-                strategy_update_needed = tool_input.get("strategy_update_needed", False)
-                confidence_in_learning = tool_input.get("confidence_in_learning", "medium")
-
-                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
-                results = {"trade_ticker": trade_ticker, "appended_to": []}
-
-                # Always append key learning to learnings.md
-                learning_entry = (
-                    f"\n## {timestamp} - {trade_ticker}\n"
-                    f"- **Outcome**: {outcome_analysis}\n"
-                    f"- **Reasoning Accuracy**: {reasoning_accuracy}\n"
-                    f"- **Learning** [{confidence_in_learning}]: {key_learning}\n"
-                )
-                await self._tools.append_memory("learnings.md", learning_entry)
-                results["appended_to"].append("learnings.md")
-
-                # Append mistake if provided
-                if mistake and mistake.strip():
-                    mistake_entry = (
-                        f"\n## {timestamp} - {trade_ticker}\n"
-                        f"- {mistake}\n"
-                    )
-                    await self._tools.append_memory("mistakes.md", mistake_entry)
-                    results["appended_to"].append("mistakes.md")
-
-                # Append pattern if provided
-                if pattern and pattern.strip():
-                    pattern_entry = (
-                        f"\n## {timestamp} - {trade_ticker}\n"
-                        f"- {pattern}\n"
-                    )
-                    await self._tools.append_memory("patterns.md", pattern_entry)
-                    results["appended_to"].append("patterns.md")
-
-                results["strategy_update_needed"] = strategy_update_needed
-
-                # Track learnings for session persistence
-                learning_msg = {
-                    "id": f"reflect-{time.strftime('%H:%M:%S')}",
-                    "content": key_learning[:200],
-                    "timestamp": time.strftime("%H:%M:%S"),
-                }
-                self._learnings_history.append(learning_msg)
-
-                logger.info(
-                    f"[deep_agent.agent] Reflect: {trade_ticker} "
-                    f"accuracy={reasoning_accuracy} confidence={confidence_in_learning} "
-                    f"files={results['appended_to']}"
-                )
-
-                return results
-
+                return await self._execute_append_memory(tool_input)
             elif tool_name == "write_cycle_summary":
-                # Agent-written cycle journal entry
-                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
-                signals = tool_input.get("signals_observed", "none")
-                decisions = tool_input.get("decisions_made", "none")
-                reasoning = tool_input.get("reasoning_notes", "")
-                markets = tool_input.get("markets_of_interest", "")
-
-                entry = (
-                    f"\n## Cycle {self._cycle_count} - {timestamp}\n"
-                    f"- **Signals**: {signals}\n"
-                    f"- **Decisions**: {decisions}\n"
-                    f"- **Reasoning**: {reasoning}\n"
-                )
-                if markets:
-                    entry += f"- **Watching**: {markets}\n"
-
-                result = await self._tools.append_memory("cycle_journal.md", entry)
-                return {
-                    "recorded": result.get("success", False),
-                    "cycle": self._cycle_count,
-                }
-
-            elif tool_name == "evaluate_extractions":
-                # Score extraction accuracy after trade settlement
-                self._tools._tool_calls["evaluate_extractions"] = self._tools._tool_calls.get("evaluate_extractions", 0) + 1
-                trade_ticker = tool_input["trade_ticker"]
-                trade_outcome = tool_input["trade_outcome"]
-                evaluations = tool_input.get("evaluations", [])
-
-                accuracy_map = {
-                    "accurate": 1.0,
-                    "partially_accurate": 0.7,
-                    "inaccurate": 0.2,
-                    "noise": 0.0,
-                }
-
-                supabase = self._tools._get_supabase()
-                if not supabase:
-                    return {"error": "Supabase not available"}
-
-                results_summary = {
-                    "trade_ticker": trade_ticker,
-                    "trade_outcome": trade_outcome,
-                    "evaluated": 0,
-                    "promoted_examples": 0,
-                    "evaluations": [],
-                }
-
-                for eval_item in evaluations:
-                    ext_id = eval_item.get("extraction_id", "")
-                    accuracy = eval_item.get("accuracy", "noise")
-                    note = eval_item.get("note", "")
-                    quality_score = accuracy_map.get(accuracy, 0.0)
-
-                    try:
-                        # Update quality_score on the extraction
-                        supabase.table("extractions") \
-                            .update({"quality_score": quality_score}) \
-                            .eq("id", ext_id) \
-                            .execute()
-
-                        results_summary["evaluated"] += 1
-                        results_summary["evaluations"].append({
-                            "extraction_id": ext_id,
-                            "accuracy": accuracy,
-                            "quality_score": quality_score,
-                        })
-
-                        # Auto-promote: accurate extraction + winning trade -> example
-                        if accuracy == "accurate" and trade_outcome == "win":
-                            # Fetch the full extraction to build the example
-                            ext_result = supabase.table("extractions") \
-                                .select("*") \
-                                .eq("id", ext_id) \
-                                .execute()
-
-                            if ext_result.data:
-                                ext_row = ext_result.data[0]
-                                event_tickers = ext_row.get("event_tickers", [])
-                                event_ticker = event_tickers[0] if event_tickers else ""
-
-                                example_data = {
-                                    "event_ticker": event_ticker,
-                                    "extraction_class": ext_row.get("extraction_class", "market_signal"),
-                                    "source_text": ext_row.get("extraction_text", ""),
-                                    "expected_output": {
-                                        "extraction_class": ext_row.get("extraction_class", ""),
-                                        "extraction_text": ext_row.get("extraction_text", ""),
-                                        "attributes": ext_row.get("attributes", {}),
-                                    },
-                                    "quality_score": 1.0,
-                                    "source": "real",
-                                    "created_at": datetime.now().isoformat(),
-                                }
-
-                                supabase.table("extraction_examples") \
-                                    .insert(example_data) \
-                                    .execute()
-
-                                results_summary["promoted_examples"] += 1
-                                logger.info(
-                                    f"[deep_agent.agent] Promoted extraction {ext_id} as example "
-                                    f"for {event_ticker}"
-                                )
-
-                    except Exception as e:
-                        logger.warning(
-                            f"[deep_agent.agent] Failed to evaluate extraction {ext_id}: {e}"
-                        )
-                        results_summary["evaluations"].append({
-                            "extraction_id": ext_id,
-                            "error": str(e),
-                        })
-
-                logger.info(
-                    f"[deep_agent.agent] evaluate_extractions: {results_summary['evaluated']} evaluated, "
-                    f"{results_summary['promoted_examples']} promoted for {trade_ticker}"
-                )
-                return results_summary
-
-            elif tool_name == "refine_event":
-                # Push learnings back to extraction pipeline via event_configs
-                self._tools._tool_calls["refine_event"] = self._tools._tool_calls.get("refine_event", 0) + 1
-                event_ticker = tool_input["event_ticker"]
-                what_works = tool_input["what_works"]
-                what_fails = tool_input["what_fails"]
-                watchlist_additions = tool_input.get("suggested_watchlist_additions", [])
-                prompt_refinement = tool_input.get("suggested_prompt_refinement", "")
-
-                supabase = self._tools._get_supabase()
-                if not supabase:
-                    return {"error": "Supabase not available"}
-
-                try:
-                    # Fetch current event_configs
-                    result = supabase.table("event_configs") \
-                        .select("*") \
-                        .eq("event_ticker", event_ticker) \
-                        .execute()
-
-                    if not result.data:
-                        return {
-                            "error": f"No event_configs found for {event_ticker}. "
-                            f"Call understand_event() first.",
-                            "event_ticker": event_ticker,
-                        }
-
-                    config = result.data[0]
-                    current_version = config.get("research_version", 1)
-                    updates = {}
-
-                    # Append prompt refinement if provided
-                    if prompt_refinement:
-                        current_prompt = config.get("prompt_description", "")
-                        version_tag = f"\n\n[v{current_version + 1} refinement]: "
-                        updates["prompt_description"] = current_prompt + version_tag + prompt_refinement
-
-                    # Merge watchlist additions
-                    if watchlist_additions:
-                        watchlist = config.get("watchlist", {})
-                        entities = watchlist.get("entities", [])
-                        for entity in watchlist_additions:
-                            if entity not in entities:
-                                entities.append(entity)
-                        watchlist["entities"] = entities
-                        updates["watchlist"] = watchlist
-
-                    # Always bump version and timestamp
-                    updates["research_version"] = current_version + 1
-                    updates["last_researched_at"] = datetime.now().isoformat()
-                    updates["updated_at"] = datetime.now().isoformat()
-
-                    # UPSERT
-                    supabase.table("event_configs") \
-                        .update(updates) \
-                        .eq("event_ticker", event_ticker) \
-                        .execute()
-
-                    logger.info(
-                        f"[deep_agent.agent] refine_event: updated {event_ticker} "
-                        f"to v{updates['research_version']} "
-                        f"(prompt_refined={bool(prompt_refinement)}, "
-                        f"watchlist_added={len(watchlist_additions)})"
-                    )
-
-                    return {
-                        "status": "refined",
-                        "event_ticker": event_ticker,
-                        "new_version": updates["research_version"],
-                        "prompt_refined": bool(prompt_refinement),
-                        "watchlist_entities_added": len(watchlist_additions),
-                        "what_works": what_works[:200],
-                        "what_fails": what_fails[:200],
-                    }
-
-                except Exception as e:
-                    logger.error(f"[deep_agent.agent] refine_event error: {e}")
-                    return {"error": str(e), "event_ticker": event_ticker}
-
-            elif tool_name == "get_extraction_quality":
-                # Query extraction quality metrics per event
-                self._tools._tool_calls["get_extraction_quality"] = self._tools._tool_calls.get("get_extraction_quality", 0) + 1
-                event_ticker = tool_input.get("event_ticker")
-
-                supabase = self._tools._get_supabase()
-                if not supabase:
-                    return {"error": "Supabase not available"}
-
-                try:
-                    # Query evaluated extractions (those with quality_score set)
-                    query = supabase.table("extractions") \
-                        .select("event_tickers, quality_score") \
-                        .not_.is_("quality_score", "null")
-
-                    if event_ticker:
-                        query = query.contains("event_tickers", [event_ticker])
-
-                    result = query.execute()
-
-                    if not result.data:
-                        return {
-                            "events": [],
-                            "message": "No evaluated extractions found" + (
-                                f" for {event_ticker}" if event_ticker else ""
-                            ),
-                        }
-
-                    # Aggregate by event ticker
-                    event_metrics: Dict[str, Dict] = {}
-                    for row in result.data:
-                        score = row.get("quality_score", 0)
-                        event_tickers_list = row.get("event_tickers", [])
-                        for et in event_tickers_list:
-                            if et not in event_metrics:
-                                event_metrics[et] = {
-                                    "event_ticker": et,
-                                    "total_evaluated": 0,
-                                    "scores": [],
-                                    "accurate_count": 0,
-                                    "partially_accurate_count": 0,
-                                    "inaccurate_count": 0,
-                                    "noise_count": 0,
-                                }
-                            m = event_metrics[et]
-                            m["total_evaluated"] += 1
-                            m["scores"].append(score)
-
-                            if score >= 0.9:
-                                m["accurate_count"] += 1
-                            elif score >= 0.5:
-                                m["partially_accurate_count"] += 1
-                            elif score >= 0.1:
-                                m["inaccurate_count"] += 1
-                            else:
-                                m["noise_count"] += 1
-
-                    # Finalize: compute averages, remove raw scores
-                    events = []
-                    for et, m in event_metrics.items():
-                        scores = m.pop("scores")
-                        m["avg_quality"] = round(sum(scores) / len(scores), 2) if scores else 0.0
-                        m["needs_refinement"] = m["avg_quality"] < 0.6
-                        events.append(m)
-
-                    # Sort by avg_quality ascending (worst first)
-                    events.sort(key=lambda e: e["avg_quality"])
-
-                    return {
-                        "events": events,
-                        "total_events": len(events),
-                        "message": f"{len(events)} events with extraction quality data",
-                    }
-
-                except Exception as e:
-                    logger.error(f"[deep_agent.agent] get_extraction_quality error: {e}")
-                    return {"error": str(e)}
-
-            elif tool_name == "read_todos":
-                result = await self._tools.read_todos()
-                return result
-
+                return await self._execute_write_cycle_summary(tool_input)
             elif tool_name == "write_todos":
-                result = await self._tools.write_todos(
-                    items=tool_input.get("items", []),
-                    current_cycle=self._cycle_count,
-                )
-                return result
+                return await self._execute_write_todos(tool_input)
 
-            elif tool_name == "get_reddit_daily_digest":
-                result = await self._tools.get_reddit_daily_digest(
-                    force_refresh=tool_input.get("force_refresh", False),
-                )
-                return result
+            # --- Subagent delegation ---
+            elif tool_name == "task":
+                return await self._execute_task(tool_input)
 
-            elif tool_name == "query_gdelt_news":
-                result = await self._tools.query_gdelt_news(
-                    search_terms=tool_input.get("search_terms", []),
-                    window_hours=tool_input.get("window_hours"),
-                    tone_filter=tool_input.get("tone_filter"),
-                    source_filter=tool_input.get("source_filter"),
-                    limit=tool_input.get("limit"),
-                )
-                return result
-
-            elif tool_name == "query_gdelt_events":
-                result = await self._tools.query_gdelt_events(
-                    actor_names=tool_input.get("actor_names", []),
-                    country_filter=tool_input.get("country_filter"),
-                    window_hours=tool_input.get("window_hours"),
-                    limit=tool_input.get("limit"),
-                )
-                return result
-
-            elif tool_name == "search_gdelt_articles":
-                result = await self._tools.search_gdelt_articles(
-                    search_terms=tool_input.get("search_terms", []),
-                    timespan=tool_input.get("timespan"),
-                    tone_filter=tool_input.get("tone_filter"),
-                    max_records=tool_input.get("max_records"),
-                    sort=tool_input.get("sort", "datedesc"),
-                )
-                return result
-
-            elif tool_name == "get_gdelt_volume_timeline":
-                result = await self._tools.get_gdelt_volume_timeline(
-                    search_terms=tool_input.get("search_terms", []),
-                    timespan=tool_input.get("timespan"),
-                    tone_filter=tool_input.get("tone_filter"),
-                )
-                return result
-
-            elif tool_name == "get_microstructure":
-                result = await self._tools.get_microstructure(
-                    market_ticker=tool_input.get("market_ticker"),
-                )
-                return result
-
-            elif tool_name == "get_candlesticks":
-                result = await self._tools.get_candlesticks(
-                    event_ticker=tool_input.get("event_ticker", ""),
-                    period=tool_input.get("period", "hourly"),
-                    hours_back=tool_input.get("hours_back", 24),
-                )
-                return result
+            # --- Complex tool handlers ---
+            elif tool_name == "think":
+                return await self._execute_think(tool_input)
+            elif tool_name == "reflect":
+                return await self._execute_reflect(tool_input)
 
             else:
                 return {"error": f"Unknown tool: {tool_name}"}
@@ -3391,9 +3363,925 @@ Return ONLY the updated strategy.md content, nothing else."""
             logger.error(f"[deep_agent.agent] Error executing {tool_name}: {e}")
             return {"error": str(e)}
 
+    # ---- Simple tool dispatch table ----
+    # Maps tool name -> async handler(self, tool_input) -> result.
+    # Each handler is a thin lambda/coroutine that delegates to self._tools.
+
+    @staticmethod
+    async def _dispatch_get_extraction_signals(self, inp: Dict) -> Any:
+        return await self._tools.get_extraction_signals(
+            market_ticker=inp.get("market_ticker"),
+            event_ticker=inp.get("event_ticker"),
+            window_hours=inp.get("hours", 4),
+            limit=inp.get("limit", 20),
+        )
+
+    @staticmethod
+    async def _dispatch_get_markets(self, inp: Dict) -> Any:
+        markets = await self._tools.get_markets(
+            event_ticker=inp.get("event_ticker"),
+            limit=inp.get("limit", 20),
+        )
+        return [m.to_dict() for m in markets]
+
+    @staticmethod
+    async def _dispatch_get_session_state(self, inp: Dict) -> Any:
+        state = await self._tools.get_session_state()
+        return state.to_dict()
+
+    @staticmethod
+    async def _dispatch_get_true_performance(self, inp: Dict) -> Any:
+        perf = await self._tools.get_true_performance()
+        return perf.to_dict()
+
+    @staticmethod
+    async def _dispatch_get_trade_log(self, inp: Dict) -> Any:
+        return self._reflection.get_trade_log(
+            limit=inp.get("limit", 10),
+            event_ticker=inp.get("event_ticker"),
+        )
+
+    @staticmethod
+    async def _dispatch_read_memory(self, inp: Dict) -> Any:
+        return await self._tools.read_memory(inp["filename"])
+
+    @staticmethod
+    async def _dispatch_get_event_context(self, inp: Dict) -> Any:
+        context = await self._tools.get_event_context(
+            event_ticker=inp["event_ticker"],
+        )
+        if context:
+            return context.to_dict()
+        return {"error": f"Event {inp['event_ticker']} not found or no tracked markets"}
+
+    @staticmethod
+    async def _dispatch_preflight_check(self, inp: Dict) -> Any:
+        return await self._tools.preflight_check(
+            ticker=inp["ticker"],
+            side=inp["side"],
+            contracts=min(inp["contracts"], self._config.max_contracts_per_trade),
+            execution_strategy=inp.get("execution_strategy", "aggressive"),
+        )
+
+    @staticmethod
+    async def _dispatch_understand_event(self, inp: Dict) -> Any:
+        return await self._tools.understand_event(
+            event_ticker=inp["event_ticker"],
+            force_refresh=inp.get("force_refresh", False),
+        )
+
+    @staticmethod
+    async def _dispatch_read_todos(self, inp: Dict) -> Any:
+        return await self._tools.read_todos()
+
+    @staticmethod
+    async def _dispatch_get_reddit_daily_digest(self, inp: Dict) -> Any:
+        return await self._tools.get_reddit_daily_digest(
+            force_refresh=inp.get("force_refresh", False),
+        )
+
+    @staticmethod
+    async def _dispatch_query_gdelt_news(self, inp: Dict) -> Any:
+        return await self._tools.query_gdelt_news(
+            search_terms=inp.get("search_terms", []),
+            window_hours=inp.get("window_hours"),
+            tone_filter=inp.get("tone_filter"),
+            source_filter=inp.get("source_filter"),
+            limit=inp.get("limit"),
+        )
+
+    @staticmethod
+    async def _dispatch_query_gdelt_events(self, inp: Dict) -> Any:
+        return await self._tools.query_gdelt_events(
+            actor_names=inp.get("actor_names", []),
+            country_filter=inp.get("country_filter"),
+            window_hours=inp.get("window_hours"),
+            limit=inp.get("limit"),
+        )
+
+    @staticmethod
+    async def _dispatch_search_gdelt_articles(self, inp: Dict) -> Any:
+        return await self._tools.search_gdelt_articles(
+            search_terms=inp.get("search_terms", []),
+            timespan=inp.get("timespan"),
+            tone_filter=inp.get("tone_filter"),
+            max_records=inp.get("max_records"),
+            sort=inp.get("sort", "datedesc"),
+        )
+
+    @staticmethod
+    async def _dispatch_get_gdelt_volume_timeline(self, inp: Dict) -> Any:
+        return await self._tools.get_gdelt_volume_timeline(
+            search_terms=inp.get("search_terms", []),
+            timespan=inp.get("timespan"),
+            tone_filter=inp.get("tone_filter"),
+        )
+
+    @staticmethod
+    async def _dispatch_get_news_intelligence(self, inp: Dict) -> Any:
+        return await self._tools.get_news_intelligence(
+            search_terms=inp.get("search_terms", []),
+            context_hint=inp.get("context_hint", ""),
+        )
+
+    @staticmethod
+    async def _dispatch_get_microstructure(self, inp: Dict) -> Any:
+        return await self._tools.get_microstructure(
+            market_ticker=inp.get("market_ticker"),
+        )
+
+    @staticmethod
+    async def _dispatch_get_candlesticks(self, inp: Dict) -> Any:
+        return await self._tools.get_candlesticks(
+            event_ticker=inp.get("event_ticker", ""),
+            period=inp.get("period", "hourly"),
+            hours_back=inp.get("hours_back", 24),
+        )
+
+    @staticmethod
+    async def _dispatch_submit_trade_intent(self, inp: Dict) -> Any:
+        result = await self._tools.submit_trade_intent(
+            market_ticker=inp["market_ticker"],
+            side=inp["side"],
+            contracts=min(inp["contracts"], self._config.max_contracts_per_trade),
+            thesis=inp["thesis"],
+            confidence=inp.get("confidence", "medium"),
+            exit_criteria=inp.get("exit_criteria", ""),
+            max_price_cents=inp.get("max_price_cents", 99),
+            execution_strategy=inp.get("execution_strategy", "aggressive"),
+            action=inp.get("action", "buy"),
+        )
+        # Track trade intent for anti-stagnation
+        if result.get("status") == "submitted":
+            self._cycles_since_last_trade = 0
+            # Update event focus
+            evt = result.get("event_ticker", "")
+            if evt:
+                self._event_focus[evt] = EventFocus(
+                    event_ticker=evt,
+                    thesis=inp["thesis"][:200],
+                    confidence=inp.get("confidence", "medium"),
+                    researched_at=time.time(),
+                    last_evaluated=time.time(),
+                    cycles_watched=self._event_focus.get(evt, EventFocus(evt, "", "", 0, 0, 0, False)).cycles_watched,
+                    intent_submitted=True,
+                )
+        return result
+
+    @staticmethod
+    async def _dispatch_search_memory(self, inp: Dict) -> Any:
+        return await self._tools.search_memory(
+            query=inp["query"],
+            types=inp.get("types"),
+            limit=inp.get("limit", 8),
+        )
+
+    _SIMPLE_TOOL_DISPATCH = {
+        "get_extraction_signals": _dispatch_get_extraction_signals,
+        "get_markets": _dispatch_get_markets,
+        "read_memory": _dispatch_read_memory,
+        "get_event_context": _dispatch_get_event_context,
+        "understand_event": _dispatch_understand_event,
+        "read_todos": _dispatch_read_todos,
+        "get_reddit_daily_digest": _dispatch_get_reddit_daily_digest,
+        "query_gdelt_news": _dispatch_query_gdelt_news,
+        "query_gdelt_events": _dispatch_query_gdelt_events,
+        "search_gdelt_articles": _dispatch_search_gdelt_articles,
+        "get_gdelt_volume_timeline": _dispatch_get_gdelt_volume_timeline,
+        "get_news_intelligence": _dispatch_get_news_intelligence,
+        "submit_trade_intent": _dispatch_submit_trade_intent,
+        "search_memory": _dispatch_search_memory,
+    }
+
+    # ---- Medium-complexity tool handlers (side effects) ----
+
+    async def _execute_write_memory(self, tool_input: Dict) -> Any:
+        filename = tool_input["filename"]
+        content = tool_input["content"]
+        success = await self._tools.write_memory(filename, content)
+
+        # Track learnings for session persistence
+        if success and filename == "learnings.md":
+            learning_entry = {
+                "id": f"learning-{time.strftime('%H:%M:%S')}",
+                "content": content[:200] + "..." if len(content) > 200 else content,
+                "timestamp": time.strftime("%H:%M:%S"),
+            }
+            self._learnings_history.append(learning_entry)
+
+        return {"success": success}
+
+    async def _execute_append_memory(self, tool_input: Dict) -> Any:
+        filename = tool_input["filename"]
+        content = tool_input["content"]
+        result = await self._tools.append_memory(filename, content)
+        if filename == "learnings.md":
+            self._cycle_learnings_written = True
+
+        # Track learnings for session persistence
+        if result.get("success") and filename == "learnings.md":
+            learning_entry = {
+                "id": f"learning-{time.strftime('%H:%M:%S')}",
+                "content": content[:200] + "..." if len(content) > 200 else content,
+                "timestamp": time.strftime("%H:%M:%S"),
+            }
+            self._learnings_history.append(learning_entry)
+
+        return result
+
+    async def _execute_write_cycle_summary(self, tool_input: Dict) -> Any:
+        self._cycle_journal_written = True
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+        signals = tool_input.get("signals_observed", "none")
+        decisions = tool_input.get("decisions_made", "none")
+        reasoning = tool_input.get("reasoning_notes", "")
+        markets = tool_input.get("markets_of_interest", "")
+
+        entry = (
+            f"\n## Cycle {self._cycle_count} - {timestamp}\n"
+            f"- **Signals**: {signals}\n"
+            f"- **Decisions**: {decisions}\n"
+            f"- **Reasoning**: {reasoning}\n"
+        )
+        if markets:
+            entry += f"- **Watching**: {markets}\n"
+
+        result = await self._tools.append_memory("cycle_journal.md", entry)
+        return {
+            "recorded": result.get("success", False),
+            "cycle": self._cycle_count,
+        }
+
+    async def _execute_write_todos(self, tool_input: Dict) -> Any:
+        result = await self._tools.write_todos(
+            items=tool_input.get("items", []),
+            current_cycle=self._cycle_count,
+        )
+        # Broadcast updated todos to frontend
+        if result.get("success") and self._ws_manager:
+            todos_data = await self._tools.read_todos()
+            await self._ws_manager.broadcast_message("deep_agent_todos", {
+                "items": todos_data.get("items", []),
+                "cycle": self._cycle_count,
+            })
+        return result
+
+    # ---- Subagent delegation ----
+
+    async def _execute_task(self, tool_input: Dict) -> Any:
+        """Delegate a task to a named subagent.
+
+        The subagent runs its own isolated LLM conversation with its own
+        tools. The parent agent only receives the final summary, not the
+        intermediate tool calls -- solving context bloat.
+        """
+        agent_name = tool_input.get("agent", "")
+        task_input = tool_input.get("input", "")
+
+        subagent = self._get_subagent(agent_name)
+        if not subagent:
+            available = ", ".join(self._subagent_registry.keys())
+            return {"error": f"Unknown subagent '{agent_name}'. Available: {available}"}
+
+        logger.info(
+            "[deep_agent.agent] Delegating to subagent '%s': %s",
+            agent_name, task_input[:100],
+        )
+
+        # Broadcast delegation to frontend
+        if self._ws_manager:
+            await self._ws_manager.broadcast_message("deep_agent_subagent", {
+                "agent": agent_name,
+                "action": "started",
+                "input_preview": task_input[:200],
+                "timestamp": time.strftime("%H:%M:%S"),
+            })
+
+        result = await subagent.run(task_input)
+
+        # Broadcast completion
+        if self._ws_manager:
+            await self._ws_manager.broadcast_message("deep_agent_subagent", {
+                "agent": agent_name,
+                "action": "completed",
+                "success": result.success,
+                "summary_preview": result.summary[:200],
+                "timestamp": time.strftime("%H:%M:%S"),
+            })
+
+        if result.success:
+            return {"summary": result.summary, "data": result.data}
+        else:
+            return {"error": result.error or "Subagent failed", "summary": result.summary}
+
+    # ---- Complex tool handlers ----
+
+    async def _execute_trade(self, tool_input: Dict) -> Any:
+        """Execute a trade with think enforcement, circuit breaker, and reflection recording."""
+        ticker = tool_input["ticker"]
+
+        # === THINK ENFORCEMENT (HARD BLOCK) ===
+        think_warning = None
+        if self._last_think_decision is None:
+            error_msg = (
+                "BLOCKED: You must call think() before trade(). "
+                "Structured pre-trade analysis is required."
+            )
+            logger.warning(f"[deep_agent.agent] {error_msg}")
+            return {
+                "success": False,
+                "ticker": ticker,
+                "side": tool_input.get("side", ""),
+                "contracts": tool_input.get("contracts", 0),
+                "error": error_msg,
+                "think_required": True,
+            }
+        elif self._last_think_decision != "TRADE":
+            error_msg = (
+                f"BLOCKED: Last think() decision was '{self._last_think_decision}', not 'TRADE'. "
+                f"Call think() again with decision='TRADE' if you want to proceed."
+            )
+            logger.warning(f"[deep_agent.agent] {error_msg}")
+            return {
+                "success": False,
+                "ticker": ticker,
+                "side": tool_input.get("side", ""),
+                "contracts": tool_input.get("contracts", 0),
+                "error": error_msg,
+                "think_required": True,
+            }
+        elif self._last_think_timestamp and time.time() - self._last_think_timestamp > 60:
+            think_warning = (
+                "WARNING: think() decision is stale (>60s). "
+                "Trade proceeding but consider calling think() again for fresh analysis."
+            )
+            logger.warning(f"[deep_agent.agent] {think_warning}")
+
+        # NOTE: Think state is cleared ONLY after successful trade execution
+        # (moved to the success block below to prevent clearing on blocked trades)
+
+        # === CIRCUIT BREAKER CHECK ===
+        is_blacklisted, blacklist_reason = self._is_ticker_blacklisted(ticker)
+        if is_blacklisted:
+            logger.warning(f"[deep_agent.agent] Trade blocked by circuit breaker: {ticker}")
+            return {
+                "success": False,
+                "ticker": ticker,
+                "side": tool_input["side"],
+                "contracts": tool_input["contracts"],
+                "error": blacklist_reason,
+                "circuit_breaker_blocked": True,
+            }
+
+        # Validate contracts
+        contracts = min(tool_input["contracts"], self._config.max_contracts_per_trade)
+
+        result = await self._tools.trade(
+            ticker=ticker,
+            side=tool_input["side"],
+            contracts=contracts,
+            reasoning=tool_input["reasoning"],
+            execution_strategy=tool_input.get("execution_strategy", "aggressive"),
+            action=tool_input.get("action", "buy"),
+        )
+
+        # === CIRCUIT BREAKER: Record failure if trade failed ===
+        if not result.success and result.error:
+            was_blacklisted = self._record_trade_failure(ticker, result.error)
+            if was_blacklisted:
+                result.error = (
+                    f"{result.error} | CIRCUIT BREAKER: Market now blacklisted "
+                    f"after {self._config.circuit_breaker_threshold} failures. "
+                    f"Try other markets instead."
+                )
+
+        # Record for reflection if successful
+        if result.success:
+            self._trades_executed += 1
+            self._cycles_since_last_trade = 0  # Reset anti-stagnation counter
+
+            # Capture calibration data before clearing think state
+            trade_estimated_probability = self._last_think_estimated_probability
+            trade_what_could_go_wrong = self._last_think_what_could_go_wrong
+
+            # Clear think state (require fresh think for next trade)
+            self._last_think_decision = None
+            self._last_think_timestamp = None
+            self._last_think_estimated_probability = None
+            self._last_think_what_could_go_wrong = None
+
+            # Get event_ticker from trading client
+            event_ticker = ""
+            try:
+                if self._trading_client:
+                    market = await self._trading_client.get_market(ticker)
+                    event_ticker = market.get("event_ticker", "") if market else ""
+            except Exception as e:
+                logger.warning(f"[deep_agent.agent] Could not fetch event_ticker: {e}")
+
+            # T1.2: Use limit_price_cents as fallback — never fabricate a price
+            entry_price = result.price_cents or result.limit_price_cents or 1
+
+            # Snapshot extractions + GDELT queries that drove this trade (for learning loop)
+            extraction_ids, extraction_snapshot, gdelt_snapshot = await self._snapshot_trade_extractions(ticker)
+
+            # Snapshot microstructure at trade time for reflection
+            microstructure_snapshot = None
+            if self._tools._trade_flow_service or self._tools._orderbook_integration:
+                try:
+                    micro = await self._tools.get_microstructure(market_ticker=ticker)
+                    if micro.get("has_data"):
+                        microstructure_snapshot = micro.get("data")
+                except Exception:
+                    pass  # Non-fatal
+
+            action = tool_input.get("action", "buy")
+            if action == "sell":
+                await self._handle_sell_close(
+                    ticker=ticker,
+                    side=tool_input["side"],
+                    contracts=contracts,
+                    sell_price_cents=entry_price,
+                    reasoning=tool_input["reasoning"],
+                )
+            else:
+                self._reflection.record_trade(
+                    trade_id=result.order_id or str(uuid.uuid4()),
+                    ticker=ticker,
+                    event_ticker=event_ticker,
+                    side=tool_input["side"],
+                    contracts=contracts,
+                    entry_price_cents=entry_price,
+                    reasoning=tool_input["reasoning"],
+                    order_id=result.order_id,
+                    extraction_ids=extraction_ids,
+                    extraction_snapshot=extraction_snapshot,
+                    gdelt_snapshot=gdelt_snapshot,
+                    estimated_probability=trade_estimated_probability,
+                    what_could_go_wrong=trade_what_could_go_wrong,
+                    microstructure_snapshot=microstructure_snapshot,
+                )
+
+            # Store in trade history for session persistence
+            trade_msg = {
+                "ticker": ticker,
+                "side": tool_input["side"],
+                "action": tool_input.get("action", "buy"),
+                "contracts": contracts,
+                "price_cents": entry_price,
+                "limit_price_cents": result.limit_price_cents,
+                "order_id": result.order_id,
+                "order_status": result.order_status or "unknown",
+                "reasoning": tool_input["reasoning"][:500],
+                "timestamp": time.strftime("%H:%M:%S"),
+            }
+            self._trade_history.append(trade_msg)
+
+        # Include think warning in result if present
+        trade_result = result.to_dict()
+        if think_warning:
+            trade_result["think_warning"] = think_warning
+        return trade_result
+
+    async def _execute_think(self, tool_input: Dict) -> Any:
+        """Pre-trade structured analysis tool - forces structured reasoning."""
+        signal_analysis = tool_input.get("signal_analysis", "")
+        strategy_check = tool_input.get("strategy_check", "")
+        risk_assessment = tool_input.get("risk_assessment", "")
+        decision = tool_input.get("decision", "")
+        reflection = tool_input.get("reflection", "")
+        estimated_probability = tool_input.get("estimated_probability")
+        what_could_go_wrong = tool_input.get("what_could_go_wrong", "")
+
+        # Validate required fields
+        missing = []
+        if not signal_analysis.strip():
+            missing.append("signal_analysis")
+        if not strategy_check.strip():
+            missing.append("strategy_check")
+        if not risk_assessment.strip():
+            missing.append("risk_assessment")
+        if decision not in ("TRADE", "WAIT", "PASS"):
+            missing.append("decision (must be TRADE, WAIT, or PASS)")
+
+        if missing:
+            return {"recorded": False, "error": f"Missing required fields: {', '.join(missing)}"}
+
+        # Format structured analysis for display
+        formatted_analysis = (
+            f"**Signal**: {signal_analysis}\n"
+            f"**Strategy**: {strategy_check}\n"
+            f"**Risks**: {risk_assessment}\n"
+            f"**Decision**: {decision}"
+        )
+        if estimated_probability is not None:
+            formatted_analysis += f"\n**Est. Probability (YES)**: {estimated_probability}%"
+        if what_could_go_wrong:
+            formatted_analysis += f"\n**What Could Go Wrong**: {what_could_go_wrong}"
+        if reflection:
+            formatted_analysis += f"\n**Notes**: {reflection}"
+
+        logger.info(f"[deep_agent.agent] Think: decision={decision}, signal={signal_analysis[:100]}...")
+
+        thinking_msg = {
+            "text": f"[Pre-Trade Analysis]\n{formatted_analysis}",
+            "cycle": self._cycle_count,
+            "timestamp": time.strftime("%H:%M:%S"),
+            "is_structured_reflection": True,
+            "decision": decision,
+            "structured_data": {
+                "signal_analysis": signal_analysis,
+                "strategy_check": strategy_check,
+                "risk_assessment": risk_assessment,
+                "decision": decision,
+                "reflection": reflection,
+                "estimated_probability": estimated_probability,
+                "what_could_go_wrong": what_could_go_wrong,
+            }
+        }
+
+        self._thinking_history.append(thinking_msg)
+
+        # Update think enforcement tracking
+        self._last_think_decision = decision
+        self._last_think_timestamp = time.time()
+        self._last_think_estimated_probability = self._parse_probability(estimated_probability)
+        self._last_think_what_could_go_wrong = what_could_go_wrong or None
+
+        if self._ws_manager:
+            await self._ws_manager.broadcast_message("deep_agent_thinking", thinking_msg)
+
+        return {
+            "recorded": True,
+            "decision": decision,
+            "proceed_to_trade": decision == "TRADE",
+        }
+
+    async def _execute_reflect(self, tool_input: Dict) -> Any:
+        """Structured post-trade reflection tool."""
+        self._cycle_learnings_written = True
+        trade_ticker = tool_input["trade_ticker"]
+        outcome_analysis = tool_input["outcome_analysis"]
+        reasoning_accuracy = tool_input["reasoning_accuracy"]
+        key_learning = tool_input["key_learning"]
+        mistake = tool_input.get("mistake", "")
+        pattern = tool_input.get("pattern", "")
+        strategy_update_needed = tool_input.get("strategy_update_needed", False)
+        confidence_in_learning = tool_input.get("confidence_in_learning", "medium")
+
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+        results = {"trade_ticker": trade_ticker, "appended_to": []}
+
+        # Always append key learning to learnings.md
+        learning_entry = (
+            f"\n## {timestamp} - {trade_ticker}\n"
+            f"- **Outcome**: {outcome_analysis}\n"
+            f"- **Reasoning Accuracy**: {reasoning_accuracy}\n"
+            f"- **Learning** [{confidence_in_learning}]: {key_learning}\n"
+        )
+        await self._tools.append_memory("learnings.md", learning_entry)
+        results["appended_to"].append("learnings.md")
+
+        if mistake and mistake.strip():
+            mistake_entry = (
+                f"\n## {timestamp} - {trade_ticker}\n"
+                f"- {mistake}\n"
+            )
+            await self._tools.append_memory("mistakes.md", mistake_entry)
+            results["appended_to"].append("mistakes.md")
+
+        if pattern and pattern.strip():
+            pattern_entry = (
+                f"\n## {timestamp} - {trade_ticker}\n"
+                f"- {pattern}\n"
+            )
+            await self._tools.append_memory("patterns.md", pattern_entry)
+            results["appended_to"].append("patterns.md")
+
+        results["strategy_update_needed"] = strategy_update_needed
+
+        learning_msg = {
+            "id": f"reflect-{time.strftime('%H:%M:%S')}",
+            "content": key_learning[:200],
+            "timestamp": time.strftime("%H:%M:%S"),
+        }
+        self._learnings_history.append(learning_msg)
+
+        logger.info(
+            f"[deep_agent.agent] Reflect: {trade_ticker} "
+            f"accuracy={reasoning_accuracy} confidence={confidence_in_learning} "
+            f"files={results['appended_to']}"
+        )
+
+        return results
+
+    async def _execute_evaluate_extractions(self, tool_input: Dict) -> Any:
+        """Score extraction accuracy after trade settlement."""
+        self._tools._tool_calls["evaluate_extractions"] = self._tools._tool_calls.get("evaluate_extractions", 0) + 1
+        trade_ticker = tool_input["trade_ticker"]
+        trade_outcome = tool_input["trade_outcome"]
+        evaluations = tool_input.get("evaluations", [])
+
+        accuracy_map = {
+            "accurate": 1.0,
+            "partially_accurate": 0.7,
+            "inaccurate": 0.2,
+            "noise": 0.0,
+        }
+
+        supabase = self._tools._get_supabase()
+        if not supabase:
+            return {"error": "Supabase not available"}
+
+        results_summary = {
+            "trade_ticker": trade_ticker,
+            "trade_outcome": trade_outcome,
+            "evaluated": 0,
+            "promoted_examples": 0,
+            "evaluations": [],
+        }
+
+        for eval_item in evaluations:
+            ext_id = eval_item.get("extraction_id", "")
+            accuracy = eval_item.get("accuracy", "noise")
+            quality_score = accuracy_map.get(accuracy, 0.0)
+
+            try:
+                supabase.table("extractions") \
+                    .update({"quality_score": quality_score}) \
+                    .eq("id", ext_id) \
+                    .execute()
+
+                results_summary["evaluated"] += 1
+                results_summary["evaluations"].append({
+                    "extraction_id": ext_id,
+                    "accuracy": accuracy,
+                    "quality_score": quality_score,
+                })
+
+                # Auto-promote: accurate extraction + winning trade -> example
+                if accuracy == "accurate" and trade_outcome == "win":
+                    ext_result = supabase.table("extractions") \
+                        .select("*") \
+                        .eq("id", ext_id) \
+                        .execute()
+
+                    if ext_result.data:
+                        ext_row = ext_result.data[0]
+                        event_tickers = ext_row.get("event_tickers", [])
+                        event_ticker = event_tickers[0] if event_tickers else ""
+
+                        example_data = {
+                            "event_ticker": event_ticker,
+                            "extraction_class": ext_row.get("extraction_class", "market_signal"),
+                            "source_text": ext_row.get("extraction_text", ""),
+                            "expected_output": {
+                                "extraction_class": ext_row.get("extraction_class", ""),
+                                "extraction_text": ext_row.get("extraction_text", ""),
+                                "attributes": ext_row.get("attributes", {}),
+                            },
+                            "quality_score": 1.0,
+                            "source": "real",
+                            "created_at": datetime.now().isoformat(),
+                        }
+
+                        supabase.table("extraction_examples") \
+                            .insert(example_data) \
+                            .execute()
+
+                        results_summary["promoted_examples"] += 1
+                        logger.info(
+                            f"[deep_agent.agent] Promoted extraction {ext_id} as example "
+                            f"for {event_ticker}"
+                        )
+
+            except Exception as e:
+                logger.warning(
+                    f"[deep_agent.agent] Failed to evaluate extraction {ext_id}: {e}"
+                )
+                results_summary["evaluations"].append({
+                    "extraction_id": ext_id,
+                    "error": str(e),
+                })
+
+        logger.info(
+            f"[deep_agent.agent] evaluate_extractions: {results_summary['evaluated']} evaluated, "
+            f"{results_summary['promoted_examples']} promoted for {trade_ticker}"
+        )
+        return results_summary
+
+    async def _execute_refine_event(self, tool_input: Dict) -> Any:
+        """Push learnings back to extraction pipeline via event_configs."""
+        self._tools._tool_calls["refine_event"] = self._tools._tool_calls.get("refine_event", 0) + 1
+        event_ticker = tool_input["event_ticker"]
+        what_works = tool_input["what_works"]
+        what_fails = tool_input["what_fails"]
+        watchlist_additions = tool_input.get("suggested_watchlist_additions", [])
+        prompt_refinement = tool_input.get("suggested_prompt_refinement", "")
+
+        supabase = self._tools._get_supabase()
+        if not supabase:
+            return {"error": "Supabase not available"}
+
+        try:
+            result = supabase.table("event_configs") \
+                .select("*") \
+                .eq("event_ticker", event_ticker) \
+                .execute()
+
+            if not result.data:
+                return {
+                    "error": f"No event_configs found for {event_ticker}. "
+                    f"Call understand_event() first.",
+                    "event_ticker": event_ticker,
+                }
+
+            config = result.data[0]
+            current_version = config.get("research_version", 1)
+            updates = {}
+
+            if prompt_refinement:
+                current_prompt = config.get("prompt_description", "")
+                version_tag = f"\n\n[v{current_version + 1} refinement]: "
+                updates["prompt_description"] = current_prompt + version_tag + prompt_refinement
+
+            if watchlist_additions:
+                watchlist = config.get("watchlist", {})
+                entities = watchlist.get("entities", [])
+                for entity in watchlist_additions:
+                    if entity not in entities:
+                        entities.append(entity)
+                watchlist["entities"] = entities
+                updates["watchlist"] = watchlist
+
+            updates["research_version"] = current_version + 1
+            updates["last_researched_at"] = datetime.now().isoformat()
+            updates["updated_at"] = datetime.now().isoformat()
+
+            supabase.table("event_configs") \
+                .update(updates) \
+                .eq("event_ticker", event_ticker) \
+                .execute()
+
+            logger.info(
+                f"[deep_agent.agent] refine_event: updated {event_ticker} "
+                f"to v{updates['research_version']} "
+                f"(prompt_refined={bool(prompt_refinement)}, "
+                f"watchlist_added={len(watchlist_additions)})"
+            )
+
+            return {
+                "status": "refined",
+                "event_ticker": event_ticker,
+                "new_version": updates["research_version"],
+                "prompt_refined": bool(prompt_refinement),
+                "watchlist_entities_added": len(watchlist_additions),
+                "what_works": what_works[:200],
+                "what_fails": what_fails[:200],
+            }
+
+        except Exception as e:
+            logger.error(f"[deep_agent.agent] refine_event error: {e}")
+            return {"error": str(e), "event_ticker": event_ticker}
+
+    async def _execute_get_extraction_quality(self, tool_input: Dict) -> Any:
+        """Query extraction quality metrics per event."""
+        self._tools._tool_calls["get_extraction_quality"] = self._tools._tool_calls.get("get_extraction_quality", 0) + 1
+        event_ticker = tool_input.get("event_ticker")
+
+        supabase = self._tools._get_supabase()
+        if not supabase:
+            return {"error": "Supabase not available"}
+
+        try:
+            query = supabase.table("extractions") \
+                .select("event_tickers, quality_score") \
+                .not_.is_("quality_score", "null")
+
+            if event_ticker:
+                query = query.contains("event_tickers", [event_ticker])
+
+            result = query.execute()
+
+            if not result.data:
+                return {
+                    "events": [],
+                    "message": "No evaluated extractions found" + (
+                        f" for {event_ticker}" if event_ticker else ""
+                    ),
+                }
+
+            # Aggregate by event ticker
+            event_metrics: Dict[str, Dict] = {}
+            for row in result.data:
+                score = row.get("quality_score", 0)
+                event_tickers_list = row.get("event_tickers", [])
+                for et in event_tickers_list:
+                    if et not in event_metrics:
+                        event_metrics[et] = {
+                            "event_ticker": et,
+                            "total_evaluated": 0,
+                            "scores": [],
+                            "accurate_count": 0,
+                            "partially_accurate_count": 0,
+                            "inaccurate_count": 0,
+                            "noise_count": 0,
+                        }
+                    m = event_metrics[et]
+                    m["total_evaluated"] += 1
+                    m["scores"].append(score)
+
+                    if score >= 0.9:
+                        m["accurate_count"] += 1
+                    elif score >= 0.5:
+                        m["partially_accurate_count"] += 1
+                    elif score >= 0.1:
+                        m["inaccurate_count"] += 1
+                    else:
+                        m["noise_count"] += 1
+
+            events = []
+            for et, m in event_metrics.items():
+                scores = m.pop("scores")
+                m["avg_quality"] = round(sum(scores) / len(scores), 2) if scores else 0.0
+                m["needs_refinement"] = m["avg_quality"] < 0.6
+                events.append(m)
+
+            events.sort(key=lambda e: e["avg_quality"])
+
+            return {
+                "events": events,
+                "total_events": len(events),
+                "message": f"{len(events)} events with extraction quality data",
+            }
+
+        except Exception as e:
+            logger.error(f"[deep_agent.agent] get_extraction_quality error: {e}")
+            return {"error": str(e)}
+
     # =========================================================================
     # Reflection & Memory Consolidation
     # =========================================================================
+
+    async def _handle_sell_close(
+        self,
+        ticker: str,
+        side: str,
+        contracts: int,
+        sell_price_cents: int,
+        reasoning: str,
+    ) -> None:
+        """
+        Handle a sell-to-close by settling the original pending buy trade immediately.
+
+        When the agent sells contracts it owns, this finds the matching pending trade
+        and settles it with realized P&L computed from (sell_price - entry_price) * contracts.
+        This gives instant feedback without waiting for event resolution.
+
+        Args:
+            ticker: Market ticker that was sold
+            side: Side of the contracts sold ("yes" or "no")
+            contracts: Number of contracts sold
+            sell_price_cents: Execution price of the sell order (cents)
+            reasoning: Agent's reasoning for the exit
+        """
+        # Find matching pending trade by ticker + side
+        matched_trade = None
+        for trade_id, pending in self._reflection._pending_trades.items():
+            if pending.ticker == ticker and pending.side.lower() == side.lower() and not pending.settled:
+                matched_trade = pending
+                break
+
+        if not matched_trade:
+            logger.warning(
+                f"[deep_agent.agent] Sell close: no matching pending trade for "
+                f"{ticker} {side} x{contracts} — skipping settlement"
+            )
+            return
+
+        # Compute realized P&L: for YES contracts, profit = (sell - entry) * contracts
+        # For NO contracts, same formula applies since both entry and sell are in the same basis
+        pnl_cents = (sell_price_cents - matched_trade.entry_price_cents) * min(contracts, matched_trade.contracts)
+
+        logger.info(
+            f"[deep_agent.agent] Sell close: {ticker} {side} x{contracts} "
+            f"entry={matched_trade.entry_price_cents}c sell={sell_price_cents}c "
+            f"P&L=${pnl_cents / 100:.2f}"
+        )
+
+        # Build a synthetic settlement dict matching state_container format
+        synthetic_settlement = {
+            "ticker": ticker,
+            "position": contracts,
+            "side": side,
+            "net_pnl": pnl_cents,
+            "price_cents": sell_price_cents,
+            "strategy_id": "deep_agent",
+            "market_result": "sold",  # Not an event settlement — agent exited early
+        }
+
+        # Settle the trade through the normal reflection pipeline
+        await self._reflection._handle_settlement(matched_trade, synthetic_settlement)
 
     async def _handle_reflection(self, trade: PendingTrade) -> Optional[ReflectionResult]:
         """Handle reflection callback from the reflection engine."""
@@ -3763,6 +4651,17 @@ Be selective: only add rules with clear evidence. Remove weak rules as much as a
             "target_events": self._config.target_events,
         }
 
+    def _get_todos_for_snapshot(self) -> List[Dict]:
+        """Read todos.json synchronously for snapshot inclusion."""
+        try:
+            todos_path = self._tools._memory_dir / "todos.json"
+            if todos_path.exists():
+                data = json.loads(todos_path.read_text(encoding="utf-8"))
+                return data.get("items", [])
+        except Exception:
+            pass
+        return []
+
     def get_snapshot(self) -> Dict[str, Any]:
         """
         Get full agent state for new client initialization.
@@ -3808,7 +4707,8 @@ Be selective: only add rules with clear evidence. Remove weak rules as much as a
                 },
                 "cycle_count": self._cycle_count,
             },
-            "signal_lifecycle": {},  # Removed: extraction signals tracked via extractions table
+            # Cached extraction signals from last cycle pre-fetch (for snapshot persistence)
+            "extraction_signals": self._cached_extraction_signals[:20],
             # GDELT query history for News Intelligence panel persistence
             "gdelt_queries": [
                 {
@@ -3823,4 +4723,6 @@ Be selective: only add rules with clear evidence. Remove weak rules as much as a
             # Full GDELT results for News Intelligence panel (new client restore)
             "gdelt_results": list(self._tools._recent_gdelt_results)[:5]
                 if hasattr(self._tools, '_recent_gdelt_results') else [],
+            # Agent TODO task list for frontend display
+            "todos": self._get_todos_for_snapshot(),
         }

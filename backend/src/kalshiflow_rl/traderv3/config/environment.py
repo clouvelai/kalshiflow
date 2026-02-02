@@ -17,7 +17,7 @@ logger = logging.getLogger("kalshiflow_rl.traderv3.config.environment")
 # All 13 Kalshi categories: Climate and Weather, Companies, Crypto, Economics,
 # Elections, Entertainment, Financials, Mentions, Politics, Science and Technology,
 # Social, Sports, World
-DEFAULT_LIFECYCLE_CATEGORIES = ["politics", "economics"]
+DEFAULT_LIFECYCLE_CATEGORIES = ["politics", "elections", "world"]
 
 
 @dataclass
@@ -60,7 +60,7 @@ class V3Config:
 
     # Order TTL Configuration
     order_ttl_enabled: bool = True  # Enable automatic cancellation of stale orders
-    order_ttl_seconds: int = 90  # Cancel resting orders older than this (90s - orders either fill quickly or not at all)
+    order_ttl_seconds: int = 300  # Cancel resting orders older than this (5min - gives passive orders time to fill)
 
     # Event Position Tracking Configuration
     # Tracks positions grouped by event_ticker to detect correlated exposure
@@ -75,7 +75,7 @@ class V3Config:
     lifecycle_categories: List[str] = field(default_factory=lambda: list(DEFAULT_LIFECYCLE_CATEGORIES))
     # Sports prefix filter - only allow sports markets with these event_ticker prefixes
     # Set to empty list to allow ALL sports markets
-    sports_allowed_prefixes: List[str] = field(default_factory=lambda: ["KXNFL"])
+    sports_allowed_prefixes: List[str] = field(default_factory=list)
     lifecycle_max_markets: int = 1000  # Maximum tracked markets (orderbook WS limit)
     lifecycle_sync_interval: int = 30  # Seconds between market info syncs
 
@@ -86,7 +86,7 @@ class V3Config:
 
     # Discovery Filtering Configuration
     discovery_min_hours_to_settlement: float = 0.5  # Skip markets closing <30min
-    discovery_max_days_to_settlement: int = 30  # Skip markets settling >30 days out (capital efficiency)
+    discovery_max_days_to_settlement: int = 90  # Skip markets settling >90 days out
 
     # Dormant Market Detection Configuration
     # Automatically unsubscribe markets with zero trading activity to free subscription slots
@@ -97,7 +97,7 @@ class V3Config:
     # Entity Trading System Configuration
     # Reddit entity-based trading (PRAW + langextract extraction pipeline)
     entity_system_enabled: bool = True  # Enable Reddit entity trading pipeline
-    entity_subreddits: List[str] = field(default_factory=lambda: ["politics", "news"])
+    entity_subreddits: List[str] = field(default_factory=lambda: ["politics", "news", "worldnews"])
 
     # Reddit Historic Agent (daily digest)
     reddit_historic_enabled: bool = True
@@ -108,10 +108,14 @@ class V3Config:
     # GDELT BigQuery News Intelligence
     gdelt_enabled: bool = True
     gdelt_gcp_project_id: str = ""
-    gdelt_cache_ttl_seconds: float = 300.0
+    gdelt_cache_ttl_seconds: float = 900.0
     gdelt_max_results: int = 100
     gdelt_default_window_hours: float = 4.0
-    gdelt_max_bytes_per_session: int = 500 * 1024 * 1024  # 500MB default (~$0.003)
+    gdelt_max_bytes_per_session: int = 2 * 1024 * 1024 * 1024  # 2GB default (~$0.012)
+
+    # GDELT News Analyzer (Haiku sub-agent)
+    gdelt_analyzer_model: str = "claude-3-5-haiku-20241022"
+    gdelt_analyzer_cache_ttl_seconds: float = 900.0  # 15 min (aligned with GDELT update freq)
 
     # State Machine Configuration
     sync_duration: float = 10.0  # seconds for Kalshi data sync
@@ -213,7 +217,7 @@ class V3Config:
         lifecycle_categories = [c.strip() for c in lifecycle_categories_str.split(",") if c.strip()]
         # Sports prefix filter - only allow sports markets with these event_ticker prefixes
         # Default: KXNFL (NFL markets only). Set empty to allow all sports.
-        sports_prefixes_str = os.environ.get("SPORTS_ALLOWED_PREFIXES", "KXNFL")
+        sports_prefixes_str = os.environ.get("SPORTS_ALLOWED_PREFIXES", "")
         sports_allowed_prefixes = [p.strip() for p in sports_prefixes_str.split(",") if p.strip()]
         lifecycle_max_markets = int(os.environ.get("LIFECYCLE_MAX_MARKETS", "1000"))
         lifecycle_sync_interval = int(os.environ.get("LIFECYCLE_SYNC_INTERVAL", "30"))
@@ -224,9 +228,9 @@ class V3Config:
         api_discovery_batch_size = int(os.environ.get("API_DISCOVERY_BATCH_SIZE", "200"))
 
         # Discovery Filtering configuration - time-to-settlement filter
-        # Focus on short-dated markets for capital efficiency (0.5h to 30d window)
+        # Focus on tradeable markets (0.5h to 90d window)
         discovery_min_hours_to_settlement = float(os.environ.get("DISCOVERY_MIN_HOURS_TO_SETTLEMENT", "0.5"))
-        discovery_max_days_to_settlement = int(os.environ.get("DISCOVERY_MAX_DAYS_TO_SETTLEMENT", "30"))
+        discovery_max_days_to_settlement = int(os.environ.get("DISCOVERY_MAX_DAYS_TO_SETTLEMENT", "90"))
 
         # Dormant Market Detection configuration
         # Automatically unsubscribe markets with zero 24h volume to free slots
@@ -237,7 +241,7 @@ class V3Config:
         # Entity Trading System configuration
         # Reddit entity-based trading (PRAW + langextract extraction pipeline)
         entity_system_enabled = os.environ.get("V3_ENTITY_SYSTEM_ENABLED", "true").lower() == "true"
-        entity_subreddits_str = os.environ.get("V3_ENTITY_SUBREDDITS", "politics,news")
+        entity_subreddits_str = os.environ.get("V3_ENTITY_SUBREDDITS", "politics,news,worldnews")
         entity_subreddits = [s.strip() for s in entity_subreddits_str.split(",") if s.strip()]
 
         # Reddit Historic Agent (daily digest) configuration
@@ -249,10 +253,14 @@ class V3Config:
         # GDELT BigQuery News Intelligence configuration
         gdelt_enabled = os.environ.get("GDELT_ENABLED", "true").lower() == "true"
         gdelt_gcp_project_id = os.environ.get("GDELT_GCP_PROJECT_ID", "")
-        gdelt_cache_ttl_seconds = float(os.environ.get("GDELT_CACHE_TTL_SECONDS", "300.0"))
+        gdelt_cache_ttl_seconds = float(os.environ.get("GDELT_CACHE_TTL_SECONDS", "900.0"))
         gdelt_max_results = int(os.environ.get("GDELT_MAX_RESULTS", "100"))
         gdelt_default_window_hours = float(os.environ.get("GDELT_DEFAULT_WINDOW_HOURS", "4.0"))
-        gdelt_max_bytes_per_session = int(os.environ.get("GDELT_MAX_BYTES_PER_SESSION", str(500 * 1024 * 1024)))
+        gdelt_max_bytes_per_session = int(os.environ.get("GDELT_MAX_BYTES_PER_SESSION", str(2 * 1024 * 1024 * 1024)))
+
+        # GDELT News Analyzer (Haiku sub-agent) configuration
+        gdelt_analyzer_model = os.environ.get("GDELT_ANALYZER_MODEL", "claude-3-5-haiku-20241022")
+        gdelt_analyzer_cache_ttl_seconds = float(os.environ.get("GDELT_ANALYZER_CACHE_TTL_SECONDS", "900.0"))
 
         sync_duration = float(os.environ.get("V3_SYNC_DURATION", os.environ.get("V3_CALIBRATION_DURATION", "10.0")))
         health_check_interval = float(os.environ.get("V3_HEALTH_CHECK_INTERVAL", "5.0"))
@@ -314,6 +322,8 @@ class V3Config:
             gdelt_max_results=gdelt_max_results,
             gdelt_default_window_hours=gdelt_default_window_hours,
             gdelt_max_bytes_per_session=gdelt_max_bytes_per_session,
+            gdelt_analyzer_model=gdelt_analyzer_model,
+            gdelt_analyzer_cache_ttl_seconds=gdelt_analyzer_cache_ttl_seconds,
             sync_duration=sync_duration,
             health_check_interval=health_check_interval,
             error_recovery_delay=error_recovery_delay,

@@ -1,5 +1,11 @@
 -- Extraction Signals: Aggregated view per market
 -- Materialized from extractions table, queried by deep agent
+--
+-- IMPORTANT: The magnitude and sentiment fields in attributes are JSONB text
+-- values that may contain non-numeric data (e.g. JSONPath template strings
+-- like "@/model_response.magnitude").  The CASE guards below ensure only
+-- values matching a numeric pattern are cast to float; everything else is
+-- treated as NULL and excluded from the AVG.
 
 CREATE OR REPLACE FUNCTION get_extraction_signals(
     p_window_hours FLOAT DEFAULT 4.0,
@@ -32,8 +38,18 @@ AS $$
         AVG(e.engagement_score) AS avg_engagement,
         MAX(e.engagement_score) AS max_engagement,
         SUM(e.engagement_comments) AS total_comments,
-        AVG((e.attributes->>'magnitude')::float) AS avg_magnitude,
-        AVG((e.attributes->>'sentiment')::float) AS avg_sentiment,
+        AVG(
+            CASE WHEN e.attributes->>'magnitude' ~ '^-?[0-9]+\.?[0-9]*$'
+                 THEN (e.attributes->>'magnitude')::float
+                 ELSE NULL
+            END
+        ) AS avg_magnitude,
+        AVG(
+            CASE WHEN e.attributes->>'sentiment' ~ '^-?[0-9]+\.?[0-9]*$'
+                 THEN (e.attributes->>'sentiment')::float
+                 ELSE NULL
+            END
+        ) AS avg_sentiment,
         MAX(e.created_at) AS last_seen_at,
         MIN(e.created_at) AS first_seen_at,
         MIN(e.source_created_at) AS oldest_source_at,

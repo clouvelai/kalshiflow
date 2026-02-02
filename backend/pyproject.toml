@@ -30,6 +30,7 @@ dependencies = [
     "scipy>=1.16.3",
     # Deep Agent Dependencies
     "anthropic>=0.30.0",
+    "openai>=1.0.0",
     "duckduckgo-search>=6.0.0",
     "pyyaml>=6.0",
     # LangChain (for existing agent_pipeline strategy)

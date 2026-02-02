@@ -174,6 +174,24 @@ class ContentExtractor:
         # Otherwise assume it's a link to external content
         return "link"
 
+    @staticmethod
+    def _normalize_url(url: str) -> str:
+        """
+        Normalize URL, converting relative Reddit paths to absolute URLs.
+
+        PRAW sometimes returns relative paths like '/r/AskReddit/comments/...'
+        which fail aiohttp requests. This prepends the Reddit base URL.
+        """
+        if not url:
+            return url
+        # Relative Reddit path (starts with /r/)
+        if url.startswith("/r/"):
+            return f"https://www.reddit.com{url}"
+        # Other relative paths starting with /
+        if url.startswith("/") and not url.startswith("//"):
+            return f"https://www.reddit.com{url}"
+        return url
+
     async def extract(self, url: str, selftext: str = "") -> ExtractedContent:
         """
         Extract text content from URL.
@@ -186,6 +204,9 @@ class ContentExtractor:
             ExtractedContent with extracted text or error
         """
         self._extractions_attempted += 1
+
+        # Normalize relative URLs (e.g., /r/AskReddit/...) to absolute
+        url = self._normalize_url(url)
 
         content_type = self.detect_content_type(url, selftext)
         self._by_type[content_type] = self._by_type.get(content_type, 0) + 1

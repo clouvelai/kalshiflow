@@ -15,18 +15,33 @@ Cost mitigations:
 - Partitioned table (_PARTITIONTIME filter) limits scan scope
 - Column selection (only needed fields)
 - LIMIT clause caps rows
-- In-memory TTL cache (5 min default) deduplicates repeated queries
+- In-memory TTL cache (15 min, aligned to GDELT update buckets) deduplicates repeated queries
 """
 
 import asyncio
 import hashlib
 import json
 import logging
+import re
 import time
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger("kalshiflow_rl.traderv3.services.gdelt_client")
+
+# GDELT 2.0 publishes data in 15-minute batches at :00, :15, :30, :45.
+# Data files typically appear 0-4 minutes after each boundary.
+# We offset our cache buckets by 4 minutes so the bucket flips after
+# fresh data is actually available (buckets effectively run :04-:19, etc.).
+GDELT_PUBLISH_DELAY = 240  # 4 minutes in seconds
+
+
+def _gdelt_time_bucket() -> int:
+    """Floor current time to nearest 15-min GDELT boundary, offset by publish delay."""
+    now = int(time.time())
+    adjusted = now - GDELT_PUBLISH_DELAY
+    return adjusted - (adjusted % 900)
+
 
 # CAMEO root codes — for enriching event results with human-readable labels
 CAMEO_ROOT_CODES = {
@@ -57,10 +72,10 @@ class GDELTClient:
     def __init__(
         self,
         gcp_project_id: str,
-        cache_ttl_seconds: float = 300.0,
+        cache_ttl_seconds: float = 900.0,
         max_results: int = 100,
         default_window_hours: float = 4.0,
-        max_bytes_per_session: int = 500 * 1024 * 1024,  # 500MB default (~$0.003)
+        max_bytes_per_session: int = 2 * 1024 * 1024 * 1024,  # 2GB default (~$0.012)
     ):
         self._gcp_project_id = gcp_project_id
         self._cache_ttl_seconds = cache_ttl_seconds
@@ -103,6 +118,7 @@ class GDELTClient:
             "tone": tone_filter,
             "source": source_filter,
             "limit": limit,
+            "bucket": _gdelt_time_bucket(),
         }, sort_keys=True)
         return hashlib.md5(key_data.encode()).hexdigest()
 
@@ -138,7 +154,7 @@ class GDELTClient:
     ) -> str:
         """Build the BigQuery SQL for querying GDELT GKG."""
         # Build REGEXP pattern from search terms (case-insensitive via (?i))
-        escaped_terms = [term.replace("'", "\\'") for term in search_terms]
+        escaped_terms = [re.escape(term).replace("'", "\\'") for term in search_terms]
         pattern = "|".join(escaped_terms)
 
         # Partition time filter for cost efficiency
@@ -449,6 +465,7 @@ WHERE
             "country": country_filter,
             "window": window_hours,
             "limit": limit,
+            "bucket": _gdelt_time_bucket(),
         }, sort_keys=True)
         return hashlib.md5(key_data.encode()).hexdigest()
 
@@ -461,7 +478,7 @@ WHERE
     ) -> str:
         """Build BigQuery SQL for querying GDELT Events (Actor-Event-Actor triples)."""
         # Build REGEXP pattern for actor names (case-insensitive)
-        escaped = [name.replace("'", "\\'") for name in actor_names]
+        escaped = [re.escape(name).replace("'", "\\'") for name in actor_names]
         pattern = "|".join(escaped)
 
         # Partition time filter
@@ -801,7 +818,7 @@ class GDELTDocClient:
 
     def __init__(
         self,
-        cache_ttl_seconds: float = 300.0,
+        cache_ttl_seconds: float = 900.0,
         max_records: int = 75,
         default_timespan: str = "4h",
     ):
@@ -818,7 +835,7 @@ class GDELTDocClient:
 
     def _cache_key(self, query: str, mode: str, timespan: str) -> str:
         """Generate deterministic cache key."""
-        key_data = json.dumps({"q": query, "m": mode, "t": timespan}, sort_keys=True)
+        key_data = json.dumps({"q": query, "m": mode, "t": timespan, "bucket": _gdelt_time_bucket()}, sort_keys=True)
         return hashlib.md5(key_data.encode()).hexdigest()
 
     def _get_cached(self, key: str) -> Optional[Dict[str, Any]]:
@@ -844,7 +861,12 @@ class GDELTDocClient:
                             source_country: Optional[str] = None) -> str:
         """Build GDELT DOC API query string from parameters."""
         # Join terms with OR for broad matching
-        query = " OR ".join(f'"{t}"' if " " in t else t for t in search_terms)
+        # GDELT requires OR'd terms to be wrapped in parentheses
+        terms = [f'"{t}"' if " " in t else t for t in search_terms]
+        if len(terms) > 1:
+            query = "(" + " OR ".join(terms) + ")"
+        else:
+            query = terms[0] if terms else ""
 
         # Optional tone filter
         if tone_filter == "positive":
@@ -874,7 +896,16 @@ class GDELTDocClient:
         try:
             with urllib.request.urlopen(req, timeout=30) as response:
                 data = response.read().decode("utf-8")
-                return json.loads(data)
+                if not data or not data.strip():
+                    logger.warning(f"[gdelt_doc] Empty response from API")
+                    return {"error": "GDELT API returned empty response", "articles": []}
+                try:
+                    return json.loads(data)
+                except json.JSONDecodeError:
+                    # GDELT sometimes returns HTML error pages or non-JSON content
+                    preview = data[:300].replace("\n", " ").strip()
+                    logger.warning(f"[gdelt_doc] Non-JSON response from API: {preview}")
+                    return {"error": f"GDELT API returned non-JSON response (possibly no results or rate limit)", "articles": []}
         except urllib.error.HTTPError as e:
             logger.error(f"[gdelt_doc] HTTP {e.code}: {e.reason}")
             return {"error": f"HTTP {e.code}: {e.reason}"}

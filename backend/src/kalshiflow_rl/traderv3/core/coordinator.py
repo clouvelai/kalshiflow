@@ -47,8 +47,8 @@ from ..agents import (
     RedditHistoricAgent,
     RedditHistoricAgentConfig,
     PriceImpactAgent,
-    PriceImpactAgentConfig,
 )
+from ..agents.price_impact_agent import ExtractionRelayConfig
 
 logger = logging.getLogger("kalshiflow_rl.traderv3.core.coordinator")
 
@@ -190,6 +190,7 @@ class V3Coordinator:
         self._price_impact_agent: Optional[PriceImpactAgent] = None  # Actually ExtractionSignalRelay
         self._gdelt_client = None       # GDELTClient (BigQuery GKG), initialized if enabled
         self._gdelt_doc_client = None   # GDELTDocClient (free DOC API), always available
+        self._gdelt_news_analyzer = None  # GDELTNewsAnalyzer (Haiku sub-agent)
 
         self._started_at: Optional[float] = None
         self._running = False
@@ -400,6 +401,17 @@ class V3Coordinator:
             return
 
         logger.info("Connecting to trades WebSocket...")
+
+        # Inject TrackedMarketsState for pre-filtering trades at source.
+        # This prevents ~76% of event bus queue saturation from untracked markets.
+        # TrackedMarketsState is created in _connect_lifecycle() which runs before this method.
+        if self._tracked_markets_state:
+            self._trades_integration.set_tracked_markets(self._tracked_markets_state)
+        else:
+            logger.warning(
+                "TrackedMarketsState not available - trades will NOT be pre-filtered. "
+                "This may cause event bus queue saturation."
+            )
 
         # Start the trades integration (which starts the trades client)
         await self._trades_integration.start()
@@ -674,7 +686,7 @@ class V3Coordinator:
             )
 
             # 2. Initialize Extraction Signal Relay (Realtime subscription + WebSocket broadcast)
-            relay_config = PriceImpactAgentConfig(
+            relay_config = ExtractionRelayConfig(
                 enabled=True,
             )
             self._price_impact_agent = PriceImpactAgent(
@@ -734,13 +746,31 @@ class V3Coordinator:
                 try:
                     from ..services.gdelt_client import GDELTDocClient
                     self._gdelt_doc_client = GDELTDocClient(
-                        cache_ttl_seconds=getattr(self._config, 'gdelt_cache_ttl_seconds', 300),
+                        cache_ttl_seconds=getattr(self._config, 'gdelt_cache_ttl_seconds', 900),
                         max_records=min(getattr(self._config, 'gdelt_max_results', 75), 250),
                         default_timespan=f"{int(getattr(self._config, 'gdelt_default_window_hours', 4))}h",
                     )
                     logger.info("[coordinator] GDELT DOC API client initialized (free)")
                 except Exception as e:
                     logger.warning(f"[coordinator] GDELT DOC client failed (non-fatal): {e}")
+
+            # 4e. Initialize GDELT News Analyzer (Haiku sub-agent)
+            if self._gdelt_doc_client or self._gdelt_client:
+                try:
+                    from ..services.gdelt_news_analyzer import GDELTNewsAnalyzer, GDELTNewsAnalyzerConfig
+                    analyzer_config = GDELTNewsAnalyzerConfig(
+                        model=getattr(self._config, 'gdelt_analyzer_model', 'claude-3-5-haiku-20241022'),
+                        cache_ttl_seconds=getattr(self._config, 'gdelt_analyzer_cache_ttl_seconds', 900.0),
+                    )
+                    self._gdelt_news_analyzer = GDELTNewsAnalyzer(config=analyzer_config)
+                    # Wire GDELT clients to the analyzer
+                    if self._gdelt_doc_client:
+                        self._gdelt_news_analyzer._gdelt_doc_client = self._gdelt_doc_client
+                    if self._gdelt_client:
+                        self._gdelt_news_analyzer._gdelt_client = self._gdelt_client
+                    logger.info(f"[coordinator] GDELT News Analyzer initialized (model={analyzer_config.model}, cache_ttl={analyzer_config.cache_ttl_seconds}s)")
+                except Exception as e:
+                    logger.warning(f"[coordinator] GDELT News Analyzer failed (non-fatal): {e}")
 
             subreddit_display = ", ".join(f"r/{s}" for s in self._config.entity_subreddits)
             await self._event_bus.emit_system_activity(
@@ -1333,7 +1363,13 @@ class V3Coordinator:
                         if self._gdelt_doc_client:
                             self._deep_agent_strategy._agent._tools._gdelt_doc_client = self._gdelt_doc_client
                             logger.info("GDELT DOC API client wired to deep agent tools (free)")
-                        # Rebuild tool definitions so GDELT tools are included
+                        # Wire news analyzer sub-agent
+                        if self._gdelt_news_analyzer:
+                            self._deep_agent_strategy._agent._tools._news_analyzer = self._gdelt_news_analyzer
+                            # Wire token usage callback so analyzer costs are tracked
+                            self._gdelt_news_analyzer._token_usage_callback = self._deep_agent_strategy._agent._accumulate_external_tokens
+                            logger.info("GDELT News Analyzer wired to deep agent tools")
+                        # Rebuild tool definitions so GDELT + analyzer tools are included
                         self._deep_agent_strategy._agent.rebuild_tool_definitions()
                     except Exception as e:
                         logger.warning(f"Failed to wire GDELT clients to deep agent: {e}")

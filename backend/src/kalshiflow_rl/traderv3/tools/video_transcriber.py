@@ -109,6 +109,21 @@ class VideoTranscriber:
         self._total_minutes = 0.0
         self._total_errors = 0
 
+        # Check ffmpeg availability at init time (once) to avoid wasting bandwidth
+        # downloading videos that can never be processed
+        self._ffmpeg_available = self._check_ffmpeg()
+        if not self._ffmpeg_available:
+            logger.warning(
+                "[video_transcriber] ffmpeg not found at startup. "
+                "Video transcription is disabled. Install: brew install ffmpeg"
+            )
+
+    @staticmethod
+    def _check_ffmpeg() -> bool:
+        """Check if ffmpeg is available on the system PATH."""
+        import shutil
+        return shutil.which("ffmpeg") is not None
+
     def is_video_url(self, url: str) -> bool:
         """Check if URL is a video that can be transcribed."""
         if not url:
@@ -154,6 +169,16 @@ class VideoTranscriber:
         self, url: str, start_time: float
     ) -> TranscriptionResult:
         """Implementation of transcription pipeline."""
+        # Early exit: skip download entirely if ffmpeg is unavailable
+        # (avoids wasting bandwidth on videos we cannot extract audio from)
+        if not self._ffmpeg_available:
+            return TranscriptionResult(
+                url=url,
+                success=False,
+                error="ffmpeg not available - video transcription disabled",
+                processing_time_seconds=time.time() - start_time,
+            )
+
         temp_video: Optional[Path] = None
         temp_audio: Optional[Path] = None
 

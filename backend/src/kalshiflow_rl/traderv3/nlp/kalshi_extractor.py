@@ -181,6 +181,7 @@ class KalshiExtractor:
                 self._model_id,
                 api_key=self._api_key,
                 use_schema_constraints=True,
+                show_progress=False,
             )
         except Exception as e:
             logger.error(f"langextract extraction failed: {e}")
@@ -315,6 +316,10 @@ class KalshiExtractor:
                 ext_class = getattr(ext, "extraction_class", "")
                 ext_text = getattr(ext, "extraction_text", "")
                 attrs = getattr(ext, "attributes", {})
+
+                # Guard against None (Gemini can return None for attributes)
+                if attrs is None:
+                    attrs = {}
 
                 if isinstance(attrs, str):
                     import json

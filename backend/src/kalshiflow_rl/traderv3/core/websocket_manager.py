@@ -529,7 +529,11 @@ class V3WebSocketManager:
         # Critical types need immediate delivery - no coalescing
         critical_types = (
             "state_transition", "connection", "system_activity", "history_replay",
-            "deep_agent_status", "deep_agent_cycle", "deep_agent_error"
+            "deep_agent_status", "deep_agent_cycle", "deep_agent_error",
+            "deep_agent_thinking", "deep_agent_tool_start", "deep_agent_tool_call",
+            "deep_agent_trade", "deep_agent_settlement", "deep_agent_memory_update",
+            "deep_agent_cost", "deep_agent_gdelt_result", "deep_agent_todos",
+            "trade_flow_market_state", "trade_flow_trade_arrived",
         )
         if message_type in critical_types:
             await self._broadcast_immediate(message_type, data)
@@ -824,7 +828,7 @@ class V3WebSocketManager:
             await self._disconnect_client(client_id)
         except Exception as e:
             # Log unexpected errors as warnings
-            logger.warning(f"Unexpected error sending to client {client_id}: {e}")
+            logger.warning(f"Unexpected error sending to client {client_id}: {type(e).__name__}: {e!r}")
             await self._disconnect_client(client_id)
     
     async def _disconnect_client(self, client_id: str) -> None:

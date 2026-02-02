@@ -64,9 +64,6 @@ class ExtractionRelayConfig:
     enabled: bool = True
 
 
-# Keep old name as alias for backward compatibility with coordinator imports
-PriceImpactAgentConfig = ExtractionRelayConfig
-
 
 class PriceImpactAgent(BaseAgent):
     """
@@ -405,11 +402,21 @@ class PriceImpactAgent(BaseAgent):
                         "created_at": record.get("created_at", ""),
                     })
 
-            logger.info(
-                f"[extraction_relay] {extraction_class}: "
-                f"{extraction_text[:80]}... "
-                f"markets={market_tickers} engagement={record.get('engagement_score', 0)}"
-            )
+            # Only log extractions that matched at least one market ticker.
+            # entity_mention and context_factor with markets=[] are low-value
+            # noise (~250 lines/session).  Still log market_signal always.
+            if market_tickers or extraction_class == "market_signal":
+                logger.info(
+                    f"[extraction_relay] {extraction_class}: "
+                    f"{extraction_text[:80]}... "
+                    f"markets={market_tickers} engagement={record.get('engagement_score', 0)}"
+                )
+            else:
+                logger.debug(
+                    f"[extraction_relay] {extraction_class}: "
+                    f"{extraction_text[:80]}... "
+                    f"markets=[] (no match)"
+                )
 
         except Exception as e:
             logger.error(f"[extraction_relay] Process extraction error: {e}")

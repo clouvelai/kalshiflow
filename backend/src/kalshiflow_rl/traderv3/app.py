@@ -7,6 +7,7 @@ Runs on port 8005 with minimal dependencies.
 
 import asyncio
 import logging
+import os
 import sys
 from pathlib import Path
 from contextlib import asynccontextmanager
@@ -53,9 +54,103 @@ logging.basicConfig(
 )
 logger = logging.getLogger("kalshiflow_rl.traderv3")
 
-# Suppress noisy third-party loggers
-for _noisy_logger in ("httpx", "httpcore", "hpack", "websockets", "asyncio"):
-    logging.getLogger(_noisy_logger).setLevel(logging.WARNING)
+
+def _configure_logging() -> None:
+    """Suppress noisy third-party and internal loggers.
+
+    Each suppression documents the real bug/noise source with issue numbers.
+    """
+    # ── Problem 4 fix: Suppress Google Cloud project warning ──────────────
+    os.environ.setdefault("GOOGLE_CLOUD_PROJECT", "kalshiflow")
+
+    # ── Problem 3 fix: Suppress LangExtract ANSI progress bar output ─────
+    # LangExtract uses tqdm progress bars with ANSI codes. Primary fix is passing
+    # show_progress=False in kalshi_extractor.py. This env var is a belt-and-suspenders
+    # fallback that disables all tqdm output globally.
+    os.environ.setdefault("TQDM_DISABLE", "1")
+
+    # ── Third-party loggers ──────────────────────────────────────────────
+    # Suppress noisy third-party loggers to WARNING (errors still surface).
+    for name in (
+        "httpx",                    # HTTP client debug
+        "httpcore",                 # HTTP connection pool debug
+        "hpack",                    # HTTP/2 header compression debug
+        "websockets",               # WebSocket protocol debug
+        "asyncio",                  # Event loop debug
+        "realtime._async.client",   # Supabase Realtime full JSON payloads
+        "realtime._async.channel",  # Supabase Realtime channel events
+        "realtime",                 # Supabase Realtime parent
+        "langextract",              # LangExtract parent (ANSI progress bars)
+        "langextract.debug",        # LangExtract debug sub-logger
+        "urllib3.connectionpool",   # ~633 lines – HTTP pool debug (keepalive)
+        "google_genai",             # parent logger for google_genai.models
+        "google_genai.models",      # ~155 lines – "AFC is enabled with max remote calls: 10"
+        "google.auth._default",     # "Could not determine project ID" warning
+        "kalshiflow.auth",          # ~2,104 lines – RSA signature debug
+    ):
+        logging.getLogger(name).setLevel(logging.WARNING)
+
+    # P3 fix: GLiNER/LangExtract NER model emits ~41 `absl` WARNING lines per session
+    # (always the same example #4, 'regime_stability_signal'). Suppress to ERROR.
+    logging.getLogger("absl").setLevel(logging.ERROR)
+
+    # ── Problem 2 fix: PRAW async warnings via logging (not warnings module) ─
+    # PRAW emits ~900 "using PRAW in an asynchronous environment" per session
+    # via the logging module, not Python warnings. Set to ERROR.
+    for name in ("praw", "prawcore"):
+        logging.getLogger(name).setLevel(logging.ERROR)
+
+    # BUG-4 (HIGH): OpenAI and Anthropic _base_client DEBUG loggers dump entire HTML
+    # pages and full request/response payloads (including system prompts, tool
+    # definitions, and third-party API keys embedded in error pages).
+    for name in ("openai", "openai._base_client",
+                 "anthropic", "anthropic._base_client"):
+        logging.getLogger(name).setLevel(logging.INFO)
+
+    # IMP-1: Event bus DEBUG logging is ~33% of all output.
+    # "Processing event: public_trade_received" and orderbook_delta events produce
+    # ~9,759 lines in 3 minutes. Set to INFO to keep operational messages only.
+    logging.getLogger("kalshiflow_rl.traderv3.event_bus").setLevel(logging.INFO)
+
+    # ── Problem 1 fix: Internal V3 loggers (CORRECTED logger names) ──────
+    # Round 2 suppressions had wrong logger names (services.* vs core.*, extra
+    # path segments). These are the ACTUAL getLogger() names from each module.
+    # All set to WARNING so ERRORs still surface.
+    for name in (
+        # 28.4% of output – lifecycle client heartbeat/sync chatter
+        "kalshiflow_rl.traderv3.clients.lifecycle_client",
+        # ~3,486 lines – "Broadcast trading state" every 0.5s
+        # WAS: "kalshiflow_rl.traderv3.services.status_reporter" (wrong path)
+        "kalshiflow_rl.traderv3.core.status_reporter",
+        # ~2,339 lines – "Market price updated" on every tick
+        # WAS: "kalshiflow_rl.traderv3.services.state_container" (wrong path)
+        "kalshiflow_rl.traderv3.core.state_container",
+        # ~5,651 lines – "Ticker update" per update
+        # WAS: "kalshiflow_rl.traderv3.clients.market_ticker_listener" (wrong path)
+        "kalshiflow_rl.traderv3.market_ticker_listener",
+        # ~4,252 lines – trading sync chatter
+        "kalshiflow_rl.traderv3.clients.trading_client_integration",
+        # ~1,031 lines – "Retrieved X markets" every sync
+        "kalshiflow_rl.traderv3.clients.demo_client",
+        # ~809 lines – connection mgmt debug
+        # WAS: "kalshiflow_rl.traderv3.core.websocket_manager" (wrong path)
+        "kalshiflow_rl.traderv3.websocket_manager",
+        # ~715 lines – lifecycle event processing
+        "kalshiflow_rl.traderv3.services.event_lifecycle_service",
+        # ~716 lines – "Lifecycle event stored" per DB write
+        # WAS: "kalshiflow_rl.traderv3.database" (wrong path – actual is data layer)
+        "kalshiflow_rl.database",
+        # ~285 lines – "Orderbook unhealthy" every 5s
+        # WAS: "kalshiflow_rl.traderv3.services.health_monitor" (wrong path)
+        "kalshiflow_rl.traderv3.core.health_monitor",
+        # Additional noisy data-layer loggers
+        "kalshiflow_rl.orderbook_client",
+        "kalshiflow_rl.write_queue",
+    ):
+        logging.getLogger(name).setLevel(logging.WARNING)
+
+
+_configure_logging()
 
 # Global coordinator instance
 coordinator: V3Coordinator = None

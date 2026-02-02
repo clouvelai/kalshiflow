@@ -75,6 +75,11 @@ const INITIAL_REDDIT_AGENT_HEALTH = {
 };
 
 /**
+ * Initial state for Reddit historic digest
+ */
+
+
+/**
  * useV3WebSocket - Hook for managing V3 Trader WebSocket connection
  */
 export const useV3WebSocket = ({ onMessage }) => {
@@ -139,6 +144,9 @@ export const useV3WebSocket = ({ onMessage }) => {
   const ttlCancellationTimeoutRef = useRef(null);
   const settlementTimeoutRef = useRef(null);
   const researchAlertTimeoutRef = useRef(null);
+
+  // Guard against duplicate deep_agent_snapshot processing (Bug 1)
+  const lastDeepAgentSnapshotRef = useRef(null);
 
   // Keep currentStateRef in sync
   useEffect(() => {
@@ -303,12 +311,17 @@ export const useV3WebSocket = ({ onMessage }) => {
           if (data.data.settlements !== undefined) {
             const newSettlements = data.data.settlements || [];
             setSettlements(prevSettlements => {
-              // Only update if actually changed (length or first item ticker)
-              if (prevSettlements.length === newSettlements.length &&
-                  prevSettlements[0]?.ticker === newSettlements[0]?.ticker) {
+              // Build fingerprints from length + first 3 tickers + first 3 results for deeper comparison
+              const fp = (arr) => `${arr.length}:${arr.slice(0, 3).map(s => `${s?.ticker}/${s?.result}`).join(',')}`;
+              if (fp(prevSettlements) === fp(newSettlements)) {
                 return prevSettlements;
               }
-              if (newSettlements.length > prevSettlements.length && newSettlements[0]) {
+              // Detect new settlement by checking if first item differs or length grew
+              if (newSettlements.length > 0 && (
+                newSettlements.length > prevSettlements.length ||
+                newSettlements[0]?.ticker !== prevSettlements[0]?.ticker ||
+                newSettlements[0]?.result !== prevSettlements[0]?.result
+              )) {
                 setNewSettlement(newSettlements[0]);
                 // Auto-dismiss after 5 seconds (with proper cleanup)
                 if (settlementTimeoutRef.current) {
@@ -696,6 +709,10 @@ export const useV3WebSocket = ({ onMessage }) => {
       case 'extraction':
         // Extraction from langextract pipeline (all classes)
         if (data.data?.extraction_class) {
+          // Prevent unbounded Set growth in long-running sessions
+          if (extractionKeysRef.current.size > 10000) {
+            extractionKeysRef.current = new Set();
+          }
           const extKey = `${data.data.source_id}_${data.data.extraction_class}_${data.data.extraction_text?.slice(0, 50)}`;
           if (!extractionKeysRef.current.has(extKey)) {
             extractionKeysRef.current.add(extKey);
@@ -704,6 +721,9 @@ export const useV3WebSocket = ({ onMessage }) => {
 
           // Also track market_signal class separately for quick access
           if (data.data.extraction_class === 'market_signal') {
+            if (marketSignalKeysRef.current.size > 10000) {
+              marketSignalKeysRef.current = new Set();
+            }
             const sigKey = `${data.data.source_id}_${data.data.extraction_text?.slice(0, 50)}`;
             if (!marketSignalKeysRef.current.has(sigKey)) {
               marketSignalKeysRef.current.add(sigKey);
@@ -751,23 +771,61 @@ export const useV3WebSocket = ({ onMessage }) => {
 
       case 'entity_snapshot':
         // Initial snapshot with recent entity data (langextract pipeline)
+        // Bug 3 fix: MERGE with existing state instead of replacing, so reconnects
+        // don't drop accumulated items that aren't in the snapshot.
         if (data.data) {
           if (data.data.reddit_posts) {
-            setEntityRedditPosts(data.data.reddit_posts);
+            setEntityRedditPosts(prev => {
+              if (prev.length === 0) return data.data.reddit_posts;
+              // Merge: add new posts that we don't already have
+              const existingIds = new Set(prev.map(p => p.post_id));
+              const newPosts = data.data.reddit_posts.filter(p => !existingIds.has(p.post_id));
+              return [...newPosts, ...prev].slice(0, 50);
+            });
           }
-          // Populate extractions from snapshot
+          // Populate extractions from snapshot - merge with existing
           if (data.data.extractions) {
-            setExtractions(data.data.extractions);
-            // Rebuild dedup Sets from snapshot
-            extractionKeysRef.current = new Set(
+            // Build keys for new extractions
+            const newExtKeys = new Set(
               data.data.extractions.map(e => `${e.source_id}_${e.extraction_class}_${e.extraction_text?.slice(0, 50)}`)
             );
-            // Also populate market signals subset
+            setExtractions(prev => {
+              if (prev.length === 0) {
+                // First load: just use snapshot
+                extractionKeysRef.current = newExtKeys;
+                return data.data.extractions;
+              }
+              // Merge: add new items from snapshot that don't exist locally
+              const merged = [...prev];
+              for (const ext of data.data.extractions) {
+                const key = `${ext.source_id}_${ext.extraction_class}_${ext.extraction_text?.slice(0, 50)}`;
+                if (!extractionKeysRef.current.has(key)) {
+                  extractionKeysRef.current.add(key);
+                  merged.push(ext);
+                }
+              }
+              return merged.slice(0, 200);
+            });
+            // Also merge market signals subset
             const signals = data.data.extractions.filter(e => e.extraction_class === 'market_signal');
-            setMarketSignals(signals);
-            marketSignalKeysRef.current = new Set(
+            const newSigKeys = new Set(
               signals.map(e => `${e.source_id}_${e.extraction_text?.slice(0, 50)}`)
             );
+            setMarketSignals(prev => {
+              if (prev.length === 0) {
+                marketSignalKeysRef.current = newSigKeys;
+                return signals;
+              }
+              const merged = [...prev];
+              for (const sig of signals) {
+                const key = `${sig.source_id}_${sig.extraction_text?.slice(0, 50)}`;
+                if (!marketSignalKeysRef.current.has(key)) {
+                  marketSignalKeysRef.current.add(key);
+                  merged.push(sig);
+                }
+              }
+              return merged.slice(0, 100);
+            });
           }
           setEntitySystemActive(data.data.is_active || false);
           console.log(
@@ -827,17 +885,104 @@ export const useV3WebSocket = ({ onMessage }) => {
       case 'deep_agent_status':
       case 'deep_agent_cycle':
       case 'deep_agent_thinking':
+      case 'deep_agent_tool_start':
       case 'deep_agent_tool_call':
       case 'deep_agent_trade':
       case 'deep_agent_settlement':
       case 'deep_agent_memory_update':
       case 'deep_agent_error':
-      case 'deep_agent_snapshot':
       case 'deep_agent_cost':
       case 'deep_agent_gdelt_result':
+      case 'deep_agent_news_intelligence':
+      case 'deep_agent_todos':
         // Pass deep agent messages to the onMessage callback
         // useDeepAgent.processMessage() handles these
         onMessageRef.current?.(data.type, data.data, { timestamp: data.data?.timestamp });
+        break;
+
+      case 'deep_agent_snapshot': {
+        // Guard against duplicate snapshot processing (Bug 1: excessive snapshot loops)
+        const snapshotFp = `${data.data?.cycle_count}:${data.data?.trades_executed}:${data.data?.recent_trades?.length || 0}:${data.data?.recent_thinking?.length || 0}`;
+        if (snapshotFp === lastDeepAgentSnapshotRef.current) {
+          break; // Already processed this snapshot
+        }
+        lastDeepAgentSnapshotRef.current = snapshotFp;
+
+        // Pass to useDeepAgent for agent state restoration
+        onMessageRef.current?.(data.type, data.data, { timestamp: data.data?.timestamp });
+
+        // Also restore extraction signals from the deep agent's cached pre-fetch.
+        // This is the primary persistence path for market signals on page refresh
+        // (the entity_snapshot from RedditEntityAgent may have stale or empty data).
+        if (data.data?.extraction_signals?.length > 0) {
+          const signalExtractions = data.data.extraction_signals.flatMap(sig => {
+            const tickers = sig.market_ticker ? [sig.market_ticker] : [];
+            // Use recent_extractions snippets if available (higher fidelity)
+            if (sig.recent_extractions?.length > 0) {
+              return sig.recent_extractions.map((snippet, i) => ({
+                source_id: `snapshot-${sig.market_ticker}-${i}`,
+                extraction_class: 'market_signal',
+                extraction_text: snippet.text || '',
+                attributes: {
+                  direction: snippet.direction || sig.consensus || '',
+                  magnitude: snippet.magnitude || sig.avg_magnitude || 0,
+                  confidence: snippet.confidence || '',
+                  reasoning: snippet.reasoning || '',
+                },
+                market_tickers: tickers,
+                event_tickers: sig.event_tickers || [],
+                source_subreddit: snippet.source_subreddit || '',
+                engagement_score: snippet.engagement || 0,
+                created_at: snippet.extracted_at || '',
+                _from_snapshot: true,
+              }));
+            }
+            // Fallback: build a single extraction from the aggregated signal
+            return [{
+              source_id: `snapshot-${sig.market_ticker}`,
+              extraction_class: 'market_signal',
+              extraction_text: `${sig.consensus || 'neutral'} signal (${sig.occurrence_count || 0} occurrences, ${sig.unique_source_count || 0} sources)`,
+              attributes: {
+                direction: sig.consensus || '',
+                magnitude: sig.consensus_strength || 0,
+              },
+              market_tickers: tickers,
+              event_tickers: sig.event_tickers || [],
+              source_subreddit: '',
+              engagement_score: sig.total_engagement || 0,
+              _from_snapshot: true,
+            }];
+          });
+
+          // Only apply if extractions are currently empty (entity_snapshot hasn't arrived or was empty)
+          setExtractions(prev => {
+            if (prev.length > 0) return prev;
+            return signalExtractions;
+          });
+          setMarketSignals(prev => {
+            if (prev.length > 0) return prev;
+            return signalExtractions;
+          });
+          console.log(
+            `[useV3WebSocket] Restored ${signalExtractions.length} market signals from deep_agent_snapshot`
+          );
+        }
+        break;
+      }
+
+      // === Reddit Historic Digest (daily top-post extraction pipeline) ===
+      case 'reddit_historic_digest':
+        if (data.data) {
+          // Pass through to deep agent which owns the redditHistoricDigest state
+          onMessageRef.current?.(data.type, data.data, { timestamp: data.data?.timestamp });
+        }
+        break;
+
+      // === Silently handled message types (suppress console spam) ===
+      case 'upcoming_markets':
+      case 'lifecycle_event':
+        // These are informational messages from backend services.
+        // Silently ignore - no frontend state needed for these.
         break;
 
       default:
@@ -877,13 +1022,15 @@ export const useV3WebSocket = ({ onMessage }) => {
   }, [connectWebSocket]);
 
   // Heartbeat monitoring - detect zombie connections
-  // If we haven't received a ping from server in 60s, force reconnect
+  // If we haven't received a ping from server in 90s, force reconnect.
+  // Server sends pings every 30s. The 90s timeout tolerates up to 2 missed pings
+  // before forcing a reconnect, reducing false-positive disconnects during
+  // heavy backend processing (e.g., deep agent cycles, GDELT queries).
   useEffect(() => {
     const checkHeartbeat = () => {
       const timeSinceLastPing = Date.now() - lastPingRef.current;
-      // Server sends pings every 30s, so 60s timeout gives buffer
-      if (timeSinceLastPing > 60000 && wsStatus === 'connected') {
-        console.warn('[useV3WebSocket] No ping in 60s, forcing reconnect');
+      if (timeSinceLastPing > 90000 && wsStatus === 'connected') {
+        console.warn('[useV3WebSocket] No ping in 90s, forcing reconnect');
         wsRef.current?.close();
       }
     };

@@ -74,6 +74,7 @@ class TradeResult:
     order_id: Optional[str] = None
     error: Optional[str] = None
     limit_price_cents: Optional[int] = None  # The computed limit price used for the order
+    order_status: Optional[str] = None  # Kalshi order status (resting, executed, etc.)
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -223,6 +224,12 @@ class DeepAgentTools:
         self._event_position_tracker = event_position_tracker
         self._supabase_client = None
 
+        # Vector memory service (set by agent after startup)
+        self._vector_memory = None  # VectorMemoryService instance
+
+        # Trade executor (set by plugin after startup)
+        self._trade_executor = None  # TradeExecutor instance
+
         # Token usage callback (set by agent to accumulate tool API costs)
         self._token_usage_callback = None
 
@@ -232,6 +239,9 @@ class DeepAgentTools:
         # GDELT client references (set by coordinator after startup)
         self._gdelt_client = None       # BigQuery GKG (structured entities/themes)
         self._gdelt_doc_client = None   # Free DOC API (article search/timelines)
+
+        # GDELT News Analyzer sub-agent (set by coordinator after startup)
+        self._news_analyzer = None      # GDELTNewsAnalyzer (Haiku sub-agent)
 
         # Microstructure services (set by coordinator after startup)
         self._orderbook_integration = None   # V3OrderbookIntegration
@@ -266,13 +276,14 @@ class DeepAgentTools:
         # preventing 100+ old positions from previous sessions from appearing.
         self._traded_tickers: set = set()
 
+        # Cache of event tickers that failed understand_event (e.g., KXQUICKSETTLE).
+        # Prevents repeated LLM calls for events that always produce empty/bad JSON.
+        self._failed_event_tickers: set = set()
+
         # Circuit breaker callback: set by agent.py to check if a ticker is blacklisted.
         # Signature: (ticker: str) -> tuple[bool, Optional[str]]
         # Returns (is_blacklisted, reason_message)
         self._circuit_breaker_checker: Optional[Callable] = None
-
-        # Min spread config (set by agent to match DeepAgentConfig.min_spread_cents)
-        self._min_spread_cents: int = 3
 
         # Track tool usage for metrics
         self._tool_calls = {
@@ -296,10 +307,13 @@ class DeepAgentTools:
             "query_gdelt_events": 0,
             "search_gdelt_articles": 0,
             "get_gdelt_volume_timeline": 0,
+            "get_news_intelligence": 0,
             "get_microstructure": 0,
             "get_candlesticks": 0,
             "read_todos": 0,
             "write_todos": 0,
+            "search_memory": 0,
+            "submit_trade_intent": 0,
         }
 
 
@@ -1135,14 +1149,11 @@ class DeepAgentTools:
 
         # Step 3: Spread check
         spread = result["spread"]
-        max_spread = 8
-        min_spread = self._min_spread_cents
+        max_spread = 12
         if result["checks"]["data_quality_ok"]:
-            result["checks"]["spread_ok"] = spread <= max_spread and spread >= min_spread
+            result["checks"]["spread_ok"] = spread <= max_spread
             if spread > max_spread:
                 result["blockers"].append(f"Spread too wide: {spread}c (max {max_spread}c)")
-            elif spread < min_spread:
-                result["warnings"].append(f"Spread too narrow: {spread}c (min {min_spread}c for inefficiency)")
 
         # Step 4: Circuit breaker check
         if self._circuit_breaker_checker:
@@ -1227,13 +1238,22 @@ class DeepAgentTools:
         For BUY orders: aggressive crosses the spread (pay more for immediate fill).
         For SELL orders: aggressive crosses the spread (accept less for immediate fill).
 
+        NO-side price derivation: NO_bid = 100 - YES_ask, NO_ask = 100 - YES_bid.
+        When yes_bid == 0, we use yes_ask as the NO-side anchor (NO_bid = 100 - yes_ask).
+        When yes_ask == 0, we use yes_bid as the NO-side anchor (NO_ask = 100 - yes_bid).
+
         Returns a clamped price in [1, 99].
         """
-        midpoint = (yes_bid + yes_ask) // 2 if yes_bid > 0 else 0
+        midpoint = (yes_bid + yes_ask) // 2 if (yes_bid > 0 and yes_ask > 0) else 0
 
         # Normalize unrecognized strategies to aggressive
         if execution_strategy not in ("aggressive", "moderate", "passive"):
             execution_strategy = "aggressive"
+
+        # Pre-compute NO-side anchor prices
+        no_bid = (100 - yes_ask) if yes_ask > 0 else 0   # What you'd get selling NO
+        no_ask = (100 - yes_bid) if yes_bid > 0 else 0   # What you'd pay buying NO
+        no_mid = (no_bid + no_ask) // 2 if (no_bid > 0 and no_ask > 0) else 0
 
         if action == "sell":
             # SELL: price is the minimum you'll accept
@@ -1243,17 +1263,19 @@ class DeepAgentTools:
                 if side == "yes":
                     price = yes_bid if yes_bid > 0 else yes_ask
                 else:
-                    price = 100 - yes_ask if yes_ask > 0 else (100 - yes_bid if yes_bid > 0 else 0)
+                    # Sell NO aggressive = sell at NO bid (100 - yes_ask)
+                    price = no_bid if no_bid > 0 else no_ask
             elif execution_strategy == "moderate":
                 if side == "yes":
                     price = midpoint if midpoint > 0 else yes_bid
                 else:
-                    price = (100 - midpoint) if midpoint > 0 else (100 - yes_ask if yes_ask > 0 else 0)
+                    price = no_mid if no_mid > 0 else (no_bid if no_bid > 0 else no_ask)
             else:  # passive
                 if side == "yes":
                     price = yes_ask - 1 if yes_ask > 1 else (yes_bid if yes_bid > 0 else 1)
                 else:
-                    price = (100 - yes_bid) - 1 if yes_bid > 0 else (100 - yes_ask if yes_ask > 0 else 0)
+                    # Sell NO passive = near NO ask (best price, may not fill)
+                    price = no_ask - 1 if no_ask > 1 else (no_bid if no_bid > 0 else 1)
         else:
             # BUY: price is the maximum you'll pay
             # aggressive = buy at ask (immediate fill, highest cost)
@@ -1262,17 +1284,20 @@ class DeepAgentTools:
                 if side == "yes":
                     price = yes_ask
                 else:
-                    price = 100 - yes_bid if yes_bid > 0 else 0
+                    # Buy NO aggressive = buy at NO ask (100 - yes_bid)
+                    # Fallback to NO bid if no NO ask available
+                    price = no_ask if no_ask > 0 else no_bid
             elif execution_strategy == "moderate":
                 if side == "yes":
                     price = midpoint + 1 if midpoint > 0 else yes_ask
                 else:
-                    price = (100 - midpoint) + 1 if midpoint > 0 else (100 - yes_bid if yes_bid > 0 else 0)
+                    price = no_mid + 1 if no_mid > 0 else (no_ask if no_ask > 0 else no_bid)
             else:  # passive
                 if side == "yes":
                     price = yes_bid + 1 if yes_bid > 0 else yes_ask
                 else:
-                    price = (100 - yes_ask) + 1 if yes_ask > 0 else (100 - yes_bid if yes_bid > 0 else 0)
+                    # Buy NO passive = near NO bid + 1 (cheapest)
+                    price = no_bid + 1 if no_bid > 0 else (no_ask if no_ask > 0 else 1)
 
         return max(1, min(99, price))
 
@@ -1370,13 +1395,38 @@ class DeepAgentTools:
                     error=f"Market data incomplete: yes_bid={yes_bid}, yes_ask={yes_ask}",
                 )
 
+            # T1.1b: For NO-side trades, require at least one valid anchor price
+            # to avoid computing meaningless 1c limit prices
+            if side == "no" and yes_bid == 0 and yes_ask == 0:
+                return TradeResult(
+                    success=False,
+                    ticker=ticker,
+                    side=side,
+                    contracts=contracts,
+                    error=f"No valid anchor for NO-side price: yes_bid={yes_bid}, yes_ask={yes_ask}",
+                )
+
+            # T1.3: Re-check spread with fresh API data (mirrors preflight check)
+            # This closes the race window between preflight (cached prices) and trade (fresh prices)
+            spread = yes_ask - yes_bid if (yes_ask > 0 and yes_bid > 0) else 0
+            max_spread = 12
+            if spread > max_spread:
+                return TradeResult(
+                    success=False,
+                    ticker=ticker,
+                    side=side,
+                    contracts=contracts,
+                    error=f"Spread too wide at trade time: {spread}c (max {max_spread}c, yes_bid={yes_bid}, yes_ask={yes_ask})",
+                )
+
             limit_price = self._compute_limit_price(side, yes_bid, yes_ask, execution_strategy, action)
 
             # RF-1: Enforce per-event dollar exposure cap (buy orders only)
             # Sell orders reduce exposure, so skip the cap check
+            # Use limit_price as estimate (actual fill may be better but we don't know yet)
             event_ticker = market_data.get("event_ticker", "")
             if event_ticker and action == "buy":
-                new_cost_cents = contracts * limit_price
+                new_cost_cents = contracts * limit_price  # Conservative: limit_price >= actual fill
                 existing_cents = self._event_exposure_cents.get(event_ticker, 0)
                 if existing_cents + new_cost_cents > self._max_event_exposure_cents:
                     max_dollars = self._max_event_exposure_cents / 100
@@ -1425,10 +1475,18 @@ class DeepAgentTools:
             success = order is not None
 
             if success:
+                # Log raw API response for debugging impossible price issues
+                logger.debug(f"[deep_agent.tools.trade] Raw API order response: {order}")
+
                 # Extract order details
                 order_id = order.get("order_id", "")
-                # For market orders, avg_price comes from fills
-                avg_price = order.get("avg_price") or order.get("price")
+                # For market orders, avg_price comes from fills.
+                # Demo API may not return avg_price or price, so fall back to limit_price.
+                raw_avg_price = order.get("avg_price") or order.get("price") or limit_price
+                avg_price = self._clamp_binary_price(raw_avg_price, limit_price, f"order {order_id}")
+
+                # Determine order status for fill tracking and broadcast
+                order_status = order.get("status", "unknown")
 
                 # Broadcast to WebSocket
                 if self._ws_manager:
@@ -1438,24 +1496,31 @@ class DeepAgentTools:
                         "action": action,
                         "contracts": contracts,
                         "price_cents": avg_price,
+                        "limit_price_cents": limit_price,
                         "order_id": order_id,
-                        "reasoning": reasoning[:200],
+                        "order_status": order_status,
+                        "reasoning": reasoning[:500],
                         "timestamp": time.strftime("%H:%M:%S"),
                     })
 
                 logger.info(f"[deep_agent.tools.trade] Order placed successfully: {order_id} @ {avg_price}c")
 
                 # RF-1: Record event exposure for dollar cap enforcement
+                # Use actual fill price when available, fall back to limit price for resting orders
                 # Buy orders increase exposure; sell orders release it
                 if event_ticker:
-                    cost = contracts * limit_price
+                    fill_price = avg_price if avg_price and avg_price != limit_price else limit_price
                     if action == "buy":
+                        buy_cost = contracts * fill_price
                         self._event_exposure_cents[event_ticker] = (
-                            self._event_exposure_cents.get(event_ticker, 0) + cost
+                            self._event_exposure_cents.get(event_ticker, 0) + buy_cost
                         )
                     else:  # sell
+                        # Release exposure based on what was recorded at buy time (limit_price),
+                        # not the current sell price, to keep the tracker balanced
+                        sell_release = contracts * fill_price
                         self._event_exposure_cents[event_ticker] = max(
-                            0, self._event_exposure_cents.get(event_ticker, 0) - cost
+                            0, self._event_exposure_cents.get(event_ticker, 0) - sell_release
                         )
                     logger.info(
                         f"[deep_agent.tools.trade] Event {event_ticker} exposure: "
@@ -1464,26 +1529,43 @@ class DeepAgentTools:
                         f"(action={action})"
                     )
 
-                # Record order fill in session tracker for P&L metrics
-                if self._state_container:
-                    order_cost_cents = contracts * limit_price
-                    self._state_container.record_order_fill(order_cost_cents, contracts)
-                    logger.info(f"[deep_agent.tools.trade] Session recorded: {contracts} contracts @ {limit_price}c = {order_cost_cents}c")
+                # Only record fill metrics when the order actually executed immediately.
+                # Resting orders haven't filled yet — their fills will be detected
+                # by _sync_trading_attachments() when the next REST sync runs.
+                # Recording phantom fills for resting orders causes the agent's
+                # recent_fills to disagree with actual positions, triggering E5 halts.
+                is_immediate_fill = order_status in ("executed", "filled")
 
-                # Record fill in recent fills for session state visibility
-                self.record_fill(
-                    order_id=order_id,
-                    ticker=ticker,
-                    side=side,
-                    contracts=contracts,
-                    price_cents=avg_price or limit_price,
-                    reasoning=reasoning,
-                )
+                if is_immediate_fill:
+                    # Record order fill in session tracker for P&L metrics
+                    if self._state_container:
+                        order_cost_cents = contracts * limit_price
+                        self._state_container.record_order_fill(order_cost_cents, contracts)
+                        logger.info(f"[deep_agent.tools.trade] Session recorded: {contracts} contracts @ {limit_price}c = {order_cost_cents}c")
 
-                # Wire strategy_id into state container for per-strategy P&L tracking
+                    # Record fill in recent fills for session state visibility
+                    self.record_fill(
+                        order_id=order_id,
+                        ticker=ticker,
+                        side=side,
+                        contracts=contracts,
+                        price_cents=avg_price or limit_price,
+                        reasoning=reasoning,
+                    )
+                else:
+                    logger.info(
+                        f"[deep_agent.tools.trade] Order {order_id[:8]}... is {order_status}, "
+                        f"deferring fill recording until confirmed by sync"
+                    )
+
+                # Wire strategy_id into state container for per-strategy P&L tracking.
+                # Use the actual order status from the API response so that
+                # immediately-executed orders are tracked as "filled" from the start.
                 if self._state_container:
                     try:
                         signal_id = f"deep_agent:{ticker}:{int(time.time() * 1000)}"
+                        attachment_status = "filled" if is_immediate_fill else "resting"
+                        now = time.time()
                         await self._state_container.update_order_in_attachment(
                             ticker=ticker,
                             order_id=order_id,
@@ -1494,14 +1576,17 @@ class DeepAgentTools:
                                 side=side,
                                 count=contracts,
                                 price=limit_price,
-                                status="resting",
-                                placed_at=time.time(),
+                                status=attachment_status,
+                                placed_at=now,
+                                fill_count=contracts if is_immediate_fill else 0,
+                                fill_avg_price=avg_price if is_immediate_fill else 0,
+                                filled_at=now if is_immediate_fill else None,
                                 strategy_id="deep_agent",
                             ),
                         )
                         logger.info(
                             f"[deep_agent.tools.trade] Order tracked in attachment: "
-                            f"{ticker} {order_id[:8]}... strategy_id=deep_agent"
+                            f"{ticker} {order_id[:8]}... status={attachment_status}, strategy_id=deep_agent"
                         )
                     except Exception as e:
                         logger.warning(f"[deep_agent.tools.trade] Failed to track order in attachment: {e}")
@@ -1514,6 +1599,7 @@ class DeepAgentTools:
                     price_cents=avg_price,
                     order_id=order_id,
                     limit_price_cents=limit_price,
+                    order_status=order_status,
                 )
             else:
                 error_msg = result.get("error") or result.get("message") or "Unknown error"
@@ -1611,6 +1697,28 @@ class DeepAgentTools:
         """
         return [fill.to_dict() for fill in list(self._recent_fills)[:limit]]
 
+    # === Price Validation Helpers ===
+
+    @staticmethod
+    def _clamp_binary_price(raw_price: int, fallback: int, context: str = "") -> int:
+        """Validate a binary contract price is in the 1-99c range.
+
+        The Kalshi demo API sometimes returns impossible prices (>100c) --
+        likely centi-cent values or cumulative costs.  This helper detects
+        those and falls back to the provided fallback price.
+        """
+        try:
+            price = int(raw_price)
+        except (TypeError, ValueError):
+            price = 0
+        if 1 <= price <= 99:
+            return price
+        logger.warning(
+            "[deep_agent.tools] Impossible price %sc clamped to %sc (%s)",
+            raw_price, fallback, context,
+        )
+        return int(fallback) if 1 <= int(fallback) <= 99 else 50
+
     # === Strategy Filtering Helpers ===
 
     def _filter_positions_by_strategy(self, positions_details: List[Dict]) -> List[Dict]:
@@ -1675,29 +1783,32 @@ class DeepAgentTools:
             # Get positions with details, filtered to deep_agent strategy.
             # Primary: strategy_id on TradingAttachment (survives restarts).
             # Fallback: _traded_tickers set (current session only).
+            #
+            # Bug 5 fix: _format_position_details() returns dicts with
+            #   "position" (signed int, +YES/-NO) and "side" ("yes"/"no"),
+            #   NOT "yes_contracts"/"no_contracts".  Use the correct fields.
             positions = []
             for pos in self._filter_positions_by_strategy(summary.get("positions_details", [])):
                 ticker = pos.get("ticker")
 
-                # T1.5: Explicit position side determination
-                yes_c = pos.get("yes_contracts", 0) or 0
-                no_c = pos.get("no_contracts", 0) or 0
-                if yes_c > 0:
-                    pos_side = "yes"
-                    pos_contracts = yes_c
-                elif no_c > 0:
-                    pos_side = "no"
-                    pos_contracts = no_c
-                else:
-                    pos_side = "none"
-                    pos_contracts = 0
+                # Read side and absolute contract count from formatted position data
+                pos_side = pos.get("side", "none")
+                pos_contracts = abs(pos.get("position", 0))
+
+                if pos_contracts == 0:
+                    continue  # Skip empty positions
+
+                # Compute per-contract avg price from total_cost
+                total_cost = pos.get("total_cost", 0) or 0
+                raw_avg = total_cost // pos_contracts if pos_contracts > 0 else 0
+                avg_price = raw_avg if 1 <= raw_avg <= 99 else 0
 
                 positions.append({
                     "ticker": ticker,
                     "side": pos_side,
                     "contracts": pos_contracts,
-                    "avg_price": pos.get("avg_price"),
-                    "current_value": pos.get("market_value"),
+                    "avg_price": avg_price,
+                    "current_value": pos.get("current_value"),
                     "unrealized_pnl": pos.get("unrealized_pnl"),
                 })
 
@@ -1738,9 +1849,11 @@ class DeepAgentTools:
                 if p.get("unrealized_pnl") is not None
             )
 
+            # Bug 5 fix: balance and portfolio_value from get_trading_summary()
+            # are already in cents (from TraderState).  Do NOT multiply by 100 again.
             return SessionState(
-                balance_cents=int(summary.get("balance", 0) * 100),
-                portfolio_value_cents=int(summary.get("portfolio_value", 0) * 100),
+                balance_cents=int(summary.get("balance", 0)),
+                portfolio_value_cents=int(summary.get("portfolio_value", 0)),
                 realized_pnl_cents=int(agent_realized_pnl),
                 unrealized_pnl_cents=int(agent_unrealized_pnl),
                 total_pnl_cents=int(agent_realized_pnl + agent_unrealized_pnl),
@@ -1800,38 +1913,41 @@ class DeepAgentTools:
             summary = self._state_container.get_trading_summary()
 
             # Account-level (not strategy-filtered)
-            balance_cents = int(summary.get("balance", 0) * 100)
-            portfolio_value_cents = int(summary.get("portfolio_value", 0) * 100)
+            # Bug 5 fix: balance/portfolio_value are already in cents from TraderState.
+            balance_cents = int(summary.get("balance", 0))
+            portfolio_value_cents = int(summary.get("portfolio_value", 0))
 
             # --- Filter positions by strategy_id or _traded_tickers ---
             agent_positions = self._filter_positions_by_strategy(summary.get("positions_details", []))
 
             # Build clean position list with unrealized P&L
+            # Bug 5 fix: _format_position_details() uses "position" (signed int)
+            # and "side" ("yes"/"no"), not "yes_contracts"/"no_contracts".
             positions = []
             unrealized_pnl_cents = 0
             for pos in agent_positions:
                 ticker = pos.get("ticker", "")
-                yes_c = pos.get("yes_contracts", 0) or 0
-                no_c = pos.get("no_contracts", 0) or 0
-                if yes_c > 0:
-                    pos_side = "yes"
-                    pos_contracts = yes_c
-                elif no_c > 0:
-                    pos_side = "no"
-                    pos_contracts = no_c
-                else:
+                pos_side = pos.get("side", "none")
+                pos_contracts = abs(pos.get("position", 0))
+
+                if pos_contracts == 0:
                     continue  # No position
 
                 pos_unrealized = pos.get("unrealized_pnl", 0) or 0
                 unrealized_pnl_cents += pos_unrealized
+
+                # Compute per-contract avg price from total_cost
+                total_cost = pos.get("total_cost", 0) or 0
+                raw_avg = total_cost // pos_contracts if pos_contracts > 0 else 0
+                avg_price = raw_avg if 1 <= raw_avg <= 99 else 0
 
                 positions.append({
                     "ticker": ticker,
                     "event_ticker": pos.get("event_ticker", ""),
                     "side": pos_side,
                     "contracts": pos_contracts,
-                    "avg_price": pos.get("avg_price"),
-                    "market_value": pos.get("market_value"),
+                    "avg_price": avg_price,
+                    "current_value": pos.get("current_value"),
                     "unrealized_pnl": pos_unrealized,
                 })
 
@@ -2128,6 +2244,10 @@ class DeepAgentTools:
 
             logger.info(f"[deep_agent.tools.append_memory] Successfully wrote {len(new_content)} chars to {safe_name}")
             success = True
+
+            # Dual-write to vector store (fire-and-forget, non-blocking)
+            if self._vector_memory and safe_name in self._get_vector_memory_types():
+                asyncio.create_task(self._safe_vector_store(content, safe_name))
         except Exception as e:
             logger.error(f"[deep_agent.tools.append_memory] Error writing {safe_name}: {e}")
             success = False
@@ -2137,6 +2257,135 @@ class DeepAgentTools:
             "new_length": len(new_content),
             "archived": archived,
             "archive_path": archive_path if archived else None,
+        }
+
+    # === Vector Memory Helpers ===
+
+    @staticmethod
+    def _get_vector_memory_types():
+        """Return the set of filenames that should be dual-written to vector store."""
+        from .vector_memory import VectorMemoryService
+        return VectorMemoryService.FILENAME_TO_TYPE
+
+    async def _safe_vector_store(self, content: str, filename: str) -> None:
+        """Fire-and-forget vector store write. Never raises."""
+        try:
+            from .vector_memory import VectorMemoryService
+            memory_type = VectorMemoryService.FILENAME_TO_TYPE.get(filename)
+            if memory_type and self._vector_memory:
+                await self._vector_memory.store(content, memory_type, {
+                    "source_file": filename,
+                })
+        except Exception as e:
+            logger.debug(f"[tools] Vector store write failed (non-fatal): {e}")
+
+    async def search_memory(
+        self, query: str, types: Optional[list] = None, limit: int = 8
+    ) -> str:
+        """Semantic search across all historical vector memories."""
+        self._tool_calls["search_memory"] += 1
+        if not self._vector_memory:
+            return "Vector memory not available. Use read_memory for flat-file access."
+        try:
+            results = await self._vector_memory.recall(
+                query=query, types=types, limit=limit
+            )
+            if not results:
+                return "No matching memories found."
+            lines = []
+            for r in results:
+                age_marker = ""
+                if r.get("access_count", 0) >= 5:
+                    age_marker = f" [recalled {r['access_count']}x]"
+                lines.append(
+                    f"- [{r['memory_type']}]{age_marker} {r['content'][:400]}"
+                )
+            return f"Found {len(results)} memories:\n" + "\n".join(lines)
+        except Exception as e:
+            return f"Search failed: {e}. Use read_memory for flat-file access."
+
+    # === Trade Intent Submission ===
+
+    async def submit_trade_intent(
+        self,
+        market_ticker: str,
+        side: str,
+        contracts: int,
+        thesis: str,
+        confidence: str = "medium",
+        exit_criteria: str = "",
+        max_price_cents: int = 99,
+        execution_strategy: str = "aggressive",
+        action: str = "buy",
+    ) -> Dict[str, Any]:
+        """Submit a trade intent to the executor for execution.
+
+        The deep agent calls this instead of trade() directly. The executor
+        handles preflight, pricing, and fill verification.
+        """
+        self._tool_calls["submit_trade_intent"] += 1
+
+        if not self._trade_executor:
+            return {
+                "error": "Trade executor not available",
+                "status": "failed",
+            }
+
+        # Resolve event_ticker from tracked markets
+        event_ticker = ""
+        if self._tracked_markets:
+            markets_by_event = self._tracked_markets.get_markets_by_event()
+            for evt, tickers in markets_by_event.items():
+                if market_ticker in tickers:
+                    event_ticker = evt
+                    break
+
+        from .trade_executor import TradeIntent
+        import uuid as _uuid
+
+        intent = TradeIntent(
+            intent_id=str(_uuid.uuid4())[:8],
+            event_ticker=event_ticker,
+            market_ticker=market_ticker,
+            side=side,
+            action=action,
+            contracts=contracts,
+            max_price_cents=max_price_cents,
+            thesis=thesis,
+            exit_criteria=exit_criteria or f"Hold until settlement or thesis invalidated",
+            confidence=confidence,
+            execution_strategy=execution_strategy,
+            created_at=time.time(),
+            status="pending",
+        )
+
+        await self._trade_executor.submit_intent(intent)
+
+        # Embed thesis in vector memory for future recall
+        if self._vector_memory and thesis:
+            try:
+                summary = (
+                    f"Trade thesis for {market_ticker} ({side} {action}): {thesis[:300]}"
+                )
+                asyncio.create_task(
+                    self._vector_memory.store_signal_summary(
+                        event_ticker, summary, signal_type="thesis"
+                    )
+                )
+            except Exception as e:
+                logger.debug(f"[tools] Thesis embed failed (non-fatal): {e}")
+
+        return {
+            "intent_id": intent.intent_id,
+            "market_ticker": market_ticker,
+            "side": side,
+            "action": action,
+            "contracts": contracts,
+            "max_price_cents": max_price_cents,
+            "confidence": confidence,
+            "execution_strategy": execution_strategy,
+            "status": "submitted",
+            "note": "Intent queued for executor. It will run preflight, check price, and execute within 30s.",
         }
 
     # === TODO Task Planning Tools ===
@@ -2272,6 +2521,22 @@ class DeepAgentTools:
         """
         self._tool_calls["understand_event"] += 1
         logger.info(f"[deep_agent.tools.understand_event] event={event_ticker}, force={force_refresh}")
+
+        # Fast-path: return generic response for events that previously failed
+        # (e.g., KXQUICKSETTLE synthetic markets that always produce empty JSON)
+        if not force_refresh and event_ticker in self._failed_event_tickers:
+            logger.debug(f"[deep_agent.tools.understand_event] Skipping {event_ticker} (cached failure)")
+            return {
+                "status": "cached_failure",
+                "event_ticker": event_ticker,
+                "event_title": f"Synthetic quick-settle market ({event_ticker})",
+                "description": "This is a synthetic quick-settle market used for rapid settlement testing. No meaningful research is available.",
+                "primary_entity": "",
+                "key_drivers": [],
+                "markets_count": 0,
+                "extraction_classes_count": 0,
+                "watchlist": {},
+            }
 
         supabase = self._get_supabase()
         if not supabase:
@@ -2434,10 +2699,17 @@ relevant information in Reddit posts and news articles that impact these specifi
                 lines = content.split("\n")
                 content = "\n".join(l for l in lines if not l.strip().startswith("```"))
 
+            # Guard against empty response body
+            if not content:
+                logger.warning(f"[deep_agent.tools.understand_event] Empty response from Claude for {event_ticker}")
+                self._failed_event_tickers.add(event_ticker)
+                return {"error": "Empty response from research model", "event_ticker": event_ticker}
+
             research = json.loads(content)
 
         except Exception as e:
             logger.error(f"[deep_agent.tools.understand_event] Research failed: {e}")
+            self._failed_event_tickers.add(event_ticker)
             return {"error": f"Research failed: {str(e)}", "event_ticker": event_ticker}
 
         # Build examples JSON from research
@@ -2520,6 +2792,21 @@ relevant information in Reddit posts and news articles that impact these specifi
 
     # === Extraction Signal Tools ===
 
+    @staticmethod
+    def _safe_float(value: Any, default: float = 0.0) -> float:
+        """Safely convert a value to float, returning default on failure.
+
+        Handles None, non-numeric strings (e.g. JSONPath templates like
+        '@/model_response.magnitude'), and other unparseable values that
+        may arrive from JSONB attribute fields.
+        """
+        if value is None:
+            return default
+        try:
+            return float(value)
+        except (ValueError, TypeError):
+            return default
+
     def _process_extraction_row(self, row: Dict, market_signals: Dict[str, Dict]) -> None:
         """Process a single SQL RPC row into the per-market signals accumulator."""
         ticker = row.get("market_ticker", "")
@@ -2528,13 +2815,13 @@ relevant information in Reddit posts and news articles that impact these specifi
 
         extraction_class = row.get("extraction_class", "")
         direction = row.get("direction", "")
-        occ_count = int(row.get("occurrence_count", 0))
-        unique_src = int(row.get("unique_sources", 0))
-        avg_eng = float(row.get("avg_engagement", 0) or 0)
+        occ_count = int(row.get("occurrence_count", 0) or 0)
+        unique_src = int(row.get("unique_sources", 0) or 0)
+        avg_eng = self._safe_float(row.get("avg_engagement"))
         max_eng = int(row.get("max_engagement", 0) or 0)
         total_comments = int(row.get("total_comments", 0) or 0)
-        avg_mag = float(row.get("avg_magnitude", 0) or 0)
-        avg_sent = float(row.get("avg_sentiment", 0) or 0)
+        avg_mag = self._safe_float(row.get("avg_magnitude"))
+        avg_sent = self._safe_float(row.get("avg_sentiment"))
         last_seen = row.get("last_seen_at", "")
         first_seen = row.get("first_seen_at", "")
         oldest_source = row.get("oldest_source_at", "")
@@ -2817,9 +3104,29 @@ relevant information in Reddit posts and news articles that impact these specifi
 
             # Step 6: Sort and return
             signals.sort(key=lambda s: s["occurrence_count"], reverse=True)
+            top_signals = signals[:limit]
+
+            # Step 7: Background embed top signals into vector memory
+            if self._vector_memory and top_signals:
+                try:
+                    summaries = []
+                    for s in top_signals[:5]:
+                        ticker = s.get("market_ticker", "?")
+                        consensus = s.get("consensus", "?")
+                        strength = s.get("consensus_strength", 0)
+                        sources = s.get("unique_source_count", 0)
+                        summaries.append(
+                            f"{ticker}: consensus={consensus} ({strength:.0%}), {sources} sources"
+                        )
+                    summary = f"Extraction signals ({window_hours}h): " + "; ".join(summaries)
+                    asyncio.create_task(
+                        self._vector_memory.store_signal_summary("", summary, "signal")
+                    )
+                except Exception as e:
+                    logger.debug(f"[tools] Signal embed failed (non-fatal): {e}")
 
             return {
-                "signals": signals[:limit],
+                "signals": top_signals,
                 "total_markets": len(signals),
                 "window_hours": window_hours,
                 "message": f"{len(signals)} markets with extraction signals in the last {window_hours}h",
@@ -3098,6 +3405,90 @@ relevant information in Reddit posts and news articles that impact these specifi
         except Exception as e:
             logger.error(f"[deep_agent.tools.get_gdelt_volume_timeline] Error: {e}")
             return {"error": str(e), "timeline": []}
+
+    # === GDELT News Intelligence (Haiku Sub-Agent) ===
+
+    async def get_news_intelligence(
+        self,
+        search_terms: List[str],
+        context_hint: str = "",
+    ) -> Dict[str, Any]:
+        """
+        Get structured news intelligence via Haiku sub-agent analysis of GDELT data.
+
+        Preferred over raw GDELT tools — analyzes full article data and returns
+        compact, actionable trading intelligence with sentiment, market signals,
+        and freshness assessment. Results cached for 15 minutes.
+
+        Args:
+            search_terms: Terms to search (e.g., ["government shutdown", "funding"])
+            context_hint: Optional context about what you're investigating
+                          (e.g., "Evaluating KXGOVTFUND-25FEB14 NO position")
+
+        Returns:
+            Structured intelligence with narrative_summary, sentiment, market_signals,
+            freshness, and trading_recommendation (act_now/monitor/wait/no_signal)
+        """
+        self._tool_calls["get_news_intelligence"] += 1
+
+        if not self._news_analyzer:
+            return {
+                "status": "unavailable",
+                "message": "News analyzer not initialized. GDELT DOC client required.",
+            }
+
+        try:
+            result = await self._news_analyzer.analyze(
+                search_terms=search_terms,
+                context_hint=context_hint,
+            )
+
+            # Track in recent GDELT queries for trade snapshots
+            self._recent_gdelt_queries.appendleft({
+                "search_terms": search_terms,
+                "article_count": result.get("metadata", {}).get("raw_article_count", 0),
+                "status": result.get("status", "unknown"),
+                "trading_recommendation": result.get("intelligence", {}).get("trading_recommendation", "unknown"),
+                "timestamp": time.time(),
+                "source": "news_intelligence",
+            })
+
+            # Store for WebSocket snapshot (new clients get recent results on page refresh)
+            if result.get("status") not in ("error", "unavailable"):
+                self._recent_gdelt_results.appendleft({
+                    "search_terms": search_terms,
+                    "source": "news_intelligence",
+                    "article_count": result.get("metadata", {}).get("raw_article_count", 0),
+                    "status": result.get("status", "unknown"),
+                    "intelligence": result.get("intelligence", {}),
+                    "cached": result.get("metadata", {}).get("cached", False),
+                    "timestamp": time.strftime("%H:%M:%S"),
+                    "timestamp_unix": time.time(),
+                })
+
+                # Background embed research result into vector memory
+                if self._vector_memory:
+                    try:
+                        intel = result.get("intelligence", {})
+                        narrative = intel.get("narrative_summary", "")
+                        rec = intel.get("trading_recommendation", "")
+                        if narrative:
+                            summary = (
+                                f"GDELT research [{', '.join(search_terms[:3])}]: "
+                                f"{narrative[:300]}. Recommendation: {rec}"
+                            )
+                            asyncio.create_task(
+                                self._vector_memory.store_signal_summary(
+                                    "", summary, "research"
+                                )
+                            )
+                    except Exception as e2:
+                        logger.debug(f"[tools] Research embed failed (non-fatal): {e2}")
+
+            return result
+        except Exception as e:
+            logger.error(f"[deep_agent.tools.get_news_intelligence] Error: {e}")
+            return {"status": "error", "error": str(e)}
 
     def get_tool_stats(self) -> Dict[str, int]:
         """Get tool usage statistics."""

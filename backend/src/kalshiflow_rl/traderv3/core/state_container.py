@@ -998,6 +998,7 @@ class V3StateContainer:
             # Build position dict
             position_data = {
                 "ticker": ticker,
+                "event_ticker": pos.get("event_ticker", ""),  # From raw Kalshi position data
                 "position": position_count,
                 "side": side,
                 "total_cost": total_cost,            # Cost basis (cents) - from tracked orders or approximated
@@ -1273,8 +1274,14 @@ class V3StateContainer:
                         ]
                         if filled_orders:
                             # Compute cost basis from our tracked orders
+                            # Defense-in-depth: validate fill_avg_price is in binary range (1-99c)
+                            # Demo API sometimes returns impossible prices (>100c)
                             computed_cost = sum(
-                                order.fill_count * (order.fill_avg_price if order.fill_avg_price > 0 else order.price)
+                                order.fill_count * (
+                                    order.fill_avg_price
+                                    if 0 < order.fill_avg_price <= 99
+                                    else order.price
+                                )
                                 for order in filled_orders
                             )
                             computed_count = sum(order.fill_count for order in filled_orders)

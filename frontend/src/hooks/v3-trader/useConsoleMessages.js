@@ -42,13 +42,14 @@ export const useConsoleMessages = () => {
     let toState = null;
     let isTransition = false;
 
-    if (metadata.to_state || content.includes('\u2192')) {
+    const contentStr = typeof content === 'string' ? content : String(content ?? '');
+    if (metadata.to_state || contentStr.includes('\u2192')) {
       isTransition = true;
       if (metadata.from_state && metadata.to_state) {
         fromState = metadata.from_state;
         toState = metadata.to_state;
-      } else if (content.includes('\u2192')) {
-        const match = content.match(/(\w+)\s*\u2192\s*(\w+)/);
+      } else if (contentStr.includes('\u2192')) {
+        const match = contentStr.match(/(\w+)\s*\u2192\s*(\w+)/);
         if (match) {
           fromState = match[1];
           toState = match[2];
@@ -58,18 +59,18 @@ export const useConsoleMessages = () => {
 
     // Extract status from the message
     let status = null;
-    if (content.includes('SUCCESS')) status = 'SUCCESS';
-    else if (content.includes('FAILED')) status = 'FAILED';
-    else if (content.includes('ERROR')) status = 'ERROR';
-    else if (content.includes('READY')) status = 'READY';
-    else if (content.includes('INITIALIZING')) status = 'INITIALIZING';
-    else if (content.includes('CONNECTING')) status = 'CONNECTING';
-    else if (content.includes('CALIBRATING')) status = 'CALIBRATING';
+    if (contentStr.includes('SUCCESS')) status = 'SUCCESS';
+    else if (contentStr.includes('FAILED')) status = 'FAILED';
+    else if (contentStr.includes('ERROR')) status = 'ERROR';
+    else if (contentStr.includes('READY')) status = 'READY';
+    else if (contentStr.includes('INITIALIZING')) status = 'INITIALIZING';
+    else if (contentStr.includes('CONNECTING')) status = 'CONNECTING';
+    else if (contentStr.includes('CALIBRATING')) status = 'CALIBRATING';
 
     // Clean up the content for display
-    let cleanContent = content;
+    let cleanContent = contentStr;
     if (isTransition && fromState && toState) {
-      cleanContent = content
+      cleanContent = contentStr
         .replace(new RegExp(`${fromState}\\s*\u2192\\s*${toState}:?\\s*`, 'gi'), '')
         .replace(/\u2192\s*State:\s*/gi, '')
         .replace(/State:\s*/gi, '')
@@ -107,7 +108,6 @@ export const useConsoleMessages = () => {
       id: `${Date.now()}-${messageIdCounter.current}`,
       type,
       content: cleanContent,
-      originalContent: content,
       timestamp,
       metadata: {
         ...metadata,

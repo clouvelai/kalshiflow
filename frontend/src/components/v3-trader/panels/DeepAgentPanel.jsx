@@ -18,14 +18,29 @@ import {
   BookOpen,
   AlertCircle,
   Newspaper,
+  Wrench,
 } from 'lucide-react';
 import renderThinkingMarkdown from '../../../utils/renderThinkingMarkdown';
 
 /**
  * Thinking Stream - Real-time agent reasoning display
  */
-const ThinkingStream = memo(({ thinking, isLearning }) => {
+const ThinkingStream = memo(({ thinking, isLearning, activeToolCall }) => {
   if (!thinking?.text && !isLearning) {
+    if (activeToolCall) {
+      return (
+        <div className="p-4 bg-cyan-900/20 rounded-lg border border-cyan-700/30">
+          <div className="flex items-center gap-2">
+            <Wrench className="w-4 h-4 text-cyan-400 animate-pulse" />
+            <span className="text-xs text-cyan-300 uppercase tracking-wider font-medium">Executing Tool</span>
+          </div>
+          <div className="flex items-center gap-2 mt-2">
+            <RefreshCw className="w-3.5 h-3.5 text-cyan-400 animate-spin" />
+            <span className="text-sm font-mono text-cyan-300">{activeToolCall.tool}()</span>
+          </div>
+        </div>
+      );
+    }
     return (
       <div className="p-4 bg-gray-800/30 rounded-lg border border-gray-700/20 text-center">
         <div className="text-gray-500 text-sm flex items-center justify-center gap-2">
@@ -51,8 +66,16 @@ const ThinkingStream = memo(({ thinking, isLearning }) => {
           </div>
           <div className="break-words">
             {renderThinkingMarkdown(thinking?.text)}
-            <span className="animate-pulse text-violet-400">█</span>
+            {thinking?.streaming && (
+              <span className="inline-block w-0.5 h-4 bg-violet-400 ml-0.5 animate-pulse align-middle" />
+            )}
           </div>
+          {activeToolCall && (
+            <div className="mt-2 flex items-center gap-2 px-2 py-1.5 bg-cyan-900/20 rounded border border-cyan-800/30">
+              <RefreshCw className="w-3 h-3 text-cyan-400 animate-spin" />
+              <span className="text-[10px] font-mono text-cyan-300">{activeToolCall.tool}()</span>
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -113,16 +136,35 @@ const ToolCallRow = memo(({ toolCall }) => {
 ToolCallRow.displayName = 'ToolCallRow';
 
 /**
- * Trade Row - Shows a single trade
+ * Trade Row - Shows a single trade with time, status, and reasoning
  */
 const TradeRow = memo(({ trade }) => {
+  const [expanded, setExpanded] = useState(false);
   const sideColor = trade.side === 'yes' ? 'text-green-400' : 'text-red-400';
   const sideBg = trade.side === 'yes' ? 'bg-green-900/30 border-green-600/20' : 'bg-red-900/30 border-red-600/20';
   const isSell = trade.action === 'sell';
 
+  const statusStyle = {
+    executed: 'bg-emerald-900/30 border-emerald-600/20 text-emerald-400',
+    resting: 'bg-amber-900/30 border-amber-600/20 text-amber-400',
+    canceled: 'bg-gray-800/30 border-gray-600/20 text-gray-400',
+    cancelled: 'bg-gray-800/30 border-gray-600/20 text-gray-400',
+    unknown: 'bg-gray-800/30 border-gray-600/20 text-gray-500',
+  };
+  const orderStatus = trade.orderStatus || 'executed';
+  const statusLabel = orderStatus === 'resting' ? 'RESTING' : orderStatus.toUpperCase();
+
+  const totalCost = trade.contracts && trade.priceCents
+    ? ((trade.contracts * trade.priceCents) / 100).toFixed(2)
+    : null;
+
   return (
-    <div className="p-3 bg-gray-800/30 rounded-lg border border-gray-700/20 mb-2">
-      <div className="flex items-center justify-between mb-2">
+    <div
+      className="p-3 bg-gray-800/30 rounded-lg border border-gray-700/20 mb-2 cursor-pointer hover:bg-gray-800/40 transition-colors"
+      onClick={() => setExpanded(!expanded)}
+    >
+      {/* Row 1: Action badges + ticker + time */}
+      <div className="flex items-center justify-between mb-1.5">
         <div className="flex items-center gap-2">
           <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold border ${
             isSell ? 'bg-amber-900/30 border-amber-600/20 text-amber-400' : 'bg-blue-900/30 border-blue-600/20 text-blue-400'
@@ -135,13 +177,44 @@ const TradeRow = memo(({ trade }) => {
           <span className="font-mono text-xs text-gray-300">{trade.ticker}</span>
         </div>
         <div className="flex items-center gap-2">
-          <span className="text-xs text-gray-400">{trade.contracts} contracts</span>
-          <span className="font-mono text-xs text-emerald-400">{trade.priceCents}c</span>
+          <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold border ${statusStyle[orderStatus] || statusStyle.unknown}`}>
+            {statusLabel}
+          </span>
+          {trade.timestamp && (
+            <span className="font-mono text-[10px] text-gray-500 flex items-center gap-1">
+              <Clock className="w-3 h-3" />
+              {trade.timestamp}
+            </span>
+          )}
         </div>
       </div>
-      <div className="text-[10px] text-gray-500 truncate" title={trade.reasoning}>
-        {trade.reasoning}
+
+      {/* Row 2: Contracts, price, total */}
+      <div className="flex items-center justify-between mb-1.5">
+        <div className="flex items-center gap-3 text-xs">
+          <span className="text-gray-400">
+            {trade.contracts}x @ <span className="font-mono text-emerald-400">{trade.priceCents}c</span>
+          </span>
+          {trade.limitPriceCents && trade.limitPriceCents !== trade.priceCents && (
+            <span className="text-[10px] text-gray-600">
+              (limit: {trade.limitPriceCents}c)
+            </span>
+          )}
+        </div>
+        {totalCost && (
+          <span className="font-mono text-xs font-bold text-emerald-400">${totalCost}</span>
+        )}
       </div>
+
+      {/* Row 3: Reasoning (truncated, click to expand) */}
+      {trade.reasoning && (
+        <div className={`text-[11px] text-gray-400 leading-relaxed ${expanded ? '' : 'line-clamp-2'}`}>
+          {trade.reasoning}
+        </div>
+      )}
+      {trade.reasoning && trade.reasoning.length > 120 && !expanded && (
+        <span className="text-[10px] text-violet-400 mt-0.5 inline-block">click to expand</span>
+      )}
     </div>
   );
 });
@@ -360,6 +433,7 @@ CostPanel.displayName = 'CostPanel';
 const DeepAgentPanel = ({
   agentState,
   thinking,
+  activeToolCall = null,
   toolCalls = [],
   trades = [],
   settlements = [],
@@ -368,6 +442,8 @@ const DeepAgentPanel = ({
   isLearning = false,
   statsOnly = false,
   costData = null,
+  watchdog = null,
+  cycleCountdown = null,
 }) => {
   const [isExpanded, setIsExpanded] = useState(true);
   const [showTools, setShowTools] = useState(false);
@@ -420,6 +496,11 @@ const DeepAgentPanel = ({
                   <span className="text-gray-600">|</span>
                   <span className="text-[10px] text-gray-500">
                     Cycle <span className="text-violet-400 font-mono">{agentState.cycleCount}</span>
+                    {cycleCountdown != null && cycleCountdown > 0 && (
+                      <span className="text-gray-600 font-mono ml-1">
+                        ({Math.floor(cycleCountdown / 60)}:{String(cycleCountdown % 60).padStart(2, '0')})
+                      </span>
+                    )}
                   </span>
                 </>
               )}
@@ -429,9 +510,16 @@ const DeepAgentPanel = ({
         <div className="flex items-center space-x-3">
           <div data-testid="deep-agent-status" className={`
             inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold border
-            ${statusBg} ${statusColor}
+            ${watchdog?.permanentlyStopped
+              ? 'bg-rose-900/40 border-rose-600/30 text-rose-400'
+              : `${statusBg} ${statusColor}`}
           `}>
-            {isRunning ? (
+            {watchdog?.permanentlyStopped ? (
+              <>
+                <AlertCircle className="w-3 h-3 mr-1" />
+                STOPPED (circuit break)
+              </>
+            ) : isRunning ? (
               <>
                 <RefreshCw className="w-3 h-3 mr-1 animate-spin" />
                 RUNNING
@@ -443,6 +531,11 @@ const DeepAgentPanel = ({
               </>
             )}
           </div>
+          {watchdog && !watchdog.permanentlyStopped && watchdog.restartsThisHour > 0 && (
+            <span className="text-[9px] font-mono text-amber-400">
+              (restarts: {watchdog.restartsThisHour}/{watchdog.maxRestartsPerHour})
+            </span>
+          )}
           {isExpanded ? (
             <ChevronDown className="w-4 h-4 text-gray-400" />
           ) : (
@@ -553,7 +646,7 @@ const DeepAgentPanel = ({
               <Brain className="w-3 h-3 text-gray-500" />
               <span className="text-[10px] text-gray-500 uppercase tracking-wider font-medium">Thinking</span>
             </div>
-            <ThinkingStream thinking={thinking} isLearning={isLearning} />
+            <ThinkingStream thinking={thinking} isLearning={isLearning} activeToolCall={activeToolCall} />
           </div>
 
           {/* Recent Activity */}
@@ -592,11 +685,14 @@ const DeepAgentPanel = ({
               <div className="flex items-center space-x-2 mb-2">
                 <DollarSign className="w-3 h-3 text-gray-500" />
                 <span className="text-[10px] text-gray-500 uppercase tracking-wider font-medium">
-                  Recent Trades
+                  Trades
+                </span>
+                <span className="px-1.5 py-0.5 bg-gray-700/50 text-gray-400 text-[9px] rounded">
+                  {trades.length}
                 </span>
               </div>
-              <div className="max-h-[200px] overflow-y-auto">
-                {trades.slice(0, 5).map((trade) => (
+              <div className="max-h-[400px] overflow-y-auto">
+                {trades.slice(0, 10).map((trade) => (
                   <TradeRow key={trade.id} trade={trade} />
                 ))}
               </div>

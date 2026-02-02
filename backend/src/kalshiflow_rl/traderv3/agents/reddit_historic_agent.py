@@ -14,11 +14,21 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+import warnings
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 from .base_agent import BaseAgent
+
+# Suppress PRAW async environment warning.
+# PRAW detects an active event loop and emits a warning, but our blocking calls
+# are already wrapped in asyncio.to_thread(). The remaining attribute accesses
+# (title, url, etc.) are lightweight and safe on the async thread.
+warnings.filterwarnings(
+    "ignore",
+    message=".*It appears that you are using PRAW in an asynchronous environment.*",
+)
 
 if TYPE_CHECKING:
     from ..core.websocket_manager import V3WebSocketManager

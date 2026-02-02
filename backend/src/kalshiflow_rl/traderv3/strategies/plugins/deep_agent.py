@@ -17,6 +17,7 @@ import time
 from typing import Any, Dict, Optional, TYPE_CHECKING
 
 from ...deep_agent import SelfImprovingAgent, DeepAgentConfig
+from ...deep_agent.trade_executor import TradeExecutor
 from ...services.event_position_tracker import EventPositionTracker
 
 if TYPE_CHECKING:
@@ -49,6 +50,7 @@ class DeepAgentStrategy:
     def __init__(self):
         """Initialize the strategy."""
         self._agent: Optional[SelfImprovingAgent] = None
+        self._trade_executor: Optional[TradeExecutor] = None
         self._event_position_tracker: Optional[EventPositionTracker] = None
         self._running = False
         self._started_at: Optional[float] = None
@@ -124,6 +126,17 @@ class DeepAgentStrategy:
             event_position_tracker=self._event_position_tracker,
         )
 
+        # Create and wire Trade Executor (pure Python, no LLM)
+        self._trade_executor = TradeExecutor(
+            tools=self._agent._tools,
+            ws_manager=websocket_manager,
+            reflection_engine=self._agent._reflection,
+        )
+        # Wire executor into agent and tools so they can submit intents
+        self._agent._trade_executor = self._trade_executor
+        self._agent._tools._trade_executor = self._trade_executor
+        logger.info("[deep_agent] Trade Executor created and wired")
+
         # Bootstrap event configs for all tracked events before starting the agent loop.
         try:
             bootstrap_result = await self._agent.bootstrap_events()
@@ -136,6 +149,10 @@ class DeepAgentStrategy:
 
         # Start the agent
         await self._agent.start()
+
+        # Start executor loop (creates its own internal asyncio task)
+        await self._trade_executor.start()
+        logger.info("[deep_agent] Trade Executor loop started")
 
         # Wire agent to websocket manager for session persistence (snapshot on connect)
         if websocket_manager:
@@ -161,6 +178,11 @@ class DeepAgentStrategy:
                 await self._watchdog_task
             except asyncio.CancelledError:
                 pass
+
+        # Stop trade executor
+        if self._trade_executor:
+            await self._trade_executor.stop()
+            self._trade_executor = None
 
         # Stop the agent
         if self._agent:
@@ -209,6 +231,19 @@ class DeepAgentStrategy:
             "cycle_interval": agent_stats.get("config", {}).get("cycle_interval_seconds", 60),
         }
 
+    def _get_watchdog_state(self) -> Dict[str, Any]:
+        """Get current watchdog state, pruning stale restart timestamps."""
+        now = time.time()
+        self._restart_timestamps = [
+            ts for ts in self._restart_timestamps
+            if now - ts < 3600
+        ]
+        return {
+            "restarts_this_hour": len(self._restart_timestamps),
+            "max_restarts_per_hour": self._max_restarts_per_hour,
+            "permanently_stopped": self._permanently_stopped,
+        }
+
     def get_consolidated_view(self) -> Dict[str, Any]:
         """Get consolidated view for frontend display."""
         stats = self.get_stats()
@@ -244,6 +279,8 @@ class DeepAgentStrategy:
             # Event awareness
             "event_tracker_enabled": stats["event_tracker_enabled"],
             "event_exposure": event_exposure,
+            # Watchdog health
+            "watchdog": self._get_watchdog_state(),
         }
 
     async def _watchdog_loop(self) -> None:
@@ -298,6 +335,10 @@ class DeepAgentStrategy:
                             ),
                             "severity": "critical",
                             "timestamp": time.strftime("%H:%M:%S"),
+                            "watchdog_event": True,
+                            "restarts_this_hour": len(self._restart_timestamps),
+                            "max_restarts_per_hour": self._max_restarts_per_hour,
+                            "permanently_stopped": True,
                         })
                     break
 
@@ -318,11 +359,22 @@ class DeepAgentStrategy:
                         ),
                         "severity": "warning",
                         "timestamp": time.strftime("%H:%M:%S"),
+                        "watchdog_event": True,
+                        "restarts_this_hour": restart_count,
+                        "max_restarts_per_hour": self._max_restarts_per_hour,
+                        "permanently_stopped": False,
                     })
 
                 # Re-create the cycle task
                 self._agent._cycle_task = asyncio.create_task(self._agent._main_loop())
                 logger.info("[deep_agent.watchdog] Cycle task restarted successfully")
+
+                # Also check if executor died and restart it
+                if self._trade_executor and not self._trade_executor.is_running:
+                    logger.warning(
+                        "[deep_agent.watchdog] Executor task also died. Restarting."
+                    )
+                    await self._trade_executor.start()
 
             except asyncio.CancelledError:
                 break
