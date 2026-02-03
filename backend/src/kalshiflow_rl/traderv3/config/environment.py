@@ -94,28 +94,23 @@ class V3Config:
     dormant_volume_threshold: int = 0  # volume_24h <= this is "dormant" (default 0 = no activity)
     dormant_grace_period_hours: float = 1.0  # Minimum hours tracked before considering dormant
 
-    # Entity Trading System Configuration
-    # Reddit entity-based trading (PRAW + langextract extraction pipeline)
-    entity_system_enabled: bool = True  # Enable Reddit entity trading pipeline
-    entity_subreddits: List[str] = field(default_factory=lambda: ["politics", "news", "worldnews"])
-
-    # Reddit Historic Agent (daily digest)
-    reddit_historic_enabled: bool = True
-    reddit_historic_posts_limit: int = 25
-    reddit_historic_comments_per_post: int = 20
-    reddit_historic_cooldown_hours: float = 6.0
-
-    # GDELT BigQuery News Intelligence
-    gdelt_enabled: bool = True
-    gdelt_gcp_project_id: str = ""
-    gdelt_cache_ttl_seconds: float = 900.0
-    gdelt_max_results: int = 100
-    gdelt_default_window_hours: float = 4.0
-    gdelt_max_bytes_per_session: int = 2 * 1024 * 1024 * 1024  # 2GB default (~$0.012)
-
-    # GDELT News Analyzer (Haiku sub-agent)
-    gdelt_analyzer_model: str = "claude-3-5-haiku-20241022"
-    gdelt_analyzer_cache_ttl_seconds: float = 900.0  # 15 min (aligned with GDELT update freq)
+    # Arbitrage Configuration
+    arb_enabled: bool = False  # Enable cross-venue arbitrage system
+    polymarket_enabled: bool = False  # Enable Polymarket price oracle
+    arb_spread_threshold_cents: int = 5  # Minimum spread (cents) to trigger arb trade
+    arb_poll_interval_seconds: float = 5.0  # Polymarket price polling interval
+    arb_max_pairs: int = 50  # Maximum number of tracked pairs
+    arb_max_position_per_pair: int = 100  # Max contracts per pair
+    arb_cooldown_seconds: float = 30.0  # Cooldown between trades on same pair
+    arb_daily_loss_limit_cents: int = 50000  # $500 daily loss limit
+    arb_fee_estimate_cents: int = 7  # Kalshi fee estimate per $1 profit (~7%)
+    arb_min_pair_confidence: float = 0.35  # Pre-filter threshold (LLM validates above this)
+    arb_scan_interval_seconds: float = 300.0  # Agent scanner runs every 5 min
+    arb_auto_index: bool = True  # Auto-build persistent pair index on startup
+    arb_max_events: int = 25  # Maximum events in the pair index
+    arb_active_event_tickers: List[str] = field(default_factory=list)  # Trading whitelist (empty = all)
+    arb_top_n_events: int = 10  # Number of top-volume Kalshi events to track
+    arb_orchestrator_enabled: bool = False  # Enable LLM orchestrator (set True when index is solid)
 
     # State Machine Configuration
     sync_duration: float = 10.0  # seconds for Kalshi data sync
@@ -238,29 +233,24 @@ class V3Config:
         dormant_volume_threshold = int(os.environ.get("DORMANT_VOLUME_THRESHOLD", "0"))
         dormant_grace_period_hours = float(os.environ.get("DORMANT_GRACE_PERIOD_HOURS", "1.0"))
 
-        # Entity Trading System configuration
-        # Reddit entity-based trading (PRAW + langextract extraction pipeline)
-        entity_system_enabled = os.environ.get("V3_ENTITY_SYSTEM_ENABLED", "true").lower() == "true"
-        entity_subreddits_str = os.environ.get("V3_ENTITY_SUBREDDITS", "politics,news,worldnews")
-        entity_subreddits = [s.strip() for s in entity_subreddits_str.split(",") if s.strip()]
-
-        # Reddit Historic Agent (daily digest) configuration
-        reddit_historic_enabled = os.environ.get("V3_REDDIT_HISTORIC_ENABLED", "true").lower() == "true"
-        reddit_historic_posts_limit = int(os.environ.get("V3_REDDIT_HISTORIC_POSTS_LIMIT", "25"))
-        reddit_historic_comments_per_post = int(os.environ.get("V3_REDDIT_HISTORIC_COMMENTS_PER_POST", "20"))
-        reddit_historic_cooldown_hours = float(os.environ.get("V3_REDDIT_HISTORIC_COOLDOWN_HOURS", "6.0"))
-
-        # GDELT BigQuery News Intelligence configuration
-        gdelt_enabled = os.environ.get("GDELT_ENABLED", "true").lower() == "true"
-        gdelt_gcp_project_id = os.environ.get("GDELT_GCP_PROJECT_ID", "")
-        gdelt_cache_ttl_seconds = float(os.environ.get("GDELT_CACHE_TTL_SECONDS", "900.0"))
-        gdelt_max_results = int(os.environ.get("GDELT_MAX_RESULTS", "100"))
-        gdelt_default_window_hours = float(os.environ.get("GDELT_DEFAULT_WINDOW_HOURS", "4.0"))
-        gdelt_max_bytes_per_session = int(os.environ.get("GDELT_MAX_BYTES_PER_SESSION", str(2 * 1024 * 1024 * 1024)))
-
-        # GDELT News Analyzer (Haiku sub-agent) configuration
-        gdelt_analyzer_model = os.environ.get("GDELT_ANALYZER_MODEL", "claude-3-5-haiku-20241022")
-        gdelt_analyzer_cache_ttl_seconds = float(os.environ.get("GDELT_ANALYZER_CACHE_TTL_SECONDS", "900.0"))
+        # Arbitrage configuration
+        arb_enabled = os.environ.get("V3_ARB_ENABLED", "false").lower() == "true"
+        polymarket_enabled = os.environ.get("V3_POLYMARKET_ENABLED", "false").lower() == "true"
+        arb_spread_threshold_cents = int(os.environ.get("V3_ARB_SPREAD_THRESHOLD_CENTS", "5"))
+        arb_poll_interval_seconds = float(os.environ.get("V3_ARB_POLL_INTERVAL_SECONDS", "5.0"))
+        arb_max_pairs = int(os.environ.get("V3_ARB_MAX_PAIRS", "50"))
+        arb_max_position_per_pair = int(os.environ.get("V3_ARB_MAX_POSITION_PER_PAIR", "100"))
+        arb_cooldown_seconds = float(os.environ.get("V3_ARB_COOLDOWN_SECONDS", "30.0"))
+        arb_daily_loss_limit_cents = int(os.environ.get("V3_ARB_DAILY_LOSS_LIMIT_CENTS", "50000"))
+        arb_fee_estimate_cents = int(os.environ.get("V3_ARB_FEE_ESTIMATE_CENTS", "7"))
+        arb_min_pair_confidence = float(os.environ.get("V3_ARB_MIN_PAIR_CONFIDENCE", "0.35"))
+        arb_scan_interval_seconds = float(os.environ.get("V3_ARB_SCAN_INTERVAL_SECONDS", "300.0"))
+        arb_auto_index = os.environ.get("V3_ARB_AUTO_INDEX", "true").lower() == "true"
+        arb_max_events = int(os.environ.get("V3_ARB_MAX_EVENTS", "25"))
+        arb_active_event_tickers_str = os.environ.get("V3_ARB_ACTIVE_EVENT_TICKERS", "")
+        arb_active_event_tickers = [t.strip() for t in arb_active_event_tickers_str.split(",") if t.strip()]
+        arb_top_n_events = int(os.environ.get("V3_ARB_TOP_N_EVENTS", "10"))
+        arb_orchestrator_enabled = os.environ.get("V3_ARB_ORCHESTRATOR_ENABLED", "false").lower() == "true"
 
         sync_duration = float(os.environ.get("V3_SYNC_DURATION", os.environ.get("V3_CALIBRATION_DURATION", "10.0")))
         health_check_interval = float(os.environ.get("V3_HEALTH_CHECK_INTERVAL", "5.0"))
@@ -310,20 +300,22 @@ class V3Config:
             dormant_detection_enabled=dormant_detection_enabled,
             dormant_volume_threshold=dormant_volume_threshold,
             dormant_grace_period_hours=dormant_grace_period_hours,
-            entity_system_enabled=entity_system_enabled,
-            entity_subreddits=entity_subreddits,
-            reddit_historic_enabled=reddit_historic_enabled,
-            reddit_historic_posts_limit=reddit_historic_posts_limit,
-            reddit_historic_comments_per_post=reddit_historic_comments_per_post,
-            reddit_historic_cooldown_hours=reddit_historic_cooldown_hours,
-            gdelt_enabled=gdelt_enabled,
-            gdelt_gcp_project_id=gdelt_gcp_project_id,
-            gdelt_cache_ttl_seconds=gdelt_cache_ttl_seconds,
-            gdelt_max_results=gdelt_max_results,
-            gdelt_default_window_hours=gdelt_default_window_hours,
-            gdelt_max_bytes_per_session=gdelt_max_bytes_per_session,
-            gdelt_analyzer_model=gdelt_analyzer_model,
-            gdelt_analyzer_cache_ttl_seconds=gdelt_analyzer_cache_ttl_seconds,
+            arb_enabled=arb_enabled,
+            polymarket_enabled=polymarket_enabled,
+            arb_spread_threshold_cents=arb_spread_threshold_cents,
+            arb_poll_interval_seconds=arb_poll_interval_seconds,
+            arb_max_pairs=arb_max_pairs,
+            arb_max_position_per_pair=arb_max_position_per_pair,
+            arb_cooldown_seconds=arb_cooldown_seconds,
+            arb_daily_loss_limit_cents=arb_daily_loss_limit_cents,
+            arb_fee_estimate_cents=arb_fee_estimate_cents,
+            arb_min_pair_confidence=arb_min_pair_confidence,
+            arb_scan_interval_seconds=arb_scan_interval_seconds,
+            arb_auto_index=arb_auto_index,
+            arb_max_events=arb_max_events,
+            arb_active_event_tickers=arb_active_event_tickers,
+            arb_top_n_events=arb_top_n_events,
+            arb_orchestrator_enabled=arb_orchestrator_enabled,
             sync_duration=sync_duration,
             health_check_interval=health_check_interval,
             error_recovery_delay=error_recovery_delay,
@@ -368,25 +360,25 @@ class V3Config:
             logger.info(f"  - Order TTL: {order_ttl_seconds}s (auto-cancel stale resting orders)")
         else:
             logger.info(f"  - Order TTL: DISABLED")
-        if entity_system_enabled:
-            logger.info(f"  - Entity trading: ENABLED")
-            logger.info(f"    - Subreddits: r/{', r/'.join(entity_subreddits)}")
-        else:
-            logger.info(f"  - Entity trading: DISABLED")
-
-        # Log GDELT config
-        if gdelt_enabled and gdelt_gcp_project_id:
-            logger.info(f"  - GDELT news intelligence: ENABLED (project={gdelt_gcp_project_id}, cache={gdelt_cache_ttl_seconds}s)")
-        elif gdelt_enabled:
-            logger.warning(f"  - GDELT news intelligence: ENABLED but no GCP project ID set (will fail)")
-        else:
-            logger.info(f"  - GDELT news intelligence: DISABLED")
-
         # Log event tracking config
         if event_tracking_enabled:
             logger.info(f"  - Event tracking: ENABLED (action={event_exposure_action}, loss>{event_loss_threshold_cents}c, risk>{event_risk_threshold_cents}c)")
         else:
             logger.info(f"  - Event tracking: DISABLED")
+
+        # Log arb config
+        if arb_enabled:
+            logger.info(f"  - Arbitrage: ENABLED (threshold={arb_spread_threshold_cents}c, max_pairs={arb_max_pairs}, cooldown={arb_cooldown_seconds}s)")
+            if polymarket_enabled:
+                logger.info(f"    - Polymarket poller: interval={arb_poll_interval_seconds}s, max_position={arb_max_position_per_pair}")
+            else:
+                logger.warning(f"  - WARNING: arb_enabled=true but polymarket_enabled=false - arb system will have no Poly prices")
+            if arb_auto_index:
+                logger.info(f"    - Auto index: max_events={arb_max_events}")
+            if arb_active_event_tickers:
+                logger.info(f"    - Trading whitelist: {', '.join(arb_active_event_tickers)}")
+        else:
+            logger.info(f"  - Arbitrage: DISABLED")
 
         return config
     

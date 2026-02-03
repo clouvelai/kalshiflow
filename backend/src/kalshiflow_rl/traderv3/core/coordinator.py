@@ -38,17 +38,6 @@ from ..services.trading_decision_service import TradingDecisionService
 from ..services.listener_bootstrap_service import ListenerBootstrapService
 from ..services.order_cleanup_service import OrderCleanupService
 from ..services.event_position_tracker import EventPositionTracker
-from ..strategies import DeepAgentStrategy
-
-# Entity trading agents (optional, for Reddit entity-based trading)
-from ..agents import (
-    RedditEntityAgent,
-    RedditEntityAgentConfig,
-    RedditHistoricAgent,
-    RedditHistoricAgentConfig,
-    PriceImpactAgent,
-)
-from ..agents.price_impact_agent import ExtractionRelayConfig
 
 logger = logging.getLogger("kalshiflow_rl.traderv3.core.coordinator")
 
@@ -56,16 +45,16 @@ logger = logging.getLogger("kalshiflow_rl.traderv3.core.coordinator")
 class V3Coordinator:
     """
     Central coordinator for TRADER V3.
-    
+
     Responsibilities:
     - Component lifecycle management
     - Health monitoring
     - Status reporting
     - Graceful shutdown
-    
+
     NO business logic - just orchestration.
     """
-    
+
     def __init__(
         self,
         config: V3Config,
@@ -76,18 +65,6 @@ class V3Coordinator:
         trading_client_integration: Optional['V3TradingClientIntegration'] = None,
         trades_integration: Optional['V3TradesIntegration'] = None
     ):
-        """
-        Initialize coordinator.
-
-        Args:
-            config: V3 configuration
-            state_machine: State machine instance
-            event_bus: Event bus instance
-            websocket_manager: WebSocket manager instance
-            orderbook_integration: Orderbook integration instance
-            trading_client_integration: Optional trading client integration
-            trades_integration: Optional trades integration for public trades stream
-        """
         self._config = config
         self._state_machine = state_machine
         self._event_bus = event_bus
@@ -101,7 +78,7 @@ class V3Coordinator:
 
         # Initialize state container
         self._state_container = V3StateContainer()
-        
+
         # Initialize health monitor
         self._health_monitor = V3HealthMonitor(
             config=config,
@@ -113,7 +90,7 @@ class V3Coordinator:
             trading_client_integration=trading_client_integration,
             trades_integration=trades_integration
         )
-        
+
         # Initialize status reporter
         self._status_reporter = V3StatusReporter(
             config=config,
@@ -151,20 +128,16 @@ class V3Coordinator:
             # Set state container for immediate trading state on client connect
             self._websocket_manager.set_state_container(self._state_container)
 
-        # Deep agent strategy (sole trading strategy)
-        self._deep_agent_strategy: Optional[DeepAgentStrategy] = None
-
         # Event position tracker (initialized in _connect_lifecycle when TrackedMarketsState is available)
-        # Tracks positions grouped by event_ticker to detect correlated exposure
         self._event_position_tracker: Optional[EventPositionTracker] = None
 
-        # Position listener for real-time position updates (initialized later if trading client available)
+        # Position listener for real-time position updates
         self._position_listener: Optional['PositionListener'] = None
 
-        # Market ticker listener for real-time price updates (initialized later if trading client available)
+        # Market ticker listener for real-time price updates
         self._market_ticker_listener: Optional['MarketTickerListener'] = None
 
-        # Market price syncer for REST API price fetching (initialized later if trading client available)
+        # Market price syncer for REST API price fetching
         self._market_price_syncer: Optional['MarketPriceSyncer'] = None
 
         # Trading state syncer for periodic balance/positions/orders/settlements sync
@@ -173,7 +146,7 @@ class V3Coordinator:
         # Fill listener for real-time order fill notifications
         self._fill_listener: Optional['FillListener'] = None
 
-        # Lifecycle mode components (initialized when no target tickers specified)
+        # Lifecycle mode components
         self._lifecycle_client: Optional['LifecycleClient'] = None
         self._lifecycle_integration: Optional['V3LifecycleIntegration'] = None
         self._tracked_markets_state: Optional['TrackedMarketsState'] = None
@@ -181,16 +154,16 @@ class V3Coordinator:
         self._lifecycle_syncer: Optional['TrackedMarketsSyncer'] = None
         self._upcoming_markets_syncer: Optional['UpcomingMarketsSyncer'] = None
         self._api_discovery_syncer: Optional['ApiDiscoverySyncer'] = None
-        self._trade_flow_service = None  # TradeFlowService for live trade feed to UX
+        self._trade_flow_service = None
 
-        # Extraction-based entity trading system
-        self._entity_system_enabled = config.entity_system_enabled if hasattr(config, 'entity_system_enabled') else False
-        self._reddit_entity_agent: Optional[RedditEntityAgent] = None
-        self._reddit_historic_agent: Optional[RedditHistoricAgent] = None
-        self._price_impact_agent: Optional[PriceImpactAgent] = None  # Actually ExtractionSignalRelay
-        self._gdelt_client = None       # GDELTClient (BigQuery GKG), initialized if enabled
-        self._gdelt_doc_client = None   # GDELTDocClient (free DOC API), always available
-        self._gdelt_news_analyzer = None  # GDELTNewsAnalyzer (Haiku sub-agent)
+        # Arbitrage components (initialized in _transition_to_ready when arb_enabled)
+        self._pair_registry = None
+        self._poly_client = None
+        self._poly_poller = None
+        self._poly_ws_client = None
+        self._arb_strategy = None
+        self._pair_index_service = None
+        self._arb_trades_client = None
 
         self._started_at: Optional[float] = None
         self._running = False
@@ -198,42 +171,33 @@ class V3Coordinator:
         # Main event loop task
         self._event_loop_task: Optional[asyncio.Task] = None
 
-        # Monitoring tasks (tracked for proper cleanup)
+        # Monitoring tasks
         self._health_monitor_task: Optional[asyncio.Task] = None
         self._status_reporter_task: Optional[asyncio.Task] = None
 
         logger.info("V3 Coordinator initialized")
-    
+
     async def start(self) -> None:
-        """Start the V3 trader system - just initialization."""
+        """Start the V3 trader system."""
         if self._running:
             logger.warning("V3 Coordinator is already running")
             return
-        
+
         try:
-            # Phase 1: Initialize components
             await self._initialize_components()
-
-            # Mark running BEFORE Phase 2 so stop() can clean up Phase 1
-            # components (event_bus, websocket_manager, state_machine) if
-            # Phase 2 fails and the except block calls stop().
             self._running = True
-
-            # Phase 2: Establish connections
             await self._establish_connections()
-
-            # Phase 3: Start event loop
             self._event_loop_task = asyncio.create_task(self._run_event_loop())
-            
+
             logger.info("=" * 60)
-            logger.info("✅ TRADER V3 STARTED SUCCESSFULLY")
+            logger.info("TRADER V3 STARTED SUCCESSFULLY")
             logger.info("=" * 60)
-            
+
         except Exception as e:
             logger.error(f"Failed to start V3 Coordinator: {e}")
             await self.stop()
             raise
-    
+
     async def _initialize_components(self) -> None:
         """Initialize all core components in order."""
         logger.info("=" * 60)
@@ -241,40 +205,33 @@ class V3Coordinator:
         logger.info(f"Environment: {self._config.get_environment_name()}")
         logger.info(f"Markets: {', '.join(self._config.market_tickers[:3])}{'...' if len(self._config.market_tickers) > 3 else ''}")
         logger.info("=" * 60)
-        
+
         self._started_at = time.time()
         self._status_reporter.set_started_at(self._started_at)
-        
-        # Start components (no connections yet)
+
         logger.info("1/3 Starting Event Bus...")
         await self._event_bus.start()
-        
+
         logger.info("2/3 Starting WebSocket Manager...")
         await self._websocket_manager.start()
-        
+
         logger.info("3/3 Starting State Machine...")
         await self._state_machine.start()
-        
+
         await self._status_reporter.emit_status_update("System initializing")
-    
+
     async def _establish_connections(self) -> None:
         """Establish all external connections."""
-        # Orderbook connection
         await self._connect_orderbook()
-
-        # Lifecycle connection (for lifecycle mode market discovery)
         await self._connect_lifecycle()
 
-        # Trades connection (if configured - optional, for public trades stream)
         if self._trades_integration:
             await self._connect_trades()
 
-        # Trading client connection (if configured)
         if self._trading_client_integration:
             await self._connect_trading_client()
             await self._sync_trading_state()
 
-            # Cleanup orphaned orders on startup if configured
             if self._config.cleanup_on_startup:
                 order_cleanup = OrderCleanupService(
                     trading_client=self._trading_client_integration,
@@ -282,32 +239,15 @@ class V3Coordinator:
                 )
                 await order_cleanup.cleanup_orphaned_orders()
 
-            # Connect real-time position listener (non-blocking, falls back to polling on failure)
             await self._connect_position_listener()
-
-            # Connect market ticker listener for real-time prices (non-blocking, optional)
             await self._connect_market_ticker_listener()
-
-            # Start market price syncer for REST API price fetching
             await self._start_market_price_syncer()
-
-            # Start trading state syncer for periodic Kalshi sync
             await self._start_trading_state_syncer()
-
-            # Connect fill listener for real-time order fill notifications
             await self._connect_fill_listener()
-
-            # Start API discovery syncer AFTER trading client is connected
-            # This must come after trading client because it uses REST API calls
             await self._start_api_discovery()
 
-            # Start entity trading system (if enabled)
-            # Must be after trading client for REST API access
-            await self._start_entity_system()
-
-        # Transition to READY with actual metrics
         await self._transition_to_ready()
-    
+
     def _market_summary_list(self) -> list:
         """Return a short summary list of market tickers for state metadata."""
         tickers = self._config.market_tickers
@@ -348,19 +288,16 @@ class V3Coordinator:
     async def _connect_orderbook(self) -> None:
         """Connect to orderbook WebSocket and wait for data."""
         logger.info("Connecting to orderbook...")
-
-        # Start integration
         await self._orderbook_integration.start()
 
-        # Wait for connection
-        logger.info("🔄 Waiting for orderbook connection...")
+        logger.info("Waiting for orderbook connection...")
         connection_success = await self._orderbook_integration.wait_for_connection(timeout=30.0)
 
         if not connection_success:
-            logger.warning("⚠️ DEGRADED MODE: Orderbook WebSocket unavailable - continuing without live market data")
+            logger.warning("DEGRADED MODE: Orderbook WebSocket unavailable")
             await self._event_bus.emit_system_activity(
                 activity_type="connection",
-                message="⚠️ DEGRADED MODE: Running without orderbook connection",
+                message="DEGRADED MODE: Running without orderbook connection",
                 metadata={"degraded": True, "reason": "WebSocket unavailable", "severity": "warning"}
             )
             await self._emit_orderbook_state(
@@ -368,16 +305,12 @@ class V3Coordinator:
                 markets_connected=0, snapshots_received=0, deltas_received=0,
                 connection_established=False, first_snapshot_received=False, degraded=True,
             )
-            # Continue to ready state in degraded mode - don't return here
         else:
-            # Wait for first snapshot
             logger.info("Waiting for initial orderbook snapshot...")
             data_flowing = await self._orderbook_integration.wait_for_first_snapshot(timeout=10.0)
-
             if not data_flowing:
                 logger.warning("No orderbook data received - continuing anyway")
 
-        # Collect metrics and transition
         metrics = self._orderbook_integration.get_metrics()
         health_details = self._orderbook_integration.get_health_details()
 
@@ -391,40 +324,24 @@ class V3Coordinator:
         )
 
     async def _connect_trades(self) -> None:
-        """
-        Connect to trades WebSocket for public trades stream.
-
-        This connection is OPTIONAL - the system continues without it
-        if connection fails. Used for RLM strategy trade flow analysis.
-        """
+        """Connect to trades WebSocket for public trades stream (optional)."""
         if not self._trades_integration:
             return
 
         logger.info("Connecting to trades WebSocket...")
 
-        # Inject TrackedMarketsState for pre-filtering trades at source.
-        # This prevents ~76% of event bus queue saturation from untracked markets.
-        # TrackedMarketsState is created in _connect_lifecycle() which runs before this method.
         if self._tracked_markets_state:
             self._trades_integration.set_tracked_markets(self._tracked_markets_state)
         else:
-            logger.warning(
-                "TrackedMarketsState not available - trades will NOT be pre-filtered. "
-                "This may cause event bus queue saturation."
-            )
+            logger.warning("TrackedMarketsState not available - trades will NOT be pre-filtered.")
 
-        # Start the trades integration (which starts the trades client)
         await self._trades_integration.start()
 
-        # Wait for connection with timeout
         logger.info("Waiting for trades WebSocket connection...")
         connection_success = await self._trades_integration.wait_for_connection(timeout=30.0)
 
         if not connection_success:
-            logger.warning(
-                "Trades WebSocket connection failed - continuing without trades stream. "
-                "This is non-critical, orderbook and trading features remain functional."
-            )
+            logger.warning("Trades WebSocket connection failed - continuing without trades stream.")
             await self._event_bus.emit_system_activity(
                 activity_type="connection",
                 message="Trades stream unavailable (WS connection failed)",
@@ -432,65 +349,44 @@ class V3Coordinator:
             )
             return
 
-        # Wait briefly for first trade to confirm data flow
         trade_flowing = await self._trades_integration.wait_for_first_trade(timeout=10.0)
         if trade_flowing:
             metrics = self._trades_integration.get_metrics()
             logger.info(f"Trades data flowing: {metrics['trades_received']} trades received")
         else:
-            logger.info("No trades received yet - this is normal during quiet market periods")
+            logger.info("No trades received yet - normal during quiet market periods")
 
     async def _connect_lifecycle(self) -> None:
         """
-        Initialize TrackedMarketsState, DeepAgentStrategy, and lifecycle services.
+        Initialize TrackedMarketsState and lifecycle services.
 
-        This method ALWAYS creates:
-        - TrackedMarketsState for market state tracking
-        - DeepAgentStrategy for trading
-        - Component wiring (WebSocketManager, StateContainer, StatusReporter)
-
-        When no target tickers are specified, also starts:
-        - LifecycleClient for lifecycle WebSocket
-        - V3LifecycleIntegration for EventBus integration
-        - EventLifecycleService for event processing
-        - TrackedMarketsSyncer for REST price updates
+        Always creates TrackedMarketsState for market state tracking.
+        When no target tickers are specified, also starts lifecycle discovery services.
         """
         has_target_tickers = bool(self._config.market_tickers)
         mode_description = "Target tickers mode" if has_target_tickers else "Lifecycle discovery mode"
-
         logger.info(f"Starting {mode_description}...")
 
-        # --- Block 1: TrackedMarketsState creation + wiring (FATAL if fails) ---
-        # The system cannot function without market tracking, so re-raise on failure.
         from ..state.tracked_markets import TrackedMarketsState
 
+        # Block 1: TrackedMarketsState (FATAL if fails)
         try:
-            # 1. Create TrackedMarketsState
             self._tracked_markets_state = TrackedMarketsState(
                 max_markets=self._config.lifecycle_max_markets
             )
-
-            # 1a-pre. Wire subscription callbacks on TrackedMarketsState
-            # This ensures orderbook subscriptions stay in sync with tracked markets
-            # When markets are added/removed from tracking, subscriptions follow automatically
             self._tracked_markets_state.set_subscription_callbacks(
                 on_added=self._orderbook_integration.subscribe_market,
                 on_removed=self._orderbook_integration.unsubscribe_market,
             )
-            logger.info("TrackedMarketsState callbacks wired to orderbook integration")
+            logger.info("TrackedMarketsState initialized")
 
-            logger.info("TrackedMarketsState initialized (strategies will self-discover markets)")
-
-            # 2. Set TrackedMarketsState on WebSocketManager, StateContainer, and StatusReporter
             self._websocket_manager.set_tracked_markets_state(self._tracked_markets_state)
             self._state_container.set_tracked_markets(self._tracked_markets_state)
             self._status_reporter.set_tracked_markets_state(self._tracked_markets_state)
 
-            # 2b. Set trading client on StateContainer for settlement result lookups
             if self._trading_client_integration:
                 self._state_container.set_trading_client(self._trading_client_integration)
 
-            # 3. Subscribe to MARKET_DETERMINED for state cleanup (always needed)
             await self._event_bus.subscribe_to_market_determined(self._handle_market_determined_cleanup)
             logger.info("Subscribed to MARKET_DETERMINED for state cleanup")
 
@@ -501,56 +397,36 @@ class V3Coordinator:
                 message=f"FATAL: TrackedMarketsState init failed: {str(e)}",
                 metadata={"error": str(e), "severity": "error"}
             )
-            raise  # Fatal: system cannot function without market tracking
+            raise
 
-        # --- Block 2: DeepAgentStrategy + EventPositionTracker (degraded if fails) ---
-        # These are important but non-fatal. Log error and continue in degraded mode.
+        # Block 2: EventPositionTracker (degraded if fails)
         try:
-            # 4. Initialize DeepAgentStrategy (sole trading strategy)
-            if self._trading_client_integration:
-                self._deep_agent_strategy = DeepAgentStrategy()
-                # Register with health monitor for health tracking
-                self._health_monitor.set_deep_agent_strategy(self._deep_agent_strategy)
-                logger.info("DeepAgentStrategy initialized")
-
-            # 6. Initialize EventPositionTracker (for event-level position tracking)
             if self._config.event_tracking_enabled and self._trading_service:
                 self._event_position_tracker = EventPositionTracker(
                     tracked_markets=self._tracked_markets_state,
                     state_container=self._state_container,
                     config=self._config,
                 )
-                # Inject tracker into trading service for pre-trade checks
                 self._trading_service.set_event_tracker(self._event_position_tracker)
-                # Set on status reporter for WebSocket broadcasts
                 self._status_reporter.set_event_position_tracker(self._event_position_tracker)
-                logger.info("EventPositionTracker initialized for event-level position tracking")
-
+                logger.info("EventPositionTracker initialized")
         except Exception as e:
-            logger.error(f"DeepAgentStrategy/EventPositionTracker init failed (degraded): {e}")
-            self._degraded_subsystems.add("deep_agent_strategy")
+            logger.error(f"EventPositionTracker init failed (degraded): {e}")
+            self._degraded_subsystems.add("event_position_tracker")
             await self._event_bus.emit_system_activity(
                 activity_type="connection",
-                message=f"Strategy subsystem degraded: {str(e)}",
+                message=f"Event tracking subsystem degraded: {str(e)}",
                 metadata={"error": str(e), "severity": "error", "degraded": True}
             )
 
-        # --- Block 3: Lifecycle services (when no target tickers specified) ---
+        # Block 3: Lifecycle services (when no target tickers)
         if not has_target_tickers:
             await self._start_lifecycle_websocket()
         else:
-            logger.info(f"Target tickers specified - skipping lifecycle discovery services")
+            logger.info("Target tickers specified - skipping lifecycle discovery services")
 
     async def _start_lifecycle_websocket(self) -> None:
-        """
-        Start lifecycle WebSocket and broad discovery services.
-
-        Only called when no target tickers are specified. This enables:
-        - Lifecycle WebSocket for real-time market open/close events
-        - EventLifecycleService for processing lifecycle events
-        - TrackedMarketsSyncer for REST price updates
-        - UpcomingMarketsSyncer for scheduled market tracking
-        """
+        """Start lifecycle WebSocket and discovery services."""
         try:
             from ..clients.lifecycle_client import LifecycleClient
             from ..clients.lifecycle_integration import V3LifecycleIntegration
@@ -560,23 +436,19 @@ class V3Coordinator:
             from kalshiflow.auth import KalshiAuth
             from ...data.database import rl_db
 
-            # 1. Create KalshiAuth for lifecycle WebSocket
             auth = KalshiAuth.from_env()
 
-            # 2. Create LifecycleClient
             self._lifecycle_client = LifecycleClient(
                 ws_url=self._config.ws_url,
                 auth=auth,
                 base_reconnect_delay=5.0,
             )
 
-            # 3. Create V3LifecycleIntegration
             self._lifecycle_integration = V3LifecycleIntegration(
                 lifecycle_client=self._lifecycle_client,
                 event_bus=self._event_bus,
             )
 
-            # 4. Create EventLifecycleService
             self._event_lifecycle_service = EventLifecycleService(
                 event_bus=self._event_bus,
                 tracked_markets=self._tracked_markets_state,
@@ -586,10 +458,8 @@ class V3Coordinator:
                 sports_prefixes=self._config.sports_allowed_prefixes,
             )
 
-            # 5. Start lifecycle integration
             await self._lifecycle_integration.start()
 
-            # 6. Wait for connection
             connected = await self._lifecycle_integration.wait_for_connection(timeout=30.0)
             if not connected:
                 logger.warning("Lifecycle connection failed - lifecycle mode degraded")
@@ -600,13 +470,8 @@ class V3Coordinator:
                 )
                 return
 
-            # 7. Start EventLifecycleService
             await self._event_lifecycle_service.start()
 
-            # NOTE: ApiDiscoverySyncer is started AFTER trading client connects
-            # in _start_api_discovery() to ensure the client is ready for REST calls
-
-            # 8. Start TrackedMarketsSyncer (for REST price/volume updates + dormant detection)
             self._lifecycle_syncer = TrackedMarketsSyncer(
                 trading_client=self._trading_client_integration,
                 tracked_markets_state=self._tracked_markets_state,
@@ -618,17 +483,15 @@ class V3Coordinator:
             )
             await self._lifecycle_syncer.start()
 
-            # 9. Start UpcomingMarketsSyncer (for upcoming markets schedule)
             self._upcoming_markets_syncer = UpcomingMarketsSyncer(
                 trading_client=self._trading_client_integration,
                 websocket_manager=self._websocket_manager,
                 event_bus=self._event_bus,
-                sync_interval=60.0,  # Refresh every 60s
-                hours_ahead=24.0,    # 24-hour lookahead window
+                sync_interval=60.0,
+                hours_ahead=24.0,
             )
             await self._upcoming_markets_syncer.start()
             self._websocket_manager.set_upcoming_markets_syncer(self._upcoming_markets_syncer)
-            logger.info("UpcomingMarketsSyncer started - tracking markets opening within 4h")
 
             logger.info(
                 f"Lifecycle mode active - tracking categories: {', '.join(self._config.lifecycle_categories)}"
@@ -653,184 +516,10 @@ class V3Coordinator:
                 metadata={"error": str(e), "severity": "error"}
             )
 
-    async def _start_entity_system(self) -> None:
-        """
-        Start the extraction-based entity trading system.
-
-        Initializes:
-        1. RedditEntityAgent - streams Reddit posts, extracts via KalshiExtractor
-        2. Extraction Signal Relay (PriceImpactAgent) - subscribes to extractions Realtime,
-           broadcasts to frontend, refreshes engagement scores
-
-        The extraction pipeline replaces the old EntityMarketIndex + spaCy approach.
-        Market linking, direction assessment, and multi-class extraction are all
-        handled by langextract with merged event specs from understand_event.
-        """
-        if not self._entity_system_enabled:
-            logger.debug("Entity system disabled")
-            return
-
-        try:
-            logger.info("Starting extraction-based entity system...")
-
-            # 1. Initialize Reddit Entity Agent (streams Reddit, runs KalshiExtractor)
-            reddit_config = RedditEntityAgentConfig(
-                subreddits=self._config.entity_subreddits,
-                skip_existing=False,  # Get historical 100 items
-                enabled=True,
-            )
-            self._reddit_entity_agent = RedditEntityAgent(
-                config=reddit_config,
-                websocket_manager=self._websocket_manager,
-                event_bus=self._event_bus,
-            )
-
-            # 2. Initialize Extraction Signal Relay (Realtime subscription + WebSocket broadcast)
-            relay_config = ExtractionRelayConfig(
-                enabled=True,
-            )
-            self._price_impact_agent = PriceImpactAgent(
-                config=relay_config,
-                websocket_manager=self._websocket_manager,
-                event_bus=self._event_bus,
-            )
-
-            # 3. Enable Supabase Realtime on extractions table
-            await self._enable_entity_realtime()
-
-            # 4. Start agents
-            await self._reddit_entity_agent.start()
-            await self._price_impact_agent.start()
-
-            # Wire reddit agent to websocket manager for entity snapshots on reconnect
-            self._websocket_manager.set_reddit_agent(self._reddit_entity_agent)
-
-            # 4b. Initialize Reddit Historic Agent (daily digest)
-            if self._config.reddit_historic_enabled:
-                try:
-                    historic_config = RedditHistoricAgentConfig(
-                        subreddits=self._config.entity_subreddits,
-                        posts_limit=self._config.reddit_historic_posts_limit,
-                        comments_per_post=self._config.reddit_historic_comments_per_post,
-                        digest_cooldown_seconds=self._config.reddit_historic_cooldown_hours * 3600,
-                    )
-                    self._reddit_historic_agent = RedditHistoricAgent(
-                        config=historic_config,
-                        websocket_manager=self._websocket_manager,
-                        event_bus=self._event_bus,
-                    )
-                    await self._reddit_historic_agent.start()
-                    logger.info("[coordinator] Reddit Historic Agent started for daily digest")
-                except Exception as e:
-                    logger.warning(f"[coordinator] Reddit Historic Agent failed (non-fatal): {e}")
-
-            # 4c. Initialize GDELT BigQuery client (news intelligence)
-            if getattr(self._config, 'gdelt_enabled', False) and getattr(self._config, 'gdelt_gcp_project_id', ''):
-                try:
-                    from ..services.gdelt_client import GDELTClient
-                    self._gdelt_client = GDELTClient(
-                        gcp_project_id=self._config.gdelt_gcp_project_id,
-                        cache_ttl_seconds=self._config.gdelt_cache_ttl_seconds,
-                        max_results=self._config.gdelt_max_results,
-                        default_window_hours=self._config.gdelt_default_window_hours,
-                        max_bytes_per_session=getattr(self._config, 'gdelt_max_bytes_per_session', 500 * 1024 * 1024),
-                    )
-                    logger.info("[coordinator] GDELT client initialized")
-                except ImportError:
-                    logger.warning("[coordinator] GDELT client not available (google-cloud-bigquery not installed)")
-                except Exception as e:
-                    logger.warning(f"[coordinator] GDELT client failed (non-fatal): {e}")
-
-            # 4d. Initialize GDELT DOC API client (free, no BigQuery needed)
-            if getattr(self._config, 'gdelt_enabled', False):
-                try:
-                    from ..services.gdelt_client import GDELTDocClient
-                    self._gdelt_doc_client = GDELTDocClient(
-                        cache_ttl_seconds=getattr(self._config, 'gdelt_cache_ttl_seconds', 900),
-                        max_records=min(getattr(self._config, 'gdelt_max_results', 75), 250),
-                        default_timespan=f"{int(getattr(self._config, 'gdelt_default_window_hours', 4))}h",
-                    )
-                    logger.info("[coordinator] GDELT DOC API client initialized (free)")
-                except Exception as e:
-                    logger.warning(f"[coordinator] GDELT DOC client failed (non-fatal): {e}")
-
-            # 4e. Initialize GDELT News Analyzer (Haiku sub-agent)
-            if self._gdelt_doc_client or self._gdelt_client:
-                try:
-                    from ..services.gdelt_news_analyzer import GDELTNewsAnalyzer, GDELTNewsAnalyzerConfig
-                    analyzer_config = GDELTNewsAnalyzerConfig(
-                        model=getattr(self._config, 'gdelt_analyzer_model', 'claude-3-5-haiku-20241022'),
-                        cache_ttl_seconds=getattr(self._config, 'gdelt_analyzer_cache_ttl_seconds', 900.0),
-                    )
-                    self._gdelt_news_analyzer = GDELTNewsAnalyzer(config=analyzer_config)
-                    # Wire GDELT clients to the analyzer
-                    if self._gdelt_doc_client:
-                        self._gdelt_news_analyzer._gdelt_doc_client = self._gdelt_doc_client
-                    if self._gdelt_client:
-                        self._gdelt_news_analyzer._gdelt_client = self._gdelt_client
-                    logger.info(f"[coordinator] GDELT News Analyzer initialized (model={analyzer_config.model}, cache_ttl={analyzer_config.cache_ttl_seconds}s)")
-                except Exception as e:
-                    logger.warning(f"[coordinator] GDELT News Analyzer failed (non-fatal): {e}")
-
-            subreddit_display = ", ".join(f"r/{s}" for s in self._config.entity_subreddits)
-            await self._event_bus.emit_system_activity(
-                activity_type="entity_system",
-                message=f"Extraction pipeline active - streaming {subreddit_display}",
-                metadata={
-                    "feature": "extraction_pipeline",
-                    "subreddits": self._config.entity_subreddits,
-                    "severity": "info"
-                }
-            )
-            logger.info("Extraction-based entity system started successfully")
-
-        except Exception as e:
-            logger.error(f"Failed to start entity system: {e}")
-            await self._event_bus.emit_system_activity(
-                activity_type="entity_system",
-                message=f"Entity system failed: {str(e)}",
-                metadata={"error": str(e), "severity": "warning"}
-            )
-
-    async def _enable_entity_realtime(self) -> None:
-        """
-        Enable Supabase Realtime on the extractions table.
-
-        The Extraction Signal Relay subscribes to INSERT events via Supabase Realtime.
-        The table must be added to the supabase_realtime publication for
-        Realtime to deliver change events.
-
-        Note: The extractions migration already includes ALTER PUBLICATION,
-        but this ensures it's enabled even if the migration was partial.
-        """
-        try:
-            from ...data.database import rl_db
-
-            db = rl_db
-            if not db or not db._pool:
-                logger.warning("Cannot enable Realtime: database pool not available")
-                return
-
-            async with db._pool.acquire() as conn:
-                for table in ("extractions",):
-                    try:
-                        await conn.execute(
-                            f"ALTER PUBLICATION supabase_realtime ADD TABLE {table}"
-                        )
-                        logger.info(f"Enabled Supabase Realtime for {table}")
-                    except Exception as e:
-                        if "already member" in str(e).lower():
-                            logger.debug(f"Realtime already enabled for {table}")
-                        else:
-                            logger.warning(f"Failed to enable Realtime for {table}: {e}")
-
-        except Exception as e:
-            logger.warning(f"Could not enable Supabase Realtime on extractions table: {e}")
-
     async def _connect_trading_client(self) -> None:
         """Connect to trading API."""
         logger.info("Connecting to trading API...")
-        
+
         await self._state_machine.transition_to(
             V3State.TRADING_CLIENT_CONNECT,
             context="Connecting to trading API",
@@ -840,189 +529,119 @@ class V3Coordinator:
                 "api_url": self._trading_client_integration.api_url
             }
         )
-        
-        logger.info("🔌 TRADING_CLIENT_CONNECT: Actually connecting to Kalshi Trading API...")
+
+        logger.info("TRADING_CLIENT_CONNECT: Connecting to Kalshi Trading API...")
         connected = await self._trading_client_integration.wait_for_connection(timeout=30.0)
-        
+
         if not connected:
             raise RuntimeError("Failed to connect to trading API")
-        
-        # Setup order group for portfolio limits (simplified)
+
         logger.info("Setting up order group for portfolio limits...")
         order_group_id = await self._trading_client_integration.create_or_get_order_group(
-            contracts_limit=10000  # 10K contracts limit
+            contracts_limit=10000
         )
-        
+
         if order_group_id:
-            logger.info(f"✅ Order group ready: {order_group_id[:8]}...")
+            logger.info(f"Order group ready: {order_group_id[:8]}...")
             await self._event_bus.emit_system_activity(
                 activity_type="order_group",
                 message=f"Order group ready: {order_group_id[:8]}... (10K contract limit)",
                 metadata={"order_group_id": order_group_id, "contracts_limit": 10000}
             )
         else:
-            logger.warning("⚠️ Order groups not available - continuing without portfolio limits")
+            logger.warning("Order groups not available - continuing without portfolio limits")
             await self._event_bus.emit_system_activity(
                 activity_type="order_group",
-                message="⚠️ DEGRADED MODE: Order groups unavailable",
+                message="DEGRADED MODE: Order groups unavailable",
                 metadata={"degraded": True, "severity": "warning"}
             )
-    
+
     async def _connect_position_listener(self) -> None:
         """Connect to real-time position updates via WebSocket."""
         if not self._trading_client_integration:
             return
-
         self._position_listener = await self._listener_bootstrap.connect_position_listener(
             on_position_update=self._handle_position_update
         )
 
     async def _handle_position_update(self, event) -> None:
-        """
-        Handle real-time position update from WebSocket.
-
-        Updates the state container and broadcasts to frontend.
-
-        Args:
-            event: MarketPositionEvent from event bus
-        """
+        """Handle real-time position update from WebSocket."""
         try:
             ticker = event.market_ticker
             position_data = event.position_data
-
-            # Update state container
             if await self._state_container.update_single_position(ticker, position_data):
-                # Broadcast updated state to frontend
                 await self._status_reporter.emit_trading_state()
-
-                # Update market ticker subscriptions if positions changed
                 await self._update_market_ticker_subscriptions()
-
                 logger.debug(f"Position update broadcast: {ticker}")
-
         except Exception as e:
             logger.error(f"Error handling position update: {e}")
 
     async def _connect_market_ticker_listener(self) -> None:
         """Connect market ticker listener for real-time price updates."""
         if not self._trading_client_integration:
-            logger.debug("Skipping market ticker listener (no trading client)")
             return
-
         self._market_ticker_listener = await self._listener_bootstrap.connect_market_ticker_listener(
             on_ticker_update=self._handle_market_ticker_update
         )
 
     async def _handle_market_ticker_update(self, event) -> None:
-        """
-        Handle real-time market ticker update from WebSocket.
-
-        Updates the state container with new market prices.
-
-        Args:
-            event: MarketTickerEvent from event bus
-        """
+        """Handle real-time market ticker update from WebSocket."""
         try:
             ticker = event.market_ticker
             price_data = event.price_data
-
-            # Update state container (separate from position data)
             if self._state_container.update_market_price(ticker, price_data):
-                # Broadcast updated state to frontend
-                # Note: We piggyback on trading state broadcast since market prices
-                # are included in get_trading_summary()
                 await self._status_reporter.emit_trading_state()
-
         except Exception as e:
             logger.error(f"Error handling market ticker update: {e}")
 
     async def _handle_market_determined_cleanup(self, event) -> None:
-        """
-        Handle market determined events for state cleanup.
-
-        Cleans up state container and optionally removes from tracked markets
-        to prevent unbounded memory growth.
-
-        Args:
-            event: MarketDeterminedEvent from event bus
-        """
+        """Handle market determined events for state cleanup."""
         try:
             ticker = event.market_ticker
-
-            # Clean up state container (market prices, session tracking)
             cleaned = self._state_container.cleanup_market(ticker)
-
-            # Remove from tracked markets state to prevent unbounded memory growth
             if self._tracked_markets_state:
                 removed = await self._tracked_markets_state.remove_market(ticker)
                 if removed:
                     logger.info(f"Removed determined market from tracking: {ticker}")
-
             if cleaned:
                 logger.info(f"Coordinator cleaned up state for determined market: {ticker}")
-
         except Exception as e:
             logger.error(f"Error handling market determined cleanup: {e}")
 
     async def _update_market_ticker_subscriptions(self) -> None:
-        """
-        Update market ticker subscriptions based on current positions.
-
-        Called when positions change to add/remove ticker subscriptions.
-        """
+        """Update market ticker subscriptions based on current positions."""
         if not self._market_ticker_listener:
             return
-
         if not self._state_container.trading_state:
             return
-
         tickers = list(self._state_container.trading_state.positions.keys())
         await self._market_ticker_listener.update_subscriptions(tickers)
 
     async def _start_market_price_syncer(self) -> None:
-        """
-        Start the market price syncer for REST API price fetching.
-
-        This provides immediate market prices on startup and periodic refresh.
-        Works alongside WebSocket ticker updates.
-        """
+        """Start the market price syncer for REST API price fetching."""
         if not self._trading_client_integration:
-            logger.debug("Skipping market price syncer (no trading client)")
             return
 
         try:
-            # Import here to avoid circular imports
             from ..services.market_price_syncer import MarketPriceSyncer
 
             logger.info("Starting market price syncer...")
-
-            # Create market price syncer with 30s refresh interval
             self._market_price_syncer = MarketPriceSyncer(
                 trading_client=self._trading_client_integration,
                 state_container=self._state_container,
                 event_bus=self._event_bus,
                 sync_interval=30.0,
             )
-
-            # Start the syncer (performs initial sync immediately)
             await self._market_price_syncer.start()
 
-            # Set on status reporter for health broadcasting
             self._status_reporter.set_market_price_syncer(self._market_price_syncer)
-
-            # Register with health monitor for health tracking
             self._health_monitor.set_market_price_syncer(self._market_price_syncer)
-
-            # Set on websocket manager for initial state sends to new clients
             self._websocket_manager.set_market_price_syncer(self._market_price_syncer)
 
-            # Bump trading state version and emit immediately
-            # This ensures any connected clients get the syncer health info
             self._state_container._trading_state_version += 1
             await self._status_reporter.emit_trading_state()
 
             logger.info("Market price syncer active")
-
             await self._event_bus.emit_system_activity(
                 activity_type="connection",
                 message="Market price syncer enabled - REST API refresh every 30s",
@@ -1030,25 +649,19 @@ class V3Coordinator:
             )
 
         except Exception as e:
-            # Don't fail startup if market price syncer fails - it's non-critical
-            # T5.1: Upgrade to error and track degraded state
             logger.error(f"Market price syncer failed: {e}")
             self._market_price_syncer = None
             self._degraded_subsystems.add("market_price_syncer")
 
     async def _start_trading_state_syncer(self) -> None:
-        """Start trading state syncer for periodic balance/positions/orders/settlements sync."""
+        """Start trading state syncer for periodic sync."""
         if not self._trading_client_integration:
-            logger.debug("Skipping trading state syncer (no trading client)")
             return
 
         try:
-            # Import here to avoid circular imports
             from ..services.trading_state_syncer import TradingStateSyncer
 
             logger.info("Starting trading state syncer...")
-
-            # Create trading state syncer with 20s refresh interval
             self._trading_state_syncer = TradingStateSyncer(
                 trading_client=self._trading_client_integration,
                 state_container=self._state_container,
@@ -1056,18 +669,11 @@ class V3Coordinator:
                 status_reporter=self._status_reporter,
                 sync_interval=20.0,
             )
-
-            # Pass config for TTL cleanup (needed for event-driven strategies)
             self._trading_state_syncer.set_config(self._config)
-
-            # Start the syncer (performs initial sync immediately)
             await self._trading_state_syncer.start()
-
-            # Register with health monitor for health tracking
             self._health_monitor.set_trading_state_syncer(self._trading_state_syncer)
 
             logger.info("Trading state syncer active")
-
             await self._event_bus.emit_system_activity(
                 activity_type="connection",
                 message="Trading state syncer enabled - Kalshi sync every 20s",
@@ -1075,33 +681,18 @@ class V3Coordinator:
             )
 
         except Exception as e:
-            # Don't fail startup if trading state syncer fails - it's non-critical
-            # T5.1: Upgrade to error and track degraded state
             logger.error(f"Trading state syncer failed: {e}")
             self._trading_state_syncer = None
             self._degraded_subsystems.add("trading_state_syncer")
 
     async def _start_api_discovery(self) -> None:
-        """
-        Start API discovery syncer for already-open markets.
-
-        This MUST be called AFTER trading client connects since it uses
-        REST API calls to fetch open markets. Called from _establish_connections()
-        after _connect_trading_client().
-        """
-        # Skip if user specified target tickers (they chose specific markets)
+        """Start API discovery syncer for already-open markets."""
         if self._config.market_tickers:
-            logger.debug("Skipping API discovery (target tickers specified)")
             return
-
         if not self._config.api_discovery_enabled:
-            logger.debug("Skipping API discovery (disabled in config)")
             return
-
         if not self._trading_client_integration:
-            logger.debug("Skipping API discovery (no trading client)")
             return
-
         if not self._event_lifecycle_service:
             logger.warning("Skipping API discovery (no event lifecycle service)")
             return
@@ -1109,8 +700,7 @@ class V3Coordinator:
         try:
             from ..services.api_discovery_syncer import ApiDiscoverySyncer
 
-            logger.info("Starting API discovery syncer for already-open markets...")
-
+            logger.info("Starting API discovery syncer...")
             self._api_discovery_syncer = ApiDiscoverySyncer(
                 trading_client=self._trading_client_integration,
                 event_lifecycle_service=self._event_lifecycle_service,
@@ -1125,12 +715,9 @@ class V3Coordinator:
             )
             await self._api_discovery_syncer.start()
 
-            sports_filter_msg = ""
-            if "sports" in [c.lower() for c in self._config.lifecycle_categories] and self._config.sports_allowed_prefixes:
-                sports_filter_msg = f", sports={self._config.sports_allowed_prefixes}"
             logger.info(
                 f"API discovery syncer active - "
-                f"categories: {', '.join(self._config.lifecycle_categories)}{sports_filter_msg}, "
+                f"categories: {', '.join(self._config.lifecycle_categories)}, "
                 f"interval: {self._config.api_discovery_interval}s"
             )
 
@@ -1145,39 +732,24 @@ class V3Coordinator:
     async def _connect_fill_listener(self) -> None:
         """Connect fill listener for real-time order fill notifications."""
         if not self._trading_client_integration:
-            logger.debug("Skipping fill listener (no trading client)")
             return
-
         self._fill_listener = await self._listener_bootstrap.connect_fill_listener(
             on_order_fill=self._handle_order_fill
         )
 
     async def _handle_order_fill(self, event) -> None:
-        """
-        Handle real-time order fill notification.
-
-        Emits a satisfying console message when an order fills.
-        This is the key UX moment for the fill listener.
-
-        Args:
-            event: OrderFillEvent from event bus
-        """
+        """Handle real-time order fill notification."""
         try:
-            # Extract fill details
             ticker = event.market_ticker
-            action = event.action.upper()  # BUY or SELL
-            side = event.side.upper()  # YES or NO
+            action = event.action.upper()
+            side = event.side.upper()
             count = event.count
             price_cents = event.price_cents
             total_cents = price_cents * count
-
-            # Format dollar amount nicely
             total_dollars = total_cents / 100
 
-            # Build satisfying console message
             message = f"Order filled: {action} {count} {side} {ticker} @ {price_cents}c (${total_dollars:.2f})"
 
-            # Emit as system activity with success severity for nice UX
             await self._event_bus.emit_system_activity(
                 activity_type="order_fill",
                 message=message,
@@ -1196,22 +768,16 @@ class V3Coordinator:
                 }
             )
 
-            # Log at info level for visibility
             logger.info(f"ORDER FILL: {message}")
 
-            # Remove filled order from state and broadcast update immediately
-            # This provides instant UI feedback without waiting for REST sync
             if event.order_id:
                 removed = self._state_container.remove_order(event.order_id)
-
-                # Update trading attachment for tracked markets (real-time fill update)
                 await self._state_container.mark_order_filled_in_attachment(
                     ticker=ticker,
                     order_id=event.order_id,
                     fill_count=count,
                     fill_price=price_cents
                 )
-
                 if removed:
                     await self._status_reporter.emit_trading_state()
 
@@ -1220,24 +786,17 @@ class V3Coordinator:
 
     async def _sync_trading_state(self) -> None:
         """Perform initial trading state sync."""
-        logger.info("🔄 Syncing with Kalshi...")
+        logger.info("Syncing with Kalshi...")
 
         state, changes = await self._trading_client_integration.sync_with_kalshi()
-
-        # Store in container
         state_changed = await self._state_container.update_trading_state(state, changes)
-
-        # Initialize session P&L tracking on first sync
-        # This captures starting balance/portfolio for session P&L calculation
         self._state_container.initialize_session_pnl(state.balance, state.portfolio_value)
 
-        # Emit trading state if changed
         if state_changed:
             await self._status_reporter.emit_trading_state()
-        
-        # Log the sync results
-        if changes and (abs(changes.balance_change) > 0 or 
-                      changes.position_count_change != 0 or 
+
+        if changes and (abs(changes.balance_change) > 0 or
+                      changes.position_count_change != 0 or
                       changes.order_count_change != 0):
             logger.info(
                 f"Kalshi sync complete - Balance: {state.balance} cents ({changes.balance_change:+d}), "
@@ -1249,7 +808,7 @@ class V3Coordinator:
                 f"Initial Kalshi sync - Balance: {state.balance} cents, "
                 f"Positions: {state.position_count}, Orders: {state.order_count}"
             )
-        
+
         await self._state_machine.transition_to(
             V3State.KALSHI_DATA_SYNC,
             context=f"Synced: {state.position_count} positions, {state.order_count} orders",
@@ -1262,14 +821,12 @@ class V3Coordinator:
                 "orders": state.order_count
             }
         )
-    
+
     async def _transition_to_ready(self) -> None:
         """Transition to READY state with collected metrics."""
-        # Gather metrics
         orderbook_metrics = self._orderbook_integration.get_metrics()
         health_details = self._orderbook_integration.get_health_details()
-        
-        # Build READY state metadata
+
         ready_metadata = {
             "markets_connected": orderbook_metrics["markets_connected"],
             "snapshots_received": orderbook_metrics["snapshots_received"],
@@ -1278,8 +835,7 @@ class V3Coordinator:
             "first_snapshot_received": health_details["first_snapshot_received"],
             "environment": self._config.get_environment_name()
         }
-        
-        # Add trading client info if available
+
         if self._trading_client_integration and self._state_container.trading_state:
             trading_state = self._state_container.trading_state
             ready_metadata["trading_client"] = {
@@ -1290,16 +846,14 @@ class V3Coordinator:
                 "positions": trading_state.position_count,
                 "orders": trading_state.order_count
             }
-        
-        # Check for degraded mode
+
         degraded = not health_details["connection_established"] and orderbook_metrics["markets_connected"] == 0
-        
-        # Determine context based on connection status
+
         if degraded:
             if self._trading_client_integration:
-                context = f"DEGRADED MODE: Trading enabled without orderbook (paper mode)"
+                context = "DEGRADED MODE: Trading enabled without orderbook (paper mode)"
             else:
-                context = f"DEGRADED MODE: No orderbook connection available"
+                context = "DEGRADED MODE: No orderbook connection available"
             ready_metadata["degraded"] = True
         elif orderbook_metrics["snapshots_received"] > 0:
             if self._trading_client_integration:
@@ -1308,75 +862,15 @@ class V3Coordinator:
                 context = f"System fully operational with {orderbook_metrics['markets_connected']} markets (orderbook only)"
         else:
             context = f"System connected (waiting for data) - {orderbook_metrics['markets_connected']} markets"
-        
+
         await self._state_machine.transition_to(
-            V3State.READY,
-            context=context,
-            metadata=ready_metadata
+            V3State.READY, context=context, metadata=ready_metadata
         )
-        
-        # Update state container with degraded flag so health monitor can see it
-        self._state_container.update_machine_state(
-            V3State.READY,
-            context,
-            ready_metadata  # This includes degraded=True when appropriate
-        )
-        
-        # Emit trading state immediately when READY
+
+        self._state_container.update_machine_state(V3State.READY, context, ready_metadata)
+
         if self._trading_client_integration and self._state_container.trading_state:
             await self._status_reporter.emit_trading_state()
-        
-        # Start deep agent strategy (sole trading strategy)
-        if self._deep_agent_strategy and self._trading_client_integration:
-            try:
-                await self._deep_agent_strategy.start(
-                    trading_client=self._trading_client_integration,
-                    state_container=self._state_container,
-                    websocket_manager=self._websocket_manager,
-                    tracked_markets=self._tracked_markets_state,
-                    event_position_tracker=self._event_position_tracker,
-                )
-                logger.info("DeepAgentStrategy started")
-                await self._event_bus.emit_system_activity(
-                    activity_type="strategy_active",
-                    message="Started deep agent trading strategy",
-                    metadata={"strategies": ["deep_agent"], "severity": "info"}
-                )
-
-                # Wire deep agent to WebSocket manager for trade processing broadcasts
-                self._websocket_manager.set_deep_agent_strategy(self._deep_agent_strategy)
-
-                # Wire Reddit Historic Agent to deep agent tools for daily digest access
-                if self._reddit_historic_agent and self._deep_agent_strategy._agent:
-                    try:
-                        self._deep_agent_strategy._agent._tools._reddit_historic_agent = self._reddit_historic_agent
-                        logger.info("Reddit Historic Agent wired to deep agent tools")
-                    except Exception as e:
-                        logger.warning(f"Failed to wire Reddit Historic Agent to deep agent: {e}")
-
-                # Wire GDELT clients to deep agent tools for news intelligence
-                if self._deep_agent_strategy._agent and (self._gdelt_client or self._gdelt_doc_client):
-                    try:
-                        if self._gdelt_client:
-                            self._deep_agent_strategy._agent._tools._gdelt_client = self._gdelt_client
-                            logger.info("GDELT GKG client wired to deep agent tools")
-                        if self._gdelt_doc_client:
-                            self._deep_agent_strategy._agent._tools._gdelt_doc_client = self._gdelt_doc_client
-                            logger.info("GDELT DOC API client wired to deep agent tools (free)")
-                        # Wire news analyzer sub-agent
-                        if self._gdelt_news_analyzer:
-                            self._deep_agent_strategy._agent._tools._news_analyzer = self._gdelt_news_analyzer
-                            # Wire token usage callback so analyzer costs are tracked
-                            self._gdelt_news_analyzer._token_usage_callback = self._deep_agent_strategy._agent._accumulate_external_tokens
-                            logger.info("GDELT News Analyzer wired to deep agent tools")
-                        # Rebuild tool definitions so GDELT + analyzer tools are included
-                        self._deep_agent_strategy._agent.rebuild_tool_definitions()
-                    except Exception as e:
-                        logger.warning(f"Failed to wire GDELT clients to deep agent: {e}")
-
-            except Exception as e:
-                logger.error(f"Failed to start DeepAgentStrategy: {e}", exc_info=True)
-                self._degraded_subsystems.add("deep_agent_strategy")
 
         # Start TradeFlowService for live trade feed to UX
         if self._trades_integration and self._tracked_markets_state:
@@ -1389,59 +883,179 @@ class V3Coordinator:
                 await self._trade_flow_service.start()
                 self._websocket_manager.set_trade_flow_service(self._trade_flow_service)
                 logger.info("TradeFlowService started - live trades will stream to UX")
-
-                # Wire microstructure services to deep agent tools
-                if self._deep_agent_strategy and self._deep_agent_strategy._agent:
-                    try:
-                        tools = self._deep_agent_strategy._agent._tools
-                        tools._trade_flow_service = self._trade_flow_service
-                        tools._orderbook_integration = self._orderbook_integration
-                        logger.info("Microstructure services wired to deep agent tools")
-                    except Exception as e:
-                        logger.warning(f"Failed to wire microstructure to deep agent: {e}")
             except Exception as e:
                 logger.error(f"TradeFlowService failed to start: {e}")
                 self._degraded_subsystems.add("trade_flow_service")
 
-        # Emit ready status
+        if self._config.arb_enabled and self._config.polymarket_enabled:
+            await self._start_arb_system()
+
         status_msg = f"System ready with {len(self._config.market_tickers)} markets"
         if self._trading_client_integration:
             status_msg += f" (trading enabled in {self._trading_client_integration._client.mode} mode)"
+        if self._pair_registry:
+            status_msg += f" ({self._pair_registry.count} arb pairs)"
         await self._status_reporter.emit_status_update(status_msg)
-    
+
+    async def _start_arb_system(self) -> None:
+        """Initialize and start the arbitrage subsystem.
+
+        Two-layer architecture:
+        1. DATA LAYER: PairIndexService owns event discovery, pairing, price feeds
+        2. TRADING LAYER: ArbStrategy owns SpreadMonitor for trade execution
+        """
+        try:
+            from ..clients.polymarket_client import PolymarketClient
+            from ..clients.polymarket_ws_client import PolymarketWSClient
+            from ..services.pair_registry import PairRegistry
+            from ..services.pairing_service import PairingService
+            from ..services.pair_index_service import PairIndexService
+            from ..strategies.plugins.arb_strategy import ArbStrategy
+
+            # 1. Create PairRegistry (empty — clean slate every startup)
+            self._pair_registry = PairRegistry()
+
+            # 2. Supabase client (for pair persistence)
+            supabase = None
+            try:
+                import os
+                from supabase import create_client
+                supabase_url = os.environ.get("SUPABASE_URL", "")
+                supabase_key = os.environ.get("SUPABASE_ANON_KEY", os.environ.get("SUPABASE_KEY", ""))
+                if supabase_url and supabase_key:
+                    supabase = create_client(supabase_url, supabase_key)
+                else:
+                    logger.warning("Supabase credentials not set - pairs will be in-memory only")
+            except Exception as e:
+                logger.warning(f"Failed to create Supabase client: {e}")
+
+            # 3. Create Polymarket REST client
+            self._poly_client = PolymarketClient()
+
+            # 4. Create PolymarketWSClient -> start (connects, no subscriptions yet)
+            self._poly_ws_client = PolymarketWSClient(
+                pair_registry=self._pair_registry,
+                event_bus=self._event_bus,
+            )
+            await self._poly_ws_client.start()
+            self._health_monitor.register_component("poly_ws", self._poly_ws_client, critical=False)
+
+            poly_connected = await self._poly_ws_client.wait_for_connection(timeout=15.0)
+            if poly_connected:
+                logger.info("Polymarket WebSocket connected")
+            else:
+                logger.warning("Polymarket WebSocket connection timeout - prices may be delayed")
+
+            # 5. Create PairingService (deterministic matcher)
+            trading_client = self._trading_client_integration._client if self._trading_client_integration else None
+
+            # Initialize embedding model for better matching
+            embedding_model = None
+            try:
+                from langchain_openai import OpenAIEmbeddings
+                embedding_model = OpenAIEmbeddings(model="text-embedding-3-small")
+                logger.info("Embedding model initialized for pairing")
+            except Exception as e:
+                logger.warning(f"Embedding model not available (text-only matching): {e}")
+
+            # Initialize OpenAI client for LLM pair validation
+            openai_client = None
+            try:
+                from openai import AsyncOpenAI
+                openai_client = AsyncOpenAI()
+                logger.info("OpenAI client initialized for LLM pair matching")
+            except Exception as e:
+                logger.warning(f"OpenAI client not available (text-only pairing): {e}")
+
+            pairing_service = PairingService(
+                poly_client=self._poly_client,
+                trading_client=trading_client,
+                pair_registry=self._pair_registry,
+                embedding_model=embedding_model,
+                supabase_client=supabase,
+                spread_monitor=None,  # Will be set after ArbStrategy creates it
+                event_bus=self._event_bus,
+                openai_client=openai_client,
+            )
+
+            # 6. Create ArbStrategy (SpreadMonitor only) -> start
+            self._arb_strategy = ArbStrategy(
+                event_bus=self._event_bus,
+                pair_registry=self._pair_registry,
+                config=self._config,
+                trading_client=trading_client,
+                websocket_manager=self._websocket_manager,
+                state_container=self._state_container,
+                supabase_client=supabase,
+                orderbook_integration=self._orderbook_integration,
+                poly_client=self._poly_client,
+            )
+            await self._arb_strategy.start()
+            self._health_monitor.register_component("arb_strategy", self._arb_strategy, critical=False)
+
+            # Wire SpreadMonitor into PairingService for pair registration
+            if self._arb_strategy._spread_monitor:
+                pairing_service._spread_monitor = self._arb_strategy._spread_monitor
+
+            # 7. Create PairIndexService -> start (drives discovery + subscriptions)
+            self._pair_index_service = PairIndexService(
+                pairing_service=pairing_service,
+                pair_registry=self._pair_registry,
+                event_bus=self._event_bus,
+                websocket_manager=self._websocket_manager,
+                config=self._config,
+                supabase_client=supabase,
+                orderbook_integration=self._orderbook_integration,
+                poly_ws_client=self._poly_ws_client,
+                spread_monitor=self._arb_strategy._spread_monitor,
+            )
+            await self._pair_index_service.start()
+            self._websocket_manager.set_pair_index_service(self._pair_index_service)
+            self._health_monitor.register_component("pair_index_service", self._pair_index_service, critical=False)
+
+            # 8. Start PolymarketPoller as API price fallback
+            #    WS is primary, but API poll fills gaps when WS prices are missing/stale
+            try:
+                from ..services.polymarket_poller import PolymarketPoller
+
+                self._poly_poller = PolymarketPoller(
+                    poly_client=self._poly_client,
+                    pair_registry=self._pair_registry,
+                    event_bus=self._event_bus,
+                    poll_interval=self._config.arb_poll_interval_seconds,
+                    supabase_client=supabase,
+                )
+                await self._poly_poller.start()
+                self._health_monitor.register_component("poly_poller", self._poly_poller, critical=False)
+                logger.info(f"Polymarket API poller started (interval={self._config.arb_poll_interval_seconds}s)")
+            except Exception as e:
+                logger.warning(f"Polymarket poller failed to start (WS-only mode): {e}")
+
+            logger.info(
+                f"Arbitrage system started: "
+                f"{self._pair_registry.count} pairs, "
+                f"{len(self._pair_registry.get_events_grouped())} events"
+            )
+
+        except Exception as e:
+            logger.error(f"Failed to start arb system: {e}")
+            self._degraded_subsystems.add("arb_system")
+
     async def _run_event_loop(self) -> None:
-        """
-        Main event loop - handles all periodic operations.
-        This is the heart of the V3 trader after startup.
-
-        Note: Periodic trading state sync is now handled by TradingStateSyncer
-        which runs in its own asyncio task for reliability.
-        """
-        # Start monitoring tasks
+        """Main event loop."""
         self._start_monitoring_tasks()
-
         logger.info("Event loop started")
 
         while self._running:
             try:
                 current_state = self._state_machine.current_state
 
-                # State-specific handlers
-                if current_state == V3State.READY:
-                    # TradingStateSyncer handles periodic sync
-                    pass
-
-                elif current_state == V3State.ERROR:
-                    # In ERROR state, just sleep to prevent CPU spinning
-                    # TradingStateSyncer continues running in its own task
+                if current_state == V3State.ERROR:
                     await asyncio.sleep(1.0)
                     continue
-
                 elif current_state == V3State.SHUTDOWN:
-                    # Exit loop on shutdown
                     break
 
-                # Small sleep to prevent CPU spinning
                 await asyncio.sleep(0.1)
 
             except asyncio.CancelledError:
@@ -1449,18 +1063,13 @@ class V3Coordinator:
                 break
             except Exception as e:
                 logger.error(f"Error in event loop: {e}")
-                await self._state_machine.enter_error_state(
-                    "Event loop error", e
-                )
+                await self._state_machine.enter_error_state("Event loop error", e)
 
         logger.info("Event loop stopped")
-    
+
     def _start_monitoring_tasks(self) -> None:
         """Start background monitoring tasks."""
-        # Start health monitor service (track for cleanup)
         self._health_monitor_task = asyncio.create_task(self._health_monitor.start())
-
-        # Start status reporter service (track for cleanup)
         self._status_reporter_task = asyncio.create_task(self._status_reporter.start())
 
     async def stop(self) -> None:
@@ -1474,7 +1083,6 @@ class V3Coordinator:
 
         self._running = False
 
-        # Cancel event loop task
         if self._event_loop_task:
             self._event_loop_task.cancel()
             try:
@@ -1482,7 +1090,6 @@ class V3Coordinator:
             except asyncio.CancelledError:
                 pass
 
-        # Cancel monitoring tasks before stopping components
         for task, _name in [
             (self._health_monitor_task, "health_monitor"),
             (self._status_reporter_task, "status_reporter"),
@@ -1494,18 +1101,15 @@ class V3Coordinator:
                 except asyncio.CancelledError:
                     pass
 
-        # Stop health monitor and status reporter first
         await self._health_monitor.stop()
         await self._status_reporter.stop()
 
-        # Define shutdown sequence: (component, name, stop_callable)
-        # Order matters - stop in reverse of startup order
         shutdown_sequence = [
-            (self._deep_agent_strategy, "Deep Agent Strategy", lambda c: c.stop()),
-            # Entity trading agents
-            (self._reddit_entity_agent, "Reddit Entity Agent", lambda c: c.stop()),
-            (self._reddit_historic_agent, "Reddit Historic Agent", lambda c: c.stop()),
-            (self._price_impact_agent, "Price Impact Agent", lambda c: c.stop()),
+            (self._pair_index_service, "Pair Index Service", lambda c: c.stop()),
+            (self._arb_strategy, "Arb Strategy", lambda c: c.stop()),
+            (self._poly_ws_client, "Polymarket WS Client", lambda c: c.stop()),
+            (self._poly_poller, "Polymarket Poller", lambda c: c.stop()),
+            (self._poly_client, "Polymarket Client", lambda c: c.close()),
             (self._trade_flow_service, "Trade Flow Service", lambda c: c.stop()),
             (self._trades_integration, "Trades Integration", lambda c: c.stop()),
             (self._upcoming_markets_syncer, "Upcoming Markets Syncer", lambda c: c.stop()),
@@ -1522,13 +1126,10 @@ class V3Coordinator:
             (self._orderbook_integration, "Orderbook Integration", lambda c: c.stop()),
         ]
 
-        # Filter to only existing components
         active_components = [(c, n, s) for c, n, s in shutdown_sequence if c is not None]
-        # Add core components (always exist)
-        core_steps = 3  # state transition, state machine, websocket, event bus counted together
+        core_steps = 3
         total_steps = len(active_components) + core_steps
 
-        # Stop optional components
         for step, (component, name, stop_func) in enumerate(active_components, 1):
             try:
                 logger.info(f"[{step}/{total_steps}] Stopping {name}...")
@@ -1538,14 +1139,12 @@ class V3Coordinator:
             except Exception as e:
                 logger.error(f"[{step}/{total_steps}] Error stopping {name}: {e}")
 
-        # Core shutdown steps (always run)
         step = len(active_components) + 1
 
         try:
             logger.info(f"[{step}/{total_steps}] Transitioning to SHUTDOWN state...")
             await self._state_machine.transition_to(
-                V3State.SHUTDOWN,
-                context="Graceful shutdown initiated"
+                V3State.SHUTDOWN, context="Graceful shutdown initiated"
             )
         except Exception as e:
             logger.error(f"[{step}/{total_steps}] Error transitioning to SHUTDOWN: {e}")
@@ -1566,9 +1165,8 @@ class V3Coordinator:
 
     def get_status(self) -> Dict[str, Any]:
         """Get comprehensive system status."""
-        # Calculate uptime directly
         uptime = time.time() - self._started_at if self._started_at else 0.0
-        
+
         components = {
             "state_machine": self._state_machine.get_health_details(),
             "event_bus": self._event_bus.get_health_details(),
@@ -1578,12 +1176,10 @@ class V3Coordinator:
             "status_reporter": self._status_reporter.get_status()
         }
 
-        # Add optional components that may or may not be configured
         _OPTIONAL_STATUS_COMPONENTS = [
             ("_trading_service", "trading_service", "get_stats"),
             ("_trading_client_integration", "trading_client", "get_health_details"),
             ("_trades_integration", "trades_integration", "get_health_details"),
-            ("_deep_agent_strategy", "deep_agent_strategy", "get_stats"),
             ("_api_discovery_syncer", "api_discovery_syncer", "get_health_details"),
             ("_position_listener", "position_listener", "get_metrics"),
             ("_market_ticker_listener", "market_ticker_listener", "get_metrics"),
@@ -1593,45 +1189,28 @@ class V3Coordinator:
             ("_tracked_markets_state", "tracked_markets_state", "get_stats"),
             ("_event_lifecycle_service", "event_lifecycle_service", "get_stats"),
             ("_trade_flow_service", "trade_flow_service", "get_trade_processing_stats"),
+            ("_pair_registry", "pair_registry", "get_status"),
+            ("_poly_ws_client", "poly_ws", "get_status"),
+            ("_poly_poller", "poly_poller", "get_status"),
+            ("_arb_strategy", "arb_strategy", "get_status"),
+            ("_pair_index_service", "pair_index_service", "get_status"),
         ]
         for attr, key, method in _OPTIONAL_STATUS_COMPONENTS:
             comp = getattr(self, attr, None)
             if comp is not None:
                 components[key] = getattr(comp, method)()
 
-        # Add entity system components if enabled
-        components["entity_system"] = {
-            "enabled": self._entity_system_enabled,
-            "pipeline": "extraction",
-            "reddit_agent_running": self._reddit_entity_agent is not None and self._reddit_entity_agent.is_running,
-            "reddit_historic_running": self._reddit_historic_agent is not None and self._reddit_historic_agent.is_running,
-            "extraction_relay_running": self._price_impact_agent is not None and self._price_impact_agent.is_running,
-        }
-        if self._reddit_entity_agent:
-            components["reddit_entity_agent"] = self._reddit_entity_agent.get_health_details()
-        if self._reddit_historic_agent:
-            components["reddit_historic_agent"] = self._reddit_historic_agent.get_health_details()
-        if self._price_impact_agent:
-            components["extraction_relay"] = self._price_impact_agent.get_health_details()
-
-        # Get metrics from various sources
         orderbook_metrics = self._orderbook_integration.get_metrics()
         ws_stats = self._websocket_manager.get_stats()
         health_details = self._orderbook_integration.get_health_details()
 
-        # Get tracked markets count
         tracked_markets_count = 0
         if self._tracked_markets_state:
             tracked_markets_count = self._tracked_markets_state.active_count
 
-        # Get actual OB subscription count from integration
-        # With proper sync callbacks, this should match tracked_markets_count
         subscribed_markets = self._orderbook_integration.get_subscribed_market_count()
-
-        # Get signal aggregator stats
         signal_aggregator_stats = orderbook_metrics.get("signal_aggregator")
 
-        # Build metrics similar to status_reporter
         metrics = {
             "uptime": uptime,
             "state": self._state_machine.current_state.value,
@@ -1650,7 +1229,7 @@ class V3Coordinator:
             "api_connected": orderbook_metrics["markets_connected"] > 0,
             "signal_aggregator": signal_aggregator_stats,
         }
-        
+
         status = {
             "running": self._running,
             "uptime": uptime,
@@ -1660,46 +1239,33 @@ class V3Coordinator:
             "components": components,
             "metrics": metrics
         }
-        
-        # Add trading mode if configured
+
         if self._trading_client_integration:
             status["trading_mode"] = self._trading_client_integration._client.mode
 
         return status
-    
+
     def is_healthy(self) -> bool:
-        """
-        Check if system is healthy.
-
-        Only checks CRITICAL components for overall health status.
-        Non-critical components (orderbook, trades) can be
-        degraded without affecting overall system health.
-
-        Returns:
-            True if running and all critical components are healthy.
-        """
+        """Check if system is healthy (only critical components)."""
         if not self._running:
             return False
 
-        # Map component names to their health check methods
         component_health_map = {
             "state_machine": self._state_machine.is_healthy,
             "event_bus": self._event_bus.is_healthy,
             "websocket_manager": self._websocket_manager.is_healthy,
         }
 
-        # Only check CRITICAL components for overall health
         for component_name in CRITICAL_COMPONENTS:
             if component_name in component_health_map:
                 if not component_health_map[component_name]():
                     return False
 
-        # Health monitor must also be healthy (it monitors the critical components)
         if not self._health_monitor.is_healthy():
             return False
 
         return True
-    
+
     def get_health(self) -> Dict[str, Any]:
         """Get health status."""
         return {
@@ -1711,16 +1277,15 @@ class V3Coordinator:
         }
 
     def get_degraded_subsystems(self) -> Set[str]:
-        """T5.1: Get set of subsystems that failed to start or are in degraded state."""
+        """Get set of subsystems that failed to start or are in degraded state."""
         return self._degraded_subsystems.copy()
-    
+
     @property
     def state_container(self) -> V3StateContainer:
         """Get state container for external access."""
         return self._state_container
-    
+
     @property
     def trading_service(self) -> Optional[TradingDecisionService]:
         """Get trading service for external access."""
         return self._trading_service
-    
