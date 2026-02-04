@@ -7,6 +7,7 @@ Runs on port 8005 with minimal dependencies.
 
 import asyncio
 import logging
+import logging.handlers
 import os
 import sys
 from pathlib import Path
@@ -54,21 +55,25 @@ logging.basicConfig(
 )
 logger = logging.getLogger("kalshiflow_rl.traderv3")
 
+# Add file handler for structured log monitoring
+_log_dir = Path(__file__).parent.parent.parent.parent / "logs"
+_log_dir.mkdir(exist_ok=True)
+_file_handler = logging.handlers.RotatingFileHandler(
+    _log_dir / "v3-trader.log",
+    maxBytes=10 * 1024 * 1024,  # 10 MB
+    backupCount=3,
+)
+_file_handler.setFormatter(logging.Formatter(
+    '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+))
+logging.getLogger().addHandler(_file_handler)
+
 
 def _configure_logging() -> None:
     """Suppress noisy third-party and internal loggers.
 
     Each suppression documents the real bug/noise source with issue numbers.
     """
-    # ── Problem 4 fix: Suppress Google Cloud project warning ──────────────
-    os.environ.setdefault("GOOGLE_CLOUD_PROJECT", "kalshiflow")
-
-    # ── Problem 3 fix: Suppress LangExtract ANSI progress bar output ─────
-    # LangExtract uses tqdm progress bars with ANSI codes. Primary fix is passing
-    # show_progress=False in kalshi_extractor.py. This env var is a belt-and-suspenders
-    # fallback that disables all tqdm output globally.
-    os.environ.setdefault("TQDM_DISABLE", "1")
-
     # ── Third-party loggers ──────────────────────────────────────────────
     # Suppress noisy third-party loggers to WARNING (errors still surface).
     for name in (
@@ -80,25 +85,10 @@ def _configure_logging() -> None:
         "realtime._async.client",   # Supabase Realtime full JSON payloads
         "realtime._async.channel",  # Supabase Realtime channel events
         "realtime",                 # Supabase Realtime parent
-        "langextract",              # LangExtract parent (ANSI progress bars)
-        "langextract.debug",        # LangExtract debug sub-logger
         "urllib3.connectionpool",   # ~633 lines – HTTP pool debug (keepalive)
-        "google_genai",             # parent logger for google_genai.models
-        "google_genai.models",      # ~155 lines – "AFC is enabled with max remote calls: 10"
-        "google.auth._default",     # "Could not determine project ID" warning
         "kalshiflow.auth",          # ~2,104 lines – RSA signature debug
     ):
         logging.getLogger(name).setLevel(logging.WARNING)
-
-    # P3 fix: GLiNER/LangExtract NER model emits ~41 `absl` WARNING lines per session
-    # (always the same example #4, 'regime_stability_signal'). Suppress to ERROR.
-    logging.getLogger("absl").setLevel(logging.ERROR)
-
-    # ── Problem 2 fix: PRAW async warnings via logging (not warnings module) ─
-    # PRAW emits ~900 "using PRAW in an asynchronous environment" per session
-    # via the logging module, not Python warnings. Set to ERROR.
-    for name in ("praw", "prawcore"):
-        logging.getLogger(name).setLevel(logging.ERROR)
 
     # BUG-4 (HIGH): OpenAI and Anthropic _base_client DEBUG loggers dump entire HTML
     # pages and full request/response payloads (including system prompts, tool
@@ -290,6 +280,9 @@ async def lifespan(app):
         # Start the system
         await coordinator.start()
         
+        logger.info("[V3:STARTUP] environment=%s markets=%d arb=%s orchestrator=%s",
+                     config.get_environment_name(), len(config.market_tickers),
+                     config.arb_enabled, config.arb_orchestrator_enabled)
         logger.info("TRADER V3 ready to serve requests")
         
         yield
@@ -331,6 +324,7 @@ async def lifespan(app):
         except Exception as e:
             logger.error(f"Error closing database: {e}")
         
+        logger.info("[V3:SHUTDOWN] complete")
         logger.info("TRADER V3 shutdown complete")
 
 
@@ -531,31 +525,49 @@ async def export_order_contexts_endpoint(request: Request):
         )
 
 
-async def event_configs_endpoint(request: Request) -> JSONResponse:
-    """Debug endpoint to expose active event configs from Supabase."""
+async def pairs_endpoint(request: Request) -> JSONResponse:
+    """List active arb pairs with current spread data."""
     if not coordinator:
-        return JSONResponse({"error": "Coordinator not initialized"}, status_code=503)
+        return JSONResponse({"error": "System not initialized"}, status_code=503)
 
-    try:
-        import os
-        from supabase import create_client
-        url = os.environ.get("SUPABASE_URL") or os.environ.get("DATABASE_URL_POOLED", "").replace("postgresql://", "https://").split("@")[-1].split("/")[0]
-        key = os.environ.get("SUPABASE_ANON_KEY") or os.environ.get("SUPABASE_KEY", "")
-        if not url or not key:
-            return JSONResponse({"error": "Supabase credentials not configured"}, status_code=404)
+    pair_registry = coordinator._pair_registry
+    if not pair_registry:
+        return JSONResponse({"pairs": [], "count": 0, "arb_enabled": False})
 
-        supabase = create_client(url, key)
-        result = supabase.table("event_configs").select("*").eq("is_active", True).execute()
-        configs = result.data or []
+    pairs = [
+        {
+            "id": p.id,
+            "kalshi_ticker": p.kalshi_ticker,
+            "kalshi_event_ticker": p.kalshi_event_ticker,
+            "poly_condition_id": p.poly_condition_id,
+            "poly_token_id_yes": p.poly_token_id_yes,
+            "question": p.question,
+            "match_method": p.match_method,
+            "match_confidence": p.match_confidence,
+            "status": p.status,
+        }
+        for p in pair_registry.get_all_active()
+    ]
 
-        return JSONResponse({
-            "total_configs": len(configs),
-            "configs": configs,
-        })
+    return JSONResponse({
+        "pairs": pairs,
+        "count": len(pairs),
+        "arb_enabled": True,
+        "poller_status": coordinator._poly_poller.get_status() if coordinator._poly_poller else None,
+    })
 
-    except Exception as e:
-        logger.error(f"Event configs endpoint error: {e}")
-        return JSONResponse({"error": str(e)}, status_code=500)
+
+async def agent_websocket_endpoint(websocket: WebSocket):
+    """WebSocket endpoint for agent interaction/streaming."""
+    # Capture reference atomically to avoid race during shutdown
+    arb_strategy = coordinator._arb_strategy if coordinator else None
+    if not arb_strategy:
+        await websocket.close(code=1003, reason="Agent not running")
+        return
+
+    from src.kalshiflow_rl.traderv3.ws_agent_handler import AgentWebSocketHandler
+    handler = AgentWebSocketHandler(arb_strategy=arb_strategy)
+    await handler.handle_websocket(websocket)
 
 
 # Create Starlette application
@@ -566,8 +578,9 @@ app = Starlette(
         Route("/v3/status", status_endpoint),
         Route("/v3/cleanup", cleanup_endpoint, methods=["POST"]),
         Route("/v3/export/order-contexts", export_order_contexts_endpoint),
-        Route("/v3/event-configs", event_configs_endpoint),
-        WebSocketRoute("/v3/ws", websocket_endpoint)
+        Route("/v3/pairs", pairs_endpoint),
+        WebSocketRoute("/v3/ws", websocket_endpoint),
+        WebSocketRoute("/v3/ws/agent", agent_websocket_endpoint),
     ]
 )
 

@@ -548,23 +548,31 @@ class OrderbookClient:
             
             # Trigger actor event via event bus (always emit, not dependent on database enqueue)
             try:
-                # Dual event bus strategy for V3 integration:
-                # 1. Emit to V3's event bus if provided (direct integration without global coupling)
-                # 2. Fallback to global event bus (maintains backward compatibility)
                 if self._v3_event_bus:
-                    # Direct V3 event bus emission for isolated operation
+                    # Attach BBO to metadata so subscribers can read prices without lock acquisition
+                    meta = {
+                        "sequence_number": snapshot_data["sequence_number"],
+                        "timestamp_ms": snapshot_data["timestamp_ms"],
+                    }
+                    ob = self._orderbook_states.get(market_ticker)
+                    if ob:
+                        s = ob._state
+                        yes_bid = s._get_best_price(s.yes_bids, True)
+                        yes_ask = s._get_best_price(s.yes_asks, False)
+                        mid = int((yes_bid + yes_ask) / 2) if yes_bid is not None and yes_ask is not None else None
+                        meta["yes_bid"] = yes_bid
+                        meta["yes_ask"] = yes_ask
+                        meta["yes_mid"] = mid
                     await self._v3_event_bus.emit_orderbook_snapshot(
                         market_ticker=market_ticker,
-                        metadata={"sequence_number": snapshot_data["sequence_number"],
-                                "timestamp_ms": snapshot_data["timestamp_ms"]}
+                        metadata=meta,
                     )
                 else:
-                    # No event bus provided - V3 always provides one, so this is unexpected
                     logger.debug(f"No event bus available for {market_ticker} snapshot")
             except Exception as e:
                 # Don't let event bus errors break orderbook processing
                 logger.debug(f"Event bus emit failed for {market_ticker} snapshot: {e}")
-            
+
             # Log snapshot processing (less verbose for production)
             total_levels = (len(snapshot_data['yes_bids']) + len(snapshot_data['yes_asks']) + 
                            len(snapshot_data['no_bids']) + len(snapshot_data['no_asks']))
@@ -661,21 +669,28 @@ class OrderbookClient:
             
             # Trigger actor event via event bus (always emit, not dependent on database enqueue)
             try:
-                # Dual event bus strategy for V3 integration:
-                # 1. Emit to V3's event bus if provided (direct integration without global coupling)
-                # 2. Fallback to global event bus (maintains backward compatibility)
                 if self._v3_event_bus:
-                    # Direct V3 event bus emission for isolated operation
+                    # Attach BBO to metadata so subscribers can read prices without lock acquisition
+                    meta = {
+                        "sequence_number": delta_data["sequence_number"],
+                        "timestamp_ms": delta_data["timestamp_ms"],
+                    }
+                    ob = self._orderbook_states.get(market_ticker)
+                    if ob:
+                        s = ob._state
+                        yes_bid = s._get_best_price(s.yes_bids, True)
+                        yes_ask = s._get_best_price(s.yes_asks, False)
+                        mid = int((yes_bid + yes_ask) / 2) if yes_bid is not None and yes_ask is not None else None
+                        meta["yes_bid"] = yes_bid
+                        meta["yes_ask"] = yes_ask
+                        meta["yes_mid"] = mid
                     await self._v3_event_bus.emit_orderbook_delta(
                         market_ticker=market_ticker,
-                        metadata={"sequence_number": delta_data["sequence_number"],
-                                "timestamp_ms": delta_data["timestamp_ms"]}
+                        metadata=meta,
                     )
                 else:
-                    # No event bus provided - V3 always provides one, so this is unexpected
                     logger.debug(f"No event bus available for {market_ticker} delta")
             except Exception as e:
-                # Don't let event bus errors break orderbook processing
                 logger.debug(f"Event bus emit failed for {market_ticker} delta: {e}")
             
             # Log periodically at info level for production monitoring

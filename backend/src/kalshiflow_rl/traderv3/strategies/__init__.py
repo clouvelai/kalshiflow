@@ -1,5 +1,5 @@
-"""Deep Agent Strategy for TRADER V3."""
+"""Trading strategies for TRADER V3."""
 
-from .plugins.deep_agent import DeepAgentStrategy
+from .plugins.arb_strategy import ArbStrategy
 
-__all__ = ['DeepAgentStrategy']
+__all__ = ["ArbStrategy"]

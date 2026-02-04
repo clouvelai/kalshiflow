@@ -56,3 +56,6 @@ class EventType(Enum):
     PAIR_MATCHED = "pair_matched"                      # New cross-venue pair discovered
     KALSHI_API_PRICE_UPDATE = "kalshi_api_price_update"  # Kalshi REST API price poll result
 
+    # Event Codex (background data enrichment)
+    EVENT_CODEX_SNAPSHOT = "event_codex_snapshot"        # Full codex snapshot with candle data
+

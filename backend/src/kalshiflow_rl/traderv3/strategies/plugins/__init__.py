@@ -1,6 +1,5 @@
 # Strategy plugins directory
-from .deep_agent import DeepAgentStrategy
 
-__all__ = [
-    'DeepAgentStrategy',
-]
+from .arb_strategy import ArbStrategy
+
+__all__ = ["ArbStrategy"]

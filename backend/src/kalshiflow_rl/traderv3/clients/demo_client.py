@@ -189,21 +189,22 @@ class KalshiDemoTradingClient:
     async def connect(self) -> None:
         """
         Connect to demo account API.
-        
-        Tests connection with public markets endpoint and validates
+
+        Tests connection with exchange status endpoint and validates
         demo account portfolio access.
-        
+
         Raises:
             KalshiDemoAuthError: If authentication or connection fails
         """
         try:
             # Create HTTP session
             self.session = aiohttp.ClientSession()
-            
-            # Test connection with markets endpoint (public access)
-            # Demo accounts may have limited portfolio access
-            await self.get_markets(limit=1)
-            
+
+            # Test connection with exchange status (lightweight, always available)
+            status = await self.get_exchange_status()
+            if not status.get("exchange_active"):
+                logger.warning("Exchange is not active - trading may be limited")
+
             # Get account info - if this fails, the demo account is not properly configured
             await self.get_account_info()
             logger.info("Demo account with full portfolio access")
@@ -319,6 +320,25 @@ class KalshiDemoTradingClient:
         if not isinstance(response["portfolio_value"], (int, float)):
             raise ValueError(f"Portfolio value must be numeric, got {type(response['portfolio_value'])}: {response['portfolio_value']}")
     
+    async def get_exchange_status(self) -> Dict[str, Any]:
+        """
+        Get exchange status (lightweight connectivity check).
+
+        GET /trade-api/v2/exchange/status
+
+        Returns:
+            Dict with exchange_active, trading_active, exchange_estimated_resume_time
+        """
+        try:
+            response = await self._make_request("GET", "/exchange/status")
+            logger.debug(
+                f"Exchange status: active={response.get('exchange_active')}, "
+                f"trading={response.get('trading_active')}"
+            )
+            return response
+        except Exception as e:
+            raise KalshiDemoTradingClientError(f"Failed to get exchange status: {e}")
+
     async def get_account_info(self) -> Dict[str, Any]:
         """
         Get demo account information including balance and portfolio_value.
@@ -490,11 +510,12 @@ class KalshiDemoTradingClient:
         count: int,
         price: Optional[int] = None,
         type: str = "limit",
-        order_group_id: Optional[str] = None
+        order_group_id: Optional[str] = None,
+        expiration_ts: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
         Create order on demo account.
-        
+
         Args:
             ticker: Market ticker (e.g., "INXD-25JAN03")
             action: "buy" or "sell"
@@ -503,10 +524,12 @@ class KalshiDemoTradingClient:
             price: Limit price in cents (1-99), None for market orders
             type: Order type ("limit" or "market")
             order_group_id: Optional order group ID for portfolio limits
-            
+            expiration_ts: Optional Unix timestamp in seconds for auto-cancellation.
+                          Kalshi cancels the order when this timestamp passes.
+
         Returns:
             Order creation response
-            
+
         Raises:
             KalshiDemoOrderError: If order creation fails
         """
@@ -518,10 +541,14 @@ class KalshiDemoTradingClient:
                 "count": count,
                 "type": type
             }
-            
+
             # Add order group if provided
             if order_group_id:
                 order_data["order_group_id"] = order_group_id
+
+            # Add expiration timestamp for auto-cancel (Kalshi native TTL)
+            if expiration_ts is not None:
+                order_data["expiration_ts"] = expiration_ts
             
             # Kalshi API requires specific price field names based on contract side
             if price is not None:
@@ -668,7 +695,9 @@ class KalshiDemoTradingClient:
         self,
         limit: int = 100,
         tickers: Optional[List[str]] = None,
-        status: Optional[str] = None
+        status: Optional[str] = None,
+        event_ticker: Optional[str] = None,
+        series_ticker: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Get available markets on demo account.
@@ -677,6 +706,8 @@ class KalshiDemoTradingClient:
             limit: Maximum number of markets to return
             tickers: Optional list of specific tickers to fetch
             status: Optional market status filter ('unopened', 'open', 'closed', 'settled')
+            event_ticker: Optional event ticker to filter by
+            series_ticker: Optional series ticker to filter by
 
         Returns:
             Markets data with market details including bid/ask prices and close_time
@@ -688,6 +719,10 @@ class KalshiDemoTradingClient:
                 params.append(f"tickers={','.join(tickers)}")
             if status:
                 params.append(f"status={status}")
+            if event_ticker:
+                params.append(f"event_ticker={event_ticker}")
+            if series_ticker:
+                params.append(f"series_ticker={series_ticker}")
 
             query_string = "&".join(params)
             response = await self._make_request("GET", f"/markets?{query_string}")

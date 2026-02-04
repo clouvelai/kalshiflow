@@ -200,7 +200,13 @@ class SpreadMonitor:
         self._event_bus.subscribe(EventType.KALSHI_API_PRICE_UPDATE, self._on_kalshi_api)
         self._event_bus.subscribe(EventType.PAIR_MATCHED, self._on_pair_matched)
 
-        logger.info(f"Spread monitor started: {len(self._spreads)} pairs, threshold={self._config.arb_spread_threshold_cents}c")
+        trade_mode = "ENABLED" if self._config.arb_auto_trade_enabled else "DISABLED"
+        logger.info(
+            f"Spread monitor started: {len(self._spreads)} pairs, "
+            f"threshold={self._config.arb_spread_threshold_cents}c, fee={self._config.arb_fee_estimate_cents}c, "
+            f"min_profit={self._config.arb_min_profit_cents}c, order_ttl={self._config.arb_order_ttl_seconds}s, "
+            f"auto_trade={trade_mode}"
+        )
 
     def register_pair(self, pair) -> None:
         """Register a new pair for spread monitoring at runtime.
@@ -370,12 +376,25 @@ class SpreadMonitor:
         threshold = (pair.threshold_override_cents if pair and pair.threshold_override_cents
                      else self._config.arb_spread_threshold_cents)
 
-        if abs(spread) >= threshold and state.is_fresh():
-            await self._maybe_execute_trade(state, spread, threshold)
+        # Fee-aware threshold: subtract fee estimate before comparison
+        net_spread = abs(spread) - self._config.arb_fee_estimate_cents
+        if net_spread >= threshold and state.is_fresh() and self._config.arb_auto_trade_enabled:
+            await self._maybe_execute_trade(state, spread, net_spread)
 
-    async def _maybe_execute_trade(self, state: SpreadState, spread: int, threshold: int) -> None:
-        """Check constraints and execute arb trade if conditions met."""
+    async def _maybe_execute_trade(self, state: SpreadState, spread: int, net_spread: int) -> None:
+        """Check constraints and execute arb trade if conditions met.
+
+        Args:
+            state: Live spread state for the pair
+            spread: Raw spread in cents (kalshi_mid - poly_yes)
+            net_spread: Fee-adjusted spread (abs(spread) - fee_estimate)
+        """
         now = time.time()
+
+        # Daily loss limit enforcement
+        if self._daily_pnl_cents <= -self._config.arb_daily_loss_limit_cents:
+            logger.warning(f"Daily loss limit hit ({self._daily_pnl_cents}c), halting arb trades")
+            return
 
         # Event ticker whitelist check
         if self._config.arb_active_event_tickers:
@@ -391,6 +410,13 @@ class SpreadMonitor:
         if not self._trading_client:
             logger.debug(f"Spread {spread}c on {state.kalshi_ticker} exceeds threshold but no trading client")
             return
+
+        # Position limit check: don't exceed max contracts per pair
+        max_pos = self._config.arb_max_position_per_pair
+        existing = self._trading_client.positions.get(state.kalshi_ticker, {})
+        current_pos = abs(existing.get("position", 0)) if isinstance(existing, dict) else 0
+        if current_pos >= max_pos:
+            return  # At position limit, skip silently
 
         # Positive spread: Kalshi YES expensive vs Poly -> buy YES on Kalshi at ask
         # (we'll hedge by notionally selling on Poly where it's cheaper).
@@ -413,9 +439,28 @@ class SpreadMonitor:
             logger.warning(f"No Kalshi price for {state.kalshi_ticker}, skipping trade (spread={spread}c)")
             return
 
-        contracts = min(10, self._config.arb_max_position_per_pair)  # Use config limit
+        remaining = max_pos - current_pos
+        contracts = min(10, remaining)  # Cap at 10 or remaining room
+        if contracts <= 0:
+            return
 
-        reasoning = f"Spread {spread}c (threshold {threshold}c) on {state.kalshi_ticker}"
+        # Profitability filter: expected profit must exceed minimum
+        expected_profit_cents = net_spread * contracts
+        if expected_profit_cents < self._config.arb_min_profit_cents:
+            logger.debug(
+                f"Skip {state.kalshi_ticker}: expected profit {expected_profit_cents}c "
+                f"< min {self._config.arb_min_profit_cents}c "
+                f"(net_spread={net_spread}c x {contracts} contracts)"
+            )
+            return
+
+        # Compute order expiration (Kalshi native TTL)
+        expiration_ts = int(now) + self._config.arb_order_ttl_seconds
+
+        reasoning = (
+            f"Spread {spread}c (net {net_spread}c after {self._config.arb_fee_estimate_cents}c fee) "
+            f"on {state.kalshi_ticker}, expected_profit={expected_profit_cents}c"
+        )
 
         try:
             order_result = await self._trading_client.create_order(
@@ -424,8 +469,8 @@ class SpreadMonitor:
                 action=action,
                 count=contracts,
                 type="limit",
-                yes_price=price_cents if side == "yes" else None,
-                no_price=price_cents if side == "no" else None,
+                price=price_cents,
+                expiration_ts=expiration_ts,
             )
 
             order_id = order_result.get("order", {}).get("order_id") if order_result else None
@@ -437,7 +482,7 @@ class SpreadMonitor:
             state.trades_count += 1
             self._trades_executed += 1
 
-            logger.info(f"ARB TRADE: {action} {contracts} {side} {state.kalshi_ticker} @ {price_cents}c (spread={spread}c, order={order_id})")
+            logger.info(f"ARB TRADE: {action} {contracts} {side} {state.kalshi_ticker} @ {price_cents}c (spread={spread}c, net={net_spread}c, ttl={self._config.arb_order_ttl_seconds}s, order={order_id})")
 
             trade_event = SpreadTradeExecutedEvent(
                 pair_id=state.pair_id,
@@ -512,11 +557,17 @@ class SpreadMonitor:
         """Get monitor status for health endpoints."""
         return {
             "running": self._running,
+            "auto_trade_enabled": self._config.arb_auto_trade_enabled,
             "pairs_monitored": len(self._spreads),
             "spread_updates": self._spread_updates,
             "trades_executed": self._trades_executed,
             "trades_skipped_cooldown": self._trades_skipped_cooldown,
             "threshold_cents": self._config.arb_spread_threshold_cents,
+            "fee_estimate_cents": self._config.arb_fee_estimate_cents,
+            "min_profit_cents": self._config.arb_min_profit_cents,
+            "order_ttl_seconds": self._config.arb_order_ttl_seconds,
+            "daily_pnl_cents": self._daily_pnl_cents,
+            "daily_loss_limit_cents": self._config.arb_daily_loss_limit_cents,
             "cooldown_seconds": self._config.arb_cooldown_seconds,
         }
 

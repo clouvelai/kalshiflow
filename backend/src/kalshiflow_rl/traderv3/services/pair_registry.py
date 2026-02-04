@@ -42,6 +42,9 @@ class EventGroup:
     market_count: int = 0
     pairs: List[MarketPair] = field(default_factory=list)
     is_tradeable: bool = True  # Trading whitelist flag
+    poly_event_id: Optional[str] = None
+    poly_event_slug: Optional[str] = None
+    series_ticker: Optional[str] = None
 
 
 class PairRegistry:
@@ -137,6 +140,8 @@ class PairRegistry:
     def update_event_metadata(
         self, event_ticker: str, title: str = "", category: str = "",
         volume_24h: int = 0, is_tradeable: bool = True,
+        poly_event_id: Optional[str] = None, poly_event_slug: Optional[str] = None,
+        series_ticker: Optional[str] = None,
     ) -> None:
         """Update metadata on an event group (creates if not exists)."""
         group = self._by_event.get(event_ticker)
@@ -149,6 +154,12 @@ class PairRegistry:
             group.category = category
         group.volume_24h = volume_24h
         group.is_tradeable = is_tradeable
+        if poly_event_id:
+            group.poly_event_id = poly_event_id
+        if poly_event_slug:
+            group.poly_event_slug = poly_event_slug
+        if series_ticker:
+            group.series_ticker = series_ticker
 
     async def load_from_supabase(self, supabase_client: Any) -> int:
         """

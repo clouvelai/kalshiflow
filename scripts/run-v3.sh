@@ -2,7 +2,7 @@
 # =============================================================================
 # TRADER V3 Launcher
 # =============================================================================
-# Runs the V3 Trader with deep_agent strategy.
+# Runs the V3 Trader with Kalshi-Polymarket arbitrage strategy.
 # Lifecycle discovery is the default; set V3_MARKET_TICKERS to target specifics.
 #
 # Usage:
@@ -10,8 +10,7 @@
 #   ./scripts/run-v3.sh paper              # Paper trading (demo API)
 #   ./scripts/run-v3.sh production         # Production (live API) - BE CAREFUL!
 #
-# The deep_agent strategy is configured via:
-#   backend/src/kalshiflow_rl/traderv3/strategies/config/deep_agent.yaml
+# Arb system enabled via V3_ARB_ENABLED=true and V3_POLYMARKET_ENABLED=true
 # =============================================================================
 
 set -e
@@ -27,7 +26,7 @@ NC='\033[0m'
 
 echo -e "${CYAN}"
 echo "============================================================"
-echo "  TRADER V3 - Deep Agent Strategy"
+echo "  TRADER V3 - Kalshi-Polymarket Arbitrage"
 echo "============================================================"
 echo -e "${NC}"
 
@@ -105,8 +104,7 @@ if [ -z "$SUPABASE_KEY" ] && [ -z "$SUPABASE_ANON_KEY" ]; then
 fi
 
 # Non-critical warnings
-[ -z "$OPENAI_API_KEY" ] && echo -e "${YELLOW}Warning: OPENAI_API_KEY not set${NC}"
-[ -z "$REDDIT_CLIENT_ID" ] || [ -z "$REDDIT_CLIENT_SECRET" ] && echo -e "${YELLOW}Warning: Reddit credentials not set${NC}"
+[ -z "$OPENAI_API_KEY" ] && echo -e "${YELLOW}Warning: OPENAI_API_KEY not set (needed for embeddings)${NC}"
 
 # Display config
 echo ""

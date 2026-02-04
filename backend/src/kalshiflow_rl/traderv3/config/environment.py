@@ -17,7 +17,11 @@ logger = logging.getLogger("kalshiflow_rl.traderv3.config.environment")
 # All 13 Kalshi categories: Climate and Weather, Companies, Crypto, Economics,
 # Elections, Entertainment, Financials, Mentions, Politics, Science and Technology,
 # Social, Sports, World
-DEFAULT_LIFECYCLE_CATEGORIES = ["politics", "elections", "world"]
+DEFAULT_LIFECYCLE_CATEGORIES = [
+    "climate and weather", "companies", "crypto", "economics",
+    "elections", "entertainment", "financials", "mentions",
+    "politics", "science and technology", "social", "sports", "world",
+]
 
 
 @dataclass
@@ -97,20 +101,26 @@ class V3Config:
     # Arbitrage Configuration
     arb_enabled: bool = False  # Enable cross-venue arbitrage system
     polymarket_enabled: bool = False  # Enable Polymarket price oracle
-    arb_spread_threshold_cents: int = 5  # Minimum spread (cents) to trigger arb trade
-    arb_poll_interval_seconds: float = 5.0  # Polymarket price polling interval
+    arb_auto_trade_enabled: bool = False  # Enable auto trade execution (spread monitor still runs)
+    arb_spread_threshold_cents: int = 10  # Minimum spread (cents) to trigger arb trade (raised for oracle risk)
+    arb_poll_interval_seconds: float = 10.0  # Polymarket price polling interval
     arb_max_pairs: int = 50  # Maximum number of tracked pairs
     arb_max_position_per_pair: int = 100  # Max contracts per pair
     arb_cooldown_seconds: float = 30.0  # Cooldown between trades on same pair
     arb_daily_loss_limit_cents: int = 50000  # $500 daily loss limit
     arb_fee_estimate_cents: int = 7  # Kalshi fee estimate per $1 profit (~7%)
+    arb_min_profit_cents: int = 200  # Minimum expected profit per trade ($2) after fees
+    arb_order_ttl_seconds: int = 5  # Auto-cancel unfilled arb orders after N seconds (via Kalshi expiration_ts)
     arb_min_pair_confidence: float = 0.35  # Pre-filter threshold (LLM validates above this)
     arb_scan_interval_seconds: float = 300.0  # Agent scanner runs every 5 min
     arb_auto_index: bool = True  # Auto-build persistent pair index on startup
     arb_max_events: int = 25  # Maximum events in the pair index
     arb_active_event_tickers: List[str] = field(default_factory=list)  # Trading whitelist (empty = all)
     arb_top_n_events: int = 10  # Number of top-volume Kalshi events to track
+    arb_search_pool_size: int = 50  # Events to consider for pairing before narrowing to arb_top_n_events
     arb_orchestrator_enabled: bool = False  # Enable LLM orchestrator (set True when index is solid)
+    event_codex_poll_interval: float = 120.0  # Event codex sync interval (seconds)
+    event_codex_candle_window: int = 60  # Candle history window (minutes) - default 1h
 
     # State Machine Configuration
     sync_duration: float = 10.0  # seconds for Kalshi data sync
@@ -236,13 +246,16 @@ class V3Config:
         # Arbitrage configuration
         arb_enabled = os.environ.get("V3_ARB_ENABLED", "false").lower() == "true"
         polymarket_enabled = os.environ.get("V3_POLYMARKET_ENABLED", "false").lower() == "true"
-        arb_spread_threshold_cents = int(os.environ.get("V3_ARB_SPREAD_THRESHOLD_CENTS", "5"))
-        arb_poll_interval_seconds = float(os.environ.get("V3_ARB_POLL_INTERVAL_SECONDS", "5.0"))
+        arb_auto_trade_enabled = os.environ.get("V3_ARB_AUTO_TRADE_ENABLED", "false").lower() == "true"
+        arb_spread_threshold_cents = int(os.environ.get("V3_ARB_SPREAD_THRESHOLD_CENTS", "10"))
+        arb_poll_interval_seconds = float(os.environ.get("V3_ARB_POLL_INTERVAL_SECONDS", "3.0"))
         arb_max_pairs = int(os.environ.get("V3_ARB_MAX_PAIRS", "50"))
         arb_max_position_per_pair = int(os.environ.get("V3_ARB_MAX_POSITION_PER_PAIR", "100"))
         arb_cooldown_seconds = float(os.environ.get("V3_ARB_COOLDOWN_SECONDS", "30.0"))
         arb_daily_loss_limit_cents = int(os.environ.get("V3_ARB_DAILY_LOSS_LIMIT_CENTS", "50000"))
         arb_fee_estimate_cents = int(os.environ.get("V3_ARB_FEE_ESTIMATE_CENTS", "7"))
+        arb_min_profit_cents = int(os.environ.get("V3_ARB_MIN_PROFIT_CENTS", "200"))
+        arb_order_ttl_seconds = int(os.environ.get("V3_ARB_ORDER_TTL_SECONDS", "5"))
         arb_min_pair_confidence = float(os.environ.get("V3_ARB_MIN_PAIR_CONFIDENCE", "0.35"))
         arb_scan_interval_seconds = float(os.environ.get("V3_ARB_SCAN_INTERVAL_SECONDS", "300.0"))
         arb_auto_index = os.environ.get("V3_ARB_AUTO_INDEX", "true").lower() == "true"
@@ -250,7 +263,10 @@ class V3Config:
         arb_active_event_tickers_str = os.environ.get("V3_ARB_ACTIVE_EVENT_TICKERS", "")
         arb_active_event_tickers = [t.strip() for t in arb_active_event_tickers_str.split(",") if t.strip()]
         arb_top_n_events = int(os.environ.get("V3_ARB_TOP_N_EVENTS", "10"))
-        arb_orchestrator_enabled = os.environ.get("V3_ARB_ORCHESTRATOR_ENABLED", "false").lower() == "true"
+        arb_search_pool_size = int(os.environ.get("V3_ARB_SEARCH_POOL_SIZE", "50"))
+        arb_orchestrator_enabled = os.environ.get("V3_ARB_ORCHESTRATOR_ENABLED", "true").lower() == "true"
+        event_codex_poll_interval = float(os.environ.get("V3_EVENT_CODEX_POLL_INTERVAL", "120.0"))
+        event_codex_candle_window = int(os.environ.get("V3_EVENT_CODEX_CANDLE_WINDOW", "60"))
 
         sync_duration = float(os.environ.get("V3_SYNC_DURATION", os.environ.get("V3_CALIBRATION_DURATION", "10.0")))
         health_check_interval = float(os.environ.get("V3_HEALTH_CHECK_INTERVAL", "5.0"))
@@ -302,6 +318,7 @@ class V3Config:
             dormant_grace_period_hours=dormant_grace_period_hours,
             arb_enabled=arb_enabled,
             polymarket_enabled=polymarket_enabled,
+            arb_auto_trade_enabled=arb_auto_trade_enabled,
             arb_spread_threshold_cents=arb_spread_threshold_cents,
             arb_poll_interval_seconds=arb_poll_interval_seconds,
             arb_max_pairs=arb_max_pairs,
@@ -309,13 +326,18 @@ class V3Config:
             arb_cooldown_seconds=arb_cooldown_seconds,
             arb_daily_loss_limit_cents=arb_daily_loss_limit_cents,
             arb_fee_estimate_cents=arb_fee_estimate_cents,
+            arb_min_profit_cents=arb_min_profit_cents,
+            arb_order_ttl_seconds=arb_order_ttl_seconds,
             arb_min_pair_confidence=arb_min_pair_confidence,
             arb_scan_interval_seconds=arb_scan_interval_seconds,
             arb_auto_index=arb_auto_index,
             arb_max_events=arb_max_events,
             arb_active_event_tickers=arb_active_event_tickers,
             arb_top_n_events=arb_top_n_events,
+            arb_search_pool_size=arb_search_pool_size,
             arb_orchestrator_enabled=arb_orchestrator_enabled,
+            event_codex_poll_interval=event_codex_poll_interval,
+            event_codex_candle_window=event_codex_candle_window,
             sync_duration=sync_duration,
             health_check_interval=health_check_interval,
             error_recovery_delay=error_recovery_delay,
@@ -368,13 +390,14 @@ class V3Config:
 
         # Log arb config
         if arb_enabled:
-            logger.info(f"  - Arbitrage: ENABLED (threshold={arb_spread_threshold_cents}c, max_pairs={arb_max_pairs}, cooldown={arb_cooldown_seconds}s)")
+            logger.info(f"  - Arbitrage: ENABLED (threshold={arb_spread_threshold_cents}c, fee={arb_fee_estimate_cents}c, min_profit={arb_min_profit_cents}c, order_ttl={arb_order_ttl_seconds}s)")
+            logger.info(f"    - Limits: max_pairs={arb_max_pairs}, cooldown={arb_cooldown_seconds}s, daily_loss_limit=${arb_daily_loss_limit_cents/100:.0f}")
             if polymarket_enabled:
                 logger.info(f"    - Polymarket poller: interval={arb_poll_interval_seconds}s, max_position={arb_max_position_per_pair}")
             else:
                 logger.warning(f"  - WARNING: arb_enabled=true but polymarket_enabled=false - arb system will have no Poly prices")
             if arb_auto_index:
-                logger.info(f"    - Auto index: max_events={arb_max_events}")
+                logger.info(f"    - Auto index: max_events={arb_max_events}, search_pool={arb_search_pool_size}, top_n={arb_top_n_events}")
             if arb_active_event_tickers:
                 logger.info(f"    - Trading whitelist: {', '.join(arb_active_event_tickers)}")
         else:

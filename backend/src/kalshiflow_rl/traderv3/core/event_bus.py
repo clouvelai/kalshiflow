@@ -93,7 +93,7 @@ QUEUE_CAPACITY = 50_000
 # How many queued events to drain per processing cycle.  Keeps the
 # consumer from falling behind during bursty traffic while still
 # yielding to the event loop between batches.
-BATCH_SIZE = 500
+BATCH_SIZE = 10000
 
 # How often (seconds) to log aggregated drop statistics.
 # Prevents per-event warning spam during sustained back-pressure.
@@ -106,6 +106,10 @@ CRITICAL_EVENT_TYPES = frozenset({
     "public_trade_received",
     "order_fill",
     "state_transition",
+    "orderbook_snapshot",
+    "orderbook_delta",
+    "poly_price_update",
+    "kalshi_api_price_update",
 })
 
 
@@ -258,6 +262,31 @@ class EventBus:
             except ValueError:
                 logger.warning(f"Callback not found in subscribers: {callback.__name__}")
     
+    async def emit(self, event_type: EventType, event: Any) -> bool:
+        """
+        Emit an arbitrary event through the bus.
+
+        Generic emit for event types that don't have a dedicated emit_* method
+        (e.g., arb events: POLY_PRICE_UPDATE, SPREAD_UPDATE, SPREAD_TRADE_EXECUTED).
+
+        The event object must have an `event_type` attribute matching the EventType
+        so _notify_subscribers can route it correctly.
+
+        Args:
+            event_type: Type of event (used for subscriber lookup)
+            event: Event dataclass with event_type attribute
+
+        Returns:
+            True if event was queued, False if queue full or bus not running
+        """
+        if not self._running:
+            return False
+
+        if not hasattr(event, "event_type"):
+            event.event_type = event_type
+
+        return await self._queue_event(event)
+
     async def emit_market_event(
         self,
         event_type: EventType,
@@ -1114,53 +1143,106 @@ class EventBus:
     
     def _coalesce_ticker_updates(self, batch: list) -> list:
         """
-        Coalesce market_ticker_update events within a batch.
+        Coalesce high-frequency events within a batch.
 
-        When multiple ticker updates arrive for the same market in one batch,
-        only the LATEST update (last in the batch) is kept. All earlier
-        updates for that ticker are dropped since only the most recent
-        price data matters. Other event types pass through unchanged.
+        For "latest-wins" event types, only the most recent event per key
+        is kept. All earlier events for the same key are dropped since
+        only the most recent data matters. Non-coalescable event types
+        pass through unchanged.
 
-        This dramatically reduces subscriber processing when 107+ markets
-        each produce frequent ticker updates.
+        Coalesced event types and their dedup keys:
+            - market_ticker_update: market_ticker
+            - orderbook_delta: market_ticker
+            - orderbook_snapshot: market_ticker
+            - kalshi_api_price_update: kalshi_ticker (via pair_id)
+            - poly_price_update: pair_id
+            - spread_update: pair_id
 
         Args:
             batch: List of events drained from the queue
 
         Returns:
-            Filtered batch with deduplicated ticker updates
+            Filtered batch with deduplicated events
         """
         # Fast path: nothing to coalesce in small batches
         if len(batch) <= 1:
             return batch
 
-        # Walk the batch in reverse to find the LAST ticker update per market
-        seen_tickers: set = set()
+        # Per-type seen sets for dedup keys
+        seen_ticker: set = set()       # market_ticker_update
+        seen_ob_delta: set = set()     # orderbook_delta
+        seen_ob_snap: set = set()      # orderbook_snapshot
+        seen_kalshi_api: set = set()   # kalshi_api_price_update
+        seen_poly: set = set()         # poly_price_update
+        seen_spread: set = set()       # spread_update
+
         coalesced: list = []
         coalesced_count = 0
 
+        # Walk in reverse so the LAST (most recent) event per key survives
         for event in reversed(batch):
-            if (
-                hasattr(event, "event_type")
-                and event.event_type == EventType.MARKET_TICKER_UPDATE
-                and hasattr(event, "market_ticker")
-            ):
-                if event.market_ticker in seen_tickers:
-                    # Duplicate ticker update -- drop it but still mark task_done
-                    self._event_queue.task_done()
-                    self._events_coalesced += 1
-                    coalesced_count += 1
-                    continue
-                seen_tickers.add(event.market_ticker)
+            if not hasattr(event, "event_type"):
+                coalesced.append(event)
+                continue
 
-            coalesced.append(event)
+            et = event.event_type
+            drop = False
+
+            if et == EventType.MARKET_TICKER_UPDATE and hasattr(event, "market_ticker"):
+                key = event.market_ticker
+                if key in seen_ticker:
+                    drop = True
+                else:
+                    seen_ticker.add(key)
+
+            elif et == EventType.ORDERBOOK_DELTA and hasattr(event, "market_ticker"):
+                key = event.market_ticker
+                if key in seen_ob_delta:
+                    drop = True
+                else:
+                    seen_ob_delta.add(key)
+
+            elif et == EventType.ORDERBOOK_SNAPSHOT and hasattr(event, "market_ticker"):
+                key = event.market_ticker
+                if key in seen_ob_snap:
+                    drop = True
+                else:
+                    seen_ob_snap.add(key)
+
+            elif et == EventType.KALSHI_API_PRICE_UPDATE and hasattr(event, "pair_id"):
+                key = event.pair_id
+                if key in seen_kalshi_api:
+                    drop = True
+                else:
+                    seen_kalshi_api.add(key)
+
+            elif et == EventType.POLY_PRICE_UPDATE and hasattr(event, "pair_id"):
+                key = event.pair_id
+                if key in seen_poly:
+                    drop = True
+                else:
+                    seen_poly.add(key)
+
+            elif et == EventType.SPREAD_UPDATE and hasattr(event, "pair_id"):
+                key = event.pair_id
+                if key in seen_spread:
+                    drop = True
+                else:
+                    seen_spread.add(key)
+
+            if drop:
+                self._event_queue.task_done()
+                self._events_coalesced += 1
+                coalesced_count += 1
+            else:
+                coalesced.append(event)
 
         # Reverse back to original order
         coalesced.reverse()
 
         if coalesced_count > 0:
             logger.debug(
-                f"Coalesced {coalesced_count} duplicate ticker updates "
+                f"Coalesced {coalesced_count} events "
                 f"({len(batch)} -> {len(coalesced)} events)"
             )
 
@@ -1201,37 +1283,27 @@ class EventBus:
             EventType.ORDERBOOK_SNAPSHOT, EventType.ORDERBOOK_DELTA
         ]
 
-        event_type_value = event.event_type.value if hasattr(event, "event_type") else ""
-        use_concurrent = event_type_value in CRITICAL_EVENT_TYPES
+        # All events use concurrent notification for maximum throughput
+        tasks = []
+        for callback in subscribers:
+            if is_orderbook:
+                task = asyncio.create_task(
+                    self._safe_call_subscriber(callback, event.market_ticker, event.metadata or {})
+                )
+            else:
+                task = asyncio.create_task(
+                    self._safe_call_subscriber(callback, event)
+                )
+            tasks.append(task)
 
-        if use_concurrent:
-            # Critical path: concurrent notification for lowest latency
-            tasks = []
-            for callback in subscribers:
-                if is_orderbook:
-                    task = asyncio.create_task(
-                        self._safe_call_subscriber(callback, event.market_ticker, event.metadata or {})
-                    )
-                else:
-                    task = asyncio.create_task(
-                        self._safe_call_subscriber(callback, event)
-                    )
-                tasks.append(task)
-
-            if tasks:
-                try:
-                    await asyncio.wait_for(
-                        asyncio.gather(*tasks, return_exceptions=True), timeout=5.0
-                    )
-                except asyncio.TimeoutError:
-                    logger.warning(f"Subscriber callbacks timeout for {event_type_value}")
-        else:
-            # Non-critical path: sequential notification to reduce task overhead
-            for callback in subscribers:
-                if is_orderbook:
-                    await self._safe_call_subscriber(callback, event.market_ticker, event.metadata or {})
-                else:
-                    await self._safe_call_subscriber(callback, event)
+        if tasks:
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(*tasks, return_exceptions=True), timeout=5.0
+                )
+            except asyncio.TimeoutError:
+                event_type_value = event.event_type.value if hasattr(event, "event_type") else ""
+                logger.warning(f"Subscriber callbacks timeout for {event_type_value}")
     
     async def _safe_call_subscriber(self, callback: Callable, *args) -> None:
         """

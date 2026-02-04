@@ -1,21 +1,11 @@
 """
-Deep Agent - Self-Improving Trading Agent for Kalshi.
+Arbitrage Deep Agent v2 - Captain + EventAnalyst + MemoryCurator.
 
-This module implements a self-improving agent that:
-1. Observes market price impact signals from Reddit entity pipeline
-2. Acts by trading or holding based on signal strength
-3. Reflects on outcomes and learns
-4. Persists learnings to memory files
-
-The agent uses the Anthropic Claude API directly for tool calling,
-with custom tools for market data, price impacts, and trade execution.
+Captain (create_react_agent) delegates to subagents via tool calls.
+Trade execution via self-contained buy_arb_position / sell_arb_position tools.
+Shared data (PairRegistry, SpreadMonitor, EventCodex) accessed via read-only snapshot tools.
 """
 
-from .agent import SelfImprovingAgent, DeepAgentConfig
-from .reflection import ReflectionEngine
+from .orchestrator import ArbOrchestrator, ArbOrchestratorConfig
 
-__all__ = [
-    "SelfImprovingAgent",
-    "DeepAgentConfig",
-    "ReflectionEngine",
-]
+__all__ = ["ArbOrchestrator", "ArbOrchestratorConfig"]
