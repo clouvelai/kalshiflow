@@ -18,12 +18,10 @@ class EventType(Enum):
     # Orderbook events (from existing system)
     ORDERBOOK_SNAPSHOT = "orderbook_snapshot"
     ORDERBOOK_DELTA = "orderbook_delta"
-    SETTLEMENT = "settlement"
 
     # V3 specific events
     STATE_TRANSITION = "state_transition"
     TRADER_STATUS = "trader_status"
-    CONNECTION_STATUS = "connection_status"
     SYSTEM_ACTIVITY = "system_activity"  # Unified console messaging
 
     # Public trade events
@@ -50,8 +48,11 @@ class EventType(Enum):
     # True Market Open (TMO) events
     TMO_FETCHED = "tmo_fetched"                        # True market open price fetched from candlestick API
 
-    # Event Research Agent events (visible research feed)
-    RESEARCH_STRATEGY = "research_strategy"            # Calibration output - what we're looking for
-    RESEARCH_ITEM = "research_item"                    # Each news item found (visible feed)
-    RESEARCH_SIGNAL = "research_signal"                # Actionable signal extracted from research
-    RESEARCH_BATCH_COMPLETE = "research_batch_complete"  # Batch summary after each loop
+    # Cross-venue arbitrage events
+    POLY_PRICE_UPDATE = "poly_price_update"            # Polymarket price update for a paired market
+    SPREAD_UPDATE = "spread_update"                    # Spread recalculation for a paired market
+    SPREAD_ALERT = "spread_alert"                      # Spread exceeds threshold
+    SPREAD_TRADE_EXECUTED = "spread_trade_executed"    # Arb trade executed on hot path
+    PAIR_MATCHED = "pair_matched"                      # New cross-venue pair discovered
+    KALSHI_API_PRICE_UPDATE = "kalshi_api_price_update"  # Kalshi REST API price poll result
+

@@ -18,6 +18,7 @@ from ..config.environment import V3Config
 from ..core.event_bus import EventBus
 from ..core.websocket_manager import V3WebSocketManager
 from .pair_registry import PairRegistry, EventGroup
+from .pairing_service import NormalizedEvent
 
 logger = logging.getLogger("kalshiflow_rl.traderv3.services.pair_index_service")
 
@@ -137,8 +138,6 @@ class PairIndexService:
 
     async def _select_top_events(self) -> list:
         """Fetch Kalshi events and return top N by volume."""
-        from .pairing_service import NormalizedEvent
-
         all_events = await self._pairing_service.fetch_kalshi_events()
         if not all_events:
             return []
@@ -372,6 +371,7 @@ class PairIndexService:
 
         for group in events:
             pairs_data = []
+            tradeable_count = 0
             for pair in group.pairs:
                 pair_dict = {
                     "pair_id": pair.id,
@@ -384,6 +384,8 @@ class PairIndexService:
                     ss = self._spread_monitor.get_spread_state(pair.id)
                     if ss:
                         pair_dict.update(ss.to_dict())
+                        if ss.tradeable:
+                            tradeable_count += 1
                 pairs_data.append(pair_dict)
             total_pairs += len(pairs_data)
 
@@ -394,6 +396,7 @@ class PairIndexService:
                 "volume_24h": group.volume_24h,
                 "market_count": group.market_count,
                 "is_tradeable": group.is_tradeable,
+                "tradeable_pair_count": tradeable_count,
                 "pairs": pairs_data,
             })
 
