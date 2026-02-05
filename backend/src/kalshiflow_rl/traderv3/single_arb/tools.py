@@ -6,7 +6,7 @@ Module-level globals are injected at startup by the coordinator.
 
 import logging
 import time
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional
 
 from langchain_core.tools import tool
 
@@ -17,6 +17,8 @@ _index = None           # EventArbIndex
 _trading_client = None  # KalshiDemoTradingClient
 _memory_store = None    # DualMemoryStore (file + vector)
 _config = None          # V3Config
+_order_group_id = None  # Session order group ID
+_order_ttl = 60         # Default TTL in seconds (1 min for demo)
 
 
 def set_dependencies(
@@ -24,9 +26,11 @@ def set_dependencies(
     trading_client=None,
     memory_store=None,
     config=None,
+    order_group_id=None,
+    order_ttl=None,
 ) -> None:
     """Set shared dependencies for all tools."""
-    global _index, _trading_client, _memory_store, _config
+    global _index, _trading_client, _memory_store, _config, _order_group_id, _order_ttl
     if index is not None:
         _index = index
     if trading_client is not None:
@@ -35,6 +39,10 @@ def set_dependencies(
         _memory_store = memory_store
     if config is not None:
         _config = config
+    if order_group_id is not None:
+        _order_group_id = order_group_id
+    if order_ttl is not None:
+        _order_ttl = order_ttl
 
 
 # --- Tools ---
@@ -59,19 +67,60 @@ async def get_event_snapshot(event_ticker: str) -> Dict[str, Any]:
     if not snapshot:
         return {"error": f"Event {event_ticker} not found in index"}
 
+    # Trim noisy fields from each market to reduce token usage
+    _market_keep_fields = {
+        "ticker", "title", "yes_bid", "yes_ask", "yes_bid_size", "yes_ask_size",
+        "yes_levels", "no_levels", "spread", "freshness_seconds",
+        "last_trade_price", "last_trade_side", "trade_count",
+    }
+    if "markets" in snapshot:
+        trimmed = {}
+        for ticker, mkt in snapshot["markets"].items():
+            trimmed[ticker] = {k: v for k, v in mkt.items() if k in _market_keep_fields}
+        snapshot["markets"] = trimmed
+
+    # Also remove event-level noise
+    for key in ("subtitle", "loaded_at"):
+        snapshot.pop(key, None)
+
     return snapshot
 
 
 @tool
-async def get_all_events() -> Dict[str, Any]:
-    """Get summary of all monitored events with arb state.
+async def get_events_summary() -> List[Dict[str, Any]]:
+    """Get a compact summary of all monitored events for scanning.
 
-    Returns each event's probability sums, edges, and market coverage.
+    Returns a lightweight list with edge calculations and data coverage
+    per event. Use this for initial scanning, then drill into specific
+    events with get_event_snapshot().
+
+    Returns:
+        List of dicts with event_ticker, title, market_count, edge info
     """
     if not _index:
         return {"error": "EventArbIndex not available"}
 
-    return _index.get_snapshot()
+    fee = _index._fee_per_contract
+    summary = []
+    for et, event in _index.events.items():
+        sum_bid = event.market_sum_bid()
+        sum_ask = event.market_sum_ask()
+        long_e = event.long_edge(fee)
+        short_e = event.short_edge(fee)
+
+        summary.append({
+            "event_ticker": et,
+            "title": event.title,
+            "market_count": event.markets_total,
+            "markets_with_data": event.markets_with_data,
+            "all_markets_have_data": event.all_markets_have_data,
+            "sum_yes_bid": sum_bid,
+            "sum_yes_ask": sum_ask,
+            "long_edge": round(long_e, 1) if long_e is not None else None,
+            "short_edge": round(short_e, 1) if short_e is not None else None,
+        })
+
+    return summary
 
 
 @tool
@@ -115,6 +164,276 @@ async def get_market_orderbook(market_ticker: str) -> Dict[str, Any]:
         "source": market.source,
         "freshness_seconds": round(market.freshness_seconds, 1),
     }
+
+
+@tool
+async def place_order(
+    ticker: str,
+    side: str,
+    contracts: int,
+    price_cents: int,
+    reasoning: str,
+    action: str = "buy",
+) -> Dict[str, Any]:
+    """Place a single order. Auto-sets configurable TTL and uses session order group.
+    Auto-records trade to memory.
+
+    Args:
+        ticker: Market ticker
+        side: "yes" or "no"
+        contracts: Number of contracts (1-100)
+        price_cents: Limit price in cents (1-99)
+        reasoning: Trade thesis (REQUIRED - stored in memory)
+        action: "buy" or "sell" (default "buy")
+    """
+    if not _trading_client:
+        return {"error": "Trading client not available"}
+
+    if side not in ("yes", "no"):
+        return {"error": f"Invalid side: {side}. Must be 'yes' or 'no'."}
+    if action not in ("buy", "sell"):
+        return {"error": f"Invalid action: {action}. Must be 'buy' or 'sell'."}
+    if not (1 <= contracts <= 100):
+        return {"error": f"Contracts must be 1-100, got {contracts}"}
+    if not (1 <= price_cents <= 99):
+        return {"error": f"Price must be 1-99 cents, got {price_cents}"}
+
+    try:
+        expiration_ts = int(time.time()) + _order_ttl
+
+        order_kwargs = {
+            "ticker": ticker,
+            "action": action,
+            "side": side,
+            "count": contracts,
+            "price": price_cents,
+            "type": "limit",
+            "expiration_ts": expiration_ts,
+        }
+        if _order_group_id:
+            order_kwargs["order_group_id"] = _order_group_id
+
+        logger.info(
+            f"[SINGLE_ARB:TRADE] action={action} ticker={ticker} "
+            f"side={side} contracts={contracts} price={price_cents}c ttl={_order_ttl}s"
+        )
+
+        order_resp = await _trading_client.create_order(**order_kwargs)
+        order = order_resp.get("order", order_resp)
+        order_id = order.get("order_id", "")
+        status = order.get("status", "placed")
+
+        # Auto-record to memory
+        if _memory_store:
+            try:
+                _memory_store.append(
+                    content=f"TRADE: {action} {contracts} {side} {ticker} @{price_cents}c | {reasoning}",
+                    memory_type="trade",
+                    metadata={
+                        "order_id": order_id,
+                        "ticker": ticker,
+                        "side": side,
+                        "action": action,
+                        "contracts": contracts,
+                        "price_cents": price_cents,
+                        "status": status,
+                    },
+                )
+            except Exception as e:
+                logger.debug(f"Memory record failed: {e}")
+
+        return {
+            "order_id": order_id,
+            "status": status,
+            "ticker": ticker,
+            "side": side,
+            "action": action,
+            "contracts": contracts,
+            "price_cents": price_cents,
+            "ttl_seconds": _order_ttl,
+            "order_group": _order_group_id[:8] if _order_group_id else None,
+        }
+
+    except Exception as e:
+        # Record failed order to memory
+        if _memory_store:
+            try:
+                _memory_store.append(
+                    content=f"FAILED ORDER: {action} {contracts} {side} {ticker} @{price_cents}c | {reasoning} | error: {e}",
+                    memory_type="trade",
+                    metadata={
+                        "ticker": ticker,
+                        "side": side,
+                        "action": action,
+                        "contracts": contracts,
+                        "price_cents": price_cents,
+                        "status": "failed",
+                        "error": str(e),
+                    },
+                )
+            except Exception:
+                pass
+        return {"error": f"Order failed: {e}"}
+
+
+@tool
+async def get_trade_history(ticker: Optional[str] = None, limit: int = 20) -> Dict[str, Any]:
+    """Get fills, settlements, and P&L. This is your report card.
+
+    Args:
+        ticker: Filter to specific market ticker (optional)
+        limit: Maximum fills to return (default 20)
+    """
+    if not _trading_client:
+        return {"error": "Trading client not available"}
+
+    try:
+        # Get fills
+        fills_resp = await _trading_client.get_fills(ticker=ticker)
+        raw_fills = fills_resp.get("fills", [])[:limit]
+        fills = [
+            {
+                "ticker": f.get("ticker"),
+                "side": f.get("side"),
+                "action": f.get("action"),
+                "count": f.get("count"),
+                "yes_price": f.get("yes_price"),
+                "no_price": f.get("no_price"),
+                "order_id": f.get("order_id"),
+                "created_time": f.get("created_time"),
+            }
+            for f in raw_fills
+        ]
+
+        # Get settlements
+        settlements_resp = await _trading_client.get_settlements(max_settlements=50)
+        raw_settlements = settlements_resp if isinstance(settlements_resp, list) else settlements_resp.get("settlements", [])
+        settlements = [
+            {
+                "ticker": s.get("ticker") or s.get("market_ticker"),
+                "market_result": s.get("market_result") or s.get("result"),
+                "revenue": s.get("revenue"),
+                "payout": s.get("payout"),
+                "settled_time": s.get("settled_time") or s.get("settlement_time"),
+            }
+            for s in raw_settlements[:20]
+        ]
+
+        # Compute P&L from settlements
+        total_revenue = sum(s.get("revenue", 0) or 0 for s in settlements)
+        total_payout = sum(s.get("payout", 0) or 0 for s in settlements)
+        net_pnl = total_payout - total_revenue
+
+        return {
+            "fills": fills,
+            "fill_count": len(fills),
+            "settlements": settlements,
+            "settlement_count": len(settlements),
+            "pnl_summary": {
+                "total_revenue_cents": total_revenue,
+                "total_payout_cents": total_payout,
+                "net_pnl_cents": net_pnl,
+            },
+        }
+
+    except Exception as e:
+        return {"error": f"Trade history failed: {e}"}
+
+
+@tool
+async def get_resting_orders(ticker: Optional[str] = None) -> Dict[str, Any]:
+    """Get currently open/resting orders with queue position info.
+
+    Returns order details plus queue position (contracts ahead of yours).
+
+    Args:
+        ticker: Filter to specific market ticker (optional)
+    """
+    if not _trading_client:
+        return {"error": "Trading client not available"}
+
+    try:
+        # Get orders
+        resp = await _trading_client.get_orders(ticker=ticker, status="resting")
+        raw_orders = resp.get("orders", [])
+
+        # Get queue positions (best-effort)
+        queue_map = {}
+        try:
+            qp_resp = await _trading_client.get_queue_positions(
+                market_tickers=ticker if ticker else None,
+            )
+            for qp in qp_resp.get("queue_positions", []):
+                queue_map[qp.get("order_id")] = qp.get("queue_position", None)
+        except Exception:
+            pass
+
+        orders = [
+            {
+                "order_id": o.get("order_id"),
+                "ticker": o.get("ticker"),
+                "side": o.get("side"),
+                "action": o.get("action"),
+                "price": o.get("price") or o.get("yes_price"),
+                "remaining_count": o.get("remaining_count"),
+                "created_time": o.get("created_time"),
+                "expiration_time": o.get("expiration_time"),
+                "queue_position": queue_map.get(o.get("order_id")),
+            }
+            for o in raw_orders
+        ]
+
+        return {
+            "count": len(orders),
+            "orders": orders,
+        }
+
+    except Exception as e:
+        return {"error": f"Get orders failed: {e}"}
+
+
+@tool
+async def cancel_order(order_id: str, reason: str = "") -> Dict[str, Any]:
+    """Cancel a resting order.
+
+    Args:
+        order_id: The order ID to cancel
+        reason: Optional reason for cancellation
+    """
+    if not _trading_client:
+        return {"error": "Trading client not available"}
+
+    try:
+        await _trading_client.cancel_order(order_id)
+
+        # Record cancellation to memory if reason provided
+        if reason and _memory_store:
+            try:
+                _memory_store.append(
+                    content=f"CANCEL: order {order_id[:8]}... | {reason}",
+                    memory_type="trade",
+                    metadata={"order_id": order_id, "action": "cancel"},
+                )
+            except Exception:
+                pass
+
+        return {"status": "cancelled", "order_id": order_id}
+
+    except Exception as e:
+        err_str = str(e).lower()
+        if "not found" in err_str or "404" in err_str:
+            return {"status": "already_gone", "order_id": order_id}
+        # Record failed cancel to memory
+        if _memory_store:
+            try:
+                _memory_store.append(
+                    content=f"FAILED CANCEL: order {order_id[:8]}... | error: {e}",
+                    memory_type="trade",
+                    metadata={"order_id": order_id, "action": "cancel", "status": "failed", "error": str(e)},
+                )
+            except Exception:
+                pass
+        return {"error": f"Cancel failed: {e}"}
 
 
 @tool
@@ -168,6 +487,7 @@ async def execute_arb(
     direction: str,
     max_contracts: int,
     reasoning: str,
+    dry_run: bool = False,
 ) -> Dict[str, Any]:
     """Execute a multi-leg arb trade on a single event.
 
@@ -177,39 +497,44 @@ async def execute_arb(
     Each leg is placed as a limit order at the current best price.
     All legs must succeed for the arb to be profitable.
 
+    Use dry_run=True to preview the trade without placing orders.
+
     Args:
         event_ticker: Event to trade
         direction: "long" (buy all YES) or "short" (buy all NO)
         max_contracts: Maximum contracts per leg
         reasoning: Why this trade should be made
+        dry_run: If True, compute everything but don't place orders (preview mode)
 
     Returns:
-        Dict with status (completed/partial/aborted), legs executed, total cost
+        Dict with status (preview/completed/partial/aborted), legs, total cost
     """
     if not _trading_client:
-        return {"status": "aborted", "reason": "Trading client not available"}
+        return {"error": "Trading client not available"}
     if not _index:
-        return {"status": "aborted", "reason": "EventArbIndex not available"}
+        return {"error": "EventArbIndex not available"}
 
     event_state = _index.events.get(event_ticker)
     if not event_state:
-        return {"status": "aborted", "reason": f"Event {event_ticker} not found"}
+        return {"error": f"Event {event_ticker} not found"}
 
     if not event_state.all_markets_have_data:
         return {
-            "status": "aborted",
-            "reason": f"Not all markets have data ({event_state.markets_with_data}/{event_state.markets_total})",
+            "error": f"Not all markets have data ({event_state.markets_with_data}/{event_state.markets_total})",
         }
+
+    if direction not in ("long", "short"):
+        return {"error": f"Invalid direction: {direction}. Must be 'long' or 'short'."}
 
     # Check balance
     try:
-        balance_resp = await _trading_client.get_balance()
+        balance_resp = await _trading_client.get_account_info()
         balance = balance_resp.get("balance", 0)
     except Exception as e:
-        return {"status": "aborted", "reason": f"Balance check failed: {e}"}
+        return {"error": f"Balance check failed: {e}"}
 
     # Build legs
-    legs_executed = []
+    legs = []
     total_cost = 0
     errors = []
 
@@ -221,15 +546,13 @@ async def execute_arb(
                 continue
             side = "yes"
             price = book.yes_ask
-        elif direction == "short":
+        else:
             # Buy NO (sell YES) → NO price = 100 - YES bid
             if book.yes_bid is None:
                 errors.append(f"{book.ticker}: no YES bid")
                 continue
             side = "no"
             price = 100 - book.yes_bid
-        else:
-            return {"status": "aborted", "reason": f"Invalid direction: {direction}"}
 
         # Size: minimum of max_contracts and available liquidity
         contracts = min(max_contracts, book.yes_ask_size if direction == "long" else book.yes_bid_size)
@@ -241,41 +564,72 @@ async def execute_arb(
             errors.append(f"{book.ticker}: insufficient balance for {contracts}@{price}c")
             continue
 
+        legs.append({
+            "ticker": book.ticker,
+            "title": book.title,
+            "side": side,
+            "contracts": contracts,
+            "price_cents": price,
+        })
+        total_cost += leg_cost
+
+    # Dry run: return preview without placing orders
+    if dry_run:
+        return {
+            "status": "preview",
+            "event_ticker": event_ticker,
+            "direction": direction,
+            "legs_planned": len(legs),
+            "legs_total": event_state.markets_total,
+            "estimated_cost_cents": total_cost,
+            "balance_cents": balance,
+            "balance_after_cents": balance - total_cost,
+            "legs": legs,
+            "errors": errors,
+            "reasoning": reasoning,
+        }
+
+    # Execute orders
+    legs_executed = []
+    exec_cost = 0
+
+    for leg in legs:
         try:
             logger.info(
-                f"[SINGLE_ARB:TRADE] action=buy ticker={book.ticker} "
-                f"side={side} contracts={contracts} price={price}c"
+                f"[SINGLE_ARB:TRADE] action=buy ticker={leg['ticker']} "
+                f"side={leg['side']} contracts={leg['contracts']} price={leg['price_cents']}c"
             )
-            order_resp = await _trading_client.create_order(
-                ticker=book.ticker,
-                action="buy",
-                side=side,
-                count=contracts,
-                price=price,
-                type="limit",
-            )
+            order_kwargs = {
+                "ticker": leg["ticker"],
+                "action": "buy",
+                "side": leg["side"],
+                "count": leg["contracts"],
+                "price": leg["price_cents"],
+                "type": "limit",
+                "expiration_ts": int(time.time()) + _order_ttl,
+            }
+            if _order_group_id:
+                order_kwargs["order_group_id"] = _order_group_id
+
+            order_resp = await _trading_client.create_order(**order_kwargs)
             order = order_resp.get("order", order_resp)
             order_id = order.get("order_id", "")
 
             legs_executed.append({
-                "ticker": book.ticker,
-                "title": book.title,
-                "side": side,
-                "contracts": contracts,
-                "price_cents": price,
+                **leg,
                 "order_id": order_id,
                 "status": order.get("status", "placed"),
             })
-            total_cost += leg_cost
+            exec_cost += leg["contracts"] * leg["price_cents"]
 
         except Exception as e:
-            error_msg = f"{book.ticker}: order failed: {e}"
+            error_msg = f"{leg['ticker']}: order failed: {e}"
             logger.error(f"[SINGLE_ARB:TRADE_ERROR] {error_msg}")
             errors.append(error_msg)
 
     status = "completed" if len(legs_executed) == event_state.markets_total else "partial"
     if len(legs_executed) == 0:
-        status = "aborted"
+        status = "failed"
 
     result = {
         "status": status,
@@ -283,16 +637,36 @@ async def execute_arb(
         "direction": direction,
         "legs_executed": len(legs_executed),
         "legs_total": event_state.markets_total,
-        "total_cost_cents": total_cost,
+        "total_cost_cents": exec_cost,
         "legs": legs_executed,
         "errors": errors,
         "reasoning": reasoning,
     }
 
+    # Auto-record to memory (including failures)
+    if _memory_store:
+        try:
+            prefix = "ARB" if status != "failed" else "FAILED ARB"
+            _memory_store.append(
+                content=f"{prefix}: {direction} {event_ticker} | {len(legs_executed)}/{event_state.markets_total} legs | cost={exec_cost}c | {reasoning}",
+                memory_type="trade",
+                metadata={
+                    "event_ticker": event_ticker,
+                    "direction": direction,
+                    "legs_executed": len(legs_executed),
+                    "total_cost_cents": exec_cost,
+                    "status": status,
+                    "order_ids": [l.get("order_id") for l in legs_executed],
+                    "errors": errors if errors else None,
+                },
+            )
+        except Exception as e:
+            logger.debug(f"Memory record failed: {e}")
+
     logger.info(
         f"[SINGLE_ARB:TRADE_RESULT] event={event_ticker} direction={direction} "
         f"status={status} legs={len(legs_executed)}/{event_state.markets_total} "
-        f"cost={total_cost}c"
+        f"cost={exec_cost}c"
     )
 
     return result
@@ -332,45 +706,11 @@ async def memory_store(
 
 
 @tool
-async def memory_search(
-    query: str,
-    limit: int = 5,
-) -> Dict[str, Any]:
-    """Search past experiences and learnings in memory.
-
-    Uses semantic search (vector similarity) when available, with keyword
-    fallback. Results are merged and deduplicated.
-
-    Args:
-        query: Search query (keywords or natural language)
-        limit: Maximum results to return
-
-    Returns:
-        Dict with matching memory entries
-    """
-    if not _memory_store:
-        return {"error": "Memory store not available"}
-
-    try:
-        # Use async hybrid search (semantic + keyword) if DualMemoryStore
-        if hasattr(_memory_store, 'search'):
-            results = await _memory_store.search(query=query, limit=limit)
-        else:
-            results = _memory_store.search_journal(query=query, limit=limit)
-        return {
-            "results": results,
-            "count": len(results),
-            "query": query,
-        }
-    except Exception as e:
-        return {"error": str(e)}
-
-
-@tool
 async def get_positions() -> Dict[str, Any]:
-    """Get current open positions on Kalshi.
+    """Get current positions on Kalshi, filtered to arb-tracked markets.
 
-    Returns all positions with market tickers and quantities.
+    Returns only positions whose ticker is in the current EventArbIndex.
+    Also reports total position count so the agent knows about legacy positions.
     """
     if not _trading_client:
         return {"error": "Trading client not available"}
@@ -378,9 +718,19 @@ async def get_positions() -> Dict[str, Any]:
     try:
         resp = await _trading_client.get_positions()
         positions = resp.get("market_positions", resp.get("positions", []))
+        total = len(positions)
+
+        # Filter to arb-tracked market tickers
+        tracked = set(_index.market_tickers) if _index else set()
+        arb_positions = [
+            p for p in positions
+            if p.get("ticker") in tracked
+        ]
+
         return {
-            "positions": positions[:50],
-            "count": len(positions),
+            "arb_positions": arb_positions,
+            "arb_position_count": len(arb_positions),
+            "total_positions": total,
         }
     except Exception as e:
         return {"error": str(e)}
@@ -396,7 +746,7 @@ async def get_balance() -> Dict[str, Any]:
         return {"error": "Trading client not available"}
 
     try:
-        resp = await _trading_client.get_balance()
+        resp = await _trading_client.get_account_info()
         balance_cents = resp.get("balance", 0)
         return {
             "balance_cents": balance_cents,
@@ -404,172 +754,3 @@ async def get_balance() -> Dict[str, Any]:
         }
     except Exception as e:
         return {"error": str(e)}
-
-
-# --- MemoryCurator tools ---
-
-
-def _get_file_store():
-    """Get the FileMemoryStore."""
-    return _memory_store
-
-
-@tool
-async def get_memory_stats() -> Dict[str, Any]:
-    """Get memory store statistics.
-
-    Returns entry counts by type, staleness info, and storage details.
-    Used by MemoryCurator to assess memory health.
-
-    Returns:
-        Dict with journal_entries, type_counts, validations_cached, etc.
-    """
-    if not _memory_store:
-        return {"error": "Memory store not available"}
-    return _memory_store.get_stats()
-
-
-@tool
-async def dedup_memories(similarity_threshold: float = 0.88) -> Dict[str, Any]:
-    """Find and mark duplicate memories based on content similarity.
-
-    Scans recent journal entries for near-duplicates (keyword overlap).
-    Returns pairs of duplicates found for review.
-
-    Args:
-        similarity_threshold: Minimum overlap ratio to flag as duplicate (0-1)
-
-    Returns:
-        Dict with duplicate pairs found and dedup count
-    """
-    file_store = _get_file_store()
-    if not file_store:
-        return {"error": "Memory store not available"}
-
-    entries = file_store.get_journal(limit=200)
-
-    duplicates = []
-    seen_content: Dict[str, Dict] = {}
-
-    for entry in entries:
-        content = entry.get("content", "").lower().strip()
-        if not content:
-            continue
-
-        words: Set[str] = set(content.split())
-        found_dup = False
-        for existing_content, existing_entry in seen_content.items():
-            existing_words: Set[str] = set(existing_content.split())
-            if not words or not existing_words:
-                continue
-            overlap = len(words & existing_words) / max(len(words | existing_words), 1)
-            if overlap >= similarity_threshold:
-                duplicates.append({
-                    "original": existing_entry.get("content", "")[:100],
-                    "duplicate": content[:100],
-                    "overlap": round(overlap, 3),
-                })
-                found_dup = True
-                break
-
-        if not found_dup:
-            seen_content[content] = entry
-
-    return {
-        "duplicates_found": len(duplicates),
-        "entries_scanned": len(entries),
-        "pairs": duplicates[:20],
-    }
-
-
-@tool
-async def consolidate_memories(memory_type: str = "learning") -> Dict[str, Any]:
-    """Merge related memories of a given type into a summary.
-
-    Reads all entries of a type, groups by topic similarity, and identifies
-    candidates for consolidation. Does NOT auto-merge (returns recommendations).
-
-    Args:
-        memory_type: Type of memories to consolidate (learning, mistake, etc.)
-
-    Returns:
-        Dict with consolidation recommendations
-    """
-    file_store = _get_file_store()
-    if not file_store:
-        return {"error": "Memory store not available"}
-
-    entries = file_store.get_journal(limit=100, memory_type=memory_type)
-
-    groups: Dict[str, List[Dict]] = {}
-    ungrouped = []
-
-    for entry in entries:
-        meta = entry.get("metadata", {})
-        event_ticker = meta.get("event_ticker")
-        ticker = meta.get("ticker") or meta.get("market_ticker")
-
-        key = event_ticker or ticker
-        if key:
-            groups.setdefault(key, []).append(entry)
-        else:
-            ungrouped.append(entry)
-
-    recommendations = []
-    for key, group in groups.items():
-        if len(group) >= 3:
-            recommendations.append({
-                "group_key": key,
-                "count": len(group),
-                "newest": group[0].get("content", "")[:100],
-                "oldest": group[-1].get("content", "")[:100],
-                "recommendation": "consolidate",
-            })
-
-    return {
-        "type": memory_type,
-        "total_entries": len(entries),
-        "groups": len(groups),
-        "ungrouped": len(ungrouped),
-        "consolidation_candidates": len(recommendations),
-        "recommendations": recommendations[:10],
-    }
-
-
-@tool
-async def prune_stale_memories(max_age_hours: float = 168.0) -> Dict[str, Any]:
-    """Identify stale memories older than max_age_hours.
-
-    Reports stale entries but does NOT delete them (read-only analysis).
-    Returns count and preview for curator to decide.
-
-    Args:
-        max_age_hours: Maximum age in hours before considering stale (default 168 = 7 days)
-
-    Returns:
-        Dict with stale entry count and previews
-    """
-    file_store = _get_file_store()
-    if not file_store:
-        return {"error": "Memory store not available"}
-
-    entries = file_store.get_journal(limit=500)
-
-    cutoff = time.time() - (max_age_hours * 3600)
-    stale = []
-
-    for entry in entries:
-        ts = entry.get("timestamp", 0)
-        if ts and ts < cutoff:
-            stale.append({
-                "content": entry.get("content", "")[:100],
-                "type": entry.get("type"),
-                "age_hours": round((time.time() - ts) / 3600, 1),
-            })
-
-    return {
-        "max_age_hours": max_age_hours,
-        "total_scanned": len(entries),
-        "stale_count": len(stale),
-        "stale_preview": stale[:15],
-    }

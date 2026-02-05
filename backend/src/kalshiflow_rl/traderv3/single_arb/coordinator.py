@@ -5,11 +5,12 @@ Startup sequence:
 1. Create EventArbIndex
 2. For each hardcoded event ticker: load_event() via REST
 3. Subscribe all market tickers to orderbook WS
-4. Create EventArbMonitor (subscribes to EventBus)
-5. Start REST poller fallback
-6. Create ArbCaptain with memory store
-7. Start Captain cycle loop
-8. Wire WebSocket broadcasting
+4. Setup memory store (file + vector) + seed AGENTS.md
+5. Create session order group
+6. Set tool dependencies
+7. Create EventArbMonitor (subscribes to EventBus)
+8. Create ArbCaptain with FilesystemBackend for persistent /memories/
+9. Broadcast initial snapshot
 """
 
 import asyncio
@@ -58,6 +59,7 @@ class SingleArbCoordinator:
         self._captain = None
         self._memory_store = None
 
+        self._order_group_id: Optional[str] = None
         self._running = False
         self._started_at: Optional[float] = None
 
@@ -114,15 +116,30 @@ class SingleArbCoordinator:
         # 4. Setup memory store
         self._setup_memory()
 
-        # 5. Set tool dependencies
+        # 5. Create session order group for the captain
+        self._order_group_id = None
+        try:
+            resp = await client.create_order_group(contracts_limit=10000)
+            self._order_group_id = resp.get("order_group_id")
+            if self._order_group_id:
+                logger.info(f"[SINGLE_ARB] Order group created: {self._order_group_id[:8]}...")
+            else:
+                logger.warning("[SINGLE_ARB] Order group response missing order_group_id")
+        except Exception as e:
+            logger.warning(f"[SINGLE_ARB] Order group creation failed: {e}")
+
+        # 6. Set tool dependencies
+        order_ttl = getattr(self._config, "single_arb_order_ttl", 60)
         set_tool_dependencies(
             index=self._index,
             trading_client=client,
             memory_store=self._memory_store,
             config=self._config,
+            order_group_id=self._order_group_id,
+            order_ttl=order_ttl,
         )
 
-        # 6. Create monitor
+        # 7. Create monitor
         self._monitor = EventArbMonitor(
             index=self._index,
             event_bus=self._event_bus,
@@ -133,7 +150,7 @@ class SingleArbCoordinator:
         )
         await self._monitor.start()
 
-        # 7. Create and start Captain (if enabled)
+        # 8. Create and start Captain (if enabled)
         captain_enabled = getattr(self._config, "single_arb_captain_enabled", True)
         if captain_enabled:
             try:
@@ -142,13 +159,14 @@ class SingleArbCoordinator:
                 self._captain = ArbCaptain(
                     cycle_interval=captain_interval,
                     event_callback=self._emit_agent_event,
+                    memory_data_dir=DEFAULT_MEMORY_DIR,
                 )
                 await self._captain.start()
                 logger.info("ArbCaptain started")
             except Exception as e:
                 logger.error(f"Failed to start ArbCaptain: {e}")
 
-        # 8. Broadcast initial snapshot
+        # 9. Broadcast initial snapshot
         await self._broadcast_snapshot()
 
         # Register with health monitor
@@ -174,6 +192,16 @@ class SingleArbCoordinator:
         if self._monitor:
             await self._monitor.stop()
 
+        # Reset order group (cancels all resting orders in group)
+        if getattr(self, "_order_group_id", None):
+            try:
+                client = self._get_trading_client()
+                if client:
+                    await client.reset_order_group(self._order_group_id)
+                    logger.info(f"[SINGLE_ARB] Order group reset: {self._order_group_id[:8]}...")
+            except Exception as e:
+                logger.debug(f"Order group reset failed: {e}")
+
         logger.info("Single-event arb system stopped")
 
     def _get_trading_client(self):
@@ -186,7 +214,7 @@ class SingleArbCoordinator:
         return None
 
     def _setup_memory(self) -> None:
-        """Setup dual memory store (file + vector)."""
+        """Setup dual memory store (file + vector) and seed AGENTS.md."""
         from .memory import FileMemoryStore, VectorMemoryService, DualMemoryStore
         from kalshiflow_rl.data.database import rl_db
 
@@ -205,6 +233,31 @@ class SingleArbCoordinator:
             vector_store=vector_store,
         )
         logger.info(f"DualMemoryStore initialized (vector={'yes' if vector_store else 'no'})")
+
+        # Seed AGENTS.md if it doesn't exist (loaded into Captain system prompt each cycle)
+        agents_md_path = os.path.join(DEFAULT_MEMORY_DIR, "AGENTS.md")
+        if not os.path.exists(agents_md_path):
+            with open(agents_md_path, "w") as f:
+                f.write(
+                    "# Trading Learnings\n"
+                    "\n"
+                    "## Strategy Notes\n"
+                    "- Primary: single-event arb (probability sum violations)\n"
+                    "- Long arb: sum of YES asks < 100 - total_fees -> buy all YES\n"
+                    "- Short arb: sum of YES bids > 100 + total_fees -> buy all NO\n"
+                    "- Fee ~7c per contract per leg\n"
+                    "- Start with 5 contracts per leg. Scale what proves profitable.\n"
+                    "\n"
+                    "## Patterns Observed\n"
+                    "(Record patterns here as you discover them)\n"
+                    "\n"
+                    "## Mistakes & Lessons\n"
+                    "(Record mistakes and what you learned)\n"
+                    "\n"
+                    "## Market-Specific Notes\n"
+                    "(Record notes about specific events/markets)\n"
+                )
+            logger.info("Created seed AGENTS.md")
 
     async def _broadcast(self, message: Dict) -> None:
         """Broadcast message to all frontend WebSocket clients."""
