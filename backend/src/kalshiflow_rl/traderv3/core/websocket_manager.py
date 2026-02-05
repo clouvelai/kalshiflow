@@ -74,6 +74,7 @@ class V3WebSocketManager:
         self._market_price_syncer = None
         self._tracked_markets_state: Optional['TrackedMarketsState'] = None
         self._upcoming_markets_syncer: Optional['UpcomingMarketsSyncer'] = None
+        self._single_arb_coordinator = None
         self._clients: Dict[str, WebSocketClient] = {}
         self._client_counter = 0
         self._started_at: Optional[float] = None
@@ -124,6 +125,10 @@ class V3WebSocketManager:
     def set_upcoming_markets_syncer(self, syncer: 'UpcomingMarketsSyncer') -> None:
         self._upcoming_markets_syncer = syncer
         logger.info("UpcomingMarketsSyncer set on WebSocket manager")
+
+    def set_single_arb_coordinator(self, coordinator) -> None:
+        self._single_arb_coordinator = coordinator
+        logger.info("SingleArbCoordinator set on WebSocket manager")
 
     def _add_to_activity_feed_history(self, message_type: str, data: dict) -> None:
         """Track events for Activity Feed history replay."""
@@ -294,6 +299,14 @@ class V3WebSocketManager:
             # Send activity feed history
             if self._activity_feed_history and client_id in self._clients:
                 await self._send_activity_feed_history(client_id)
+
+            # Send captain paused state to new client
+            if self._single_arb_coordinator and client_id in self._clients:
+                is_paused = self._single_arb_coordinator.is_captain_paused()
+                await self._send_to_client(client_id, {
+                    "type": "captain_paused",
+                    "data": {"paused": is_paused}
+                })
 
             # Handle incoming messages
             async for message in websocket.iter_text():
@@ -469,6 +482,18 @@ class V3WebSocketManager:
                 if client_id in self._clients:
                     self._clients[client_id].subscriptions = subscriptions
                     logger.info(f"Client {client_id} subscribed to: {subscriptions}")
+
+            elif message_type == "captain_pause":
+                if self._single_arb_coordinator:
+                    self._single_arb_coordinator.pause_captain()
+                    await self.broadcast_message("captain_paused", {"paused": True})
+                    logger.info(f"Captain paused by client {client_id}")
+
+            elif message_type == "captain_resume":
+                if self._single_arb_coordinator:
+                    self._single_arb_coordinator.resume_captain()
+                    await self.broadcast_message("captain_paused", {"paused": False})
+                    logger.info(f"Captain resumed by client {client_id}")
 
             else:
                 logger.debug(f"Unknown message type from client {client_id}: {message_type}")

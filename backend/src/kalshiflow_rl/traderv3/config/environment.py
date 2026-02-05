@@ -101,13 +101,13 @@ class V3Config:
     # Single-Event Arbitrage Configuration
     single_arb_enabled: bool = False  # Enable single-event arb system
     single_arb_event_tickers: List[str] = field(default_factory=list)  # Events to monitor
-    single_arb_poll_interval: float = 10.0  # REST fallback interval (seconds)
+    single_arb_poll_interval: float = 5.0  # REST fallback interval (seconds)
     single_arb_captain_interval: float = 60.0  # Captain cycle interval (seconds)
-    single_arb_min_edge_cents: float = 3.0  # Min edge after fees to trigger trade
-    single_arb_fee_per_contract: int = 7  # Kalshi fee per contract (~7c)
+    single_arb_min_edge_cents: float = 0.5  # Min edge after fees to trigger detection (low = let captain decide)
+    single_arb_fee_per_contract: int = 1  # Kalshi fee per contract (demo ~1c)
     single_arb_max_contracts: int = 50  # Max contracts per leg
     single_arb_captain_enabled: bool = True  # Enable LLM Captain
-    single_arb_order_ttl: int = 60  # Order TTL in seconds (auto-cancel)
+    single_arb_order_ttl: int = 30  # Order TTL in seconds (auto-cancel)
 
     # State Machine Configuration
     sync_duration: float = 10.0  # seconds for Kalshi data sync
@@ -234,13 +234,13 @@ class V3Config:
         single_arb_enabled = os.environ.get("V3_SINGLE_ARB_ENABLED", "false").lower() == "true"
         single_arb_event_tickers_str = os.environ.get("V3_SINGLE_ARB_EVENT_TICKERS", "")
         single_arb_event_tickers = [t.strip() for t in single_arb_event_tickers_str.split(",") if t.strip()]
-        single_arb_poll_interval = float(os.environ.get("V3_SINGLE_ARB_POLL_INTERVAL", "10.0"))
+        single_arb_poll_interval = float(os.environ.get("V3_SINGLE_ARB_POLL_INTERVAL", "5.0"))
         single_arb_captain_interval = float(os.environ.get("V3_SINGLE_ARB_CAPTAIN_INTERVAL", "60.0"))
-        single_arb_min_edge_cents = float(os.environ.get("V3_SINGLE_ARB_MIN_EDGE_CENTS", "3.0"))
-        single_arb_fee_per_contract = int(os.environ.get("V3_SINGLE_ARB_FEE_PER_CONTRACT", "7"))
+        single_arb_min_edge_cents = float(os.environ.get("V3_SINGLE_ARB_MIN_EDGE_CENTS", "0.5"))
+        single_arb_fee_per_contract = int(os.environ.get("V3_SINGLE_ARB_FEE_PER_CONTRACT", "1"))
         single_arb_max_contracts = int(os.environ.get("V3_SINGLE_ARB_MAX_CONTRACTS", "50"))
         single_arb_captain_enabled = os.environ.get("V3_SINGLE_ARB_CAPTAIN_ENABLED", "true").lower() == "true"
-        single_arb_order_ttl = int(os.environ.get("V3_SINGLE_ARB_ORDER_TTL", "60"))
+        single_arb_order_ttl = int(os.environ.get("V3_SINGLE_ARB_ORDER_TTL", "30"))
 
         sync_duration = float(os.environ.get("V3_SYNC_DURATION", os.environ.get("V3_CALIBRATION_DURATION", "10.0")))
         health_check_interval = float(os.environ.get("V3_HEALTH_CHECK_INTERVAL", "5.0"))

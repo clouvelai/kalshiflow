@@ -49,11 +49,20 @@ class EventArbMonitor:
 
         self._running = False
         self._poller_task: Optional[asyncio.Task] = None
+        self._stats_task: Optional[asyncio.Task] = None
+
+        # Feed counters
         self._update_count = 0
         self._poll_count = 0
         self._ticker_count = 0
         self._trade_count = 0
         self._opportunities_detected = 0
+
+        # Feed timestamps (epoch seconds)
+        self._last_orderbook_at: float = 0.0
+        self._last_ticker_at: float = 0.0
+        self._last_trade_at: float = 0.0
+        self._last_poll_at: float = 0.0
 
     async def start(self) -> None:
         """Start monitoring: subscribe to events + start REST poller."""
@@ -76,6 +85,9 @@ class EventArbMonitor:
         poll_interval = getattr(self._config, "single_arb_poll_interval", 10.0)
         self._poller_task = asyncio.create_task(self._rest_poller_loop(poll_interval))
 
+        # Start periodic stats broadcast (every 5 seconds)
+        self._stats_task = asyncio.create_task(self._stats_broadcast_loop(5.0))
+
         logger.info(
             f"EventArbMonitor started: {len(self._index.market_tickers)} markets, "
             f"poll_interval={poll_interval}s (orderbook+ticker+trade channels)"
@@ -94,6 +106,13 @@ class EventArbMonitor:
             self._poller_task.cancel()
             try:
                 await self._poller_task
+            except asyncio.CancelledError:
+                pass
+
+        if self._stats_task:
+            self._stats_task.cancel()
+            try:
+                await self._stats_task
             except asyncio.CancelledError:
                 pass
 
@@ -140,6 +159,7 @@ class EventArbMonitor:
             )
 
         self._update_count += 1
+        self._last_orderbook_at = time.time()
 
         # Broadcast update to frontend
         event_ticker = self._index.get_event_for_ticker(market_ticker)
@@ -164,6 +184,7 @@ class EventArbMonitor:
             oi_delta=metadata.get("open_interest_delta", 0),
         )
         self._ticker_count += 1
+        self._last_ticker_at = time.time()
 
         # Broadcast ticker update to frontend
         event_ticker = self._index.get_event_for_ticker(market_ticker)
@@ -194,6 +215,7 @@ class EventArbMonitor:
 
         self._index.on_trade(market_ticker, metadata)
         self._trade_count += 1
+        self._last_trade_at = time.time()
 
         # Broadcast trade to frontend
         event_ticker = self._index.get_event_for_ticker(market_ticker)
@@ -262,6 +284,7 @@ class EventArbMonitor:
                 )
 
                 self._poll_count += 1
+                self._last_poll_at = time.time()
 
                 event_ticker = self._index.get_event_for_ticker(ticker)
                 if event_ticker:
@@ -308,14 +331,59 @@ class EventArbMonitor:
             except Exception as e:
                 logger.debug(f"Broadcast error: {e}")
 
+    async def _stats_broadcast_loop(self, interval: float) -> None:
+        """Periodically broadcast feed stats to frontend."""
+        while self._running:
+            try:
+                await asyncio.sleep(interval)
+                if not self._running:
+                    break
+                await self._broadcast_feed_stats()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.debug(f"Stats broadcast error: {e}")
+
+    async def _broadcast_feed_stats(self) -> None:
+        """Broadcast feed stats to frontend."""
+        if not self._broadcast:
+            return
+
+        try:
+            await self._broadcast({
+                "type": "feed_stats",
+                "data": self.get_stats(),
+            })
+        except Exception as e:
+            logger.debug(f"Feed stats broadcast error: {e}")
+
     def get_stats(self) -> Dict:
-        """Get monitor stats."""
+        """Get monitor stats including feed timestamps."""
+        now = time.time()
         return {
             "running": self._running,
-            "update_count": self._update_count,
-            "ticker_count": self._ticker_count,
-            "trade_count": self._trade_count,
-            "poll_count": self._poll_count,
+            "feeds": {
+                "orderbook": {
+                    "count": self._update_count,
+                    "last_at": self._last_orderbook_at,
+                    "age_seconds": round(now - self._last_orderbook_at, 1) if self._last_orderbook_at > 0 else None,
+                },
+                "ticker": {
+                    "count": self._ticker_count,
+                    "last_at": self._last_ticker_at,
+                    "age_seconds": round(now - self._last_ticker_at, 1) if self._last_ticker_at > 0 else None,
+                },
+                "trade": {
+                    "count": self._trade_count,
+                    "last_at": self._last_trade_at,
+                    "age_seconds": round(now - self._last_trade_at, 1) if self._last_trade_at > 0 else None,
+                },
+                "poll": {
+                    "count": self._poll_count,
+                    "last_at": self._last_poll_at,
+                    "age_seconds": round(now - self._last_poll_at, 1) if self._last_poll_at > 0 else None,
+                },
+            },
             "opportunities_detected": self._opportunities_detected,
             "tracked_markets": len(self._index.market_tickers),
             "tracked_events": len(self._index.events),

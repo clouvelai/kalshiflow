@@ -31,6 +31,10 @@ export const useArbWebSocket = () => {
   const [events, setEvents] = useState(new Map());
   // Public trade feed: Array of recent trades (newest first)
   const [eventTrades, setEventTrades] = useState([]);
+  // Feed stats from backend monitor (orderbook, ticker, trade, poll counts + timestamps)
+  const [feedStats, setFeedStats] = useState(null);
+  // Captain pause state
+  const [captainPaused, setCaptainPaused] = useState(false);
 
   const wsRef = useRef(null);
   const reconnectTimeoutRef = useRef(null);
@@ -225,6 +229,20 @@ export const useArbWebSocket = () => {
         break;
       }
 
+      case 'feed_stats': {
+        if (data.data) {
+          setFeedStats(data.data);
+        }
+        break;
+      }
+
+      case 'captain_paused': {
+        if (data.data != null) {
+          setCaptainPaused(data.data.paused);
+        }
+        break;
+      }
+
       default:
         break;
     }
@@ -249,8 +267,16 @@ export const useArbWebSocket = () => {
         import.meta.env.VITE_BACKEND_PORT ||
         '8005';
       const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const wsHost = import.meta.env.VITE_V3_BACKEND_URL || `${wsProtocol}//localhost:${backendPort}`;
-      const wsUrl = wsHost.startsWith('ws') ? `${wsHost}/v3/ws` : `${wsProtocol}//${wsHost}/v3/ws`;
+
+      let wsUrl;
+      const envUrl = import.meta.env.VITE_V3_BACKEND_URL;
+      if (envUrl) {
+        // Strip any existing protocol (http://, https://, ws://, wss://) and add ws/wss
+        const host = envUrl.replace(/^(https?|wss?):\/\//, '');
+        wsUrl = `${wsProtocol}//${host}/v3/ws`;
+      } else {
+        wsUrl = `${wsProtocol}//localhost:${backendPort}/v3/ws`;
+      }
       const ws = new WebSocket(wsUrl);
 
       ws.onopen = () => {
@@ -294,6 +320,11 @@ export const useArbWebSocket = () => {
   }, [connectWebSocket]);
 
   useEffect(() => {
+    // Clear any existing interval first to prevent memory leak during reconnection cycles
+    if (heartbeatIntervalRef.current) {
+      clearInterval(heartbeatIntervalRef.current);
+    }
+
     const check = () => {
       if (Date.now() - lastPingRef.current > 90000 && connectionStatus === 'connected') {
         console.warn('[useArbWebSocket] No ping in 90s, reconnecting');
@@ -306,6 +337,14 @@ export const useArbWebSocket = () => {
     };
   }, [connectionStatus]);
 
+  const sendCaptainPauseToggle = useCallback(() => {
+    const ws = wsRef.current;
+    if (ws?.readyState === WebSocket.OPEN) {
+      const msgType = captainPaused ? 'captain_resume' : 'captain_pause';
+      ws.send(JSON.stringify({ type: msgType }));
+    }
+  }, [captainPaused]);
+
   return {
     connectionStatus,
     systemState,
@@ -314,6 +353,9 @@ export const useArbWebSocket = () => {
     agentMessages,
     events,
     eventTrades,
+    feedStats,
+    captainPaused,
+    sendCaptainPauseToggle,
   };
 };
 

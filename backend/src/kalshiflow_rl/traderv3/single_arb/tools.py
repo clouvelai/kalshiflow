@@ -4,6 +4,7 @@ LangChain tools for the ArbCaptain.
 Module-level globals are injected at startup by the coordinator.
 """
 
+import hashlib
 import logging
 import time
 from typing import Any, Dict, List, Optional
@@ -43,6 +44,107 @@ def set_dependencies(
         _order_group_id = order_group_id
     if order_ttl is not None:
         _order_ttl = order_ttl
+
+
+# --- Helper functions ---
+
+def _compute_entity_fingerprint(trades: List[Dict]) -> Dict[str, Any]:
+    """Generate a fingerprint from a cluster of similar trades.
+
+    Returns fingerprint ID and pattern details.
+    """
+    if not trades:
+        return {"fingerprint": "UNKNOWN", "pattern": {}}
+
+    # Size signature: modal size bucket
+    sizes = [t.get("count", 1) for t in trades]
+    avg_size = sum(sizes) / len(sizes) if sizes else 0
+    size_sig = "S" if avg_size < 20 else "M" if avg_size < 100 else "L"
+
+    # Timing signature: average inter-trade delta
+    deltas = [t.get("delta_ms", 0) for t in trades if t.get("delta_ms", 0) > 0]
+    avg_delta = sum(deltas) / len(deltas) if deltas else 0
+    timing_sig = "F" if avg_delta < 500 else "N" if avg_delta < 5000 else "S"
+
+    # Hash from pattern
+    pattern = f"{size_sig}_{timing_sig}_{avg_size:.0f}_{avg_delta:.0f}"
+    fingerprint = hashlib.md5(pattern.encode()).hexdigest()[:6]
+
+    return {
+        "fingerprint": f"ENT_{fingerprint.upper()}",
+        "pattern": {
+            "size_sig": size_sig,
+            "timing_sig": timing_sig,
+            "avg_size": round(avg_size, 1),
+            "avg_delta_ms": round(avg_delta, 1),
+        },
+    }
+
+
+def _cluster_trades_by_pattern(trades: List[Dict]) -> List[List[Dict]]:
+    """Group trades by similar characteristics (size, timing, side).
+
+    Returns list of trade clusters, each cluster being a potential entity.
+    """
+    if not trades:
+        return []
+
+    # Simple clustering: group by size bucket and side tendency
+    clusters = {}
+    for t in trades:
+        count = t.get("count", 1)
+        side = t.get("side", "unknown")
+
+        # Size bucket
+        if count <= 10:
+            size_key = "tiny"
+        elif count <= 50:
+            size_key = "small"
+        elif count <= 100:
+            size_key = "medium"
+        else:
+            size_key = "large"
+
+        key = f"{size_key}_{side}"
+        if key not in clusters:
+            clusters[key] = []
+        clusters[key].append(t)
+
+    # Filter to clusters with >= 3 trades (enough to identify a pattern)
+    return [c for c in clusters.values() if len(c) >= 3]
+
+
+def _guess_entity_type(trades: List[Dict]) -> str:
+    """Guess entity type based on behavior patterns."""
+    if not trades:
+        return "UNKNOWN"
+
+    # Check for market maker patterns (consistent sizes, both sides)
+    sides = set(t.get("side") for t in trades)
+    sizes = [t.get("count", 1) for t in trades]
+    avg_size = sum(sizes) / len(sizes) if sizes else 0
+    size_variance = sum((s - avg_size) ** 2 for s in sizes) / len(sizes) if sizes else 0
+
+    # Low size variance = consistent sizing = likely automated
+    is_consistent_size = size_variance < (avg_size * 0.3) ** 2
+
+    # Both sides = market maker
+    if len(sides) > 1 and is_consistent_size:
+        return "MM_BOT"
+
+    # Consistent large sizes = whale or arb bot
+    if avg_size >= 50 and is_consistent_size:
+        return "ARB_BOT"
+
+    # Large inconsistent = whale
+    if avg_size >= 100:
+        return "WHALE"
+
+    # Consistent small sizes = automated
+    if is_consistent_size:
+        return "UNKNOWN_AUTO"
+
+    return "RETAIL"
 
 
 # --- Tools ---
@@ -754,3 +856,216 @@ async def get_balance() -> Dict[str, Any]:
         }
     except Exception as e:
         return {"error": str(e)}
+
+
+@tool
+async def analyze_microstructure(event_ticker: str) -> Dict[str, Any]:
+    """Analyze market microstructure for automated trading patterns.
+
+    Returns trade flow analysis, size clustering, timing patterns,
+    and whale activity for the ChevalDeTroie to interpret.
+
+    Args:
+        event_ticker: The event to analyze
+
+    Returns:
+        Dict with trade_flow, size_distribution, timing_analysis, whale_trades, anomalies
+    """
+    if not _index:
+        return {"error": "EventArbIndex not available"}
+
+    event = _index.events.get(event_ticker)
+    if not event:
+        return {"error": f"Event {event_ticker} not found"}
+
+    all_trades = []
+    for m in event.markets.values():
+        for t in m.recent_trades:
+            all_trades.append({**t, "market_ticker": m.ticker})
+
+    if not all_trades:
+        return {
+            "event_ticker": event_ticker,
+            "total_trades": 0,
+            "trade_flow": [],
+            "size_distribution": {"1-10": 0, "11-50": 0, "51-100": 0, "101-500": 0, "500+": 0},
+            "whale_trades": [],
+            "whale_count": 0,
+            "timing_histogram": {},
+            "rapid_sequences": 0,
+            "rapid_sequence_samples": [],
+            "detected_entities": [],
+        }
+
+    # Sort by timestamp
+    all_trades.sort(key=lambda t: t.get("ts", 0))
+
+    # Compute inter-trade deltas (ms)
+    trade_flow = []
+    for i, t in enumerate(all_trades):
+        prev_ts = all_trades[i - 1].get("ts", 0) if i > 0 else t.get("ts", 0)
+        curr_ts = t.get("ts", 0)
+        delta_ms = (curr_ts - prev_ts) * 1000 if i > 0 else 0
+        trade_flow.append({
+            "market": t["market_ticker"],
+            "price": t.get("yes_price"),
+            "count": t.get("count", 1),
+            "side": t.get("taker_side"),
+            "ts": curr_ts,
+            "delta_ms": round(delta_ms),
+        })
+
+    # Size distribution
+    size_buckets = {"1-10": 0, "11-50": 0, "51-100": 0, "101-500": 0, "500+": 0}
+    for t in all_trades:
+        count = t.get("count", 1)
+        if count <= 10:
+            size_buckets["1-10"] += 1
+        elif count <= 50:
+            size_buckets["11-50"] += 1
+        elif count <= 100:
+            size_buckets["51-100"] += 1
+        elif count <= 500:
+            size_buckets["101-500"] += 1
+        else:
+            size_buckets["500+"] += 1
+
+    # Whale trades (>= 100 contracts)
+    whale_trades = [t for t in trade_flow if t["count"] >= 100]
+
+    # Timing pattern: trades per second-of-minute
+    timing_histogram = {}
+    for t in all_trades:
+        ts = t.get("ts", 0)
+        sec = int(ts) % 60
+        timing_histogram[sec] = timing_histogram.get(sec, 0) + 1
+
+    # Anomalies: look for rapid sequences (< 100ms between trades)
+    rapid_sequences = []
+    seq = []
+    for t in trade_flow:
+        if 0 < t["delta_ms"] < 100:
+            seq.append(t)
+        else:
+            if len(seq) >= 3:
+                rapid_sequences.append(seq)
+            seq = [t] if 0 < t["delta_ms"] < 100 else []
+    # Check final sequence
+    if len(seq) >= 3:
+        rapid_sequences.append(seq)
+
+    # Entity detection: cluster trades by pattern and fingerprint each cluster
+    detected_entities = []
+    clusters = _cluster_trades_by_pattern(trade_flow)
+    for cluster in clusters:
+        fp_result = _compute_entity_fingerprint(cluster)
+        entity_type = _guess_entity_type(cluster)
+
+        # Confidence based on cluster size
+        if len(cluster) >= 10:
+            confidence = "high"
+        elif len(cluster) >= 5:
+            confidence = "medium"
+        else:
+            confidence = "low"
+
+        detected_entities.append({
+            "fingerprint": fp_result["fingerprint"],
+            "type_guess": entity_type,
+            "trade_count": len(cluster),
+            "avg_size": fp_result["pattern"].get("avg_size", 0),
+            "timing_pattern": fp_result["pattern"].get("timing_sig", "?"),
+            "confidence": confidence,
+        })
+
+    # Sort by trade count descending
+    detected_entities.sort(key=lambda e: e["trade_count"], reverse=True)
+
+    return {
+        "event_ticker": event_ticker,
+        "total_trades": len(all_trades),
+        "trade_flow": trade_flow[-30:],  # Last 30 for token efficiency
+        "size_distribution": size_buckets,
+        "whale_trades": whale_trades,
+        "whale_count": len(whale_trades),
+        "timing_histogram": timing_histogram,
+        "rapid_sequences": len(rapid_sequences),
+        "rapid_sequence_samples": rapid_sequences[:3],  # First 3 for examples
+        "detected_entities": detected_entities[:10],  # Top 10 entities
+    }
+
+
+@tool
+async def analyze_orderbook_patterns(market_ticker: str) -> Dict[str, Any]:
+    """Analyze orderbook for MM/bot signatures.
+
+    Looks at current orderbook state for:
+    - Symmetric quoting (bids and asks at equal distances from mid)
+    - Round number clustering (orders at 50, 60, 70, etc.)
+    - Size patterns (consistent sizes suggest automation)
+    - Layering (multiple levels with similar sizes)
+
+    Args:
+        market_ticker: The market to analyze
+
+    Returns:
+        Dict with mm_likelihood, patterns detected, anomalies
+    """
+    if not _index:
+        return {"error": "Index not available"}
+
+    event_ticker = _index.get_event_for_ticker(market_ticker)
+    if not event_ticker:
+        return {"error": f"Market {market_ticker} not tracked"}
+
+    event = _index.events.get(event_ticker)
+    market = event.markets.get(market_ticker) if event else None
+    if not market:
+        return {"error": f"Market {market_ticker} not found"}
+
+    yes_levels = market.yes_levels or []
+    no_levels = market.no_levels or []
+
+    patterns = []
+
+    # 1. Check for symmetric quoting (MM signature)
+    if market.yes_bid and market.yes_ask:
+        mid = (market.yes_bid + market.yes_ask) / 2
+        bid_dist = mid - market.yes_bid
+        ask_dist = market.yes_ask - mid
+        if abs(bid_dist - ask_dist) <= 1:  # Within 1 cent
+            patterns.append("symmetric_quotes")
+
+    # 2. Check for round number clustering
+    all_prices = [l[0] for l in yes_levels] + [l[0] for l in no_levels]
+    round_count = sum(1 for p in all_prices if p % 5 == 0)
+    if len(all_prices) > 0 and round_count / len(all_prices) > 0.6:
+        patterns.append("round_number_clustering")
+
+    # 3. Check for consistent sizes (automation signal)
+    all_sizes = [l[1] for l in yes_levels] + [l[1] for l in no_levels]
+    if len(all_sizes) >= 3:
+        avg_size = sum(all_sizes) / len(all_sizes)
+        variance = sum((s - avg_size) ** 2 for s in all_sizes) / len(all_sizes)
+        if variance < (avg_size * 0.3) ** 2:  # Low variance
+            patterns.append("consistent_sizes")
+
+    # 4. Check for layering (multiple levels, similar sizes)
+    if len(yes_levels) >= 3 or len(no_levels) >= 3:
+        patterns.append("layered_book")
+
+    # MM likelihood score
+    mm_signals = {"symmetric_quotes", "consistent_sizes", "layered_book"}
+    mm_score = len(set(patterns) & mm_signals) / 3.0
+
+    return {
+        "market_ticker": market_ticker,
+        "spread": market.spread,
+        "yes_levels_count": len(yes_levels),
+        "no_levels_count": len(no_levels),
+        "patterns_detected": patterns,
+        "mm_likelihood": round(mm_score, 2),
+        "mm_likelihood_label": "high" if mm_score > 0.6 else "medium" if mm_score > 0.3 else "low",
+        "top_bid": {"price": market.yes_bid, "size": market.yes_bid_size},
+        "top_ask": {"price": market.yes_ask, "size": market.yes_ask_size},
+    }

@@ -179,8 +179,8 @@ class SingleArbCoordinator:
         self._started_at = time.time()
 
         logger.info(
-            f"Single-event arb system started: "
-            f"{loaded_events} events, {len(market_tickers)} markets"
+            f"[SINGLE_ARB:STARTUP] Single-event arb system started: "
+            f"events={loaded_events} markets={len(market_tickers)} captain={captain_enabled}"
         )
 
     async def stop(self) -> None:
@@ -202,7 +202,7 @@ class SingleArbCoordinator:
             except Exception as e:
                 logger.debug(f"Order group reset failed: {e}")
 
-        logger.info("Single-event arb system stopped")
+        logger.info("[SINGLE_ARB:SHUTDOWN] Single-event arb system stopped")
 
     def _get_trading_client(self):
         """Get the underlying trading client for REST calls."""
@@ -259,6 +259,30 @@ class SingleArbCoordinator:
                 )
             logger.info("Created seed AGENTS.md")
 
+        # Seed BOTS.md if it doesn't exist (ChevalDeTroie bot registry)
+        bots_md_path = os.path.join(DEFAULT_MEMORY_DIR, "BOTS.md")
+        if not os.path.exists(bots_md_path):
+            with open(bots_md_path, "w") as f:
+                f.write(
+                    "# Bot Registry\n"
+                    "\n"
+                    "## Classification Schema\n"
+                    "- **MM_BOT**: Market maker (maintains quotes on both sides)\n"
+                    "- **ARB_BOT**: Arbitrage bot (responds to edge conditions)\n"
+                    "- **MOMENTUM_BOT**: Trades with recent price direction\n"
+                    "- **WHALE**: Large position accumulator\n"
+                    "- **UNKNOWN_AUTO**: Automated but pattern unclear\n"
+                    "\n"
+                    "## Identified Entities\n"
+                    "\n"
+                    "No bots identified yet.\n"
+                    "\n"
+                    "## Anomalies Log\n"
+                    "\n"
+                    "(Record unusual market behavior here)\n"
+                )
+            logger.info("Created seed BOTS.md")
+
     async def _broadcast(self, message: Dict) -> None:
         """Broadcast message to all frontend WebSocket clients."""
         if self._websocket_manager:
@@ -289,6 +313,21 @@ class SingleArbCoordinator:
     async def _emit_agent_event(self, event_data: Dict) -> None:
         """Forward agent events to frontend WebSocket."""
         await self._broadcast(event_data)
+
+    # Captain pause/resume interface
+    def pause_captain(self) -> None:
+        """Pause the Captain after current cycle completes."""
+        if self._captain:
+            self._captain.pause()
+
+    def resume_captain(self) -> None:
+        """Resume Captain cycles."""
+        if self._captain:
+            self._captain.resume()
+
+    def is_captain_paused(self) -> bool:
+        """Check if Captain is paused."""
+        return self._captain.is_paused if self._captain else False
 
     # Health check interface
     @property

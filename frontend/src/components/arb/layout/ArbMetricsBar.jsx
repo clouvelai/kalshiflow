@@ -4,7 +4,7 @@ import { DollarSign, TrendingUp, Layers, Zap } from 'lucide-react';
 /**
  * MetricCard - Single metric display
  */
-const MetricCard = memo(({ label, value, icon: Icon, valueClass = 'text-white', accentColor = 'gray' }) => {
+const MetricCard = memo(({ label, value, icon: Icon, valueClass = 'text-white', accentColor = 'gray', testId }) => {
   const accentStyles = {
     cyan: 'border-cyan-500/30 bg-gradient-to-br from-cyan-950/30 via-gray-900/50 to-gray-900/30',
     green: 'border-green-500/30 bg-gradient-to-br from-green-950/30 via-gray-900/50 to-gray-900/30',
@@ -15,17 +15,20 @@ const MetricCard = memo(({ label, value, icon: Icon, valueClass = 'text-white', 
   };
 
   return (
-    <div className={`
-      rounded-xl p-4 border backdrop-blur-sm
-      transition-all duration-300 ease-out
-      hover:scale-[1.02] hover:shadow-lg hover:shadow-black/20
-      ${accentStyles[accentColor] || accentStyles.gray}
-    `}>
+    <div
+      data-testid={testId}
+      className={`
+        rounded-xl p-4 border backdrop-blur-sm
+        transition-all duration-300 ease-out
+        hover:scale-[1.02] hover:shadow-lg hover:shadow-black/20
+        ${accentStyles[accentColor] || accentStyles.gray}
+      `}
+    >
       <div className="flex items-center justify-between mb-2">
         <span className="text-xs text-gray-500 uppercase tracking-wider font-medium">{label}</span>
         {Icon && <Icon className="w-3.5 h-3.5 text-gray-600" />}
       </div>
-      <div className={`text-2xl font-mono font-bold tracking-tight ${valueClass}`}>
+      <div data-testid={`${testId}-value`} className={`text-2xl font-mono font-bold tracking-tight ${valueClass}`}>
         {value}
       </div>
     </div>
@@ -58,13 +61,14 @@ const ArbMetricsBar = ({ tradingState, arbTradeCount, events }) => {
   const pnlDisplay = `${pnlPrefix}$${Math.abs(pnlDollars).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
   return (
-    <div className="grid grid-cols-4 gap-4">
+    <div id="arb-metrics-bar" data-testid="arb-metrics-bar" className="grid grid-cols-4 gap-4">
       <MetricCard
         label="Balance"
         value={formatDollars(balance)}
         icon={DollarSign}
         accentColor="cyan"
         valueClass="text-cyan-400"
+        testId="metric-balance"
       />
       <MetricCard
         label="P&L"
@@ -72,6 +76,7 @@ const ArbMetricsBar = ({ tradingState, arbTradeCount, events }) => {
         icon={TrendingUp}
         accentColor={pnlCents >= 0 ? 'green' : 'red'}
         valueClass={pnlCents >= 0 ? 'text-green-400' : 'text-red-400'}
+        testId="metric-pnl"
       />
       <MetricCard
         label={activeLabel}
@@ -79,6 +84,7 @@ const ArbMetricsBar = ({ tradingState, arbTradeCount, events }) => {
         icon={Layers}
         accentColor="violet"
         valueClass="text-violet-400"
+        testId="metric-active-events"
       />
       <MetricCard
         label="Arb Trades"
@@ -86,6 +92,7 @@ const ArbMetricsBar = ({ tradingState, arbTradeCount, events }) => {
         icon={Zap}
         accentColor="amber"
         valueClass="text-amber-400"
+        testId="metric-arb-trades"
       />
     </div>
   );

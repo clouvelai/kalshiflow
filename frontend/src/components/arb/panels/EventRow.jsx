@@ -28,11 +28,15 @@ ProbSumBadge.displayName = 'ProbSumBadge';
  * MiniDepth - Compact orderbook depth display (top 3 levels)
  */
 const MiniDepth = memo(({ yesLevels = [], noLevels = [] }) => {
-  if (yesLevels.length === 0 && noLevels.length === 0) return null;
+  // Filter out any null/undefined/malformed levels
+  const validYes = yesLevels.filter(l => l && Array.isArray(l) && l.length >= 2).slice(0, 3);
+  const validNo = noLevels.filter(l => l && Array.isArray(l) && l.length >= 2).slice(0, 3);
+
+  if (validYes.length === 0 && validNo.length === 0) return null;
 
   const maxSize = Math.max(
-    ...yesLevels.slice(0, 3).map(l => l[1] || 0),
-    ...noLevels.slice(0, 3).map(l => l[1] || 0),
+    ...validYes.map(l => l[1] || 0),
+    ...validNo.map(l => l[1] || 0),
     1,
   );
 
@@ -40,7 +44,7 @@ const MiniDepth = memo(({ yesLevels = [], noLevels = [] }) => {
     <div className="grid grid-cols-2 gap-1 mb-1.5">
       {/* Bids (YES) */}
       <div className="space-y-px">
-        {yesLevels.slice(0, 3).map((level, i) => (
+        {validYes.map((level, i) => (
           <div key={i} className="flex items-center gap-1 text-[9px]">
             <span className="font-mono text-cyan-400/70 w-6 text-right">{level[0]}</span>
             <div className="flex-1 h-2 bg-gray-800/50 rounded-sm overflow-hidden">
@@ -55,7 +59,7 @@ const MiniDepth = memo(({ yesLevels = [], noLevels = [] }) => {
       </div>
       {/* Asks (NO -> derived YES asks) */}
       <div className="space-y-px">
-        {noLevels.slice(0, 3).map((level, i) => (
+        {validNo.map((level, i) => (
           <div key={i} className="flex items-center gap-1 text-[9px]">
             <span className="font-mono text-gray-600 w-6 text-left">{level[1]}</span>
             <div className="flex-1 h-2 bg-gray-800/50 rounded-sm overflow-hidden">
@@ -113,12 +117,18 @@ const MarketCard = memo(({ market }) => {
   };
 
   return (
-    <div className="
-      bg-gradient-to-br from-gray-900/70 via-gray-900/50 to-gray-950/60
-      rounded-xl border border-gray-800/50 p-3
-      transition-all duration-200
-      hover:border-gray-700/60 hover:bg-gray-900/60
-    ">
+    <div
+      data-testid={`market-card-${ticker}`}
+      data-market-ticker={ticker}
+      data-yes-bid={yes_bid}
+      data-yes-ask={yes_ask}
+      className="
+        bg-gradient-to-br from-gray-900/70 via-gray-900/50 to-gray-950/60
+        rounded-xl border border-gray-800/50 p-3
+        transition-all duration-200
+        hover:border-gray-700/60 hover:bg-gray-900/60
+      "
+    >
       {/* Title + last trade */}
       <div className="flex items-start justify-between gap-2 mb-2">
         <p className="text-sm text-gray-300 leading-snug line-clamp-2 flex-1">
@@ -228,13 +238,20 @@ const EventRow = ({ event, isSelected, onSelectEvent }) => {
     : null;
 
   return (
-    <div className={`
-      border rounded-xl overflow-hidden transition-colors duration-150
-      ${isSelected
-        ? 'border-cyan-500/30 bg-cyan-950/10'
-        : 'border-gray-800/50'
-      }
-    `}>
+    <div
+      data-testid={`event-row-${event_ticker}`}
+      data-event-ticker={event_ticker}
+      data-selected={isSelected}
+      data-edge={bestEdge}
+      data-edge-direction={edgeDirection}
+      className={`
+        border rounded-xl overflow-hidden transition-colors duration-150
+        ${isSelected
+          ? 'border-cyan-500/30 bg-cyan-950/10'
+          : 'border-gray-800/50'
+        }
+      `}
+    >
       {/* Summary Row */}
       <button
         onClick={handleRowClick}

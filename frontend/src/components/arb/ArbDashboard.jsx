@@ -21,6 +21,9 @@ const ArbDashboard = () => {
     agentMessages,
     events,
     eventTrades,
+    feedStats,
+    captainPaused,
+    sendCaptainPauseToggle,
   } = useArbWebSocket();
 
   const {
@@ -64,18 +67,23 @@ const ArbDashboard = () => {
   }, [events]);
 
   return (
-    <div className="min-h-screen bg-gray-950 text-white">
+    <div id="arb-dashboard" data-testid="arb-dashboard" className="min-h-screen bg-gray-950 text-white">
       <ArbHeader
         connectionStatus={connectionStatus}
         systemState={systemState}
+        feedStats={feedStats}
+        captainPaused={captainPaused}
+        onCaptainPauseToggle={sendCaptainPauseToggle}
       />
 
       <div className="max-w-[1600px] mx-auto px-6 py-6 space-y-6">
-        <ArbMetricsBar
-          tradingState={tradingState}
-          arbTradeCount={arbTrades.length}
-          events={events}
-        />
+        <div id="metrics-bar" data-testid="metrics-bar">
+          <ArbMetricsBar
+            tradingState={tradingState}
+            arbTradeCount={arbTrades.length}
+            events={events}
+          />
+        </div>
 
         {/* Agent Chat - full width */}
         <AgentChatPanel
@@ -92,15 +100,15 @@ const ArbDashboard = () => {
         />
 
         {/* Event Index + Event Details side by side */}
-        <div className="grid grid-cols-5 gap-6" style={{ minHeight: '420px' }}>
-          <div className="col-span-3">
+        <div id="events-grid" data-testid="events-grid" className="grid grid-cols-5 gap-6" style={{ minHeight: '420px' }}>
+          <div id="event-index-container" data-testid="event-index-container" className="col-span-3">
             <EventIndexPanel
               events={eventList}
               selectedEventTicker={selectedEventTicker}
               onSelectEvent={setSelectedEventTicker}
             />
           </div>
-          <div className="col-span-2">
+          <div id="event-details-container" data-testid="event-details-container" className="col-span-2">
             <EventDetailsPanel
               selectedEventTicker={selectedEventTicker}
               events={events}
@@ -109,7 +117,9 @@ const ArbDashboard = () => {
           </div>
         </div>
 
-        <PositionPanel tradingState={tradingState} />
+        <div id="position-container" data-testid="position-container">
+          <PositionPanel tradingState={tradingState} />
+        </div>
       </div>
     </div>
   );

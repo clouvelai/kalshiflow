@@ -37,6 +37,8 @@ from .tools import (
     memory_store,
     get_positions,
     get_balance,
+    analyze_microstructure,
+    analyze_orderbook_patterns,
 )
 
 logger = logging.getLogger("kalshiflow_rl.traderv3.single_arb.captain")
@@ -103,6 +105,49 @@ ERROR HANDLING:
 Execute precisely. Report facts, not opinions.
 """
 
+CHEVAL_DE_TROIE_PROMPT = """You are ChevalDeTroie -- a market surveillance specialist.
+
+MISSION:
+Identify and catalog all automated trading activity in the monitored markets.
+Maintain an always-current registry of bots, whales, and anomalies.
+
+WHAT TO LOOK FOR:
+
+1. **Automated Traders (Bots)**:
+   - Consistent size patterns (always 100 contracts, always round numbers)
+   - Regular timing intervals (trades every 5s, 10s, 30s)
+   - Sub-second response to orderbook changes (latency < 500ms)
+   - Quote stuffing (rapid order placement/cancellation)
+   - Consistent spread maintenance (market makers)
+
+2. **Whales**:
+   - Single trades >= 100 contracts
+   - Accumulated volume >= 500 contracts within 5 minutes
+   - Aggressive crossing (taking liquidity at unfavorable prices)
+
+3. **Anomalies**:
+   - Price dislocations (mid price diverges from event equilibrium)
+   - Volume spikes (> 3x normal activity)
+   - Liquidity gaps (sudden spread widening)
+   - Unusual taker side imbalance
+
+CLASSIFICATION SCHEMA:
+- MM_BOT: Market maker (maintains quotes on both sides)
+- ARB_BOT: Arbitrage bot (responds to edge conditions)
+- MOMENTUM_BOT: Trades with recent price direction
+- WHALE: Large position accumulator
+- UNKNOWN_AUTO: Automated but pattern unclear
+
+OUTPUT:
+Update /memories/BOTS.md with your findings:
+- For each identified bot: ID, type, markets active, size patterns, timing signature
+- Confidence score (low/medium/high)
+- First seen / last seen timestamps
+- Notable behaviors
+
+Use memory_store() to log raw observations for future analysis.
+"""
+
 # Tool categorization for frontend event routing
 TOOL_CATEGORIES = {
     "write_todos": "todo",
@@ -120,6 +165,8 @@ TOOL_CATEGORIES = {
     "get_resting_orders": "arb",
     "get_positions": "arb",
     "get_balance": "arb",
+    "analyze_microstructure": "surveillance",
+    "analyze_orderbook_patterns": "surveillance",
 }
 
 
@@ -174,6 +221,16 @@ class ArbCaptain:
             memory_store,
         ]
 
+        # ChevalDeTroie tools: surveillance + recording
+        surveillance_tools = [
+            analyze_microstructure,
+            analyze_orderbook_patterns,
+            get_recent_trades,
+            get_market_orderbook,
+            get_event_snapshot,
+            memory_store,
+        ]
+
         # CompositeBackend: /memories/ persists on disk, everything else is ephemeral
         memory_backend = FilesystemBackend(root_dir=memory_data_dir, virtual_mode=True)
         backend_factory = lambda rt: CompositeBackend(
@@ -192,16 +249,24 @@ class ArbCaptain:
                     "system_prompt": TRADE_COMMANDO_PROMPT,
                     "tools": commando_tools,
                 },
+                {
+                    "name": "cheval_de_troie",
+                    "description": "Market surveillance specialist. Analyzes microstructure to identify bots, whales, and anomalies. Returns findings to update your trading intelligence.",
+                    "system_prompt": CHEVAL_DE_TROIE_PROMPT,
+                    "tools": surveillance_tools,
+                },
             ],
             backend=backend_factory,
             memory=["/memories/AGENTS.md"],
         )
 
         self._running = False
+        self._paused = False
         self._task: Optional[asyncio.Task] = None
         self._cycle_count = 0
         self._last_cycle_at: Optional[float] = None
         self._errors: List[str] = []
+        self._subagent_runs: Dict[str, str] = {}  # run_id -> subagent_name (supports concurrent subagents)
 
     async def start(self) -> None:
         """Start the Captain cycle loop."""
@@ -209,7 +274,7 @@ class ArbCaptain:
             return
         self._running = True
         self._task = asyncio.create_task(self._run_loop())
-        logger.info(f"ArbCaptain started (model={self._model_name}, interval={self._cycle_interval}s)")
+        logger.info(f"[SINGLE_ARB:CAPTAIN_START] model={self._model_name} interval={self._cycle_interval}s")
 
     async def stop(self) -> None:
         """Stop the Captain."""
@@ -220,7 +285,22 @@ class ArbCaptain:
                 await self._task
             except asyncio.CancelledError:
                 pass
-        logger.info(f"ArbCaptain stopped (cycles={self._cycle_count})")
+        logger.info(f"[SINGLE_ARB:CAPTAIN_STOP] cycles={self._cycle_count}")
+
+    def pause(self) -> None:
+        """Pause Captain after current cycle completes."""
+        self._paused = True
+        logger.info("[SINGLE_ARB:CAPTAIN_PAUSE] Captain paused")
+
+    def resume(self) -> None:
+        """Resume Captain cycles."""
+        self._paused = False
+        logger.info("[SINGLE_ARB:CAPTAIN_RESUME] Captain resumed")
+
+    @property
+    def is_paused(self) -> bool:
+        """Check if Captain is paused."""
+        return self._paused
 
     async def _run_loop(self) -> None:
         """Main cycle loop."""
@@ -228,6 +308,11 @@ class ArbCaptain:
         await asyncio.sleep(10.0)
 
         while self._running:
+            # Check pause state at start of each cycle
+            if self._paused:
+                await asyncio.sleep(self._cycle_interval)
+                continue
+
             try:
                 await self._run_cycle()
                 self._cycle_count += 1
@@ -353,11 +438,20 @@ class ArbCaptain:
                         continue
 
                     if tool_name == "task":
-                        # Only one subagent now: trade_commando
+                        # Determine which subagent is being invoked
+                        subagent_name = "trade_commando"  # default
+                        input_str = str(tool_input).lower()
+                        if "cheval" in input_str or "surveillance" in input_str or "bot" in input_str:
+                            subagent_name = "cheval_de_troie"
+                        # Track by run_id to support concurrent subagents
+                        run_id = event.get("run_id")
+                        if run_id:
+                            self._subagent_runs[run_id] = subagent_name
+                        logger.info(f"[SINGLE_ARB:SUBAGENT_START] subagent={subagent_name}")
                         await self._emit_event({
                             "type": "agent_message",
                             "subtype": "subagent_start",
-                            "agent": "trade_commando",
+                            "agent": subagent_name,
                             "prompt": str(tool_input)[:200],
                         })
                     else:
@@ -380,10 +474,14 @@ class ArbCaptain:
                         continue
 
                     if tool_name == "task":
+                        # Look up subagent by run_id (supports concurrent subagents)
+                        run_id = event.get("run_id")
+                        subagent_name = self._subagent_runs.pop(run_id, "trade_commando") if run_id else "trade_commando"
+                        logger.info(f"[SINGLE_ARB:SUBAGENT_COMPLETE] subagent={subagent_name}")
                         await self._emit_event({
                             "type": "agent_message",
                             "subtype": "subagent_complete",
-                            "agent": "trade_commando",
+                            "agent": subagent_name,
                             "response_preview": str(tool_output)[:500],
                         })
                     elif tool_name in ("write_todos", "read_todos"):
@@ -461,6 +559,7 @@ class ArbCaptain:
         """Get Captain stats."""
         return {
             "running": self._running,
+            "paused": self._paused,
             "cycle_count": self._cycle_count,
             "last_cycle_at": self._last_cycle_at,
             "errors": self._errors[-5:],

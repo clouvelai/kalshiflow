@@ -907,6 +907,9 @@ class V3Coordinator:
             )
             await self._single_arb_coordinator.start()
 
+            # Wire up coordinator to websocket manager for pause/resume commands
+            self._websocket_manager.set_single_arb_coordinator(self._single_arb_coordinator)
+
             logger.info("Single-event arb system started")
 
         except Exception as e:

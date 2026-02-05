@@ -28,9 +28,11 @@ const SingleArbDetailsView = memo(({ event, eventTrades = [] }) => {
     long_edge,
     short_edge,
     signals,
-    markets = {},
+    markets: rawMarkets,
   } = event;
 
+  // Defensive default: ensure markets is always an object
+  const markets = rawMarkets || {};
   const marketList = Object.values(markets);
 
   const formatVol = (v) => {
