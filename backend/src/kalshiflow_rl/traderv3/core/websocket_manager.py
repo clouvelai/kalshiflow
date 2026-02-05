@@ -74,8 +74,6 @@ class V3WebSocketManager:
         self._market_price_syncer = None
         self._tracked_markets_state: Optional['TrackedMarketsState'] = None
         self._upcoming_markets_syncer: Optional['UpcomingMarketsSyncer'] = None
-        self._pair_index_service = None
-        self._event_codex_service = None
         self._clients: Dict[str, WebSocketClient] = {}
         self._client_counter = 0
         self._started_at: Optional[float] = None
@@ -126,14 +124,6 @@ class V3WebSocketManager:
     def set_upcoming_markets_syncer(self, syncer: 'UpcomingMarketsSyncer') -> None:
         self._upcoming_markets_syncer = syncer
         logger.info("UpcomingMarketsSyncer set on WebSocket manager")
-
-    def set_pair_index_service(self, service) -> None:
-        self._pair_index_service = service
-        logger.info("PairIndexService set on WebSocket manager")
-
-    def set_event_codex_service(self, service) -> None:
-        self._event_codex_service = service
-        logger.info("EventCodexService set on WebSocket manager")
 
     def _add_to_activity_feed_history(self, message_type: str, data: dict) -> None:
         """Track events for Activity Feed history replay."""
@@ -301,14 +291,6 @@ class V3WebSocketManager:
             if self._state_container and client_id in self._clients:
                 await self._send_event_research_snapshot(client_id)
 
-            # Send pair index snapshot (arb dashboard)
-            if self._pair_index_service and client_id in self._clients:
-                await self._send_pair_index_snapshot(client_id)
-
-            # Send event codex snapshot (arb dashboard enrichment data)
-            if self._event_codex_service and client_id in self._clients:
-                await self._send_event_codex_snapshot(client_id)
-
             # Send activity feed history
             if self._activity_feed_history and client_id in self._clients:
                 await self._send_activity_feed_history(client_id)
@@ -329,8 +311,7 @@ class V3WebSocketManager:
         critical_types = (
             "state_transition", "connection", "system_activity", "history_replay",
             "trade_flow_market_state", "trade_flow_trade_arrived",
-            "spread_update", "arb_trade_executed", "agent_message",
-            "pair_index_snapshot", "event_codex_snapshot",
+            "agent_message",
         )
         if message_type in critical_types:
             await self._broadcast_immediate(message_type, data)
@@ -669,22 +650,6 @@ class V3WebSocketManager:
         await self._send_snapshot(
             client_id, "trading_state", event_research,
             lambda: {"event_research": event_research}, log_name="event_research"
-        )
-
-    async def _send_pair_index_snapshot(self, client_id: str) -> None:
-        """Send pair index snapshot to a specific client."""
-        await self._send_snapshot(
-            client_id, "pair_index_snapshot", self._pair_index_service,
-            lambda: self._pair_index_service.get_index_snapshot(),
-            log_name="pair_index"
-        )
-
-    async def _send_event_codex_snapshot(self, client_id: str) -> None:
-        """Send event codex snapshot to a specific client."""
-        await self._send_snapshot(
-            client_id, "event_codex_snapshot", self._event_codex_service,
-            lambda: self._event_codex_service.get_full_snapshot(),
-            log_name="event_codex"
         )
 
     async def _send_activity_feed_history(self, client_id: str) -> None:

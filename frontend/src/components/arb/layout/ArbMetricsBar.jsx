@@ -37,13 +37,15 @@ MetricCard.displayName = 'MetricCard';
 /**
  * ArbMetricsBar - Row of 4 metric cards
  *
- * Balance ($), P&L ($), Active Pairs (#), Arb Trades Today (#)
+ * Balance ($), P&L ($), Active Events/Pairs (#), Arb Trades Today (#)
  */
-const ArbMetricsBar = ({ tradingState, spreads, arbTradeCount }) => {
+const ArbMetricsBar = ({ tradingState, arbTradeCount, events }) => {
   const balance = tradingState?.balance ?? 0;
   const pnl = tradingState?.pnl;
-  const activePairs = spreads?.size ?? 0;
   const tradeCount = arbTradeCount ?? 0;
+
+  const activeCount = events?.size ?? 0;
+  const activeLabel = 'Active Events';
 
   const formatDollars = (cents) => {
     const dollars = (cents || 0) / 100;
@@ -72,8 +74,8 @@ const ArbMetricsBar = ({ tradingState, spreads, arbTradeCount }) => {
         valueClass={pnlCents >= 0 ? 'text-green-400' : 'text-red-400'}
       />
       <MetricCard
-        label="Active Pairs"
-        value={activePairs}
+        label={activeLabel}
+        value={activeCount}
         icon={Layers}
         accentColor="violet"
         valueClass="text-violet-400"

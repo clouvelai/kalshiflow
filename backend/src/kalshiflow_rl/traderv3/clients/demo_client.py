@@ -501,7 +501,44 @@ class KalshiDemoTradingClient:
             raise KalshiDemoTradingClientError(f"Invalid orders response structure: {e}")
         except Exception as e:
             raise KalshiDemoTradingClientError(f"Failed to get orders: {e}")
-    
+
+    async def get_queue_positions(
+        self,
+        market_tickers: Optional[str] = None,
+        event_ticker: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Get queue positions for all resting orders.
+
+        Queue position represents the number of contracts ahead of yours
+        that need to be matched before your order gets filled.
+
+        Args:
+            market_tickers: Comma-separated list of market tickers to filter by
+            event_ticker: Event ticker to filter by
+
+        Returns:
+            Dictionary with queue_positions list
+
+        Raises:
+            KalshiDemoTradingClientError: If request fails
+        """
+        try:
+            path = "/portfolio/orders/queue_positions"
+            params = []
+            if market_tickers:
+                params.append(f"market_tickers={market_tickers}")
+            if event_ticker:
+                params.append(f"event_ticker={event_ticker}")
+            if params:
+                path += "?" + "&".join(params)
+
+            response = await self._make_request("GET", path)
+            return response
+
+        except Exception as e:
+            raise KalshiDemoTradingClientError(f"Failed to get queue positions: {e}")
+
     async def create_order(
         self,
         ticker: str,

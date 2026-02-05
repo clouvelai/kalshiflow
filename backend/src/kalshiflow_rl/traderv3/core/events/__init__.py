@@ -47,14 +47,6 @@ from .system_events import (
     PublicTradeEvent,
 )
 
-from .arb_events import (
-    PolyPriceEvent,
-    SpreadUpdateEvent,
-    SpreadTradeExecutedEvent,
-    PairMatchedEvent,
-    KalshiApiPriceEvent,
-)
-
 __all__ = [
     # Types
     "EventType",
@@ -76,10 +68,4 @@ __all__ = [
     "TraderStatusEvent",
     "SystemActivityEvent",
     "PublicTradeEvent",
-    # Arb events
-    "PolyPriceEvent",
-    "SpreadUpdateEvent",
-    "SpreadTradeExecutedEvent",
-    "PairMatchedEvent",
-    "KalshiApiPriceEvent",
 ]

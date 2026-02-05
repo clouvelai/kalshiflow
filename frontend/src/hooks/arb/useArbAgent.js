@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 
 const MAX_TOOL_CALLS = 30;
+const MAX_MEMORY_OPS = 20;
+const MAX_COMMANDO_OPS = 20;
 
 /**
  * useArbAgent - Categorizes the raw agent message stream into structured buckets.
@@ -11,7 +13,10 @@ const MAX_TOOL_CALLS = 30;
  *   cycleCount      - Number of captain cycles observed
  *   thinking        - { text, agent, streaming } from thinking_delta/thinking_complete
  *   activeToolCall  - Currently executing tool { tool_name, tool_input, agent, timestamp }
- *   toolCalls       - Recent tool invocations (capped)
+ *   toolCalls       - Recent tool invocations (capped, arb category only)
+ *   todos           - Current TODO list [{text, status}]
+ *   memoryOps       - Recent memory operations [{id, type, tool_name, ...}]
+ *   commando        - { active, startedAt, ops: [{id, type, tool_name, ...}] }
  */
 export const useArbAgent = (agentMessages = []) => {
   const [isRunning, setIsRunning] = useState(false);
@@ -20,9 +25,15 @@ export const useArbAgent = (agentMessages = []) => {
   const [thinking, setThinking] = useState({ text: '', agent: null, streaming: false });
   const [activeToolCall, setActiveToolCall] = useState(null);
   const [toolCalls, setToolCalls] = useState([]);
+  const [todos, setTodos] = useState([]);
+  const [memoryOps, setMemoryOps] = useState([]);
+  // Track multiple concurrent commando sessions: [{id, active, startedAt, prompt, ops: []}]
+  const [commandoSessions, setCommandoSessions] = useState([]);
+  const commandoIdCounter = useRef(0);
 
   const lastProcessedIdRef = useRef(null);
   const processedCountRef = useRef(0);
+  const commandoActiveRef = useRef(false);
 
   const processMessage = useCallback((msg) => {
     switch (msg.subtype) {
@@ -34,50 +45,147 @@ export const useArbAgent = (agentMessages = []) => {
         setThinking({ text: msg.text || '', agent: msg.agent, streaming: false });
         break;
 
+      case 'todo_update':
+        if (msg.todos) {
+          setTodos(msg.todos);
+        }
+        break;
+
       case 'tool_call':
         setActiveToolCall({
           tool_name: msg.tool_name,
           tool_input: msg.tool_input,
           agent: msg.agent,
+          category: msg.category,
           timestamp: msg.timestamp,
         });
+        // Track memory category ops
+        if (msg.category === 'memory') {
+          setMemoryOps(prev => [{
+            id: msg.id,
+            type: 'call',
+            tool_name: msg.tool_name,
+            tool_input: msg.tool_input,
+            timestamp: msg.timestamp,
+          }, ...prev].slice(0, MAX_MEMORY_OPS));
+        }
+        // Track commando tool calls
+        if (commandoActiveRef.current) {
+          setCommandoSessions(prev => {
+            const idx = prev.findIndex(s => s.active);
+            if (idx === -1) return prev;
+            const updated = [...prev];
+            updated[idx] = {
+              ...updated[idx],
+              ops: [...updated[idx].ops, {
+                id: msg.id, type: 'call', tool_name: msg.tool_name,
+                tool_input: msg.tool_input, timestamp: msg.timestamp || Date.now(),
+              }].slice(-MAX_COMMANDO_OPS),
+            };
+            return updated;
+          });
+        }
         break;
 
       case 'tool_result':
         setActiveToolCall(null);
-        setToolCalls(prev => [{
-          id: msg.id,
-          tool_name: msg.tool_name,
-          tool_input: msg.tool_input,
-          tool_output: msg.tool_output,
-          agent: msg.agent,
-          timestamp: msg.timestamp,
-        }, ...prev].slice(0, MAX_TOOL_CALLS));
+        // Track memory results
+        if (msg.category === 'memory') {
+          setMemoryOps(prev => [{
+            id: msg.id,
+            type: 'result',
+            tool_name: msg.tool_name,
+            tool_output: msg.tool_output,
+            timestamp: msg.timestamp,
+          }, ...prev].slice(0, MAX_MEMORY_OPS));
+        }
+        // Only add non-memory tool calls to the toolCalls list
+        if (msg.category !== 'memory' && msg.category !== 'todo') {
+          setToolCalls(prev => [{
+            id: msg.id,
+            tool_name: msg.tool_name,
+            tool_input: msg.tool_input,
+            tool_output: msg.tool_output,
+            agent: msg.agent,
+            category: msg.category,
+            timestamp: msg.timestamp,
+          }, ...prev].slice(0, MAX_TOOL_CALLS));
+        }
+        // Track commando tool results
+        if (commandoActiveRef.current) {
+          setCommandoSessions(prev => {
+            const idx = prev.findIndex(s => s.active);
+            if (idx === -1) return prev;
+            const updated = [...prev];
+            updated[idx] = {
+              ...updated[idx],
+              ops: [...updated[idx].ops, {
+                id: msg.id, type: 'result', tool_name: msg.tool_name,
+                tool_output: msg.tool_output, timestamp: msg.timestamp || Date.now(),
+              }].slice(-MAX_COMMANDO_OPS),
+            };
+            return updated;
+          });
+        }
         break;
 
       case 'subagent_start':
         setIsRunning(true);
         setCurrentSubagent(msg.agent || null);
         // Captain starts increment cycle count
-        if (msg.agent === 'captain') {
+        if (msg.agent === 'single_arb_captain') {
           setCycleCount(c => c + 1);
           // Reset thinking for new cycle
           setThinking({ text: '', agent: msg.agent, streaming: false });
+        }
+        // TradeCommando starts - add new session
+        if (msg.agent === 'trade_commando') {
+          commandoIdCounter.current += 1;
+          commandoActiveRef.current = true;
+          setCommandoSessions(prev => [{
+            id: commandoIdCounter.current,
+            active: true,
+            startedAt: Date.now(),
+            prompt: msg.prompt || '',
+            ops: [],
+          }, ...prev].slice(0, 5)); // Keep last 5 sessions
         }
         break;
 
       case 'subagent_complete':
         // Only mark idle if captain completes (subagents complete mid-cycle)
-        if (msg.agent === 'captain') {
+        if (msg.agent === 'single_arb_captain') {
           setIsRunning(false);
+          setCurrentSubagent(null);
+        }
+        // TradeCommando completes - mark latest active session done
+        if (msg.agent === 'trade_commando') {
+          commandoActiveRef.current = false;
+          setCommandoSessions(prev => {
+            const idx = prev.findIndex(s => s.active);
+            if (idx === -1) return prev;
+            const updated = [...prev];
+            updated[idx] = { ...updated[idx], active: false, completedAt: Date.now() };
+            return updated;
+          });
           setCurrentSubagent(null);
         }
         break;
 
       case 'subagent_error':
-        if (msg.agent === 'captain') {
+        if (msg.agent === 'single_arb_captain') {
           setIsRunning(false);
           setCurrentSubagent(null);
+        }
+        if (msg.agent === 'trade_commando') {
+          commandoActiveRef.current = false;
+          setCommandoSessions(prev => {
+            const idx = prev.findIndex(s => s.active);
+            if (idx === -1) return prev;
+            const updated = [...prev];
+            updated[idx] = { ...updated[idx], active: false, error: true, completedAt: Date.now() };
+            return updated;
+          });
         }
         break;
 
@@ -114,6 +222,9 @@ export const useArbAgent = (agentMessages = []) => {
     thinking,
     activeToolCall,
     toolCalls,
+    todos,
+    memoryOps,
+    commandoSessions,
   };
 };
 

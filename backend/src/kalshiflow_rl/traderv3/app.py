@@ -280,9 +280,9 @@ async def lifespan(app):
         # Start the system
         await coordinator.start()
         
-        logger.info("[V3:STARTUP] environment=%s markets=%d arb=%s orchestrator=%s",
+        logger.info("[V3:STARTUP] environment=%s markets=%d single_arb=%s",
                      config.get_environment_name(), len(config.market_tickers),
-                     config.arb_enabled, config.arb_orchestrator_enabled)
+                     config.single_arb_enabled)
         logger.info("TRADER V3 ready to serve requests")
         
         yield
@@ -525,50 +525,6 @@ async def export_order_contexts_endpoint(request: Request):
         )
 
 
-async def pairs_endpoint(request: Request) -> JSONResponse:
-    """List active arb pairs with current spread data."""
-    if not coordinator:
-        return JSONResponse({"error": "System not initialized"}, status_code=503)
-
-    pair_registry = coordinator._pair_registry
-    if not pair_registry:
-        return JSONResponse({"pairs": [], "count": 0, "arb_enabled": False})
-
-    pairs = [
-        {
-            "id": p.id,
-            "kalshi_ticker": p.kalshi_ticker,
-            "kalshi_event_ticker": p.kalshi_event_ticker,
-            "poly_condition_id": p.poly_condition_id,
-            "poly_token_id_yes": p.poly_token_id_yes,
-            "question": p.question,
-            "match_method": p.match_method,
-            "match_confidence": p.match_confidence,
-            "status": p.status,
-        }
-        for p in pair_registry.get_all_active()
-    ]
-
-    return JSONResponse({
-        "pairs": pairs,
-        "count": len(pairs),
-        "arb_enabled": True,
-        "poller_status": coordinator._poly_poller.get_status() if coordinator._poly_poller else None,
-    })
-
-
-async def agent_websocket_endpoint(websocket: WebSocket):
-    """WebSocket endpoint for agent interaction/streaming."""
-    # Capture reference atomically to avoid race during shutdown
-    arb_strategy = coordinator._arb_strategy if coordinator else None
-    if not arb_strategy:
-        await websocket.close(code=1003, reason="Agent not running")
-        return
-
-    from src.kalshiflow_rl.traderv3.ws_agent_handler import AgentWebSocketHandler
-    handler = AgentWebSocketHandler(arb_strategy=arb_strategy)
-    await handler.handle_websocket(websocket)
-
 
 # Create Starlette application
 app = Starlette(
@@ -578,9 +534,7 @@ app = Starlette(
         Route("/v3/status", status_endpoint),
         Route("/v3/cleanup", cleanup_endpoint, methods=["POST"]),
         Route("/v3/export/order-contexts", export_order_contexts_endpoint),
-        Route("/v3/pairs", pairs_endpoint),
         WebSocketRoute("/v3/ws", websocket_endpoint),
-        WebSocketRoute("/v3/ws/agent", agent_websocket_endpoint),
     ]
 )
 

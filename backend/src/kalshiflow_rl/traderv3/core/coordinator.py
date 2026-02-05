@@ -156,16 +156,8 @@ class V3Coordinator:
         self._api_discovery_syncer: Optional['ApiDiscoverySyncer'] = None
         self._trade_flow_service = None
 
-        # Arbitrage components (initialized in _transition_to_ready when arb_enabled)
-        self._pair_registry = None
-        self._poly_client = None
-        self._poly_poller = None
-        self._kalshi_poller = None
-        self._poly_ws_client = None
-        self._arb_strategy = None
-        self._pair_index_service = None
-        self._arb_trades_client = None
-        self._event_codex_service = None
+        # Single-event arb coordinator (initialized in _transition_to_ready when single_arb_enabled)
+        self._single_arb_coordinator = None
 
         self._started_at: Optional[float] = None
         self._running = False
@@ -889,219 +881,37 @@ class V3Coordinator:
                 logger.error(f"TradeFlowService failed to start: {e}")
                 self._degraded_subsystems.add("trade_flow_service")
 
-        if self._config.arb_enabled and self._config.polymarket_enabled:
-            await self._start_arb_system()
+        if self._config.single_arb_enabled:
+            await self._start_single_arb_system()
 
         status_msg = f"System ready with {len(self._config.market_tickers)} markets"
         if self._trading_client_integration:
             status_msg += f" (trading enabled in {self._trading_client_integration._client.mode} mode)"
-        if self._pair_registry:
-            status_msg += f" ({self._pair_registry.count} arb pairs)"
+        if self._single_arb_coordinator:
+            details = self._single_arb_coordinator.get_health_details()
+            status_msg += f" ({details.get('events', 0)} single-arb events)"
         await self._status_reporter.emit_status_update(status_msg)
 
-    async def _start_arb_system(self) -> None:
-        """Initialize and start the arbitrage subsystem.
-
-        Architecture:
-        1. PAIR INDEX: Load pre-built pairs from Supabase (instant startup)
-        2. DATA LAYER: PairIndexService subscribes pairs to price feeds, refreshes in background
-        3. TRADING LAYER: ArbStrategy owns SpreadMonitor for trade execution
-        """
+    async def _start_single_arb_system(self) -> None:
+        """Initialize and start the single-event arbitrage subsystem."""
         try:
-            from ..clients.polymarket_client import PolymarketClient
-            from ..clients.polymarket_ws_client import PolymarketWSClient
-            from ..services.pair_registry import PairRegistry
-            from ..services.pair_index_service import PairIndexService
-            from ..strategies.plugins.arb_strategy import ArbStrategy
+            from ..single_arb.coordinator import SingleArbCoordinator
 
-            # 1. Create PairRegistry and load pre-built pairs from Supabase
-            self._pair_registry = PairRegistry()
-
-            supabase = None
-            try:
-                import os
-                from supabase import create_client
-                supabase_url = os.environ.get("SUPABASE_URL", "")
-                supabase_key = os.environ.get("SUPABASE_ANON_KEY", os.environ.get("SUPABASE_KEY", ""))
-                if supabase_url and supabase_key:
-                    supabase = create_client(supabase_url, supabase_key)
-                else:
-                    logger.warning("Supabase credentials not set - pairs will be in-memory only")
-            except Exception as e:
-                logger.warning(f"Failed to create Supabase client: {e}")
-
-            # Load pairs from DB (instant — no LLM, no API calls)
-            if supabase:
-                loaded = await self._pair_registry.load_from_supabase(supabase)
-                logger.info(f"Loaded {loaded} pairs from Supabase (instant startup)")
-            else:
-                logger.warning("No Supabase client - run `scripts/build_pair_index.py build` to populate pairs")
-
-            # 2. Create Polymarket clients
-            self._poly_client = PolymarketClient()
-
-            self._poly_ws_client = PolymarketWSClient(
-                pair_registry=self._pair_registry,
-                event_bus=self._event_bus,
-            )
-            await self._poly_ws_client.start()
-            self._health_monitor.register_component("poly_ws", self._poly_ws_client, critical=False)
-
-            poly_connected = await self._poly_ws_client.wait_for_connection(timeout=15.0)
-            if poly_connected:
-                logger.info("Polymarket WebSocket connected")
-            else:
-                logger.warning("Polymarket WebSocket connection timeout - prices may be delayed")
-
-            trading_client = self._trading_client_integration._client if self._trading_client_integration else None
-
-            # 3. Create ArbStrategy (SpreadMonitor) -> start
-            self._arb_strategy = ArbStrategy(
-                event_bus=self._event_bus,
-                pair_registry=self._pair_registry,
+            self._single_arb_coordinator = SingleArbCoordinator(
                 config=self._config,
-                trading_client=trading_client,
-                websocket_manager=self._websocket_manager,
-                state_container=self._state_container,
-                supabase_client=supabase,
-                orderbook_integration=self._orderbook_integration,
-                poly_client=self._poly_client,
-            )
-            await self._arb_strategy.start()
-            self._health_monitor.register_component("arb_strategy", self._arb_strategy, critical=False)
-
-            # 4. Create PairIndexBuilder for background refresh
-            pair_index_builder = None
-            try:
-                from ...pair_index import PairIndexBuilder
-                from ...pair_index.fetchers.kalshi import KalshiFetcher
-                from ...pair_index.fetchers.polymarket import PolymarketFetcher
-                from ...pair_index.matchers.text_matcher import TextMatcher
-                from ...pair_index.matchers.llm_matcher import LLMMatcher
-                from ...pair_index.store import PairStore
-
-                # Initialize OpenAI for Tier 2 LLM matching
-                openai_client = None
-                try:
-                    from openai import AsyncOpenAI
-                    openai_client = AsyncOpenAI()
-                    logger.info("OpenAI client initialized for Tier 2 pair matching")
-                except Exception as e:
-                    logger.info(f"OpenAI not available (Tier 1 only): {e}")
-
-                pair_index_builder = PairIndexBuilder(
-                    kalshi_fetcher=KalshiFetcher(),
-                    poly_fetcher=PolymarketFetcher(),
-                    text_matcher=TextMatcher(),
-                    llm_matcher=LLMMatcher(openai_client=openai_client),
-                    store=PairStore(supabase_client=supabase),
-                )
-                logger.info("PairIndexBuilder created for background refresh")
-            except Exception as e:
-                logger.warning(f"PairIndexBuilder not available (no background refresh): {e}")
-
-            # 5. Create PairIndexService -> start (subscriptions + background refresh)
-            self._pair_index_service = PairIndexService(
-                pair_registry=self._pair_registry,
                 event_bus=self._event_bus,
                 websocket_manager=self._websocket_manager,
-                config=self._config,
-                pair_index_builder=pair_index_builder,
-                supabase_client=supabase,
                 orderbook_integration=self._orderbook_integration,
-                poly_ws_client=self._poly_ws_client,
-                spread_monitor=self._arb_strategy._spread_monitor,
+                trading_client=self._trading_client_integration,
+                health_monitor=self._health_monitor,
             )
-            await self._pair_index_service.start()
-            self._websocket_manager.set_pair_index_service(self._pair_index_service)
-            self._health_monitor.register_component("pair_index_service", self._pair_index_service, critical=False)
+            await self._single_arb_coordinator.start()
 
-            # 6. Start EventCodexService for background data enrichment
-            try:
-                from ..services.event_codex import EventCodexService
-
-                self._event_codex_service = EventCodexService(
-                    pair_registry=self._pair_registry,
-                    trading_client=trading_client,
-                    poly_client=self._poly_client,
-                    event_bus=self._event_bus,
-                    websocket_manager=self._websocket_manager,
-                    config=self._config,
-                )
-                await self._event_codex_service.start()
-                self._websocket_manager.set_event_codex_service(self._event_codex_service)
-                self._health_monitor.register_component("event_codex", self._event_codex_service, critical=False)
-                logger.info("EventCodexService started")
-
-                if self._arb_strategy:
-                    self._arb_strategy.set_event_codex(self._event_codex_service)
-            except Exception as e:
-                logger.warning(f"EventCodexService failed to start: {e}")
-                self._event_codex_service = None
-
-            # 7. Start PolymarketPoller as API price fallback
-            try:
-                from ..services.polymarket_poller import PolymarketPoller
-
-                self._poly_poller = PolymarketPoller(
-                    poly_client=self._poly_client,
-                    pair_registry=self._pair_registry,
-                    event_bus=self._event_bus,
-                    poll_interval=self._config.arb_poll_interval_seconds,
-                    supabase_client=supabase,
-                )
-                await self._poly_poller.start()
-                self._health_monitor.register_component("poly_poller", self._poly_poller, critical=False)
-                logger.info(f"Polymarket API poller started (interval={self._config.arb_poll_interval_seconds}s)")
-            except Exception as e:
-                logger.warning(f"Polymarket poller failed to start (WS-only mode): {e}")
-
-            # 8. Start KalshiPoller as REST API price source
-            try:
-                from ..services.kalshi_poller import KalshiPoller
-
-                self._kalshi_poller = KalshiPoller(
-                    trading_client=trading_client,
-                    pair_registry=self._pair_registry,
-                    event_bus=self._event_bus,
-                    poll_interval=10.0,
-                )
-                await self._kalshi_poller.start()
-                self._health_monitor.register_component("kalshi_poller", self._kalshi_poller, critical=False)
-                logger.info("Kalshi REST poller started (interval=10s, bulk mode)")
-            except Exception as e:
-                logger.warning(f"Kalshi poller failed to start (WS-only mode): {e}")
-
-            # 9. Wait for pair subscriptions, then start orchestrator
-            if self._arb_strategy and self._config.arb_orchestrator_enabled:
-                logger.info("Waiting for pair index subscriptions...")
-                ready = await self._pair_index_service.wait_for_initial_discovery(timeout=30.0)
-                if ready:
-                    events = self._pair_registry.get_events_grouped()
-                    logger.info(
-                        f"Pair index ready: {self._pair_registry.count} pairs, "
-                        f"{len(events)} events"
-                    )
-
-                # Force an EventCodex sync so the orchestrator has enriched data on first cycle
-                if self._event_codex_service:
-                    logger.info("Running EventCodex sync before starting orchestrator...")
-                    try:
-                        await self._event_codex_service._sync_all()
-                    except Exception as e:
-                        logger.warning(f"Pre-orchestrator EventCodex sync failed: {e}")
-
-                await self._arb_strategy.start_orchestrator()
-
-            logger.info(
-                f"Arbitrage system started: "
-                f"{self._pair_registry.count} pairs, "
-                f"{len(self._pair_registry.get_events_grouped())} events"
-            )
+            logger.info("Single-event arb system started")
 
         except Exception as e:
-            logger.error(f"Failed to start arb system: {e}")
-            self._degraded_subsystems.add("arb_system")
+            logger.error(f"Failed to start single-arb system: {e}")
+            self._degraded_subsystems.add("single_arb_system")
 
     async def _run_event_loop(self) -> None:
         """Main event loop."""
@@ -1167,13 +977,7 @@ class V3Coordinator:
         await self._status_reporter.stop()
 
         shutdown_sequence = [
-            (self._event_codex_service, "Event Codex Service", lambda c: c.stop()),
-            (self._pair_index_service, "Pair Index Service", lambda c: c.stop()),
-            (self._arb_strategy, "Arb Strategy", lambda c: c.stop()),
-            (self._poly_ws_client, "Polymarket WS Client", lambda c: c.stop()),
-            (self._poly_poller, "Polymarket Poller", lambda c: c.stop()),
-            (self._kalshi_poller, "Kalshi Poller", lambda c: c.stop()),
-            (self._poly_client, "Polymarket Client", lambda c: c.close()),
+            (self._single_arb_coordinator, "Single Arb Coordinator", lambda c: c.stop()),
             (self._trade_flow_service, "Trade Flow Service", lambda c: c.stop()),
             (self._trades_integration, "Trades Integration", lambda c: c.stop()),
             (self._upcoming_markets_syncer, "Upcoming Markets Syncer", lambda c: c.stop()),
@@ -1253,13 +1057,6 @@ class V3Coordinator:
             ("_tracked_markets_state", "tracked_markets_state", "get_stats"),
             ("_event_lifecycle_service", "event_lifecycle_service", "get_stats"),
             ("_trade_flow_service", "trade_flow_service", "get_trade_processing_stats"),
-            ("_pair_registry", "pair_registry", "get_status"),
-            ("_poly_ws_client", "poly_ws", "get_status"),
-            ("_poly_poller", "poly_poller", "get_status"),
-            ("_kalshi_poller", "kalshi_poller", "get_status"),
-            ("_arb_strategy", "arb_strategy", "get_status"),
-            ("_pair_index_service", "pair_index_service", "get_status"),
-            ("_event_codex_service", "event_codex", "get_status"),
         ]
         for attr, key, method in _OPTIONAL_STATUS_COMPONENTS:
             comp = getattr(self, attr, None)

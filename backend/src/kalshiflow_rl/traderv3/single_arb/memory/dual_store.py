@@ -152,21 +152,3 @@ class DualMemoryStore:
 
     def get_journal(self, limit: int = 50, memory_type: Optional[str] = None) -> List[Dict[str, Any]]:
         return self._file_store.get_journal(limit=limit, memory_type=memory_type)
-
-    def get_validation(self, pair_id: str) -> Optional[Dict[str, Any]]:
-        return self._file_store.get_validation(pair_id)
-
-    def save_validation(self, pair_id: str, data: Dict[str, Any]) -> None:
-        self._file_store.save_validation(pair_id, data)
-
-    def get_all_validations(self) -> Dict[str, Dict[str, Any]]:
-        return self._file_store.get_all_validations()
-
-    def clear_validations(self) -> int:
-        return self._file_store.clear_validations()
-
-    def get_session(self) -> Dict[str, Any]:
-        return self._file_store.get_session()
-
-    def save_session(self, data: Dict[str, Any]) -> None:
-        self._file_store.save_session(data)

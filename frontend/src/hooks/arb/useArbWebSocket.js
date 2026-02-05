@@ -1,12 +1,13 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 
 /**
- * useArbWebSocket - WebSocket hook for the Arbitrage Dashboard
+ * useArbWebSocket - WebSocket hook for the Single-Event Arb Dashboard
  *
  * Handles message types:
- *   spread_update, arb_trade_executed, arb_pairs,
+ *   event_arb_snapshot, event_arb_update, event_arb_ticker, event_arb_trade,
+ *   arb_opportunity, arb_trade_executed,
  *   trading_state, agent_message, system_activity,
- *   tracked_markets_state, connection, ping/pong
+ *   trader_status, connection, ping/pong
  */
 
 const INITIAL_TRADING_STATE = {
@@ -20,23 +21,16 @@ const INITIAL_TRADING_STATE = {
   order_count: 0,
 };
 
-const INITIAL_METRICS = {
-  uptime: 0,
-  health: 'unknown',
-  api_connected: false,
-};
-
 export const useArbWebSocket = () => {
   const [connectionStatus, setConnectionStatus] = useState('connecting');
   const [systemState, setSystemState] = useState('initializing');
   const [tradingState, setTradingState] = useState(INITIAL_TRADING_STATE);
-  const [spreads, setSpreads] = useState(new Map());
   const [arbTrades, setArbTrades] = useState([]);
   const [agentMessages, setAgentMessages] = useState([]);
-  const [metrics, setMetrics] = useState(INITIAL_METRICS);
-  const [trackedMarkets, setTrackedMarkets] = useState([]);
-  const [pairIndex, setPairIndex] = useState(null);
-  const [eventCodex, setEventCodex] = useState(null);
+  // Single-event arb state: Map<event_ticker, EventArbState>
+  const [events, setEvents] = useState(new Map());
+  // Public trade feed: Array of recent trades (newest first)
+  const [eventTrades, setEventTrades] = useState([]);
 
   const wsRef = useRef(null);
   const reconnectTimeoutRef = useRef(null);
@@ -45,43 +39,81 @@ export const useArbWebSocket = () => {
 
   const handleMessage = useCallback((data, ws) => {
     switch (data.type) {
-      case 'spread_update': {
-        if (data.data) {
-          const d = data.data;
-          setSpreads(prev => {
-            const next = new Map(prev);
-            next.set(d.pair_id, {
-              pair_id: d.pair_id,
-              kalshi_ticker: d.kalshi_ticker,
-              kalshi_yes_bid: d.kalshi_yes_bid,
-              kalshi_yes_ask: d.kalshi_yes_ask,
-              kalshi_yes_mid: d.kalshi_yes_mid,
-              poly_yes_cents: d.poly_yes_cents,
-              spread_cents: d.spread_cents,
-              question: d.question,
-              // Kalshi WS source
-              kalshi_ws_yes_bid: d.kalshi_ws_yes_bid,
-              kalshi_ws_yes_ask: d.kalshi_ws_yes_ask,
-              kalshi_ws_yes_mid: d.kalshi_ws_yes_mid,
-              kalshi_ws_age_ms: d.kalshi_ws_age_ms,
-              // Kalshi API source
-              kalshi_api_yes_bid: d.kalshi_api_yes_bid,
-              kalshi_api_yes_ask: d.kalshi_api_yes_ask,
-              kalshi_api_yes_mid: d.kalshi_api_yes_mid,
-              kalshi_api_age_ms: d.kalshi_api_age_ms,
-              // Poly WS source
-              poly_ws_yes_cents: d.poly_ws_yes_cents,
-              poly_ws_age_ms: d.poly_ws_age_ms,
-              // Poly API source
-              poly_api_yes_cents: d.poly_api_yes_cents,
-              poly_api_age_ms: d.poly_api_age_ms,
-              // Tradeable status
-              tradeable: d.tradeable,
-              tradeable_reason: d.tradeable_reason,
-              updated_at: Date.now(),
+      // --- Single-event arb messages ---
+      case 'event_arb_snapshot': {
+        if (data.data?.events) {
+          setEvents(() => {
+            const next = new Map();
+            Object.entries(data.data.events).forEach(([ticker, state]) => {
+              next.set(ticker, { ...state, updated_at: Date.now() });
             });
             return next;
           });
+        }
+        break;
+      }
+
+      case 'event_arb_update': {
+        if (data.data?.event_ticker) {
+          const d = data.data;
+          setEvents(prev => {
+            const next = new Map(prev);
+            next.set(d.event_ticker, { ...d, updated_at: Date.now() });
+            return next;
+          });
+        }
+        break;
+      }
+
+      case 'event_arb_ticker': {
+        // Ticker V2 update: price, volume, OI delta for a market
+        if (data.data?.event_ticker && data.data?.market_ticker) {
+          const d = data.data;
+          setEvents(prev => {
+            const next = new Map(prev);
+            const event = next.get(d.event_ticker);
+            if (event?.markets?.[d.market_ticker]) {
+              const m = { ...event.markets[d.market_ticker] };
+              if (d.price != null) m.last_price = d.price;
+              m.volume_delta_total = (m.volume_delta_total || 0) + (d.volume_delta || 0);
+              m.oi_delta_total = (m.oi_delta_total || 0) + (d.open_interest_delta || 0);
+              next.set(d.event_ticker, {
+                ...event,
+                markets: { ...event.markets, [d.market_ticker]: m },
+                updated_at: Date.now(),
+              });
+            }
+            return next;
+          });
+        }
+        break;
+      }
+
+      case 'event_arb_trade': {
+        // Public trade from trade channel
+        if (data.data) {
+          const trade = {
+            id: `trade-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+            ...data.data,
+            received_at: Date.now(),
+          };
+          setEventTrades(prev => [trade, ...prev].slice(0, 200));
+        }
+        break;
+      }
+
+      case 'arb_opportunity': {
+        // Opportunities show as agent messages for visibility
+        if (data.data) {
+          const msg = {
+            id: `opp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+            type: 'agent_message',
+            subtype: 'arb_opportunity',
+            agent: 'single_arb_monitor',
+            text: `${data.data.direction.toUpperCase()} ARB: ${data.data.event_ticker} edge=${data.data.edge_cents}c (after fees: ${data.data.edge_after_fees}c)`,
+            timestamp: new Date().toISOString(),
+          };
+          setAgentMessages(prev => [msg, ...prev].slice(0, 200));
         }
         break;
       }
@@ -90,31 +122,22 @@ export const useArbWebSocket = () => {
         if (data.data) {
           const trade = {
             id: data.data.order_id || `arb-${Date.now()}`,
+            event_ticker: data.data.event_ticker,
             pair_id: data.data.pair_id,
             kalshi_ticker: data.data.kalshi_ticker,
+            direction: data.data.direction,
             side: data.data.side,
             action: data.data.action,
             contracts: data.data.contracts,
             price_cents: data.data.price_cents,
             spread_at_entry: data.data.spread_at_entry,
+            legs_executed: data.data.legs_executed,
+            total_cost_cents: data.data.total_cost_cents,
             order_id: data.data.order_id,
             reasoning: data.data.reasoning,
             timestamp: data.data.timestamp || new Date().toISOString(),
           };
           setArbTrades(prev => [trade, ...prev].slice(0, 100));
-        }
-        break;
-      }
-
-      case 'arb_pairs': {
-        if (data.data?.pairs) {
-          setSpreads(() => {
-            const next = new Map();
-            data.data.pairs.forEach(p => {
-              next.set(p.pair_id, { ...p, updated_at: Date.now() });
-            });
-            return next;
-          });
         }
         break;
       }
@@ -153,6 +176,8 @@ export const useArbWebSocket = () => {
             tool_name: data.data.tool_name,
             tool_input: data.data.tool_input,
             tool_output: data.data.tool_output,
+            category: data.data.category,
+            todos: data.data.todos,
             duration: data.data.duration,
             error: data.data.error,
             text: data.data.text,
@@ -182,28 +207,6 @@ export const useArbWebSocket = () => {
         break;
       }
 
-      case 'tracked_markets_state':
-      case 'tracked_markets': {
-        if (data.data?.markets) {
-          setTrackedMarkets(data.data.markets);
-        }
-        break;
-      }
-
-      case 'pair_index_snapshot': {
-        if (data.data) {
-          setPairIndex(data.data);
-        }
-        break;
-      }
-
-      case 'event_codex_snapshot': {
-        if (data.data) {
-          setEventCodex(data.data);
-        }
-        break;
-      }
-
       case 'connection':
         break;
 
@@ -216,14 +219,6 @@ export const useArbWebSocket = () => {
       }
 
       case 'trader_status': {
-        if (data.data?.metrics) {
-          setMetrics(prev => ({
-            ...prev,
-            uptime: data.data.metrics.uptime || 0,
-            health: data.data.metrics.health || 'unknown',
-            api_connected: data.data.metrics.api_connected || prev.api_connected,
-          }));
-        }
         if (data.data?.state) {
           setSystemState(data.data.state);
         }
@@ -315,13 +310,10 @@ export const useArbWebSocket = () => {
     connectionStatus,
     systemState,
     tradingState,
-    spreads,
     arbTrades,
     agentMessages,
-    metrics,
-    trackedMarkets,
-    pairIndex,
-    eventCodex,
+    events,
+    eventTrades,
   };
 };
 

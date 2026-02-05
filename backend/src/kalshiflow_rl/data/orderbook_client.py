@@ -264,19 +264,43 @@ class OrderbookClient:
             self._connection_established.set()
             return
 
-        # Use same format as trades subscription but with orderbook_delta channel
+        # Subscribe to orderbook_delta channel
         subscription_message = {
             "id": 1,
             "cmd": "subscribe",
             "params": {
                 "channels": ["orderbook_delta"],
-                "market_tickers": self.market_tickers  # Array of market ticker strings
+                "market_tickers": self.market_tickers
             }
         }
 
         logger.info(f"Sending subscription: {json.dumps(subscription_message)}")
         await self._websocket.send(json.dumps(subscription_message))
         logger.info(f"Subscribed to orderbook_delta channel for {len(self.market_tickers)} markets: {', '.join(self.market_tickers)}")
+
+        # Subscribe to ticker + trade channels (for single-arb enrichment)
+        # These channels provide price/volume deltas and public trade feed
+        if self._v3_event_bus:
+            ticker_sub = {
+                "id": 10,
+                "cmd": "subscribe",
+                "params": {
+                    "channels": ["ticker"],
+                    "market_tickers": self.market_tickers,
+                }
+            }
+            await self._websocket.send(json.dumps(ticker_sub))
+
+            trade_sub = {
+                "id": 11,
+                "cmd": "subscribe",
+                "params": {
+                    "channels": ["trade"],
+                    "market_tickers": self.market_tickers,
+                }
+            }
+            await self._websocket.send(json.dumps(trade_sub))
+            logger.info(f"Subscribed to ticker + trade channels for {len(self.market_tickers)} markets")
 
         # Signal that connection is established after successful subscription
         self._connection_established.set()
@@ -353,6 +377,10 @@ class OrderbookClient:
                 await self._process_snapshot(message)
             elif msg_type == "delta":
                 await self._process_delta(message)
+            elif msg_type == "ticker_v2":
+                await self._process_ticker_v2(message)
+            elif msg_type == "trade":
+                await self._process_trade(message)
             elif msg_type == "subscription_ack":
                 logger.info("Subscription acknowledged for multi-market orderbook")
             elif msg_type == "heartbeat":
@@ -370,16 +398,20 @@ class OrderbookClient:
         """Determine the type of WebSocket message."""
         # Check for message type field (Kalshi format)
         msg_type = message.get("type")
-        
+
         if msg_type == "orderbook_snapshot":
             return "snapshot"
         elif msg_type == "orderbook_delta":
             return "delta"
-        
+        elif msg_type == "ticker":
+            return "ticker_v2"
+        elif msg_type == "trade":
+            return "trade"
+
         # Check for acknowledgment (Kalshi uses type: "subscribed")
         if message.get("type") == "subscribed":
             return "subscription_ack"
-        
+
         return "unknown"
     
     def _extract_market_from_channel(self, channel: str) -> Optional[str]:
@@ -549,7 +581,7 @@ class OrderbookClient:
             # Trigger actor event via event bus (always emit, not dependent on database enqueue)
             try:
                 if self._v3_event_bus:
-                    # Attach BBO to metadata so subscribers can read prices without lock acquisition
+                    # Attach BBO + full depth to metadata
                     meta = {
                         "sequence_number": snapshot_data["sequence_number"],
                         "timestamp_ms": snapshot_data["timestamp_ms"],
@@ -563,6 +595,14 @@ class OrderbookClient:
                         meta["yes_bid"] = yes_bid
                         meta["yes_ask"] = yes_ask
                         meta["yes_mid"] = mid
+                        # Full depth: top 5 levels as [[price, size], ...]
+                        # yes_bids sorted descending (bids), no_bids sorted descending
+                        yes_bid_levels = [[p, s.yes_bids[p]] for p in list(s.yes_bids.keys())[:5]]
+                        no_bid_levels = [[p, s.no_bids[p]] for p in list(s.no_bids.keys())[:5]]
+                        meta["yes_bid_size"] = s.yes_bids.get(yes_bid, 0) if yes_bid is not None else 0
+                        meta["yes_ask_size"] = s.no_bids.get(100 - yes_ask, 0) if yes_ask is not None else 0
+                        meta["yes_levels"] = yes_bid_levels
+                        meta["no_levels"] = no_bid_levels
                     await self._v3_event_bus.emit_orderbook_snapshot(
                         market_ticker=market_ticker,
                         metadata=meta,
@@ -574,7 +614,7 @@ class OrderbookClient:
                 logger.debug(f"Event bus emit failed for {market_ticker} snapshot: {e}")
 
             # Log snapshot processing (less verbose for production)
-            total_levels = (len(snapshot_data['yes_bids']) + len(snapshot_data['yes_asks']) + 
+            total_levels = (len(snapshot_data['yes_bids']) + len(snapshot_data['yes_asks']) +
                            len(snapshot_data['no_bids']) + len(snapshot_data['no_asks']))
             logger.info(
                 f"Snapshot processed: {market_ticker} seq={self._last_sequences[market_ticker]} "
@@ -670,7 +710,7 @@ class OrderbookClient:
             # Trigger actor event via event bus (always emit, not dependent on database enqueue)
             try:
                 if self._v3_event_bus:
-                    # Attach BBO to metadata so subscribers can read prices without lock acquisition
+                    # Attach BBO + full depth to metadata
                     meta = {
                         "sequence_number": delta_data["sequence_number"],
                         "timestamp_ms": delta_data["timestamp_ms"],
@@ -684,6 +724,13 @@ class OrderbookClient:
                         meta["yes_bid"] = yes_bid
                         meta["yes_ask"] = yes_ask
                         meta["yes_mid"] = mid
+                        # Full depth: top 5 levels
+                        yes_bid_levels = [[p, s.yes_bids[p]] for p in list(s.yes_bids.keys())[:5]]
+                        no_bid_levels = [[p, s.no_bids[p]] for p in list(s.no_bids.keys())[:5]]
+                        meta["yes_bid_size"] = s.yes_bids.get(yes_bid, 0) if yes_bid is not None else 0
+                        meta["yes_ask_size"] = s.no_bids.get(100 - yes_ask, 0) if yes_ask is not None else 0
+                        meta["yes_levels"] = yes_bid_levels
+                        meta["no_levels"] = no_bid_levels
                     await self._v3_event_bus.emit_orderbook_delta(
                         market_ticker=market_ticker,
                         metadata=meta,
@@ -700,6 +747,59 @@ class OrderbookClient:
         except Exception as e:
             logger.error(f"Error processing delta: {e}\n{traceback.format_exc()}")
     
+    async def _process_ticker_v2(self, message: Dict[str, Any]) -> None:
+        """Process ticker_v2 message (price, volume, OI deltas per market)."""
+        try:
+            msg_data = message.get("msg", {})
+            market_ticker = msg_data.get("market_ticker")
+            if not market_ticker or market_ticker not in self.market_tickers:
+                return
+
+            # Emit via event bus for single-arb monitor
+            if self._v3_event_bus:
+                from ..traderv3.core.events.types import EventType
+                await self._v3_event_bus.emit(
+                    EventType.TICKER_UPDATE,
+                    market_ticker=market_ticker,
+                    metadata={
+                        "market_ticker": market_ticker,
+                        "price": msg_data.get("price"),
+                        "volume_delta": msg_data.get("volume_delta", 0),
+                        "open_interest_delta": msg_data.get("open_interest_delta", 0),
+                        "dollar_volume_delta": msg_data.get("dollar_volume_delta", 0),
+                        "dollar_open_interest_delta": msg_data.get("dollar_open_interest_delta", 0),
+                        "ts": msg_data.get("ts"),
+                    },
+                )
+        except Exception as e:
+            logger.debug(f"Error processing ticker_v2: {e}")
+
+    async def _process_trade(self, message: Dict[str, Any]) -> None:
+        """Process public trade message."""
+        try:
+            msg_data = message.get("msg", {})
+            market_ticker = msg_data.get("market_ticker")
+            if not market_ticker or market_ticker not in self.market_tickers:
+                return
+
+            # Emit via event bus for single-arb monitor
+            if self._v3_event_bus:
+                from ..traderv3.core.events.types import EventType
+                await self._v3_event_bus.emit(
+                    EventType.MARKET_TRADE,
+                    market_ticker=market_ticker,
+                    metadata={
+                        "market_ticker": market_ticker,
+                        "yes_price": msg_data.get("yes_price"),
+                        "no_price": msg_data.get("no_price"),
+                        "count": msg_data.get("count", 0),
+                        "taker_side": msg_data.get("taker_side"),
+                        "ts": msg_data.get("ts"),
+                    },
+                )
+        except Exception as e:
+            logger.debug(f"Error processing trade: {e}")
+
     def _map_delta_action(self, data: Dict[str, Any]) -> str:
         """Map WebSocket delta data to standardized action."""
         new_size = data.get("new_size", data.get("size", 0))
@@ -1057,6 +1157,13 @@ class OrderbookClient:
 
             logger.info(f"Subscribing to {len(tickers_to_add)} additional markets: {', '.join(tickers_to_add)}")
             await self._websocket.send(json.dumps(subscription_message))
+
+            # Also subscribe to ticker + trade channels if event bus available
+            if self._v3_event_bus:
+                ticker_sub = {"id": 12, "cmd": "subscribe", "params": {"channels": ["ticker"], "market_tickers": tickers_to_add}}
+                trade_sub = {"id": 13, "cmd": "subscribe", "params": {"channels": ["trade"], "market_tickers": tickers_to_add}}
+                await self._websocket.send(json.dumps(ticker_sub))
+                await self._websocket.send(json.dumps(trade_sub))
 
             # Add to our tracked tickers
             self.market_tickers.extend(tickers_to_add)

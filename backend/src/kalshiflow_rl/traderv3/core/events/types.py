@@ -48,14 +48,12 @@ class EventType(Enum):
     # True Market Open (TMO) events
     TMO_FETCHED = "tmo_fetched"                        # True market open price fetched from candlestick API
 
-    # Cross-venue arbitrage events
-    POLY_PRICE_UPDATE = "poly_price_update"            # Polymarket price update for a paired market
-    SPREAD_UPDATE = "spread_update"                    # Spread recalculation for a paired market
-    SPREAD_ALERT = "spread_alert"                      # Spread exceeds threshold
-    SPREAD_TRADE_EXECUTED = "spread_trade_executed"    # Arb trade executed on hot path
-    PAIR_MATCHED = "pair_matched"                      # New cross-venue pair discovered
-    KALSHI_API_PRICE_UPDATE = "kalshi_api_price_update"  # Kalshi REST API price poll result
+    # Single-event arbitrage events
+    EVENT_ARB_UPDATE = "event_arb_update"                # Single event arb state broadcast
+    ARB_OPPORTUNITY = "arb_opportunity"                  # Arb opportunity detected
+    ARB_TRADE_EXECUTED = "arb_trade_executed"            # Arb trade placed
 
-    # Event Codex (background data enrichment)
-    EVENT_CODEX_SNAPSHOT = "event_codex_snapshot"        # Full codex snapshot with candle data
+    # Ticker V2 + public trade channels (for single-arb enrichment)
+    TICKER_UPDATE = "ticker_update"                      # ticker_v2 channel: price, volume, OI delta
+    MARKET_TRADE = "market_trade"                        # trade channel: public trade feed
 

@@ -2,9 +2,10 @@ import React, { memo, useRef, useEffect, useState } from 'react';
 import {
   Brain, Wrench, CheckCircle, RefreshCw,
   ArrowUpCircle, ChevronDown, ChevronRight, Eye,
-  Search, Database, Globe, FileText, ShoppingCart,
+  Search, Database, Globe, ShoppingCart, ListTodo,
+  ArrowUpRight, ArrowDownLeft, FileText, Wallet,
+  Crosshair, Clock, AlertTriangle,
 } from 'lucide-react';
-import renderThinkingMarkdown from '../../../utils/renderThinkingMarkdown';
 
 const fmtTime = (ts) => {
   if (!ts) return '';
@@ -17,27 +18,20 @@ const fmtTime = (ts) => {
 };
 
 const TOOL_ICONS = {
-  get_pair_snapshot: Database,
-  get_spread_snapshot: Database,
-  get_event_codex: FileText,
-  get_validation_status: CheckCircle,
-  get_system_state: Database,
+  get_event_snapshot: Database,
+  get_all_events: Globe,
+  get_events_summary: Globe,
+  get_market_orderbook: Database,
+  get_recent_trades: Globe,
+  get_trade_history: FileText,
+  execute_arb: ShoppingCart,
+  place_order: Crosshair,
+  cancel_order: AlertTriangle,
+  get_resting_orders: Clock,
   memory_store: Database,
   memory_search: Search,
-  buy_arb_position: ShoppingCart,
-  sell_arb_position: ShoppingCart,
-  delegate_event_analyst: Brain,
-  delegate_memory_curator: Brain,
-  kalshi_get_events: Globe,
-  kalshi_get_markets: Globe,
-  kalshi_get_orderbook: Globe,
-  kalshi_get_positions: Globe,
-  kalshi_get_fills: Globe,
-  poly_get_events: Globe,
-  poly_get_markets: Globe,
-  poly_search_events: Search,
-  get_pair_history: Database,
-  save_validation: FileText,
+  get_positions: Wallet,
+  get_balance: Wallet,
 };
 
 const getToolIcon = (toolName) => TOOL_ICONS[toolName] || Wrench;
@@ -55,14 +49,14 @@ const ThinkingStream = memo(({ thinking, activeToolCall, isRunning }) => {
   const hasContent = thinking.text || activeToolCall || isRunning;
 
   return (
-    <div className="relative">
+    <div className="relative flex-1 min-h-0">
       <div
         ref={scrollRef}
-        className="max-h-[400px] overflow-y-auto rounded-lg bg-gray-900/60 border border-violet-800/20 p-4"
+        className="h-full overflow-y-auto rounded-lg bg-gray-900/60 border border-violet-800/20 p-4"
       >
         {thinking.text ? (
           <div className="space-y-0">
-            {renderThinkingMarkdown(thinking.text)}
+            <pre className="whitespace-pre-wrap font-mono text-[12px] text-gray-300 leading-relaxed">{thinking.text}</pre>
             {thinking.streaming && (
               <span className="inline-block w-2 h-4 bg-violet-400 animate-pulse ml-0.5 align-text-bottom" />
             )}
@@ -103,6 +97,51 @@ const ThinkingStream = memo(({ thinking, activeToolCall, isRunning }) => {
 });
 ThinkingStream.displayName = 'ThinkingStream';
 
+/* ─── TodoListSection ─── */
+const TODO_STATUS_ICONS = {
+  completed: { icon: '✓', color: 'text-emerald-400' },
+  in_progress: { icon: '◎', color: 'text-amber-400' },
+  pending: { icon: '○', color: 'text-gray-500' },
+};
+
+const TodoListSection = memo(({ todos }) => {
+  if (!todos || todos.length === 0) return null;
+
+  return (
+    <div className="rounded-lg border border-gray-800/40 bg-gray-900/30 p-3">
+      <div className="flex items-center gap-2 mb-2">
+        <ListTodo className="w-3.5 h-3.5 text-amber-500" />
+        <span className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider">
+          TODO
+        </span>
+        <span className="text-[10px] text-gray-600 font-mono ml-auto">
+          {todos.filter(t => t.status === 'completed').length}/{todos.length}
+        </span>
+      </div>
+      <div className="space-y-1 max-h-[160px] overflow-y-auto">
+        {todos.map((todo, i) => {
+          const status = TODO_STATUS_ICONS[todo.status] || TODO_STATUS_ICONS.pending;
+          return (
+            <div key={i} className="flex items-start gap-2 py-0.5">
+              <span className={`text-[12px] ${status.color} shrink-0 leading-5`}>
+                {status.icon}
+              </span>
+              <span className={`text-[11px] leading-5 ${
+                todo.status === 'completed' ? 'text-gray-600 line-through' :
+                todo.status === 'in_progress' ? 'text-gray-300' :
+                'text-gray-400'
+              }`}>
+                {todo.text || todo.content || todo.description || JSON.stringify(todo)}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+});
+TodoListSection.displayName = 'TodoListSection';
+
 /* ─── ToolCallRow ─── */
 const ToolCallRow = memo(({ call }) => {
   const Icon = getToolIcon(call.tool_name);
@@ -112,11 +151,6 @@ const ToolCallRow = memo(({ call }) => {
       <span className="text-[11px] font-mono text-gray-300 shrink-0">
         {call.tool_name}
       </span>
-      {call.agent && call.agent !== 'captain' && (
-        <span className="text-[9px] px-1 py-0.5 bg-violet-900/40 text-violet-400 rounded shrink-0">
-          {call.agent}
-        </span>
-      )}
       {call.tool_input && (
         <span className="text-[10px] text-gray-600 truncate flex-1 font-mono">
           {call.tool_input}
@@ -132,7 +166,7 @@ ToolCallRow.displayName = 'ToolCallRow';
 
 /* ─── ToolCallsSection ─── */
 const ToolCallsSection = memo(({ toolCalls }) => {
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(true);
   const visible = toolCalls.slice(0, 10);
 
   if (toolCalls.length === 0) return null;
@@ -150,7 +184,7 @@ const ToolCallsSection = memo(({ toolCalls }) => {
         )}
         <Wrench className="w-3.5 h-3.5 text-cyan-500" />
         <span className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider">
-          Tool Calls
+          Tools
         </span>
         <span className="text-[10px] text-gray-600 font-mono ml-auto">
           {toolCalls.length}
@@ -172,6 +206,54 @@ const ToolCallsSection = memo(({ toolCalls }) => {
   );
 });
 ToolCallsSection.displayName = 'ToolCallsSection';
+
+/* ─── MemorySection ─── */
+const MemorySection = memo(({ memoryOps }) => {
+  if (!memoryOps || memoryOps.length === 0) return null;
+
+  return (
+    <div className="rounded-lg border border-gray-800/40 bg-gray-900/30 p-3">
+      <div className="flex items-center gap-2 mb-2">
+        <Brain className="w-3.5 h-3.5 text-violet-500" />
+        <span className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider">
+          Memory
+        </span>
+        <span className="text-[10px] text-gray-600 font-mono ml-auto">
+          {memoryOps.length}
+        </span>
+      </div>
+      <div className="space-y-1 max-h-[140px] overflow-y-auto">
+        {memoryOps.slice(0, 10).map((op, i) => {
+          const isStore = op.tool_name === 'memory_store' || (op.tool_name === 'edit_file' || op.tool_name === 'write_file');
+          const isSearch = op.tool_name === 'memory_search' || op.tool_name === 'read_file';
+          const Icon = isStore ? ArrowUpRight : isSearch ? ArrowDownLeft : FileText;
+          const iconColor = isStore ? 'text-emerald-500' : isSearch ? 'text-cyan-500' : 'text-violet-500';
+          const preview = op.type === 'call'
+            ? (op.tool_input || '').slice(0, 60)
+            : (op.tool_output || '').slice(0, 60);
+
+          return (
+            <div key={`${op.id}-${i}`} className="flex items-center gap-2 py-0.5">
+              <Icon className={`w-3 h-3 ${iconColor} shrink-0`} />
+              <span className="text-[10px] font-mono text-gray-500 shrink-0">
+                {op.tool_name?.replace('memory_', '')}
+              </span>
+              {preview && (
+                <span className="text-[10px] text-gray-600 truncate flex-1">
+                  {preview}
+                </span>
+              )}
+              <span className="text-[9px] text-gray-700 font-mono shrink-0 ml-auto">
+                {fmtTime(op.timestamp)}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+});
+MemorySection.displayName = 'MemorySection';
 
 /* ─── TradeCard (arbTrades shape) ─── */
 const TradeCard = memo(({ trade }) => {
@@ -241,6 +323,108 @@ const TradesSection = memo(({ trades }) => {
 });
 TradesSection.displayName = 'TradesSection';
 
+/* ─── CommandoSessionPanel ─── */
+const CommandoElapsed = ({ startedAt, completedAt, active }) => {
+  const [elapsed, setElapsed] = React.useState(0);
+
+  React.useEffect(() => {
+    if (!startedAt) return;
+    if (!active && completedAt) {
+      setElapsed(Math.round((completedAt - startedAt) / 1000));
+      return;
+    }
+    const tick = () => setElapsed(Math.round((Date.now() - startedAt) / 1000));
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, [startedAt, completedAt, active]);
+
+  return (
+    <span className="text-[10px] font-mono text-gray-400">
+      {elapsed}s
+    </span>
+  );
+};
+
+const CommandoSessionCard = memo(({ session }) => {
+  const { active, startedAt, completedAt, error, prompt, ops } = session;
+
+  return (
+    <div className={`rounded-lg border p-3 ${
+      active
+        ? 'border-amber-700/40 bg-amber-950/20'
+        : error
+          ? 'border-red-800/30 bg-red-950/10'
+          : 'border-emerald-800/30 bg-emerald-950/10'
+    }`}>
+      {/* Header */}
+      <div className="flex items-center gap-2 mb-2">
+        <Crosshair className={`w-3.5 h-3.5 ${active ? 'text-amber-400 animate-pulse' : error ? 'text-red-400' : 'text-emerald-400'}`} />
+        <span className="text-[11px] font-bold text-gray-300 uppercase tracking-wider">
+          Commando
+        </span>
+        {active && <RefreshCw className="w-3 h-3 text-amber-400 animate-spin" />}
+        <span className={`ml-auto px-1.5 py-0.5 rounded text-[9px] font-bold uppercase ${
+          active ? 'bg-amber-900/50 text-amber-300' : error ? 'bg-red-900/50 text-red-300' : 'bg-emerald-900/50 text-emerald-300'
+        }`}>
+          {active ? 'Executing' : error ? 'Error' : 'Done'}
+        </span>
+        <CommandoElapsed startedAt={startedAt} completedAt={completedAt} active={active} />
+      </div>
+
+      {/* Prompt */}
+      {prompt && (
+        <div className="text-[10px] text-gray-500 mb-2 truncate font-mono">
+          {prompt.slice(0, 120)}
+        </div>
+      )}
+
+      {/* Ops timeline */}
+      {ops.length > 0 && (
+        <div className="space-y-1 max-h-[120px] overflow-y-auto">
+          {ops.map((op, i) => {
+            const Icon = TOOL_ICONS[op.tool_name] || Wrench;
+            const isCall = op.type === 'call';
+            return (
+              <div key={`${op.id}-${i}`} className="flex items-center gap-2 py-0.5">
+                <Icon className={`w-3 h-3 ${isCall ? 'text-cyan-500' : 'text-gray-500'} shrink-0`} />
+                <span className="text-[10px] font-mono text-gray-400 shrink-0">
+                  {op.tool_name}
+                </span>
+                <span className={`text-[9px] truncate flex-1 ${isCall ? 'text-gray-500' : 'text-gray-600'}`}>
+                  {isCall ? (op.tool_input || '').slice(0, 60) : (op.tool_output || '').slice(0, 60)}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Empty state */}
+      {ops.length === 0 && active && (
+        <div className="text-[10px] text-gray-600 flex items-center gap-2">
+          <RefreshCw className="w-3 h-3 animate-spin" />
+          Preparing execution...
+        </div>
+      )}
+    </div>
+  );
+});
+CommandoSessionCard.displayName = 'CommandoSessionCard';
+
+const CommandoSection = memo(({ sessions }) => {
+  if (!sessions || sessions.length === 0) return null;
+
+  return (
+    <div className="space-y-2">
+      {sessions.map(session => (
+        <CommandoSessionCard key={session.id} session={session} />
+      ))}
+    </div>
+  );
+});
+CommandoSection.displayName = 'CommandoSection';
+
 /* ─── AgentChatPanel ─── */
 const AgentChatPanel = ({
   thinking = { text: '', agent: null, streaming: false },
@@ -250,6 +434,9 @@ const AgentChatPanel = ({
   isRunning = false,
   currentSubagent = null,
   cycleCount = 0,
+  todos = [],
+  memoryOps = [],
+  commandoSessions = [],
 }) => {
   return (
     <div className="
@@ -272,7 +459,9 @@ const AgentChatPanel = ({
                 <>
                   <RefreshCw className="w-3 h-3 text-violet-400 animate-spin" />
                   <span className="text-[10px] text-violet-400 font-medium">
-                    {currentSubagent ? `Running: ${currentSubagent}` : 'Running'}
+                    {currentSubagent && currentSubagent !== 'single_arb_captain'
+                      ? `Subagent: ${currentSubagent}`
+                      : 'Running'}
                   </span>
                 </>
               ) : (
@@ -297,15 +486,33 @@ const AgentChatPanel = ({
         </div>
       </div>
 
-      {/* Thinking Stream */}
-      <ThinkingStream
-        thinking={thinking}
-        activeToolCall={activeToolCall}
-        isRunning={isRunning}
-      />
+      {/* Split-view: Thinking (left) | TODOs + Tools + Memory (right) */}
+      <div className="grid grid-cols-5 gap-4" style={{ minHeight: '300px', maxHeight: '450px' }}>
+        {/* Left: Thinking Stream (3 cols) */}
+        <div className="col-span-3 flex flex-col min-h-0">
+          <ThinkingStream
+            thinking={thinking}
+            activeToolCall={activeToolCall}
+            isRunning={isRunning}
+          />
+        </div>
 
-      {/* Tool Calls (collapsible) */}
-      <ToolCallsSection toolCalls={toolCalls} />
+        {/* Right: TODOs + Tools + Memory (2 cols) */}
+        <div className="col-span-2 flex flex-col gap-3 overflow-y-auto min-h-0">
+          <TodoListSection todos={todos} />
+          <ToolCallsSection toolCalls={toolCalls} />
+          <MemorySection memoryOps={memoryOps} />
+          {/* If no right-panel content yet, show placeholder */}
+          {todos.length === 0 && toolCalls.length === 0 && memoryOps.length === 0 && (
+            <div className="flex-1 flex items-center justify-center text-gray-700 text-[11px]">
+              Waiting for agent activity...
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Commando Sessions */}
+      <CommandoSection sessions={commandoSessions} />
 
       {/* Trades */}
       <TradesSection trades={arbTrades} />
