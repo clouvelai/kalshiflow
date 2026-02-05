@@ -8,9 +8,6 @@ import TradeFlowRiver from './components/TradeFlowRiver';
 import TopTradesList from './components/TopTradesList';
 import FAQ from './components/FAQ';
 import RLTraderDashboard from './components/RLTraderDashboard';
-import V3TraderConsole from './components/V3TraderConsole';
-import AgentPage from './components/v3-trader/pages/AgentPage';
-import { LifecycleDiscovery } from './components/lifecycle';
 import { ArbDashboard } from './components/arb';
 
 const MainDashboard = () => {
@@ -99,18 +96,6 @@ function App() {
         <Route
           path="/arb"
           element={<ArbDashboard />}
-        />
-        <Route
-          path="/v3-trader/legacy"
-          element={<V3TraderConsole />}
-        />
-        <Route
-          path="/v3-trader/agent"
-          element={<AgentPage />}
-        />
-        <Route
-          path="/lifecycle"
-          element={<LifecycleDiscovery />}
         />
       </Routes>
     </Router>
