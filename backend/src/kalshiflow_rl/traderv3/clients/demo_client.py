@@ -705,26 +705,41 @@ class KalshiDemoTradingClient:
         except Exception as e:
             raise KalshiDemoOrderError(f"Failed to cancel orders: {e}")
     
-    async def get_fills(self, ticker: Optional[str] = None) -> Dict[str, Any]:
+    async def get_fills(
+        self,
+        ticker: Optional[str] = None,
+        order_group_id: Optional[str] = None,
+        limit: int = 100,
+    ) -> Dict[str, Any]:
         """
         Get trade fills on demo account.
-        
+
         Args:
             ticker: Optional market ticker to filter fills
-            
+            order_group_id: Optional order group ID to filter fills
+            limit: Maximum number of fills to return (default 100)
+
         Returns:
             Dictionary of fills
         """
         try:
-            path = "/portfolio/fills"
+            params = []
             if ticker:
-                path += f"?ticker={ticker}"
-            
+                params.append(f"ticker={ticker}")
+            if order_group_id:
+                params.append(f"order_group_id={order_group_id}")
+            if limit != 100:
+                params.append(f"limit={limit}")
+
+            path = "/portfolio/fills"
+            if params:
+                path += "?" + "&".join(params)
+
             response = await self._make_request("GET", path)
-            
+
             logger.debug(f"Retrieved fills for demo account")
             return response
-            
+
         except Exception as e:
             raise KalshiDemoTradingClientError(f"Failed to get fills: {e}")
     

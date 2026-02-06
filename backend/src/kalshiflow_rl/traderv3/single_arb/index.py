@@ -200,7 +200,7 @@ class MarketMeta:
     def freshness_seconds(self) -> float:
         latest = max(self.ws_updated_at, self.api_updated_at)
         if latest == 0:
-            return float("inf")
+            return 9999.0  # No data yet, use large number (JSON doesn't support Infinity)
         return time.time() - latest
 
     def to_dict(self) -> Dict:
@@ -251,6 +251,28 @@ class EventMeta:
     markets: Dict[str, MarketMeta] = field(default_factory=dict)
     loaded_at: float = 0.0
     updated_at: float = 0.0
+
+    # Mentions-specific data (CUMULATIVE STATE across Captain sessions)
+    # Contains:
+    # - lexeme_pack: LexemePackLite (parsed rules) - Dict version
+    # - current_count: int (CUMULATIVE mention count across all sources)
+    # - evidence: List[Dict] (all grounded hits with full provenance)
+    # - sources_scanned: List[str] (URLs already processed to prevent double-counting)
+    # - last_scan_ts: float (timestamp of last scan)
+    mentions_data: Dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def event_type(self) -> str:
+        """Explicit event type for UI and Captain awareness.
+
+        Returns:
+            "mutually_exclusive" - Outcomes are mutually exclusive, sum should = 100%
+            "independent" - Independent binary outcomes, sum > 100% is normal
+        """
+        if self.mutually_exclusive:
+            return "mutually_exclusive"
+        else:
+            return "independent"
 
     @classmethod
     async def from_event_ticker(
@@ -356,7 +378,7 @@ class EventMeta:
             total += m.yes_ask
         return total if self.markets else None
 
-    def long_edge(self, fee_per_contract: int = 7) -> Optional[float]:
+    def long_edge(self, fee_per_contract: int = 1) -> Optional[float]:
         """100 - sum_ask - total_fees. Positive = profitable long arb."""
         sum_ask = self.market_sum_ask()
         if sum_ask is None:
@@ -364,7 +386,7 @@ class EventMeta:
         total_fees = fee_per_contract * len(self.markets)
         return 100 - sum_ask - total_fees
 
-    def short_edge(self, fee_per_contract: int = 7) -> Optional[float]:
+    def short_edge(self, fee_per_contract: int = 1) -> Optional[float]:
         """sum_bid - 100 - total_fees. Positive = profitable short arb."""
         sum_bid = self.market_sum_bid()
         if sum_bid is None:
@@ -424,6 +446,7 @@ class EventMeta:
             "title": self.title,
             "category": self.category,
             "mutually_exclusive": self.mutually_exclusive,
+            "event_type": self.event_type,  # "mutually_exclusive" | "independent"
             "subtitle": self.subtitle,
             "markets": {t: m.to_dict() for t, m in self.markets.items()},
             "sum_yes_bid": sum_bid,
@@ -448,7 +471,7 @@ class EventArbIndex:
     recomputes probability sums and detects arb opportunities.
     """
 
-    def __init__(self, fee_per_contract_cents: int = 7, min_edge_cents: float = 3.0):
+    def __init__(self, fee_per_contract_cents: int = 1, min_edge_cents: float = 3.0):
         self._events: Dict[str, EventMeta] = {}
         self._ticker_to_event: Dict[str, str] = {}  # market_ticker -> event_ticker
         self._fee_per_contract = fee_per_contract_cents
@@ -462,6 +485,23 @@ class EventArbIndex:
     def market_tickers(self) -> List[str]:
         """All market tickers across all events."""
         return list(self._ticker_to_event.keys())
+
+    @property
+    def is_ready(self) -> bool:
+        """True when all events have been loaded and all markets have orderbook data."""
+        if not self._events:
+            return False
+        return all(event.all_markets_have_data for event in self._events.values())
+
+    @property
+    def readiness_summary(self) -> str:
+        """Human-readable readiness status."""
+        if not self._events:
+            return "No events loaded"
+        ready_events = sum(1 for e in self._events.values() if e.all_markets_have_data)
+        total_markets = sum(e.markets_total for e in self._events.values())
+        markets_with_data = sum(e.markets_with_data for e in self._events.values())
+        return f"{ready_events}/{len(self._events)} events ready, {markets_with_data}/{total_markets} markets with data"
 
     def get_event_for_ticker(self, market_ticker: str) -> Optional[str]:
         """Get event_ticker for a given market_ticker."""

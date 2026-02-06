@@ -270,11 +270,15 @@ class EventArbMonitor:
         for ticker in stale_tickers:
             try:
                 resp = await self._trading_client.get_orderbook(ticker, depth=5)
+                if not resp:
+                    continue
                 orderbook = resp.get("orderbook", resp)
+                if not orderbook or not isinstance(orderbook, dict):
+                    continue
 
-                # Full depth levels from REST
-                yes_levels = orderbook.get("yes", [])
-                no_levels = orderbook.get("no", [])
+                # Full depth levels from REST (API may return None instead of empty list)
+                yes_levels = orderbook.get("yes") or []
+                no_levels = orderbook.get("no") or []
 
                 opportunity = self._index.on_orderbook_update(
                     market_ticker=ticker,

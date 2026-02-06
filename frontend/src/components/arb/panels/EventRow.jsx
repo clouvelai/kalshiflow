@@ -217,8 +217,13 @@ const EventRow = ({ event, isSelected, onSelectEvent }) => {
     sum_yes_mid,
     long_edge,
     short_edge,
+    mutually_exclusive,
+    event_type,
     markets = [],
   } = event;
+
+  // Independent events don't have meaningful spread arb edges
+  const isIndependent = event_type === 'independent' || !mutually_exclusive;
 
   const handleRowClick = useCallback(() => {
     if (onSelectEvent) onSelectEvent(event_ticker);
@@ -229,11 +234,13 @@ const EventRow = ({ event, isSelected, onSelectEvent }) => {
     setExpanded(prev => !prev);
   }, []);
 
-  // Which edge to display (best of long/short)
-  const bestEdge = (long_edge != null && long_edge > 0) ? long_edge
+  // Which edge to display (best of long/short) - only for mutually exclusive events
+  const bestEdge = isIndependent ? null
+    : (long_edge != null && long_edge > 0) ? long_edge
     : (short_edge != null && short_edge > 0) ? short_edge
     : null;
-  const edgeDirection = (long_edge != null && long_edge > 0) ? 'long'
+  const edgeDirection = isIndependent ? null
+    : (long_edge != null && long_edge > 0) ? 'long'
     : (short_edge != null && short_edge > 0) ? 'short'
     : null;
 
@@ -305,9 +312,11 @@ const EventRow = ({ event, isSelected, onSelectEvent }) => {
 
         {/* Edge badge */}
         <span className="flex-shrink-0 w-16 text-right">
-          {bestEdge != null
-            ? <EdgeBadge edgeCents={bestEdge} direction={edgeDirection} />
-            : <span className="text-[10px] text-gray-600 font-mono">--</span>
+          {isIndependent
+            ? <span className="text-[10px] text-amber-500/60 font-mono" title="Independent outcomes - no spread arb">indep</span>
+            : bestEdge != null
+              ? <EdgeBadge edgeCents={bestEdge} direction={edgeDirection} />
+              : <span className="text-[10px] text-gray-600 font-mono">--</span>
           }
         </span>
       </button>

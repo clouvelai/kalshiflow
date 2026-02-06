@@ -1,81 +1,72 @@
 ---
 name: iterate-captain
-description: Automated improvement loop for the Captain single-arb strategy. Starts the system, monitors logs + browser for issues, implements fixes, simplifies code, and validates. Use when you want to systematically find and fix issues in the single-event arb system.
-argument-hint: [cycles]
+description: Step-by-step Captain debugging. Runs one cycle, pauses, debugs issues, then resumes or restarts based on what changed.
+argument-hint: [iterations]
 user-invocable: true
 allowed-tools: Bash, Read, Write, Edit, Grep, Glob, Task, TaskCreate, TaskUpdate, TaskList, AskUserQuestion
 ---
 
-# Iterate Captain - Automated Improvement Loop
+# Iterate Captain - Step-by-Step Debugging
 
-You are running an automated improvement loop on the Captain single-event arb system. Each iteration:
-1. Start the system (run-v3.sh)
-2. Observe via logs + browser (in parallel)
-3. Stop after target cycles
-4. Fix the top issues
-5. Simplify changed code
-6. Restart and validate
+Debug the Captain in 2-cycle batches. After every 2 cycles:
+1. Auto-pause
+2. Analyze logs for issues
+3. Fix issues
+4. Resume or Restart (if Python files changed)
+5. Validate system is working
 
-**Target cycles per iteration**: `$ARGUMENTS` (default: 3)
+**Iterations**: `$ARGUMENTS` (default: 3 batches = 6 cycles)
 
 ---
 
-## Key System Info
+## System Info
 
 - **Backend**: Port 8005
 - **Frontend**: http://localhost:5173/arb
-- **Health**: http://localhost:8005/v3/health
-- **Status**: http://localhost:8005/v3/status
 - **Log file**: backend/logs/v3-trader.log
-- **Log markers**: `[SINGLE_ARB:*]` prefixes
-
-### Frontend Data-TestID Reference
-
-The frontend has been optimized with data-testid attributes for automation:
-
-- `data-testid="arb-dashboard"` - Main dashboard container
-- `data-testid="arb-header"` - Top header bar
-- `data-testid="connection-status"` with `data-connected` attribute
-- `data-testid="system-state"` with `data-state` attribute
-- `data-testid="agent-panel"` with `data-running` attribute
-- `data-testid="agent-cycle-count"` - Shows current cycle number
-- `data-testid="thinking-stream"` - Agent thinking/reasoning output
-- `data-testid="tool-calls-section"` with `data-count` attribute
-- `data-testid="trades-section"` with `data-count` attribute
-- `data-testid="event-index-panel"` with `data-event-count`, `data-market-count`
-- `data-testid="event-row-{ticker}"` with `data-edge`, `data-edge-direction`
-- `data-testid="metric-balance"`, `data-testid="metric-pnl"`, etc.
+- **Log markers**: `[SINGLE_ARB:*]`
 
 ---
 
-## Step 1: Setup & Start System
+## Helper: Send WebSocket Command
 
-```
-TARGET_CYCLES = $ARGUMENTS or 3
-LOG_FILE = backend/logs/v3-trader.log
-ITERATION = 1
+Use this Python snippet to send pause/resume commands:
+
+```bash
+cd /Users/samuelclark/Desktop/kalshiflow/backend && uv run python -c "
+import asyncio, websockets, json
+async def send(cmd):
+    try:
+        async with websockets.connect('ws://localhost:8005/v3/ws') as ws:
+            await ws.send(json.dumps({'type': cmd}))
+            print(f'{cmd} sent')
+    except Exception as e:
+        print(f'Error: {e}')
+asyncio.run(send('$CMD'))
+"
 ```
 
-### 1a. Kill existing process
+Replace `$CMD` with `captain_pause` or `captain_resume`.
+
+---
+
+## Step 1: Start System
+
+### 1a. Kill existing and clear logs
 ```bash
 lsof -ti:8005 | xargs kill -9 2>/dev/null || true
 sleep 2
-```
-
-### 1b. Clear log file
-```bash
 > backend/logs/v3-trader.log
 ```
 
-### 1c. Start system in background
+### 1b. Start system in background
 ```bash
-cd /Users/samuelclark/Desktop/kalshiflow
-./scripts/run-v3.sh paper 2>&1 | tee backend/logs/v3-trader.log &
+cd /Users/samuelclark/Desktop/kalshiflow && ./scripts/run-v3.sh paper 2>&1 | tee backend/logs/v3-trader.log &
 ```
-Use the Bash tool with `run_in_background: true` for this command.
+Use `run_in_background: true`.
 
-### 1d. Wait for startup
-Poll until you see `[SINGLE_ARB:STARTUP]` in the log file (check every 5s, timeout 90s):
+### 1c. Wait for startup
+Poll until `[SINGLE_ARB:STARTUP]` or `[SINGLE_ARB:CAPTAIN_START]` appears (timeout 90s):
 ```bash
 for i in $(seq 1 18); do
   grep -q "SINGLE_ARB:STARTUP\|SINGLE_ARB:CAPTAIN_START" backend/logs/v3-trader.log 2>/dev/null && echo "READY" && break
@@ -83,276 +74,279 @@ for i in $(seq 1 18); do
 done
 ```
 
-If the system doesn't start, read the log file to diagnose and fix the startup error before proceeding.
+If startup fails, read the log file to diagnose.
 
 ---
 
-## Step 2: Observe (Parallel Agents)
+## Step 2: Debug Loop (Repeat per Iteration)
 
-Launch TWO background agents simultaneously using a single message with multiple Task tool calls:
-
-### 2a. Log Monitor Agent
-Use the Task tool with `subagent_type: "general-purpose"` and `run_in_background: true`:
-
+### Track State
 ```
-Prompt: "You are monitoring Captain single-arb logs for issues and improvements.
-
-LOG FILE: /Users/samuelclark/Desktop/kalshiflow/backend/logs/v3-trader.log
-
-KEY LOG MARKERS TO WATCH:
-- [SINGLE_ARB:STARTUP] - System startup
-- [SINGLE_ARB:SHUTDOWN] - System shutdown
-- [SINGLE_ARB:CAPTAIN_START] - Captain agent started
-- [SINGLE_ARB:CAPTAIN_STOP] - Captain agent stopped
-- [SINGLE_ARB:CYCLE_START] cycle=N - Captain cycle began
-- [SINGLE_ARB:CYCLE_END] cycle=N duration=Xs - Captain cycle completed
-- [SINGLE_ARB:CAPTAIN_ERROR] - Captain encountered an error
-- [SINGLE_ARB:SUBAGENT_START] subagent=X - TradeCommando/ChevalDeTroie invoked
-- [SINGLE_ARB:SUBAGENT_COMPLETE] subagent=X - Subagent finished
-- [SINGLE_ARB:TRADE] - Trade order placed
-- [SINGLE_ARB:TRADE_ERROR] - Trade failed
-- [SINGLE_ARB:TRADE_RESULT] - Trade execution result
-
-Your job:
-1. Read the log file every 30 seconds (use Read tool with offset to only read new lines)
-2. Track how many captain cycles have completed by counting '[SINGLE_ARB:CYCLE_END]' markers
-3. Collect ALL of the following into a structured list:
-   - ERRORS: Any ERROR, Exception, or [SINGLE_ARB:*_ERROR] lines with full context
-   - WARNINGS: Any WARNING lines that indicate real problems
-   - TRADE_ISSUES: Failed trades, aborted arbs, cancelled orders with reasons
-   - AGENT_ISSUES: Captain failures, subagent errors, tool timeouts
-   - PERFORMANCE: Slow cycles (>120s), connection issues, queue drops
-   - IMPROVEMENTS: Patterns you notice that could be improved
-
-4. After TARGET_CYCLES captain cycles (look for [SINGLE_ARB:CYCLE_END] count), OR if you've found 15+ issues, write your findings to:
-   /Users/samuelclark/Desktop/kalshiflow/backend/logs/iteration-issues-logs.md
-
-Format the output as:
-# Log Monitor Issues - Iteration N
-
-## Cycle Summary
-- Cycles completed: X
-- Total errors: X
-- Total warnings: X
-- Trades attempted: X
-- Subagent invocations: X
-
-## Critical Issues (must fix)
-1. [ERROR] Description - file:line if identifiable
-   Context: ...
-
-## Warnings (should fix)
-1. [WARNING] Description
-   Context: ...
-
-## Trade Issues
-1. Description
-   Context: ...
-
-## Improvement Opportunities
-1. Description
-   Suggestion: ...
-
-Then stop monitoring."
+ITERATION = 1
+MAX_ITERATIONS = $ARGUMENTS or 3
+MODIFIED_PY_FILES = []
+CYCLES_BEFORE = (count of CYCLE_END in logs)
 ```
 
-### 2b. Browser Validation Agent
-Use the Task tool with `subagent_type: "puppeteer-e2e-validator"` and `run_in_background: true`:
-
-```
-Prompt: "Validate the Captain single-arb frontend at http://localhost:5173/arb
-
-Wait 30 seconds for the system to initialize, then:
-
-1. SCREENSHOTS: Take screenshots of each major section:
-   - Full page overview
-   - Agent panel (data-testid='agent-panel') - shows captain thinking/tool calls
-   - Event index (data-testid='event-index-panel') - shows events and edge calculations
-   - Metrics bar (data-testid='arb-metrics-bar') - balance, P&L, trade counts
-
-2. CHECK these things using data-testid selectors:
-   - Connection status: data-testid='connection-status' should have data-connected='true'
-   - System state: data-testid='system-state' should show 'READY' or 'TRADING'
-   - Agent running: data-testid='agent-panel' should have data-running='true' during cycles
-   - Cycle count: data-testid='agent-cycle-count' should increment
-   - Events loaded: data-testid='event-index-panel' should have data-event-count > 0
-   - Edge calculations: Check for event rows with data-edge values
-
-3. VERIFY DATA FLOW:
-   - Agent thinking stream (data-testid='thinking-stream') should show content
-   - Tool calls section (data-testid='tool-calls-section') should have data-count > 0
-   - Balance metric (data-testid='metric-balance') should show a value
-
-4. WAIT and re-check after 2 minutes:
-   - Has the cycle count increased?
-   - Are new tool calls appearing?
-   - Any UI freezes or stale data?
-
-5. Write findings to:
-   /Users/samuelclark/Desktop/kalshiflow/backend/logs/iteration-issues-browser.md
-
-Format:
-# Browser Validation Issues - Iteration N
-
-## Connection & State
-- WebSocket: [Connected/Disconnected]
-- System State: [state value]
-- Agent Running: [Yes/No]
-- Cycles Observed: X
-
-## UI Issues
-1. [SEVERITY] Description
-   Screenshot: path
-   Element: data-testid
-
-## Data Flow Issues
-1. Description
-
-## Working Correctly
-1. What's working fine
-
-Then stop."
-```
-
----
-
-## Step 3: Wait for Completion
-
-Poll until both agents have written their issue files:
+### 2a. Wait for 2 cycles to complete
+Poll until 2 new `[SINGLE_ARB:CYCLE_END]` markers appear:
 ```bash
-for i in $(seq 1 60); do
-  LOGS_DONE=$(test -f backend/logs/iteration-issues-logs.md && echo 1 || echo 0)
-  BROWSER_DONE=$(test -f backend/logs/iteration-issues-browser.md && echo 1 || echo 0)
-  if [ "$LOGS_DONE" = "1" ] && [ "$BROWSER_DONE" = "1" ]; then
-    echo "Both agents done"
+START_COUNT=$(grep -c 'SINGLE_ARB:CYCLE_END' backend/logs/v3-trader.log 2>/dev/null || echo 0)
+TARGET=$((START_COUNT + 2))
+for i in $(seq 1 120); do
+  CURRENT=$(grep -c 'SINGLE_ARB:CYCLE_END' backend/logs/v3-trader.log 2>/dev/null || echo 0)
+  if [ "$CURRENT" -ge "$TARGET" ]; then
+    echo "2 cycles complete (total: $CURRENT)"
     break
   fi
-  # Also check if enough cycles have passed
-  CYCLES=$(grep -c 'SINGLE_ARB:CYCLE_END' backend/logs/v3-trader.log 2>/dev/null || echo 0)
-  echo "Waiting... cycles=$CYCLES logs_done=$LOGS_DONE browser_done=$BROWSER_DONE"
-  sleep 15
+  echo "Waiting... cycles=$CURRENT target=$TARGET"
+  sleep 5
 done
 ```
 
-If the log monitor agent hasn't finished but enough cycles have passed, you can proceed with whatever issues have been collected so far.
+### 2b. Pause after 2 cycles
+Send `captain_pause` via WebSocket (use helper above).
 
----
-
-## Step 4: Stop System & Collect Issues
-
-### 4a. Stop system
+### 2c. Extract the last 2 cycles' log segments
+Get lines from the start of the first of the 2 cycles to the end:
 ```bash
-lsof -ti:8005 | xargs kill -9 2>/dev/null || true
-sleep 2
+# Get line numbers for the last 2 cycle starts and the final cycle end
+STARTS=$(grep -n 'SINGLE_ARB:CYCLE_START' backend/logs/v3-trader.log | tail -2 | head -1 | cut -d: -f1)
+LAST_END=$(grep -n 'SINGLE_ARB:CYCLE_END' backend/logs/v3-trader.log | tail -1 | cut -d: -f1)
+sed -n "${STARTS},${LAST_END}p" backend/logs/v3-trader.log
 ```
 
-### 4b. Read and merge issue lists
-Read both issue files:
-- `backend/logs/iteration-issues-logs.md`
-- `backend/logs/iteration-issues-browser.md`
+### 2d. Analyze for issues
+Look for in the cycle segment:
+- `ERROR` or `Exception` lines
+- `[SINGLE_ARB:*_ERROR]` markers
+- `WARNING` that indicate real problems
+- Failed tool calls or API errors
+- Timeouts or connection issues
 
-Merge into a single prioritized list:
-1. **Critical** (errors, crashes, data corruption, failed trades)
-2. **High** (agent failures, broken UI, missing data, edge miscalculations)
-3. **Medium** (warnings, performance, UX issues)
-4. **Low** (improvements, cosmetics)
+**Mentions-specific issues to watch for:**
+- `mentions_specialist` subagent not being invoked for mentions markets
+- `simulate_probability` or `trigger_simulation` failures
+- Missing `gather_mention_contexts` or `gather_blind_context` calls
+- Edge computation errors (spread/fee awareness issues)
+- Context cache failures (4-hour TTL system)
+- LLM simulation timeouts or rate limits
+
+**How to trigger mentions testing:**
+The Captain should auto-detect mentions markets (markets with "mention" rules).
+If not seeing mentions activity, check:
+1. Are mentions markets in the index? (`get_events_summary` output)
+2. Is `mentions_enabled` config True?
+3. Does `get_mentions_rules(event_ticker)` return parsed rules?
+
+List issues by priority:
+1. **Critical**: Crashes, exceptions, failed trades
+2. **High**: Tool failures, missing data, mentions not detected
+3. **Medium**: Warnings, slow performance, simulation timeouts
+4. **Low**: Improvements
+
+### 2e. Fix issues (if any)
+
+**MAJOR vs MINOR changes:**
+- **MINOR**: Single-line fixes, typos, simple bug fixes, logging changes → Apply directly
+- **MAJOR**: Architectural changes, new functions, refactors, multi-file changes, prompt rewrites → **STOP and create plan file**
+
+**For MINOR fixes:**
+1. Locate source file using Grep/Glob
+2. Read and understand context
+3. Apply minimal fix using Edit
+4. Track: `MODIFIED_PY_FILES.append(file_path)` if it's a `.py` file
+
+**For MAJOR changes:**
+1. **DO NOT apply the change**
+2. Create a plan file at `backend/logs/iterate-captain-plan.md`:
+```markdown
+# Iterate Captain - Proposed Major Change
+
+## Issue
+[Description of the issue]
+
+## Proposed Change
+[What needs to change and why]
+
+## Files Affected
+- file1.py: [what changes]
+- file2.py: [what changes]
+
+## Risk Assessment
+[Low/Medium/High] - [Why]
+
+## Waiting for approval...
+```
+3. Tell the user: "Found a major change needed. Plan written to `backend/logs/iterate-captain-plan.md`. Review and approve before I proceed."
+4. **STOP the iteration loop** and wait for user response
+5. Only proceed with the change after explicit user approval
+
+Key files:
+- Captain: `backend/src/kalshiflow_rl/traderv3/single_arb/captain.py`
+- Tools: `backend/src/kalshiflow_rl/traderv3/single_arb/tools.py`
+- Coordinator: `backend/src/kalshiflow_rl/traderv3/single_arb/coordinator.py`
+- Index/Monitor: `backend/src/kalshiflow_rl/traderv3/single_arb/index.py`, `monitor.py`
+- Mentions Tools: `backend/src/kalshiflow_rl/traderv3/single_arb/mentions_tools.py`
+- Mentions Context: `backend/src/kalshiflow_rl/traderv3/single_arb/mentions_context.py`
+- Mentions Simulator: `backend/src/kalshiflow_rl/traderv3/single_arb/mentions_simulator.py`
+
+For complex fixes, use:
+```
+Task tool with subagent_type: "kalshi-flow-trader-specialist"
+```
+
+### 2f. Decide: Resume or Restart
+
+**If MODIFIED_PY_FILES is not empty** → RESTART
+- Python changes require process restart to take effect
+- Go to Step 3 (Restart) which includes validation
+
+**If no .py files changed** → RESUME
+- Frontend, config, or no changes
+- Send `captain_resume` via WebSocket
+- Go to Step 2g (Validate Resume)
+
+### 2g. Validate Resume
+After sending `captain_resume`, verify system is healthy:
+```bash
+# Wait 10s for system to resume
+sleep 10
+
+# Check health endpoint
+curl -s http://localhost:8005/v3/health | jq -e '.healthy == true'
+
+# Check captain is running (not paused)
+curl -s http://localhost:8005/v3/status | jq -e '.captain.paused == false'
+
+# Watch for next CYCLE_START to confirm agent resumed
+for i in $(seq 1 12); do
+  grep -q "SINGLE_ARB:CYCLE_START" backend/logs/v3-trader.log 2>/dev/null && echo "Captain resumed OK" && break
+  sleep 5
+done
+```
+
+If validation fails, investigate before continuing.
+
+### 2h. Increment and check
+```
+ITERATION += 1
+if ITERATION > MAX_ITERATIONS:
+    Stop and report
+else:
+    Continue to Step 2a (wait for next 2 cycles)
+```
 
 ---
 
-## Step 5: Implement Fixes
+## Step 3: Restart (When Python Files Changed)
 
-For each issue starting from highest priority:
+### 3a. Graceful stop (faster than SIGKILL)
+```bash
+# Try graceful shutdown first (SIGTERM allows cleanup)
+PID=$(lsof -ti:8005)
+if [ -n "$PID" ]; then
+  kill -TERM $PID 2>/dev/null
+  sleep 1
+  # Only SIGKILL if still running
+  lsof -ti:8005 | xargs kill -9 2>/dev/null || true
+fi
+```
 
-1. **Locate the source**: Use Grep/Glob to find the relevant code
-   - Captain logic: `backend/src/kalshiflow_rl/traderv3/single_arb/captain.py`
-   - Coordinator: `backend/src/kalshiflow_rl/traderv3/single_arb/coordinator.py`
-   - Tools: `backend/src/kalshiflow_rl/traderv3/single_arb/tools.py`
-   - Index/Monitor: `backend/src/kalshiflow_rl/traderv3/single_arb/index.py`, `monitor.py`
-   - Frontend: `frontend/src/components/arb/`
+### 3b. Clear logs and modified files list
+```bash
+> backend/logs/v3-trader.log
+```
+```
+MODIFIED_PY_FILES = []
+```
 
-2. **Understand the root cause**: Read the file and surrounding context
+### 3c. Start system fresh
+```bash
+cd /Users/samuelclark/Desktop/kalshiflow && ./scripts/run-v3.sh paper 2>&1 | tee backend/logs/v3-trader.log &
+```
+Use `run_in_background: true`.
 
-3. **Implement the fix**: Use Edit tool for minimal, targeted changes
+### 3d. Fast Startup Validation
+Optimized for speed - poll aggressively, fail fast:
+```bash
+# Fast poll for startup (check every 2s, timeout 60s)
+for i in $(seq 1 30); do
+  if grep -q "SINGLE_ARB:CAPTAIN_START" backend/logs/v3-trader.log 2>/dev/null; then
+    echo "Captain started in $((i*2))s"
+    break
+  fi
+  # Check for startup errors early
+  if grep -q "ERROR\|Failed to start" backend/logs/v3-trader.log 2>/dev/null; then
+    echo "Startup error detected!"
+    tail -20 backend/logs/v3-trader.log
+    break
+  fi
+  sleep 2
+done
 
-4. **Track what you changed**: Note which files were modified
+# Quick health check
+curl -sf http://localhost:8005/v3/health > /dev/null && echo "Health OK" || echo "Health FAIL"
+```
 
-**Rules**:
-- Fix at most 5 issues per iteration (stay focused)
-- Each fix should be minimal and targeted
-- Don't refactor surrounding code
-- Don't add features beyond what's needed for the fix
-- If a fix requires architectural changes, note it for a future iteration
+If validation fails, read logs and diagnose before continuing.
 
-Use the `kalshi-flow-trader-specialist` agent (Task tool) for complex trader-specific fixes.
+Then go to Step 2a (wait for 2 cycles).
 
 ---
 
-## Step 6: Simplify Changed Code
+## Fast Restart Optimizations
 
-After implementing fixes, run the code-simplifier agent on changed files:
+The restart is inherently slow due to:
+1. Python process startup + imports (~5-10s)
+2. Market discovery via REST API (~3-5s)
+3. Orderbook WebSocket connections (~5-10s)
+4. Index initialization waiting for data (~10-30s)
 
-Use the Task tool with `subagent_type: "code-simplifier"`:
-```
-Prompt: "Simplify and clean up the following recently modified files. Focus on clarity, consistency, and maintainability while preserving all functionality:
-[list the files you modified in Step 5]"
-```
+**Current optimizations in skill:**
+- Graceful SIGTERM before SIGKILL (faster cleanup)
+- Aggressive polling (2s intervals vs 5s)
+- Early error detection (fail fast on startup errors)
+- Skip unnecessary waits (60s timeout vs 90s)
 
----
-
-## Step 7: Validate Fixes
-
-### 7a. Restart system
-Repeat Step 1 (kill existing, clear logs, start fresh, wait for startup).
-
-### 7b. Quick validation
-Run a shorter observation cycle (2 cycles) to verify:
-- Previous errors are gone
-- No new errors introduced
-- Captain cycles completing successfully
-- Agent tool calls working
-- System is stable
-
-### 7c. Report
-Create a brief iteration report:
-```
-## Iteration N Complete
-
-### Issues Found: X
-### Issues Fixed: X
-### Issues Deferred: X
-
-### Changes Made:
-- file1.py: description of change
-- file2.py: description of change
-
-### Remaining Issues:
-- issue1 (deferred because...)
-- issue2 (deferred because...)
-
-### Next Iteration Focus:
-- What to prioritize next
-```
+**Future optimizations (not in this PR):**
+1. **Hot module reload** - Reload only changed Python modules without full restart
+2. **Market cache** - Cache discovered markets to skip REST call on restart
+3. **Persistent orderbook connections** - Keep WS connections across restarts
+4. **Index warmup from DB** - Load last known orderbook state from database
 
 ---
 
-## Step 8: Repeat or Stop
+## Step 4: Final Report
 
-If there are remaining issues and the user hasn't asked to stop:
-- Increment ITERATION
-- Go to Step 1
+After all iterations complete:
+```markdown
+## Iterate Captain Complete
 
-If the system is stable and all major issues are fixed:
-- Report final status
-- Ask the user if they want another iteration or are satisfied
+### Summary
+- Iterations: X / Y
+- Cycles run: N
+- Restarts required: M
+
+### Issues Fixed
+1. [file.py:line] Description
+
+### Remaining Issues
+1. Description (deferred because...)
+
+### Files Modified
+- file1.py
+- file2.py
+```
 
 ---
 
 ## Important Notes
 
-- **Never commit automatically** - only commit when the user explicitly asks
-- **Keep the system running during observation** - don't stop it prematurely
-- **Log file location**: `backend/logs/v3-trader.log` (structured markers prefixed with `[SINGLE_ARB:*]`)
-- **Frontend URL**: `http://localhost:5173/arb`
-- **Backend health**: `http://localhost:8005/v3/health`
-- **Backend status**: `http://localhost:8005/v3/status`
-- The system must have `V3_SINGLE_ARB_ENABLED=true` and `V3_SINGLE_ARB_CAPTAIN_ENABLED=true` in `.env.paper` for captain cycles to run
+- **Never commit automatically** - only when user asks
+- **Major changes need approval** - create plan file at `backend/logs/iterate-captain-plan.md` and STOP
+- **2 cycles per batch** - pause after every 2 cycles for analysis
+- **Always validate** - check health after BOTH resume and restart
+- **Restart if .py changed** - Python needs process restart
+- **Resume if only frontend/config** - faster iteration
+- **Focus on real issues** - don't over-engineer fixes

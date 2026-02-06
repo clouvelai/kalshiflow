@@ -1,885 +1,403 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Project guidance for Claude Code. Focus: Captain agent development on Kalshi prediction markets.
 
 ## Project Overview
 
-Kalshi Flowboard - A real-time web application that displays Kalshi public trades via WebSocket, showing a live tape and heatmap of "hot" markets based on trade volume and flow direction.
+**Kalshi Flow** - A real-time prediction market trading platform with two main products:
+
+1. **Flowboard** (shipped, production) - https://kalshiflow.io/
+   - Live trade tape showing public Kalshi trades in real-time
+   - Hot markets heatmap based on volume and flow direction
+   - Time-series analytics and market insights
+   - WebSocket-driven real-time updates
+
+2. **V3 Trader + Captain** (active development)
+   - LLM-powered Captain agent for autonomous trading
+   - Single-event arbitrage detection
+   - Mentions market probability estimation
+   - Paper trading on demo-api.kalshi.co
+
+## Production
+
+**Live URL**: https://kalshiflow.io/
+
+Railway services:
+- `kalshi-flowboard-backend` - Python backend + WebSocket
+- `kalshi-flowboard` - Static frontend
+
+## Tech Stack
+
+| Layer | Technology |
+|-------|------------|
+| Backend | Python 3.x + Starlette (ASGI), uv for deps |
+| Frontend | React + Vite + Tailwind, npm for deps |
+| Database | PostgreSQL via Supabase |
+| LLM Framework | deepagents + LangChain tools + Claude Sonnet |
+| Deployment | Railway (backend + frontend) |
+
+## Flowboard Backend (Production)
+
+The core Kalshiflow backend at `backend/src/kalshiflow/`:
+
+```
+Kalshi WebSocket (public trades) → Backend → PostgreSQL + In-Memory Aggregates
+                                      ↓
+                              Frontend WebSocket
+                                      ↓
+                         Trade Tape + Hot Markets + Charts
+```
+
+Key modules:
+- `kalshi_client.py` - WebSocket connection to Kalshi with RSA auth
+- `trade_processor.py` - Processes incoming trades, deduplication
+- `aggregator.py` - Hot markets, ticker states, sliding window aggregates
+- `websocket_handler.py` - Frontend WebSocket connections
+- `database.py` - PostgreSQL via Supabase
 
 ## Architecture
 
-### Tech Stack
-- **Backend**: Python 3.x + Starlette (ASGI) with uv for dependency management
-- **Frontend**: React + Vite + Tailwind CSS with npm for dependency management
-- **Database**: PostgreSQL via Supabase (production + development)
-- **Authentication**: RSA private key file-based auth for Kalshi API
+### Core Systems
 
-### Core Constraint
-Do not call any Kalshi REST endpoints in the MVP. All data must originate from the WebSocket public trades stream.
-
-### Data Flow
-1. Kalshi WebSocket → Backend (auth with RSA signature)
-2. Backend processes trades → PostgreSQL (durable) + In-memory (aggregates)
-3. Backend broadcasts → Frontend WebSocket
-4. Frontend displays → Trade tape + Hot markets + Ticker details
-
-## Common Commands
-
-### Development Setup
-
-#### Quick Start (PostgreSQL/Supabase)
-```bash
-# Start local Supabase instance
-cd backend && supabase start
-
-# Install dependencies and run backend
-uv sync
-uv run uvicorn kalshiflow.app:app --reload
-
-# In separate terminal: run frontend
-cd frontend && npm install && npm run dev
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                         V3 Trader                               │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────────────┐│
+│  │ EventBus │──│ Orderbook│──│ Trading  │──│ WebSocket Manager││
+│  │ (pub/sub)│  │ Client   │  │ Client   │  │ (frontend)       ││
+│  └──────────┘  └──────────┘  └──────────┘  └──────────────────┘│
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    Single-Arb System                            │
+│  ┌──────────┐  ┌──────────┐  ┌──────────────────────────────┐  │
+│  │EventArb  │──│ Monitor  │──│         Captain              │  │
+│  │Index     │  │          │  │  ┌────────────────────────┐  │  │
+│  │(markets) │  │(data in) │  │  │ Subagents:             │  │  │
+│  └──────────┘  └──────────┘  │  │ - TradeCommando (exec) │  │  │
+│                              │  │ - ChevalDeTroie (surv) │  │  │
+│                              │  │ - MentionsSpecialist   │  │  │
+│                              │  │ - MemoryCurator        │  │  │
+│                              │  └────────────────────────┘  │  │
+│                              └──────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-#### Alternative Setup
+### Key Files
+
+| Component | Location |
+|-----------|----------|
+| V3 Coordinator | `backend/src/kalshiflow_rl/traderv3/core/coordinator.py` |
+| Event Bus | `backend/src/kalshiflow_rl/traderv3/core/event_bus.py` |
+| **Captain Agent** | `backend/src/kalshiflow_rl/traderv3/single_arb/captain.py` |
+| Captain Tools | `backend/src/kalshiflow_rl/traderv3/single_arb/tools.py` |
+| Mentions Tools | `backend/src/kalshiflow_rl/traderv3/single_arb/mentions_tools.py` |
+| Single-Arb Coordinator | `backend/src/kalshiflow_rl/traderv3/single_arb/coordinator.py` |
+| EventArb Index | `backend/src/kalshiflow_rl/traderv3/single_arb/index.py` |
+| Memory System | `backend/src/kalshiflow_rl/traderv3/single_arb/memory/` |
+| V3 Config | `backend/src/kalshiflow_rl/traderv3/config/environment.py` |
+
+## Quick Commands
+
+### Flowboard (Production Backend)
+
 ```bash
-# Initialize and install all dependencies
-./init.sh
+# Start Flowboard backend (port 8000)
+cd backend && uv run uvicorn kalshiflow.app:app --reload
 
-# Backend only (using uv)
-cd backend
-uv sync
-uv run uvicorn kalshiflow.app:app --reload
-
-# Frontend only (using npm)
-cd frontend
-npm install
-npm run dev
+# Frontend (separate terminal)
+cd frontend && npm run dev
 ```
 
-#### Environment Management
-```bash
-# Switch between local/production environments
-./scripts/switch-env.sh local       # Use local Supabase
-./scripts/switch-env.sh production  # Use remote Supabase
-./scripts/switch-env.sh current     # Show current environment
+### V3 Trader (Captain Development)
 
-# PostgreSQL is used in both environments via Supabase
-# See SUPABASE_SETUP.md for detailed configuration
-```
-
-### V3 Trader (Paper Trading)
-**Purpose**: Clean architecture trading system with WebSocket-driven state management
 ```bash
-# Start V3 trader (default: paper trading, discovery mode, 10 markets)
+# Start V3 trader (paper trading, auto-discovers markets, port 8005)
 ./scripts/run-v3.sh
 
-# Custom configurations: [environment] [mode] [market_limit]
-./scripts/run-v3.sh paper discovery 20      # More markets
-./scripts/run-v3.sh paper config 5          # Specific tickers from RL_MARKET_TICKERS
+# Start with custom settings: [env] [mode] [market_limit]
+./scripts/run-v3.sh paper discovery 20
+
+# Frontend for arb dashboard
+cd frontend && npm run dev
+# Then visit http://localhost:5173/arb
 ```
 
-**Default Configuration:**
-- **Environment**: `paper` (demo account)
-- **Port**: 8005
-- **Mode**: Discovery (auto-discovers active markets)
-- **Markets**: 10 orderbook subscriptions
+### Access Points
 
-**Access Points:**
-- **Console**: http://localhost:5173/v3-trader (requires frontend)
+**Flowboard (production):**
+- **Production**: https://kalshiflow.io/
+- **Local**: http://localhost:5173/ (requires backend on :8000)
+- **Backend WebSocket**: ws://localhost:8000/ws
+
+**V3 Trader (development):**
+- **Arb Dashboard**: http://localhost:5173/arb
 - **Health**: http://localhost:8005/v3/health
 - **Status**: http://localhost:8005/v3/status
 - **WebSocket**: ws://localhost:8005/v3/ws
 
-**Order Management:**
-
-*Order TTL (Time-to-Live)*: Resting orders are automatically cancelled after a configurable timeout to prevent capital lock-up.
-- `V3_ORDER_TTL_ENABLED`: Enable/disable TTL cleanup (default: `true`)
-- `V3_ORDER_TTL_SECONDS`: TTL threshold in seconds (default: `90` = 1.5 minutes)
-- Runs after each sync cycle (~20 seconds), only cancels "resting" orders (not partial fills)
-- Emits toast notification to frontend, tracks count in "TTL Cancelled" metric
-
-*Startup Cleanup*: On restart, old order groups are automatically cleaned up:
-1. **Reset** each old order group (cancels all resting orders)
-2. **Delete** the empty order group
-3. Current session's order group is preserved
-- `cleanup_on_startup: True` (default) - Enable startup cleanup
-
 ### Testing
+
 ```bash
-# Backend tests
-cd backend
-uv run pytest
+# Backend E2E (golden standard - MUST pass before deploy)
+cd backend && uv run pytest tests/test_backend_e2e_regression.py -v
 
-# CRITICAL: Backend E2E regression test (golden standard)
-# Run this before any deployment to ensure entire backend pipeline works
-uv run pytest tests/test_backend_e2e_regression.py -v
-
-# Detailed validation output for debugging
-uv run pytest tests/test_backend_e2e_regression.py -v -s --log-cli-level=INFO
-
-# RL Orderbook Collector E2E test (for RL subsystem)
-uv run pytest tests/test_rl_orderbook_e2e.py -v
-# Or use the test script
-./scripts/test_rl_e2e.sh
-
-# Test Kalshi client standalone
-uv run backend/scripts/test_kalshi_client.py
-
-# Frontend E2E tests (requires backend running on port 8000)
-cd frontend
-
-# CRITICAL: Frontend E2E regression test (golden standard)
-# Comprehensive validation of entire frontend against live data
-npm run test:frontend-regression
-
-# All frontend E2E tests
-npm run test:e2e
-
-# Interactive UI for debugging
-npm run test:e2e-ui
+# Frontend E2E (requires backend on :8000)
+cd frontend && npm run test:frontend-regression
 ```
 
-## Key Implementation Details
+### Deployment
 
-### Kalshi Authentication
-- Uses RSA private key file (not API secret)
-- Environment variables:
-  - `KALSHI_API_KEY_ID` - The API key ID
-  - `KALSHI_PRIVATE_KEY_CONTENT` - RSA private key content as string (or `KALSHI_PRIVATE_KEY_PATH` for file path)
-- Signature process: `timestamp_ms + method + path` → RSA sign with PSS padding → base64 encode
-- Reference implementation: https://github.com/clouvelai/prophete/blob/main/backend/app/core/auth.py
-
-### WebSocket Message Protocol
-
-**Frontend receives from backend:**
-```json
-// Snapshot (on connect)
-{
-  "type": "snapshot",
-  "data": {
-    "recent_trades": [...],
-    "hot_markets": [...]
-  }
-}
-
-// Trade update
-{
-  "type": "trade",
-  "data": {
-    "trade": {...},
-    "ticker_state": {...}
-  }
-}
+```bash
+# ONLY deploy when explicitly requested by user
+./deploy.sh
 ```
 
-### In-Memory Aggregation
-- Sliding window aggregates (default 10 minutes)
-- Per-ticker state tracks: volume, yes/no flow, price points for sparklines
-- Periodic pruning of old data to maintain performance
+## Captain Agent Architecture
 
-## Implementation Roadmap
+### Overview
 
-The project follows a phased approach documented in `feature_plan.json`:
+The Captain is a multi-agent LLM system using `deepagents` framework with Claude Sonnet. It runs on a 60-second cycle, observing markets, delegating to specialized subagents, and learning from experience.
 
-**Phase 1 (Current)**: End-to-end live public trades feed
-- Milestone 1: Project initialization
-- Milestone 2: Kalshi WebSocket client with RSA auth
-- Milestone 3: Backend integration with Starlette
-- Milestone 4: Frontend implementation
+### Subagents
 
-**Phase 2 (Future)**: Storage, aggregation, and advanced features
+| Agent | Role | Key Tools |
+|-------|------|-----------|
+| **TradeCommando** | Execution specialist | `place_order`, `execute_arb`, `cancel_order`, `get_resting_orders` |
+| **ChevalDeTroie** | Surveillance/bot detection | `analyze_microstructure`, `analyze_orderbook_patterns` |
+| **MentionsSpecialist** | Mentions market edge | `simulate_probability`, `trigger_simulation`, `compute_edge` |
+| **MemoryCurator** | Memory maintenance | `memory_store`, file operations |
 
-## File Structure
+### Memory Architecture
 
 ```
-backend/
-  src/kalshiflow/
-    main.py         # Entry point
-    app.py          # Starlette app
-    auth.py         # RSA authentication
-    kalshi_client.py # WebSocket client
-    models.py       # Pydantic models
-    database.py     # PostgreSQL setup
-    aggregator.py   # In-memory aggregation
-    trade_processor.py # Trade handling
-    websocket_handler.py # Frontend WebSocket
-frontend/
-  src/
-    components/     # React components
-    hooks/          # Custom hooks
-    context/        # State management
+┌────────────────┐   ┌─────────────────┐   ┌────────────────┐
+│  AGENTS.md     │   │  journal.jsonl  │   │   pgvector     │
+│  (persistent)  │   │  (append-only)  │   │  (semantic)    │
+│                │   │                 │   │                │
+│  Learnings     │   │  Trade records  │   │  Search across │
+│  loaded into   │   │  via memory_    │   │  historical    │
+│  system prompt │   │  store tool     │   │  context       │
+└────────────────┘   └─────────────────┘   └────────────────┘
 ```
 
-## Environment Configuration
+### Captain Tools (13 total)
 
-The project uses environment-specific `.env` files for credential management:
+**Observation:**
+- `get_events_summary()` - All events with edge calculations
+- `get_event_snapshot(event_ticker)` - Full orderbook depth for one event
+- `get_market_orderbook(ticker)` - 5 levels of orderbook
+- `get_trade_history(ticker)` - Fills, settlements, P&L
+- `get_positions()` - Current positions (captain vs legacy split)
+- `get_balance()` - Account balance
+
+**Execution:**
+- `place_order(ticker, side, contracts, price, reasoning)` - Single-leg order
+- `execute_arb(event_ticker, direction, max_contracts, reasoning)` - Multi-leg arb
+- `cancel_order(order_id, reason)` - Cancel resting order
+
+**Memory:**
+- `memory_store(content, memory_type, metadata)` - Persist learnings
+
+### Mentions Strategy System
+
+Blind LLM simulation for mentions markets (e.g., "Will Trump say 'tariff'?"):
+
+1. **Blind transcript generation** - LLM generates realistic speech without knowing target terms
+2. **Post-hoc scanning** - Count term appearances in generated text
+3. **P(term) estimation** - appearances / n_simulations
+4. **Edge calculation** - Blend baseline + informed probabilities
+
+Key tools: `simulate_probability`, `trigger_simulation` (async), `compute_edge`, `query_wordnet`
+
+## Development Patterns
+
+### LangChain Tools Pattern
+
+```python
+# Tools use module-level globals for dependency injection
+_index: Optional[EventArbIndex] = None
+_trading_client: Optional[KalshiDemoTradingClient] = None
+
+def set_dependencies(index, client, order_group_id, order_ttl):
+    """Called by coordinator at startup"""
+    global _index, _trading_client, _order_group_id, _order_ttl
+    _index = index
+    _trading_client = client
+    # ...
+
+@tool
+async def get_events_summary() -> str:
+    """Get summary of all events with edge calculations."""
+    # Implementation using _index
+```
+
+### EventBus Pattern
+
+```python
+# Subscribe to events
+event_bus.subscribe(EventType.ORDERBOOK_SNAPSHOT, self._on_orderbook)
+
+# Callback receives market_ticker and metadata
+async def _on_orderbook(self, market_ticker: str, metadata: Dict):
+    yes_bid = metadata.get("yes_bid")
+    yes_ask = metadata.get("yes_ask")
+    # ...
+```
+
+### Memory Persistence Pattern
+
+```python
+# File-based persistence via FilesystemBackend
+# /memories/ and /skills/ routes → FilesystemBackend (persistent)
+# Everything else → StateBackend (ephemeral per thread_id)
+
+# Each cycle gets unique thread_id to prevent history accumulation
+thread_id = str(uuid.uuid4())
+```
+
+## Configuration
+
+### Key Environment Variables
+
+```bash
+# V3 Trader
+V3_PORT=8005
+V3_ORDER_TTL_ENABLED=true
+V3_ORDER_TTL_SECONDS=90
+
+# Single-Arb System
+V3_SINGLE_ARB_ENABLED=true
+V3_SINGLE_ARB_CAPTAIN_ENABLED=true
+V3_SINGLE_ARB_CAPTAIN_INTERVAL=60
+V3_SINGLE_ARB_MIN_EDGE_CENTS=0.5
+V3_SINGLE_ARB_ORDER_TTL=30
+
+# Mentions
+V3_MENTIONS_ENABLED=true
+```
 
 ### Environment Files
-- **`.env.local`** - Local development environment (default)
-- **`.env.production`** - Production environment
-- **`.env.paper`** - Paper trading environment (demo account)
 
-### Environment Loading Pattern
-The system loads environment variables based on the `ENVIRONMENT` variable:
-1. Loads `.env.{ENVIRONMENT}` first (with override=True)
-2. Falls back to `.env` for any missing variables
+- `.env.paper` - Paper trading (demo-api.kalshi.co)
+- `.env.local` - Local development
+- `.env.production` - Production
 
-**Example:**
-```bash
-# Set environment
-export ENVIRONMENT=paper  # or "local" or "production"
+Switch with: `./scripts/switch-env.sh paper`
 
-# System will load:
-# 1. .env.paper (override=True)
-# 2. .env (fallback)
-```
+## Subagent Selection Guide
 
-### Required Variables by Environment
+Use the Task tool with these specialized agents:
 
-#### Local Development (`.env.local`)
-```bash
-ENVIRONMENT=local
-
-# Kalshi API Configuration (production API for data collection)
-KALSHI_API_KEY_ID=<your_api_key_id>
-KALSHI_PRIVATE_KEY_CONTENT=<your_private_key_content>
-KALSHI_API_URL=https://api.elections.kalshi.com/trade-api/v2
-KALSHI_WS_URL=wss://api.elections.kalshi.com/trade-api/ws/v2
-
-# PostgreSQL Database Configuration (via Supabase)
-DATABASE_URL=<postgresql_connection_string>
-DATABASE_URL_POOLED=<postgresql_pooled_connection_string>
-
-# Application Settings
-WINDOW_MINUTES=10
-HOT_MARKETS_LIMIT=20
-RECENT_TRADES_LIMIT=200
-
-# Server Configuration
-BACKEND_PORT=8000
-FRONTEND_PORT=5173
-```
-
-#### Production (`.env.production`)
-```bash
-ENVIRONMENT=production
-
-# Kalshi API Configuration (production API)
-KALSHI_API_KEY_ID=<your_production_api_key_id>
-KALSHI_PRIVATE_KEY_CONTENT=<your_production_private_key_content>
-KALSHI_API_URL=https://api.elections.kalshi.com/trade-api/v2
-KALSHI_WS_URL=wss://api.elections.kalshi.com/trade-api/ws/v2
-
-# PostgreSQL Database Configuration
-DATABASE_URL=<production_postgresql_connection_string>
-DATABASE_URL_POOLED=<production_pooled_connection_string>
-```
-
-#### Paper Trading (`.env.paper`)
-```bash
-ENVIRONMENT=paper
-
-# Kalshi Demo Account API Configuration (demo-api.kalshi.co)
-KALSHI_API_KEY_ID=<your_demo_api_key_id>
-KALSHI_PRIVATE_KEY_CONTENT=<your_demo_private_key_content>
-KALSHI_API_URL=https://demo-api.kalshi.co/trade-api/v2
-KALSHI_WS_URL=wss://demo-api.kalshi.co/trade-api/ws/v2
-
-# Database Configuration (shared with other environments)
-DATABASE_URL=<postgresql_connection_string>
-DATABASE_URL_POOLED=<postgresql_pooled_connection_string>
-
-# RL-Specific Configuration (optional)
-RL_MARKET_TICKERS=INXD-25JAN03,OTHER-TICKER
-RL_LOG_LEVEL=INFO
-```
-
-### Environment Switching
-
-Use the provided script to switch between environments:
-```bash
-# Switch to local development
-./scripts/switch-env.sh local
-
-# Switch to production
-./scripts/switch-env.sh production
-
-# Show current environment
-./scripts/switch-env.sh current
-```
-
-### Paper Trading Safety
-
-The `KalshiDemoTradingClient` includes validation to prevent accidental production trading:
-- ✅ **Validates URLs**: Ensures all URLs point to `demo-api.kalshi.co`
-- ✅ **Blocks Production**: Raises error if production URLs (`api.elections.kalshi.com`) are detected
-- ✅ **Clear Errors**: Provides helpful error messages directing users to use `ENVIRONMENT=paper`
-
-**To use paper trading:**
-1. Copy `.env.paper.example` to `.env.paper`
-2. Fill in your demo account credentials
-3. Set `ENVIRONMENT=paper` or use the environment switcher
-4. The demo client will automatically validate the configuration
-## Backend E2E Regression Test
-
-**Critical test that MUST pass before any deployment or major changes.**
-
-### What it validates:
-- ✅ **Backend Startup**: Complete application starts successfully
-- ✅ **Service Integration**: All services (trade processor, aggregator, websocket manager) initialize
-- ✅ **Kalshi Connection**: WebSocket client connects to Kalshi public trades stream
-- ✅ **Database Functionality**: PostgreSQL database connection and functionality
-- ✅ **Frontend WebSocket**: Client connections work and receive valid data
-- ✅ **Data Processing**: Trade data flows through complete pipeline (when available)
-- ✅ **Clean Shutdown**: All services stop gracefully
-
-### Running the test:
-```bash
-# Standard run (must pass before deployment)
-uv run pytest tests/test_backend_e2e_regression.py -v
-
-# Debug mode with detailed validation steps
-uv run pytest tests/test_backend_e2e_regression.py -v -s --log-cli-level=INFO
-
-# What to expect:
-# - Test duration: ~10-11 seconds
-# - Clear ✅/❌ status indicators for each validation step
-# - Detailed failure messages if anything breaks
-# - Works with or without live trade data from Kalshi
-```
-
-### Understanding test output:
-- **✅ PASSED**: Validation step completed successfully
-- **❌ FAILED**: Validation step failed (investigate immediately)
-- **⚠️ WARNING**: Non-critical issue detected (monitor)
-- **ℹ️ INFO**: Status information (normal)
-- **📊 STATS**: Final test statistics
-
-### When to run:
-- **Before deployment** (mandatory)
-- **After backend changes** (highly recommended)
-- **When debugging backend issues** (use debug mode)
-- **As part of CI pipeline** (automated)
-
-This test serves as the definitive validation that the entire backend is functional and safe to deploy.
-
-## Frontend E2E Regression Test
-
-**Critical test that MUST pass before any deployment or major changes.**
-
-### What it validates:
-- ✅ **Backend Connection**: WebSocket connection established with "Live" status
-- ✅ **Real Data Flow**: Live trade data flows from Kalshi → Backend → Frontend
-- ✅ **Analytics Populated**: Summary statistics show non-zero values (volume, trades)
-- ✅ **Market Grid Active**: At least one market displayed (critical failure if empty)
-- ✅ **Chart Rendering**: Time-series chart renders with data points
-- ✅ **Interactive Features**: Hour/Day mode toggle functions correctly
-- ✅ **Real-time Updates**: Data changes over time proving live stream works
-- ✅ **Component Stability**: All UI components render and remain functional
-
-### Running the test:
-```bash
-# Prerequisites: Backend MUST be running on port 8000
-# From project root directory
-cd backend && uv run uvicorn kalshiflow.app:app --reload --port 8000
-
-# Run the golden frontend test (in separate terminal)
-# From project root directory  
-cd frontend && npm run test:frontend-regression
-
-# Note: Ensure you're in the kalshiflow root directory before running these commands
-
-# What to expect:
-# - Test duration: ~15-20 seconds
-# - 5 screenshots captured in test-results/screenshots/
-# - Clear ✅/❌ status indicators for each validation step
-# - IMMEDIATE FAILURE if backend not running or no data flowing
-# - Visual proof via screenshots of working system
-
-```
-
-### Understanding test output:
-- **✅ WebSocket connected**: Backend is running and accessible
-- **✅ Analytics active**: Real data flowing (Volume: $XXXk, Trades: XXX)
-- **✅ Market grid populated**: X active markets displayed
-- **✅ Chart rendering**: X data points visible
-- **✅ Real-time updates**: Data increased over test duration
-- **❌ CRITICAL FAILURES**: Backend not running, no data, or component failures
-
-### Screenshots captured:
-1. `01_initial_load.png` - Application startup state
-2. `02_connection_established.png` - WebSocket "Live" connection confirmed
-3. `03_data_populated.png` - Full view with analytics, markets, charts populated
-4. `04_interactive_features.png` - After testing Hour/Day toggle functionality
-5. `05_final_state.png` - Final state showing real-time data updates
-
-### When to run:
-- **Before deployment** (mandatory)
-- **After frontend changes** (highly recommended)
-- **When debugging frontend issues** (screenshots help diagnosis)
-- **As part of CI pipeline** (automated validation)
-
-### Critical failure conditions:
-- Backend not running (WebSocket shows "Disconnected")
-- No data flowing (Analytics shows $0 volume)
-- Empty market grid (No markets displayed)
-- Components not rendering (UI elements missing)
-- No real-time updates (Data unchanged over test duration)
-
-This test serves as the definitive validation that the entire frontend is functional and the E2E system works with live data.
-
-## Railway Deployment
-
-The application is deployed on Railway.app for production hosting with automated deployment pipeline.
-
-### Deployment Prerequisites
-1. **Railway CLI**: Ensure `railway` CLI is installed and authenticated
-2. **Validation**: Run pre-deployment validation script
-3. **Tests**: Both E2E regression tests must pass
-
-### Automated Deployment Setup
-
-#### Configuration Files
-- **`railway.toml`**: Railway service configuration with health checks
-- **`nixpacks.toml`**: Optimized build process configuration
-- **`scripts/deploy-setup.sh`**: One-time Railway setup script
-- **`scripts/pre-deploy-validation.sh`**: Pre-deployment validation
-
-#### Setup Process
-```bash
-# 1. One-time Railway setup
-./scripts/deploy-setup.sh
-
-# 2. Enable auto-deployment on main branch
-railway settings --auto-deploy=main
-
-# 3. Configure missing environment variables
-railway variables set PYTHONPATH="/app/backend/src"
-railway variables set UVICORN_HOST="0.0.0.0"
-railway variables set UVICORN_PORT="$PORT"
-railway variables set NODE_ENV="production"
-```
-
-### Deployment Workflow
-
-#### Deployment Script (Recommended)
-```bash
-# IMPORTANT: Only deploy when explicitly requested by the user
-# This script handles all validation and deployment steps
-./deploy.sh
-
-# What the script does:
-# 1. Validates git status (main branch, clean working directory)
-# 2. Runs backend E2E regression tests
-# 3. Runs frontend E2E regression tests  
-# 4. Deploys backend to kalshi-flowboard-backend service
-# 5. Deploys frontend to kalshi-flowboard service
-# 6. Verifies deployment success
-```
-
-#### Manual Deployment (Alternative)
-```bash
-# 1. Run pre-deployment validation
-./scripts/pre-deploy-validation.sh
-
-# 2. Deploy backend and frontend separately
-cd backend && railway up --service kalshi-flowboard-backend
-cd frontend && railway up --service kalshi-flowboard
-```
-
-### Railway Configuration
-- **Build**: Optimized via nixpacks.toml
-- **Health Check**: `/health` endpoint with 30s timeout
-- **Restart Policy**: On failure with max 3 retries
-- **Environment Variables**: Managed via Railway dashboard
-
-### Validation Checklist
-- ✅ Backend E2E regression test passes
-- ✅ Frontend builds successfully  
-- ✅ Railway configuration files present
-- ✅ Environment variables configured
-- ✅ Health endpoints responding
-
-### Production Monitoring
-- **Logs**: Available via Railway dashboard
-- **Metrics**: CPU, memory, and request metrics tracked
-- **Health**: Continuous monitoring with automatic restarts
-- **WebSocket**: Connection stability monitoring
-
-## Agent Selection Guide
-
-| Task Type | Primary Agent | When to Use |
-|-----------|--------------|-------------|
-| **External hypothesis sourcing** | strategy-researcher | Find ideas from academic papers, sports betting, crypto/DeFi, social media |
-| **Microstructure strategy validation** | quant | Validate hypotheses with historical trade data, backtesting, statistical rigor |
-| **AI research calibration analysis** | agentic-trading-scientist | Analyze LLM calibration, semantic frame quality, research pipeline efficiency |
-| **Prompt design & implementation** | prompt-engineer | Design/implement prompts, enforce simplicity, LangChain architecture |
-| **P&L maximization** | v3-profit-optimizer | Orchestrate strategies, diagnose profit leaks, climb leaderboard |
-| **V3 trader implementation** | kalshi-flow-trader-specialist | Implement strategies, debug state machine, fix trader issues |
-| **Real-time features, WebSocket** | fullstack-websocket-engineer | WebSocket functionality, performance optimization, test fixes |
-| **Deployment** | deployment-engineer | Railway.app deployments, production infrastructure |
-| **Implementation planning** | Plan agent | Design implementation approach for complex tasks |
-
-### Agent Collaboration Flow
-
-```
-Strategy Researcher ─────→ Quant Agent ←───── Agentic Trading Scientist
-        ↓                       ↓                        ↓
- (hypothesis briefs)    (validated strategies)    (calibration issues)
-        ↓                       ↓                        ↓
-        │                       │                  Prompt Engineer
-        │                       │              (prompt implementation)
-        │                       │                        ↓
-        └───────────────→ V3 Profit Optimizer ←──────────┘
-                                ↓
-                    Kalshi Flow Trader Specialist
-                                ↓
-                           V3 Trader
-```
+| Task | Agent | When to Use |
+|------|-------|-------------|
+| **Captain debugging** | `kalshi-flow-trader-specialist` | Debug trader issues, state machine, trading client |
+| **Prompt improvements** | `prompt-engineer` | Design/fix LLM prompts, schema validation |
+| **WebSocket/real-time** | `fullstack-websocket-engineer` | WebSocket features, performance, test fixes |
+| **Deployment** | `deployment-engineer` | Railway deployment, Supabase config |
 
 ### Quick Reference
 
-- **"Find me new strategy ideas"** → strategy-researcher
-- **"Validate this hypothesis with data"** → quant
-- **"Analyze AI research calibration"** → agentic-trading-scientist
-- **"Fix/improve a prompt"** → prompt-engineer
-- **"Maximize P&L / climb leaderboard"** → v3-profit-optimizer
-- **"Fix V3 trader state machine"** → kalshi-flow-trader-specialist
-- **"Implement WebSocket feature"** → fullstack-websocket-engineer
-- **"Deploy to production"** → deployment-engineer
+- "Debug why Captain isn't trading" → `kalshi-flow-trader-specialist`
+- "Fix Captain's prompt for better edge detection" → `prompt-engineer`
+- "WebSocket messages not reaching frontend" → `fullstack-websocket-engineer`
+- "Deploy to production" → `deployment-engineer`
 
-### Special Modes
+## Skills
 
-- **LSD Mode** (quant agent): Rapid lateral hypothesis exploration. User says "LSD mode" to enable, "normal mode" to return to rigorous validation.
+Available skills (invoke with `/skill-name`):
 
-### Important Constraints
+| Skill | Purpose |
+|-------|---------|
+| `/iterate-captain` | Step-by-step Captain debugging - runs 2 cycles, pauses, analyzes, fixes |
 
-- IMPORTANT: Only deploy to production when explicitly requested by the user. Never deploy autonomously.
+## Code Quality Standards
 
-## Multi-Session Coordination
+### Module Docstrings
 
-When multiple Claude Code sessions work on the same codebase, use the session tracking system to avoid conflicts and enable visibility.
+Every file MUST have a comprehensive docstring:
+- Purpose, Key Responsibilities, Architecture Position, Design Principles
 
-### Session Registration (REQUIRED)
+### Type Safety
 
-**At the start of every conversation**, register your session:
+- Use `TYPE_CHECKING` for forward references
+- Dataclasses for structured data
+- Enums for constants
+- Type hints on all functions
 
-```bash
-# Generate a session ID and create your session file
-SESSION_ID=$(uuidgen | cut -c1-8 | tr '[:upper:]' '[:lower:]')
-```
+### Async Patterns
 
-Then create `.claude-sessions/active/{SESSION_ID}.json`:
-```json
-{
-  "session_id": "{SESSION_ID}",
-  "started_at": "2025-12-30T10:15:00Z",
-  "last_updated": "2025-12-30T10:15:00Z",
-  "branch": "current-git-branch",
-  "status": "active",
-  "current_task": "Initial task description",
-  "files_touched": [],
-  "sub_agents": []
-}
-```
+- NEVER block event loop with sync operations
+- Use `asyncio.create_task()` for background work
+- Handle `asyncio.CancelledError` in long-running loops
+- Use timeouts for external calls
 
-### Updating Session Status
-
-Update your session file when:
-1. **Switching tasks** - Update `current_task` and `last_updated`
-2. **Touching files** - Add to `files_touched` array
-3. **Spawning sub-agents** - Add to `sub_agents` array
-
-### Sub-Agent Tracking
-
-When spawning a Task agent, add it to your session's `sub_agents`:
-```json
-{
-  "sub_agents": [
-    {
-      "type": "fullstack-websocket-engineer",
-      "task": "Implementing WebSocket reconnection",
-      "started_at": "2025-12-30T10:40:00Z",
-      "status": "running"
-    }
-  ]
-}
-```
-
-Update `status` to `"completed"` when the agent finishes.
-
-### Viewing Other Sessions
-
-Before making major changes, check what other sessions are doing:
-```bash
-./scripts/claude-sessions.sh list
-```
-
-Or read files directly in `.claude-sessions/active/`.
-
-### Session Lifecycle
-
-- **Active**: Session is working (update `last_updated` regularly)
-- **Idle**: Session is waiting for user input
-- **Stale**: Session file >4 hours old (auto-cleaned)
-
-Clean up stale sessions:
-```bash
-./scripts/claude-sessions.sh clean
-```
-
-## Strategy Research System
-
-### Strategy Researcher Agent
-Use this agent to discover novel trading strategy hypotheses from external sources:
-- **Academic**: SSRN, arXiv quant-finance, prediction market papers
-- **Sports Betting**: CLV, steam moves, sharp vs square patterns
-- **Crypto/DeFi**: DEX microstructure, MEV research, Polymarket analysis
-- **Market Microstructure**: Order flow toxicity, informed trading detection
-
-Output: Hypothesis briefs in `research/hypotheses/incoming/`
-
-### Quant Agent
-
-The quant agent discovers and validates trading strategies using the **Point-in-Time Backtesting Framework**.
-
-#### CRITICAL: Avoid Look-Ahead Bias
-
-**The #1 cause of strategy failure is look-ahead bias.** Our old backtest methodology used FINAL market statistics (all trades, final price) instead of point-in-time state. This caused:
-- RLM NO: +17% backtest → +5% reality (12pp look-ahead bias)
-- S-LATE: +20% backtest → 0% reality (complete failure)
-
-**ALWAYS use the point-in-time framework** at `research/backtest/`.
-
-#### Primary Tool: Point-in-Time Backtesting Framework
-
-```bash
-cd backend
-
-# Run backtest on a strategy
-uv run python ../research/backtest/run_backtest.py --strategy rlm
-uv run python ../research/backtest/run_backtest.py --strategy slate
-uv run python ../research/backtest/run_backtest.py --strategy all
-
-# Limit markets for quick testing
-uv run python ../research/backtest/run_backtest.py --strategy rlm --limit 5000
-
-# Save results to JSON
-uv run python ../research/backtest/run_backtest.py --strategy rlm --save
-```
-
-#### Creating New Strategies
-
-1. **Create strategy file** at `research/backtest/strategies/my_strategy.py`:
+### Logging
 
 ```python
-from dataclasses import dataclass, field
-from typing import Optional, Dict, Any
-import sys, os
-
-# Setup imports
-_PARENT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if _PARENT_DIR not in sys.path:
-    sys.path.insert(0, _PARENT_DIR)
-
-try:
-    from ..state import Trade, MarketState, SignalEntry
-except ImportError:
-    from state import Trade, MarketState, SignalEntry
-
-@dataclass
-class MyStrategy:
-    name: str = "my_strategy"
-
-    # Parameters
-    threshold: float = 0.70
-    min_trades: int = 25
-
-    # Internal state
-    _signaled_markets: Dict[str, bool] = field(default_factory=dict)
-
-    def on_trade(self, trade: Trade, state: MarketState) -> Optional[SignalEntry]:
-        """
-        Called AFTER state.update(trade). Return SignalEntry if signal fires.
-
-        CRITICAL: Only use information available at this moment!
-        - state.total_trades, state.yes_ratio, state.price_drop are OK
-        - Looking at future trades or final settlement is FORBIDDEN
-        """
-        # Already signaled this market?
-        if state.market_ticker in self._signaled_markets:
-            return None
-
-        # Check conditions
-        if state.total_trades < self.min_trades:
-            return None
-        if state.yes_ratio < self.threshold:
-            return None
-
-        # Signal fires!
-        self._signaled_markets[state.market_ticker] = True
-
-        return SignalEntry(
-            market_ticker=state.market_ticker,
-            signal_time=trade.timestamp,
-            entry_price_cents=100 - state.last_yes_price,  # NO price
-            side='no',
-            signal_strength=1.0,
-            metadata={'yes_ratio': state.yes_ratio}
-        )
-
-    def get_parameters(self) -> Dict[str, Any]:
-        return {'threshold': self.threshold, 'min_trades': self.min_trades}
-
-    def reset(self) -> None:
-        self._signaled_markets.clear()
+logger = logging.getLogger("kalshiflow_rl.traderv3.component_name")
 ```
 
-2. **Register in `__init__.py`**:
-```python
-from .my_strategy import MyStrategy
-__all__ = [..., 'MyStrategy']
-```
+## Testing Workflow
 
-3. **Add to `run_backtest.py`** or create custom runner.
+### Before Deployment (Mandatory)
 
-#### Validation Criteria
+1. Backend E2E test passes
+2. Frontend E2E test passes
+3. Health endpoints responding
 
-A strategy **passes validation** when:
-1. **Bucket-matched edge > 0%** - Edge after controlling for entry price distribution
-2. **Statistically significant** - p < 0.05
-3. **Low concentration** - No >30% of signals from single market
-4. **Positive edge across buckets** - Not just cheap/expensive contracts
+### Captain Iteration
 
-#### Available Signals (from `signals.py`)
+Use `/iterate-captain` skill for step-by-step debugging:
+1. Starts V3 trader
+2. Runs 2 Captain cycles
+3. Auto-pauses
+4. Analyzes logs for issues
+5. Fixes or escalates
+6. Resume/restart based on changes
 
-| Signal | Description | Usage |
-|--------|-------------|-------|
-| `yes_ratio(state)` | YES trades / total trades | `if yes_ratio(state) > 0.7` |
-| `price_drop(state)` | Open price - current (cents) | `if price_drop(state) > 5` |
-| `total_trades(state)` | Total trade count | `if total_trades(state) >= 25` |
-| `current_no_price(state)` | 100 - last YES price | Entry price for NO bets |
-| `trade_velocity(state, time)` | Trades per minute | Activity indicator |
+## Critical Constraints
 
-#### LSD Mode (Lateral Strategy Discovery)
+- **NEVER deploy without explicit user request**
+- **NEVER modify E2E tests to make them pass** - fix the code
+- **Paper trading only** - demo-api.kalshi.co
+- **Context management** - Use `/clear` between unrelated tasks
 
-When user says "LSD mode", enter rapid exploration:
-- **Speed over rigor**: Quick edge checks, skip full validation
-- **Lower threshold**: Flag anything with raw edge > 5%
-- **Absurdity encouraged**: Test weird hypotheses
-- **Point-in-time required**: Even in LSD mode, use the framework!
+## Railway Deployment
 
-User says "normal mode" to return to rigorous validation.
-
-#### Research → Production Path
-
-1. **Research strategy** validates in `research/backtest/strategies/`
-2. **Production plugin** implements at `backend/src/kalshiflow_rl/traderv3/strategies/plugins/`
-3. **Key differences**:
-   - Research: Pure signal logic, single `on_trade()` method
-   - Production: Adds orderbook filters, position management, rate limiting
-
-#### Self-Improvement Mandate
-
-The quant MUST continuously improve tooling:
-1. **Never write ad-hoc analysis scripts** - Use/extend the framework
-2. **Add new signals to `signals.py`** - Reusable building blocks
-3. **Track improvements** - Add ideas to `research/TOOLING_BACKLOG.md`
-
-See `research/LSD_MODE_INSTRUCTIONS.md` for additional details.
-
-## Managing RL Session Data
-
-### Checking Orderbook Sessions
-Use `@backend/src/kalshiflow_rl/scripts/fetch_session_data.py` to monitor and analyze session data:
+Services:
+- `kalshi-flowboard-backend` - Python backend + WebSocket
+- `kalshi-flowboard` - Static frontend
 
 ```bash
-# List all available sessions
-uv run python src/kalshiflow_rl/scripts/fetch_session_data.py --list
+# Check Railway status
+railway status
 
-# Load and analyze specific session
-uv run python src/kalshiflow_rl/scripts/fetch_session_data.py --analyze 9
+# View logs
+railway logs --service kalshi-flowboard-backend
 
-# Analyze the most recent session
-uv run python src/kalshiflow_rl/scripts/fetch_session_data.py --analyze
-
-# Create market-specific view
-uv run python src/kalshiflow_rl/scripts/fetch_session_data.py --view 9 --market TICKER
+# Manual deploy (prefer ./deploy.sh)
+railway up --service kalshi-flowboard-backend
 ```
 
-### Cleaning Up Empty/Test Sessions
-Use `@backend/src/kalshiflow_rl/scripts/cleanup_sessions.py` to identify and remove problematic sessions:
+## Useful Debugging
 
-```bash
-# Check database statistics
-uv run python src/kalshiflow_rl/scripts/cleanup_sessions.py --stats
+### Captain Not Trading?
 
-# Generate cleanup report (shows what can be deleted)
-uv run python src/kalshiflow_rl/scripts/cleanup_sessions.py --report
+1. Check health: `curl http://localhost:8005/v3/health`
+2. Check status: `curl http://localhost:8005/v3/status | jq '.captain'`
+3. Check logs: `grep "SINGLE_ARB" backend/logs/v3-trader.log`
+4. Use `/iterate-captain` for systematic debugging
 
-# List empty sessions (0 snapshots and 0 deltas)
-uv run python src/kalshiflow_rl/scripts/cleanup_sessions.py --list-empty
+### WebSocket Issues?
 
-# List test sessions (<5 min, ≤5 markets)
-uv run python src/kalshiflow_rl/scripts/cleanup_sessions.py --list-test
+1. Check browser console at http://localhost:5173/arb
+2. Check backend logs for WebSocket errors
+3. Use `fullstack-websocket-engineer` agent
 
-# Delete specific sessions (with confirmation)
-uv run python src/kalshiflow_rl/scripts/cleanup_sessions.py --delete 2,3,8,18-22
+### Deployment Issues?
 
-# Delete all empty sessions
-uv run python src/kalshiflow_rl/scripts/cleanup_sessions.py --delete-empty
-
-# Delete all test sessions
-uv run python src/kalshiflow_rl/scripts/cleanup_sessions.py --delete-test
-```
-
-### Session Data Quality Indicators
-- **Meaningful sessions**: Have snapshots (>0) and deltas (>0)
-- **Empty sessions**: 0 snapshots AND 0 deltas (safe to delete)
-- **Test sessions**: <5 minutes duration, ≤5 markets (usually safe to delete)
-- **Active stuck sessions**: Status='active' but no data for >24 hours (investigate before deleting)
-
-### Best Practices
-1. Run `--report` first to understand what will be deleted
-2. Check `--stats` after cleanup to verify database state
-3. Keep deletion logs for audit trail (automatically saved)
-4. Preserve sessions with any meaningful data (snapshots or deltas > 0)
-5. Document cleanup actions in `training/reports/` directory
-
-## Managing RL Trained Models
-
-### Current Model Configuration
-The active RL model is tracked in `@backend/src/kalshiflow_rl/BEST_MODEL/CURRENT_MODEL.json`:
-- **Current model**: `session32_final.zip` (21-action space with 5 contract sizes)
-- **Model location**: `@backend/src/kalshiflow_rl/BEST_MODEL/session32_final.zip`
-- **Action space**: 21 actions supporting position sizes of [5, 10, 20, 50, 100] contracts
-- **Status**: Production-ready with centralized organization
-- **Backup model**: `session9_ppo_20251211_221054` (historical reference)
-
-### Cleaning Up Trained Models
-Use `@backend/src/kalshiflow_rl/scripts/cleanup_trained_models.py` to manage the trained models directory:
-
-```bash
-# Preview what will be deleted (dry run mode - default)
-uv run python src/kalshiflow_rl/scripts/cleanup_trained_models.py
-
-# Actually delete old models (keeps only current + historical reference)
-uv run python src/kalshiflow_rl/scripts/cleanup_trained_models.py --execute
-
-# Quiet mode (minimal output)
-uv run python src/kalshiflow_rl/scripts/cleanup_trained_models.py --execute --quiet
-```
-
-### Model Cleanup Features
-- **Automatic detection**: Reads BEST_MODEL/CURRENT_MODEL.json to identify models to keep
-- **Space recovery**: Removes failed training runs and experiments (typically 400+ MB)
-- **Safety**: Always preserves current production model and historical reference
-- **Centralized organization**: Works with new BEST_MODEL directory structure
-- **Audit trail**: Saves deletion log to `src/kalshiflow_rl/logs/model_cleanup_YYYYMMDD_HHMMSS.json`
-- **Dry run default**: Won't delete anything unless `--execute` flag is used
-
-### When to Run Cleanup
-- After updating BEST_MODEL/CURRENT_MODEL.json to a new model
-- When trained_models directory exceeds 1GB
-- Before archiving or backing up the project
-- After extensive hyperparameter tuning sessions
+1. Run E2E tests first
+2. Check Railway logs: `railway logs`
+3. Use `deployment-engineer` agent

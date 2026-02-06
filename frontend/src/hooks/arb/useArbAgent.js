@@ -3,6 +3,25 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 const MAX_TOOL_CALLS = 30;
 const MAX_MEMORY_OPS = 20;
 const MAX_COMMANDO_OPS = 20;
+const STORAGE_KEY = 'arb_agent_state';
+
+/* ─── Session Storage Persistence ─── */
+const saveSnapshot = (state) => {
+  try {
+    sessionStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  } catch (e) {
+    /* ignore quota errors */
+  }
+};
+
+const loadSnapshot = () => {
+  try {
+    const saved = sessionStorage.getItem(STORAGE_KEY);
+    return saved ? JSON.parse(saved) : null;
+  } catch (e) {
+    return null;
+  }
+};
 
 /**
  * useArbAgent - Categorizes the raw agent message stream into structured buckets.
@@ -17,19 +36,31 @@ const MAX_COMMANDO_OPS = 20;
  *   todos           - Current TODO list [{text, status}]
  *   memoryOps       - Recent memory operations [{id, type, tool_name, ...}]
  *   commando        - { active, startedAt, ops: [{id, type, tool_name, ...}] }
+ *
+ * Persistence: State is persisted to sessionStorage and restored on mount.
  */
 export const useArbAgent = (agentMessages = []) => {
+  // Load snapshot once on mount
+  const snapshotRef = useRef(loadSnapshot());
+  const snapshot = snapshotRef.current;
+
   const [isRunning, setIsRunning] = useState(false);
   const [currentSubagent, setCurrentSubagent] = useState(null);
-  const [cycleCount, setCycleCount] = useState(0);
-  const [thinking, setThinking] = useState({ text: '', agent: null, streaming: false });
+  const [cycleCount, setCycleCount] = useState(snapshot?.cycleCount ?? 0);
+  const [thinking, setThinking] = useState(
+    snapshot?.thinking ?? { text: '', agent: null, streaming: false }
+  );
   const [activeToolCall, setActiveToolCall] = useState(null);
-  const [toolCalls, setToolCalls] = useState([]);
-  const [todos, setTodos] = useState([]);
-  const [memoryOps, setMemoryOps] = useState([]);
+  const [toolCalls, setToolCalls] = useState(snapshot?.toolCalls ?? []);
+  const [todos, setTodos] = useState(snapshot?.todos ?? []);
+  const [memoryOps, setMemoryOps] = useState(snapshot?.memoryOps ?? []);
   // Track multiple concurrent commando sessions: [{id, active, startedAt, prompt, ops: []}]
-  const [commandoSessions, setCommandoSessions] = useState([]);
-  const commandoIdCounter = useRef(0);
+  const [commandoSessions, setCommandoSessions] = useState(snapshot?.commandoSessions ?? []);
+  const commandoIdCounter = useRef(
+    snapshot?.commandoSessions?.length
+      ? Math.max(...snapshot.commandoSessions.map(s => s.id || 0))
+      : 0
+  );
 
   const lastProcessedIdRef = useRef(null);
   const processedCountRef = useRef(0);
@@ -214,6 +245,21 @@ export const useArbAgent = (agentMessages = []) => {
     lastProcessedIdRef.current = agentMessages[0].id;
     processedCountRef.current = agentMessages.length;
   }, [agentMessages, processMessage]);
+
+  // Persist state to sessionStorage (debounced)
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      saveSnapshot({
+        cycleCount,
+        thinking: { ...thinking, streaming: false }, // Always save as non-streaming
+        toolCalls,
+        todos,
+        memoryOps,
+        commandoSessions,
+      });
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [cycleCount, thinking, toolCalls, todos, memoryOps, commandoSessions]);
 
   return {
     isRunning,

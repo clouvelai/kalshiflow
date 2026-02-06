@@ -19,6 +19,7 @@ const SingleArbDetailsView = memo(({ event, eventTrades = [] }) => {
     category,
     series_ticker,
     mutually_exclusive,
+    event_type,
     market_count,
     markets_with_data,
     all_markets_have_data,
@@ -30,6 +31,9 @@ const SingleArbDetailsView = memo(({ event, eventTrades = [] }) => {
     signals,
     markets: rawMarkets,
   } = event;
+
+  // Independent events don't have meaningful spread arb edges
+  const isIndependent = event_type === 'independent' || !mutually_exclusive;
 
   // Defensive default: ensure markets is always an object
   const markets = rawMarkets || {};
@@ -62,9 +66,13 @@ const SingleArbDetailsView = memo(({ event, eventTrades = [] }) => {
               {category}
             </span>
           )}
-          {mutually_exclusive && (
+          {mutually_exclusive ? (
             <span className="text-[10px] font-mono bg-emerald-900/30 text-emerald-400/80 rounded-full px-2 py-0.5">
               mut. excl.
+            </span>
+          ) : (
+            <span className="text-[10px] font-mono bg-amber-900/30 text-amber-400/80 rounded-full px-2 py-0.5">
+              independent
             </span>
           )}
         </div>
@@ -103,20 +111,30 @@ const SingleArbDetailsView = memo(({ event, eventTrades = [] }) => {
                 </span>
               </div>
             )}
-            <div className="flex justify-between items-center pt-1 border-t border-gray-700/20">
-              <span className="text-gray-500">Long Edge (after fees)</span>
-              {long_edge != null
-                ? <EdgeBadge edgeCents={long_edge} direction="long" />
-                : <span className="font-mono text-gray-600">--</span>
-              }
-            </div>
-            <div className="flex justify-between items-center">
-              <span className="text-gray-500">Short Edge (after fees)</span>
-              {short_edge != null
-                ? <EdgeBadge edgeCents={short_edge} direction="short" />
-                : <span className="font-mono text-gray-600">--</span>
-              }
-            </div>
+            {isIndependent ? (
+              <div className="pt-1 border-t border-gray-700/20">
+                <div className="flex items-center gap-2 text-amber-500/70">
+                  <span className="text-[10px]">No spread arb - independent outcomes</span>
+                </div>
+              </div>
+            ) : (
+              <>
+                <div className="flex justify-between items-center pt-1 border-t border-gray-700/20">
+                  <span className="text-gray-500">Long Edge (after fees)</span>
+                  {long_edge != null
+                    ? <EdgeBadge edgeCents={long_edge} direction="long" />
+                    : <span className="font-mono text-gray-600">--</span>
+                  }
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-gray-500">Short Edge (after fees)</span>
+                  {short_edge != null
+                    ? <EdgeBadge edgeCents={short_edge} direction="short" />
+                    : <span className="font-mono text-gray-600">--</span>
+                  }
+                </div>
+              </>
+            )}
             <div className="flex justify-between items-center pt-1 border-t border-gray-700/20">
               <span className="text-gray-500">Data Coverage</span>
               <span className="font-mono">

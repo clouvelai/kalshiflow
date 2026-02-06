@@ -7,5 +7,6 @@ ALTER TABLE agent_memories ADD CONSTRAINT agent_memories_memory_type_check
   CHECK (memory_type IN (
     'learning', 'mistake', 'pattern', 'journal',
     'market_knowledge', 'consolidation',
-    'signal', 'research', 'thesis'
+    'signal', 'research', 'thesis',
+    'trade', 'strategy', 'observation', 'trade_result'
   ));

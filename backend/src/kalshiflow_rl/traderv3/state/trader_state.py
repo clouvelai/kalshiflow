@@ -205,4 +205,8 @@ class SessionPnLState:
             "invested_amount": current_portfolio_value,  # Amount currently in positions
             "realized_pnl": total_realized,
             "unrealized_pnl": total_unrealized,
+            # Frontend expects _cents suffix - add aliases
+            "realized_pnl_cents": total_realized,
+            "unrealized_pnl_cents": total_unrealized,
+            "total_pnl_cents": session_pnl,
         }

@@ -1,11 +1,12 @@
-import React, { memo, useRef, useEffect, useState } from 'react';
+import React, { memo, useRef, useEffect, useState, useMemo } from 'react';
 import {
   Brain, Wrench, CheckCircle, RefreshCw,
   ArrowUpCircle, ChevronDown, ChevronRight, Eye,
   Search, Database, Globe, ShoppingCart, ListTodo,
   ArrowUpRight, ArrowDownLeft, FileText, Wallet,
-  Crosshair, Clock, AlertTriangle,
+  Crosshair, Clock, AlertTriangle, Copy, Check,
 } from 'lucide-react';
+import renderThinkingMarkdown from '../../../utils/renderThinkingMarkdown';
 
 const fmtTime = (ts) => {
   if (!ts) return '';
@@ -36,6 +37,95 @@ const TOOL_ICONS = {
 
 const getToolIcon = (toolName) => TOOL_ICONS[toolName] || Wrench;
 
+/* ─── Tool Category Detection ─── */
+const getToolCategory = (toolName) => {
+  if (['execute_arb', 'place_order', 'cancel_order', 'get_resting_orders'].includes(toolName)) return 'arb';
+  if (['memory_store', 'memory_search', 'edit_file', 'write_file', 'read_file'].includes(toolName)) return 'memory';
+  if (['get_positions', 'get_balance', 'get_trade_history'].includes(toolName)) return 'portfolio';
+  if (['get_event_snapshot', 'get_events_summary', 'get_all_events'].includes(toolName)) return 'surveillance';
+  if (['get_market_orderbook', 'get_recent_trades'].includes(toolName)) return 'market';
+  return 'other';
+};
+
+const CATEGORY_STYLES = {
+  arb: { bg: 'bg-cyan-900/30', text: 'text-cyan-400', dot: 'bg-cyan-500', label: 'ARB' },
+  memory: { bg: 'bg-violet-900/30', text: 'text-violet-400', dot: 'bg-violet-500', label: 'MEM' },
+  portfolio: { bg: 'bg-emerald-900/30', text: 'text-emerald-400', dot: 'bg-emerald-500', label: 'PORT' },
+  surveillance: { bg: 'bg-orange-900/30', text: 'text-orange-400', dot: 'bg-orange-500', label: 'SURV' },
+  market: { bg: 'bg-blue-900/30', text: 'text-blue-400', dot: 'bg-blue-500', label: 'MKT' },
+  other: { bg: 'bg-gray-800', text: 'text-gray-400', dot: 'bg-gray-500', label: 'TOOL' },
+};
+
+const CategoryBadge = ({ category }) => {
+  const style = CATEGORY_STYLES[category] || CATEGORY_STYLES.other;
+  return (
+    <span className={`ml-2 px-1.5 py-0.5 rounded text-[8px] font-bold uppercase ${style.bg} ${style.text}`}>
+      {style.label}
+    </span>
+  );
+};
+
+/* ─── JSON Syntax Highlighting ─── */
+const highlightJson = (str) => {
+  if (!str) return str;
+  // Simple JSON highlighting without dependencies
+  return str.replace(
+    /("(?:[^"\\]|\\.)*")\s*:/g,
+    '<span class="text-violet-400">$1</span>:'
+  ).replace(
+    /:\s*("(?:[^"\\]|\\.)*")/g,
+    ': <span class="text-emerald-400">$1</span>'
+  ).replace(
+    /:\s*(true|false|null)/g,
+    ': <span class="text-amber-400">$1</span>'
+  ).replace(
+    /:\s*(-?\d+\.?\d*)/g,
+    ': <span class="text-cyan-400">$1</span>'
+  );
+};
+
+const JsonBlock = ({ label, content }) => {
+  const [copied, setCopied] = useState(false);
+
+  const formatted = useMemo(() => {
+    try {
+      const obj = typeof content === 'string' ? JSON.parse(content) : content;
+      return JSON.stringify(obj, null, 2);
+    } catch {
+      return typeof content === 'string' ? content : JSON.stringify(content);
+    }
+  }, [content]);
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(formatted);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-1">
+        <div className="text-[9px] text-gray-500 uppercase tracking-wider">{label}</div>
+        <button
+          onClick={handleCopy}
+          className="p-1 hover:bg-gray-700/50 rounded transition-colors"
+          title="Copy to clipboard"
+        >
+          {copied ? (
+            <Check className="w-3 h-3 text-emerald-400" />
+          ) : (
+            <Copy className="w-3 h-3 text-gray-500 hover:text-gray-300" />
+          )}
+        </button>
+      </div>
+      <pre
+        className="text-[11px] font-mono bg-gray-900/60 rounded p-2 overflow-x-auto max-h-[200px] overflow-y-auto text-gray-300"
+        dangerouslySetInnerHTML={{ __html: highlightJson(formatted) }}
+      />
+    </div>
+  );
+};
+
 /* ─── ThinkingStream ─── */
 const ThinkingStream = memo(({ thinking, activeToolCall, isRunning }) => {
   const scrollRef = useRef(null);
@@ -56,12 +146,20 @@ const ThinkingStream = memo(({ thinking, activeToolCall, isRunning }) => {
         className="h-full overflow-y-auto rounded-lg bg-gray-900/60 border border-violet-800/20 p-4"
       >
         {thinking.text ? (
-          <div className="space-y-0">
-            <pre className="whitespace-pre-wrap font-mono text-[12px] text-gray-300 leading-relaxed">{thinking.text}</pre>
-            {thinking.streaming && (
+          thinking.streaming ? (
+            // Streaming mode: raw text with cursor for performance
+            <div className="space-y-0">
+              <pre className="whitespace-pre-wrap font-mono text-[12px] text-gray-300 leading-relaxed">
+                {thinking.text}
+              </pre>
               <span className="inline-block w-2 h-4 bg-violet-400 animate-pulse ml-0.5 align-text-bottom" />
-            )}
-          </div>
+            </div>
+          ) : (
+            // Complete mode: rich markdown rendering
+            <div className="prose-agent space-y-1">
+              {renderThinkingMarkdown(thinking.text)}
+            </div>
+          )
         ) : activeToolCall ? (
           <div className="flex items-center gap-3 text-cyan-400">
             <RefreshCw className="w-4 h-4 animate-spin" />
@@ -143,32 +241,88 @@ const TodoListSection = memo(({ todos }) => {
 });
 TodoListSection.displayName = 'TodoListSection';
 
-/* ─── ToolCallRow ─── */
-const ToolCallRow = memo(({ call }) => {
+/* ─── ToolCallCard (Expandable) ─── */
+const ToolCallCard = memo(({ call }) => {
+  const [expanded, setExpanded] = useState(false);
   const Icon = getToolIcon(call.tool_name);
+  const category = getToolCategory(call.tool_name);
+  const categoryStyle = CATEGORY_STYLES[category];
+
   return (
-    <div className="flex items-center gap-2 py-1.5 border-b border-gray-800/50 last:border-0">
-      <Icon className="w-3.5 h-3.5 text-cyan-500 shrink-0" />
-      <span className="text-[11px] font-mono text-gray-300 shrink-0">
-        {call.tool_name}
-      </span>
-      {call.tool_input && (
-        <span className="text-[10px] text-gray-600 truncate flex-1 font-mono">
-          {call.tool_input}
+    <div className="border border-gray-800/40 rounded-lg overflow-hidden bg-gray-900/20 hover:bg-gray-900/40 transition-colors">
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="w-full flex items-center gap-2 p-2 text-left"
+      >
+        <Icon className={`w-3.5 h-3.5 ${categoryStyle.text} shrink-0`} />
+        <span className="text-[11px] font-mono text-gray-300 shrink-0">
+          {call.tool_name}
         </span>
+        <CategoryBadge category={category} />
+        <span className="text-[9px] text-gray-600 ml-auto mr-2 font-mono">
+          {fmtTime(call.timestamp)}
+        </span>
+        <ChevronDown className={`w-3 h-3 text-gray-500 transition-transform ${expanded ? 'rotate-180' : ''}`} />
+      </button>
+
+      {expanded && (
+        <div className="border-t border-gray-800/40 p-3 space-y-3 bg-gray-950/50">
+          {call.tool_input && (
+            <JsonBlock label="Input" content={call.tool_input} />
+          )}
+          {call.tool_output && (
+            <JsonBlock label="Output" content={call.tool_output} />
+          )}
+          {!call.tool_input && !call.tool_output && (
+            <div className="text-[10px] text-gray-600 italic">No data available</div>
+          )}
+        </div>
       )}
-      <span className="text-[9px] text-gray-700 font-mono shrink-0 ml-auto">
-        {fmtTime(call.timestamp)}
-      </span>
     </div>
   );
 });
-ToolCallRow.displayName = 'ToolCallRow';
+ToolCallCard.displayName = 'ToolCallCard';
+
+/* ─── ToolTimeline ─── */
+const ToolTimeline = memo(({ toolCalls }) => {
+  const [showAll, setShowAll] = useState(false);
+  const visible = showAll ? toolCalls : toolCalls.slice(0, 8);
+
+  return (
+    <div className="relative pl-4">
+      {/* Gradient timeline line */}
+      <div className="absolute left-1.5 top-0 bottom-0 w-px bg-gradient-to-b from-cyan-500/50 via-violet-500/30 to-gray-800/20" />
+
+      <div className="space-y-2">
+        {visible.map((call) => {
+          const category = getToolCategory(call.tool_name);
+          const categoryStyle = CATEGORY_STYLES[category];
+          return (
+            <div key={call.id} className="relative">
+              {/* Timeline dot */}
+              <div className={`absolute -left-[11px] top-3 w-2 h-2 rounded-full ${categoryStyle.dot} ring-2 ring-gray-900`} />
+              <ToolCallCard call={call} />
+            </div>
+          );
+        })}
+      </div>
+
+      {toolCalls.length > 8 && !showAll && (
+        <button
+          onClick={() => setShowAll(true)}
+          className="mt-2 ml-2 text-[10px] text-gray-500 hover:text-gray-300 transition-colors"
+        >
+          Show {toolCalls.length - 8} more...
+        </button>
+      )}
+    </div>
+  );
+});
+ToolTimeline.displayName = 'ToolTimeline';
 
 /* ─── ToolCallsSection ─── */
 const ToolCallsSection = memo(({ toolCalls }) => {
   const [expanded, setExpanded] = useState(true);
-  const visible = toolCalls.slice(0, 10);
 
   if (toolCalls.length === 0) return null;
 
@@ -192,15 +346,8 @@ const ToolCallsSection = memo(({ toolCalls }) => {
         </span>
       </button>
       {expanded && (
-        <div className="px-3 pb-2 max-h-[200px] overflow-y-auto">
-          {visible.map(call => (
-            <ToolCallRow key={call.id} call={call} />
-          ))}
-          {toolCalls.length > 10 && (
-            <div className="text-[10px] text-gray-600 text-center py-1">
-              +{toolCalls.length - 10} more
-            </div>
-          )}
+        <div className="px-3 pb-3 max-h-[350px] overflow-y-auto">
+          <ToolTimeline toolCalls={toolCalls} />
         </div>
       )}
     </div>
@@ -450,10 +597,11 @@ const AgentChatPanel = ({
         border border-violet-800/30
         shadow-xl shadow-black/20
         p-5 flex flex-col gap-4
+        max-h-[600px]
       "
     >
-      {/* Header */}
-      <div className="flex items-center justify-between">
+      {/* Header - stays fixed at top */}
+      <div className="flex items-center justify-between shrink-0">
         <div className="flex items-center space-x-3">
           <div className="p-2 rounded-lg bg-gradient-to-br from-violet-900/40 to-violet-950/40 border border-violet-700/30">
             <Brain className={`w-4 h-4 ${isRunning ? 'text-violet-400 animate-pulse' : 'text-violet-500'}`} />
@@ -497,36 +645,39 @@ const AgentChatPanel = ({
         </div>
       </div>
 
-      {/* Split-view: Thinking (left) | TODOs + Tools + Memory (right) */}
-      <div id="agent-split-view" data-testid="agent-split-view" className="grid grid-cols-5 gap-4" style={{ minHeight: '300px', maxHeight: '450px' }}>
-        {/* Left: Thinking Stream (3 cols) */}
-        <div id="thinking-container" data-testid="thinking-container" className="col-span-3 flex flex-col min-h-0">
-          <ThinkingStream
-            thinking={thinking}
-            activeToolCall={activeToolCall}
-            isRunning={isRunning}
-          />
+      {/* Scrollable content area */}
+      <div className="flex-1 min-h-0 overflow-y-auto flex flex-col gap-4">
+        {/* Split-view: Thinking (left) | TODOs + Tools + Memory (right) */}
+        <div id="agent-split-view" data-testid="agent-split-view" className="grid grid-cols-5 gap-4" style={{ minHeight: '300px', maxHeight: '450px' }}>
+          {/* Left: Thinking Stream (3 cols) */}
+          <div id="thinking-container" data-testid="thinking-container" className="col-span-3 flex flex-col min-h-0">
+            <ThinkingStream
+              thinking={thinking}
+              activeToolCall={activeToolCall}
+              isRunning={isRunning}
+            />
+          </div>
+
+          {/* Right: TODOs + Tools + Memory (2 cols) */}
+          <div id="agent-sidebar" data-testid="agent-sidebar" className="col-span-2 flex flex-col gap-3 overflow-y-auto min-h-0">
+            <TodoListSection todos={todos} />
+            <ToolCallsSection toolCalls={toolCalls} />
+            <MemorySection memoryOps={memoryOps} />
+            {/* If no right-panel content yet, show placeholder */}
+            {todos.length === 0 && toolCalls.length === 0 && memoryOps.length === 0 && (
+              <div className="flex-1 flex items-center justify-center text-gray-700 text-[11px]">
+                Waiting for agent activity...
+              </div>
+            )}
+          </div>
         </div>
 
-        {/* Right: TODOs + Tools + Memory (2 cols) */}
-        <div id="agent-sidebar" data-testid="agent-sidebar" className="col-span-2 flex flex-col gap-3 overflow-y-auto min-h-0">
-          <TodoListSection todos={todos} />
-          <ToolCallsSection toolCalls={toolCalls} />
-          <MemorySection memoryOps={memoryOps} />
-          {/* If no right-panel content yet, show placeholder */}
-          {todos.length === 0 && toolCalls.length === 0 && memoryOps.length === 0 && (
-            <div className="flex-1 flex items-center justify-center text-gray-700 text-[11px]">
-              Waiting for agent activity...
-            </div>
-          )}
-        </div>
+        {/* Commando Sessions */}
+        <CommandoSection sessions={commandoSessions} />
+
+        {/* Trades */}
+        <TradesSection trades={arbTrades} />
       </div>
-
-      {/* Commando Sessions */}
-      <CommandoSection sessions={commandoSessions} />
-
-      {/* Trades */}
-      <TradesSection trades={arbTrades} />
     </div>
   );
 };

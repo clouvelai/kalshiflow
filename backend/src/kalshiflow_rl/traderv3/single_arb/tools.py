@@ -20,6 +20,8 @@ _memory_store = None    # DualMemoryStore (file + vector)
 _config = None          # V3Config
 _order_group_id = None  # Session order group ID
 _order_ttl = 60         # Default TTL in seconds (1 min for demo)
+_broadcast_callback = None  # Async callback to broadcast events to frontend
+_captain_order_ids = set()  # Track order IDs placed by Captain this session
 
 
 def set_dependencies(
@@ -29,9 +31,15 @@ def set_dependencies(
     config=None,
     order_group_id=None,
     order_ttl=None,
+    broadcast_callback=None,
+    reset_session=False,
 ) -> None:
-    """Set shared dependencies for all tools."""
-    global _index, _trading_client, _memory_store, _config, _order_group_id, _order_ttl
+    """Set shared dependencies for all tools.
+
+    Args:
+        reset_session: If True, clears captain_order_ids (call on new session start)
+    """
+    global _index, _trading_client, _memory_store, _config, _order_group_id, _order_ttl, _broadcast_callback, _captain_order_ids
     if index is not None:
         _index = index
     if trading_client is not None:
@@ -42,8 +50,14 @@ def set_dependencies(
         _config = config
     if order_group_id is not None:
         _order_group_id = order_group_id
+        # New order group = new session, clear tracked orders
+        _captain_order_ids.clear()
     if order_ttl is not None:
         _order_ttl = order_ttl
+    if broadcast_callback is not None:
+        _broadcast_callback = broadcast_callback
+    if reset_session:
+        _captain_order_ids.clear()
 
 
 # --- Helper functions ---
@@ -150,18 +164,21 @@ def _guess_entity_type(trades: List[Dict]) -> str:
 # --- Tools ---
 
 @tool
-async def get_event_snapshot(event_ticker: str) -> Dict[str, Any]:
-    """Get current arb state for a specific event.
+async def get_event_snapshot(event_ticker: str, _ts: Optional[str] = None) -> Dict[str, Any]:
+    """Get current arb state for a specific event. ALWAYS returns real-time data.
 
     Returns all markets with full orderbook depth, probability sums,
     edge calculations, signal operators, and recent trade activity.
 
     Args:
         event_ticker: The Kalshi event ticker (e.g., "KXFEDCHAIRNOM")
+        _ts: Cache-buster. Pass current timestamp to ensure fresh data.
 
     Returns:
         Dict with markets (incl. depth, trades, volume), prob sums, edges, and signals
     """
+    # _ts parameter exists to bust cache - unique input = cache miss
+    _ = _ts
     if not _index:
         return {"error": "EventArbIndex not available"}
 
@@ -325,6 +342,10 @@ async def place_order(
         order_id = order.get("order_id", "")
         status = order.get("status", "placed")
 
+        # Track this order as a Captain order
+        if order_id:
+            _captain_order_ids.add(order_id)
+
         # Auto-record to memory
         if _memory_store:
             try:
@@ -343,6 +364,29 @@ async def place_order(
                 )
             except Exception as e:
                 logger.debug(f"Memory record failed: {e}")
+
+        # Emit arb_trade_executed event to frontend
+        if _broadcast_callback:
+            try:
+                event_ticker = _index.get_event_for_ticker(ticker) if _index else None
+                await _broadcast_callback({
+                    "type": "arb_trade_executed",
+                    "data": {
+                        "order_id": order_id,
+                        "event_ticker": event_ticker,
+                        "market_ticker": ticker,
+                        "direction": None,  # Single-leg trade, no direction
+                        "side": side,
+                        "action": action,
+                        "contracts": contracts,
+                        "price_cents": price_cents,
+                        "status": status,
+                        "reasoning": reasoning,
+                        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                    },
+                })
+            except Exception as e:
+                logger.debug(f"Failed to emit arb_trade_executed: {e}")
 
         return {
             "order_id": order_id,
@@ -459,16 +503,20 @@ async def get_resting_orders(ticker: Optional[str] = None) -> Dict[str, Any]:
         resp = await _trading_client.get_orders(ticker=ticker, status="resting")
         raw_orders = resp.get("orders", [])
 
-        # Get queue positions (best-effort)
+        # Get queue positions (best-effort) - only if we have orders to check
         queue_map = {}
-        try:
-            qp_resp = await _trading_client.get_queue_positions(
-                market_tickers=ticker if ticker else None,
-            )
-            for qp in qp_resp.get("queue_positions", []):
-                queue_map[qp.get("order_id")] = qp.get("queue_position", None)
-        except Exception:
-            pass
+        if raw_orders:
+            try:
+                # Use first order's ticker if no specific ticker provided
+                market_ticker = ticker or raw_orders[0].get("ticker")
+                if market_ticker:
+                    qp_resp = await _trading_client.get_queue_positions(
+                        market_tickers=market_ticker,
+                    )
+                    for qp in qp_resp.get("queue_positions", []):
+                        queue_map[qp.get("order_id")] = qp.get("queue_position", None)
+            except Exception:
+                pass
 
         orders = [
             {
@@ -542,14 +590,14 @@ async def cancel_order(order_id: str, reason: str = "") -> Dict[str, Any]:
 async def get_recent_trades(event_ticker: str) -> Dict[str, Any]:
     """Get recent public trades across all markets in an event.
 
-    Returns the last trades from the trade WS channel for each market,
-    merged and sorted by timestamp (newest first).
+    Returns the last trades merged and sorted by timestamp (newest first).
+    Titles omitted for token efficiency - use get_event_snapshot for market details.
 
     Args:
         event_ticker: The Kalshi event ticker
 
     Returns:
-        Dict with trades list, per-market trade counts, and most active market
+        Dict with trades list and most active market ticker
     """
     if not _index:
         return {"error": "EventArbIndex not available"}
@@ -559,16 +607,17 @@ async def get_recent_trades(event_ticker: str) -> Dict[str, Any]:
         return {"error": f"Event {event_ticker} not found"}
 
     all_trades = []
-    market_stats = {}
+    total_count = 0
     for m in event.markets.values():
-        market_stats[m.ticker] = {
-            "title": m.title,
-            "trade_count": m.trade_count,
-            "last_trade_price": m.last_trade_price,
-            "last_trade_side": m.last_trade_side,
-        }
-        for t in m.recent_trades[:10]:
-            all_trades.append({**t, "market_ticker": m.ticker, "title": m.title})
+        total_count += m.trade_count
+        for t in m.recent_trades[:5]:  # 5 per market max
+            all_trades.append({
+                "ticker": m.ticker,
+                "price": t.get("yes_price"),
+                "count": t.get("count", 1),
+                "side": t.get("taker_side"),
+                "ts": t.get("ts"),
+            })
 
     # Sort by timestamp descending
     all_trades.sort(key=lambda t: t.get("ts", 0), reverse=True)
@@ -576,9 +625,8 @@ async def get_recent_trades(event_ticker: str) -> Dict[str, Any]:
     most_active = event.most_active_market()
     return {
         "event_ticker": event_ticker,
-        "trades": all_trades[:30],
-        "trade_count_total": sum(s["trade_count"] for s in market_stats.values()),
-        "market_stats": market_stats,
+        "trades": all_trades[:15],  # Reduced from 30
+        "trade_count_total": total_count,
         "most_active_ticker": most_active.ticker if most_active else None,
     }
 
@@ -717,6 +765,10 @@ async def execute_arb(
             order = order_resp.get("order", order_resp)
             order_id = order.get("order_id", "")
 
+            # Track this order as a Captain order
+            if order_id:
+                _captain_order_ids.add(order_id)
+
             legs_executed.append({
                 **leg,
                 "order_id": order_id,
@@ -771,6 +823,29 @@ async def execute_arb(
         f"cost={exec_cost}c"
     )
 
+    # Emit arb_trade_executed event to frontend for each executed leg
+    if _broadcast_callback and legs_executed:
+        try:
+            import asyncio
+            for leg in legs_executed:
+                await _broadcast_callback({
+                    "type": "arb_trade_executed",
+                    "data": {
+                        "order_id": leg.get("order_id"),
+                        "event_ticker": event_ticker,
+                        "market_ticker": leg.get("ticker"),
+                        "direction": direction,
+                        "side": leg.get("side"),
+                        "contracts": leg.get("contracts"),
+                        "price_cents": leg.get("price_cents"),
+                        "status": leg.get("status"),
+                        "reasoning": reasoning,
+                        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                    },
+                })
+        except Exception as e:
+            logger.debug(f"Failed to emit arb_trade_executed: {e}")
+
     return result
 
 
@@ -809,30 +884,173 @@ async def memory_store(
 
 @tool
 async def get_positions() -> Dict[str, Any]:
-    """Get current positions on Kalshi, filtered to arb-tracked markets.
+    """Get current positions with unrealized P&L and source attribution.
 
-    Returns only positions whose ticker is in the current EventArbIndex.
-    Also reports total position count so the agent knows about legacy positions.
+    Distinguishes between:
+    - "captain" positions: Created this session (via current order group)
+    - "legacy" positions: Inherited from before this session
+
+    For each position returns:
+    - ticker, side, quantity
+    - total_cost (cents): What you paid
+    - current_value (cents): What it's worth now (using live orderbook)
+    - unrealized_pnl (cents): current_value - total_cost
+    - exit_price (cents): Price you'd get selling now (bid for YES, 100-ask for NO)
+    - source: "captain" or "legacy"
+
+    Use this to decide exits: positive unrealized_pnl = take profit candidate.
     """
     if not _trading_client:
         return {"error": "Trading client not available"}
 
     try:
+        # Get all positions from Kalshi
         resp = await _trading_client.get_positions()
         positions = resp.get("market_positions", resp.get("positions", []))
-        total = len(positions)
+        total_count = len(positions)
 
-        # Filter to arb-tracked market tickers
+        # Get fills from this session to identify captain positions
+        # Strategy: Try order_group_id filter first, fall back to _captain_order_ids
+        captain_tickers = set()
+        captain_costs = {}  # ticker -> total cost from fills
+        captain_quantities = {}  # ticker -> net quantity from fills
+
+        fills = []
+        try:
+            if _order_group_id:
+                fills_resp = await _trading_client.get_fills(order_group_id=_order_group_id)
+                fills = fills_resp.get("fills", [])
+
+            # Fallback: if no fills from order_group, try filtering by tracked order_ids
+            if not fills and _captain_order_ids:
+                fills_resp = await _trading_client.get_fills(limit=500)
+                all_fills = fills_resp.get("fills", [])
+                fills = [f for f in all_fills if f.get("order_id") in _captain_order_ids]
+
+        except Exception as e:
+            logger.debug(f"Could not get fills: {e}")
+
+        # Process fills to compute captain positions
+        for fill in fills:
+            ticker = fill.get("ticker")
+            if not ticker:
+                continue
+            captain_tickers.add(ticker)
+
+            # Aggregate cost and quantity
+            count = fill.get("count", 0)
+            side = fill.get("side", "yes")
+            action = fill.get("action", "buy")
+
+            # Get price (yes_price or no_price depending on side)
+            if side == "yes":
+                price = fill.get("yes_price", 0)
+            else:
+                price = fill.get("no_price", 0)
+
+            cost = count * price
+
+            # Track costs
+            if ticker not in captain_costs:
+                captain_costs[ticker] = 0
+                captain_quantities[ticker] = 0
+
+            if action == "buy":
+                captain_costs[ticker] += cost
+                if side == "yes":
+                    captain_quantities[ticker] += count
+                else:
+                    captain_quantities[ticker] -= count  # NO = negative
+            else:  # sell
+                captain_costs[ticker] -= cost  # Reduce cost basis on sells
+                if side == "yes":
+                    captain_quantities[ticker] -= count
+                else:
+                    captain_quantities[ticker] += count
+
+        # Filter to arb-tracked markets
         tracked = set(_index.market_tickers) if _index else set()
-        arb_positions = [
-            p for p in positions
-            if p.get("ticker") in tracked
-        ]
+
+        # Build enriched position list
+        enriched_positions = []
+        captain_positions = []
+        legacy_positions = []
+
+        for pos in positions:
+            ticker = pos.get("ticker")
+            if ticker not in tracked:
+                continue
+
+            position_count = pos.get("position", 0)
+            market_exposure = pos.get("market_exposure", 0)
+            qty = abs(position_count)
+            side = "yes" if position_count > 0 else "no"
+
+            # Determine source
+            source = "captain" if ticker in captain_tickers else "legacy"
+
+            # Get cost basis
+            if source == "captain" and ticker in captain_costs:
+                total_cost = captain_costs[ticker]
+            else:
+                total_cost = market_exposure  # Fallback for legacy
+
+            # Get live orderbook prices for current value and exit price
+            current_value = market_exposure  # Fallback
+            exit_price = None
+            unrealized_pnl = 0
+
+            if _index:
+                event_ticker = _index.get_event_for_ticker(ticker)
+                if event_ticker:
+                    event = _index.events.get(event_ticker)
+                    if event:
+                        market = event.markets.get(ticker)
+                        if market and qty > 0:
+                            if side == "yes":
+                                # YES position: exit at yes_bid
+                                exit_price = market.yes_bid
+                                if exit_price:
+                                    current_value = exit_price * qty
+                            else:
+                                # NO position: exit at 100 - yes_ask
+                                if market.yes_ask:
+                                    exit_price = 100 - market.yes_ask
+                                    current_value = exit_price * qty
+
+                            if total_cost > 0:
+                                unrealized_pnl = current_value - total_cost
+
+            position_data = {
+                "ticker": ticker,
+                "side": side,
+                "quantity": qty,
+                "total_cost": total_cost,
+                "current_value": current_value,
+                "unrealized_pnl": unrealized_pnl,
+                "exit_price": exit_price,
+                "source": source,
+            }
+
+            enriched_positions.append(position_data)
+            if source == "captain":
+                captain_positions.append(position_data)
+            else:
+                legacy_positions.append(position_data)
+
+        # Sort by unrealized P&L (best exits first)
+        captain_positions.sort(key=lambda p: p["unrealized_pnl"], reverse=True)
+        legacy_positions.sort(key=lambda p: p["unrealized_pnl"], reverse=True)
 
         return {
-            "arb_positions": arb_positions,
-            "arb_position_count": len(arb_positions),
-            "total_positions": total,
+            "captain_positions": captain_positions,
+            "captain_count": len(captain_positions),
+            "captain_unrealized_pnl": sum(p["unrealized_pnl"] for p in captain_positions),
+            "legacy_positions": legacy_positions,
+            "legacy_count": len(legacy_positions),
+            "legacy_unrealized_pnl": sum(p["unrealized_pnl"] for p in legacy_positions),
+            "total_tracked": len(enriched_positions),
+            "total_all_positions": total_count,
         }
     except Exception as e:
         return {"error": str(e)}

@@ -758,9 +758,13 @@ class OrderbookClient:
             # Emit via event bus for single-arb monitor
             if self._v3_event_bus:
                 from ..traderv3.core.events.types import EventType
-                await self._v3_event_bus.emit(
-                    EventType.TICKER_UPDATE,
+                from ..traderv3.core.events.market_events import MarketEvent
+                event = MarketEvent(
+                    event_type=EventType.TICKER_UPDATE,
                     market_ticker=market_ticker,
+                    sequence_number=0,
+                    timestamp_ms=msg_data.get("ts", int(time.time() * 1000)),
+                    received_at=time.time(),
                     metadata={
                         "market_ticker": market_ticker,
                         "price": msg_data.get("price"),
@@ -771,6 +775,7 @@ class OrderbookClient:
                         "ts": msg_data.get("ts"),
                     },
                 )
+                await self._v3_event_bus.emit(EventType.TICKER_UPDATE, event)
         except Exception as e:
             logger.debug(f"Error processing ticker_v2: {e}")
 
@@ -785,9 +790,13 @@ class OrderbookClient:
             # Emit via event bus for single-arb monitor
             if self._v3_event_bus:
                 from ..traderv3.core.events.types import EventType
-                await self._v3_event_bus.emit(
-                    EventType.MARKET_TRADE,
+                from ..traderv3.core.events.market_events import MarketEvent
+                event = MarketEvent(
+                    event_type=EventType.MARKET_TRADE,
                     market_ticker=market_ticker,
+                    sequence_number=0,
+                    timestamp_ms=msg_data.get("ts", int(time.time() * 1000)),
+                    received_at=time.time(),
                     metadata={
                         "market_ticker": market_ticker,
                         "yes_price": msg_data.get("yes_price"),
@@ -797,6 +806,7 @@ class OrderbookClient:
                         "ts": msg_data.get("ts"),
                     },
                 )
+                await self._v3_event_bus.emit(EventType.MARKET_TRADE, event)
         except Exception as e:
             logger.debug(f"Error processing trade: {e}")
 

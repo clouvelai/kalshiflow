@@ -50,6 +50,10 @@ dependencies = [
     # Pair index: fast fuzzy string matching
     "rapidfuzz>=3.0.0",
     "httpx>=0.28.1",
+    # Google's LangExtract for grounded extraction (mentions markets)
+    "langextract>=0.1.0",
+    # WordNet for semantic grounding (mentions markets - synonym detection, settlement rules)
+    "wn>=0.9.0",
 ]
 
 [project.scripts]

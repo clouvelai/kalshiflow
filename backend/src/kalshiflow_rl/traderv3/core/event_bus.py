@@ -1154,9 +1154,6 @@ class EventBus:
             - market_ticker_update: market_ticker
             - orderbook_delta: market_ticker
             - orderbook_snapshot: market_ticker
-            - kalshi_api_price_update: kalshi_ticker (via pair_id)
-            - poly_price_update: pair_id
-            - spread_update: pair_id
 
         Args:
             batch: List of events drained from the queue
@@ -1172,9 +1169,6 @@ class EventBus:
         seen_ticker: set = set()       # market_ticker_update
         seen_ob_delta: set = set()     # orderbook_delta
         seen_ob_snap: set = set()      # orderbook_snapshot
-        seen_kalshi_api: set = set()   # kalshi_api_price_update
-        seen_poly: set = set()         # poly_price_update
-        seen_spread: set = set()       # spread_update
 
         coalesced: list = []
         coalesced_count = 0
@@ -1208,27 +1202,6 @@ class EventBus:
                     drop = True
                 else:
                     seen_ob_snap.add(key)
-
-            elif et == EventType.KALSHI_API_PRICE_UPDATE and hasattr(event, "pair_id"):
-                key = event.pair_id
-                if key in seen_kalshi_api:
-                    drop = True
-                else:
-                    seen_kalshi_api.add(key)
-
-            elif et == EventType.POLY_PRICE_UPDATE and hasattr(event, "pair_id"):
-                key = event.pair_id
-                if key in seen_poly:
-                    drop = True
-                else:
-                    seen_poly.add(key)
-
-            elif et == EventType.SPREAD_UPDATE and hasattr(event, "pair_id"):
-                key = event.pair_id
-                if key in seen_spread:
-                    drop = True
-                else:
-                    seen_spread.add(key)
 
             if drop:
                 self._event_queue.task_done()
@@ -1279,14 +1252,16 @@ class EventBus:
         logger.debug(f"Notifying {len(subscribers)} subscribers for {event.event_type.value}")
 
         # Determine call args based on event type
-        is_orderbook = isinstance(event, MarketEvent) and event.event_type in [
-            EventType.ORDERBOOK_SNAPSHOT, EventType.ORDERBOOK_DELTA
+        # MarketEvents with metadata use (market_ticker, metadata) signature for callbacks
+        is_market_event_with_metadata = isinstance(event, MarketEvent) and event.event_type in [
+            EventType.ORDERBOOK_SNAPSHOT, EventType.ORDERBOOK_DELTA,
+            EventType.TICKER_UPDATE, EventType.MARKET_TRADE,
         ]
 
         # All events use concurrent notification for maximum throughput
         tasks = []
         for callback in subscribers:
-            if is_orderbook:
+            if is_market_event_with_metadata:
                 task = asyncio.create_task(
                     self._safe_call_subscriber(callback, event.market_ticker, event.metadata or {})
                 )

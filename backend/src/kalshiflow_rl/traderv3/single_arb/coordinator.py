@@ -22,6 +22,13 @@ from typing import Any, Dict, Optional
 from .index import EventArbIndex
 from .monitor import EventArbMonitor
 from .tools import set_dependencies as set_tool_dependencies
+from .mentions_tools import (
+    set_mentions_dependencies,
+    restore_mentions_state_from_disk,
+    _llm_parse_rules,
+)
+from .mentions_context import set_context_cache_dir
+from .mentions_semantic import is_wordnet_available
 
 logger = logging.getLogger("kalshiflow_rl.traderv3.single_arb.coordinator")
 
@@ -71,7 +78,7 @@ class SingleArbCoordinator:
         logger.info("Starting single-event arb system...")
 
         # 1. Create index
-        fee_per_contract = getattr(self._config, "single_arb_fee_per_contract", 7)
+        fee_per_contract = getattr(self._config, "single_arb_fee_per_contract", 1)
         min_edge = getattr(self._config, "single_arb_min_edge_cents", 3.0)
         self._index = EventArbIndex(
             fee_per_contract_cents=fee_per_contract,
@@ -92,15 +99,35 @@ class SingleArbCoordinator:
 
         loaded_events = 0
         for event_ticker in event_tickers:
-            state = await self._index.load_event(event_ticker, client)
-            if state:
-                loaded_events += 1
-            else:
-                logger.warning(f"Failed to load event: {event_ticker}")
+            state = None
+            for attempt in range(3):  # 3 attempts per event
+                state = await self._index.load_event(event_ticker, client)
+                if state:
+                    loaded_events += 1
+                    break
+                logger.warning(f"Failed to load event {event_ticker} (attempt {attempt + 1}/3)")
+                await asyncio.sleep(1.0)  # 1s backoff between retries
+
+            if not state:
+                logger.error(f"Failed to load event after 3 attempts: {event_ticker}")
+
+            # Small delay between events to avoid rate limiting
+            await asyncio.sleep(0.5)
 
         if loaded_events == 0:
             logger.error("No events loaded - single-arb system cannot start")
             return
+
+        # 2b. Initialize mentions for applicable events
+        mentions_enabled = getattr(self._config, "mentions_enabled", True)
+        mentions_prewarm = getattr(self._config, "mentions_prewarm_enabled", False)
+        if mentions_enabled:
+            await self._initialize_mentions_events()
+            # Pre-warm WordNet (downloads on first use if not present)
+            self._initialize_wordnet()
+            # Pre-warm simulations (optional, can be slow)
+            if mentions_prewarm:
+                await self._prewarm_mentions_simulations()
 
         # 3. Subscribe all market tickers to orderbook WS
         market_tickers = self._index.market_tickers
@@ -137,7 +164,22 @@ class SingleArbCoordinator:
             config=self._config,
             order_group_id=self._order_group_id,
             order_ttl=order_ttl,
+            broadcast_callback=self._broadcast,
         )
+
+        # 6b. Set mentions tool dependencies
+        set_mentions_dependencies(
+            index=self._index,
+            memory_store=self._memory_store,
+            config=self._config,
+            mentions_data_dir=DEFAULT_MEMORY_DIR,
+        )
+
+        # 6c. Set EventContext cache directory (4-hour TTL cache)
+        set_context_cache_dir(DEFAULT_MEMORY_DIR)
+
+        # 6d. Restore mentions state from disk (cross-session persistence)
+        restore_mentions_state_from_disk()
 
         # 7. Create monitor
         self._monitor = EventArbMonitor(
@@ -213,6 +255,144 @@ class SingleArbCoordinator:
             return self._trading_client
         return None
 
+    def _initialize_wordnet(self) -> None:
+        """Initialize WordNet for semantic analysis (downloads on first use)."""
+        try:
+            if is_wordnet_available():
+                logger.info("[SINGLE_ARB] WordNet available for semantic analysis")
+            else:
+                logger.warning("[SINGLE_ARB] WordNet not available - semantic features disabled")
+        except Exception as e:
+            logger.warning(f"[SINGLE_ARB] WordNet initialization failed: {e}")
+
+    def _is_mentions_event(self, event) -> bool:
+        """Check if event is a mentions market based on ticker pattern or category."""
+        if not event:
+            return False
+        ticker = event.event_ticker.upper()
+        title = event.title.upper() if event.title else ""
+        category = event.category.lower() if event.category else ""
+
+        # Check ticker patterns
+        mentions_patterns = ["MENTION", "KXFEDMENTION", "KXNBAMENTION", "KXNFLMENTION"]
+        for pattern in mentions_patterns:
+            if pattern in ticker:
+                return True
+
+        # Check title for "mention" keyword
+        if "MENTION" in title:
+            return True
+
+        # Check category
+        if "mention" in category:
+            return True
+
+        return False
+
+    async def _initialize_mentions_events(self) -> None:
+        """Initialize mentions_data for all mentions events.
+
+        Parses settlement rules into LexemePackLite for each mentions market.
+        """
+        if not self._index:
+            return
+
+        mentions_count = 0
+        for event_ticker, event in self._index.events.items():
+            if not self._is_mentions_event(event):
+                continue
+
+            mentions_count += 1
+            logger.info(f"[MENTIONS] Detected mentions event: {event_ticker}")
+
+            # Initialize mentions_data if empty
+            if not event.mentions_data:
+                event.mentions_data = {
+                    "current_count": 0,
+                    "evidence": [],
+                    "sources_scanned": [],
+                    "last_scan_ts": None,
+                }
+
+            # Parse rules for each market in the event
+            for market_ticker, market in event.markets.items():
+                # Get rules_primary from raw API response
+                rules_text = market.raw.get("rules_primary", "")
+                if not rules_text:
+                    logger.warning(f"[MENTIONS] No rules_primary for {market_ticker}")
+                    continue
+
+                # Parse rules into LexemePackLite
+                try:
+                    lexeme_pack = await _llm_parse_rules(rules_text, market.title)
+                    lexeme_pack.market_ticker = market_ticker
+
+                    # Store in event.mentions_data
+                    event.mentions_data["lexeme_pack"] = lexeme_pack.to_dict()
+                    logger.info(
+                        f"[MENTIONS] Parsed rules for {market_ticker}: "
+                        f"entity='{lexeme_pack.entity}', "
+                        f"forms={len(lexeme_pack.accepted_forms)}"
+                    )
+                except Exception as e:
+                    logger.error(f"[MENTIONS] Failed to parse rules for {market_ticker}: {e}")
+
+        if mentions_count > 0:
+            logger.info(f"[MENTIONS] Initialized {mentions_count} mentions events")
+
+    async def _prewarm_mentions_simulations(self) -> None:
+        """Pre-warm simulations for mentions events.
+
+        Runs blind LLM roleplay simulations in the background to cache
+        probability estimates for all mentions terms.
+        """
+        if not self._index:
+            return
+
+        # Find all mentions events
+        mentions_events = [
+            (ticker, event)
+            for ticker, event in self._index.events.items()
+            if self._is_mentions_event(event) and event.mentions_data
+        ]
+
+        if not mentions_events:
+            logger.info("[MENTIONS] No mentions events to pre-warm")
+            return
+
+        logger.info(f"[MENTIONS] Pre-warming simulations for {len(mentions_events)} events...")
+
+        for event_ticker, event in mentions_events:
+            try:
+                # Get terms from lexeme pack
+                lexeme_pack = event.mentions_data.get("lexeme_pack", {})
+                entity = lexeme_pack.get("entity", "")
+                terms = lexeme_pack.get("accepted_forms", [entity]) if entity else []
+
+                if not terms:
+                    continue
+
+                # Run simulation (will cache results)
+                from .mentions_simulator import run_mentions_simulation
+
+                result = await run_mentions_simulation(
+                    event_ticker=event_ticker,
+                    event_title=event.title,
+                    mention_terms=terms[:5],  # Limit to top 5 terms
+                    n_simulations=5,  # Quick pre-warm with 5 simulations
+                    cache_dir=os.path.join(DEFAULT_MEMORY_DIR, "simulations"),
+                )
+
+                # Store estimates
+                event.mentions_data["simulation_estimates"] = result["estimates"]
+                logger.info(
+                    f"[MENTIONS] Pre-warmed {event_ticker}: "
+                    f"{len(result['estimates'])} terms simulated"
+                )
+
+            except Exception as e:
+                logger.warning(f"[MENTIONS] Pre-warm failed for {event_ticker}: {e}")
+
     def _setup_memory(self) -> None:
         """Setup dual memory store (file + vector) and seed AGENTS.md."""
         from .memory import FileMemoryStore, VectorMemoryService, DualMemoryStore
@@ -241,21 +421,22 @@ class SingleArbCoordinator:
                 f.write(
                     "# Trading Learnings\n"
                     "\n"
+                    "## Subagents\n"
+                    "- trade_commando: execution (orders, queue management)\n"
+                    "- cheval_de_troie: surveillance (bots, whales)\n"
+                    "- mentions_specialist: 'will X say Y?' edge detection\n"
+                    "\n"
                     "## Strategy Notes\n"
-                    "- Primary: single-event arb (probability sum violations)\n"
-                    "- Long arb: sum of YES asks < 100 - total_fees -> buy all YES\n"
-                    "- Short arb: sum of YES bids > 100 + total_fees -> buy all NO\n"
-                    "- Fee ~7c per contract per leg\n"
-                    "- Start with 5 contracts per leg. Scale what proves profitable.\n"
+                    "- Arb: sum YES asks < 100 - fees → buy all YES\n"
+                    "- Arb: sum YES bids > 100 + fees → buy all NO\n"
+                    "- Mentions: simulation P vs market P → trade the gap\n"
+                    "- Fee ~7c per contract. Start 5-10 contracts.\n"
                     "\n"
                     "## Patterns Observed\n"
-                    "(Record patterns here as you discover them)\n"
+                    "(Record patterns as discovered)\n"
                     "\n"
                     "## Mistakes & Lessons\n"
-                    "(Record mistakes and what you learned)\n"
-                    "\n"
-                    "## Market-Specific Notes\n"
-                    "(Record notes about specific events/markets)\n"
+                    "(Record mistakes and learnings)\n"
                 )
             logger.info("Created seed AGENTS.md")
 
@@ -287,7 +468,9 @@ class SingleArbCoordinator:
         """Broadcast message to all frontend WebSocket clients."""
         if self._websocket_manager:
             try:
-                await self._websocket_manager.broadcast(message)
+                msg_type = message.get("type", "unknown")
+                msg_data = message.get("data", message)
+                await self._websocket_manager.broadcast_message(msg_type, msg_data)
             except Exception as e:
                 logger.debug(f"Broadcast error: {e}")
 
@@ -330,8 +513,8 @@ class SingleArbCoordinator:
         return self._captain.is_paused if self._captain else False
 
     # Health check interface
-    @property
     def is_healthy(self) -> bool:
+        """Health check for health monitor (must be callable method, not property)."""
         return self._running and self._index is not None
 
     def get_health_details(self) -> Dict:
