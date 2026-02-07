@@ -238,6 +238,112 @@ class MentionsSimulator:
 
         return segments
 
+    async def simulate_by_segment(
+        self,
+        event_ticker: str,
+        segment_prompts: Dict[str, str],
+        n_per_segment: int = 7,
+        model: str = "haiku",
+        context_hash: Optional[str] = None,
+    ) -> List[SimulationResult]:
+        """Run simulations per-segment, then concatenate into full results.
+
+        Each high-yield segment gets n_per_segment independent simulations.
+        Results are recombined into SimulationResult objects where:
+        - transcript = concatenated segment outputs (for backwards-compat with scan_for_terms)
+        - segment_transcripts = individual segment outputs
+
+        Args:
+            event_ticker: Event identifier for caching
+            segment_prompts: Dict[segment_name, prompt] from DomainTemplate.get_segment_prompts()
+            n_per_segment: Simulations per segment (default 7)
+            model: LLM model to use
+            context_hash: Hash for cache invalidation
+
+        Returns:
+            List of SimulationResult objects (one per simulation round)
+        """
+        # Check cache first
+        if context_hash:
+            cached = self._get_cached(event_ticker, context_hash, n_per_segment)
+            if cached:
+                logger.info(f"Using {len(cached)} cached segment simulations for {event_ticker}")
+                return cached
+
+        segment_names = list(segment_prompts.keys())
+        n_segments = len(segment_names)
+
+        logger.info(
+            f"Running segment-based simulation for {event_ticker}: "
+            f"{n_segments} segments x {n_per_segment} sims = {n_segments * n_per_segment} total"
+        )
+
+        # Run all segments x n_per_segment simulations
+        # Organize as: segment_results[segment_name] = [SimulationResult, ...]
+        segment_results: Dict[str, List[SimulationResult]] = {name: [] for name in segment_names}
+
+        # Batch across all segments concurrently (5 at a time)
+        all_tasks = []
+        for seg_name, prompt in segment_prompts.items():
+            for _ in range(n_per_segment):
+                all_tasks.append((seg_name, prompt))
+
+        batch_size = 5
+        for i in range(0, len(all_tasks), batch_size):
+            batch = all_tasks[i:i + batch_size]
+            coros = [
+                self._run_single_simulation(event_ticker, prompt, model, context_hash)
+                for _, prompt in batch
+            ]
+            batch_results = await asyncio.gather(*coros, return_exceptions=True)
+
+            for j, result in enumerate(batch_results):
+                seg_name = batch[j][0]
+                if isinstance(result, SimulationResult):
+                    segment_results[seg_name].append(result)
+                else:
+                    logger.warning(f"Segment simulation failed ({seg_name}): {result}")
+
+            if i + batch_size < len(all_tasks):
+                await asyncio.sleep(0.5)
+
+        # Recombine: create n_per_segment full results by picking one sim per segment per round
+        combined_results: List[SimulationResult] = []
+        for round_idx in range(n_per_segment):
+            segment_transcripts: Dict[str, str] = {}
+            full_transcript_parts: List[str] = []
+
+            for seg_name in segment_names:
+                seg_sims = segment_results[seg_name]
+                if round_idx < len(seg_sims):
+                    seg_text = seg_sims[round_idx].transcript
+                else:
+                    seg_text = ""
+                segment_transcripts[seg_name] = seg_text
+                full_transcript_parts.append(f"[{seg_name.upper()}]\n{seg_text}")
+
+            full_transcript = "\n\n".join(full_transcript_parts)
+            combined_results.append(SimulationResult(
+                event_ticker=event_ticker,
+                simulation_id=str(uuid.uuid4())[:8],
+                transcript=full_transcript,
+                segment_transcripts=segment_transcripts,
+                generated_at=time.time(),
+                model=model,
+                context_hash=context_hash or "",
+                word_count=len(full_transcript.split()),
+            ))
+
+        # Cache results
+        if context_hash and combined_results:
+            self._cache_results(event_ticker, context_hash, combined_results)
+
+        logger.info(
+            f"Completed segment simulation for {event_ticker}: "
+            f"{len(combined_results)} combined results from {n_segments} segments"
+        )
+        return combined_results
+
     def scan_for_terms(
         self,
         simulations: List[SimulationResult],
@@ -654,24 +760,77 @@ async def _run_simulation_core(
 
     simulator = MentionsSimulator(cache_dir=cache_dir)
 
-    # 4. Generate prompt from template (compressed format for token efficiency)
+    # 4. Try segment-based simulation first (better coverage per segment)
+    # Build segment prompts from template using the same rich context
+    segment_prompts: Dict[str, str] = {}
+    use_segments = False
+
     if mode == "blind":
-        prompt = generate_blind_prompt(event_context, template, compressed=True)
+        # Build context params for segment prompts
+        special_context = None
+        if event_context.speakers:
+            persona_intros = []
+            for speaker in event_context.speakers[:3]:
+                if hasattr(speaker, "to_prompt_intro"):
+                    intro = speaker.to_prompt_intro()
+                    if intro:
+                        persona_intros.append(f"- {intro}")
+            if persona_intros:
+                special_context = "SPEAKER PERSONAS:\n" + "\n".join(persona_intros)
+
+        try:
+            segment_prompts = template.get_segment_prompts(
+                event_title=event_context.event_title,
+                participants=event_context.participants,
+                announcers=event_context.announcers,
+                venue=event_context.venue,
+                storylines=event_context.historical_notes,
+                special_context=special_context,
+                participant_details=event_context.participant_details,
+                key_figures=event_context.key_figures,
+                figure_details=event_context.figure_details,
+                network=event_context.network,
+                date=event_context.date,
+            )
+            use_segments = len(segment_prompts) >= 2
+        except Exception as e:
+            logger.warning(f"Segment prompt generation failed, falling back to monolithic: {e}")
+
+    # 5. Run simulations (segment-based or monolithic fallback)
+    if use_segments:
+        # Segment-based: distribute simulations across segments
+        # e.g. 5 segments * 7 sims/segment = 35 total calls, recombined into 7 results
+        n_per_segment = max(5, n_simulations)
+        context_hash = hashlib.md5(
+            (str(list(segment_prompts.values())[:2]) + f"{mode.upper()}_SEG" + str(mention_terms)).encode()
+        ).hexdigest()[:12]
+
+        logger.info(f"Using segment-based simulation: {len(segment_prompts)} segments x {n_per_segment} sims")
+        all_simulations = await simulator.simulate_by_segment(
+            event_ticker=event_ticker,
+            segment_prompts=segment_prompts,
+            n_per_segment=n_per_segment,
+            model=None,
+            context_hash=context_hash,
+        )
     else:
-        prompt = generate_informed_prompt(informed_context, template, compressed=True)
+        # Monolithic fallback
+        if mode == "blind":
+            prompt = generate_blind_prompt(event_context, template, compressed=True)
+        else:
+            prompt = generate_informed_prompt(informed_context, template, compressed=True)
 
-    # 5. Run simulations
-    context_hash = hashlib.md5(
-        (prompt + f"{mode.upper()}_COMP" + str(mention_terms)).encode()
-    ).hexdigest()[:12]
+        context_hash = hashlib.md5(
+            (prompt + f"{mode.upper()}_COMP" + str(mention_terms)).encode()
+        ).hexdigest()[:12]
 
-    all_simulations = await simulator.simulate(
-        event_ticker=event_ticker,
-        prompt=prompt,
-        n_simulations=n_simulations,
-        model=None,
-        context_hash=context_hash,
-    )
+        all_simulations = await simulator.simulate(
+            event_ticker=event_ticker,
+            prompt=prompt,
+            n_simulations=n_simulations,
+            model=None,
+            context_hash=context_hash,
+        )
 
     # 6. Scan for terms across ALL simulations
     scan_results = simulator.scan_for_terms(

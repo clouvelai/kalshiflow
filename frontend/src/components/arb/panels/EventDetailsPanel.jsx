@@ -1,9 +1,10 @@
 import React, { memo, useMemo, useState } from 'react';
-import { List, BarChart2 } from 'lucide-react';
+import { List, BarChart2, ExternalLink } from 'lucide-react';
 import EdgeBadge from '../ui/EdgeBadge';
 import EventTradeFeed from '../ui/EventTradeFeed';
 import MarketOrderbook from '../ui/MarketOrderbook';
 import EventUnderstandingCard from './EventUnderstandingCard';
+import MarketCandlestickChart from '../ui/MarketCandlestickChart';
 
 /**
  * TabButton - Orderbook/trades tab toggle.
@@ -59,14 +60,18 @@ const SingleArbDetailsView = memo(({ event, eventTrades = [], arbTrades = [], po
     if (!hasPositions) return null;
     let marketsWithPos = 0;
     let totalUnrealized = 0;
+    let totalCost = 0;
+    let totalExposure = 0;
     for (const m of marketList) {
       const pos = positionsByTicker[m.ticker];
       if (pos) {
         marketsWithPos++;
         totalUnrealized += pos.unrealized_pnl || 0;
+        totalCost += pos.total_cost || 0;
+        totalExposure += pos.current_value || 0;
       }
     }
-    return { marketsWithPos, totalUnrealized };
+    return { marketsWithPos, totalUnrealized, totalCost, totalExposure };
   }, [marketList, positionsByTicker, hasPositions]);
 
   const getFreshnessDisplay = (seconds) => {
@@ -109,9 +114,30 @@ const SingleArbDetailsView = memo(({ event, eventTrades = [], arbTrades = [], po
             {mutually_exclusive ? 'mut. excl.' : 'independent'}
           </span>
         </div>
-        <h3 className="text-sm font-medium text-gray-200 leading-tight">
-          {title || event_ticker}
-        </h3>
+        <div className="flex items-center gap-2.5">
+          {event.image_url && (
+            <img
+              src={event.image_url}
+              alt=""
+              className="w-7 h-7 rounded-md object-cover opacity-80 flex-shrink-0"
+              onError={(e) => { e.target.style.display = 'none'; }}
+            />
+          )}
+          <h3 className="text-sm font-medium text-gray-200 leading-tight flex-1 min-w-0">
+            {title || event_ticker}
+          </h3>
+          {(event.kalshi_url || event_ticker) && (
+            <a
+              href={event.kalshi_url || `https://kalshi.com/markets/${event_ticker.toLowerCase()}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-gray-600 hover:text-cyan-400 transition-colors flex-shrink-0"
+              title="View on Kalshi"
+            >
+              <ExternalLink className="w-3.5 h-3.5" />
+            </a>
+          )}
+        </div>
       </div>
 
       {/* Content */}
@@ -198,6 +224,11 @@ const SingleArbDetailsView = memo(({ event, eventTrades = [], arbTrades = [], po
           </div>
         </div>
 
+        {/* Price History Chart */}
+        {event.candlestick_series && Object.keys(event.candlestick_series).length > 0 && (
+          <MarketCandlestickChart candlestickSeries={event.candlestick_series} markets={markets} />
+        )}
+
         {/* Markets Table */}
         {marketList.length > 0 && (
           <div className="bg-gray-800/15 rounded-lg p-3 border border-gray-800/20">
@@ -205,74 +236,74 @@ const SingleArbDetailsView = memo(({ event, eventTrades = [], arbTrades = [], po
               Markets ({marketList.length})
               <span className="text-gray-600 font-normal ml-2">click for orderbook</span>
             </div>
-            <div className="space-y-0.5 overflow-x-auto">
-              {/* Header */}
-              <div className="flex items-center text-[8px] text-gray-600 uppercase tracking-wider font-semibold mb-1 min-w-max">
-                <span className="flex-1 min-w-[120px]">Outcome</span>
-                <span className="w-10 text-right">Bid</span>
-                <span className="w-10 text-right">Ask</span>
-                <span className="w-10 text-right">Mid</span>
-                <span className="w-12 text-right">Vol</span>
-                <span className="w-12 text-right">Age</span>
-                {hasPositions && (
-                  <>
-                    <span className="w-10 text-right">Qty</span>
-                    <span className="w-12 text-right">Avg</span>
-                    <span className="w-14 text-right">P&L</span>
-                  </>
-                )}
-              </div>
-              {marketList.map((m) => {
-                const pos = positionsByTicker[m.ticker];
-                const freshness = getFreshnessDisplay(m.freshness_seconds);
-                return (
-                  <div
-                    key={m.ticker}
-                    className={`flex items-center text-[11px] cursor-pointer rounded px-1 -mx-1 transition-colors min-w-max ${
-                      selectedMarket === m.ticker ? 'bg-cyan-900/15' : 'hover:bg-gray-800/20'
-                    }`}
-                    onClick={() => setSelectedMarket(selectedMarket === m.ticker ? null : m.ticker)}
-                  >
-                    <div className="flex-1 min-w-[120px] mr-2">
-                      <span className="text-gray-400 truncate block">{m.title || m.ticker}</span>
-                      <span className="text-[9px] text-gray-600 font-mono">{m.ticker}</span>
-                    </div>
-                    <span className="w-10 text-right font-mono text-gray-500 tabular-nums">{m.yes_bid != null ? `${m.yes_bid}` : '--'}</span>
-                    <span className="w-10 text-right font-mono text-gray-500 tabular-nums">{m.yes_ask != null ? `${m.yes_ask}` : '--'}</span>
-                    <span className="w-10 text-right font-mono text-cyan-400/60 tabular-nums">{m.yes_mid != null ? `${m.yes_mid.toFixed(0)}` : '--'}</span>
-                    <span className="w-12 text-right font-mono text-gray-600 text-[10px] tabular-nums">{formatVol(m.volume_24h)}</span>
-                    <span className={`w-12 text-right font-mono text-[10px] tabular-nums ${freshness.color}`}>{freshness.text}</span>
-                    {hasPositions && (
-                      <>
-                        <span className="w-10 text-right font-mono text-gray-400 tabular-nums">{pos?.qty || '--'}</span>
-                        <span className="w-12 text-right font-mono text-gray-500 tabular-nums">{pos?.avg_cost != null ? `${pos.avg_cost}c` : '--'}</span>
-                        <span className={`w-14 text-right font-mono tabular-nums ${
-                          pos?.unrealized_pnl > 0 ? 'text-emerald-400' : pos?.unrealized_pnl < 0 ? 'text-red-400' : 'text-gray-500'
+            <div className="overflow-x-auto">
+              <table className="w-full border-collapse">
+                <thead>
+                  <tr className="text-[8px] text-gray-600 uppercase tracking-wider font-semibold">
+                    <th className="text-left pb-1.5 pr-3 font-semibold">Outcome</th>
+                    <th className="text-right pb-1.5 px-2 font-semibold whitespace-nowrap">Bid</th>
+                    <th className="text-right pb-1.5 px-2 font-semibold whitespace-nowrap">Ask</th>
+                    <th className="text-right pb-1.5 px-2 font-semibold whitespace-nowrap">Mid</th>
+                    <th className="text-right pb-1.5 px-2 font-semibold whitespace-nowrap">Vol</th>
+                    <th className="text-right pb-1.5 px-2 font-semibold whitespace-nowrap">Age</th>
+                    <th className="text-right pb-1.5 pl-4 px-2 font-semibold whitespace-nowrap border-l border-gray-700/10">Cost</th>
+                    <th className="text-right pb-1.5 px-2 font-semibold whitespace-nowrap">Expo</th>
+                    <th className="text-right pb-1.5 pl-2 font-semibold whitespace-nowrap">P&L</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {marketList.map((m) => {
+                    const pos = positionsByTicker[m.ticker];
+                    const freshness = getFreshnessDisplay(m.freshness_seconds);
+                    return (
+                      <tr
+                        key={m.ticker}
+                        className={`text-[11px] cursor-pointer transition-colors ${
+                          selectedMarket === m.ticker ? 'bg-cyan-900/15' : 'hover:bg-gray-800/20'
+                        }`}
+                        onClick={() => setSelectedMarket(selectedMarket === m.ticker ? null : m.ticker)}
+                      >
+                        <td className="py-1 pr-3">
+                          <div className="text-gray-400 truncate max-w-[320px]">{m.title || m.ticker}</div>
+                          <div className="text-[9px] text-gray-600 font-mono">{m.ticker}</div>
+                        </td>
+                        <td className="text-right py-1 px-2 font-mono text-gray-500 tabular-nums whitespace-nowrap">{m.yes_bid != null ? `${m.yes_bid}` : '--'}</td>
+                        <td className="text-right py-1 px-2 font-mono text-gray-500 tabular-nums whitespace-nowrap">{m.yes_ask != null ? `${m.yes_ask}` : '--'}</td>
+                        <td className="text-right py-1 px-2 font-mono text-cyan-400/60 tabular-nums whitespace-nowrap">{m.yes_mid != null ? `${m.yes_mid.toFixed(0)}` : '--'}</td>
+                        <td className="text-right py-1 px-2 font-mono text-gray-600 text-[10px] tabular-nums whitespace-nowrap">{formatVol(m.volume_24h)}</td>
+                        <td className={`text-right py-1 px-2 font-mono text-[10px] tabular-nums whitespace-nowrap ${freshness.color}`}>{freshness.text}</td>
+                        <td className="text-right py-1 pl-4 px-2 font-mono text-gray-400 tabular-nums whitespace-nowrap border-l border-gray-700/10">{pos?.total_cost != null ? `$${(pos.total_cost / 100).toFixed(2)}` : '--'}</td>
+                        <td className="text-right py-1 px-2 font-mono text-gray-500 tabular-nums whitespace-nowrap">{pos?.current_value != null ? `$${(pos.current_value / 100).toFixed(2)}` : '--'}</td>
+                        <td className={`text-right py-1 pl-2 font-mono tabular-nums whitespace-nowrap ${
+                          pos?.unrealized_pnl > 0 ? 'text-emerald-400' : pos?.unrealized_pnl < 0 ? 'text-red-400' : 'text-gray-600'
                         }`}>
-                          {pos?.unrealized_pnl != null ? `${pos.unrealized_pnl >= 0 ? '+' : ''}$${pos.unrealized_pnl.toFixed(2)}` : '--'}
-                        </span>
-                      </>
-                    )}
-                  </div>
-                );
-              })}
-              {/* Sum row */}
-              <div className="flex items-center text-[11px] border-t border-gray-700/20 pt-1 mt-1 font-semibold min-w-max">
-                <span className="text-gray-400 flex-1 min-w-[120px]">TOTAL</span>
-                <span className="w-10 text-right font-mono text-gray-400 tabular-nums">{sum_yes_bid != null ? `${sum_yes_bid}` : '--'}</span>
-                <span className="w-10 text-right font-mono text-gray-400 tabular-nums">{sum_yes_ask != null ? `${sum_yes_ask}` : '--'}</span>
-                <span className="w-10 text-right font-mono text-cyan-400 tabular-nums">{sum_yes_mid != null ? `${sum_yes_mid.toFixed(0)}` : '--'}</span>
-                <span className="w-12" />
-                <span className="w-12 text-right font-mono text-[10px] text-gray-600">/100</span>
-                {hasPositions && <><span className="w-10" /><span className="w-12" /><span className="w-14" /></>}
-              </div>
+                          {pos?.unrealized_pnl != null ? `${pos.unrealized_pnl >= 0 ? '+' : ''}$${(pos.unrealized_pnl / 100).toFixed(2)}` : '--'}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+                <tfoot>
+                  <tr className="text-[11px] font-semibold border-t border-gray-700/20">
+                    <td className="text-gray-400 pt-1.5 pr-3">TOTAL</td>
+                    <td className="text-right pt-1.5 px-2 font-mono text-gray-400 tabular-nums">{sum_yes_bid != null ? `${sum_yes_bid}` : '--'}</td>
+                    <td className="text-right pt-1.5 px-2 font-mono text-gray-400 tabular-nums">{sum_yes_ask != null ? `${sum_yes_ask}` : '--'}</td>
+                    <td className="text-right pt-1.5 px-2 font-mono text-cyan-400 tabular-nums">{sum_yes_mid != null ? `${sum_yes_mid.toFixed(0)}` : '--'}</td>
+                    <td className="pt-1.5 px-2" />
+                    <td className="text-right pt-1.5 px-2 font-mono text-[10px] text-gray-600">/100</td>
+                    <td className="text-right pt-1.5 pl-4 px-2 font-mono text-gray-400 tabular-nums border-l border-gray-700/10">{positionSummary ? `$${(positionSummary.totalCost / 100).toFixed(2)}` : ''}</td>
+                    <td className="text-right pt-1.5 px-2 font-mono text-gray-400 tabular-nums">{positionSummary ? `$${(positionSummary.totalExposure / 100).toFixed(2)}` : ''}</td>
+                    <td className={`text-right pt-1.5 pl-2 font-mono tabular-nums ${positionSummary?.totalUnrealized >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>{positionSummary ? `${positionSummary.totalUnrealized >= 0 ? '+' : ''}$${(positionSummary.totalUnrealized / 100).toFixed(2)}` : ''}</td>
+                  </tr>
+                </tfoot>
+              </table>
               {positionSummary && (
-                <div className="flex items-center justify-between text-[10px] border-t border-gray-700/20 pt-1 mt-1">
+                <div className="flex items-center justify-between text-[10px] border-t border-gray-700/20 pt-1.5 mt-0.5">
                   <span className="text-gray-500">
                     Positions: {positionSummary.marketsWithPos}/{marketList.length} markets
                   </span>
                   <span className={`font-mono font-semibold tabular-nums ${positionSummary.totalUnrealized >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                    {positionSummary.totalUnrealized >= 0 ? '+' : ''}${positionSummary.totalUnrealized.toFixed(2)}
+                    {positionSummary.totalUnrealized >= 0 ? '+' : ''}${(positionSummary.totalUnrealized / 100).toFixed(2)}
                   </span>
                 </div>
               )}

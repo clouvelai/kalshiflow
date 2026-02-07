@@ -37,6 +37,7 @@ _file_store = None      # FileMemoryStore (journal.jsonl)
 _config = None          # V3Config
 _mentions_data_dir = None  # Directory for persisting mentions state
 _broadcast_callback = None  # Async callback to broadcast mentions updates to frontend
+_budget_manager = None  # SimulationBudgetManager (optional)
 
 # Simulator instance (lazy loaded)
 _simulator = None
@@ -50,9 +51,10 @@ def set_mentions_dependencies(
     file_store=None,
     config=None,
     mentions_data_dir=None,
+    budget_manager=None,
 ) -> None:
     """Set shared dependencies for mentions tools."""
-    global _index, _file_store, _config, _mentions_data_dir
+    global _index, _file_store, _config, _mentions_data_dir, _budget_manager
     if index is not None:
         _index = index
     if file_store is not None:
@@ -62,6 +64,8 @@ def set_mentions_dependencies(
     if mentions_data_dir is not None:
         _mentions_data_dir = mentions_data_dir
         os.makedirs(mentions_data_dir, exist_ok=True)
+    if budget_manager is not None:
+        _budget_manager = budget_manager
 
 
 def set_mentions_broadcast_callback(callback) -> None:
@@ -396,6 +400,16 @@ async def simulate_probability(
     if mode not in ["blind", "informed"]:
         return {"error": f"Invalid mode: {mode}. Use 'blind' or 'informed'."}
 
+    # Check budget before running
+    if _budget_manager:
+        budget_status = _budget_manager.get_budget_status(event_ticker)
+        if budget_status and budget_status.get("simulations_remaining", 999) <= 0:
+            return {
+                "error": "Simulation budget exhausted for this event",
+                "budget": budget_status,
+                "hint": "Budget is $1/event. All simulations have been used.",
+            }
+
     # Run simulation
     try:
         from .mentions_simulator import run_mentions_simulation
@@ -477,6 +491,10 @@ async def simulate_probability(
             simulation_in_progress=False,
         )
 
+        # --- Record against budget ---
+        if _budget_manager:
+            _budget_manager.record_simulation(event_ticker, n_simulations, mode)
+
         # --- Build Response ---
         response = {
             "event_ticker": event_ticker,
@@ -491,6 +509,18 @@ async def simulate_probability(
             "template": result.get("template", ""),
             "domain": result.get("domain", ""),
         }
+
+        # Add budget info
+        if _budget_manager:
+            budget_status = _budget_manager.get_budget_status(event_ticker)
+            if budget_status:
+                response["budget"] = {
+                    "phase": budget_status["phase"],
+                    "simulations_used": budget_status["total_simulations"],
+                    "simulations_remaining": budget_status["simulations_remaining"],
+                    "cost_used": budget_status["total_estimated_cost"],
+                    "budget_pct_used": budget_status["budget_pct_used"],
+                }
 
         # Add usage guidance based on mode
         if mode == "blind":
@@ -678,6 +708,17 @@ async def trigger_simulation(
     # Validate mode
     if mode not in ["blind", "informed"]:
         return {"error": f"Invalid mode: {mode}. Use 'blind' or 'informed'."}
+
+    # Check budget before triggering
+    if _budget_manager:
+        budget_status = _budget_manager.get_budget_status(event_ticker)
+        if budget_status and budget_status.get("simulations_remaining", 999) <= 0:
+            return {
+                "status": "budget_exhausted",
+                "event_ticker": event_ticker,
+                "budget": budget_status,
+                "usage_note": "Budget exhausted. No more simulations will be scheduled.",
+            }
 
     # Track as pending
     _pending_simulations[event_ticker] = {
@@ -1002,6 +1043,11 @@ async def get_mentions_summary(event_ticker: str) -> Dict[str, Any]:
     current_estimates = mentions_data.get("current_estimates", {})
     estimate_history = mentions_data.get("estimate_history", [])
 
+    # Budget info
+    budget_info = None
+    if _budget_manager:
+        budget_info = _budget_manager.get_budget_status(event_ticker)
+
     return {
         "event_ticker": event_ticker,
         "is_mentions_market": bool(lexeme_pack),
@@ -1023,6 +1069,8 @@ async def get_mentions_summary(event_ticker: str) -> Dict[str, Any]:
         # Async status
         "simulation_in_progress": simulation_in_progress,
         "pending_simulation": pending_info,
+        # Budget
+        "budget": budget_info,
     }
 
 
@@ -1199,6 +1247,11 @@ async def get_mentions_status(event_ticker: str) -> Dict[str, Any]:
     n_sims = baseline_estimates.get(entity, {}).get("n_simulations", 0) if entity else 0
     ready_for_trading = bool(baseline_estimates) and n_sims >= 10 and confidence_score >= 0.6
 
+    # Build budget info
+    budget_info = None
+    if _budget_manager:
+        budget_info = _budget_manager.get_budget_status(event_ticker)
+
     return {
         "event_ticker": event_ticker,
         "is_mentions_market": True,
@@ -1222,6 +1275,9 @@ async def get_mentions_status(event_ticker: str) -> Dict[str, Any]:
         "ready_for_trading": ready_for_trading,
         "confidence_score": round(confidence_score, 2),
         "n_simulations": n_sims,
+
+        # Budget
+        "budget": budget_info,
 
         # Timestamps
         "last_simulation_ts": last_sim_ts,
@@ -1356,8 +1412,15 @@ async def compute_edge(
     confidence: float = 0.5,
     baseline_weight: float = 0.6,
     spread_adjustment: int = 2,
+    ci_lower: Optional[float] = None,
+    ci_upper: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Compute edge between blended probability and market price.
+
+    CONFIDENCE INTERVAL GATE:
+    If the market price falls within the simulation's confidence interval,
+    there is NO detectable edge - the market and model agree within uncertainty.
+    This prevents trading on point estimates when the true probability is uncertain.
 
     RECENCY BIAS CORRECTION:
     News makes terms seem more likely than they are. The baseline (blind) estimate
@@ -1379,14 +1442,17 @@ async def compute_edge(
         confidence: Confidence in simulation estimate (0.0 to 1.0)
         baseline_weight: How much to weight baseline (default 0.6 = 60%)
         spread_adjustment: Additional cents to require beyond spread
+        ci_lower: Lower bound of confidence interval (from baseline_estimates CI). If None, uses heuristic.
+        ci_upper: Upper bound of confidence interval (from baseline_estimates CI). If None, uses heuristic.
 
     Returns:
         Dict with edge analysis, recency bias adjustment, and trade recommendation
 
     Example:
         >>> await compute_edge("Taylor Swift", baseline_probability=0.10,
-        ...                    informed_probability=0.45, market_yes_price=60, ...)
-        {"blended_probability": 0.24, "recency_bias_adjustment": 0.21, ...}
+        ...                    informed_probability=0.45, market_yes_price=60, ...,
+        ...                    ci_lower=0.0, ci_upper=0.278)
+        {"recommendation": "PASS", "reason": "Market price within confidence interval..."}
     """
     logger.info(f"[MENTIONS:EDGE] term={term} baseline={baseline_probability} informed={informed_probability} yes={market_yes_price} no={market_no_price}")
 
@@ -1399,6 +1465,25 @@ async def compute_edge(
     # Recency bias adjustment = how much informed overestimates vs blended
     recency_bias_adjustment = informed_probability - blended_probability
 
+    # --- CONFIDENCE INTERVAL GATE ---
+    # If CI not provided, compute a heuristic CI from baseline_probability
+    # Wilson score interval approximation for small samples
+    import math
+    if ci_lower is None or ci_upper is None:
+        # Default to wide interval reflecting uncertainty
+        # Approximate using normal approximation with n=10 simulations
+        n = 10  # default simulation count
+        p = baseline_probability
+        z = 1.96  # 95% CI
+        denominator = 1 + z**2 / n
+        center = (p + z**2 / (2 * n)) / denominator
+        spread_ci = z * math.sqrt((p * (1 - p) + z**2 / (4 * n)) / n) / denominator
+        ci_lower = max(0.0, center - spread_ci)
+        ci_upper = min(1.0, center + spread_ci)
+
+    market_yes_frac = market_yes_price / 100.0
+    market_within_ci = ci_lower <= market_yes_frac <= ci_upper
+
     # Convert blended probability to fair value in cents
     yes_fair = round(blended_probability * 100)
     no_fair = 100 - yes_fair
@@ -1410,8 +1495,10 @@ async def compute_edge(
     # Calculate spread
     spread = 100 - market_yes_price - market_no_price
 
-    # Fee per contract (typical Kalshi fee)
-    fee_per_side = 7  # cents
+    # Kalshi taker fee: roundup(0.07 * contracts * price * (1-price))
+    # For 1 contract: max fee is 2c (at 50c), min is 1c at extremes
+    price_frac = market_yes_price / 100.0
+    fee_per_side = max(1, math.ceil(0.07 * 1 * price_frac * (1 - price_frac) * 100))
 
     # Minimum edge required: spread + fees + buffer
     min_edge = spread + fee_per_side + spread_adjustment
@@ -1429,6 +1516,9 @@ async def compute_edge(
         "blended_probability": round(blended_probability, 4),
         "baseline_weight": baseline_weight,
         "recency_bias_adjustment": round(recency_bias_adjustment, 4),
+        # Confidence interval
+        "confidence_interval": [round(ci_lower, 4), round(ci_upper, 4)],
+        "market_within_ci": market_within_ci,
         # Fair values (from blended)
         "yes_fair_value_cents": yes_fair,
         "no_fair_value_cents": no_fair,
@@ -1446,13 +1536,25 @@ async def compute_edge(
         "reason": "",
     }
 
+    # --- CI GATE: If market price is within confidence interval, NO EDGE ---
+    if market_within_ci:
+        result["recommendation"] = "PASS"
+        result["reason"] = (
+            f"Market price ({market_yes_price}c = {market_yes_frac:.0%}) is WITHIN the simulation's "
+            f"confidence interval [{ci_lower:.1%}, {ci_upper:.1%}]. No detectable edge. "
+            f"The market and your model agree within uncertainty. "
+            f"When your model says {baseline_probability:.0%} but CI extends to {ci_upper:.0%}, "
+            f"a market price of {market_yes_price}c is not mispriced - your estimate is just uncertain."
+        )
+        return result
+
     # Make recommendation
     if adjusted_yes_edge >= min_edge:
         result["recommendation"] = "BUY_YES"
-        result["reason"] = f"YES edge ({yes_edge}c) exceeds min required ({min_edge}c). Blended P={blended_probability:.0%} vs market {market_yes_price}c."
+        result["reason"] = f"YES edge ({yes_edge}c) exceeds min required ({min_edge}c). Blended P={blended_probability:.0%} vs market {market_yes_price}c. Market OUTSIDE CI [{ci_lower:.1%}, {ci_upper:.1%}]."
     elif adjusted_no_edge >= min_edge:
         result["recommendation"] = "BUY_NO"
-        result["reason"] = f"NO edge ({no_edge}c) exceeds min required ({min_edge}c). Blended P={1-blended_probability:.0%} vs market {market_no_price}c."
+        result["reason"] = f"NO edge ({no_edge}c) exceeds min required ({min_edge}c). Blended P={1-blended_probability:.0%} vs market {market_no_price}c. Market OUTSIDE CI [{ci_lower:.1%}, {ci_upper:.1%}]."
     elif confidence < 0.6:
         result["reason"] = f"Confidence too low ({confidence:.2f}). Need more simulations."
     else:

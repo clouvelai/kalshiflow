@@ -225,7 +225,15 @@ const EventRow = ({ event, isSelected, onSelectEvent }) => {
           }
         </span>
 
-        {/* Title */}
+        {/* Image avatar + Title */}
+        {event.image_url && (
+          <img
+            src={event.image_url}
+            alt=""
+            className="w-5 h-5 rounded object-cover opacity-80 flex-shrink-0"
+            onError={(e) => { e.target.style.display = 'none'; }}
+          />
+        )}
         <span className="text-sm text-gray-200 font-medium truncate flex-1 min-w-0">
           {title || event_ticker}
         </span>

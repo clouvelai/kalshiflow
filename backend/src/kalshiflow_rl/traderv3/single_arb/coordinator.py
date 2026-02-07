@@ -28,7 +28,8 @@ from .mentions_tools import (
     restore_mentions_state_from_disk,
     _llm_parse_rules,
 )
-from .mentions_context import set_context_cache_dir, gather_event_context
+from .mentions_budget import SimulationBudgetManager
+from .mentions_context import set_context_cache_dir, gather_event_context, _extract_real_event_from_mentions_title
 from .event_understanding import UnderstandingBuilder, MentionsExtension
 from .mentions_semantic import is_wordnet_available
 
@@ -70,6 +71,10 @@ class SingleArbCoordinator:
 
         self._order_group_id: Optional[str] = None
         self._understanding_builder: Optional[UnderstandingBuilder] = None
+        self._budget_manager: Optional[SimulationBudgetManager] = None
+        self._tavily_budget = None  # TavilyBudgetManager
+        self._search_service = None  # TavilySearchService
+        self._simulation_scheduler_task: Optional[asyncio.Task] = None
         self._running = False
         self._started_at: Optional[float] = None
 
@@ -129,10 +134,32 @@ class SingleArbCoordinator:
             logger.error("No events loaded - single-arb system cannot start")
             return
 
-        # 2a. Build event understanding for all events
+        # 2a. Fetch candlesticks for all events
+        await self._fetch_all_candlesticks()
+
+        # 2b. Initialize Tavily search service (before understanding build)
+        if self._config.tavily_enabled and self._config.tavily_api_key:
+            from .tavily_budget import TavilyBudgetManager
+            from .tavily_service import TavilySearchService
+            self._tavily_budget = TavilyBudgetManager(
+                monthly_limit=self._config.tavily_monthly_budget,
+            )
+            self._search_service = TavilySearchService(
+                api_key=self._config.tavily_api_key,
+                budget_manager=self._tavily_budget,
+                search_depth=self._config.tavily_search_depth,
+                max_results=self._config.tavily_max_results,
+            )
+            logger.info(
+                f"[TAVILY] Search service initialized "
+                f"(depth={self._config.tavily_search_depth}, "
+                f"budget={self._config.tavily_monthly_budget})"
+            )
+
+        # 2c. Build event understanding for all events
         await self._build_all_understanding()
 
-        # 2b. Initialize mentions for applicable events
+        # 2c. Initialize mentions for applicable events
         mentions_enabled = getattr(self._config, "mentions_enabled", True)
         mentions_prewarm = getattr(self._config, "mentions_prewarm_enabled", False)
         if mentions_enabled:
@@ -145,6 +172,8 @@ class SingleArbCoordinator:
             # Pre-warm informed simulations (optional, can be slow)
             if mentions_prewarm:
                 await self._prewarm_mentions_simulations()
+            # 2d. Initialize simulation budget manager for mentions events
+            self._initialize_budget_manager()
 
         # 3. Subscribe all market tickers to orderbook WS
         market_tickers = self._index.market_tickers
@@ -222,11 +251,13 @@ class SingleArbCoordinator:
                 if use_new_gateway:
                     tool_overrides = self._build_gateway_tool_overrides()
 
+                cheval_model = getattr(self._config, "single_arb_cheval_model", "claude-haiku-4-5-20251001")
                 captain_kwargs = dict(
                     cycle_interval=captain_interval,
                     event_callback=self._emit_agent_event,
                     memory_data_dir=DEFAULT_MEMORY_DIR,
                     tool_overrides=tool_overrides,
+                    cheval_model=cheval_model,
                 )
                 if use_new_gateway:
                     captain_kwargs["index"] = self._index
@@ -252,6 +283,13 @@ class SingleArbCoordinator:
 
         # 10. Start exchange status monitor
         self._exchange_monitor_task = asyncio.create_task(self._exchange_monitor_loop())
+
+        # 10a. Start candlestick refresh loop
+        self._candlestick_refresh_task = asyncio.create_task(self._candlestick_refresh_loop())
+
+        # 10b. Start simulation budget scheduler (mentions)
+        if mentions_enabled and self._budget_manager:
+            self._simulation_scheduler_task = asyncio.create_task(self._simulation_scheduler_loop())
 
         # 11. Broadcast initial snapshot
         await self._broadcast_snapshot()
@@ -282,6 +320,24 @@ class SingleArbCoordinator:
             except asyncio.CancelledError:
                 pass
             self._exchange_monitor_task = None
+
+        # Stop candlestick refresh
+        if getattr(self, "_candlestick_refresh_task", None):
+            self._candlestick_refresh_task.cancel()
+            try:
+                await self._candlestick_refresh_task
+            except asyncio.CancelledError:
+                pass
+            self._candlestick_refresh_task = None
+
+        # Stop simulation scheduler
+        if getattr(self, "_simulation_scheduler_task", None):
+            self._simulation_scheduler_task.cancel()
+            try:
+                await self._simulation_scheduler_task
+            except asyncio.CancelledError:
+                pass
+            self._simulation_scheduler_task = None
 
         if self._captain:
             await self._captain.stop()
@@ -433,6 +489,183 @@ class SingleArbCoordinator:
 
         logger.info("[SINGLE_ARB] Exchange monitor stopped")
 
+    async def _fetch_all_candlesticks(self) -> None:
+        """Fetch 7-day hourly candlesticks for all loaded events."""
+        if not self._index:
+            return
+
+        client = self._get_trading_client()
+        if not client:
+            logger.warning("[CANDLESTICKS] No trading client for candlestick fetch")
+            return
+
+        now = int(time.time())
+        start_ts = now - (7 * 24 * 60 * 60)  # 7 days ago
+        fetched = 0
+
+        for event_ticker, event in self._index.events.items():
+            try:
+                series_ticker = event.series_ticker
+                if not series_ticker:
+                    logger.debug(f"[CANDLESTICKS] No series_ticker for {event_ticker}, skipping")
+                    continue
+
+                resp = await client.get_event_candlesticks(
+                    series_ticker=series_ticker,
+                    event_ticker=event_ticker,
+                    start_ts=start_ts,
+                    end_ts=now,
+                    period_interval=60,  # hourly intervals
+                )
+
+                if resp:
+                    event.candlesticks = resp
+                    event.candlesticks_fetched_at = time.time()
+                    fetched += 1
+                    total_candles = sum(
+                        len(c) for c in resp.get("market_candlesticks", []) if c
+                    )
+                    logger.debug(
+                        f"[CANDLESTICKS] {event_ticker}: {total_candles} candles "
+                        f"across {len(resp.get('market_tickers', []))} markets"
+                    )
+
+            except Exception as e:
+                logger.warning(f"[CANDLESTICKS] Failed for {event_ticker}: {e}")
+
+            await asyncio.sleep(0.3)  # Rate limit protection
+
+        logger.info(f"[CANDLESTICKS] Fetched candlesticks for {fetched}/{len(self._index.events)} events")
+
+    async def _candlestick_refresh_loop(self) -> None:
+        """Background task to refresh candlesticks every 30 minutes."""
+        logger.info("[CANDLESTICKS] Refresh loop started (30 min interval)")
+        while self._running:
+            try:
+                await asyncio.sleep(30 * 60)  # 30 minutes
+                if not self._running:
+                    break
+                await self._fetch_all_candlesticks()
+                await self._broadcast_snapshot()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"[CANDLESTICKS] Refresh error: {e}")
+                await asyncio.sleep(60)
+        logger.info("[CANDLESTICKS] Refresh loop stopped")
+
+    def _initialize_budget_manager(self) -> None:
+        """Initialize the SimulationBudgetManager and register all mentions events."""
+        if not self._index:
+            return
+
+        self._budget_manager = SimulationBudgetManager()
+
+        registered = 0
+        for event_ticker, event in self._index.events.items():
+            if self._is_mentions_event(event):
+                self._budget_manager.register_event(event_ticker)
+                # Record baselines that were already established
+                if event.mentions_data and event.mentions_data.get("baseline_estimates"):
+                    self._budget_manager.record_simulation(event_ticker, 10, "blind")
+                registered += 1
+
+        if registered > 0:
+            logger.info(f"[BUDGET] Registered {registered} mentions events with budget manager")
+
+    async def _simulation_scheduler_loop(self) -> None:
+        """Background task that checks budget manager and triggers simulations.
+
+        Runs every 60s, checks should_simulate() for each mentions event,
+        and runs the appropriate simulation (blind/informed) in background.
+        """
+        logger.info("[BUDGET] Simulation scheduler started (60s interval)")
+        while self._running:
+            try:
+                await asyncio.sleep(60)
+                if not self._running or not self._budget_manager:
+                    break
+
+                now = time.time()
+                for event_ticker, event in self._index.events.items():
+                    if not self._is_mentions_event(event):
+                        continue
+                    if not event.mentions_data:
+                        continue
+
+                    # Compute time to close
+                    time_to_close_hours = None
+                    for m in event.markets.values():
+                        if m.close_time:
+                            try:
+                                from datetime import datetime
+                                ct = m.close_time.replace("Z", "+00:00")
+                                close_dt = datetime.fromisoformat(ct)
+                                hours = (close_dt.timestamp() - now) / 3600
+                                if time_to_close_hours is None or hours < time_to_close_hours:
+                                    time_to_close_hours = hours
+                            except (ValueError, TypeError):
+                                pass
+
+                    has_baseline = bool(event.mentions_data.get("baseline_estimates"))
+                    has_edge = False  # TODO: could check compute_edge results
+                    understanding_updated = False  # Would be set by update_understanding
+
+                    should_run, reason, n_sims, mode = self._budget_manager.should_simulate(
+                        event_ticker=event_ticker,
+                        time_to_close_hours=time_to_close_hours,
+                        has_baseline=has_baseline,
+                        has_edge_signal=has_edge,
+                        understanding_updated=understanding_updated,
+                    )
+
+                    if should_run:
+                        logger.info(
+                            f"[BUDGET:SCHEDULER] Triggering {mode} simulation for {event_ticker}: "
+                            f"{reason} (n={n_sims})"
+                        )
+                        try:
+                            from .mentions_simulator import run_mentions_simulation
+
+                            # Get terms from lexeme pack
+                            lexeme_pack = event.mentions_data.get("lexeme_pack", {})
+                            entity = lexeme_pack.get("entity", "")
+                            terms = lexeme_pack.get("accepted_forms", [entity]) if entity else []
+
+                            if terms:
+                                result = await run_mentions_simulation(
+                                    event_ticker=event_ticker,
+                                    event_title=event.title,
+                                    mention_terms=terms[:5],
+                                    n_simulations=n_sims,
+                                    cache_dir=os.path.join(DEFAULT_MEMORY_DIR, "simulations"),
+                                    mode=mode,
+                                    mentions_data=event.mentions_data,
+                                )
+
+                                # Update event mentions_data
+                                estimates = result.get("estimates", {})
+                                if estimates:
+                                    if mode == "blind" and not event.mentions_data.get("baseline_estimates"):
+                                        event.mentions_data["baseline_estimates"] = estimates
+                                    event.mentions_data["current_estimates"] = estimates
+                                    event.mentions_data["last_simulation_ts"] = time.time()
+                                    event.mentions_data["simulation_mode"] = mode
+
+                                # Record against budget
+                                self._budget_manager.record_simulation(event_ticker, n_sims, mode)
+
+                        except Exception as e:
+                            logger.error(f"[BUDGET:SCHEDULER] Simulation failed for {event_ticker}: {e}")
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"[BUDGET:SCHEDULER] Loop error: {e}")
+                await asyncio.sleep(10)
+
+        logger.info("[BUDGET] Simulation scheduler stopped")
+
     async def _build_all_understanding(self) -> None:
         """Build EventUnderstanding for all loaded events.
 
@@ -442,9 +675,12 @@ class SingleArbCoordinator:
         if not self._index:
             return
 
-        # Create builder with cache dir and register extensions
+        # Create builder with cache dir, search service, and register extensions
         understanding_cache_dir = os.path.join(DEFAULT_MEMORY_DIR, "understanding")
-        self._understanding_builder = UnderstandingBuilder(cache_dir=understanding_cache_dir)
+        self._understanding_builder = UnderstandingBuilder(
+            cache_dir=understanding_cache_dir,
+            search_service=self._search_service,
+        )
         self._understanding_builder.register_extension(MentionsExtension())
 
         logger.info("[UNDERSTANDING] Building event understanding...")
@@ -523,6 +759,16 @@ class SingleArbCoordinator:
                     "sources_scanned": [],
                     "last_scan_ts": None,
                 }
+
+            # Extract real event name from question-format title
+            # e.g. "Will Trump say 'tariff' during the Super Bowl LX?" → "Super Bowl LX"
+            real_event_name, monitored_subject = _extract_real_event_from_mentions_title(event.title)
+            if real_event_name != event.title:
+                event.mentions_data["real_event_name"] = real_event_name
+                logger.info(f"[MENTIONS] Extracted real event name: '{real_event_name}'")
+            if monitored_subject:
+                event.mentions_data["monitored_subject"] = monitored_subject
+                logger.info(f"[MENTIONS] Monitored subject: '{monitored_subject}'")
 
             # Parse rules for each market in the event
             for market_ticker, market in event.markets.items():
@@ -691,6 +937,7 @@ class SingleArbCoordinator:
             order_ttl=order_ttl,
             broadcast_callback=self._broadcast,
             understanding_builder=self._understanding_builder,
+            search_service=self._search_service,
         )
 
         # Mentions tool dependencies
@@ -699,6 +946,7 @@ class SingleArbCoordinator:
             file_store=self._memory_store,
             config=self._config,
             mentions_data_dir=DEFAULT_MEMORY_DIR,
+            budget_manager=self._budget_manager,
         )
         set_mentions_broadcast_callback(self._broadcast)
         set_context_cache_dir(DEFAULT_MEMORY_DIR)
@@ -781,6 +1029,7 @@ class SingleArbCoordinator:
             file_store=self._memory_store,
             config=self._config,
             mentions_data_dir=DEFAULT_MEMORY_DIR,
+            budget_manager=self._budget_manager,
         )
         set_mentions_broadcast_callback(self._broadcast)
         set_context_cache_dir(DEFAULT_MEMORY_DIR)
@@ -792,8 +1041,8 @@ class SingleArbCoordinator:
         """Build tool override lists from the new agent_tools module."""
         from ..agent_tools import captain_tools, commando_tools, mentions_tools as new_mentions
 
-        # Import the self-improvement tools from legacy (not yet in agent_tools)
-        from .tools import report_issue, get_issues
+        # Import the self-improvement + surveillance + search tools from legacy (not yet in agent_tools)
+        from .tools import report_issue, get_issues, analyze_microstructure, analyze_orderbook_patterns, search_event_news
 
         return {
             "captain": [
@@ -804,6 +1053,7 @@ class SingleArbCoordinator:
                 captain_tools.get_positions,
                 captain_tools.get_balance,
                 captain_tools.update_understanding,
+                search_event_news,
                 report_issue,
                 get_issues,
             ],
@@ -828,6 +1078,14 @@ class SingleArbCoordinator:
                 new_mentions.query_wordnet,
                 new_mentions.get_mentions_rules,
                 new_mentions.get_mentions_summary,
+                commando_tools.record_learning,
+            ],
+            "cheval": [
+                analyze_microstructure,
+                analyze_orderbook_patterns,
+                captain_tools.get_event_snapshot,
+                commando_tools.get_recent_trades,
+                commando_tools.get_market_orderbook,
                 commando_tools.record_learning,
             ],
         }
@@ -1001,5 +1259,11 @@ class SingleArbCoordinator:
             captain_stats = self._captain.get_stats()
             captain_stats["paused_by_exchange"] = self._captain_paused_by_exchange
             details["captain"] = captain_stats
+
+        if self._budget_manager:
+            details["simulation_budgets"] = self._budget_manager.get_all_budgets()
+
+        if self._tavily_budget:
+            details["tavily_budget"] = self._tavily_budget.get_budget_status()
 
         return details

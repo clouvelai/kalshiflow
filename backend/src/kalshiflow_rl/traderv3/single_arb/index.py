@@ -391,6 +391,15 @@ class EventMeta:
     loaded_at: float = 0.0
     updated_at: float = 0.0
 
+    # Event metadata (image, links)
+    image_url: Optional[str] = None
+    kalshi_url: Optional[str] = None
+
+    # Candlestick data (fetched at startup, refreshed periodically)
+    # Raw response from get_event_candlesticks: {market_tickers, market_candlesticks}
+    candlesticks: Dict[str, Any] = field(default_factory=dict)
+    candlesticks_fetched_at: float = 0.0
+
     # Structured event understanding (populated by UnderstandingBuilder)
     # Contains: participants, key_factors, trading_summary, timeline, extensions, etc.
     understanding: Optional[Dict[str, Any]] = None
@@ -444,6 +453,8 @@ class EventMeta:
                 category=event.get("category", ""),
                 mutually_exclusive=event.get("mutually_exclusive", False),
                 subtitle=event.get("sub_title", ""),
+                image_url=event.get("image_url") or event.get("featured_image_url"),
+                kalshi_url=f"https://kalshi.com/markets/{event_ticker.lower()}",
                 loaded_at=time.time(),
             )
 
@@ -491,6 +502,123 @@ class EventMeta:
 
         except Exception as e:
             logger.error(f"Failed to sync EventMeta {self.event_ticker}: {e}")
+
+    # ---- Candlestick Helpers ----
+
+    def candlestick_summary(self) -> Dict[str, Any]:
+        """Token-efficient candlestick summary per market.
+
+        Returns compact trend info: price_trend, price_range, volume_trend, current_vs_7d_avg.
+        """
+        if not self.candlesticks:
+            return {}
+
+        market_tickers = self.candlesticks.get("market_tickers", [])
+        market_candlesticks = self.candlesticks.get("market_candlesticks", [])
+
+        if not market_tickers or not market_candlesticks:
+            return {}
+
+        summaries = {}
+        for i, ticker in enumerate(market_tickers):
+            if i >= len(market_candlesticks) or not market_candlesticks[i]:
+                continue
+
+            candles = market_candlesticks[i]
+            if len(candles) < 2:
+                continue
+
+            # Extract price OHLC from candles
+            prices = []
+            volumes = []
+            for c in candles:
+                price_data = c.get("price", {})
+                if price_data:
+                    close = price_data.get("close")
+                    if close is not None:
+                        prices.append(close)
+                vol = c.get("volume", 0)
+                if vol is not None:
+                    volumes.append(vol)
+
+            if len(prices) < 2:
+                continue
+
+            # Trend: compare first third vs last third
+            third = max(1, len(prices) // 3)
+            early_avg = sum(prices[:third]) / third
+            late_avg = sum(prices[-third:]) / third
+            diff = late_avg - early_avg
+
+            if diff > 3:
+                price_trend = "up"
+            elif diff < -3:
+                price_trend = "down"
+            else:
+                price_trend = "flat"
+
+            # Volume trend
+            volume_trend = "flat"
+            if len(volumes) >= 4:
+                early_vol = sum(volumes[:len(volumes)//2])
+                late_vol = sum(volumes[len(volumes)//2:])
+                if late_vol > early_vol * 1.5:
+                    volume_trend = "increasing"
+                elif late_vol < early_vol * 0.5:
+                    volume_trend = "decreasing"
+
+            # Current vs 7d avg
+            avg_price = sum(prices) / len(prices)
+            current_price = prices[-1]
+
+            summaries[ticker] = {
+                "price_trend": price_trend,
+                "price_high": max(prices),
+                "price_low": min(prices),
+                "price_current": current_price,
+                "price_7d_avg": round(avg_price, 1),
+                "volume_trend": volume_trend,
+                "total_volume": sum(volumes),
+                "candle_count": len(candles),
+            }
+
+        return summaries
+
+    def candlestick_series(self) -> Dict[str, list]:
+        """Return compact time-series per market for frontend charting.
+
+        Returns dict keyed by market ticker, each value is a list of
+        {ts, c, v} dicts (epoch seconds, close price in cents, volume).
+        """
+        if not self.candlesticks:
+            return {}
+
+        market_tickers = self.candlesticks.get("market_tickers", [])
+        market_candlesticks = self.candlesticks.get("market_candlesticks", [])
+        if not market_tickers or not market_candlesticks:
+            return {}
+
+        series = {}
+        for i, ticker in enumerate(market_tickers):
+            if i >= len(market_candlesticks) or not market_candlesticks[i]:
+                continue
+
+            points = []
+            for c in market_candlesticks[i]:
+                price_data = c.get("price", {})
+                close = price_data.get("close") if price_data else None
+                if close is None:
+                    continue
+                points.append({
+                    "ts": c.get("end_period_ts", c.get("start_period_ts", 0)),
+                    "c": close,
+                    "v": c.get("volume", 0),
+                })
+
+            if points:
+                series[ticker] = points
+
+        return series
 
     # ---- Signal Operators ----
 
@@ -603,6 +731,10 @@ class EventMeta:
             "all_markets_have_data": self.all_markets_have_data,
             "loaded_at": self.loaded_at,
             "updated_at": self.updated_at,
+            "image_url": self.image_url,
+            "kalshi_url": self.kalshi_url,
+            "candlestick_summary": self.candlestick_summary() if self.candlesticks else {},
+            "candlestick_series": self.candlestick_series() if self.candlesticks else {},
         }
 
         # Add micro_summary aggregated across markets

@@ -657,7 +657,10 @@ async def build_persona_from_event(
         extracted_speaker: Optional[ExtractedSpeaker] = None
 
         # PRIMARY: Use lexeme_pack.speaker if available and role matches
-        if lexeme_speaker and role in ("speaker", "press_secretary", "president", "ceo"):
+        # For sports events, the lexeme_speaker is the MONITORED person (e.g., "Trump"),
+        # NOT a broadcaster. Only use as speaker for politics/corporate domains.
+        is_sports = template.domain == "sports"
+        if lexeme_speaker and not is_sports and role in ("speaker", "press_secretary", "president", "ceo"):
             speaker_name = lexeme_speaker
             enhancement_level = 1
             logger.info(f"[PERSONA] {role}: Using lexeme_pack speaker '{speaker_name}' (Level 1)")
@@ -773,15 +776,30 @@ async def gather_event_context(
         domain=domain,
     )
 
-    # Domain-specific gathering
+    # For mentions events, extract the real event name from the question-format title
+    # e.g. "Will Trump say 'tariff' during the Super Bowl LX?" → "Super Bowl LX"
+    search_title = event_title
+    if mentions_data:
+        real_event_name, monitored_subject = _extract_real_event_from_mentions_title(event_title)
+        if real_event_name != event_title:
+            search_title = real_event_name
+            logger.info(f"[CONTEXT] Extracted real event '{real_event_name}' from mentions title")
+        if monitored_subject and monitored_subject not in ctx.key_figures:
+            ctx.key_figures.append(monitored_subject)
+            logger.info(f"[CONTEXT] Added monitored subject '{monitored_subject}' to key_figures")
+        # Re-detect domain using the cleaned event name
+        domain = _detect_domain(event_ticker, search_title)
+        ctx.domain = domain
+
+    # Domain-specific gathering (use cleaned search_title for better lookups)
     if domain == "sports":
-        await _gather_sports_event_context(ctx, event_title)
+        await _gather_sports_event_context(ctx, search_title)
     elif domain == "corporate":
-        await _gather_corporate_event_context(ctx, event_title)
+        await _gather_corporate_event_context(ctx, search_title)
     elif domain == "politics":
-        await _gather_politics_event_context(ctx, event_title)
+        await _gather_politics_event_context(ctx, search_title)
     else:
-        await _gather_generic_event_context(ctx, event_title)
+        await _gather_generic_event_context(ctx, search_title)
 
     # Build speaker personas (called once, cached with EventContext)
     # Uses mentions_data.lexeme_pack.speaker if available (most reliable source)
@@ -810,14 +828,52 @@ async def _gather_sports_event_context(ctx: EventContext, event_title: str) -> N
     ctx.participants = teams
 
     # Detect specific event type
-    if "super bowl" in event_title.lower():
+    title_lower = event_title.lower()
+    if "super bowl" in title_lower:
         ctx.event_type = "Super Bowl"
 
-        # Fetch Super Bowl Wikipedia
-        wiki = await _fetch_wikipedia("Super Bowl")
-        if wiki:
-            ctx.historical_notes.append(wiki.get("extract", "")[:300])
-            ctx.wikipedia_urls.append(wiki.get("url", ""))
+        # Try specific Super Bowl edition first (e.g., "Super Bowl LX")
+        # Extract Roman numeral or number from title
+        sb_specific = None
+        sb_match = re.search(r"super bowl\s+([IVXLCDM]+|\d+)", event_title, re.IGNORECASE)
+        if sb_match:
+            sb_specific = f"Super Bowl {sb_match.group(1)}"
+
+        if sb_specific:
+            wiki = await _fetch_wikipedia(sb_specific)
+            if wiki and wiki.get("extract"):
+                ctx.historical_notes.append(wiki.get("extract", "")[:500])
+                ctx.wikipedia_urls.append(wiki.get("url", ""))
+                # Extract venue, network, date from the specific SB article
+                extract = wiki.get("extract", "")
+                _parse_super_bowl_details(ctx, extract)
+                logger.info(f"[CONTEXT] Found specific Super Bowl article: {sb_specific}")
+            else:
+                # Fallback to generic Super Bowl
+                wiki = await _fetch_wikipedia("Super Bowl")
+                if wiki:
+                    ctx.historical_notes.append(wiki.get("extract", "")[:300])
+                    ctx.wikipedia_urls.append(wiki.get("url", ""))
+        else:
+            wiki = await _fetch_wikipedia("Super Bowl")
+            if wiki:
+                ctx.historical_notes.append(wiki.get("extract", "")[:300])
+                ctx.wikipedia_urls.append(wiki.get("url", ""))
+
+        # Search for broadcast team specifically
+        broadcast_query = f"{sb_specific or 'Super Bowl'} 2026 broadcast team announcers"
+        broadcast_results = await _duckduckgo_search(broadcast_query, max_results=3)
+        for r in broadcast_results:
+            snippet = r.get("snippet", "")
+            title_r = r.get("title", "")
+            combined = f"{title_r} {snippet}"
+            # Use LLM extraction for announcer names
+            speakers = await _llm_extract_speakers_from_text(
+                combined, event_title, "broadcast announcer"
+            )
+            for speaker in speakers:
+                if speaker.name and speaker.name not in ctx.announcers:
+                    ctx.announcers.append(speaker.name)
 
     # Fetch each team's Wikipedia
     for team in teams:
@@ -828,26 +884,67 @@ async def _gather_sports_event_context(ctx: EventContext, event_title: str) -> N
 
     # Try to find key players
     for team in teams[:2]:
-        # Search for team roster / key players
         results = await _duckduckgo_search(f"{team} quarterback roster 2025", max_results=2)
         for r in results:
             snippet = r.get("snippet", "")
-            # Extract player names (simplified - could use NER)
-            # Just grab the team name for now
             ctx.key_figures.append(f"{team} players")
 
-    # Try to find announcers
-    results = await _duckduckgo_search(f"{event_title} broadcast announcers commentators", max_results=3)
-    for r in results:
-        # Could extract names with NER, for now just note the search
-        ctx.wikipedia_urls.append(r.get("url", ""))
+    # Try to find announcers (only if not already found via Super Bowl broadcast search)
+    if not ctx.announcers:
+        results = await _duckduckgo_search(f"{event_title} broadcast announcers commentators 2026", max_results=3)
+        for r in results:
+            ctx.wikipedia_urls.append(r.get("url", ""))
 
-    # Venue search
-    results = await _duckduckgo_search(f"{event_title} stadium venue location", max_results=2)
-    for r in results:
-        snippet = r.get("snippet", "")
-        if "stadium" in snippet.lower() or "arena" in snippet.lower():
-            ctx.venue = snippet[:150]
+    # Venue search (only if not already found)
+    if not ctx.venue:
+        results = await _duckduckgo_search(f"{event_title} stadium venue location 2026", max_results=2)
+        for r in results:
+            snippet = r.get("snippet", "")
+            if "stadium" in snippet.lower() or "arena" in snippet.lower():
+                ctx.venue = snippet[:150]
+
+
+def _parse_super_bowl_details(ctx: EventContext, extract: str) -> None:
+    """Parse venue, network, date, location from a Super Bowl Wikipedia extract."""
+    # Venue
+    for pat in [
+        r"(?:held|played|take place) at (?:the )?([A-Z][A-Za-z\s]+(?:Stadium|Arena|Dome|Field|Center|Centre))",
+        r"([A-Z][A-Za-z\s]+(?:Stadium|Arena|Dome|Field|Center|Centre))",
+    ]:
+        vm = re.search(pat, extract)
+        if vm:
+            ctx.venue = vm.group(1).strip()
+            break
+
+    # Location
+    for pat in [
+        r"in ([A-Z][A-Za-z\s,]+(?:Louisiana|Florida|Arizona|California|Nevada|Texas|Georgia))",
+        r"in ([A-Z][A-Za-z]+(?:,\s*[A-Z][A-Za-z]+)?)",
+    ]:
+        lm = re.search(pat, extract)
+        if lm:
+            ctx.location = lm.group(1).strip().rstrip(".")
+            break
+
+    # Network
+    for pat in [
+        r"(?:broadcast|televised|aired|airing) (?:by|on) ([A-Z]{2,4})",
+        r"(Fox|CBS|NBC|ABC|ESPN|FOX)\s+(?:will |to )?(?:broadcast|televise|air)",
+    ]:
+        nm = re.search(pat, extract, re.IGNORECASE)
+        if nm:
+            ctx.network = nm.group(1).strip().upper()
+            break
+
+    # Date
+    for pat in [
+        r"(?:on |scheduled for )([A-Z][a-z]+ \d{1,2}, \d{4})",
+        r"(February \d{1,2}, \d{4})",
+    ]:
+        dm = re.search(pat, extract)
+        if dm:
+            ctx.date = dm.group(1)
+            break
 
 
 async def _gather_corporate_event_context(ctx: EventContext, event_title: str) -> None:
@@ -1337,6 +1434,47 @@ def _detect_domain(event_ticker: str, event_title: str, category: str = "") -> s
         return "entertainment"
 
     return "generic"
+
+
+def _extract_real_event_from_mentions_title(title: str) -> Tuple[str, Optional[str]]:
+    """Extract the underlying event name from a question-format mentions title.
+
+    Mentions titles are questions like:
+    - "Will Trump say 'tariff' during the Super Bowl LX?"
+    - "How many times will the announcer say 'dynasty' at the Super Bowl LX?"
+
+    Returns:
+        Tuple of (real_event_name, monitored_subject)
+        e.g. ("Super Bowl LX", "Trump")
+    """
+    monitored_subject = None
+
+    # Extract monitored subject (the person being watched)
+    subject_match = re.match(
+        r"(?:Will|How many times will|How often will)\s+(.+?)\s+(?:say|mention|use)\b",
+        title, re.IGNORECASE,
+    )
+    if subject_match:
+        raw_subject = subject_match.group(1).strip()
+        # Clean "the announcer" → None (not a specific person)
+        if raw_subject.lower() not in ("the announcer", "the commentator", "the host", "an announcer"):
+            monitored_subject = raw_subject
+
+    # Extract real event name from "during/at/in the {EVENT}" patterns
+    event_patterns = [
+        r"(?:during|at|in)\s+(?:the\s+)?(.+?)\s*\??$",
+        r"(?:during|at|in)\s+(.+?)\s*\??$",
+    ]
+    for pattern in event_patterns:
+        event_match = re.search(pattern, title, re.IGNORECASE)
+        if event_match:
+            event_name = event_match.group(1).strip().rstrip("?")
+            # Validate: the extracted name should look like an event, not residual text
+            if len(event_name) > 3:
+                return (event_name, monitored_subject)
+
+    # Fallback: return original title
+    return (title, monitored_subject)
 
 
 def _extract_teams_from_title(title: str) -> List[str]:

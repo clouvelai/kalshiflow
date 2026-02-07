@@ -108,6 +108,15 @@ class V3Config:
     single_arb_max_contracts: int = 50  # Max contracts per leg
     single_arb_captain_enabled: bool = True  # Enable LLM Captain
     single_arb_order_ttl: int = 30  # Order TTL in seconds (auto-cancel)
+    single_arb_cheval_model: str = "claude-haiku-4-5-20251001"  # ChevalDeTroie model (configurable)
+
+    # Tavily Search Configuration
+    tavily_api_key: str = ""                    # TAVILY_API_KEY env var
+    tavily_enabled: bool = True                 # V3_TAVILY_ENABLED (auto-disable if no key)
+    tavily_search_depth: str = "advanced"       # V3_TAVILY_SEARCH_DEPTH (basic=1 credit, advanced=2)
+    tavily_monthly_budget: int = 1000           # V3_TAVILY_MONTHLY_BUDGET
+    tavily_news_time_range: str = "week"        # V3_TAVILY_NEWS_TIME_RANGE (day/week/month)
+    tavily_max_results: int = 20                # V3_TAVILY_MAX_RESULTS
 
     # Gateway Configuration (new unified client)
     use_new_gateway: bool = True  # Use KalshiGateway instead of demo_client + WS clients
@@ -244,6 +253,18 @@ class V3Config:
         single_arb_max_contracts = int(os.environ.get("V3_SINGLE_ARB_MAX_CONTRACTS", "50"))
         single_arb_captain_enabled = os.environ.get("V3_SINGLE_ARB_CAPTAIN_ENABLED", "true").lower() == "true"
         single_arb_order_ttl = int(os.environ.get("V3_SINGLE_ARB_ORDER_TTL", "30"))
+        single_arb_cheval_model = os.environ.get("V3_SINGLE_ARB_CHEVAL_MODEL", "claude-haiku-4-5-20251001")
+
+        # Tavily search configuration
+        tavily_api_key = os.environ.get("TAVILY_API_KEY", "")
+        tavily_enabled = os.environ.get("V3_TAVILY_ENABLED", "true").lower() == "true"
+        # Auto-disable if no API key
+        if not tavily_api_key:
+            tavily_enabled = False
+        tavily_search_depth = os.environ.get("V3_TAVILY_SEARCH_DEPTH", "advanced")
+        tavily_monthly_budget = int(os.environ.get("V3_TAVILY_MONTHLY_BUDGET", "1000"))
+        tavily_news_time_range = os.environ.get("V3_TAVILY_NEWS_TIME_RANGE", "week")
+        tavily_max_results = int(os.environ.get("V3_TAVILY_MAX_RESULTS", "20"))
 
         # Gateway configuration
         use_new_gateway = os.environ.get("V3_USE_NEW_GATEWAY", "true").lower() == "true"
@@ -305,6 +326,13 @@ class V3Config:
             single_arb_max_contracts=single_arb_max_contracts,
             single_arb_captain_enabled=single_arb_captain_enabled,
             single_arb_order_ttl=single_arb_order_ttl,
+            single_arb_cheval_model=single_arb_cheval_model,
+            tavily_api_key=tavily_api_key,
+            tavily_enabled=tavily_enabled,
+            tavily_search_depth=tavily_search_depth,
+            tavily_monthly_budget=tavily_monthly_budget,
+            tavily_news_time_range=tavily_news_time_range,
+            tavily_max_results=tavily_max_results,
             use_new_gateway=use_new_gateway,
             sync_duration=sync_duration,
             health_check_interval=health_check_interval,
@@ -362,10 +390,17 @@ class V3Config:
         else:
             logger.info(f"  - Gateway: LEGACY (demo_client + separate WS clients)")
 
+        # Log Tavily config
+        if tavily_enabled:
+            logger.info(f"  - Tavily search: ENABLED (depth={tavily_search_depth}, budget={tavily_monthly_budget}, max_results={tavily_max_results})")
+        else:
+            logger.info(f"  - Tavily search: DISABLED (no TAVILY_API_KEY)")
+
         # Log single-arb config
         if single_arb_enabled:
             logger.info(f"  - Single-event arb: ENABLED (events={','.join(single_arb_event_tickers)}, edge>{single_arb_min_edge_cents}c, fee={single_arb_fee_per_contract}c)")
             logger.info(f"    - Captain: {'ENABLED' if single_arb_captain_enabled else 'DISABLED'} (interval={single_arb_captain_interval}s)")
+            logger.info(f"    - ChevalDeTroie model: {single_arb_cheval_model}")
         else:
             logger.info(f"  - Single-event arb: DISABLED")
 

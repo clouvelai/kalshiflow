@@ -23,6 +23,7 @@ _order_ttl = 60         # Default TTL in seconds (1 min for demo)
 _broadcast_callback = None  # Async callback to broadcast events to frontend
 _captain_order_ids = set()  # Track order IDs placed by Captain this session
 _understanding_builder = None  # UnderstandingBuilder for event context
+_search_service = None  # TavilySearchService for web search
 
 
 def set_dependencies(
@@ -35,13 +36,14 @@ def set_dependencies(
     broadcast_callback=None,
     reset_session=False,
     understanding_builder=None,
+    search_service=None,
 ) -> None:
     """Set shared dependencies for all tools.
 
     Args:
         reset_session: If True, clears captain_order_ids (call on new session start)
     """
-    global _index, _trading_client, _file_store, _config, _order_group_id, _order_ttl, _broadcast_callback, _captain_order_ids, _understanding_builder
+    global _index, _trading_client, _file_store, _config, _order_group_id, _order_ttl, _broadcast_callback, _captain_order_ids, _understanding_builder, _search_service
     if index is not None:
         _index = index
     if trading_client is not None:
@@ -60,6 +62,8 @@ def set_dependencies(
         _broadcast_callback = broadcast_callback
     if understanding_builder is not None:
         _understanding_builder = understanding_builder
+    if search_service is not None:
+        _search_service = search_service
     if reset_session:
         _captain_order_ids.clear()
 
@@ -206,6 +210,26 @@ async def get_event_snapshot(event_ticker: str, _ts: Optional[str] = None) -> Di
     for key in ("subtitle", "loaded_at"):
         snapshot.pop(key, None)
 
+    # Add candlestick summary (compact token-efficient version)
+    event = _index.events.get(event_ticker)
+    if event and event.candlesticks:
+        snapshot["candlestick_summary"] = event.candlestick_summary()
+
+    # Add mentions budget info if available
+    if event and event.mentions_data and event.mentions_data.get("lexeme_pack"):
+        from .mentions_tools import _budget_manager
+        if _budget_manager:
+            budget_status = _budget_manager.get_budget_status(event_ticker)
+            if budget_status:
+                snapshot["mentions_budget"] = {
+                    "phase": budget_status["phase"],
+                    "simulations_used": budget_status["total_simulations"],
+                    "simulations_remaining": budget_status["simulations_remaining"],
+                    "cost_used": budget_status["total_estimated_cost"],
+                    "budget_pct_used": budget_status["budget_pct_used"],
+                    "next_scheduled_ts": budget_status["next_scheduled_ts"],
+                }
+
     return snapshot
 
 
@@ -214,24 +238,22 @@ async def get_events_summary() -> List[Dict[str, Any]]:
     """Get a compact summary of all monitored events for scanning.
 
     Returns a lightweight list with edge calculations, data coverage,
-    and MENTIONS DATA per event. Use this for initial scanning, then
-    drill into specific events with get_event_snapshot().
+    event structure (mutually_exclusive, market_regime), and MENTIONS DATA per event.
+    Use this for initial scanning, then drill into specific events with get_event_snapshot().
 
-    MENTIONS MARKETS include:
-    - is_mentions_market: True for "will X say Y?" events
-    - mentions_entity: The primary term being tracked
-    - baseline_probability: Stable estimate from blind simulation
-    - current_probability: Context-aware estimate (may differ from baseline)
-    - has_baseline: True if baseline established (required for trading)
-    - simulation_stale: True if >5 min since last refresh
+    KEY FIELDS for strategy selection:
+    - mutually_exclusive: True = S1 (sum arb) may apply. False = independent outcomes.
+    - market_regime: "pre_event" (>24h), "live" (1-24h), "settling" (<1h) — guides strategy.
+    - time_to_close_hours: Hours until earliest market closes.
 
     Returns:
-        List of dicts with event_ticker, title, market_count, edge info, mentions data
+        List of dicts with event_ticker, title, market_count, edge info, structure, mentions data
     """
     if not _index:
         return {"error": "EventArbIndex not available"}
 
     fee = _index._fee_per_contract
+    now = time.time()
     summary = []
     for et, event in _index.events.items():
         sum_bid = event.market_sum_bid()
@@ -243,12 +265,40 @@ async def get_events_summary() -> List[Dict[str, Any]]:
         total_vol5m = sum(m.micro.volume_5m for m in event.markets.values())
         total_whale = sum(m.micro.whale_trade_count for m in event.markets.values())
 
+        # Compute time to close from earliest market close_time
+        time_to_close_hours = None
+        market_regime = "unknown"
+        for m in event.markets.values():
+            if m.close_time:
+                try:
+                    from datetime import datetime, timezone
+                    # Parse ISO timestamp (handles both Z and +00:00 formats)
+                    ct = m.close_time.replace("Z", "+00:00")
+                    close_dt = datetime.fromisoformat(ct)
+                    hours = (close_dt.timestamp() - now) / 3600
+                    if time_to_close_hours is None or hours < time_to_close_hours:
+                        time_to_close_hours = hours
+                except (ValueError, TypeError):
+                    pass
+
+        if time_to_close_hours is not None:
+            time_to_close_hours = round(time_to_close_hours, 1)
+            if time_to_close_hours > 24:
+                market_regime = "pre_event"
+            elif time_to_close_hours > 1:
+                market_regime = "live"
+            else:
+                market_regime = "settling"
+
         summary_item = {
             "event_ticker": et,
             "title": event.title,
             "market_count": event.markets_total,
             "markets_with_data": event.markets_with_data,
             "all_markets_have_data": event.all_markets_have_data,
+            "mutually_exclusive": event.mutually_exclusive,
+            "time_to_close_hours": time_to_close_hours,
+            "market_regime": market_regime,
             "sum_yes_bid": sum_bid,
             "sum_yes_ask": sum_ask,
             "long_edge": round(long_e, 1) if long_e is not None else None,
@@ -288,6 +338,19 @@ async def get_events_summary() -> List[Dict[str, Any]]:
             last_sim = mentions_data.get("last_simulation_ts", 0)
             summary_item["simulation_stale"] = (time.time() - last_sim) > 300
             summary_item["has_baseline"] = bool(baseline)
+
+            # Budget info
+            from .mentions_tools import _budget_manager
+            if _budget_manager:
+                budget_status = _budget_manager.get_budget_status(et)
+                if budget_status:
+                    summary_item["simulation_phase"] = budget_status["phase"]
+                    summary_item["budget_remaining"] = budget_status["budget_remaining"]
+                    # CI width for confidence indicator
+                    if entity and entity in baseline:
+                        ci = baseline[entity].get("confidence_interval", [0, 1])
+                        if len(ci) == 2:
+                            summary_item["ci_width"] = round(ci[1] - ci[0], 3)
 
         summary.append(summary_item)
 
@@ -338,6 +401,143 @@ async def get_market_orderbook(market_ticker: str) -> Dict[str, Any]:
 
 
 @tool
+async def get_event_candlesticks(event_ticker: str, period: str = "6h") -> Dict[str, Any]:
+    """Get candlestick OHLC data for all markets in an event.
+
+    Returns 7-day price history at the specified interval.
+    The "6h" period is cached (fetched at startup, refreshed every 30 min).
+    Other periods ("1h", "1d") trigger a fresh API call.
+
+    Args:
+        event_ticker: The Kalshi event ticker
+        period: Candle interval - "6h" (cached), "1h", or "1d" (fresh fetch)
+
+    Returns:
+        Dict with per-market OHLC candles, volume, and open interest
+    """
+    if not _index:
+        return {"error": "EventArbIndex not available"}
+
+    event = _index.events.get(event_ticker)
+    if not event:
+        return {"error": f"Event {event_ticker} not found"}
+
+    period_map = {"1h": 60, "6h": 360, "1d": 1440}
+    interval = period_map.get(period, 360)
+
+    # Use cached data for 6h
+    if period == "6h" and event.candlesticks:
+        raw = event.candlesticks
+        tickers = raw.get("market_tickers", [])
+        candle_lists = raw.get("market_candlesticks", [])
+        result = {}
+        for i, ticker in enumerate(tickers):
+            if i < len(candle_lists) and candle_lists[i]:
+                result[ticker] = candle_lists[i][-20:]  # Last 20 candles for token efficiency
+        return {
+            "event_ticker": event_ticker,
+            "period": period,
+            "markets": result,
+            "fetched_at": event.candlesticks_fetched_at,
+            "cached": True,
+        }
+
+    # Fresh fetch for other periods
+    if not _trading_client:
+        return {"error": "Trading client not available for fresh fetch"}
+
+    if not event.series_ticker:
+        return {"error": f"No series_ticker for {event_ticker}"}
+
+    try:
+        import time as _time
+        now = int(_time.time())
+        start_ts = now - (7 * 24 * 60 * 60)
+        resp = await _trading_client.get_event_candlesticks(
+            series_ticker=event.series_ticker,
+            event_ticker=event_ticker,
+            start_ts=start_ts,
+            end_ts=now,
+            period_interval=interval,
+        )
+        tickers = resp.get("market_tickers", [])
+        candle_lists = resp.get("market_candlesticks", [])
+        result = {}
+        for i, ticker in enumerate(tickers):
+            if i < len(candle_lists) and candle_lists[i]:
+                result[ticker] = candle_lists[i][-20:]
+        return {
+            "event_ticker": event_ticker,
+            "period": period,
+            "markets": result,
+            "cached": False,
+        }
+    except Exception as e:
+        return {"error": f"Candlestick fetch failed: {e}"}
+
+
+@tool
+async def get_market_candlesticks(market_ticker: str, period: str = "6h") -> Dict[str, Any]:
+    """Get candlestick OHLC data for a single market.
+
+    Extracts data from the event-level candlestick cache.
+
+    Args:
+        market_ticker: The Kalshi market ticker
+        period: Candle interval - "6h" (cached), "1h", or "1d" (fresh fetch)
+
+    Returns:
+        Dict with OHLC candles, volume, and open interest for one market
+    """
+    if not _index:
+        return {"error": "EventArbIndex not available"}
+
+    event_ticker = _index.get_event_for_ticker(market_ticker)
+    if not event_ticker:
+        return {"error": f"Market {market_ticker} not tracked"}
+
+    event = _index.events.get(event_ticker)
+    if not event:
+        return {"error": f"Event {event_ticker} not found"}
+
+    # Extract from cached event candlesticks
+    if period == "6h" and event.candlesticks:
+        tickers = event.candlesticks.get("market_tickers", [])
+        candle_lists = event.candlesticks.get("market_candlesticks", [])
+        for i, t in enumerate(tickers):
+            if t == market_ticker and i < len(candle_lists) and candle_lists[i]:
+                return {
+                    "market_ticker": market_ticker,
+                    "event_ticker": event_ticker,
+                    "period": period,
+                    "candles": candle_lists[i][-20:],
+                    "candle_count": len(candle_lists[i]),
+                    "cached": True,
+                }
+        return {"error": f"No candlestick data for {market_ticker}"}
+
+    # Fresh fetch via event-level API
+    result = await get_event_candlesticks.ainvoke({
+        "event_ticker": event_ticker,
+        "period": period,
+    })
+    if "error" in result:
+        return result
+
+    market_data = result.get("markets", {}).get(market_ticker)
+    if not market_data:
+        return {"error": f"No candlestick data for {market_ticker} in fresh fetch"}
+
+    return {
+        "market_ticker": market_ticker,
+        "event_ticker": event_ticker,
+        "period": period,
+        "candles": market_data,
+        "cached": False,
+    }
+
+
+@tool
 async def place_order(
     ticker: str,
     side: str,
@@ -368,6 +568,30 @@ async def place_order(
         return {"error": f"Contracts must be 1-100, got {contracts}"}
     if not (1 <= price_cents <= 99):
         return {"error": f"Price must be 1-99 cents, got {price_cents}"}
+
+    # --- POSITION CONFLICT GUARD ---
+    # Block buying the opposite side on the same market (e.g., YES while holding NO).
+    # Holding both sides simultaneously guarantees losses on at least one side.
+    # If you want to hedge, exit the existing position first, then enter the new one.
+    if action == "buy":
+        try:
+            pos_resp = await _trading_client.get_positions()
+            all_positions = pos_resp.get("market_positions", pos_resp.get("positions", []))
+            for pos in all_positions:
+                if pos.get("ticker") != ticker:
+                    continue
+                position_count = pos.get("position", 0)
+                if position_count == 0:
+                    continue
+                existing_side = "yes" if position_count > 0 else "no"
+                if existing_side != side:
+                    return {
+                        "error": f"POSITION CONFLICT: Already hold {abs(position_count)} {existing_side.upper()} "
+                        f"on {ticker}. Exit existing position first with place_order(action='sell', side='{existing_side}', ...). "
+                        f"Buying {side.upper()} while holding {existing_side.upper()} on the SAME market locks in losses.",
+                    }
+        except Exception as e:
+            logger.warning(f"[SINGLE_ARB:CONFLICT_CHECK] Position check failed: {e}")
 
     try:
         expiration_ts = int(time.time()) + _order_ttl
@@ -728,6 +952,43 @@ async def execute_arb(
     if direction not in ("long", "short"):
         return {"error": f"Invalid direction: {direction}. Must be 'long' or 'short'."}
 
+    # --- INDEPENDENT EVENT WARNING ---
+    # On independent events, sum > 100% is NORMAL, not arbitrage
+    if not event_state.mutually_exclusive and direction == "short":
+        return {
+            "error": (
+                f"INDEPENDENT EVENT: {event_ticker} has mutually_exclusive=False. "
+                f"Markets are independent - each can resolve YES independently. "
+                f"Sum of probabilities CAN exceed 100% on independent events. "
+                f"Buying NO on all markets is NOT risk-free arbitrage here. "
+                f"Use place_order() for directional bets on individual markets instead."
+            ),
+        }
+
+    # --- POSITION CONFLICT WARNING ---
+    # Warn (but don't block) if holding opposite positions on markets in this event.
+    # Legitimate hedging exists, but accidental conflicts are the #1 source of losses.
+    conflict_warnings = []
+    try:
+        pos_resp = await _trading_client.get_positions()
+        all_positions = pos_resp.get("market_positions", pos_resp.get("positions", []))
+        event_tickers = set(event_state.markets.keys())
+        for pos in all_positions:
+            if pos.get("ticker") not in event_tickers:
+                continue
+            position_count = pos.get("position", 0)
+            if position_count == 0:
+                continue
+            existing_side = "yes" if position_count > 0 else "no"
+            new_side = "yes" if direction == "long" else "no"
+            if existing_side != new_side:
+                conflict_warnings.append(
+                    f"WARNING: Hold {abs(position_count)} {existing_side.upper()} on {pos.get('ticker')}. "
+                    f"This {direction} arb will add {new_side.upper()} - creating opposing positions."
+                )
+    except Exception as e:
+        logger.warning(f"[SINGLE_ARB:CONFLICT_CHECK] Position check failed: {e}")
+
     # Check balance
     try:
         balance_resp = await _trading_client.get_account_info()
@@ -777,7 +1038,7 @@ async def execute_arb(
 
     # Dry run: return preview without placing orders
     if dry_run:
-        return {
+        preview = {
             "status": "preview",
             "event_ticker": event_ticker,
             "direction": direction,
@@ -790,6 +1051,9 @@ async def execute_arb(
             "errors": errors,
             "reasoning": reasoning,
         }
+        if conflict_warnings:
+            preview["conflict_warnings"] = conflict_warnings
+        return preview
 
     # Execute orders
     legs_executed = []
@@ -848,6 +1112,8 @@ async def execute_arb(
         "errors": errors,
         "reasoning": reasoning,
     }
+    if conflict_warnings:
+        result["conflict_warnings"] = conflict_warnings
 
     # Auto-record to memory (including failures)
     if _file_store:
@@ -1374,3 +1640,65 @@ async def update_understanding(
 
     except Exception as e:
         return {"error": f"Understanding build failed: {e}"}
+
+
+@tool
+async def search_event_news(
+    event_ticker: str,
+    query: str = "",
+    topic: str = "news",
+    time_range: str = "week",
+) -> Dict[str, Any]:
+    """Search for recent news and context about an event. Up to 5 searches per cycle.
+
+    Use topic="news" for breaking developments and recent coverage.
+    Use topic="general" for deeper background, analysis, and historical context.
+
+    Returns articles with titles, URLs, content snippets, relevance scores,
+    and published dates. Advanced depth provides multiple snippets per source.
+
+    Args:
+        event_ticker: The Kalshi event ticker
+        query: Specific search query (leave empty to auto-generate from event title)
+        topic: "news" for recent coverage, "general" for background/analysis
+        time_range: "day", "week", "month" - how far back to search
+    """
+    if not _search_service:
+        return {"error": "Search service not available (no TAVILY_API_KEY configured)"}
+    if not _index:
+        return {"error": "EventArbIndex not available"}
+
+    event = _index.events.get(event_ticker)
+    if not event:
+        return {"error": f"Event {event_ticker} not found"}
+
+    # Auto-generate query from event title if not provided
+    if not query:
+        from .event_understanding import UnderstandingBuilder
+        query = UnderstandingBuilder._extract_keywords_from_title(event.title)
+        if not query or len(query) < 5:
+            query = event.title
+        query += " latest news"
+
+    if topic == "news":
+        results = await _search_service.search_news(
+            query=query,
+            time_range=time_range,
+            event_ticker=event_ticker,
+        )
+    else:
+        results = await _search_service.search(
+            query=query,
+            topic="general",
+            time_range=time_range,
+            event_ticker=event_ticker,
+        )
+
+    return {
+        "event_ticker": event_ticker,
+        "query": query,
+        "topic": topic,
+        "time_range": time_range,
+        "articles": results,
+        "count": len(results),
+    }

@@ -343,6 +343,122 @@ Generate the compressed mention log now:
         # Roughly 150 words per minute of broadcast
         return (150 * total_mins) // len(self.segments)
 
+    def get_segment_prompts(
+        self,
+        event_title: str,
+        participants: List[str],
+        announcers: List[str],
+        venue: str,
+        storylines: List[str],
+        special_context: Optional[str] = None,
+        participant_details: Optional[Dict[str, str]] = None,
+        key_figures: Optional[List[str]] = None,
+        figure_details: Optional[Dict[str, str]] = None,
+        network: Optional[str] = None,
+        date: Optional[str] = None,
+    ) -> Dict[str, str]:
+        """Generate per-segment simulation prompts for segment-based simulation.
+
+        Returns Dict[segment_name, prompt] for high-yield segments only.
+        Each prompt includes a shared event context header plus segment-specific instructions.
+
+        High-yield segments: analysis, impromptu, interview, halftime, entertainment,
+        or any segment with impromptu_ratio > 0.3.
+        """
+        # Filter for high-yield segments (same logic as compressed prompt)
+        high_yield = [
+            seg for seg in self.segments
+            if seg.content_type in ("analysis", "impromptu", "interview", "halftime", "entertainment", "celebration", "qa", "comedy")
+            or seg.impromptu_ratio > 0.3
+        ]
+        if not high_yield:
+            high_yield = self.segments[:4]
+
+        # Build shared event context header
+        participants_text = ", ".join(participants) if participants else "TBD"
+        participants_section = f"PARTICIPANTS: {participants_text}"
+        if participant_details:
+            lines = []
+            for p in participants[:4]:
+                detail = participant_details.get(p, "")
+                if detail:
+                    lines.append(f"- {p}: {detail[:150]}")
+                else:
+                    lines.append(f"- {p}")
+            participants_section = "PARTICIPANTS:\n" + "\n".join(lines)
+
+        key_figures_section = ""
+        if key_figures:
+            fig_lines = [f"- {fig}" for fig in key_figures[:6]]
+            key_figures_section = "\nKEY FIGURES:\n" + "\n".join(fig_lines)
+
+        event_header = f"EVENT: {event_title}"
+        if date:
+            event_header += f"\nDATE: {date}"
+        if venue:
+            event_header += f"\nVENUE: {venue}"
+        if network:
+            event_header += f"\nNETWORK: {network}"
+
+        speaker_intro = self._format_speaker_intro(announcers)
+        storylines_text = "\n".join(f"- {s[:150]}" for s in storylines[:5]) if storylines else "- No specific storylines"
+
+        shared_header = f"""{event_header}
+
+{participants_section}
+{key_figures_section}
+
+{speaker_intro}
+{f"{special_context}" if special_context else ""}
+
+CONTEXT/STORYLINES:
+{storylines_text}"""
+
+        # Scale coverage targets by segment duration
+        total_high_yield_mins = sum(seg.duration_minutes for seg in high_yield)
+        segment_prompts: Dict[str, str] = {}
+
+        for seg in high_yield:
+            # Scale coverage target by duration proportion
+            duration_ratio = seg.duration_minutes / max(total_high_yield_mins, 1)
+            # Base target: 60-80 total mentions across all segments
+            base_mentions = int(70 * duration_ratio)
+            target_mentions = max(5, min(25, base_mentions))
+
+            speakers_text = ", ".join(seg.speakers[:3])
+
+            prompt = f"""You are generating a COMPRESSED log of notable mentions from a {self.event_type} broadcast.
+
+{shared_header}
+
+SEGMENT: {seg.name.replace('_', ' ').title()}
+DURATION: ~{seg.duration_minutes} minutes
+CONTENT TYPE: {seg.description or seg.content_type}
+SPEAKERS: {speakers_text}
+IMPROMPTU RATIO: {seg.impromptu_ratio:.0%} unscripted
+
+YOUR TASK:
+Generate a log of ALL names, people, celebrities, and notable entities that would be mentioned during this segment.
+
+FORMAT - Use bullet points, NOT full sentences:
+- Person/entity mentioned + brief context (e.g., "Travis Kelce - touchdown celebration reaction")
+
+COVERAGE TARGET: {target_mentions}-{target_mentions + 10} mentions for this segment.
+
+IMPORTANT RULES:
+1. Focus on WHO is mentioned, not play-by-play action
+2. Include crowd shots, celebrity sightings, guest mentions
+3. Include sponsor reads and promotional mentions
+4. Include historical comparisons ("reminds me of [player name]")
+5. Be thorough - capture every name/entity a real broadcast would mention
+6. Content should match the segment type ({seg.content_type}) and energy level
+
+Generate the compressed mention log for [{seg.name.upper()}]:
+"""
+            segment_prompts[seg.name] = prompt
+
+        return segment_prompts
+
 
 # =============================================================================
 # PRE-BUILT DOMAIN TEMPLATES
