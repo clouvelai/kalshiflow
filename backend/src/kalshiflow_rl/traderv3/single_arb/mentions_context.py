@@ -18,8 +18,11 @@ import os
 import re
 import time
 from dataclasses import dataclass, field, asdict
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Tuple
 from urllib.parse import quote_plus
+
+if TYPE_CHECKING:
+    from .mentions_templates import SpeakerPersona
 
 logger = logging.getLogger("kalshiflow_rl.traderv3.single_arb.mentions_context")
 
@@ -111,12 +114,33 @@ class EventContext:
     # Source tracking
     wikipedia_urls: List[str] = field(default_factory=list)
 
+    # Dynamic speaker personas (built by build_persona_from_event)
+    speakers: List["SpeakerPersona"] = field(default_factory=list)
+
     def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
+        result = asdict(self)
+        # Convert SpeakerPersona objects to dicts
+        if self.speakers:
+            result["speakers"] = [
+                s.to_dict() if hasattr(s, "to_dict") else s for s in self.speakers
+            ]
+        return result
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "EventContext":
-        return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
+        from .mentions_templates import SpeakerPersona
+
+        # Handle speakers field specially - convert dicts to SpeakerPersona objects
+        speakers_data = data.pop("speakers", [])
+        instance = cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
+
+        # Restore speakers as SpeakerPersona objects
+        if speakers_data:
+            instance.speakers = [
+                SpeakerPersona.from_dict(s) if isinstance(s, dict) else s
+                for s in speakers_data
+            ]
+        return instance
 
 
 @dataclass
@@ -293,6 +317,418 @@ async def _fetch_wikipedia_categories(title: str) -> List[str]:
 
 
 # =============================================================================
+# SPEAKER PERSONA BUILDING (LLM-based extraction)
+# =============================================================================
+
+
+@dataclass
+class ExtractedSpeaker:
+    """Structured speaker info extracted by LLM."""
+    name: str
+    title: Optional[str] = None
+    role: Optional[str] = None
+    style_notes: Optional[str] = None
+    confidence: float = 0.0
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+async def _llm_extract_speakers_from_text(
+    text: str,
+    event_title: str,
+    role_hint: str,
+) -> List[ExtractedSpeaker]:
+    """Use LLM to extract speaker names and info from text.
+
+    Much more robust than regex - handles:
+    - All name formats (hyphenated, apostrophes, all-caps)
+    - Context-aware extraction
+    - Multiple speakers in one text
+    """
+    try:
+        from .mentions_models import get_extraction_llm
+
+        llm = get_extraction_llm()  # Uses DEFAULT_EXTRACTION_MODEL from config
+
+        prompt = f"""Extract person names from this text who might be the {role_hint} for "{event_title}".
+
+TEXT:
+{text[:1500]}
+
+Return JSON array of speakers found:
+[{{"name": "Full Name", "title": "their title if mentioned", "confidence": 0.0-1.0}}]
+
+Rules:
+1. Only extract REAL person names, not organization names or places
+2. Confidence: 1.0 = explicitly identified as {role_hint}, 0.7 = likely based on context, 0.3 = mentioned but unclear role
+3. Return empty array [] if no relevant person names found
+4. Names can have hyphens, apostrophes, or be all caps - extract them correctly
+
+Return ONLY the JSON array, no explanation."""
+
+        response = await llm.ainvoke(prompt)
+        content = response.content.strip()
+
+        # Parse JSON
+        if content.startswith("```"):
+            content = content.split("```")[1]
+            if content.startswith("json"):
+                content = content[4:]
+        content = content.strip()
+
+        if not content or content == "[]":
+            return []
+
+        parsed = json.loads(content)
+        return [
+            ExtractedSpeaker(
+                name=item.get("name", ""),
+                title=item.get("title"),
+                confidence=float(item.get("confidence", 0.5)),
+            )
+            for item in parsed
+            if item.get("name")
+        ]
+
+    except Exception as e:
+        logger.debug(f"LLM speaker extraction failed: {e}")
+        return []
+
+
+async def _llm_extract_speaker_from_wikipedia(
+    speaker_name: str,
+) -> Optional[Dict[str, Any]]:
+    """Use LLM to extract structured info from Wikipedia about a speaker.
+
+    Returns structured data about speaking style, background, and example phrases.
+    """
+    wiki = await _fetch_wikipedia(speaker_name)
+    if not wiki:
+        return None
+
+    extract = wiki.get("extract", "")
+    description = wiki.get("description", "")
+
+    if not extract:
+        return None
+
+    try:
+        from .mentions_models import get_extraction_llm
+
+        llm = get_extraction_llm()  # Uses DEFAULT_EXTRACTION_MODEL from config
+
+        prompt = f"""Analyze this Wikipedia info about {speaker_name} and extract speaking style characteristics.
+
+DESCRIPTION: {description}
+
+EXTRACT:
+{extract[:1000]}
+
+Return JSON:
+{{
+    "full_name": "canonical full name",
+    "title": "current job title",
+    "style_description": "2-3 sentence description of how they speak/communicate",
+    "known_phrases": ["any signature phrases or catchphrases they're known for"],
+    "background_relevant_to_speech": "brief background that affects how they speak"
+}}
+
+Return ONLY valid JSON."""
+
+        response = await llm.ainvoke(prompt)
+        content = response.content.strip()
+
+        if content.startswith("```"):
+            content = content.split("```")[1]
+            if content.startswith("json"):
+                content = content[4:]
+        content = content.strip()
+
+        return json.loads(content)
+
+    except Exception as e:
+        logger.debug(f"LLM Wikipedia extraction failed: {e}")
+        return {
+            "full_name": speaker_name,
+            "title": description,
+            "style_description": extract[:200] if extract else "",
+        }
+
+
+async def _search_for_speaker_name(
+    event_title: str,
+    role: str,
+    search_terms: List[str],
+) -> Optional[ExtractedSpeaker]:
+    """Search web for speaker name using LLM-based extraction.
+
+    Args:
+        event_title: Event title for context
+        role: Role to search for (e.g., "play_by_play", "press_secretary")
+        search_terms: Additional search terms (e.g., ["broadcaster", "announcer"])
+
+    Returns:
+        ExtractedSpeaker if found, None otherwise
+    """
+    combined_text = ""
+
+    for term in search_terms[:2]:  # Limit searches
+        query = f"{event_title} {term} 2026"
+        results = await _duckduckgo_search(query, max_results=3)
+
+        for r in results:
+            snippet = r.get("snippet", "")
+            title = r.get("title", "")
+            combined_text += f"\n{title}\n{snippet}\n"
+
+    if not combined_text.strip():
+        return None
+
+    # Use LLM to extract speaker
+    speakers = await _llm_extract_speakers_from_text(combined_text, event_title, role)
+
+    if speakers:
+        # Return highest confidence speaker
+        speakers.sort(key=lambda s: s.confidence, reverse=True)
+        best = speakers[0]
+        logger.info(f"[PERSONA] LLM extracted speaker for {role}: {best.name} (conf={best.confidence})")
+        return best
+
+    return None
+
+
+async def _fetch_speaker_style(speaker_name: str) -> Tuple[str, List[str]]:
+    """Fetch style description and example phrases for a speaker from Wikipedia.
+
+    Uses LLM to extract structured info for better simulation prompts.
+
+    Args:
+        speaker_name: Name of the speaker to look up
+
+    Returns:
+        Tuple of (style_description, example_phrases)
+    """
+    # Use LLM-enhanced extraction
+    wiki_data = await _llm_extract_speaker_from_wikipedia(speaker_name)
+
+    if not wiki_data:
+        return ("", [])
+
+    style_parts = []
+
+    # Build style description
+    if wiki_data.get("title"):
+        style_parts.append(wiki_data["title"])
+    if wiki_data.get("style_description"):
+        style_parts.append(wiki_data["style_description"])
+    if wiki_data.get("background_relevant_to_speech"):
+        style_parts.append(wiki_data["background_relevant_to_speech"])
+
+    style_description = ". ".join(style_parts)[:400] if style_parts else ""
+
+    # Get known phrases
+    known_phrases = wiki_data.get("known_phrases", [])
+    if isinstance(known_phrases, list):
+        known_phrases = [p for p in known_phrases if p and len(p) > 5][:5]
+    else:
+        known_phrases = []
+
+    return (style_description, known_phrases)
+
+
+async def _fetch_style_examples(
+    speaker_name: str,
+    role: str,
+    n_examples: int = 3,
+) -> List[str]:
+    """Fetch example lines for a speaker from web/YouTube.
+
+    Sources (in order of preference):
+    1. YouTube transcript snippets (best for actual speech patterns)
+    2. News quotes from web search
+    3. Wikipedia excerpts
+
+    Args:
+        speaker_name: Name of the speaker
+        role: Speaker role (for search context)
+        n_examples: Number of examples to fetch
+
+    Returns:
+        List of example lines/quotes
+    """
+    examples: List[str] = []
+
+    # Build role-specific search queries
+    role_search_terms = {
+        "play_by_play": ["announcing", "call", "broadcast"],
+        "color_analyst": ["analysis", "commentary"],
+        "press_secretary": ["press briefing", "White House"],
+        "ceo": ["earnings call", "investor presentation"],
+        "host": ["hosting", "introducing"],
+    }
+
+    search_suffix = role_search_terms.get(role, [role.replace("_", " ")])
+
+    # Search for quotes/transcripts
+    for suffix in search_suffix[:2]:
+        query = f'"{speaker_name}" {suffix} transcript quote'
+        results = await _duckduckgo_search(query, max_results=3)
+
+        for r in results:
+            snippet = r.get("snippet", "")
+            # Look for quoted text in snippet
+            quotes = _extract_quotes(snippet)
+            for quote in quotes:
+                if len(quote) > 20 and len(quote) < 200 and quote not in examples:
+                    examples.append(quote)
+                    if len(examples) >= n_examples:
+                        return examples
+
+    return examples[:n_examples]
+
+
+def _extract_quotes(text: str) -> List[str]:
+    """Extract quoted text from a string."""
+    # Match text in quotes
+    pattern = r'"([^"]{20,200})"'
+    matches = re.findall(pattern, text)
+    return matches
+
+
+async def build_persona_from_event(
+    event_ticker: str,
+    event_title: str,
+    template,  # DomainTemplate
+    mentions_data: Optional[Dict[str, Any]] = None,
+) -> List["SpeakerPersona"]:
+    """Build speaker personas dynamically from event info.
+
+    Called ONCE during gather_event_context(), cached with EventContext.
+
+    Progressive enhancement levels (logged):
+    - Level 0: Generic persona from template.speaker_roles
+    - Level 1: Named persona from lexeme_pack.speaker OR web search
+    - Level 2: + style description from Wikipedia (LLM-extracted)
+    - Level 3: + example lines from Wikipedia/web
+
+    PRIMARY SOURCE: lexeme_pack.speaker from event rules (most reliable)
+    FALLBACK: LLM-based web search extraction
+
+    Args:
+        event_ticker: Kalshi event ticker
+        event_title: Event title for search context
+        template: DomainTemplate with speaker_roles
+        mentions_data: Optional dict with lexeme_pack containing speaker info
+
+    Returns:
+        List of SpeakerPersona objects for each role
+    """
+    from .mentions_templates import SpeakerPersona, GENERIC_PERSONAS
+
+    personas: List[SpeakerPersona] = []
+
+    # Get roles from template
+    roles = list(template.speaker_roles.keys())[:4]  # Limit to top 4 roles
+
+    # Check if we have speaker from lexeme_pack (parsed from event rules)
+    lexeme_speaker = None
+    if mentions_data:
+        lexeme_pack = mentions_data.get("lexeme_pack", {})
+        lexeme_speaker = lexeme_pack.get("speaker")
+        if lexeme_speaker:
+            logger.info(f"[PERSONA] Using speaker from lexeme_pack: {lexeme_speaker}")
+
+    for role in roles:
+        enhancement_level = 0
+
+        # Start with generic persona (Level 0)
+        generic = GENERIC_PERSONAS.get(role, (role.replace("_", " "), ""))
+        title = generic[0]
+        default_style = generic[1]
+
+        persona = SpeakerPersona(
+            role=role,
+            title=title,
+            style_description=default_style,
+        )
+
+        speaker_name: Optional[str] = None
+        extracted_speaker: Optional[ExtractedSpeaker] = None
+
+        # PRIMARY: Use lexeme_pack.speaker if available and role matches
+        if lexeme_speaker and role in ("speaker", "press_secretary", "president", "ceo"):
+            speaker_name = lexeme_speaker
+            enhancement_level = 1
+            logger.info(f"[PERSONA] {role}: Using lexeme_pack speaker '{speaker_name}' (Level 1)")
+
+        # FALLBACK: LLM-based web search
+        if not speaker_name:
+            search_terms = _get_search_terms_for_role(role)
+            extracted_speaker = await _search_for_speaker_name(event_title, role, search_terms)
+            if extracted_speaker:
+                speaker_name = extracted_speaker.name
+                if extracted_speaker.title:
+                    persona.title = extracted_speaker.title
+                enhancement_level = 1
+                logger.info(f"[PERSONA] {role}: Web search found '{speaker_name}' (Level 1)")
+
+        if speaker_name:
+            persona.name = speaker_name
+
+            # Fetch style from Wikipedia using LLM extraction (Level 2)
+            style_desc, wiki_examples = await _fetch_speaker_style(speaker_name)
+            if style_desc:
+                persona.style_description = style_desc
+                enhancement_level = 2
+                logger.debug(f"[PERSONA] {role}: Added Wikipedia style (Level 2)")
+
+            # Add Wikipedia examples first
+            if wiki_examples:
+                persona.example_lines.extend(wiki_examples)
+                enhancement_level = 3
+                logger.debug(f"[PERSONA] {role}: Added {len(wiki_examples)} Wikipedia examples (Level 3)")
+
+            # Fetch additional example lines from web
+            if len(persona.example_lines) < 3:
+                web_examples = await _fetch_style_examples(
+                    speaker_name, role, n_examples=3 - len(persona.example_lines)
+                )
+                if web_examples:
+                    persona.example_lines.extend(web_examples)
+                    enhancement_level = max(enhancement_level, 3)
+
+            persona.source_urls.append(f"https://en.wikipedia.org/wiki/{quote_plus(speaker_name)}")
+
+        personas.append(persona)
+        logger.info(
+            f"[PERSONA] Built {role}: "
+            f"name='{persona.name or 'GENERIC'}' "
+            f"level={enhancement_level} "
+            f"examples={len(persona.example_lines)}"
+        )
+
+    return personas
+
+
+def _get_search_terms_for_role(role: str) -> List[str]:
+    """Get search terms for finding speaker name by role."""
+    search_terms = {
+        "play_by_play": ["announcer", "play-by-play", "commentator", "broadcaster"],
+        "color_analyst": ["color commentator", "analyst", "color analyst"],
+        "sideline_reporter": ["sideline reporter", "field reporter"],
+        "press_secretary": ["press secretary", "spokesperson"],
+        "ceo": ["CEO", "chief executive"],
+        "cfo": ["CFO", "chief financial officer"],
+        "host": ["host", "anchor"],
+        "main_host": ["host", "anchor", "primetime host"],
+        "celebrity_cohost": ["co-host", "celebrity host"],
+        "halftime_host": ["halftime host", "halftime show host"],
+    }
+    return search_terms.get(role, [role.replace("_", " ")])
+
+
+# =============================================================================
 # CONTEXT GATHERING FUNCTIONS
 # =============================================================================
 
@@ -301,6 +737,8 @@ async def gather_event_context(
     event_ticker: str,
     event_title: str,
     domain: Optional[str] = None,
+    build_personas: bool = True,
+    mentions_data: Optional[Dict[str, Any]] = None,
 ) -> EventContext:
     """Gather structured event context from Wikipedia.
 
@@ -308,11 +746,22 @@ async def gather_event_context(
     No mention terms involved - just event facts.
 
     Caches results for 4 hours to avoid redundant HTTP calls.
+
+    Args:
+        event_ticker: Kalshi event ticker
+        event_title: Event title for context
+        domain: Optional domain override
+        build_personas: Whether to build speaker personas (default True)
+        mentions_data: Optional dict with lexeme_pack (for speaker extraction from rules)
     """
     # Check cache first
     cached = _get_cached_context(event_ticker)
     if cached:
         logger.debug(f"Using cached EventContext for {event_ticker}")
+        # Restore SpeakerPersona objects if stored as dicts
+        if cached.speakers and isinstance(cached.speakers[0], dict):
+            from .mentions_templates import SpeakerPersona
+            cached.speakers = [SpeakerPersona.from_dict(s) for s in cached.speakers]
         return cached
 
     if not domain:
@@ -333,6 +782,20 @@ async def gather_event_context(
         await _gather_politics_event_context(ctx, event_title)
     else:
         await _gather_generic_event_context(ctx, event_title)
+
+    # Build speaker personas (called once, cached with EventContext)
+    # Uses mentions_data.lexeme_pack.speaker if available (most reliable source)
+    if build_personas:
+        try:
+            from .mentions_templates import detect_template
+            template = detect_template(event_ticker, event_title)
+            ctx.speakers = await build_persona_from_event(
+                event_ticker, event_title, template, mentions_data=mentions_data
+            )
+            logger.info(f"[PERSONA] Built {len(ctx.speakers)} speaker personas for {event_ticker}")
+        except Exception as e:
+            logger.warning(f"Failed to build speaker personas: {e}")
+            ctx.speakers = []
 
     # Cache before returning
     _cache_context(event_ticker, ctx)
@@ -677,30 +1140,87 @@ async def gather_mention_contexts(
 def generate_blind_prompt(
     event: EventContext,
     template,  # DomainTemplate
+    compressed: bool = True,  # Default to compressed for better signal/token
 ) -> str:
     """Generate blind simulation prompt (baseline).
 
-    No mention terms, no term-specific news.
+    Templates ALL discovered event context elegantly:
+    - Event identity (title, venue, date, network)
+    - Participants with Wikipedia context
+    - Key figures with details
+    - Speaker personas with style + examples
+    - Historical notes as storylines
+
+    Args:
+        event: EventContext with event facts
+        template: DomainTemplate for the event type
+        compressed: If True, use compressed format (5-10x more coverage per token)
     """
-    return template.get_simulation_prompt(
-        event_title=event.event_title,
-        participants=event.participants,
-        announcers=event.announcers,
-        venue=event.venue,
-        storylines=event.historical_notes,  # Only historical, no current news
-    )
+    # Build speaker personas section if available
+    special_context = None
+    if event.speakers:
+        persona_intros = []
+        example_sections = []
+        for speaker in event.speakers[:3]:  # Top 3 speakers
+            if hasattr(speaker, "to_prompt_intro"):
+                intro = speaker.to_prompt_intro()
+                if intro:
+                    persona_intros.append(f"- {intro}")
+                examples = speaker.to_examples_section()
+                if examples:
+                    example_sections.append(examples)
+
+        if persona_intros:
+            special_context = "SPEAKER PERSONAS:\n" + "\n".join(persona_intros)
+            if example_sections:
+                special_context += "\n" + "\n".join(example_sections[:2])  # Limit examples
+
+    # Choose prompt format - pass ALL rich context
+    if compressed:
+        return template.get_compressed_simulation_prompt(
+            event_title=event.event_title,
+            participants=event.participants,
+            announcers=event.announcers,
+            venue=event.venue,
+            storylines=event.historical_notes,
+            special_context=special_context,
+            # Rich context from EventContext
+            participant_details=event.participant_details,
+            key_figures=event.key_figures,
+            figure_details=event.figure_details,
+            network=event.network,
+            date=event.date,
+        )
+    else:
+        return template.get_simulation_prompt(
+            event_title=event.event_title,
+            participants=event.participants,
+            announcers=event.announcers,
+            venue=event.venue,
+            storylines=event.historical_notes,
+            special_context=special_context,
+        )
 
 
 def generate_informed_prompt(
     informed: InformedContext,
     template,  # DomainTemplate
     terms_to_include: Optional[List[str]] = None,
+    compressed: bool = True,  # Default to compressed for better signal/token
 ) -> str:
     """Generate informed simulation prompt (with context).
 
-    Includes term-relevant storylines that might prompt natural mention.
-    DOES NOT explicitly ask for terms - just provides context that makes
-    them more likely to arise naturally.
+    Templates ALL discovered context elegantly:
+    - Event identity + participants + key figures (from EventContext)
+    - Speaker personas with style + examples
+    - Term-relevant storylines that might prompt natural mention
+    - DOES NOT explicitly ask for terms - just provides context
+
+    Args:
+        informed: InformedContext with event facts and term relevance
+        template: DomainTemplate for the event type
+        terms_to_include: Optional list of terms to focus on
+        compressed: If True, use compressed format (5-10x more coverage per token)
     """
     # Combine general and term-specific storylines
     all_storylines = list(informed.storylines)
@@ -721,13 +1241,51 @@ def generate_informed_prompt(
             if storyline not in all_storylines:
                 all_storylines.append(storyline)
 
-    return template.get_simulation_prompt(
-        event_title=informed.event.event_title,
-        participants=informed.event.participants,
-        announcers=informed.event.announcers,
-        venue=informed.event.venue,
-        storylines=all_storylines[:10],  # Limit to avoid overwhelming
-    )
+    # Build speaker personas section if available
+    special_context = None
+    event = informed.event
+    if event.speakers:
+        persona_intros = []
+        example_sections = []
+        for speaker in event.speakers[:3]:  # Top 3 speakers
+            if hasattr(speaker, "to_prompt_intro"):
+                intro = speaker.to_prompt_intro()
+                if intro:
+                    persona_intros.append(f"- {intro}")
+                examples = speaker.to_examples_section()
+                if examples:
+                    example_sections.append(examples)
+
+        if persona_intros:
+            special_context = "SPEAKER PERSONAS:\n" + "\n".join(persona_intros)
+            if example_sections:
+                special_context += "\n" + "\n".join(example_sections[:2])  # Limit examples
+
+    # Choose prompt format - pass ALL rich context
+    if compressed:
+        return template.get_compressed_simulation_prompt(
+            event_title=event.event_title,
+            participants=event.participants,
+            announcers=event.announcers,
+            venue=event.venue,
+            storylines=all_storylines[:10],
+            special_context=special_context,
+            # Rich context from EventContext
+            participant_details=event.participant_details,
+            key_figures=event.key_figures,
+            figure_details=event.figure_details,
+            network=event.network,
+            date=event.date,
+        )
+    else:
+        return template.get_simulation_prompt(
+            event_title=event.event_title,
+            participants=event.participants,
+            announcers=event.announcers,
+            venue=event.venue,
+            storylines=all_storylines[:10],
+            special_context=special_context,
+        )
 
 
 # =============================================================================
@@ -735,29 +1293,46 @@ def generate_informed_prompt(
 # =============================================================================
 
 
-def _detect_domain(event_ticker: str, event_title: str) -> str:
-    """Detect domain from event ticker and title."""
+def _detect_domain(event_ticker: str, event_title: str, category: str = "") -> str:
+    """Detect domain from event ticker, title, and Kalshi category."""
     ticker_upper = event_ticker.upper()
     title_upper = event_title.upper() if event_title else ""
+    category_lower = category.lower() if category else ""
 
+    # Use Kalshi category as primary signal when available
+    if category_lower in ("sports",):
+        return "sports"
+    if category_lower in ("elections", "politics"):
+        return "politics"
+    if category_lower in ("companies",):
+        return "corporate"
+    if category_lower in ("entertainment",):
+        return "entertainment"
+    if category_lower in ("crypto",):
+        return "crypto"
+
+    # Fallback: keyword detection from ticker and title
     if any(s in ticker_upper or s in title_upper for s in [
         "NFL", "NBA", "MLB", "NHL", "SUPER BOWL", "WORLD SERIES",
-        "PLAYOFFS", "CHAMPIONSHIP", "GAME", "MATCH"
+        "PLAYOFFS", "CHAMPIONSHIP", "CHAMPION", "FOOTBALL", "BASEBALL",
+        "BASKETBALL", "HOCKEY", "SOCCER", "GAME", "MATCH",
     ]):
         return "sports"
 
     if any(c in title_upper for c in [
-        "EARNINGS", "CALL", "INVESTOR", "QUARTERLY"
+        "EARNINGS", "CALL", "INVESTOR", "QUARTERLY",
     ]):
         return "corporate"
 
     if any(p in title_upper for p in [
-        "TRUMP", "BIDEN", "PRESIDENT", "CONGRESS", "SPEECH", "ADDRESS", "BRIEFING"
+        "TRUMP", "BIDEN", "PRESIDENT", "CONGRESS", "SPEECH", "ADDRESS",
+        "BRIEFING", "NOMINEE", "NOMINATION", "DEMOCRATIC", "REPUBLICAN",
+        "ELECTION", "VOTE", "GOVERNOR", "SENATE", "HOUSE",
     ]):
         return "politics"
 
     if any(e in title_upper for e in [
-        "OSCAR", "GRAMMY", "EMMY", "AWARD", "SHOW"
+        "OSCAR", "GRAMMY", "EMMY", "AWARD", "SHOW",
     ]):
         return "entertainment"
 

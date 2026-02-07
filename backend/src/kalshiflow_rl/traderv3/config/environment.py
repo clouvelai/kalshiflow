@@ -109,6 +109,9 @@ class V3Config:
     single_arb_captain_enabled: bool = True  # Enable LLM Captain
     single_arb_order_ttl: int = 30  # Order TTL in seconds (auto-cancel)
 
+    # Gateway Configuration (new unified client)
+    use_new_gateway: bool = True  # Use KalshiGateway instead of demo_client + WS clients
+
     # State Machine Configuration
     sync_duration: float = 10.0  # seconds for Kalshi data sync
     health_check_interval: float = 5.0  # seconds
@@ -242,6 +245,9 @@ class V3Config:
         single_arb_captain_enabled = os.environ.get("V3_SINGLE_ARB_CAPTAIN_ENABLED", "true").lower() == "true"
         single_arb_order_ttl = int(os.environ.get("V3_SINGLE_ARB_ORDER_TTL", "30"))
 
+        # Gateway configuration
+        use_new_gateway = os.environ.get("V3_USE_NEW_GATEWAY", "true").lower() == "true"
+
         sync_duration = float(os.environ.get("V3_SYNC_DURATION", os.environ.get("V3_CALIBRATION_DURATION", "10.0")))
         health_check_interval = float(os.environ.get("V3_HEALTH_CHECK_INTERVAL", "5.0"))
         error_recovery_delay = float(os.environ.get("V3_ERROR_RECOVERY_DELAY", "30.0"))
@@ -299,6 +305,7 @@ class V3Config:
             single_arb_max_contracts=single_arb_max_contracts,
             single_arb_captain_enabled=single_arb_captain_enabled,
             single_arb_order_ttl=single_arb_order_ttl,
+            use_new_gateway=use_new_gateway,
             sync_duration=sync_duration,
             health_check_interval=health_check_interval,
             error_recovery_delay=error_recovery_delay,
@@ -348,6 +355,12 @@ class V3Config:
             logger.info(f"  - Event tracking: ENABLED (action={event_exposure_action}, loss>{event_loss_threshold_cents}c, risk>{event_risk_threshold_cents}c)")
         else:
             logger.info(f"  - Event tracking: DISABLED")
+
+        # Log gateway config
+        if use_new_gateway:
+            logger.info(f"  - Gateway: NEW (KalshiGateway + unified WS)")
+        else:
+            logger.info(f"  - Gateway: LEGACY (demo_client + separate WS clients)")
 
         # Log single-arb config
         if single_arb_enabled:

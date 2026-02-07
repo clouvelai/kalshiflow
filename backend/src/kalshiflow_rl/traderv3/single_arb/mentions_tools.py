@@ -33,9 +33,10 @@ _pending_simulations: Dict[str, Dict[str, Any]] = {}  # event_ticker -> {started
 
 # --- Dependency injection via module globals ---
 _index = None           # EventArbIndex
-_memory_store = None    # DualMemoryStore (file + vector)
+_file_store = None      # FileMemoryStore (journal.jsonl)
 _config = None          # V3Config
 _mentions_data_dir = None  # Directory for persisting mentions state
+_broadcast_callback = None  # Async callback to broadcast mentions updates to frontend
 
 # Simulator instance (lazy loaded)
 _simulator = None
@@ -46,21 +47,69 @@ MENTIONS_STATE_FILE = "mentions_state.json"
 
 def set_mentions_dependencies(
     index=None,
-    memory_store=None,
+    file_store=None,
     config=None,
     mentions_data_dir=None,
 ) -> None:
     """Set shared dependencies for mentions tools."""
-    global _index, _memory_store, _config, _mentions_data_dir
+    global _index, _file_store, _config, _mentions_data_dir
     if index is not None:
         _index = index
-    if memory_store is not None:
-        _memory_store = memory_store
+    if file_store is not None:
+        _file_store = file_store
     if config is not None:
         _config = config
     if mentions_data_dir is not None:
         _mentions_data_dir = mentions_data_dir
         os.makedirs(mentions_data_dir, exist_ok=True)
+
+
+def set_mentions_broadcast_callback(callback) -> None:
+    """Set the broadcast callback for emitting mentions updates to frontend."""
+    global _broadcast_callback
+    _broadcast_callback = callback
+
+
+async def _broadcast_mentions_update(
+    event_ticker: str,
+    current_estimates: Dict[str, Dict[str, Any]],
+    mode: str,
+    baseline_estimates: Optional[Dict[str, Dict[str, Any]]],
+    deltas: Dict[str, Dict[str, Any]],
+    news_snippets: List[str],
+    history_count: int,
+    simulation_in_progress: bool = False,
+) -> None:
+    """Broadcast mentions update to frontend via WebSocket."""
+    if not _broadcast_callback:
+        return
+
+    try:
+        # Build terms list with probability and confidence interval
+        terms = []
+        for term, est in current_estimates.items():
+            terms.append({
+                "term": term,
+                "probability": est.get("probability", 0),
+                "confidence_interval": est.get("confidence_interval", [0, 1]),
+                "n_simulations": est.get("n_simulations", 0),
+            })
+
+        await _broadcast_callback({
+            "type": "mentions_update",
+            "data": {
+                "event_ticker": event_ticker,
+                "terms": terms,
+                "mode": mode,
+                "baseline_estimates": baseline_estimates or {},
+                "deltas": deltas,
+                "news_context": news_snippets[:3],
+                "history_count": history_count,
+                "simulation_in_progress": simulation_in_progress,
+            }
+        })
+    except Exception as e:
+        logger.debug(f"Failed to broadcast mentions update: {e}")
 
 
 def _get_simulator():
@@ -168,9 +217,9 @@ def restore_mentions_state_from_disk() -> None:
 async def _llm_parse_rules(rules_text: str, market_title: str) -> LexemePackLite:
     """Use LLM to parse settlement rules into LexemePackLite."""
     try:
-        from langchain_anthropic import ChatAnthropic
+        from .mentions_models import get_extraction_llm
 
-        llm = ChatAnthropic(model="claude-haiku-4-5-20251001", temperature=0)
+        llm = get_extraction_llm()  # Uses DEFAULT_EXTRACTION_MODEL from config
 
         prompt = f"""Analyze this Kalshi market's settlement rules and extract the counting criteria.
 
@@ -320,6 +369,8 @@ async def simulate_probability(
         {"current": 0.45, "baseline": 0.10, "previous": 0.40,
          "delta_from_baseline": 0.35, "delta_from_previous": 0.05, "trend": "↑"}
     """
+    logger.info(f"[MENTIONS:SIMULATE] event={event_ticker} terms={terms} n={n_simulations} mode={mode}")
+
     if not _index:
         return {"error": "EventArbIndex not available"}
 
@@ -360,6 +411,7 @@ async def simulate_probability(
             n_simulations=n_simulations,
             cache_dir=os.path.join(_mentions_data_dir or "", "simulations") if _mentions_data_dir else None,
             mode=mode,
+            mentions_data=event.mentions_data,  # Pass for speaker persona extraction
         )
 
         # Initialize mentions_data if needed
@@ -413,6 +465,18 @@ async def simulate_probability(
         # --- Build Deltas ---
         deltas = _build_deltas(current_estimates, baseline_estimates, previous_estimates)
 
+        # --- Broadcast to frontend ---
+        await _broadcast_mentions_update(
+            event_ticker=event_ticker,
+            current_estimates=current_estimates,
+            mode=mode,
+            baseline_estimates=baseline_estimates,
+            deltas=deltas,
+            news_snippets=news_snippets,
+            history_count=len(estimate_history),
+            simulation_in_progress=False,
+        )
+
         # --- Build Response ---
         response = {
             "event_ticker": event_ticker,
@@ -459,6 +523,7 @@ async def _run_simulation_background(
     terms: List[str],
     n_simulations: int,
     mode: str,
+    mentions_data: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Background simulation runner - writes results to event.mentions_data."""
     global _pending_simulations
@@ -474,6 +539,7 @@ async def _run_simulation_background(
             n_simulations=n_simulations,
             cache_dir=os.path.join(_mentions_data_dir or "", "simulations") if _mentions_data_dir else None,
             mode=mode,
+            mentions_data=mentions_data,  # Pass for speaker persona extraction
         )
 
         # Store results in event.mentions_data (same logic as simulate_probability)
@@ -519,6 +585,19 @@ async def _run_simulation_background(
 
                 _sync_event_mentions_to_disk(event_ticker)
 
+                # Build deltas and broadcast to frontend
+                deltas = _build_deltas(current_estimates, baseline_estimates, previous_estimates)
+                await _broadcast_mentions_update(
+                    event_ticker=event_ticker,
+                    current_estimates=current_estimates,
+                    mode=mode,
+                    baseline_estimates=event.mentions_data.get("baseline_estimates"),
+                    deltas=deltas,
+                    news_snippets=news_snippets,
+                    history_count=len(estimate_history),
+                    simulation_in_progress=False,
+                )
+
         logger.info(f"[MENTIONS] Background simulation complete for {event_ticker} (mode={mode})")
 
     except Exception as e:
@@ -560,6 +639,7 @@ async def trigger_simulation(
         >>> await get_mentions_summary("KXSBLX")
         {"current_estimates": {...}, ...}
     """
+    logger.info(f"[MENTIONS:TRIGGER] event={event_ticker} terms={terms} n={n_simulations} mode={mode}")
     global _pending_simulations
 
     if not _index:
@@ -607,6 +687,21 @@ async def trigger_simulation(
         "n_simulations": n_simulations,
     }
 
+    # Broadcast simulation_in_progress status to frontend
+    mentions_data = event.mentions_data or {}
+    current_estimates = mentions_data.get("current_estimates", {})
+    baseline_estimates = mentions_data.get("baseline_estimates", {})
+    await _broadcast_mentions_update(
+        event_ticker=event_ticker,
+        current_estimates=current_estimates,
+        mode=mode,
+        baseline_estimates=baseline_estimates,
+        deltas={},
+        news_snippets=[],
+        history_count=len(mentions_data.get("estimate_history", [])),
+        simulation_in_progress=True,
+    )
+
     # Start background task
     loop = asyncio.get_running_loop()
     loop.create_task(_run_simulation_background(
@@ -615,6 +710,7 @@ async def trigger_simulation(
         terms=terms,
         n_simulations=n_simulations,
         mode=mode,
+        mentions_data=event.mentions_data,  # Pass for speaker persona extraction
     ))
 
     # Estimate completion time (roughly 2 seconds per simulation)
@@ -931,8 +1027,324 @@ async def get_mentions_summary(event_ticker: str) -> Dict[str, Any]:
 
 
 # =============================================================================
+# GET_MENTIONS_STATUS TOOL (Simplified Entry Point)
+# =============================================================================
+
+# Staleness threshold in seconds (5 minutes)
+STALENESS_THRESHOLD_SECONDS = 300
+
+
+@tool
+async def get_mentions_status(event_ticker: str) -> Dict[str, Any]:
+    """Get mentions probability status. Returns cached values IMMEDIATELY.
+
+    THIS IS THE RECOMMENDED ENTRY POINT for the MentionsSpecialist.
+    Handles the complexity of baseline establishment and refresh triggering.
+
+    BEHAVIOR:
+    - If NO BASELINE exists: Runs SYNCHRONOUS blind simulation (blocks ~20s)
+      This establishes the stable baseline required for edge calculation.
+    - If BASELINE exists but STALE (>5 min): Triggers BACKGROUND informed refresh
+      You get current values NOW, refresh happens async.
+    - If BASELINE exists and FRESH: Returns immediately with all data.
+
+    RETURNS:
+    - baseline_estimates: Stable blind probabilities (reference point)
+    - current_estimates: Latest context-aware probabilities
+    - has_baseline: True if baseline exists (REQUIRED for trading)
+    - ready_for_trading: True if baseline exists AND confidence >= 0.6
+    - refresh_triggered: True if background refresh was started
+    - simulation_stale: True if >5 min since last simulation
+
+    USE THIS FOR EDGE CALCULATION:
+    Once ready_for_trading=True, call compute_edge() with:
+    - baseline_probability from baseline_estimates
+    - informed_probability from current_estimates (or baseline if no current)
+    - market_yes_price, market_no_price from orderbook
+
+    Args:
+        event_ticker: Kalshi event ticker
+
+    Returns:
+        Dict with baseline/current estimates and status flags
+
+    Example:
+        >>> status = await get_mentions_status("KXSBLX")
+        >>> if status["ready_for_trading"]:
+        ...     baseline_p = status["baseline_estimates"]["Taylor Swift"]["probability"]
+        ...     current_p = status["current_estimates"]["Taylor Swift"]["probability"]
+        ...     edge = await compute_edge("Taylor Swift", baseline_p, current_p, 60, 42)
+    """
+    global _pending_simulations
+    logger.info(f"[MENTIONS:STATUS] event={event_ticker}")
+
+    if not _index:
+        return {"error": "EventArbIndex not available"}
+
+    event = _index.events.get(event_ticker)
+    if not event:
+        return {"error": f"Event {event_ticker} not found"}
+
+    mentions_data = event.mentions_data
+    if not mentions_data:
+        return {
+            "error": f"Event {event_ticker} has no mentions_data. May not be a mentions market.",
+            "is_mentions_market": False,
+        }
+
+    lexeme_pack = mentions_data.get("lexeme_pack")
+    if not lexeme_pack:
+        return {
+            "error": "No lexeme_pack found. Rules may not have been parsed yet.",
+            "is_mentions_market": False,
+        }
+
+    entity = lexeme_pack.get("entity", "")
+    terms = lexeme_pack.get("accepted_forms", [entity]) if entity else []
+
+    if not terms:
+        return {
+            "error": "No terms found in lexeme_pack.",
+            "is_mentions_market": True,
+            "has_baseline": False,
+        }
+
+    baseline_estimates = mentions_data.get("baseline_estimates", {})
+    current_estimates = mentions_data.get("current_estimates", {})
+    last_sim_ts = mentions_data.get("last_simulation_ts", 0)
+    is_stale = (time.time() - last_sim_ts) > STALENESS_THRESHOLD_SECONDS if last_sim_ts else True
+
+    # Check if simulation is already in progress
+    pending = _pending_simulations.get(event_ticker)
+    simulation_in_progress = pending is not None
+
+    # --- BASELINE ESTABLISHMENT (SYNCHRONOUS if missing) ---
+    needs_baseline = not baseline_estimates
+    baseline_just_established = False
+
+    if needs_baseline and not simulation_in_progress:
+        logger.info(f"[MENTIONS:STATUS] No baseline for {event_ticker}, running SYNC blind simulation...")
+        try:
+            from .mentions_simulator import run_mentions_simulation
+
+            result = await run_mentions_simulation(
+                event_ticker=event_ticker,
+                event_title=event.title,
+                mention_terms=terms[:5],
+                n_simulations=10,  # Full baseline
+                cache_dir=os.path.join(_mentions_data_dir or "", "simulations") if _mentions_data_dir else None,
+                mode="blind",
+                mentions_data=mentions_data,  # Pass for speaker persona extraction
+            )
+
+            # Store baseline
+            new_estimates = result.get("estimates", {})
+            if new_estimates:
+                mentions_data["baseline_estimates"] = new_estimates
+                mentions_data["current_estimates"] = new_estimates  # Initialize current too
+                mentions_data["last_simulation_ts"] = time.time()
+                mentions_data["simulation_mode"] = "blind"
+                event.mentions_data = mentions_data
+                _sync_event_mentions_to_disk(event_ticker)
+
+                baseline_estimates = new_estimates
+                current_estimates = new_estimates
+                baseline_just_established = True
+                is_stale = False
+
+                logger.info(
+                    f"[MENTIONS:STATUS] Baseline established for {event_ticker}: "
+                    f"P({entity})={new_estimates.get(entity, {}).get('probability', 'N/A')}"
+                )
+
+        except Exception as e:
+            logger.error(f"[MENTIONS:STATUS] Baseline establishment failed: {e}")
+            return {
+                "error": f"Failed to establish baseline: {e}",
+                "is_mentions_market": True,
+                "has_baseline": False,
+            }
+
+    # --- BACKGROUND REFRESH (ASYNC if stale) ---
+    refresh_triggered = False
+    if baseline_estimates and is_stale and not simulation_in_progress and not baseline_just_established:
+        # Trigger background informed refresh
+        logger.info(f"[MENTIONS:STATUS] Triggering background refresh for {event_ticker}")
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(_run_simulation_background(
+                event_ticker=event_ticker,
+                event_title=event.title,
+                terms=terms[:5],
+                n_simulations=5,  # Lighter refresh
+                mode="informed",
+                mentions_data=mentions_data,  # Pass for speaker persona extraction
+            ))
+            refresh_triggered = True
+        except Exception as e:
+            logger.warning(f"[MENTIONS:STATUS] Failed to trigger background refresh: {e}")
+
+    # --- BUILD RESPONSE ---
+
+    # Get primary entity probability for quick reference
+    baseline_p = baseline_estimates.get(entity, {}).get("probability") if entity else None
+    current_p = current_estimates.get(entity, {}).get("probability") if entity else None
+
+    # Confidence for trading decision
+    confidence = baseline_estimates.get(entity, {}).get("confidence_interval", [0, 1])
+    ci_width = confidence[1] - confidence[0] if len(confidence) == 2 else 1.0
+    confidence_score = max(0.0, 1.0 - ci_width)  # Narrower CI = higher confidence
+
+    # Ready for trading if we have baseline AND reasonable confidence
+    n_sims = baseline_estimates.get(entity, {}).get("n_simulations", 0) if entity else 0
+    ready_for_trading = bool(baseline_estimates) and n_sims >= 10 and confidence_score >= 0.6
+
+    return {
+        "event_ticker": event_ticker,
+        "is_mentions_market": True,
+        "entity": entity,
+        "terms": terms[:5],
+
+        # Probability estimates
+        "baseline_estimates": baseline_estimates,
+        "current_estimates": current_estimates,
+        "baseline_probability": baseline_p,
+        "current_probability": current_p,
+
+        # Status flags
+        "has_baseline": bool(baseline_estimates),
+        "simulation_stale": is_stale,
+        "refresh_triggered": refresh_triggered,
+        "simulation_in_progress": simulation_in_progress,
+        "baseline_just_established": baseline_just_established,
+
+        # Trading readiness
+        "ready_for_trading": ready_for_trading,
+        "confidence_score": round(confidence_score, 2),
+        "n_simulations": n_sims,
+
+        # Timestamps
+        "last_simulation_ts": last_sim_ts,
+        "staleness_threshold_seconds": STALENESS_THRESHOLD_SECONDS,
+
+        # Usage guidance
+        "usage_note": (
+            "If ready_for_trading=True, call compute_edge(term, baseline_probability, "
+            "current_probability, market_yes, market_no) for edge calculation."
+            if ready_for_trading else
+            "Baseline established. If stale, background refresh triggered. "
+            "Check again next cycle or wait for refresh."
+            if baseline_estimates else
+            "No baseline yet. This call should have established it (check for errors)."
+        ),
+    }
+
+
+# =============================================================================
+# COUNTER-FACTUAL SIMULATION TOOL
+# =============================================================================
+
+
+@tool
+async def run_counterfactual(
+    event_ticker: str,
+    term: str,
+    n_simulations: int = 5,
+) -> Dict[str, Any]:
+    """Run counter-factual simulation to measure avoidance difficulty.
+
+    This tool tests how HARD it is to avoid mentioning a term.
+    It generates transcripts with explicit "DO NOT say X" instructions,
+    then counts how often the LLM "leaks" and says it anyway.
+
+    INTERPRETATION:
+    - High leakage (>80%): Term is nearly unavoidable - deeply embedded in discourse
+    - Moderate leakage (20-50%): Term has natural association but isn't central
+    - Low leakage (<20%): Term is easy to avoid - not naturally part of discourse
+
+    USE CASES:
+    1. Validate blind simulation results (leakage should correlate with P)
+    2. Detect terms that are so central they're nearly unavoidable
+    3. Understand the "floor" probability for a term
+    4. Identify when blind P might be under-estimating
+
+    Args:
+        event_ticker: Kalshi event ticker
+        term: Single term to test avoidance of
+        n_simulations: Number of simulations (default 5 for speed)
+
+    Returns:
+        Dict with leakage_rate, leakage_contexts, interpretation
+
+    Example:
+        >>> result = await run_counterfactual("KXSBLX", "Super Bowl", 5)
+        >>> result["counterfactual_result"]["leakage_rate"]
+        0.8  # 80% leakage - "Super Bowl" is nearly unavoidable in Super Bowl broadcast
+    """
+    logger.info(f"[MENTIONS:COUNTERFACTUAL] event={event_ticker} term={term} n={n_simulations}")
+
+    if not _index:
+        return {"error": "EventArbIndex not available"}
+
+    event = _index.events.get(event_ticker)
+    if not event:
+        return {"error": f"Event {event_ticker} not found"}
+
+    try:
+        from .mentions_simulator import run_counterfactual_simulation
+
+        result = await run_counterfactual_simulation(
+            event_ticker=event_ticker,
+            event_title=event.title,
+            term=term,
+            n_simulations=n_simulations,
+            cache_dir=os.path.join(_mentions_data_dir or "", "simulations") if _mentions_data_dir else None,
+            mentions_data=event.mentions_data,  # Pass for speaker persona extraction
+        )
+
+        # Add comparison guidance
+        cf_result = result.get("counterfactual_result", {})
+        leakage_rate = cf_result.get("leakage_rate", 0)
+
+        # Get baseline probability for comparison if available
+        baseline_p = None
+        mentions_data = event.mentions_data or {}
+        baseline_estimates = mentions_data.get("baseline_estimates", {})
+        if term in baseline_estimates:
+            baseline_p = baseline_estimates[term].get("probability")
+
+        comparison_note = ""
+        if baseline_p is not None:
+            if leakage_rate > baseline_p + 0.2:
+                comparison_note = (
+                    f"WARNING: Leakage ({leakage_rate:.0%}) >> Blind P ({baseline_p:.0%}). "
+                    f"Blind simulation may be under-estimating. Consider weighting toward leakage."
+                )
+            elif leakage_rate < baseline_p - 0.2:
+                comparison_note = (
+                    f"NOTE: Leakage ({leakage_rate:.0%}) << Blind P ({baseline_p:.0%}). "
+                    f"Blind P may reflect informed context effect. Results are consistent."
+                )
+            else:
+                comparison_note = (
+                    f"Leakage ({leakage_rate:.0%}) ≈ Blind P ({baseline_p:.0%}). "
+                    f"Results are consistent - good confidence in probability estimate."
+                )
+
+        result["baseline_probability"] = baseline_p
+        result["comparison_note"] = comparison_note
+
+        return result
+
+    except Exception as e:
+        logger.error(f"Counterfactual simulation failed: {e}")
+        return {"error": f"Counterfactual simulation failed: {e}"}
+
+
+# =============================================================================
 # EDGE DETECTION TOOL
 # =============================================================================
+
 
 @tool
 async def compute_edge(
@@ -976,6 +1388,8 @@ async def compute_edge(
         ...                    informed_probability=0.45, market_yes_price=60, ...)
         {"blended_probability": 0.24, "recency_bias_adjustment": 0.21, ...}
     """
+    logger.info(f"[MENTIONS:EDGE] term={term} baseline={baseline_probability} informed={informed_probability} yes={market_yes_price} no={market_no_price}")
+
     # Blend baseline and informed to correct for recency bias
     blended_probability = (
         baseline_weight * baseline_probability +
@@ -1052,71 +1466,3 @@ async def compute_edge(
         )
 
     return result
-
-
-# =============================================================================
-# DEPRECATED TOOLS (kept for backward compatibility during transition)
-# =============================================================================
-
-@tool
-async def record_evidence(
-    event_ticker: str,
-    hit: Dict[str, Any],
-    source_url: str,
-) -> Dict[str, Any]:
-    """Record a confirmed mention hit to memory store.
-
-    DEPRECATED: This tool is from the old live-counting approach.
-    The new simulation approach estimates probability pre-event.
-
-    Args:
-        event_ticker: The event this mention belongs to
-        hit: Confirmed hit dict (must have span, start_char, end_char, reason)
-        source_url: URL of the source document
-
-    Returns:
-        Dict with recorded status
-    """
-    if not _index:
-        return {"error": "EventArbIndex not available"}
-
-    event = _index.events.get(event_ticker)
-    if not event:
-        return {"error": f"Event {event_ticker} not found"}
-
-    mentions_data = event.mentions_data or {}
-
-    # Create evidence entry
-    evidence_id = str(uuid.uuid4())[:8]
-    evidence_entry = {
-        "id": evidence_id,
-        "span": hit.get("span", ""),
-        "start_char": hit.get("start_char", 0),
-        "end_char": hit.get("end_char", 0),
-        "context": hit.get("context", ""),
-        "source_url": source_url,
-        "source_type": hit.get("source_type", "unknown"),
-        "reasoning": hit.get("reason", ""),
-        "confidence": hit.get("confidence", 0.0),
-        "recorded_at": datetime.utcnow().isoformat(),
-    }
-
-    # Initialize fields if needed
-    if "evidence" not in mentions_data:
-        mentions_data["evidence"] = []
-    if "current_count" not in mentions_data:
-        mentions_data["current_count"] = 0
-
-    mentions_data["evidence"].append(evidence_entry)
-    mentions_data["current_count"] = mentions_data.get("current_count", 0) + 1
-    mentions_data["last_scan_ts"] = time.time()
-
-    event.mentions_data = mentions_data
-    _sync_event_mentions_to_disk(event_ticker)
-
-    return {
-        "recorded": True,
-        "evidence_id": evidence_id,
-        "new_total_count": mentions_data["current_count"],
-        "note": "DEPRECATED: Prefer simulate_probability() for probability estimation.",
-    }

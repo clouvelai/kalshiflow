@@ -10,10 +10,101 @@ Templates capture:
 """
 
 import logging
-from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from dataclasses import dataclass, field, asdict
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger("kalshiflow_rl.traderv3.single_arb.mentions_templates")
+
+
+# =============================================================================
+# SPEAKER PERSONA SYSTEM
+# =============================================================================
+
+
+@dataclass
+class SpeakerPersona:
+    """Dynamic speaker persona for enhanced simulation prompts.
+
+    Progressive enhancement levels:
+    - Level 0: Generic role-based persona ("You are the White House Press Secretary")
+    - Level 1: Named persona ("You are Karoline Leavitt, White House Press Secretary")
+    - Level 2: + style description from Wikipedia/web
+    - Level 3: + example lines from YouTube transcripts or news
+    """
+
+    role: str  # "press_secretary", "play_by_play", "color_analyst", etc.
+    name: Optional[str] = None  # "Karoline Leavitt" if found
+    title: Optional[str] = None  # "White House Press Secretary"
+    style_description: str = ""  # From Wikipedia or web ("Deflects, pivots, maintains message discipline")
+    example_lines: List[str] = field(default_factory=list)  # Few-shot examples
+    source_urls: List[str] = field(default_factory=list)  # Where we got info
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "SpeakerPersona":
+        return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
+
+    def to_prompt_intro(self) -> str:
+        """Generate persona intro for simulation prompt."""
+        if self.name:
+            base = f"You are {self.name}"
+            if self.title:
+                base += f", {self.title}"
+            elif self.role:
+                base += f", the {self.role.replace('_', ' ')}"
+        else:
+            base = f"You are the {self.title or self.role.replace('_', ' ')}"
+
+        if self.style_description:
+            base += f". {self.style_description}"
+
+        return base
+
+    def to_examples_section(self) -> str:
+        """Generate few-shot examples section for simulation prompt."""
+        if not self.example_lines:
+            return ""
+        lines = "\n".join(f'- "{line}"' for line in self.example_lines[:5])
+        return f"\nEXAMPLE STYLE (speak naturally like this):\n{lines}\n"
+
+
+# Generic personas by role (default when specific speaker not found)
+#
+# TODO: Trump persona module - Rally speeches require a dedicated TrumpPersona class
+# with unique characteristics: ad-lib heavy (60-70%), signature catchphrases,
+# stream-of-consciousness tangents, specific verbal tics ("tremendous", "beautiful",
+# "they say", "many people are saying"). This will be a separate module:
+# mentions_trump_persona.py with specialized prompt generation for rally events.
+#
+GENERIC_PERSONAS: Dict[str, tuple] = {
+    # Politics
+    "press_secretary": ("White House Press Secretary", "Deflects tough questions, pivots to talking points, maintains message discipline"),
+    "president": ("President of the United States", "Authoritative, uses rhetorical devices, speaks in grand themes"),
+    "speaker": ("speaker", "Engaging, rhetorical, connects with audience"),
+    # Sports - NFL/Football
+    "play_by_play": ("play-by-play announcer", "Energetic, precise, describes action as it happens, builds excitement"),
+    "color_analyst": ("color analyst", "Analytical, draws from playing experience, explains strategy and technique"),
+    "sideline_reporter": ("sideline reporter", "Reports injuries, coach reactions, behind-the-scenes context"),
+    "halftime_host": ("halftime show host", "Entertainment-focused, introduces performances, reacts to spectacle"),
+    # Sports - General
+    "studio_host": ("studio host", "Professional, guides narrative, introduces segments and analysis"),
+    "analyst": ("sports analyst", "Provides expert commentary, makes predictions, analyzes plays"),
+    "reporter": ("reporter", "Delivers news, conducts interviews, provides updates"),
+    # Corporate
+    "ceo": ("CEO", "Strategic vision, confident, speaks to investors and stakeholders"),
+    "cfo": ("CFO", "Numbers-focused, precise, explains financial metrics and guidance"),
+    "ir_host": ("Investor Relations host", "Professional, manages call logistics, reads legal disclaimers"),
+    # Entertainment
+    "host": ("host", "Guides the show, introduces segments, maintains energy"),
+    "presenter": ("presenter", "Announces awards, reads from teleprompter, adds brief commentary"),
+    # Olympics
+    "main_host": ("primetime host", "Narrative flow, scene-setting, cultural context"),
+    "celebrity_cohost": ("celebrity co-host", "Entertainment perspective, emotional reactions, relatable commentary"),
+    "cultural_expert": ("cultural expert", "Explains meanings, provides historical context, describes symbolism"),
+    "route_reporter": ("on-site reporter", "Field-level coverage, interviews, location-specific updates"),
+}
 
 
 @dataclass
@@ -94,6 +185,129 @@ IMPORTANT RULES:
 5. Each segment should be ~{self._avg_segment_words()} words
 
 Generate the transcript now. Include segment headers [PRE-GAME], [Q1], etc.
+"""
+        return prompt
+
+    def get_compressed_simulation_prompt(
+        self,
+        event_title: str,
+        participants: List[str],
+        announcers: List[str],
+        venue: str,
+        storylines: List[str],
+        special_context: Optional[str] = None,
+        # NEW: Rich context from EventContext
+        participant_details: Optional[Dict[str, str]] = None,
+        key_figures: Optional[List[str]] = None,
+        figure_details: Optional[Dict[str, str]] = None,
+        network: Optional[str] = None,
+        date: Optional[str] = None,
+    ) -> str:
+        """Generate a COMPRESSED simulation prompt for maximum signal-per-token.
+
+        Templates all discovered event context elegantly:
+        - Event identity (title, venue, date, network)
+        - Participants with Wikipedia context
+        - Key figures with details
+        - Speaker personas with style + examples
+        - Storylines from news/Wikipedia
+
+        This gets ~5-10x more coverage of a broadcast within the same token budget.
+        """
+        # Build participants section with Wikipedia details
+        if participants:
+            if participant_details:
+                participants_lines = []
+                for p in participants[:4]:
+                    detail = participant_details.get(p, "")
+                    if detail:
+                        participants_lines.append(f"- {p}: {detail[:150]}")
+                    else:
+                        participants_lines.append(f"- {p}")
+                participants_section = "PARTICIPANTS:\n" + "\n".join(participants_lines)
+            else:
+                participants_section = f"PARTICIPANTS: {', '.join(participants)}"
+        else:
+            participants_section = "PARTICIPANTS: TBD"
+
+        # Build key figures section if available
+        key_figures_section = ""
+        if key_figures:
+            figure_lines = []
+            for fig in key_figures[:6]:
+                detail = (figure_details or {}).get(fig, "")
+                if detail:
+                    figure_lines.append(f"- {fig}: {detail[:100]}")
+                else:
+                    figure_lines.append(f"- {fig}")
+            if figure_lines:
+                key_figures_section = "\nKEY FIGURES:\n" + "\n".join(figure_lines)
+
+        # Build speaker/broadcaster section
+        speaker_intro = self._format_speaker_intro(announcers)
+
+        # Build storylines
+        storylines_text = "\n".join(f"- {s[:150]}" for s in storylines[:5]) if storylines else "- No specific storylines"
+
+        # Build event header with all available context
+        event_header = f"EVENT: {event_title}"
+        if date:
+            event_header += f"\nDATE: {date}"
+        if venue:
+            event_header += f"\nVENUE: {venue}"
+        if network:
+            event_header += f"\nNETWORK: {network}"
+
+        # High-yield segments only (filter out play-by-play which is action-focused)
+        high_yield_segments = [
+            seg for seg in self.segments
+            if seg.content_type in ("analysis", "impromptu", "interview", "halftime", "entertainment")
+            or seg.impromptu_ratio > 0.3
+        ]
+        if not high_yield_segments:
+            high_yield_segments = self.segments[:4]
+
+        segment_list = "\n".join(
+            f"- {seg.name.replace('_', ' ').title()}: {seg.description or seg.content_type}"
+            for seg in high_yield_segments[:6]
+        )
+
+        prompt = f"""You are generating a COMPRESSED log of notable mentions from a {self.event_type}.
+
+{event_header}
+
+{participants_section}
+{key_figures_section}
+
+{speaker_intro}
+{f"{special_context}" if special_context else ""}
+
+CONTEXT/STORYLINES:
+{storylines_text}
+
+YOUR TASK:
+Generate a log of ALL names, people, celebrities, and notable entities that would be mentioned during these segments:
+{segment_list}
+
+FORMAT - Use bullet points, NOT full sentences:
+[SEGMENT_NAME]
+- Person/entity mentioned + brief context (e.g., "Travis Kelce - touchdown celebration reaction")
+- Another person/entity + context
+- Continue for all notable mentions...
+
+COVERAGE TARGETS per segment:
+- Analysis segments: 10-20 mentions (players, coaches, celebrities, historical figures)
+- Halftime/Entertainment: 15-25 mentions (performers, celebrities in crowd, sponsors)
+- Pre/Post-game: 15-20 mentions (analysts, guests, players discussed)
+
+IMPORTANT RULES:
+1. Focus on WHO is mentioned, not play-by-play action
+2. Include crowd shots, celebrity sightings, guest mentions
+3. Include sponsor reads and promotional mentions (brand names)
+4. Include any historical comparisons ("reminds me of [player name]")
+5. Be thorough - capture every name/entity a real broadcast would mention
+
+Generate the compressed mention log now:
 """
         return prompt
 

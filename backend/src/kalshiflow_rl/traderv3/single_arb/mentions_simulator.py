@@ -65,6 +65,9 @@ class TermScanResult:
     morphological_matches: List[TermMatch] = field(default_factory=list)
     total_exact: int = 0
     total_morphological: int = 0
+    # Binary counts: how many simulations had at least one match
+    simulations_with_exact: int = 0
+    simulations_with_any: int = 0
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -79,6 +82,8 @@ class TermScanResult:
             ],
             "total_exact": self.total_exact,
             "total_morphological": self.total_morphological,
+            "simulations_with_exact": self.simulations_with_exact,
+            "simulations_with_any": self.simulations_with_any,
         }
 
 
@@ -184,21 +189,17 @@ class MentionsSimulator:
         model: str,
         context_hash: Optional[str],
     ) -> SimulationResult:
-        """Run a single blind roleplay simulation."""
+        """Run a single blind roleplay simulation.
+
+        Uses centralized model config (default: Gemini 2.0 Flash).
+        Override via MENTIONS_SIMULATION_MODEL env var or model parameter.
+        """
         try:
-            from langchain_anthropic import ChatAnthropic
+            from .mentions_models import get_simulation_llm, DEFAULT_SIMULATION_MODEL
 
-            # Select model
-            model_id = {
-                "haiku": "claude-haiku-4-5-20251001",
-                "sonnet": "claude-sonnet-4-20250514",
-            }.get(model, "claude-haiku-4-5-20251001")
-
-            llm = ChatAnthropic(
-                model=model_id,
-                temperature=0.8,  # Some creativity for natural variation
-                max_tokens=4000,
-            )
+            # Use specified model or default from config
+            model_to_use = model if model else DEFAULT_SIMULATION_MODEL
+            llm = get_simulation_llm(model=model_to_use)
 
             response = await llm.ainvoke(prompt)
             transcript = response.content
@@ -212,7 +213,7 @@ class MentionsSimulator:
                 transcript=transcript,
                 segment_transcripts=segments,
                 generated_at=time.time(),
-                model=model,
+                model=model_to_use,
                 context_hash=context_hash or "",
                 word_count=len(transcript.split()),
             )
@@ -251,23 +252,30 @@ class MentionsSimulator:
             use_wordnet: Whether to use WordNet for morphological variants
 
         Returns:
-            Dict mapping term -> TermScanResult
+            Dict mapping term -> TermScanResult with simulations_with_match count
         """
         results = {}
 
         for term in terms:
             scan_result = TermScanResult(term=term)
+            simulations_with_exact = 0
+            simulations_with_any = 0
 
             # Get accepted forms (morphological variants)
             accepted_forms = self._get_accepted_forms(term, use_wordnet)
 
             for sim in simulations:
                 transcript = sim.transcript
+                sim_had_exact = False
+                sim_had_any = False
 
                 # Scan for exact matches
                 exact_matches = self._scan_text(transcript, [term], "exact", sim.segment_transcripts)
                 scan_result.exact_matches.extend(exact_matches)
                 scan_result.total_exact += len(exact_matches)
+                if exact_matches:
+                    sim_had_exact = True
+                    sim_had_any = True
 
                 # Scan for morphological variants (excluding the exact term)
                 if accepted_forms:
@@ -277,6 +285,17 @@ class MentionsSimulator:
                     )
                     scan_result.morphological_matches.extend(morph_matches)
                     scan_result.total_morphological += len(morph_matches)
+                    if morph_matches:
+                        sim_had_any = True
+
+                if sim_had_exact:
+                    simulations_with_exact += 1
+                if sim_had_any:
+                    simulations_with_any += 1
+
+            # Store the binary simulation counts for probability calculation
+            scan_result.simulations_with_exact = simulations_with_exact
+            scan_result.simulations_with_any = simulations_with_any
 
             results[term] = scan_result
 
@@ -369,26 +388,20 @@ class MentionsSimulator:
         estimates = {}
 
         for term, scan in scan_results.items():
-            # Count simulations where term appeared
-            # For now, treat any appearance as "appeared in simulation"
-            # More sophisticated: could track appearances per simulation
+            # Use binary simulation counts (how many sims had at least one match)
+            sims_with_exact = getattr(scan, 'simulations_with_exact', 0)
+            sims_with_any = getattr(scan, 'simulations_with_any', 0)
 
-            # Binary: did term appear at least once?
-            exact_appeared = 1 if scan.total_exact > 0 else 0
-            total_appeared = 1 if (scan.total_exact + scan.total_morphological) > 0 else 0
-
-            # Simple probability estimate
-            # Note: This is per-simulation probability, not per-occurrence
-            # For multiple simulations, we'd need to track per-simulation counts
-            p_exact = scan.total_exact / max(n_simulations, 1)
-            p_with_variants = (scan.total_exact + scan.total_morphological) / max(n_simulations, 1)
+            # Probability = proportion of simulations with at least one appearance
+            p_exact = sims_with_exact / max(n_simulations, 1)
+            p_with_variants = sims_with_any / max(n_simulations, 1)
 
             # Clamp to [0, 1]
             p_exact = min(1.0, max(0.0, p_exact))
             p_with_variants = min(1.0, max(0.0, p_with_variants))
 
-            # Simple confidence interval (Wilson score interval for binomial)
-            ci = self._wilson_ci(scan.total_exact, n_simulations)
+            # Wilson score confidence interval for binomial proportion
+            ci = self._wilson_ci(sims_with_exact, n_simulations)
 
             estimates[term] = ProbabilityEstimate(
                 term=term,
@@ -396,7 +409,7 @@ class MentionsSimulator:
                 probability_with_variants=p_with_variants,
                 confidence_interval=ci,
                 n_simulations=n_simulations,
-                appearances_per_simulation=[scan.total_exact],  # Simplified
+                appearances_per_simulation=[sims_with_exact],  # Binary count
                 variance=p_exact * (1 - p_exact),  # Binomial variance
             )
 
@@ -415,7 +428,11 @@ class MentionsSimulator:
         p_hat = successes / n
         denominator = 1 + z * z / n
         center = (p_hat + z * z / (2 * n)) / denominator
-        margin = z * ((p_hat * (1 - p_hat) / n + z * z / (4 * n * n)) ** 0.5) / denominator
+
+        # Guard against floating point issues that can produce negative values under sqrt
+        variance_term = p_hat * (1 - p_hat) / n + z * z / (4 * n * n)
+        variance_term = max(0.0, variance_term)  # Ensure non-negative
+        margin = z * (variance_term ** 0.5) / denominator
 
         lower = max(0.0, center - margin)
         upper = min(1.0, center + margin)
@@ -570,6 +587,7 @@ async def _run_simulation_core(
     mode: str,  # "blind" or "informed"
     cache_dir: Optional[str] = None,
     event_context: Optional[Any] = None,  # EventContext, reuse if provided
+    mentions_data: Optional[Dict[str, Any]] = None,  # For speaker persona extraction
 ) -> Dict[str, Any]:
     """Core simulation logic for both blind and informed modes.
 
@@ -609,69 +627,74 @@ async def _run_simulation_core(
             "memory", "data", "simulations"
         )
 
-    # 1. Detect template
+    # 1. Detect template from event structure
     template = detect_template(event_ticker, event_title)
 
     # 2. Gather context (mode-specific, but can reuse EventContext)
     news_snippets: List[str] = []
     informed_context = None
-    context_for_result: Any = None  # What to include in the result
+    context_for_result: Any = None
 
     if mode == "blind":
-        # Blind mode: use only event facts
         if event_context is None:
-            event_context = await gather_event_context(event_ticker, event_title)
-        prompt = generate_blind_prompt(event_context, template)
+            event_context = await gather_event_context(
+                event_ticker, event_title, mentions_data=mentions_data
+            )
         context_for_result = event_context
     else:
-        # Informed mode: use full context with term relevance and news
         informed_context = await gather_informed_context(
             event_ticker, event_title, mention_terms,
             include_news=True,
-            event_context=event_context,  # Pass cached EventContext if available
+            event_context=event_context,
         )
-        prompt = generate_informed_prompt(informed_context, template)
         news_snippets = _extract_news_snippets(informed_context)
         context_for_result = informed_context
+        if event_context is None:
+            event_context = informed_context.event
 
-    # 3. Compute context hash for caching (includes mode marker)
-    mode_marker = mode.upper()
+    simulator = MentionsSimulator(cache_dir=cache_dir)
+
+    # 4. Generate prompt from template (compressed format for token efficiency)
+    if mode == "blind":
+        prompt = generate_blind_prompt(event_context, template, compressed=True)
+    else:
+        prompt = generate_informed_prompt(informed_context, template, compressed=True)
+
+    # 5. Run simulations
     context_hash = hashlib.md5(
-        (prompt + mode_marker + str(mention_terms)).encode()
+        (prompt + f"{mode.upper()}_COMP" + str(mention_terms)).encode()
     ).hexdigest()[:12]
 
-    # 4. Run simulations
-    simulator = MentionsSimulator(cache_dir=cache_dir)
-    simulations = await simulator.simulate(
+    all_simulations = await simulator.simulate(
         event_ticker=event_ticker,
         prompt=prompt,
         n_simulations=n_simulations,
-        model="haiku",
+        model=None,
         context_hash=context_hash,
     )
 
-    # 5. Scan for terms
+    # 6. Scan for terms across ALL simulations
     scan_results = simulator.scan_for_terms(
-        simulations=simulations,
+        simulations=all_simulations,
         terms=mention_terms,
         use_wordnet=True,
     )
 
-    # 6. Compute probability estimates
+    # 7. Compute probability estimates
     estimates = simulator.estimate_probability(
         scan_results=scan_results,
-        n_simulations=len(simulations),
+        n_simulations=len(all_simulations),
     )
 
-    # 7. Build result (mode-specific payload)
+    # 8. Build result (mode-specific payload)
     result = {
         "mode": mode,
+        "simulation_format": "compressed",
         "event_ticker": event_ticker,
         "event_title": event_title,
         "template": template.event_type,
         "domain": template.domain,
-        "n_simulations": len(simulations),
-        "context_hash": context_hash,
+        "n_simulations": len(all_simulations),
         "estimates": {term: est.to_dict() for term, est in estimates.items()},
         "scan_results": {term: scan.to_dict() for term, scan in scan_results.items()},
         "news_snippets": news_snippets,
@@ -689,74 +712,13 @@ async def _run_simulation_core(
     return result
 
 
-async def run_blind_simulation(
-    event_ticker: str,
-    event_title: str,
-    mention_terms: List[str],
-    n_simulations: int = 10,
-    cache_dir: Optional[str] = None,
-    event_context: Optional[Any] = None,
-) -> Dict[str, Any]:
-    """Run BLIND simulation (baseline probability).
-
-    Uses only event facts, no term-specific news or context.
-
-    Args:
-        event_ticker: Kalshi event ticker
-        event_title: Event title for context
-        mention_terms: List of terms to estimate probabilities for
-        n_simulations: Number of simulations (10 recommended)
-        cache_dir: Optional cache directory
-        event_context: Optional pre-fetched EventContext (for comparison mode optimization)
-    """
-    return await _run_simulation_core(
-        event_ticker=event_ticker,
-        event_title=event_title,
-        mention_terms=mention_terms,
-        n_simulations=n_simulations,
-        mode="blind",
-        cache_dir=cache_dir,
-        event_context=event_context,
-    )
-
-
-async def run_informed_simulation(
-    event_ticker: str,
-    event_title: str,
-    mention_terms: List[str],
-    n_simulations: int = 10,
-    cache_dir: Optional[str] = None,
-    event_context: Optional[Any] = None,
-) -> Dict[str, Any]:
-    """Run INFORMED simulation (with term-relevant context).
-
-    Includes term-event relevance and current news.
-
-    Args:
-        event_ticker: Kalshi event ticker
-        event_title: Event title for context
-        mention_terms: List of terms to estimate probabilities for
-        n_simulations: Number of simulations (10 recommended)
-        cache_dir: Optional cache directory
-        event_context: Optional pre-fetched EventContext (for comparison mode optimization)
-    """
-    return await _run_simulation_core(
-        event_ticker=event_ticker,
-        event_title=event_title,
-        mention_terms=mention_terms,
-        n_simulations=n_simulations,
-        mode="informed",
-        cache_dir=cache_dir,
-        event_context=event_context,
-    )
-
-
 async def run_comparison_simulation(
     event_ticker: str,
     event_title: str,
     mention_terms: List[str],
     n_simulations: int = 10,
     cache_dir: Optional[str] = None,
+    mentions_data: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Run BOTH blind and informed simulations and compare.
 
@@ -770,11 +732,21 @@ async def run_comparison_simulation(
 
     Optimization: Fetches EventContext once and reuses for both simulations,
     saving ~5-10 HTTP calls compared to running separately.
+
+    Args:
+        event_ticker: Kalshi event ticker
+        event_title: Event title for context
+        mention_terms: List of terms to estimate probabilities for
+        n_simulations: Number of simulations (10 recommended)
+        cache_dir: Optional cache directory
+        mentions_data: Optional dict with lexeme_pack (for speaker extraction from rules)
     """
     from .mentions_context import gather_event_context
 
     # Fetch EventContext once for both simulations
-    event_context = await gather_event_context(event_ticker, event_title)
+    event_context = await gather_event_context(
+        event_ticker, event_title, mentions_data=mentions_data
+    )
 
     # Run both simulations, passing shared EventContext
     blind_result = await _run_simulation_core(
@@ -785,6 +757,7 @@ async def run_comparison_simulation(
         mode="blind",
         cache_dir=cache_dir,
         event_context=event_context,
+        mentions_data=mentions_data,
     )
 
     informed_result = await _run_simulation_core(
@@ -795,6 +768,7 @@ async def run_comparison_simulation(
         mode="informed",
         cache_dir=cache_dir,
         event_context=event_context,
+        mentions_data=mentions_data,
     )
 
     # Get term relevance from informed result (already computed)
@@ -860,6 +834,7 @@ async def run_mentions_simulation(
     n_simulations: int = 10,
     cache_dir: Optional[str] = None,
     mode: str = "informed",  # "blind", "informed", or "compare"
+    mentions_data: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Run mentions simulation pipeline.
 
@@ -872,13 +847,14 @@ async def run_mentions_simulation(
         n_simulations: Number of simulations (10 recommended for trading)
         cache_dir: Optional cache directory
         mode: "blind" (baseline), "informed" (with context), or "compare" (both)
+        mentions_data: Optional dict with lexeme_pack (for speaker extraction from rules)
 
     Returns:
         Dict with probability estimates, scan results, and metadata
     """
     if mode == "compare":
         return await run_comparison_simulation(
-            event_ticker, event_title, mention_terms, n_simulations, cache_dir
+            event_ticker, event_title, mention_terms, n_simulations, cache_dir, mentions_data
         )
     else:
         # Use core for both blind and informed modes
@@ -889,6 +865,174 @@ async def run_mentions_simulation(
             n_simulations=n_simulations,
             mode=mode if mode in ("blind", "informed") else "informed",
             cache_dir=cache_dir,
+            mentions_data=mentions_data,
         )
+
+
+# =============================================================================
+# COUNTER-FACTUAL SIMULATION
+# =============================================================================
+
+
+@dataclass
+class CounterfactualResult:
+    """Result of counter-factual (avoidance) simulation."""
+
+    term: str
+    n_simulations: int
+    leakages: int  # How many times the model said the term anyway
+    leakage_rate: float  # leakages / n_simulations
+    leakage_contexts: List[str]  # Context around each leakage
+    interpretation: str
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+async def run_counterfactual_simulation(
+    event_ticker: str,
+    event_title: str,
+    term: str,
+    n_simulations: int = 5,
+    cache_dir: Optional[str] = None,
+    mentions_data: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Run counter-factual simulation measuring avoidance difficulty.
+
+    Generates transcripts with explicit instruction to AVOID mentioning
+    the term, then counts how many times the LLM "leaks" and says it anyway.
+
+    High leakage = term is hard to avoid = high baseline probability
+    Low leakage = term is easy to avoid = term not naturally part of discourse
+
+    This is useful for:
+    - Validating blind simulation results (should correlate)
+    - Detecting terms that are so central they're nearly unavoidable
+    - Understanding the "floor" probability for a term
+
+    Args:
+        event_ticker: Kalshi event ticker
+        event_title: Event title for context
+        term: Single term to test avoidance of
+        n_simulations: Number of simulations (default 5)
+        cache_dir: Optional cache directory
+        mentions_data: Optional dict with lexeme_pack (for speaker extraction from rules)
+
+    Returns:
+        Dict with leakage_rate, leakage contexts, and interpretation
+    """
+    from .mentions_templates import detect_template
+    from .mentions_context import gather_event_context, generate_blind_prompt
+
+    logger.info(f"Running counterfactual simulation for '{term}' in {event_ticker}")
+
+    if not cache_dir:
+        cache_dir = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "memory", "data", "simulations"
+        )
+
+    # Get event context and template
+    event_context = await gather_event_context(
+        event_ticker, event_title, mentions_data=mentions_data
+    )
+    template = detect_template(event_ticker, event_title)
+
+    # Generate base prompt
+    base_prompt = generate_blind_prompt(event_context, template)
+
+    # Add avoidance constraint
+    avoidance_instruction = f"""
+
+CRITICAL CONSTRAINT:
+You must AVOID using the word "{term}" or any form/variant of it.
+Do NOT say "{term}", "{term.lower()}", "{term.upper()}", or related forms.
+If you would naturally say this word, find an alternative way to express the same idea.
+This is a test of whether you can generate natural content while avoiding specific words.
+
+Generate the transcript now, WITHOUT using the word "{term}".
+"""
+
+    counterfactual_prompt = base_prompt + avoidance_instruction
+
+    # Compute context hash for potential caching
+    context_hash = hashlib.md5(
+        (counterfactual_prompt + term + "COUNTERFACTUAL").encode()
+    ).hexdigest()[:12]
+
+    # Run simulations (uses DEFAULT_SIMULATION_MODEL from mentions_models.py)
+    simulator = MentionsSimulator(cache_dir=cache_dir)
+    simulations = await simulator.simulate(
+        event_ticker=f"{event_ticker}_cf_{term[:10]}",
+        prompt=counterfactual_prompt,
+        n_simulations=n_simulations,
+        model=None,  # Use default from config
+        context_hash=context_hash,
+    )
+
+    # Scan for leakages (term appearing despite avoidance instruction)
+    leakages = 0
+    leakage_contexts: List[str] = []
+
+    for sim in simulations:
+        transcript = sim.transcript
+        # Case-insensitive search for the term
+        pattern = re.compile(r"\b" + re.escape(term) + r"\b", re.IGNORECASE)
+        matches = list(pattern.finditer(transcript))
+
+        if matches:
+            leakages += 1
+            # Get context around first match
+            match = matches[0]
+            start = max(0, match.start() - 50)
+            end = min(len(transcript), match.end() + 50)
+            context = transcript[start:end]
+            leakage_contexts.append(f"...{context}...")
+
+    leakage_rate = leakages / max(n_simulations, 1)
+
+    # Interpret the result
+    if leakage_rate >= 0.8:
+        interpretation = (
+            f"VERY HIGH leakage ({leakage_rate:.0%}): '{term}' is nearly unavoidable in this context. "
+            f"The term is deeply embedded in the natural discourse. Expect high baseline P."
+        )
+    elif leakage_rate >= 0.5:
+        interpretation = (
+            f"HIGH leakage ({leakage_rate:.0%}): '{term}' is difficult to avoid. "
+            f"The term is strongly associated with this event type. Moderate-high baseline P."
+        )
+    elif leakage_rate >= 0.2:
+        interpretation = (
+            f"MODERATE leakage ({leakage_rate:.0%}): '{term}' leaks occasionally. "
+            f"The term has some natural association but isn't central. Moderate baseline P."
+        )
+    else:
+        interpretation = (
+            f"LOW leakage ({leakage_rate:.0%}): '{term}' is easy to avoid. "
+            f"The term is not naturally part of this event's discourse. Low baseline P expected."
+        )
+
+    result = CounterfactualResult(
+        term=term,
+        n_simulations=len(simulations),
+        leakages=leakages,
+        leakage_rate=leakage_rate,
+        leakage_contexts=leakage_contexts[:5],  # Limit to 5 examples
+        interpretation=interpretation,
+    )
+
+    return {
+        "event_ticker": event_ticker,
+        "event_title": event_title,
+        "counterfactual_result": result.to_dict(),
+        "template": template.event_type,
+        "domain": template.domain,
+        "usage_note": (
+            "High leakage_rate suggests the term is central to the event discourse. "
+            "Compare with blind simulation P - they should correlate. "
+            "If blind P is much lower than leakage_rate, simulations may be under-estimating."
+        ),
+    }
 
 

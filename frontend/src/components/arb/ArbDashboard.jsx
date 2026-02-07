@@ -6,6 +6,7 @@ import EventIndexPanel from './panels/EventIndexPanel';
 import EventDetailsPanel from './panels/EventDetailsPanel';
 import AgentChatPanel from './panels/AgentChatPanel';
 import PositionPanel from './panels/PositionPanel';
+import MentionsPanel from './panels/MentionsPanel';
 
 /**
  * ArbDashboard - Single-event arbitrage trading console.
@@ -24,6 +25,8 @@ const ArbDashboard = () => {
     feedStats,
     captainPaused,
     sendCaptainPauseToggle,
+    exchangeStatus,
+    mentionsState,
   } = useArbWebSocket();
 
   const {
@@ -51,6 +54,8 @@ const ArbDashboard = () => {
         category: event.category,
         series_ticker: event.series_ticker,
         mutually_exclusive: event.mutually_exclusive,
+        event_type: event.event_type,
+        understanding: event.understanding,
         market_count: event.markets_total || markets.length,
         markets_with_data: event.markets_with_data || 0,
         all_markets_have_data: event.all_markets_have_data || false,
@@ -74,6 +79,7 @@ const ArbDashboard = () => {
         feedStats={feedStats}
         captainPaused={captainPaused}
         onCaptainPauseToggle={sendCaptainPauseToggle}
+        exchangeStatus={exchangeStatus}
       />
 
       <div className="max-w-[1600px] mx-auto px-6 py-6 space-y-6">
@@ -99,23 +105,30 @@ const ArbDashboard = () => {
           commandoSessions={commandoSessions}
         />
 
-        {/* Event Index + Event Details side by side */}
-        <div id="events-grid" data-testid="events-grid" className="grid grid-cols-5 gap-6" style={{ minHeight: '420px' }}>
-          <div id="event-index-container" data-testid="event-index-container" className="col-span-3">
-            <EventIndexPanel
-              events={eventList}
-              selectedEventTicker={selectedEventTicker}
-              onSelectEvent={setSelectedEventTicker}
-            />
-          </div>
-          <div id="event-details-container" data-testid="event-details-container" className="col-span-2">
+        {/* Mentions Panel - shows mentions market probability estimates */}
+        <MentionsPanel mentionsState={mentionsState} events={events} />
+
+        {/* Event Index - full width */}
+        <div id="event-index-container" data-testid="event-index-container">
+          <EventIndexPanel
+            events={eventList}
+            selectedEventTicker={selectedEventTicker}
+            onSelectEvent={setSelectedEventTicker}
+          />
+        </div>
+
+        {/* Event Details - full width, only shown when event selected */}
+        {selectedEventTicker && (
+          <div id="event-details-container" data-testid="event-details-container">
             <EventDetailsPanel
               selectedEventTicker={selectedEventTicker}
               events={events}
               eventTrades={eventTrades}
+              arbTrades={arbTrades}
+              tradingState={tradingState}
             />
           </div>
-        </div>
+        )}
 
         <div id="position-container" data-testid="position-container">
           <PositionPanel tradingState={tradingState} />

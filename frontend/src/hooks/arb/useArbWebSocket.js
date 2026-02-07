@@ -35,6 +35,10 @@ export const useArbWebSocket = () => {
   const [feedStats, setFeedStats] = useState(null);
   // Captain pause state
   const [captainPaused, setCaptainPaused] = useState(false);
+  // Exchange status (active/down)
+  const [exchangeStatus, setExchangeStatus] = useState({ active: true, error: null, lastCheck: null });
+  // Mentions strategy state: Map<event_ticker, MentionsState>
+  const [mentionsState, setMentionsState] = useState({});
 
   const wsRef = useRef(null);
   const reconnectTimeoutRef = useRef(null);
@@ -62,7 +66,8 @@ export const useArbWebSocket = () => {
           const d = data.data;
           setEvents(prev => {
             const next = new Map(prev);
-            next.set(d.event_ticker, { ...d, updated_at: Date.now() });
+            const existing = next.get(d.event_ticker) || {};
+            next.set(d.event_ticker, { ...existing, ...d, updated_at: Date.now() });
             return next;
           });
         }
@@ -243,6 +248,52 @@ export const useArbWebSocket = () => {
         break;
       }
 
+      case 'exchange_status': {
+        if (data.data != null) {
+          setExchangeStatus({
+            active: data.data.active,
+            error: data.data.error,
+            lastCheck: data.data.last_check,
+          });
+        }
+        break;
+      }
+
+      case 'event_understanding_update': {
+        if (data.data?.event_ticker && data.data?.understanding) {
+          const { event_ticker: et, understanding } = data.data;
+          setEvents(prev => {
+            const next = new Map(prev);
+            const existing = next.get(et);
+            if (existing) {
+              next.set(et, { ...existing, understanding, updated_at: Date.now() });
+            }
+            return next;
+          });
+        }
+        break;
+      }
+
+      case 'mentions_update': {
+        if (data.data?.event_ticker) {
+          const d = data.data;
+          setMentionsState(prev => ({
+            ...prev,
+            [d.event_ticker]: {
+              terms: d.terms || [],
+              mode: d.mode,
+              baseline_estimates: d.baseline_estimates || {},
+              deltas: d.deltas || {},
+              news_context: d.news_context || [],
+              history_count: d.history_count || 0,
+              simulation_in_progress: d.simulation_in_progress || false,
+              updated_at: Date.now(),
+            }
+          }));
+        }
+        break;
+      }
+
       default:
         break;
     }
@@ -356,6 +407,8 @@ export const useArbWebSocket = () => {
     feedStats,
     captainPaused,
     sendCaptainPauseToggle,
+    exchangeStatus,
+    mentionsState,
   };
 };
 

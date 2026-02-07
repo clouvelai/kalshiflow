@@ -1060,6 +1060,7 @@ class V3Coordinator:
             ("_tracked_markets_state", "tracked_markets_state", "get_stats"),
             ("_event_lifecycle_service", "event_lifecycle_service", "get_stats"),
             ("_trade_flow_service", "trade_flow_service", "get_trade_processing_stats"),
+            ("_single_arb_coordinator", "single_arb_coordinator", "get_health_details"),
         ]
         for attr, key, method in _OPTIONAL_STATUS_COMPONENTS:
             comp = getattr(self, attr, None)

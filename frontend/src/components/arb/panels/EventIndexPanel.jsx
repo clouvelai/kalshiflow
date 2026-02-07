@@ -19,19 +19,19 @@ const EventIndexPanel = ({ events, selectedEventTicker, onSelectEvent }) => {
       data-event-count={totalEvents}
       data-market-count={totalMarkets}
       className="
-        bg-gradient-to-br from-gray-900/90 via-gray-950/80 to-black/90
-        rounded-2xl border border-cyan-500/10 shadow-lg shadow-cyan-500/5
+        bg-gradient-to-br from-gray-900/80 via-gray-950/70 to-black/80
+        rounded-xl border border-cyan-500/8 shadow-lg shadow-cyan-500/3
         overflow-hidden
       "
     >
       {/* Header */}
-      <div className="flex items-center justify-between px-5 py-3 border-b border-gray-800/50">
+      <div className="flex items-center justify-between px-5 py-3 border-b border-gray-800/30">
         <div className="flex items-center gap-2">
-          <Layers className="w-4 h-4 text-cyan-400" />
-          <h3 className="text-sm font-semibold text-gray-200">
-            Single-Event Arb
+          <Layers className="w-4 h-4 text-cyan-400/80" />
+          <h3 className="text-[12px] font-semibold text-gray-200 uppercase tracking-wider">
+            Events
           </h3>
-          <span data-testid="event-stats" className="text-[10px] font-mono text-gray-500 bg-gray-800/60 rounded-full px-2 py-0.5">
+          <span data-testid="event-stats" className="text-[10px] font-mono text-gray-500 tabular-nums bg-gray-800/40 rounded-full px-2 py-0.5">
             {totalEvents} events / {totalMarkets} markets
           </span>
         </div>
@@ -41,10 +41,10 @@ const EventIndexPanel = ({ events, selectedEventTicker, onSelectEvent }) => {
       <div id="event-list" data-testid="event-list" className="p-3 space-y-2 max-h-[70vh] overflow-y-auto">
         {totalEvents === 0 ? (
           <div data-testid="no-events-placeholder" className="text-center py-8">
-            <Layers className="w-8 h-8 text-gray-700 mx-auto mb-2" />
-            <p className="text-sm text-gray-500">No events loaded yet</p>
+            <Layers className="w-6 h-6 text-gray-700 mx-auto mb-2" />
+            <p className="text-[11px] text-gray-500">No events loaded yet</p>
             <p className="text-[10px] text-gray-600 mt-1">
-              Waiting for event data from backend...
+              Waiting for event data...
             </p>
           </div>
         ) : (

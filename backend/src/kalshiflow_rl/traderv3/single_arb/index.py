@@ -7,7 +7,7 @@ orderbook depth, trade feed, and fast arb signal operators.
 
 import logging
 import time
-from collections import deque
+from collections import Counter, deque
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -15,6 +15,11 @@ logger = logging.getLogger("kalshiflow_rl.traderv3.single_arb.index")
 
 MAX_RECENT_TRADES = 50
 MAX_ORDERBOOK_LEVELS = 5
+
+# Microstructure constants
+WHALE_THRESHOLD = 100       # Contracts per trade to qualify as whale
+RAPID_TRADE_MS = 100        # Max inter-trade gap for rapid sequence
+VOLUME_WINDOW_SECONDS = 300 # 5-minute rolling window for volume stats
 
 
 @dataclass
@@ -56,6 +61,54 @@ class ArbOpportunity:
                 for leg in self.legs
             ],
             "detected_at": self.detected_at,
+        }
+
+
+@dataclass
+class MicrostructureSignals:
+    """Incrementally computed microstructure signals per market."""
+    # Whale detection
+    whale_trade_count: int = 0
+    last_whale_ts: float = 0.0
+    last_whale_size: int = 0
+
+    # Trade cadence
+    avg_inter_trade_ms: float = 0.0
+    min_inter_trade_ms: float = 9999.0
+    rapid_sequence_count: int = 0
+
+    # Size consistency (over recent trades)
+    consistent_size_ratio: float = 0.0   # 1.0 = all same size, 0.0 = high variance
+    modal_trade_size: int = 0
+
+    # Orderbook imbalance
+    book_imbalance: float = 0.0          # (bid_depth - ask_depth) / total_depth
+    total_bid_depth: int = 0
+    total_ask_depth: int = 0
+
+    # Volume (5-minute window)
+    volume_5m: int = 0
+    buy_volume_5m: int = 0
+    sell_volume_5m: int = 0
+    buy_sell_ratio: float = 0.5          # 0.0 = all sells, 1.0 = all buys
+
+    def to_dict(self) -> Dict:
+        return {
+            "whale_trade_count": self.whale_trade_count,
+            "last_whale_ts": self.last_whale_ts,
+            "last_whale_size": self.last_whale_size,
+            "avg_inter_trade_ms": round(self.avg_inter_trade_ms, 1),
+            "min_inter_trade_ms": round(self.min_inter_trade_ms, 1) if self.min_inter_trade_ms < 9999.0 else None,
+            "rapid_sequence_count": self.rapid_sequence_count,
+            "consistent_size_ratio": round(self.consistent_size_ratio, 2),
+            "modal_trade_size": self.modal_trade_size,
+            "book_imbalance": round(self.book_imbalance, 3),
+            "total_bid_depth": self.total_bid_depth,
+            "total_ask_depth": self.total_ask_depth,
+            "volume_5m": self.volume_5m,
+            "buy_volume_5m": self.buy_volume_5m,
+            "sell_volume_5m": self.sell_volume_5m,
+            "buy_sell_ratio": round(self.buy_sell_ratio, 2),
         }
 
 
@@ -105,6 +158,10 @@ class MarketMeta:
     source: str = "none"
     ws_updated_at: float = 0.0
     api_updated_at: float = 0.0
+
+    # Microstructure signals (computed incrementally)
+    micro: MicrostructureSignals = field(default_factory=MicrostructureSignals)
+    _last_trade_ts: float = 0.0  # For inter-trade delta computation
 
     @classmethod
     def from_api(cls, market_data: Dict, event_ticker: str) -> "MarketMeta":
@@ -163,7 +220,7 @@ class MarketMeta:
         no_levels: List[List[int]],
         source: str = "ws",
     ) -> None:
-        """Update full orderbook depth and extract BBO."""
+        """Update full orderbook depth, extract BBO, and compute book imbalance."""
         self.yes_levels = yes_levels[:MAX_ORDERBOOK_LEVELS]
         self.no_levels = no_levels[:MAX_ORDERBOOK_LEVELS]
 
@@ -176,6 +233,14 @@ class MarketMeta:
 
         self.update_bbo(yes_bid, yes_ask, yes_bid_size, yes_ask_size, source)
 
+        # Book imbalance from depth
+        bid_depth = sum(level[1] for level in self.yes_levels) if self.yes_levels else 0
+        ask_depth = sum(level[1] for level in self.no_levels) if self.no_levels else 0
+        total_depth = bid_depth + ask_depth
+        self.micro.total_bid_depth = bid_depth
+        self.micro.total_ask_depth = ask_depth
+        self.micro.book_imbalance = (bid_depth - ask_depth) / total_depth if total_depth > 0 else 0.0
+
     def update_ticker(self, price: Optional[int], volume_delta: int = 0, oi_delta: int = 0) -> None:
         """Update from ticker_v2 channel data."""
         if price is not None:
@@ -184,13 +249,86 @@ class MarketMeta:
         self.oi_delta_total += oi_delta
 
     def add_trade(self, trade: Dict) -> None:
-        """Add a public trade to the ring buffer."""
+        """Add a public trade to the ring buffer and update microstructure signals."""
         self.recent_trades.insert(0, trade)
         if len(self.recent_trades) > MAX_RECENT_TRADES:
             self.recent_trades = self.recent_trades[:MAX_RECENT_TRADES]
         self.trade_count += 1
         self.last_trade_price = trade.get("yes_price")
         self.last_trade_side = trade.get("taker_side")
+
+        # --- Microstructure signal updates ---
+        trade_ts = trade.get("ts", time.time())
+        trade_count = trade.get("count", 1)
+        taker_side = trade.get("taker_side", "")
+
+        # Whale detection
+        if trade_count >= WHALE_THRESHOLD:
+            self.micro.whale_trade_count += 1
+            self.micro.last_whale_ts = trade_ts
+            self.micro.last_whale_size = trade_count
+
+        # Trade cadence (EMA of inter-trade delta)
+        if self._last_trade_ts > 0:
+            delta_ms = (trade_ts - self._last_trade_ts) * 1000
+            if delta_ms > 0:
+                if self.micro.avg_inter_trade_ms == 0:
+                    self.micro.avg_inter_trade_ms = delta_ms
+                else:
+                    # EMA with alpha=0.2
+                    self.micro.avg_inter_trade_ms = (
+                        0.2 * delta_ms + 0.8 * self.micro.avg_inter_trade_ms
+                    )
+                if delta_ms < self.micro.min_inter_trade_ms:
+                    self.micro.min_inter_trade_ms = delta_ms
+                # Rapid sequence counting
+                if delta_ms < RAPID_TRADE_MS:
+                    self.micro.rapid_sequence_count += 1
+        self._last_trade_ts = trade_ts
+
+        # Volume and buy/sell ratio (recompute from ring buffer, 5-min window)
+        self._recompute_volume_window()
+
+        # Size consistency (recompute from recent 20 trades)
+        self._recompute_size_consistency()
+
+    def _recompute_volume_window(self) -> None:
+        """Recompute 5-minute volume stats from ring buffer."""
+        cutoff = time.time() - VOLUME_WINDOW_SECONDS
+        total = 0
+        buy = 0
+        sell = 0
+        for t in self.recent_trades:
+            ts = t.get("ts", 0)
+            if ts < cutoff:
+                break  # Ring buffer is newest-first, stop at old trades
+            count = t.get("count", 1)
+            total += count
+            side = t.get("taker_side", "")
+            if side == "yes":
+                buy += count
+            elif side == "no":
+                sell += count
+        self.micro.volume_5m = total
+        self.micro.buy_volume_5m = buy
+        self.micro.sell_volume_5m = sell
+        self.micro.buy_sell_ratio = buy / total if total > 0 else 0.5
+
+    def _recompute_size_consistency(self) -> None:
+        """Compute size consistency from recent 20 trades."""
+        recent = self.recent_trades[:20]
+        if len(recent) < 3:
+            return
+        sizes = [t.get("count", 1) for t in recent]
+        avg = sum(sizes) / len(sizes)
+        if avg == 0:
+            return
+        variance = sum((s - avg) ** 2 for s in sizes) / len(sizes)
+        cv = (variance ** 0.5) / avg  # Coefficient of variation
+        self.micro.consistent_size_ratio = max(0.0, 1.0 - cv)
+        # Modal size
+        counter = Counter(sizes)
+        self.micro.modal_trade_size = counter.most_common(1)[0][0]
 
     @property
     def has_data(self) -> bool:
@@ -231,6 +369,7 @@ class MarketMeta:
             "trade_count": self.trade_count,
             "volume_delta_total": self.volume_delta_total,
             "oi_delta_total": self.oi_delta_total,
+            "micro": self.micro.to_dict(),
         }
 
 
@@ -251,6 +390,10 @@ class EventMeta:
     markets: Dict[str, MarketMeta] = field(default_factory=dict)
     loaded_at: float = 0.0
     updated_at: float = 0.0
+
+    # Structured event understanding (populated by UnderstandingBuilder)
+    # Contains: participants, key_factors, trading_summary, timeline, extensions, etc.
+    understanding: Optional[Dict[str, Any]] = None
 
     # Mentions-specific data (CUMULATIVE STATE across Captain sessions)
     # Contains:
@@ -440,7 +583,7 @@ class EventMeta:
         sum_bid = self.market_sum_bid()
         sum_ask = self.market_sum_ask()
         sum_mid = self.market_sum()
-        return {
+        result = {
             "event_ticker": self.event_ticker,
             "series_ticker": self.series_ticker,
             "title": self.title,
@@ -461,6 +604,36 @@ class EventMeta:
             "loaded_at": self.loaded_at,
             "updated_at": self.updated_at,
         }
+
+        # Add micro_summary aggregated across markets
+        total_whale = sum(m.micro.whale_trade_count for m in self.markets.values())
+        total_vol5m = sum(m.micro.volume_5m for m in self.markets.values())
+        total_rapid = sum(m.micro.rapid_sequence_count for m in self.markets.values())
+        total_buy5m = sum(m.micro.buy_volume_5m for m in self.markets.values())
+        total_sell5m = sum(m.micro.sell_volume_5m for m in self.markets.values())
+        result["micro_summary"] = {
+            "total_whale_trades": total_whale,
+            "total_volume_5m": total_vol5m,
+            "total_rapid_sequences": total_rapid,
+            "buy_sell_ratio": round(total_buy5m / (total_buy5m + total_sell5m), 2) if (total_buy5m + total_sell5m) > 0 else 0.5,
+        }
+
+        # Add structured understanding if available
+        if self.understanding:
+            result["understanding"] = self.understanding
+
+        # Add mentions info if available (for Captain visibility)
+        if self.mentions_data:
+            lexeme_pack = self.mentions_data.get("lexeme_pack", {})
+            result["mentions_speaker"] = lexeme_pack.get("speaker")
+            result["mentions_entity"] = lexeme_pack.get("entity")
+            result["mentions_current_count"] = self.mentions_data.get("current_count", 0)
+            result["mentions_evidence_count"] = len(self.mentions_data.get("evidence", []))
+            # Include simulation status
+            result["mentions_has_baseline"] = bool(self.mentions_data.get("baseline_estimates"))
+            result["mentions_last_simulation_ts"] = self.mentions_data.get("last_simulation_ts")
+
+        return result
 
 
 class EventArbIndex:
@@ -704,5 +877,9 @@ class EventArbIndex:
             "deviation": round(event.deviation(), 2) if event.deviation() is not None else None,
             "widest_spread_ticker": event.widest_spread_market().ticker if event.widest_spread_market() else None,
             "most_active_ticker": event.most_active_market().ticker if event.most_active_market() else None,
+            # Microstructure aggregates
+            "total_whale_trades": sum(m.micro.whale_trade_count for m in event.markets.values()),
+            "total_volume_5m": sum(m.micro.volume_5m for m in event.markets.values()),
+            "total_rapid_sequences": sum(m.micro.rapid_sequence_count for m in event.markets.values()),
         }
         return d

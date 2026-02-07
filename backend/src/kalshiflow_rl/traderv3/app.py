@@ -160,19 +160,23 @@ async def lifespan(app):
         load_dotenv()
         config = load_config()
         
-        # Initialize database for orderbook data persistence
+        # Initialize database for orderbook data persistence (non-fatal)
         logger.info("Initializing database...")
-        await rl_db.initialize()
+        try:
+            await rl_db.initialize()
 
-        # Initialize order context service with database pool
-        logger.info("Initializing order context service...")
-        order_context_service = get_order_context_service()
-        await order_context_service.initialize(db_pool=rl_db._pool)
+            # Initialize order context service with database pool
+            logger.info("Initializing order context service...")
+            order_context_service = get_order_context_service()
+            await order_context_service.initialize(db_pool=rl_db._pool)
 
-        # Start write queue for async database writes
-        logger.info("Starting write queue...")
-        write_queue = get_write_queue()
-        await write_queue.start()
+            # Start write queue for async database writes
+            logger.info("Starting write queue...")
+            write_queue = get_write_queue()
+            await write_queue.start()
+        except Exception as e:
+            logger.warning(f"Database initialization failed (non-fatal): {e}")
+            logger.warning("Continuing without database - orderbook persistence disabled")
         
         # Create core components
         logger.info("Creating V3 components...")

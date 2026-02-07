@@ -12,11 +12,11 @@ const EdgeBadge = ({ edgeCents, direction, highThreshold = 3, lowThreshold = 1 }
 
   let colorClasses;
   if (absEdge >= highThreshold) {
-    colorClasses = 'bg-emerald-900/40 text-emerald-400 border-emerald-600/40';
+    colorClasses = 'bg-emerald-500/10 text-emerald-400 border-emerald-500/15';
   } else if (absEdge >= lowThreshold) {
-    colorClasses = 'bg-amber-900/40 text-amber-400 border-amber-600/40';
+    colorClasses = 'bg-amber-500/10 text-amber-400 border-amber-500/15';
   } else {
-    colorClasses = 'bg-gray-800/40 text-gray-500 border-gray-700/40';
+    colorClasses = 'bg-gray-800/25 text-gray-500 border-gray-700/20';
   }
 
   const label = direction === 'long' ? 'L' : direction === 'short' ? 'S' : '';
@@ -24,7 +24,7 @@ const EdgeBadge = ({ edgeCents, direction, highThreshold = 3, lowThreshold = 1 }
 
   return (
     <span
-      className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-mono font-bold border ${colorClasses}`}
+      className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-mono font-semibold border tabular-nums ${colorClasses}`}
       title={`${direction || ''} edge: ${sign}${absEdge.toFixed(1)}c after fees`}
     >
       {label && <span className="mr-0.5 text-[9px] opacity-70">{label}</span>}

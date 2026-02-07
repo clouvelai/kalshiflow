@@ -16,36 +16,38 @@ logger = logging.getLogger("kalshiflow_rl.traderv3.single_arb.tools")
 # --- Dependency injection via module globals ---
 _index = None           # EventArbIndex
 _trading_client = None  # KalshiDemoTradingClient
-_memory_store = None    # DualMemoryStore (file + vector)
+_file_store = None      # FileMemoryStore (journal.jsonl)
 _config = None          # V3Config
 _order_group_id = None  # Session order group ID
 _order_ttl = 60         # Default TTL in seconds (1 min for demo)
 _broadcast_callback = None  # Async callback to broadcast events to frontend
 _captain_order_ids = set()  # Track order IDs placed by Captain this session
+_understanding_builder = None  # UnderstandingBuilder for event context
 
 
 def set_dependencies(
     index=None,
     trading_client=None,
-    memory_store=None,
+    file_store=None,
     config=None,
     order_group_id=None,
     order_ttl=None,
     broadcast_callback=None,
     reset_session=False,
+    understanding_builder=None,
 ) -> None:
     """Set shared dependencies for all tools.
 
     Args:
         reset_session: If True, clears captain_order_ids (call on new session start)
     """
-    global _index, _trading_client, _memory_store, _config, _order_group_id, _order_ttl, _broadcast_callback, _captain_order_ids
+    global _index, _trading_client, _file_store, _config, _order_group_id, _order_ttl, _broadcast_callback, _captain_order_ids, _understanding_builder
     if index is not None:
         _index = index
     if trading_client is not None:
         _trading_client = trading_client
-    if memory_store is not None:
-        _memory_store = memory_store
+    if file_store is not None:
+        _file_store = file_store
     if config is not None:
         _config = config
     if order_group_id is not None:
@@ -56,6 +58,8 @@ def set_dependencies(
         _order_ttl = order_ttl
     if broadcast_callback is not None:
         _broadcast_callback = broadcast_callback
+    if understanding_builder is not None:
+        _understanding_builder = understanding_builder
     if reset_session:
         _captain_order_ids.clear()
 
@@ -190,7 +194,7 @@ async def get_event_snapshot(event_ticker: str, _ts: Optional[str] = None) -> Di
     _market_keep_fields = {
         "ticker", "title", "yes_bid", "yes_ask", "yes_bid_size", "yes_ask_size",
         "yes_levels", "no_levels", "spread", "freshness_seconds",
-        "last_trade_price", "last_trade_side", "trade_count",
+        "last_trade_price", "last_trade_side", "trade_count", "micro",
     }
     if "markets" in snapshot:
         trimmed = {}
@@ -209,12 +213,20 @@ async def get_event_snapshot(event_ticker: str, _ts: Optional[str] = None) -> Di
 async def get_events_summary() -> List[Dict[str, Any]]:
     """Get a compact summary of all monitored events for scanning.
 
-    Returns a lightweight list with edge calculations and data coverage
-    per event. Use this for initial scanning, then drill into specific
-    events with get_event_snapshot().
+    Returns a lightweight list with edge calculations, data coverage,
+    and MENTIONS DATA per event. Use this for initial scanning, then
+    drill into specific events with get_event_snapshot().
+
+    MENTIONS MARKETS include:
+    - is_mentions_market: True for "will X say Y?" events
+    - mentions_entity: The primary term being tracked
+    - baseline_probability: Stable estimate from blind simulation
+    - current_probability: Context-aware estimate (may differ from baseline)
+    - has_baseline: True if baseline established (required for trading)
+    - simulation_stale: True if >5 min since last refresh
 
     Returns:
-        List of dicts with event_ticker, title, market_count, edge info
+        List of dicts with event_ticker, title, market_count, edge info, mentions data
     """
     if not _index:
         return {"error": "EventArbIndex not available"}
@@ -227,7 +239,11 @@ async def get_events_summary() -> List[Dict[str, Any]]:
         long_e = event.long_edge(fee)
         short_e = event.short_edge(fee)
 
-        summary.append({
+        # Microstructure summary
+        total_vol5m = sum(m.micro.volume_5m for m in event.markets.values())
+        total_whale = sum(m.micro.whale_trade_count for m in event.markets.values())
+
+        summary_item = {
             "event_ticker": et,
             "title": event.title,
             "market_count": event.markets_total,
@@ -237,7 +253,43 @@ async def get_events_summary() -> List[Dict[str, Any]]:
             "sum_yes_ask": sum_ask,
             "long_edge": round(long_e, 1) if long_e is not None else None,
             "short_edge": round(short_e, 1) if short_e is not None else None,
-        })
+            "volume_5m": total_vol5m,
+            "whale_trades": total_whale,
+        }
+
+        # Add mentions data if this is a mentions market
+        mentions_data = event.mentions_data
+        if mentions_data and mentions_data.get("lexeme_pack"):
+            lexeme_pack = mentions_data["lexeme_pack"]
+            entity = lexeme_pack.get("entity", "")
+
+            summary_item["is_mentions_market"] = True
+            summary_item["mentions_entity"] = entity
+
+            # Get baseline and current probability for the primary entity
+            baseline = mentions_data.get("baseline_estimates", {})
+            current = mentions_data.get("current_estimates", {})
+
+            if entity and entity in baseline:
+                summary_item["baseline_probability"] = round(
+                    baseline[entity].get("probability", 0.0), 3
+                )
+            else:
+                summary_item["baseline_probability"] = None
+
+            if entity and entity in current:
+                summary_item["current_probability"] = round(
+                    current[entity].get("probability", 0.0), 3
+                )
+            else:
+                summary_item["current_probability"] = None
+
+            # Freshness check (5 min = 300s)
+            last_sim = mentions_data.get("last_simulation_ts", 0)
+            summary_item["simulation_stale"] = (time.time() - last_sim) > 300
+            summary_item["has_baseline"] = bool(baseline)
+
+        summary.append(summary_item)
 
     return summary
 
@@ -347,9 +399,9 @@ async def place_order(
             _captain_order_ids.add(order_id)
 
         # Auto-record to memory
-        if _memory_store:
+        if _file_store:
             try:
-                _memory_store.append(
+                _file_store.append(
                     content=f"TRADE: {action} {contracts} {side} {ticker} @{price_cents}c | {reasoning}",
                     memory_type="trade",
                     metadata={
@@ -374,7 +426,7 @@ async def place_order(
                     "data": {
                         "order_id": order_id,
                         "event_ticker": event_ticker,
-                        "market_ticker": ticker,
+                        "kalshi_ticker": ticker,
                         "direction": None,  # Single-leg trade, no direction
                         "side": side,
                         "action": action,
@@ -402,9 +454,9 @@ async def place_order(
 
     except Exception as e:
         # Record failed order to memory
-        if _memory_store:
+        if _file_store:
             try:
-                _memory_store.append(
+                _file_store.append(
                     content=f"FAILED ORDER: {action} {contracts} {side} {ticker} @{price_cents}c | {reasoning} | error: {e}",
                     memory_type="trade",
                     metadata={
@@ -557,9 +609,9 @@ async def cancel_order(order_id: str, reason: str = "") -> Dict[str, Any]:
         await _trading_client.cancel_order(order_id)
 
         # Record cancellation to memory if reason provided
-        if reason and _memory_store:
+        if reason and _file_store:
             try:
-                _memory_store.append(
+                _file_store.append(
                     content=f"CANCEL: order {order_id[:8]}... | {reason}",
                     memory_type="trade",
                     metadata={"order_id": order_id, "action": "cancel"},
@@ -574,9 +626,9 @@ async def cancel_order(order_id: str, reason: str = "") -> Dict[str, Any]:
         if "not found" in err_str or "404" in err_str:
             return {"status": "already_gone", "order_id": order_id}
         # Record failed cancel to memory
-        if _memory_store:
+        if _file_store:
             try:
-                _memory_store.append(
+                _file_store.append(
                     content=f"FAILED CANCEL: order {order_id[:8]}... | error: {e}",
                     memory_type="trade",
                     metadata={"order_id": order_id, "action": "cancel", "status": "failed", "error": str(e)},
@@ -798,10 +850,10 @@ async def execute_arb(
     }
 
     # Auto-record to memory (including failures)
-    if _memory_store:
+    if _file_store:
         try:
             prefix = "ARB" if status != "failed" else "FAILED ARB"
-            _memory_store.append(
+            _file_store.append(
                 content=f"{prefix}: {direction} {event_ticker} | {len(legs_executed)}/{event_state.markets_total} legs | cost={exec_cost}c | {reasoning}",
                 memory_type="trade",
                 metadata={
@@ -833,7 +885,7 @@ async def execute_arb(
                     "data": {
                         "order_id": leg.get("order_id"),
                         "event_ticker": event_ticker,
-                        "market_ticker": leg.get("ticker"),
+                        "kalshi_ticker": leg.get("ticker"),
                         "direction": direction,
                         "side": leg.get("side"),
                         "contracts": leg.get("contracts"),
@@ -850,210 +902,111 @@ async def execute_arb(
 
 
 @tool
-async def memory_store(
+async def record_learning(
     content: str,
-    memory_type: str = "learning",
-    metadata: Optional[Dict[str, Any]] = None,
+    category: str = "learning",
+    target_file: str = "AGENTS.md",
 ) -> Dict[str, Any]:
-    """Store a learning or insight in memory.
+    """Record a learning or insight to memory.
 
-    Use this to record patterns, mistakes, strategy adjustments, or observations
-    that should persist across Captain cycles.
+    Appends to journal.jsonl (permanent audit trail) and optionally
+    notes which memory file (AGENTS.md, SIGNALS.md, PLAYBOOK.md) should
+    be updated. To actually update the file, use edit_file via the
+    FilesystemBackend (e.g. edit /memories/AGENTS.md).
 
     Args:
         content: The learning/insight text to store
-        memory_type: Category (learning, mistake, strategy, observation, trade_result)
-        metadata: Optional metadata dict (event_ticker, edge, etc.)
+        category: Category (learning, mistake, strategy, observation, trade_result)
+        target_file: Which memory file this relates to (AGENTS.md, SIGNALS.md, PLAYBOOK.md)
 
     Returns:
         Dict with status and storage details
     """
-    if not _memory_store:
-        return {"error": "Memory store not available"}
+    if not _file_store:
+        return {"error": "File store not available"}
 
     try:
-        _memory_store.append(
+        _file_store.append(
             content=content,
-            memory_type=memory_type,
-            metadata=metadata,
+            memory_type=category,
+            metadata={"target_file": target_file},
         )
-        return {"status": "stored", "type": memory_type, "file_stored": True}
+        return {"status": "stored", "category": category, "target_file": target_file}
     except Exception as e:
         return {"error": str(e)}
 
 
 @tool
 async def get_positions() -> Dict[str, Any]:
-    """Get current positions with unrealized P&L and source attribution.
+    """Get positions for tracked events with realtime P&L.
 
-    Distinguishes between:
-    - "captain" positions: Created this session (via current order group)
-    - "legacy" positions: Inherited from before this session
-
-    For each position returns:
-    - ticker, side, quantity
-    - total_cost (cents): What you paid
-    - current_value (cents): What it's worth now (using live orderbook)
-    - unrealized_pnl (cents): current_value - total_cost
-    - exit_price (cents): Price you'd get selling now (bid for YES, 100-ask for NO)
-    - source: "captain" or "legacy"
-
-    Use this to decide exits: positive unrealized_pnl = take profit candidate.
+    Cost from API (total_traded), current value from live orderbook.
     """
-    if not _trading_client:
-        return {"error": "Trading client not available"}
+    if not _trading_client or not _index:
+        return {"error": "Not initialized"}
 
-    try:
-        # Get all positions from Kalshi
-        resp = await _trading_client.get_positions()
-        positions = resp.get("market_positions", resp.get("positions", []))
-        total_count = len(positions)
+    resp = await _trading_client.get_positions()
+    all_positions = resp.get("market_positions", resp.get("positions", []))
+    tracked = set(_index.market_tickers) if _index else set()
 
-        # Get fills from this session to identify captain positions
-        # Strategy: Try order_group_id filter first, fall back to _captain_order_ids
-        captain_tickers = set()
-        captain_costs = {}  # ticker -> total cost from fills
-        captain_quantities = {}  # ticker -> net quantity from fills
+    positions = []
+    for pos in all_positions:
+        ticker = pos.get("ticker")
+        if ticker not in tracked:
+            continue
 
-        fills = []
-        try:
-            if _order_group_id:
-                fills_resp = await _trading_client.get_fills(order_group_id=_order_group_id)
-                fills = fills_resp.get("fills", [])
+        position_count = pos.get("position", 0)
+        qty = abs(position_count)
+        side = "yes" if position_count > 0 else "no"
 
-            # Fallback: if no fills from order_group, try filtering by tracked order_ids
-            if not fills and _captain_order_ids:
-                fills_resp = await _trading_client.get_fills(limit=500)
-                all_fills = fills_resp.get("fills", [])
-                fills = [f for f in all_fills if f.get("order_id") in _captain_order_ids]
+        # Cost from API (what we actually paid)
+        cost = pos.get("total_traded", 0)
+        realized_pnl = pos.get("realized_pnl", 0)
+        fees = pos.get("fees_paid", 0)
 
-        except Exception as e:
-            logger.debug(f"Could not get fills: {e}")
+        # Current value from LIVE orderbook
+        current_value = 0
+        exit_price = None
+        event_ticker = _index.get_event_for_ticker(ticker)
 
-        # Process fills to compute captain positions
-        for fill in fills:
-            ticker = fill.get("ticker")
-            if not ticker:
-                continue
-            captain_tickers.add(ticker)
+        # Calculate exit price from live orderbook
+        if event_ticker and qty > 0:
+            event = _index.events.get(event_ticker)
+            if event:
+                market = event.markets.get(ticker)
+                if market:
+                    if side == "yes":
+                        exit_price = market.yes_bid
+                    else:
+                        # NO position: exit by selling NO, which is buying YES at yes_ask
+                        exit_price = 100 - market.yes_ask if market.yes_ask else None
+                    if exit_price:
+                        current_value = exit_price * qty
 
-            # Aggregate cost and quantity
-            count = fill.get("count", 0)
-            side = fill.get("side", "yes")
-            action = fill.get("action", "buy")
+        unrealized_pnl = current_value - cost if cost > 0 else 0
 
-            # Get price (yes_price or no_price depending on side)
-            if side == "yes":
-                price = fill.get("yes_price", 0)
-            else:
-                price = fill.get("no_price", 0)
+        positions.append({
+            "ticker": ticker,
+            "event_ticker": event_ticker,
+            "side": side,
+            "quantity": qty,
+            "cost": cost,
+            "exit_price": exit_price,
+            "current_value": current_value,
+            "unrealized_pnl": unrealized_pnl,
+            "realized_pnl": realized_pnl,
+            "fees_paid": fees,
+        })
 
-            cost = count * price
+    positions.sort(key=lambda p: p["unrealized_pnl"], reverse=True)
 
-            # Track costs
-            if ticker not in captain_costs:
-                captain_costs[ticker] = 0
-                captain_quantities[ticker] = 0
-
-            if action == "buy":
-                captain_costs[ticker] += cost
-                if side == "yes":
-                    captain_quantities[ticker] += count
-                else:
-                    captain_quantities[ticker] -= count  # NO = negative
-            else:  # sell
-                captain_costs[ticker] -= cost  # Reduce cost basis on sells
-                if side == "yes":
-                    captain_quantities[ticker] -= count
-                else:
-                    captain_quantities[ticker] += count
-
-        # Filter to arb-tracked markets
-        tracked = set(_index.market_tickers) if _index else set()
-
-        # Build enriched position list
-        enriched_positions = []
-        captain_positions = []
-        legacy_positions = []
-
-        for pos in positions:
-            ticker = pos.get("ticker")
-            if ticker not in tracked:
-                continue
-
-            position_count = pos.get("position", 0)
-            market_exposure = pos.get("market_exposure", 0)
-            qty = abs(position_count)
-            side = "yes" if position_count > 0 else "no"
-
-            # Determine source
-            source = "captain" if ticker in captain_tickers else "legacy"
-
-            # Get cost basis
-            if source == "captain" and ticker in captain_costs:
-                total_cost = captain_costs[ticker]
-            else:
-                total_cost = market_exposure  # Fallback for legacy
-
-            # Get live orderbook prices for current value and exit price
-            current_value = market_exposure  # Fallback
-            exit_price = None
-            unrealized_pnl = 0
-
-            if _index:
-                event_ticker = _index.get_event_for_ticker(ticker)
-                if event_ticker:
-                    event = _index.events.get(event_ticker)
-                    if event:
-                        market = event.markets.get(ticker)
-                        if market and qty > 0:
-                            if side == "yes":
-                                # YES position: exit at yes_bid
-                                exit_price = market.yes_bid
-                                if exit_price:
-                                    current_value = exit_price * qty
-                            else:
-                                # NO position: exit at 100 - yes_ask
-                                if market.yes_ask:
-                                    exit_price = 100 - market.yes_ask
-                                    current_value = exit_price * qty
-
-                            if total_cost > 0:
-                                unrealized_pnl = current_value - total_cost
-
-            position_data = {
-                "ticker": ticker,
-                "side": side,
-                "quantity": qty,
-                "total_cost": total_cost,
-                "current_value": current_value,
-                "unrealized_pnl": unrealized_pnl,
-                "exit_price": exit_price,
-                "source": source,
-            }
-
-            enriched_positions.append(position_data)
-            if source == "captain":
-                captain_positions.append(position_data)
-            else:
-                legacy_positions.append(position_data)
-
-        # Sort by unrealized P&L (best exits first)
-        captain_positions.sort(key=lambda p: p["unrealized_pnl"], reverse=True)
-        legacy_positions.sort(key=lambda p: p["unrealized_pnl"], reverse=True)
-
-        return {
-            "captain_positions": captain_positions,
-            "captain_count": len(captain_positions),
-            "captain_unrealized_pnl": sum(p["unrealized_pnl"] for p in captain_positions),
-            "legacy_positions": legacy_positions,
-            "legacy_count": len(legacy_positions),
-            "legacy_unrealized_pnl": sum(p["unrealized_pnl"] for p in legacy_positions),
-            "total_tracked": len(enriched_positions),
-            "total_all_positions": total_count,
-        }
-    except Exception as e:
-        return {"error": str(e)}
+    return {
+        "positions": positions,
+        "count": len(positions),
+        "total_cost": sum(p["cost"] for p in positions),
+        "total_value": sum(p["current_value"] for p in positions),
+        "total_unrealized_pnl": sum(p["unrealized_pnl"] for p in positions),
+    }
 
 
 @tool
@@ -1074,6 +1027,77 @@ async def get_balance() -> Dict[str, Any]:
         }
     except Exception as e:
         return {"error": str(e)}
+
+
+@tool
+async def report_issue(
+    title: str,
+    severity: str,
+    category: str,
+    description: str,
+    proposed_fix: str = "",
+) -> Dict[str, Any]:
+    """Report an issue the Captain observed for future self-fixing.
+
+    Issues are tracked in issues.jsonl and can be auto-fixed by scripts/self-fix.sh.
+    Use this when you detect: tool failures, memory contradictions, trade outcomes
+    that don't match reasoning, prompt gaps, or config problems.
+
+    Args:
+        title: Short description (e.g., "execute_arb returns wrong leg count")
+        severity: "critical", "high", "medium", or "low"
+        category: "memory_corruption", "bad_trade_logic", "tool_failure",
+                  "prompt_gap", "pattern_detection_error", or "config_issue"
+        description: Detailed description with evidence
+        proposed_fix: What you think should change (optional but helpful)
+
+    Returns:
+        Dict with issue id and status
+    """
+    from .memory.issues import report_issue as _report_issue
+    try:
+        issue = _report_issue(
+            title=title,
+            description=description,
+            severity=severity,
+            category=category,
+            proposed_fix=proposed_fix,
+            source_agent="captain",
+        )
+        return {"status": "reported", "issue_id": issue["id"], "severity": severity}
+    except Exception as e:
+        return {"error": f"Failed to report issue: {e}"}
+
+
+@tool
+async def get_issues() -> Dict[str, Any]:
+    """Get summary of open issues and recent resolutions.
+
+    Use this to see what issues have been reported (including by you in prior cycles)
+    to avoid reporting duplicates and to track self-improvement progress.
+
+    Returns:
+        Dict with summary counts and list of open issues
+    """
+    from .memory.issues import get_open_issues, get_issues_summary
+    try:
+        summary = get_issues_summary()
+        open_issues = get_open_issues()
+        return {
+            "summary": summary,
+            "open_issues": [
+                {
+                    "id": i["id"],
+                    "title": i["title"],
+                    "severity": i["severity"],
+                    "category": i["category"],
+                    "timestamp": i["timestamp"],
+                }
+                for i in open_issues[:10]  # Limit for token efficiency
+            ],
+        }
+    except Exception as e:
+        return {"error": f"Failed to get issues: {e}"}
 
 
 @tool
@@ -1287,3 +1311,66 @@ async def analyze_orderbook_patterns(market_ticker: str) -> Dict[str, Any]:
         "top_bid": {"price": market.yes_bid, "size": market.yes_bid_size},
         "top_ask": {"price": market.yes_ask, "size": market.yes_ask_size},
     }
+
+
+@tool
+async def update_understanding(
+    event_ticker: str,
+    force_refresh: bool = False,
+) -> Dict[str, Any]:
+    """Rebuild the structured understanding for an event.
+
+    Use this to refresh event context (Wikipedia, LLM synthesis, extensions).
+    The understanding includes: trading_summary, key_factors, participants,
+    timeline, trading_considerations, and domain-specific extensions.
+
+    Args:
+        event_ticker: The Kalshi event ticker
+        force_refresh: If True, bypass cache and rebuild from scratch
+
+    Returns:
+        Dict with understanding summary or error
+    """
+    if not _index:
+        return {"error": "EventArbIndex not available"}
+    if not _understanding_builder:
+        return {"error": "UnderstandingBuilder not available"}
+
+    event = _index.events.get(event_ticker)
+    if not event:
+        return {"error": f"Event {event_ticker} not found"}
+
+    try:
+        understanding = await _understanding_builder.build(
+            event, force_refresh=force_refresh
+        )
+
+        # Store on EventMeta
+        event.understanding = understanding.to_dict()
+
+        # Broadcast update to frontend
+        if _broadcast_callback:
+            try:
+                await _broadcast_callback({
+                    "type": "event_understanding_update",
+                    "data": {
+                        "event_ticker": event_ticker,
+                        "understanding": understanding.to_dict(),
+                    },
+                })
+            except Exception as e:
+                logger.debug(f"Failed to broadcast understanding update: {e}")
+
+        return {
+            "status": "updated",
+            "event_ticker": event_ticker,
+            "trading_summary": understanding.trading_summary,
+            "key_factors": understanding.key_factors,
+            "participants": len(understanding.participants),
+            "extensions": list(understanding.extensions.keys()),
+            "version": understanding.version,
+            "stale": understanding.stale,
+        }
+
+    except Exception as e:
+        return {"error": f"Understanding build failed: {e}"}

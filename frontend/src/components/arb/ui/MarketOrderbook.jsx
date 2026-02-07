@@ -31,7 +31,7 @@ const MarketOrderbook = ({ market, maxLevels = 5 }) => {
 
   if (bids.length === 0 && asks.length === 0) {
     return (
-      <div className="bg-gray-800/20 rounded-lg p-3 border border-gray-800/30">
+      <div className="bg-gray-800/15 rounded-lg p-3 border border-gray-800/20">
         <div className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-1">
           Orderbook: {title || ticker}
         </div>
@@ -46,13 +46,13 @@ const MarketOrderbook = ({ market, maxLevels = 5 }) => {
   const numLevels = Math.max(bids.length, asks.length);
 
   return (
-    <div className="bg-gray-800/20 rounded-lg p-3 border border-gray-800/30">
+    <div className="bg-gray-800/15 rounded-lg p-3 border border-gray-800/20">
       <div className="flex items-center justify-between mb-2">
         <span className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider">
           Orderbook: {title || ticker}
         </span>
         {spread != null && (
-          <span className="text-[10px] font-mono text-gray-500">
+          <span className="text-[10px] font-mono text-gray-500 tabular-nums">
             spread: {spread}c
           </span>
         )}
@@ -78,11 +78,11 @@ const MarketOrderbook = ({ market, maxLevels = 5 }) => {
           return (
             <div key={i} className="flex items-center h-4">
               {/* Bid size */}
-              <span className="w-8 text-right text-[9px] font-mono text-gray-500">
+              <span className="w-8 text-right text-[9px] font-mono text-gray-500 tabular-nums">
                 {bid ? bid[1] : ''}
               </span>
               {/* Bid price */}
-              <span className="w-8 text-right text-[10px] font-mono text-cyan-400/80 mr-1">
+              <span className="w-8 text-right text-[10px] font-mono text-cyan-400/80 mr-1 tabular-nums">
                 {bid ? bid[0] : ''}
               </span>
               {/* Bid bar | Ask bar */}
@@ -93,7 +93,7 @@ const MarketOrderbook = ({ market, maxLevels = 5 }) => {
                     style={{ width: `${bidPct}%` }}
                   />
                 </div>
-                <div className="w-px bg-gray-700/50" />
+                <div className="w-px bg-gray-700/30" />
                 <div className="w-1/2">
                   <div
                     className="h-full bg-red-500/15 rounded-r-sm"
@@ -102,11 +102,11 @@ const MarketOrderbook = ({ market, maxLevels = 5 }) => {
                 </div>
               </div>
               {/* Ask price */}
-              <span className="w-8 text-left text-[10px] font-mono text-red-400/70 ml-1">
+              <span className="w-8 text-left text-[10px] font-mono text-red-400/70 ml-1 tabular-nums">
                 {ask ? ask[0] : ''}
               </span>
               {/* Ask size */}
-              <span className="w-8 text-left text-[9px] font-mono text-gray-500">
+              <span className="w-8 text-left text-[9px] font-mono text-gray-500 tabular-nums">
                 {ask ? ask[1] : ''}
               </span>
             </div>
@@ -115,7 +115,7 @@ const MarketOrderbook = ({ market, maxLevels = 5 }) => {
       </div>
 
       {/* BBO summary */}
-      <div className="flex items-center justify-between text-[10px] font-mono border-t border-gray-700/30 pt-1 mt-1">
+      <div className="flex items-center justify-between text-[10px] font-mono tabular-nums border-t border-gray-700/20 pt-1 mt-1">
         <span className="text-cyan-400/60">
           {yes_bid != null ? `Best bid: ${yes_bid}c` : ''}
         </span>

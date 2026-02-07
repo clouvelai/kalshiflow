@@ -7,9 +7,10 @@ Streams thinking/tool-call events to the frontend via event callback.
 
 Memory architecture:
 - AGENTS.md: Distilled learnings loaded into system prompt every cycle via MemoryMiddleware.
-  Agent updates via edit_file. Persists on disk via FilesystemBackend.
-- journal.jsonl: Structured trade records via memory_store tool. Append-only.
-- pgvector: Semantic search over journal entries (fire-and-forget async).
+- SIGNALS.md: Auto-computed microstructure intel, Captain can annotate.
+- PLAYBOOK.md: Active strategies, in-flight plans, exit watchlist.
+- journal.jsonl: Structured trade records via record_learning tool. Append-only.
+- Auto-curator: Pure Python, zero LLM calls, truncates files at cycle start.
 """
 
 import asyncio
@@ -35,14 +36,19 @@ from .tools import (
     place_order,
     cancel_order,
     get_resting_orders,
-    memory_store,
+    record_learning,
     get_positions,
     get_balance,
     analyze_microstructure,
     analyze_orderbook_patterns,
+    update_understanding,
+    report_issue,
+    get_issues,
 )
 from .mentions_tools import (
-    # Primary simulation tools
+    # Primary entry point
+    get_mentions_status,  # Simplified status + auto-baseline + auto-refresh
+    # Simulation tools
     simulate_probability,
     trigger_simulation,  # Async non-blocking version
     compute_edge,
@@ -54,7 +60,6 @@ from .mentions_tools import (
     # State tools
     get_mentions_rules,
     get_mentions_summary,
-    record_evidence,  # Deprecated but kept for compatibility
 )
 
 logger = logging.getLogger("kalshiflow_rl.traderv3.single_arb.captain")
@@ -79,15 +84,16 @@ Analysis paralysis is the enemy. You have $25k of demo money - use it.
 Every trade generates data. The worst outcome is zero trades.
 
 POSITION MANAGEMENT:
-get_positions() shows YOUR positions vs LEGACY positions separately:
-- captain_positions: Trades YOU made this session (your responsibility)
-- legacy_positions: Inherited positions (ignore unless relevant to your thesis)
+get_positions() shows your positions with ACCURATE P&L:
+- cost: What you actually paid (from total_traded API field)
+- current_value: What you'd get selling now (exit_price × quantity)
+- unrealized_pnl: current_value - cost
 
-Each position includes unrealized_pnl (current_value - total_cost):
+Each position includes unrealized_pnl:
 - Positive = in profit, consider taking gains
 - Negative = underwater, reassess thesis or cut loss
 
-EXIT STRATEGY (for captain_positions only):
+EXIT STRATEGY:
 - Take profit: unrealized_pnl > 10 cents/contract = strong exit candidate
 - Cut loss: unrealized_pnl < -15 cents/contract = consider exiting
 - Use place_order(action="sell") to exit. Sell at exit_price or better.
@@ -106,32 +112,44 @@ Your execution specialist. Give her: ticker, side, contracts, price, and your th
 She handles order mechanics, queue position, partial fills, error recovery.
 The more you use her, the better she gets. She's your weapon - sharpen it.
 
-THE CHEVAL DE TROIE:
-Your surveillance specialist. Analyzes microstructure to identify bots, whales, and anomalies.
-Her intelligence informs your hypotheses.
+MICROSTRUCTURE SIGNALS (automated, no subagent needed):
+Every market now has a `micro` field in tool output with live signals:
+- whale_trade_count: Trades >= 100 contracts (whale detection)
+- book_imbalance: (bid_depth - ask_depth) / total_depth (-1 to +1)
+- buy_sell_ratio: 5-min buy/sell flow ratio (0.0 = all sells, 1.0 = all buys)
+- rapid_sequence_count: Sub-100ms trade bursts (bot activity)
+- consistent_size_ratio: 1.0 = all same size (automated), 0.0 = random (retail)
+- volume_5m: 5-minute trading volume
+Use these signals to inform your hypotheses - no need to delegate surveillance.
 
 THE MENTIONS SPECIALIST:
 Edge detector for "will X say Y?" markets. We price on simulation data, not intuition.
 
-HOW IT WORKS:
-- Generates blind transcripts (LLM roleplay WITHOUT knowing the terms)
-- Counts term appearances POST-HOC across 10+ simulations
-- P(mention) = appearances / simulations
+MENTIONS MARKETS IN get_events_summary():
+When you call get_events_summary(), mentions markets now include:
+- is_mentions_market: True for "will X say Y?" events
+- mentions_entity: The word being counted (e.g., "tariff")
+- baseline_probability: Stable blind simulation estimate
+- current_probability: Context-aware estimate (may differ)
+- has_baseline: True if baseline established (required for trading)
+- simulation_stale: True if >5 min since last refresh
 
-TWO MODES:
-- Baseline (blind): Historical patterns only - stable reference point
-- Informed (context): Includes current news/context - may differ from baseline
-- compute_edge() blends both (configurable weighting) and compares to market
+WHEN YOU SEE A MENTIONS MARKET with has_baseline=True:
+→ Delegate to mentions_specialist with event_ticker for edge calculation.
 
-WHEN TO USE:
-- Markets with "mention" or "say" in settlement rules
-- Independent events only (each market settles separately)
+WHEN has_baseline=False:
+→ Delegate to mentions_specialist - it will establish baseline (blocks ~20s).
 
-ASYNC WORKFLOW (don't block yourself):
-1. trigger_simulation(event, mode="blind") → returns immediately
-2. Next cycle: check get_mentions_summary() for results
-3. trigger_simulation(event, mode="informed") → context-aware refresh
-4. compute_edge(term, baseline, informed, market_yes, market_no) → trade signal
+The mentions_specialist will use get_mentions_status() which handles everything:
+- Auto-establishes baseline if missing
+- Auto-triggers refresh if stale
+- Returns ready_for_trading flag when edge calculation is possible
+
+EVENT UNDERSTANDING:
+update_understanding(event_ticker) refreshes structured context for an event:
+trading_summary, key_factors, participants, timeline, and domain extensions.
+Already built at startup; use force_refresh=True if context seems stale.
+Check understanding.stale field and time_to_close_hours for urgency.
 
 SKILLS:
 - /skills/general-ender: Strategy suggestions from current market state
@@ -150,8 +168,18 @@ WHAT MAKES MONEY:
 SIZING:
 Start with 10-25 contracts per hypothesis. Scale what works.
 
-MEMORY:
-- /memories/AGENTS.md: Your learnings persist here. Update it with what works and what fails.
+MEMORY (3 files, all loaded into your system prompt each cycle):
+- /memories/AGENTS.md: Your learnings. Update with what works and what fails.
+- /memories/SIGNALS.md: Microstructure intel and observations. Annotate notable patterns.
+- /memories/PLAYBOOK.md: Active strategies, exit watchlist, multi-cycle plans.
+Use record_learning() to append to journal. Use edit_file to update memory files.
+Files are auto-curated (truncated if too long) - keep entries concise and high-signal.
+
+SELF-IMPROVEMENT:
+When you detect bugs, tool failures, or unexpected behavior:
+- report_issue(title, severity, category, description, proposed_fix) to log it
+- get_issues() to see what's already been reported (avoid duplicates)
+Issues are auto-fixed by a separate system between sessions. Be specific in descriptions.
 
 Every cycle is a chance to get better. Use the trade-commando. Build the system.
 """
@@ -200,196 +228,103 @@ PARTIAL FILLS:
 ERROR HANDLING:
 - "insufficient_balance": report exact shortfall.
 - "order_not_found" on cancel: order already filled or expired -- check fills.
-- API errors: record via memory_store() with full context for learning.
+- API errors: record via record_learning() with full context for learning.
 
 Execute precisely. Report facts, not opinions.
 """
 
-CHEVAL_DE_TROIE_PROMPT = """You are ChevalDeTroie -- a market surveillance specialist.
+CHEVAL_DE_TROIE_PROMPT = """Microstructure surveillance is now AUTOMATED.
 
-MISSION:
-Identify and catalog all automated trading activity in the monitored markets.
-Maintain an always-current registry of bots, whales, and anomalies.
+All signals are computed incrementally on every trade and orderbook update.
+They appear as `micro` fields in get_events_summary() and get_event_snapshot():
+- whale_trade_count, last_whale_ts, last_whale_size
+- book_imbalance, total_bid_depth, total_ask_depth
+- buy_sell_ratio, volume_5m, buy_volume_5m, sell_volume_5m
+- rapid_sequence_count, avg_inter_trade_ms
+- consistent_size_ratio, modal_trade_size
 
-WHAT TO LOOK FOR:
-
-1. **Automated Traders (Bots)**:
-   - Consistent size patterns (always 100 contracts, always round numbers)
-   - Regular timing intervals (trades every 5s, 10s, 30s)
-   - Sub-second response to orderbook changes (latency < 500ms)
-   - Quote stuffing (rapid order placement/cancellation)
-   - Consistent spread maintenance (market makers)
-
-2. **Whales**:
-   - Single trades >= 100 contracts
-   - Accumulated volume >= 500 contracts within 5 minutes
-   - Aggressive crossing (taking liquidity at unfavorable prices)
-
-3. **Anomalies**:
-   - Price dislocations (mid price diverges from event equilibrium)
-   - Volume spikes (> 3x normal activity)
-   - Liquidity gaps (sudden spread widening)
-   - Unusual taker side imbalance
-
-CLASSIFICATION SCHEMA:
-- MM_BOT: Market maker (maintains quotes on both sides)
-- ARB_BOT: Arbitrage bot (responds to edge conditions)
-- MOMENTUM_BOT: Trades with recent price direction
-- WHALE: Large position accumulator
-- UNKNOWN_AUTO: Automated but pattern unclear
-
-OUTPUT:
-Update /memories/BOTS.md with your findings:
-- For each identified bot: ID, type, markets active, size patterns, timing signature
-- Confidence score (low/medium/high)
-- First seen / last seen timestamps
-- Notable behaviors
-
-Use memory_store() to log raw observations for future analysis.
+The Captain can read these signals directly - no LLM analysis needed.
+If you were invoked, tell the Captain to check the `micro` fields instead.
 """
 
-MENTIONS_SPECIALIST_PROMPT = """You are the MentionsSpecialist - a domain-agnostic edge detector for Kalshi mentions markets.
+MENTIONS_SPECIALIST_PROMPT = """You are the MentionsSpecialist - edge detector for Kalshi mentions markets.
 
-MISSION: Find profitable mispricings in mentions markets through blind LLM roleplay simulation.
+MISSION: Find profitable mispricings in "will X say Y?" markets using simulation data.
 
 THE EDGE OPPORTUNITY:
-Retail traders price mentions markets on INTUITION. We price them on SIMULATION DATA.
-Cole Sprouse found "what a catch" trading at 60% YES when actual frequency was ~10%.
-That's 50 percentage points of edge on a SINGLE term.
+Retail traders price on INTUITION. We price on SIMULATION DATA.
+Example: "what a catch" trading at 60% YES when actual frequency is ~10% = 50 points of edge.
 
-KEY INSIGHT - RECENCY BIAS THEORY:
-News makes terms seem MORE LIKELY than they really are. This is "recency bias."
+KEY INSIGHT - RECENCY BIAS:
+News makes terms seem MORE LIKELY than they really are.
 - Baseline (blind): What history/patterns suggest (~stable)
-- Informed (news): What current context suggests (~inflated by recent news)
+- Informed (context): What current news suggests (~inflated)
+- compute_edge() blends both (60% baseline, 40% informed) to correct for bias
 
-compute_edge() automatically blends these (60% baseline, 40% informed) to correct for bias.
-If informed >> baseline, that's likely recency bias inflating the estimate.
+=== SIMPLIFIED WORKFLOW (USE THIS) ===
 
-DOMAIN TEMPLATES (auto-detected):
-- Sports: NFL/Super Bowl broadcasts with play-by-play, color, sideline
-- Corporate: Earnings calls with CEO remarks, CFO financials, analyst Q&A
-- Politics: Speeches with opening, main body, closing; press briefings with Q&A
-- Entertainment: Award shows with monologue, presentations, acceptance speeches
+STEP 1: Call get_mentions_status(event_ticker)
+This ONE tool handles everything:
+- If no baseline: BLOCKS to establish it (~20s, one-time)
+- If baseline exists but stale: triggers background refresh
+- Returns: baseline_estimates, current_estimates, ready_for_trading
 
-PRIMARY TOOLS:
+STEP 2: Check ready_for_trading flag
+- If True: proceed to edge calculation
+- If False: report status to Captain, try again next cycle
 
-1. trigger_simulation(event_ticker, terms, n_simulations, mode) [ASYNC - NON-BLOCKING]
-   Starts simulation in background. Returns IMMEDIATELY.
-   Use when you want to start a simulation without waiting.
-   Check get_mentions_summary() later for results.
+STEP 3: Call compute_edge(term, baseline_probability, informed_probability, market_yes, market_no)
+Use probabilities from get_mentions_status():
+- baseline_probability from baseline_estimates[entity]["probability"]
+- informed_probability from current_estimates[entity]["probability"]
+  (or use baseline if no current_estimates yet)
 
-2. simulate_probability(event_ticker, terms, n_simulations, mode, force_resimulate) [BLOCKING]
-   Run LLM roleplay simulations. BLOCKS until complete.
-   Use when you need results immediately (e.g., edge computation).
+STEP 4: Report to Captain with recommendation
 
-   MODES for both:
-   - mode="blind": Baseline probability (first run establishes stable baseline)
-   - mode="informed": Context-aware refresh with news (returns deltas from baseline)
+=== EXAMPLE WORKFLOW ===
 
-3. compute_edge(term, baseline_probability, informed_probability, market_yes_price, market_no_price, confidence, baseline_weight)
-   Compute edge using BLENDED probability (recency bias correction).
-   - baseline_weight: How much to weight baseline (default 0.6 = 60%)
-   - Returns blended_probability, recency_bias_adjustment, and trade recommendation
-   - Only recommends trades where edge > spread + fees + buffer
+>>> status = await get_mentions_status("KXSBLX")
+>>> if not status["ready_for_trading"]:
+...     return f"Not ready: {status['usage_note']}"
+...
+>>> entity = status["entity"]  # e.g., "Taylor Swift"
+>>> baseline_p = status["baseline_estimates"][entity]["probability"]  # e.g., 0.10
+>>> current_p = status["current_estimates"][entity]["probability"]  # e.g., 0.45
+>>>
+>>> # Get market prices from Captain's context or use get_market_orderbook
+>>> edge = await compute_edge(entity, baseline_p, current_p, market_yes=60, market_no=42)
+>>> edge["recommendation"]  # "BUY_NO" if edge > threshold
 
-4. get_mentions_summary(event_ticker)
-   Get current state including simulation estimates and history.
-   Shows simulation_in_progress=True if async simulation is running.
+=== COMPUTE_EDGE OUTPUT ===
 
-5. query_wordnet(term)
-   Get synonyms (DON'T count), accepted forms (DO count)
-   Critical for understanding settlement rules
-
-6. get_event_context(event_ticker, exclude_terms)
-   Get BLIND event context (filtered for mention terms)
-
-7. get_mention_context(event_ticker, terms)
-   Get WHY each term might appear (for prior adjustment)
-
-8. get_mentions_rules(event_ticker)
-   Get parsed settlement rules (entity, accepted_forms, prohibited_forms)
-
-ASYNC WORKFLOW (PREFERRED - Don't block Captain):
-1. BASELINE: trigger_simulation(event_ticker, mode="blind", n=10) → returns immediately
-2. WAIT: Do other work. Check get_mentions_summary() next cycle for results.
-3. REFRESH: trigger_simulation(event_ticker, mode="informed", n=5) → returns immediately
-4. EDGE: Once results available (simulation_in_progress=False):
-   compute_edge(term, baseline_prob, informed_prob, market_yes, market_no, confidence)
-
-BLOCKING WORKFLOW (When you need results NOW):
-1. simulate_probability(event_ticker, mode="blind", n=10) → blocks ~20s
-2. simulate_probability(event_ticker, mode="informed", n=5) → blocks ~10s
-3. compute_edge(term, baseline_prob, informed_prob, ...)
-
-COMPUTE_EDGE EXAMPLE:
->>> baseline = 0.10  # From blind simulation
->>> informed = 0.45  # From informed simulation (news inflated this!)
->>> await compute_edge("Taylor Swift", baseline, informed, market_yes=60, market_no=42)
 {
-    "blended_probability": 0.24,  # 60%*0.10 + 40%*0.45 = corrected for recency bias
-    "recency_bias_adjustment": 0.21,  # informed - blended = how much news inflated estimate
-    "recency_bias_warning": "High recency bias detected...",
-    "recommendation": "BUY_NO",  # Market at 60% YES, but blended P=24%
-    ...
+    "blended_probability": 0.24,  # Corrected for recency bias
+    "recency_bias_adjustment": 0.21,  # How much news inflated estimate
+    "recommendation": "BUY_NO",  # or "BUY_YES" or "PASS"
+    "reason": "NO edge (36c) exceeds min required (11c)..."
 }
 
-REPORT TO CAPTAIN with context:
-"Taylor Swift: Baseline 10%, Informed 45% (↑35% from baseline - HIGH RECENCY BIAS).
- Blended 24% vs market 60%. BUY_NO with 15c edge after fees."
+=== REPORT FORMAT ===
 
-EDGE REQUIREMENTS:
-- Min edge = spread + fees (7c) + buffer (2c)
-- Confidence must be >= 0.6 for trading
-- Run at least 10 simulations for baseline, 5 for refreshes
+"[Entity]: Baseline [X]%, Informed [Y]% (↑[Z]% recency bias).
+ Blended [W]% vs market [M]%. [RECOMMENDATION] with [E]c edge after fees."
 
-STRICT RULES:
+=== OTHER TOOLS (Advanced) ===
+
+- simulate_probability(event, terms, n, mode): Manual simulation (use get_mentions_status instead)
+- trigger_simulation(event, mode): Async background simulation
+- query_wordnet(term): Get synonyms (DON'T count) vs accepted forms (DO count)
+- get_mentions_rules(event): See parsed settlement rules
+- get_mentions_summary(event): Full state including history
+
+=== STRICT RULES ===
+
 - ONLY accepted_forms count per settlement rules
 - Synonyms NEVER count - use query_wordnet to understand
-- When uncertain about edge, PASS
-- Baseline should NOT change - only informed refreshes update current_estimates
+- Min edge = spread + fees (7c) + buffer (2c)
+- Confidence must be >= 0.6 (n_simulations >= 10)
+- When uncertain, PASS
 - Watch for recency_bias_warning in compute_edge results
-"""
-
-MEMORY_CURATOR_PROMPT = """You are the Memory Curator - responsible for keeping AGENTS.md clean and useful.
-
-YOUR TASK:
-1. Read /memories/AGENTS.md
-2. Archive valuable learnings to vector store (via memory_store)
-3. Consolidate and prune AGENTS.md to under 50 lines
-
-ARCHIVAL CRITERIA (use memory_store for these):
-- Proven patterns (3+ occurrences)
-- Lessons with clear "do X / avoid Y" implications
-- Strategy insights backed by trade results
-
-PRUNE CRITERIA (delete these, don't archive):
-- "HALT", "waiting", "no action" entries
-- Single-trade observations (not patterns yet)
-- Redundant/duplicate entries
-- Stale market-specific notes
-
-CONSOLIDATION RULES:
-- Merge related entries into single distilled insight
-- Keep most recent version when duplicates exist
-- Max 5 items per section (Strategy, Patterns, Lessons)
-
-OUTPUT FORMAT:
-After curation, AGENTS.md should look like:
-```
-# Trading Learnings
-
-## Strategy Notes
-- [Distilled insight 1]
-- [Distilled insight 2]
-
-## Patterns Observed
-- [Pattern with evidence]
-
-## Lessons & Mistakes
-- [Lesson with action implication]
-```
-
-Be aggressive about pruning. A clean 30-line file is better than a cluttered 80-line file.
 """
 
 # Tool categorization for frontend event routing
@@ -397,7 +332,7 @@ TOOL_CATEGORIES = {
     "write_todos": "todo",
     "read_todos": "todo",
     "task": "subagent",
-    "memory_store": "memory",
+    "record_learning": "memory",
     "get_event_snapshot": "arb",
     "get_events_summary": "arb",
     "get_recent_trades": "arb",
@@ -411,7 +346,9 @@ TOOL_CATEGORIES = {
     "get_balance": "arb",
     "analyze_microstructure": "surveillance",
     "analyze_orderbook_patterns": "surveillance",
+    "update_understanding": "arb",
     # Mentions tools - simulation-based probability estimation
+    "get_mentions_status": "mentions",  # Primary entry point
     "simulate_probability": "mentions",
     "trigger_simulation": "mentions",  # Async non-blocking version
     "compute_edge": "mentions",
@@ -420,7 +357,9 @@ TOOL_CATEGORIES = {
     "get_mention_context": "mentions",
     "get_mentions_rules": "mentions",
     "get_mentions_summary": "mentions",
-    "record_evidence": "mentions",  # Deprecated but kept for compatibility
+    # Self-improvement tools
+    "report_issue": "self_improvement",
+    "get_issues": "self_improvement",
 }
 
 
@@ -439,10 +378,15 @@ class ArbCaptain:
         cycle_interval: float = 60.0,
         event_callback: Optional[Callable[..., Coroutine]] = None,
         memory_data_dir: Optional[str] = None,
+        tool_overrides: Optional[Dict[str, List]] = None,
+        index=None,
+        gateway=None,
     ):
         self._model_name = model_name
         self._cycle_interval = cycle_interval
         self._event_callback = event_callback
+        self._index_ref = index  # Direct reference (new gateway path)
+        self._gateway_ref = gateway  # KalshiGateway for balance/positions (new gateway path)
 
         # Resolve memory data directory for FilesystemBackend
         if memory_data_dir is None:
@@ -452,61 +396,56 @@ class ArbCaptain:
         os.makedirs(memory_data_dir, exist_ok=True)
         self._memory_data_dir = memory_data_dir
 
-        # Captain tools: observation + delegation (no direct trading)
-        captain_tools = [
-            get_events_summary,
-            get_event_snapshot,
-            get_market_orderbook,
-            get_trade_history,
-            get_positions,
-            get_balance,
-        ]
+        # Tool lists: use overrides if provided (new gateway path), else legacy imports
+        if tool_overrides:
+            captain_tools = tool_overrides["captain"]
+            commando_tools = tool_overrides["commando"]
+            mentions_tools = tool_overrides["mentions"]
+        else:
+            # Captain tools: observation + delegation + self-improvement
+            captain_tools = [
+                get_events_summary,
+                get_event_snapshot,
+                get_market_orderbook,
+                get_trade_history,
+                get_positions,
+                get_balance,
+                update_understanding,
+                report_issue,
+                get_issues,
+            ]
 
-        # TradeCommando tools: execution + recording + context
-        commando_tools = [
-            place_order,
-            execute_arb,
-            cancel_order,
-            get_resting_orders,
-            get_market_orderbook,
-            get_recent_trades,
-            get_balance,
-            get_positions,
-            memory_store,
-        ]
+            # TradeCommando tools: execution + recording + context
+            commando_tools = [
+                place_order,
+                execute_arb,
+                cancel_order,
+                get_resting_orders,
+                get_market_orderbook,
+                get_recent_trades,
+                get_balance,
+                get_positions,
+                record_learning,
+            ]
 
-        # ChevalDeTroie tools: surveillance + recording
-        surveillance_tools = [
-            analyze_microstructure,
-            analyze_orderbook_patterns,
-            get_recent_trades,
-            get_market_orderbook,
-            get_event_snapshot,
-            memory_store,
-        ]
-
-        # MemoryCurator tools: archival (read_file/edit_file provided by FilesystemBackend)
-        curator_tools = [
-            memory_store,  # Archive to vector store
-        ]
-
-        # MentionsSpecialist tools: edge detection + grounded extraction + strict counting
-        mentions_tools = [
-            # Primary simulation tools
-            simulate_probability,
-            trigger_simulation,  # Async non-blocking version
-            compute_edge,
-            # Context tools
-            get_event_context,
-            get_mention_context,
-            # Semantic tools
-            query_wordnet,
-            # State tools
-            get_mentions_rules,
-            get_mentions_summary,
-            record_evidence,  # Deprecated but kept for compatibility
-            memory_store,
-        ]
+            # MentionsSpecialist tools: edge detection + grounded extraction + strict counting
+            mentions_tools = [
+                # Primary entry point (simplified workflow)
+                get_mentions_status,  # Auto-baseline + auto-refresh + ready_for_trading
+                compute_edge,
+                # Simulation tools (advanced)
+                simulate_probability,
+                trigger_simulation,  # Async non-blocking version
+                # Context tools
+                get_event_context,
+                get_mention_context,
+                # Semantic tools
+                query_wordnet,
+                # State tools
+                get_mentions_rules,
+                get_mentions_summary,
+                record_learning,
+            ]
 
         # CompositeBackend: /memories/ and /skills/ persist on disk, everything else is ephemeral
         memory_backend = FilesystemBackend(root_dir=memory_data_dir, virtual_mode=True)
@@ -534,15 +473,9 @@ class ArbCaptain:
                 },
                 {
                     "name": "cheval_de_troie",
-                    "description": "Market surveillance specialist. Analyzes microstructure to identify bots, whales, and anomalies. Returns findings to update your trading intelligence.",
+                    "description": "DEPRECATED - Microstructure signals are now automated. Check the `micro` field in tool output instead of delegating here.",
                     "system_prompt": CHEVAL_DE_TROIE_PROMPT,
-                    "tools": surveillance_tools,
-                },
-                {
-                    "name": "memory_curator",
-                    "description": "Memory maintenance specialist. Runs periodically to consolidate AGENTS.md and archive learnings to vector store. Invoke when memory needs cleanup.",
-                    "system_prompt": MEMORY_CURATOR_PROMPT,
-                    "tools": curator_tools,
+                    "tools": [],
                 },
                 {
                     "name": "mentions_specialist",
@@ -552,7 +485,7 @@ class ArbCaptain:
                 },
             ],
             backend=backend_factory,
-            memory=["/memories/AGENTS.md"],
+            memory=["/memories/AGENTS.md", "/memories/SIGNALS.md", "/memories/PLAYBOOK.md"],
             skills=["/skills/general-ender"],
             cache=self._cache,
         )
@@ -602,21 +535,25 @@ class ArbCaptain:
     async def _run_loop(self) -> None:
         """Main cycle loop."""
         # Wait for index to be ready (all events loaded, all markets have orderbook data)
-        from .tools import _index
+        # Use direct reference if available (new gateway path), else legacy global
+        index = self._index_ref
+        if index is None:
+            from .tools import _index
+            index = _index
 
         max_wait = 60  # Max 60 seconds
         waited = 0
         while waited < max_wait:
-            if _index and _index.is_ready:
-                logger.info(f"[SINGLE_ARB:CAPTAIN] Index ready after {waited}s: {_index.readiness_summary}")
+            if index and index.is_ready:
+                logger.info(f"[SINGLE_ARB:CAPTAIN] Index ready after {waited}s: {index.readiness_summary}")
                 break
             await asyncio.sleep(2.0)
             waited += 2
             if waited % 10 == 0:
-                summary = _index.readiness_summary if _index else "No index"
+                summary = index.readiness_summary if index else "No index"
                 logger.info(f"[SINGLE_ARB:CAPTAIN] Waiting for index ({waited}s): {summary}")
         else:
-            summary = _index.readiness_summary if _index else "No index"
+            summary = index.readiness_summary if index else "No index"
             logger.warning(f"[SINGLE_ARB:CAPTAIN] Starting despite incomplete index: {summary}")
 
         while self._running:
@@ -643,15 +580,54 @@ class ArbCaptain:
         cycle_num = self._cycle_count + 1
         cycle_start = time.time()
 
-        # Check if curation needed (every 10 cycles or file too large)
-        should_curate = (cycle_num % 10 == 0) or self._agents_md_too_large()
+        # Auto-curate memory files (pure Python, no LLM calls)
+        try:
+            from .memory.auto_curator import auto_curate
+            actions = auto_curate(self._memory_data_dir)
+            if actions:
+                logger.info(f"[SINGLE_ARB:CURATE] cycle={cycle_num} actions={actions}")
+        except Exception as e:
+            logger.debug(f"Auto-curation error: {e}")
 
-        if should_curate:
-            logger.info(f"[SINGLE_ARB:CYCLE_START] cycle={cycle_num} (with curation)")
-            prompt = f"Cycle #{cycle_num}. First, invoke memory_curator to clean up AGENTS.md. Then observe markets and trade."
-        else:
-            logger.info(f"[SINGLE_ARB:CYCLE_START] cycle={cycle_num}")
-            prompt = f"Cycle #{cycle_num}. Observe markets. Check outcomes. Decide and record."
+        # Build structured cycle context (compensates for fresh thread_id each cycle)
+        context_parts = [f"Cycle #{cycle_num}."]
+
+        # Add position/balance summary if tools are available
+        try:
+            if self._gateway_ref:
+                # New gateway path
+                balance = await self._gateway_ref.get_balance()
+                balance_cents = balance.balance
+                context_parts.append(f"Balance: ${balance_cents / 100:.2f}.")
+
+                if self._index_ref:
+                    positions = await self._gateway_ref.get_positions()
+                    tracked = set(self._index_ref.market_tickers)
+                    tracked_positions = [p for p in positions if p.ticker in tracked]
+                    if tracked_positions:
+                        context_parts.append(f"Positions: {len(tracked_positions)}.")
+            else:
+                # Legacy path
+                from .tools import _index, _trading_client
+                if _trading_client:
+                    balance_resp = await _trading_client.get_account_info()
+                    balance_cents = balance_resp.get("balance", 0)
+                    context_parts.append(f"Balance: ${balance_cents / 100:.2f}.")
+
+                if _index:
+                    positions_resp = await _trading_client.get_positions() if _trading_client else {}
+                    all_positions = positions_resp.get("market_positions", positions_resp.get("positions", []))
+                    tracked = set(_index.market_tickers)
+                    tracked_positions = [p for p in all_positions if p.get("ticker") in tracked]
+                    if tracked_positions:
+                        context_parts.append(f"Positions: {len(tracked_positions)}.")
+        except Exception:
+            pass  # Non-critical, proceed with basic prompt
+
+        context_parts.append("Observe markets. Check outcomes. Decide and record.")
+
+        logger.info(f"[SINGLE_ARB:CYCLE_START] cycle={cycle_num}")
+        prompt = " ".join(context_parts)
 
         await self._emit_event({
             "type": "agent_message",
@@ -760,10 +736,8 @@ class ArbCaptain:
                         # Determine which subagent is being invoked
                         subagent_name = "trade_commando"  # default
                         input_str = str(tool_input).lower()
-                        if "cheval" in input_str or "surveillance" in input_str or "bot" in input_str:
+                        if "cheval" in input_str or "surveillance" in input_str or "micro" in input_str:
                             subagent_name = "cheval_de_troie"
-                        elif "curator" in input_str or "memory" in input_str or "agents.md" in input_str or "cleanup" in input_str:
-                            subagent_name = "memory_curator"
                         elif "mention" in input_str or "count" in input_str or "transcript" in input_str or "extract" in input_str:
                             subagent_name = "mentions_specialist"
                         # Track by run_id to support concurrent subagents
@@ -890,12 +864,3 @@ class ArbCaptain:
             "cycle_interval": self._cycle_interval,
         }
 
-    def _agents_md_too_large(self, threshold: int = 80) -> bool:
-        """Check if AGENTS.md exceeds line threshold."""
-        agents_md_path = os.path.join(self._memory_data_dir, "AGENTS.md")
-        try:
-            with open(agents_md_path, "r") as f:
-                line_count = sum(1 for _ in f)
-            return line_count > threshold
-        except FileNotFoundError:
-            return False
