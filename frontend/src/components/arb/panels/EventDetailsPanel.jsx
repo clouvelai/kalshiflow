@@ -4,7 +4,7 @@ import EdgeBadge from '../ui/EdgeBadge';
 import EventTradeFeed from '../ui/EventTradeFeed';
 import MarketOrderbook from '../ui/MarketOrderbook';
 import EventUnderstandingCard from './EventUnderstandingCard';
-import Sparkline from '../ui/MarketCandlestickChart';
+import HeatStripMatrix from '../ui/MarketCandlestickChart';
 
 /**
  * TabButton - Orderbook/trades tab toggle.
@@ -224,6 +224,11 @@ const SingleArbDetailsView = memo(({ event, eventTrades = [], arbTrades = [], po
           </div>
         </div>
 
+        {/* Price History Heatmap */}
+        {event.candlestick_series && Object.keys(event.candlestick_series).length > 0 && (
+          <HeatStripMatrix candlestickSeries={event.candlestick_series} markets={markets} />
+        )}
+
         {/* Markets Table */}
         {marketList.length > 0 && (
           <div className="bg-gray-800/15 rounded-lg p-3 border border-gray-800/20">
@@ -241,7 +246,6 @@ const SingleArbDetailsView = memo(({ event, eventTrades = [], arbTrades = [], po
                     <th className="text-right pb-1.5 px-2 font-semibold whitespace-nowrap">Mid</th>
                     <th className="text-right pb-1.5 px-2 font-semibold whitespace-nowrap">Vol</th>
                     <th className="text-right pb-1.5 px-2 font-semibold whitespace-nowrap">Age</th>
-                    <th className="text-center pb-1.5 px-1 font-semibold whitespace-nowrap">7d</th>
                     <th className="text-right pb-1.5 pl-4 px-2 font-semibold whitespace-nowrap border-l border-gray-700/10">Cost</th>
                     <th className="text-right pb-1.5 px-2 font-semibold whitespace-nowrap">Expo</th>
                     <th className="text-right pb-1.5 pl-2 font-semibold whitespace-nowrap">P&L</th>
@@ -268,9 +272,6 @@ const SingleArbDetailsView = memo(({ event, eventTrades = [], arbTrades = [], po
                         <td className="text-right py-1 px-2 font-mono text-cyan-400/60 tabular-nums whitespace-nowrap">{m.yes_mid != null ? `${m.yes_mid.toFixed(0)}` : '--'}</td>
                         <td className="text-right py-1 px-2 font-mono text-gray-600 text-[10px] tabular-nums whitespace-nowrap">{formatVol(m.volume_24h)}</td>
                         <td className={`text-right py-1 px-2 font-mono text-[10px] tabular-nums whitespace-nowrap ${freshness.color}`}>{freshness.text}</td>
-                        <td className="text-center py-1 px-1">
-                          <Sparkline points={event.candlestick_series?.[m.ticker]} />
-                        </td>
                         <td className="text-right py-1 pl-4 px-2 font-mono text-gray-400 tabular-nums whitespace-nowrap border-l border-gray-700/10">{pos?.total_cost != null ? `$${(pos.total_cost / 100).toFixed(2)}` : '--'}</td>
                         <td className="text-right py-1 px-2 font-mono text-gray-500 tabular-nums whitespace-nowrap">{pos?.current_value != null ? `$${(pos.current_value / 100).toFixed(2)}` : '--'}</td>
                         <td className={`text-right py-1 pl-2 font-mono tabular-nums whitespace-nowrap ${
@@ -290,7 +291,6 @@ const SingleArbDetailsView = memo(({ event, eventTrades = [], arbTrades = [], po
                     <td className="text-right pt-1.5 px-2 font-mono text-cyan-400 tabular-nums">{sum_yes_mid != null ? `${sum_yes_mid.toFixed(0)}` : '--'}</td>
                     <td className="pt-1.5 px-2" />
                     <td className="text-right pt-1.5 px-2 font-mono text-[10px] text-gray-600">/100</td>
-                    <td className="pt-1.5 px-1" />
                     <td className="text-right pt-1.5 pl-4 px-2 font-mono text-gray-400 tabular-nums border-l border-gray-700/10">{positionSummary ? `$${(positionSummary.totalCost / 100).toFixed(2)}` : ''}</td>
                     <td className="text-right pt-1.5 px-2 font-mono text-gray-400 tabular-nums">{positionSummary ? `$${(positionSummary.totalExposure / 100).toFixed(2)}` : ''}</td>
                     <td className={`text-right pt-1.5 pl-2 font-mono tabular-nums ${positionSummary?.totalUnrealized >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>{positionSummary ? `${positionSummary.totalUnrealized >= 0 ? '+' : ''}$${(positionSummary.totalUnrealized / 100).toFixed(2)}` : ''}</td>
