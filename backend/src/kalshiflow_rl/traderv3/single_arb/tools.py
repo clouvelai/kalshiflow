@@ -352,6 +352,21 @@ async def get_events_summary() -> List[Dict[str, Any]]:
                         if len(ci) == 2:
                             summary_item["ci_width"] = round(ci[1] - ci[0], 3)
 
+        # Add candlestick trend info if available
+        if event.candlesticks:
+            cs = event.candlestick_summary()
+            if cs:
+                trends = {}
+                for ticker, info in cs.items():
+                    trends[ticker] = {
+                        "trend": info.get("price_trend", "flat"),
+                        "current": info.get("price_current"),
+                        "7d_avg": info.get("price_7d_avg"),
+                        "high": info.get("price_high"),
+                        "low": info.get("price_low"),
+                    }
+                summary_item["candlestick_trends"] = trends
+
         summary.append(summary_item)
 
     return summary
