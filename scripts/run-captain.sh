@@ -13,6 +13,11 @@
 
 set -e
 
+# Always run from project root (where .env files live)
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+cd "$PROJECT_ROOT"
+
 ENVIRONMENT="${1:-paper}"
 PORT=8005
 
@@ -41,9 +46,10 @@ source "$ENV_FILE"
 set +a
 export ENVIRONMENT="${ENVIRONMENT}"
 
-# Force-enable Captain
+# Force-enable Captain + Sniper
 export V3_SINGLE_ARB_ENABLED=true
 export V3_SINGLE_ARB_CAPTAIN_ENABLED=true
+export V3_SNIPER_ENABLED=true
 
 # Safety: paper mode must use demo API
 if [ "$ENVIRONMENT" = "paper" ]; then
@@ -79,6 +85,11 @@ if [ -z "$ANTHROPIC_API_KEY" ]; then
     exit 1
 fi
 
+if [ -z "$GOOGLE_API_KEY" ]; then
+    echo -e "${RED}[$(ts)] Error: Missing GOOGLE_API_KEY (required for mentions rule parsing)${NC}"
+    exit 1
+fi
+
 # Non-critical warnings (don't exit)
 [ -z "$SUPABASE_URL" ] && echo -e "${YELLOW}[$(ts)] Warning: SUPABASE_URL not set (DB features disabled)${NC}"
 [ -z "$OPENAI_API_KEY" ] && echo -e "${YELLOW}[$(ts)] Warning: OPENAI_API_KEY not set (embeddings disabled)${NC}"
@@ -91,17 +102,31 @@ if lsof -ti:$PORT >/dev/null 2>&1; then
     sleep 1
 fi
 
+# Start frontend dev server if not already running
+if ! lsof -ti:5173 >/dev/null 2>&1; then
+    echo -e "${CYAN}[$(ts)] Starting frontend dev server...${NC}"
+    cd frontend && npm run dev > /dev/null 2>&1 &
+    FRONTEND_PID=$!
+    cd ..
+    echo -e "${GREEN}[$(ts)] Frontend starting on http://localhost:5173${NC}"
+else
+    echo -e "${DIM}[$(ts)] Frontend already running on port 5173${NC}"
+    FRONTEND_PID=""
+fi
+
 cd backend
 mkdir -p logs
 
 # Start uvicorn WITHOUT --reload (faster startup, no file watcher)
 LOG_FILE="logs/v3-trader.log"
 echo -e "${CYAN}[$(ts)] Starting uvicorn (no reload, logs: $LOG_FILE)...${NC}"
+# App writes to LOG_FILE via its own RotatingFileHandler.
+# Only redirect stderr here for uvicorn startup errors.
 uv run uvicorn src.kalshiflow_rl.traderv3.app:app \
     --host 0.0.0.0 \
     --port $PORT \
     --log-level warning \
-    >> "$LOG_FILE" 2>&1 &
+    2>> "$LOG_FILE" &
 UVICORN_PID=$!
 
 cleanup() {
@@ -109,6 +134,7 @@ cleanup() {
     echo -e "${YELLOW}[$(ts)] Shutting down...${NC}"
     kill $TAIL_PID 2>/dev/null || true
     kill $UVICORN_PID 2>/dev/null || true
+    [ -n "$FRONTEND_PID" ] && kill $FRONTEND_PID 2>/dev/null || true
     exit 0
 }
 trap cleanup SIGINT SIGTERM

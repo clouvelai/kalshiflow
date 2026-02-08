@@ -219,57 +219,61 @@ def restore_mentions_state_from_disk() -> None:
 # --- LLM Helpers ---
 
 async def _llm_parse_rules(rules_text: str, market_title: str) -> LexemePackLite:
-    """Use LLM to parse settlement rules into LexemePackLite."""
-    try:
-        from .mentions_models import get_extraction_llm
+    """Use Gemini to parse settlement rules into LexemePackLite.
 
-        llm = get_extraction_llm()  # Uses DEFAULT_EXTRACTION_MODEL from config
+    Uses raw JSON output (not with_structured_output) because Gemini's
+    structured output drops list fields. Raw JSON preserves accepted_forms
+    extracted directly from the Kalshi rules.
 
-        prompt = f"""Analyze this Kalshi market's settlement rules and extract the counting criteria.
+    Requires GOOGLE_API_KEY to be set. Raises on failure — no silent fallback.
+    """
+    from .mentions_models import get_extraction_llm
+
+    llm = get_extraction_llm()
+
+    prompt = f"""Analyze this Kalshi market's settlement rules and extract the counting criteria.
 
 Market Title: {market_title}
 
 Settlement Rules:
 {rules_text}
 
-Extract the following as JSON:
+Return ONLY valid JSON (no markdown, no explanation):
 {{
     "entity": "the word/phrase being counted (e.g., 'tariff')",
-    "accepted_forms": ["list", "of", "exact", "forms", "that", "count"],
-    "prohibited_forms": ["synonyms", "or", "phrases", "that", "do", "NOT", "count"],
-    "source_type": "speech" | "tweet" | "any",
-    "speaker": "name of required speaker or null if any",
-    "time_window_start": "ISO timestamp or null",
-    "time_window_end": "ISO timestamp or null"
+    "accepted_forms": ["exact", "forms", "that", "count", "per", "rules"],
+    "prohibited_forms": ["forms", "explicitly", "stated", "as", "NOT", "counting"],
+    "source_type": "speech or tweet or any",
+    "speaker": "required speaker name or null",
+    "time_window_start": null,
+    "time_window_end": null
 }}
 
-CRITICAL RULES:
-1. accepted_forms should include the base word, plurals, capitalizations that EXPLICITLY count per rules
-2. prohibited_forms should include synonyms mentioned as NOT counting
-3. If rules don't specify forms, include reasonable variations of the entity
-4. Pay attention to "does not count" or "only counts if" language
+CRITICAL: accepted_forms must list the EXACT words/phrases that count per the settlement rules.
+prohibited_forms must list what the rules say does NOT count."""
 
-Return ONLY valid JSON, no explanation."""
+    result = await llm.ainvoke(prompt)
+    text = result.content.strip()
 
-        from .llm_schemas import LexemePackExtraction
+    # Strip markdown code fences if present
+    if text.startswith("```"):
+        text = text.split("\n", 1)[1] if "\n" in text else text[3:]
+        if text.endswith("```"):
+            text = text[:-3]
+        text = text.strip()
 
-        structured_llm = llm.with_structured_output(LexemePackExtraction)
-        result = await structured_llm.ainvoke(prompt)
+    data = json.loads(text)
 
-        return LexemePackLite(
-            entity=result.entity,
-            accepted_forms=result.accepted_forms,
-            prohibited_forms=result.prohibited_forms,
-            source_type=result.source_type,
-            speaker=result.speaker,
-            time_window_start=result.time_window_start,
-            time_window_end=result.time_window_end,
-            raw_rules=rules_text,
-        )
-
-    except Exception as e:
-        logger.error(f"Failed to parse rules with LLM: {e}")
-        return LexemePackLite(raw_rules=rules_text)
+    return LexemePackLite(
+        entity=data.get("entity", ""),
+        accepted_forms=data.get("accepted_forms", []),
+        prohibited_forms=data.get("prohibited_forms", []),
+        source_type=data.get("source_type", "any"),
+        speaker=data.get("speaker"),
+        time_window_start=data.get("time_window_start"),
+        time_window_end=data.get("time_window_end"),
+        raw_rules=rules_text,
+    )
 
 
 # =============================================================================

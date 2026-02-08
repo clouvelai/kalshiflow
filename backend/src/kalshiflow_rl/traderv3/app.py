@@ -48,14 +48,10 @@ from src.kalshiflow_rl.traderv3.services.order_context_service import get_order_
 from src.kalshiflow_rl.data.database import rl_db
 from src.kalshiflow_rl.data.write_queue import get_write_queue
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger("kalshiflow_rl.traderv3")
-
-# Add file handler for structured log monitoring
+# Configure logging - file handler writes to log file, stream handler writes to stderr.
+# run-captain.sh redirects stdout (not stderr) to the log file, so we use stderr
+# for the stream handler to avoid duplicate lines in the log file.
+_log_fmt = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 _log_dir = Path(__file__).parent.parent.parent.parent / "logs"
 _log_dir.mkdir(exist_ok=True)
 _file_handler = logging.handlers.RotatingFileHandler(
@@ -63,10 +59,13 @@ _file_handler = logging.handlers.RotatingFileHandler(
     maxBytes=10 * 1024 * 1024,  # 10 MB
     backupCount=3,
 )
-_file_handler.setFormatter(logging.Formatter(
-    '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-))
-logging.getLogger().addHandler(_file_handler)
+_file_handler.setFormatter(logging.Formatter(_log_fmt))
+logging.basicConfig(
+    level=logging.INFO,
+    format=_log_fmt,
+    handlers=[_file_handler],
+)
+logger = logging.getLogger("kalshiflow_rl.traderv3")
 
 
 def _configure_logging() -> None:
@@ -138,6 +137,9 @@ def _configure_logging() -> None:
         "kalshiflow_rl.write_queue",
     ):
         logging.getLogger(name).setLevel(logging.WARNING)
+
+    # Sniper rejection DEBUG logs are ~1500 lines/cycle when capital_limit blocks
+    logging.getLogger("kalshiflow_rl.traderv3.single_arb.sniper").setLevel(logging.INFO)
 
 
 _configure_logging()

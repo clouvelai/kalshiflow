@@ -1,9 +1,0 @@
-{
-  "status": "validated",
-  "n_markets": 485,
-  "mean_edge": 0.11278545396401901,
-  "ci_low": 0.08338587415008039,
-  "ci_high": 0.14184349029866802,
-  "weighted_improvement": 0.08134651882505488,
-  "temporal_pass": true,
-  "concentration_pass": 

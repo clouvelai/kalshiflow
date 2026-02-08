@@ -31,17 +31,19 @@ Debug the Captain in 2-cycle batches. After every 2 cycles:
 ## Step 1: Start System
 
 ### 1a. Kill existing and clear logs
+Run these as **separate** Bash calls (no sleeps):
 ```bash
 lsof -ti:8005 | xargs kill -9 2>/dev/null || true
-sleep 2
+```
+```bash
 > backend/logs/v3-trader.log
 ```
 
 ### 1b. Start system in background
 ```bash
-cd /Users/samuelclark/Desktop/kalshiflow && ./scripts/run-captain.sh paper 2>&1 | tee backend/logs/v3-trader.log &
+cd /Users/samuelclark/Desktop/kalshiflow && ./scripts/run-captain.sh paper
 ```
-Use `run_in_background: true`.
+Use `run_in_background: true`. The script handles its own logging to `backend/logs/v3-trader.log`.
 
 ### 1c. Wait for Captain to be running
 Poll `/v3/status` until Captain is running (timeout 90s):
@@ -159,11 +161,14 @@ Key files:
 curl -s -X POST -H 'Content-Type: application/json' -d '{"type":"captain_resume"}' http://localhost:8005/v3/captain/control
 ```
 
-Then validate resume:
+Then validate resume (poll, no sleep):
 ```bash
-sleep 10
+for i in $(seq 1 10); do
+  PAUSED=$(curl -sf http://localhost:8005/v3/status 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); c=d.get('components',{}).get('single_arb_coordinator',{}).get('captain',{}); print(c.get('paused',True))" 2>/dev/null || echo "True")
+  if [ "$PAUSED" = "False" ]; then echo "Captain resumed OK"; break; fi
+  sleep 2
+done
 curl -sf http://localhost:8005/v3/health | python3 -c "import sys,json; d=json.load(sys.stdin); print('Health OK' if d.get('healthy') else 'Health FAIL')"
-curl -sf http://localhost:8005/v3/status | python3 -c "import sys,json; d=json.load(sys.stdin); c=d.get('components',{}).get('single_arb_coordinator',{}).get('captain',{}); print('Captain OK' if not c.get('paused') else 'Captain still paused')"
 ```
 
 ### 2g. Increment and check
@@ -181,12 +186,11 @@ else:
 
 ### 3a. Graceful stop
 ```bash
-PID=$(lsof -ti:8005)
-if [ -n "$PID" ]; then
-  kill -TERM $PID 2>/dev/null
-  sleep 1
-  lsof -ti:8005 | xargs kill -9 2>/dev/null || true
-fi
+lsof -ti:8005 | xargs kill -9 2>/dev/null || true
+```
+Then verify port is free before proceeding:
+```bash
+lsof -ti:8005 2>/dev/null && echo "Port still in use" || echo "Port free"
 ```
 
 ### 3b. Clear logs and modified files list
@@ -199,9 +203,9 @@ MODIFIED_PY_FILES = []
 
 ### 3c. Start system fresh
 ```bash
-cd /Users/samuelclark/Desktop/kalshiflow && ./scripts/run-captain.sh paper 2>&1 | tee backend/logs/v3-trader.log &
+cd /Users/samuelclark/Desktop/kalshiflow && ./scripts/run-captain.sh paper
 ```
-Use `run_in_background: true`.
+Use `run_in_background: true`. The script handles its own logging.
 
 ### 3d. Fast Startup Validation
 ```bash

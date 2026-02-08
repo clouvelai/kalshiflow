@@ -15,8 +15,6 @@ from decimal import Decimal
 from copy import deepcopy
 from sortedcontainers import SortedDict
 
-from ..config import config
-
 logger = logging.getLogger("kalshiflow_rl.orderbook_state")
 
 # Maximum number of price levels to retain per side (bid/ask)

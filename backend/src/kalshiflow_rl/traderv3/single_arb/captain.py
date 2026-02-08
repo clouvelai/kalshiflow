@@ -80,6 +80,14 @@ CAPTAIN_PROMPT = """You are the Captain — you own this trading system: strateg
 Build a trading operation that learns faster than the market.
 Delegate execution to subagents. Keep the reasoning with you.
 
+PRICING UNITS (critical — all tools use this convention):
+  Kalshi prices are in CENTS (0-100 scale). 1 cent = $0.01.
+  A YES contract at 60c costs $0.60. If YES wins, it pays out 100c ($1.00). Profit = 40c ($0.40).
+  All tool return values — prices, edge, cost, P&L, balance — are in CENTS unless labeled otherwise.
+  "edge=2.5" means 2.5 cents ($0.025) of expected profit per contract.
+  "balance_cents=50000" means $500.00. "total_cost=2500" means $25.00.
+  When this prompt says "5c", "10c", "15c" — that's cents. 5c = $0.05, 10c = $0.10, 15c = $0.15.
+
 STRATEGY PLAYBOOK (seed strategies — your AGENTS.md rules OVERRIDE these):
 
 S1 — SUM ARB (mutually_exclusive events only):
@@ -120,7 +128,7 @@ YOUR SUBAGENTS:
   mentions_specialist: S5 edge detection. Give it: event_ticker.
 
 POSITION SIZING:
-  f* = edge_cents / potential_profit_cents. Use quarter-Kelly. Max 20% of capital.
+  f* = edge_cents / potential_profit_cents (both in cents, e.g., edge=3c, profit=40c → f*=0.075). Use quarter-Kelly. Max 20% of capital.
   Scale DOWN as time_to_close decreases (sqrt scaling).
 
 MARKET REGIMES:
@@ -183,6 +191,13 @@ CAUSAL MODEL:
   The causal model in get_events_summary() shows top 3 drivers + next catalyst.
   Use get_event_snapshot() for the full model with all drivers and entity links.
 
+CYCLE BUDGET:
+  You have a HARD LIMIT of ~40 tool calls per cycle. Plan your calls.
+  Typical efficient cycle: 3-5 observation calls, 0-2 trade actions, 0-1 memory writes.
+  NEVER call the same tool twice with the same arguments in one cycle.
+  When you have enough information to decide, STOP calling tools and respond with your summary.
+  If no opportunities meet your criteria, say "PASS" and end the cycle.
+
 SELF-IMPROVEMENT:
   report_issue() for bugs. get_issues() to check existing reports.
 
@@ -216,7 +231,7 @@ SNIPER EXECUTION LAYER:
   WORKFLOW:
     1. On startup: configure_sniper(enabled=True) if S1_ARB conditions are favorable
     2. Each cycle: get_sniper_status() to check trades, rejections, capital
-    3. If regime changes: adjust arb_min_edge up (cautious) or down (aggressive)
+    3. If regime changes: adjust arb_min_edge (in cents, e.g., 3.0 = 3 cents) up (cautious) or down (aggressive)
     4. If toxic flow: increase vpin_reject_threshold or disable Sniper entirely
     5. Before settling: disable Sniper, exit positions via trade_commando
 """
@@ -225,6 +240,11 @@ TRADE_COMMANDO_PROMPT = """You are the TradeCommando — order execution special
 
 You receive a strategy tag (S1-S6), thesis, and trade parameters from the Captain.
 Execute precisely and report results with the strategy tag for outcome attribution.
+
+PRICING UNITS:
+  All prices are in CENTS (1-99). 1c = $0.01. A 50c contract costs $0.50.
+  Profit on a winning contract = (100 - price) cents. E.g., buy at 30c → win 70c ($0.70).
+  balance_cents from get_balance() is in cents: 50000 = $500.00.
 
 MAKER vs TAKER:
 - Post LIMIT orders (maker) when possible. Maker fees are ~4x cheaper than taker.
@@ -947,7 +967,7 @@ class ArbCaptain:
             # but /memories/ files persist across all threads via FilesystemBackend
             config = {
                 "configurable": {"thread_id": str(uuid.uuid4())},
-                "recursion_limit": 100,  # Increased from 50 to allow complex multi-step reasoning
+                "recursion_limit": 200,  # Must set explicitly; LangGraph default is 25
             }
 
             async for event in self._agent.astream_events(
