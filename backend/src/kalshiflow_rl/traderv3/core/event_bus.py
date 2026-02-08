@@ -987,6 +987,68 @@ class EventBus:
 
         return await self._queue_event(event)
 
+    async def emit_ticker_update(
+        self,
+        market_ticker: str,
+        metadata: Dict[str, Any],
+    ) -> bool:
+        """
+        Emit a ticker_v2 update event for single-arb enrichment.
+
+        Uses the MarketEvent type with TICKER_UPDATE EventType so the
+        EventArbMonitor receives (market_ticker, metadata) via
+        _notify_subscribers' market-event path.
+
+        Args:
+            market_ticker: Market ticker for this update
+            metadata: Price/volume/OI data from the ticker channel
+
+        Returns:
+            True if event was queued, False if queue full
+        """
+        if not self._running:
+            return False
+
+        ts = metadata.get("timestamp_ms", int(time.time() * 1000))
+        return await self.emit_market_event(
+            event_type=EventType.TICKER_UPDATE,
+            market_ticker=market_ticker,
+            sequence_number=0,
+            timestamp_ms=ts,
+            metadata=metadata,
+        )
+
+    async def emit_market_trade(
+        self,
+        market_ticker: str,
+        metadata: Dict[str, Any],
+    ) -> bool:
+        """
+        Emit a public trade event for single-arb enrichment.
+
+        Uses the MarketEvent type with MARKET_TRADE EventType so the
+        EventArbMonitor receives (market_ticker, metadata) via
+        _notify_subscribers' market-event path.
+
+        Args:
+            market_ticker: Market ticker for this trade
+            metadata: Trade data (yes_price, no_price, count, taker_side, ts)
+
+        Returns:
+            True if event was queued, False if queue full
+        """
+        if not self._running:
+            return False
+
+        ts = metadata.get("ts", 0) * 1000 if metadata.get("ts") else int(time.time() * 1000)
+        return await self.emit_market_event(
+            event_type=EventType.MARKET_TRADE,
+            market_ticker=market_ticker,
+            sequence_number=0,
+            timestamp_ms=ts,
+            metadata=metadata,
+        )
+
     async def subscribe_to_tmo_fetched(self, callback: Callable) -> None:
         """
         Subscribe to TMO fetched events.

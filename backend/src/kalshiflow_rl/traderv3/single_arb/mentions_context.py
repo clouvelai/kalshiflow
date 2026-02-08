@@ -367,28 +367,19 @@ Rules:
 
 Return ONLY the JSON array, no explanation."""
 
-        response = await llm.ainvoke(prompt)
-        content = response.content.strip()
+        from .llm_schemas import SpeakerExtraction
 
-        # Parse JSON
-        if content.startswith("```"):
-            content = content.split("```")[1]
-            if content.startswith("json"):
-                content = content[4:]
-        content = content.strip()
+        structured_llm = llm.with_structured_output(SpeakerExtraction)
+        result = await structured_llm.ainvoke(prompt)
 
-        if not content or content == "[]":
-            return []
-
-        parsed = json.loads(content)
         return [
             ExtractedSpeaker(
-                name=item.get("name", ""),
-                title=item.get("title"),
-                confidence=float(item.get("confidence", 0.5)),
+                name=s.name,
+                title=s.title,
+                confidence=s.confidence,
             )
-            for item in parsed
-            if item.get("name")
+            for s in result.speakers
+            if s.name
         ]
 
     except Exception as e:
@@ -436,16 +427,12 @@ Return JSON:
 
 Return ONLY valid JSON."""
 
-        response = await llm.ainvoke(prompt)
-        content = response.content.strip()
+        from .llm_schemas import WikipediaSpeakerExtraction
 
-        if content.startswith("```"):
-            content = content.split("```")[1]
-            if content.startswith("json"):
-                content = content[4:]
-        content = content.strip()
+        structured_llm = llm.with_structured_output(WikipediaSpeakerExtraction)
+        result = await structured_llm.ainvoke(prompt)
 
-        return json.loads(content)
+        return result.model_dump()
 
     except Exception as e:
         logger.debug(f"LLM Wikipedia extraction failed: {e}")
@@ -1132,6 +1119,7 @@ async def gather_informed_context(
     mention_terms: List[str],
     include_news: bool = True,
     event_context: Optional[EventContext] = None,
+    event_understanding: Optional[Dict[str, Any]] = None,
 ) -> InformedContext:
     """Gather full context for INFORMED simulation mode.
 
@@ -1139,7 +1127,7 @@ async def gather_informed_context(
     - Event facts (from Wikipedia)
     - Entity resolution for each term
     - Term-event relevance analysis
-    - Current news storylines
+    - Current news storylines (from event understanding + web search)
 
     Args:
         event_ticker: Kalshi event ticker
@@ -1147,6 +1135,7 @@ async def gather_informed_context(
         mention_terms: List of terms to analyze
         include_news: Whether to fetch current news
         event_context: Optional pre-fetched EventContext (avoids duplicate HTTP calls)
+        event_understanding: Optional event understanding dict with news_articles
     """
     # Get event context (reuse if provided, otherwise fetch)
     event = event_context if event_context else await gather_event_context(event_ticker, event_title)
@@ -1170,9 +1159,23 @@ async def gather_informed_context(
 
     # Gather general event storylines
     storylines = []
+
+    # Pull news from event understanding first (avoids extra API calls)
+    if event_understanding:
+        news_articles = event_understanding.get("news_articles", [])
+        for article in news_articles[:3]:
+            headline = article.get("title", "")
+            snippet = (article.get("content", "") or article.get("snippet", ""))[:150]
+            if headline:
+                storyline = f"{headline}: {snippet}" if snippet else headline
+                storylines.append(storyline)
+
     if include_news:
         results = await _duckduckgo_search(f"{event_title} storylines preview 2026", max_results=5)
-        storylines = [r.get("snippet", "")[:200] for r in results]
+        for r in results:
+            s = r.get("snippet", "")[:200]
+            if s and s not in storylines:
+                storylines.append(s)
 
     return InformedContext(
         event=event,

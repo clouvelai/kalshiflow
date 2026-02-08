@@ -16,20 +16,27 @@ logger = logging.getLogger("kalshiflow_rl.traderv3.single_arb.tools")
 # --- Dependency injection via module globals ---
 _index = None           # EventArbIndex
 _trading_client = None  # KalshiDemoTradingClient
-_file_store = None      # FileMemoryStore (journal.jsonl)
+_memory_store = None    # DualMemoryStore (file + vector)
 _config = None          # V3Config
 _order_group_id = None  # Session order group ID
 _order_ttl = 60         # Default TTL in seconds (1 min for demo)
 _broadcast_callback = None  # Async callback to broadcast events to frontend
 _captain_order_ids = set()  # Track order IDs placed by Captain this session
+_order_initial_states: Dict[str, dict] = {}  # Track initial order state for lifecycle tracking
 _understanding_builder = None  # UnderstandingBuilder for event context
 _search_service = None  # TavilySearchService for web search
+_news_store = None      # NewsStore for persisting news articles
+_impact_tracker = None  # PriceImpactTracker for news-price correlation
+_causal_model_builder = None  # CausalModelBuilder for structured drivers
+_sniper = None          # Sniper execution layer
+_sniper_config = None   # SniperConfig (mutable by Captain)
 
 
 def set_dependencies(
     index=None,
     trading_client=None,
     file_store=None,
+    memory_store=None,
     config=None,
     order_group_id=None,
     order_ttl=None,
@@ -37,25 +44,34 @@ def set_dependencies(
     reset_session=False,
     understanding_builder=None,
     search_service=None,
+    news_store=None,
+    impact_tracker=None,
+    causal_model_builder=None,
+    sniper=None,
 ) -> None:
     """Set shared dependencies for all tools.
 
     Args:
+        file_store: Deprecated alias for memory_store (backwards compat)
+        memory_store: DualMemoryStore instance (preferred)
         reset_session: If True, clears captain_order_ids (call on new session start)
     """
-    global _index, _trading_client, _file_store, _config, _order_group_id, _order_ttl, _broadcast_callback, _captain_order_ids, _understanding_builder, _search_service
+    global _index, _trading_client, _memory_store, _config, _order_group_id, _order_ttl, _broadcast_callback, _captain_order_ids, _understanding_builder, _search_service, _news_store, _impact_tracker, _causal_model_builder, _sniper, _sniper_config
     if index is not None:
         _index = index
     if trading_client is not None:
         _trading_client = trading_client
-    if file_store is not None:
-        _file_store = file_store
+    if memory_store is not None:
+        _memory_store = memory_store
+    elif file_store is not None:
+        _memory_store = file_store
     if config is not None:
         _config = config
     if order_group_id is not None:
         _order_group_id = order_group_id
         # New order group = new session, clear tracked orders
         _captain_order_ids.clear()
+        _order_initial_states.clear()
     if order_ttl is not None:
         _order_ttl = order_ttl
     if broadcast_callback is not None:
@@ -64,8 +80,18 @@ def set_dependencies(
         _understanding_builder = understanding_builder
     if search_service is not None:
         _search_service = search_service
+    if news_store is not None:
+        _news_store = news_store
+    if impact_tracker is not None:
+        _impact_tracker = impact_tracker
+    if causal_model_builder is not None:
+        _causal_model_builder = causal_model_builder
+    if sniper is not None:
+        _sniper = sniper
+        _sniper_config = sniper.config
     if reset_session:
         _captain_order_ids.clear()
+        _order_initial_states.clear()
 
 
 # --- Helper functions ---
@@ -230,6 +256,14 @@ async def get_event_snapshot(event_ticker: str, _ts: Optional[str] = None) -> Di
                     "next_scheduled_ts": budget_status["next_scheduled_ts"],
                 }
 
+    # Add lifecycle classification if available
+    if event and event.lifecycle:
+        snapshot["lifecycle"] = event.lifecycle
+
+    # Add full causal model if available
+    if event and event.causal_model:
+        snapshot["causal_model"] = event.causal_model
+
     return snapshot
 
 
@@ -352,6 +386,20 @@ async def get_events_summary() -> List[Dict[str, Any]]:
                         if len(ci) == 2:
                             summary_item["ci_width"] = round(ci[1] - ci[0], 3)
 
+        # Add news context from understanding
+        if event.understanding:
+            u = event.understanding
+            news = u.get("news_articles", [])
+            if news:
+                summary_item["news_headlines"] = [a.get("title", "")[:80] for a in news[:3]]
+                news_fetched_at = u.get("news_fetched_at", 0)
+                if news_fetched_at:
+                    summary_item["news_freshness_hours"] = round(
+                        (time.time() - news_fetched_at) / 3600, 1
+                    )
+            if u.get("trading_summary"):
+                summary_item["trading_summary"] = u["trading_summary"][:150]
+
         # Add candlestick trend info if available
         if event.candlesticks:
             cs = event.candlestick_summary()
@@ -367,9 +415,229 @@ async def get_events_summary() -> List[Dict[str, Any]]:
                     }
                 summary_item["candlestick_trends"] = trends
 
+        # Add lifecycle stage if classified
+        if event.lifecycle:
+            summary_item["lifecycle"] = {
+                "stage": event.lifecycle.get("stage", "unknown"),
+                "confidence": event.lifecycle.get("confidence"),
+                "recommended_action": event.lifecycle.get("recommended_action"),
+            }
+
+        # Add causal model compact summary (top drivers, next catalyst, consensus)
+        if event.causal_model:
+            cm = event.causal_model
+            active_drivers = [d for d in cm.get("drivers", []) if d.get("status") == "active"]
+            top_drivers = active_drivers[:3]
+            summary_item["causal"] = {
+                "consensus": cm.get("consensus_direction", "unclear"),
+                "narrative": cm.get("dominant_narrative", "")[:120],
+                "drivers": [
+                    {"name": d["name"], "direction": d["direction"], "confidence": d.get("confidence", 0.5)}
+                    for d in top_drivers
+                ],
+            }
+            # Next upcoming catalyst
+            upcoming = [c for c in cm.get("catalysts", []) if not c.get("occurred")]
+            if upcoming:
+                next_cat = upcoming[0]
+                summary_item["causal"]["next_catalyst"] = {
+                    "name": next_cat["name"],
+                    "expected_date": next_cat.get("expected_date", ""),
+                    "type": next_cat.get("type", "expected"),
+                }
+
         summary.append(summary_item)
 
     return summary
+
+
+@tool
+async def update_causal_model(
+    event_ticker: str,
+    action: str,
+    driver_name: Optional[str] = None,
+    driver_direction: Optional[str] = None,
+    driver_confidence: Optional[float] = None,
+    driver_evidence: Optional[str] = None,
+    market_links: Optional[str] = None,
+    catalyst_name: Optional[str] = None,
+    catalyst_type: Optional[str] = None,
+    catalyst_date: Optional[str] = None,
+    affected_markets: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Maintain the structured causal model for an event.
+
+    The causal model tracks what's DRIVING prices NOW — drivers, catalysts, and entity links.
+    Use this tool to incrementally update causal knowledge across cycles.
+
+    Actions:
+      - refresh: Rebuild the causal model from scratch (LLM call, use sparingly)
+      - add_driver: Add a new price driver (requires driver_name, driver_direction)
+      - validate_driver: Confirm a driver is still active (requires driver_name)
+      - invalidate_driver: Mark a driver as invalidated (requires driver_name)
+      - add_catalyst: Add an upcoming catalyst/event (requires catalyst_name)
+      - mark_catalyst: Mark a catalyst as occurred (requires catalyst_name)
+      - prune: Remove stale drivers (>2h without validation)
+      - view: Return current causal model (no mutations)
+
+    Args:
+        event_ticker: The Kalshi event ticker
+        action: One of: refresh, add_driver, validate_driver, invalidate_driver, add_catalyst, mark_catalyst, prune, view
+        driver_name: Name of driver (for add/validate/invalidate actions)
+        driver_direction: Direction: bullish, bearish, neutral, ambiguous (for add_driver)
+        driver_confidence: Confidence 0.0-1.0 (for add_driver)
+        driver_evidence: Evidence source string (for add_driver)
+        market_links: Comma-separated market tickers this driver affects (for add_driver)
+        catalyst_name: Name of catalyst (for add_catalyst/mark_catalyst)
+        catalyst_type: Type: scheduled, expected, conditional (for add_catalyst)
+        catalyst_date: Expected date string (for add_catalyst)
+        affected_markets: Comma-separated market tickers (for add_catalyst)
+
+    Returns:
+        Updated causal model or action result
+    """
+    if not _index:
+        return {"error": "EventArbIndex not available"}
+
+    event = _index.events.get(event_ticker)
+    if not event:
+        return {"error": f"Event {event_ticker} not found"}
+
+    valid_actions = {"refresh", "add_driver", "validate_driver", "invalidate_driver",
+                     "add_catalyst", "mark_catalyst", "prune", "view"}
+    if action not in valid_actions:
+        return {"error": f"Invalid action '{action}'. Valid: {valid_actions}"}
+
+    from .causal_model import CausalModel, Driver, MarketLink, Catalyst
+
+    # Load existing model or create empty
+    if event.causal_model:
+        model = CausalModel.from_dict(event.causal_model)
+    else:
+        model = CausalModel(event_ticker=event_ticker)
+
+    if action == "view":
+        return model.to_dict()
+
+    if action == "refresh":
+        if not _causal_model_builder:
+            return {"error": "CausalModelBuilder not available"}
+        model = await _causal_model_builder.build(event)
+        event.causal_model = model.to_dict()
+        # Broadcast update
+        if _broadcast_callback:
+            await _broadcast_callback({
+                "type": "causal_model_update",
+                "data": {"event_ticker": event_ticker, "causal_model": event.causal_model},
+            })
+        return {"status": "rebuilt", "drivers": len(model.drivers), "catalysts": len(model.catalysts)}
+
+    if action == "add_driver":
+        if not driver_name:
+            return {"error": "driver_name required for add_driver"}
+        links = []
+        if market_links:
+            for mt in market_links.split(","):
+                mt = mt.strip()
+                if mt:
+                    links.append(MarketLink(market_ticker=mt, direction=driver_direction or "neutral"))
+        driver = model.add_driver(
+            name=driver_name,
+            direction=driver_direction or "neutral",
+            confidence=driver_confidence or 0.5,
+            market_links=[{"market_ticker": ml.market_ticker, "direction": ml.direction} for ml in links],
+            evidence=driver_evidence or "",
+        )
+        event.causal_model = model.to_dict()
+        if _broadcast_callback:
+            await _broadcast_callback({
+                "type": "causal_model_update",
+                "data": {"event_ticker": event_ticker, "causal_model": event.causal_model},
+            })
+        return {"status": "driver_added", "driver_id": driver.id, "total_drivers": len(model.drivers)}
+
+    if action == "validate_driver":
+        if not driver_name:
+            return {"error": "driver_name required for validate_driver"}
+        # Find driver by name (case-insensitive)
+        found = False
+        for d in model.drivers:
+            if d.name.lower() == driver_name.lower():
+                model.validate_driver(d.id)
+                found = True
+                break
+        if not found:
+            return {"error": f"Driver '{driver_name}' not found"}
+        event.causal_model = model.to_dict()
+        return {"status": "driver_validated", "driver_name": driver_name}
+
+    if action == "invalidate_driver":
+        if not driver_name:
+            return {"error": "driver_name required for invalidate_driver"}
+        found = False
+        for d in model.drivers:
+            if d.name.lower() == driver_name.lower():
+                model.invalidate_driver(d.id)
+                found = True
+                break
+        if not found:
+            return {"error": f"Driver '{driver_name}' not found"}
+        event.causal_model = model.to_dict()
+        if _broadcast_callback:
+            await _broadcast_callback({
+                "type": "causal_model_update",
+                "data": {"event_ticker": event_ticker, "causal_model": event.causal_model},
+            })
+        return {"status": "driver_invalidated", "driver_name": driver_name}
+
+    if action == "add_catalyst":
+        if not catalyst_name:
+            return {"error": "catalyst_name required for add_catalyst"}
+        affected = []
+        if affected_markets:
+            affected = [m.strip() for m in affected_markets.split(",") if m.strip()]
+        catalyst = Catalyst(
+            name=catalyst_name,
+            type=catalyst_type or "expected",
+            expected_date=catalyst_date or "",
+            affected_markets=affected,
+        )
+        model.add_catalyst(catalyst)
+        event.causal_model = model.to_dict()
+        if _broadcast_callback:
+            await _broadcast_callback({
+                "type": "causal_model_update",
+                "data": {"event_ticker": event_ticker, "causal_model": event.causal_model},
+            })
+        return {"status": "catalyst_added", "catalyst_id": catalyst.id, "total_catalysts": len(model.catalysts)}
+
+    if action == "mark_catalyst":
+        if not catalyst_name:
+            return {"error": "catalyst_name required for mark_catalyst"}
+        found = False
+        for c in model.catalysts:
+            if c.name.lower() == catalyst_name.lower():
+                model.mark_catalyst_occurred(c.id)
+                found = True
+                break
+        if not found:
+            return {"error": f"Catalyst '{catalyst_name}' not found"}
+        event.causal_model = model.to_dict()
+        return {"status": "catalyst_marked_occurred", "catalyst_name": catalyst_name}
+
+    if action == "prune":
+        before = len([d for d in model.drivers if d.status == "active"])
+        model.prune_stale()
+        after = len([d for d in model.drivers if d.status == "active"])
+        event.causal_model = model.to_dict()
+        if _broadcast_callback:
+            await _broadcast_callback({
+                "type": "causal_model_update",
+                "data": {"event_ticker": event_ticker, "causal_model": event.causal_model},
+            })
+        return {"status": "pruned", "active_before": before, "active_after": after}
+
+    return {"error": f"Unhandled action: {action}"}
 
 
 @tool
@@ -412,6 +680,12 @@ async def get_market_orderbook(market_ticker: str) -> Dict[str, Any]:
         "spread": market.spread,
         "source": market.source,
         "freshness_seconds": round(market.freshness_seconds, 1),
+        # Microstructure signals
+        "microprice": round(market.microprice, 2) if market.microprice is not None else None,
+        "ofi": round(market.micro.ofi, 3),
+        "ofi_ema": round(market.micro.ofi_ema, 3),
+        "vpin": round(market.micro.vpin, 3),
+        "book_imbalance": round(market.micro.book_imbalance, 3),
     }
 
 
@@ -636,11 +910,17 @@ async def place_order(
         # Track this order as a Captain order
         if order_id:
             _captain_order_ids.add(order_id)
+            _order_initial_states[order_id] = {
+                "ticker": ticker, "side": side, "action": action,
+                "contracts": contracts, "price_cents": price_cents,
+                "placed_at": time.time(), "ttl_seconds": _order_ttl,
+                "status": status,
+            }
 
         # Auto-record to memory
-        if _file_store:
+        if _memory_store:
             try:
-                _file_store.append(
+                _memory_store.append(
                     content=f"TRADE: {action} {contracts} {side} {ticker} @{price_cents}c | {reasoning}",
                     memory_type="trade",
                     metadata={
@@ -693,9 +973,9 @@ async def place_order(
 
     except Exception as e:
         # Record failed order to memory
-        if _file_store:
+        if _memory_store:
             try:
-                _file_store.append(
+                _memory_store.append(
                     content=f"FAILED ORDER: {action} {contracts} {side} {ticker} @{price_cents}c | {reasoning} | error: {e}",
                     memory_type="trade",
                     metadata={
@@ -848,9 +1128,9 @@ async def cancel_order(order_id: str, reason: str = "") -> Dict[str, Any]:
         await _trading_client.cancel_order(order_id)
 
         # Record cancellation to memory if reason provided
-        if reason and _file_store:
+        if reason and _memory_store:
             try:
-                _file_store.append(
+                _memory_store.append(
                     content=f"CANCEL: order {order_id[:8]}... | {reason}",
                     memory_type="trade",
                     metadata={"order_id": order_id, "action": "cancel"},
@@ -865,9 +1145,9 @@ async def cancel_order(order_id: str, reason: str = "") -> Dict[str, Any]:
         if "not found" in err_str or "404" in err_str:
             return {"status": "already_gone", "order_id": order_id}
         # Record failed cancel to memory
-        if _file_store:
+        if _memory_store:
             try:
-                _file_store.append(
+                _memory_store.append(
                     content=f"FAILED CANCEL: order {order_id[:8]}... | error: {e}",
                     memory_type="trade",
                     metadata={"order_id": order_id, "action": "cancel", "status": "failed", "error": str(e)},
@@ -1099,6 +1379,13 @@ async def execute_arb(
             # Track this order as a Captain order
             if order_id:
                 _captain_order_ids.add(order_id)
+                _order_initial_states[order_id] = {
+                    "ticker": leg["ticker"], "side": leg["side"], "action": "buy",
+                    "contracts": leg["contracts"], "price_cents": leg["price_cents"],
+                    "placed_at": time.time(), "ttl_seconds": _order_ttl,
+                    "status": order.get("status", "placed"),
+                    "arb_event": event_ticker, "arb_direction": direction,
+                }
 
             legs_executed.append({
                 **leg,
@@ -1131,10 +1418,10 @@ async def execute_arb(
         result["conflict_warnings"] = conflict_warnings
 
     # Auto-record to memory (including failures)
-    if _file_store:
+    if _memory_store:
         try:
             prefix = "ARB" if status != "failed" else "FAILED ARB"
-            _file_store.append(
+            _memory_store.append(
                 content=f"{prefix}: {direction} {event_ticker} | {len(legs_executed)}/{event_state.markets_total} legs | cost={exec_cost}c | {reasoning}",
                 memory_type="trade",
                 metadata={
@@ -1203,11 +1490,11 @@ async def record_learning(
     Returns:
         Dict with status and storage details
     """
-    if not _file_store:
+    if not _memory_store:
         return {"error": "File store not available"}
 
     try:
-        _file_store.append(
+        _memory_store.append(
             content=content,
             memory_type=category,
             metadata={"target_file": target_file},
@@ -1709,6 +1996,15 @@ async def search_event_news(
             event_ticker=event_ticker,
         )
 
+    # Auto-persist articles to news store if available
+    if results and _news_store:
+        try:
+            stored = await _news_store.persist_articles(results, event_ticker)
+            if stored > 0:
+                logger.debug(f"[NEWS_STORE] Persisted {stored} articles for {event_ticker}")
+        except Exception as e:
+            logger.debug(f"[NEWS_STORE] Auto-persist failed: {e}")
+
     return {
         "event_ticker": event_ticker,
         "query": query,
@@ -1716,4 +2012,586 @@ async def search_event_news(
         "time_range": time_range,
         "articles": results,
         "count": len(results),
+    }
+
+
+@tool
+async def recall_context(
+    query: str,
+    memory_types: str = "",
+    event_ticker: str = "",
+    limit: int = 5,
+) -> Dict[str, Any]:
+    """Search past learnings, trades, news, and observations by semantic similarity.
+
+    Use this to recall relevant context before making decisions:
+    - Before trading: recall_context("similar trades on [market type]")
+    - When news is stale: recall_context("[event topic] recent developments")
+    - After a loss: recall_context("mistakes on [market type]")
+    - For thesis building: recall_context("[topic] price impact patterns")
+
+    Args:
+        query: Natural language search query
+        memory_types: Comma-separated filter (e.g. "trade,learning,news"). Empty = all types.
+        event_ticker: Filter to specific event (optional)
+        limit: Max results (default 5)
+
+    Returns:
+        Dict with results list, each containing content, type, similarity score, and age
+    """
+    if not _memory_store:
+        return {"error": "Memory store not available"}
+
+    types_list = [t.strip() for t in memory_types.split(",") if t.strip()] or None
+
+    try:
+        results = await _memory_store.search(
+            query=query,
+            limit=limit,
+            memory_types=types_list,
+            event_ticker=event_ticker or None,
+        )
+
+        # Format results with age info
+        now = time.time()
+        formatted = []
+        for r in results:
+            entry = {
+                "content": r.get("content", ""),
+                "type": r.get("memory_type", r.get("type", "unknown")),
+                "similarity": round(r.get("similarity", 0.0), 3) if "similarity" in r else None,
+            }
+            # Compute age from timestamp
+            ts = r.get("timestamp") or r.get("created_at")
+            if ts:
+                if isinstance(ts, (int, float)):
+                    age_hours = (now - ts) / 3600
+                else:
+                    try:
+                        from datetime import datetime, timezone
+                        dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+                        age_hours = (now - dt.timestamp()) / 3600
+                    except (ValueError, TypeError):
+                        age_hours = None
+                if age_hours is not None:
+                    entry["age_hours"] = round(age_hours, 1)
+
+            # Include source info
+            entry["source"] = r.get("_source", "unknown")
+            formatted.append(entry)
+
+        return {
+            "query": query,
+            "results": formatted,
+            "count": len(formatted),
+        }
+    except Exception as e:
+        return {"error": f"Recall failed: {e}"}
+
+
+@tool
+async def search_news_history(
+    query: str,
+    event_ticker: str = "",
+    days: int = 7,
+    limit: int = 5,
+) -> Dict[str, Any]:
+    """Search persisted news articles by semantic similarity.
+
+    Unlike search_event_news (which fetches fresh from Tavily), this searches
+    previously stored articles with their price snapshots at time of storage.
+
+    Args:
+        query: Natural language search query
+        event_ticker: Filter to specific event (optional)
+        days: How far back to search (default 7)
+        limit: Max results (default 5)
+
+    Returns:
+        Dict with articles including price_snapshot at time of storage
+    """
+    if not _news_store:
+        # Fall back to general recall if no news store
+        if _memory_store:
+            results = await _memory_store.search(
+                query=query,
+                limit=limit,
+                memory_types=["news"],
+                event_ticker=event_ticker or None,
+            )
+            return {"query": query, "results": results, "count": len(results), "source": "vector_fallback"}
+        return {"error": "News store not available"}
+
+    try:
+        results = await _news_store.search_news(
+            query=query,
+            event_ticker=event_ticker or None,
+            hours=days * 24,
+            limit=limit,
+        )
+        return {
+            "query": query,
+            "event_ticker": event_ticker,
+            "results": results,
+            "count": len(results),
+        }
+    except Exception as e:
+        return {"error": f"News search failed: {e}"}
+
+
+@tool
+async def get_price_movers(
+    event_ticker: str,
+    min_change_cents: int = 5,
+    limit: int = 5,
+) -> Dict[str, Any]:
+    """Find news articles that correlated with significant price movements.
+
+    Returns articles where prices moved >= min_change_cents within 1-24h
+    after the article was stored. Use this to learn what kind of news
+    moves this market.
+
+    Args:
+        event_ticker: The event to check
+        min_change_cents: Minimum price change to qualify as a "mover" (default 5)
+        limit: Max results (default 5)
+
+    Returns:
+        Dict with market-moving articles and their price impact data
+    """
+    if not _impact_tracker:
+        return {"error": "Price impact tracker not available"}
+
+    try:
+        movers = await _impact_tracker.find_market_movers(
+            event_ticker=event_ticker,
+            min_change_cents=min_change_cents,
+            limit=limit,
+        )
+        return {
+            "event_ticker": event_ticker,
+            "min_change_cents": min_change_cents,
+            "movers": movers,
+            "count": len(movers),
+        }
+    except Exception as e:
+        return {"error": f"Price movers query failed: {e}"}
+
+
+@tool
+async def manage_thesis(
+    action: str,
+    thesis_id: str = "",
+    title: str = "",
+    event_ticker: str = "",
+    evidence: str = "",
+    implication: str = "",
+    confidence_delta: float = 0.0,
+) -> Dict[str, Any]:
+    """Manage multi-day strategic theses.
+
+    Theses persist across cycles in THESES.md and help build conviction
+    from accumulating evidence over time.
+
+    Actions:
+      - "create": Start a new thesis. Requires title, event_ticker, implication.
+      - "add_evidence": Add supporting evidence to an existing thesis. Requires thesis_id, evidence.
+      - "validate": Mark thesis as validated (confidence >= 0.6, 3+ evidence points).
+      - "invalidate": Mark thesis as invalidated with reason. Requires thesis_id, evidence (reason).
+      - "list": List all active theses.
+
+    Guardrails:
+      - Max 5 active theses. Create will fail if at limit.
+      - Confidence increases max 0.1 per cycle (prevents conviction spikes).
+      - Theses auto-expire after 7 days without new evidence.
+      - First 10 cycles: thesis creation blocked (need observation data first).
+
+    Args:
+        action: "create", "add_evidence", "validate", "invalidate", or "list"
+        thesis_id: ID of existing thesis (for add_evidence/validate/invalidate)
+        title: Short thesis title (for create, e.g. "tariff-escalation")
+        event_ticker: Related event (for create)
+        evidence: Evidence text (for create/add_evidence) or reason (for invalidate)
+        implication: Trading implication (for create, e.g. "YES probability should increase")
+        confidence_delta: How much to adjust confidence (max 0.1, for add_evidence)
+    """
+    import json as _json
+    import os as _os
+
+    theses_path = _os.path.join(
+        _os.path.dirname(_os.path.abspath(__file__)), "memory", "data", "theses.json"
+    )
+
+    # Load existing theses
+    theses = []
+    if _os.path.exists(theses_path):
+        try:
+            with open(theses_path, "r") as f:
+                theses = _json.load(f)
+        except (ValueError, OSError):
+            theses = []
+
+    def _save():
+        _os.makedirs(_os.path.dirname(theses_path), exist_ok=True)
+        with open(theses_path, "w") as f:
+            _json.dump(theses, f, indent=2)
+
+    now = time.time()
+
+    # Auto-expire stale theses (>7 days without evidence)
+    for t in theses:
+        if t.get("status") not in ("active", "validating"):
+            continue
+        last_evidence_ts = t.get("last_evidence_ts", t.get("created_at", 0))
+        if (now - last_evidence_ts) > 7 * 24 * 3600:
+            t["status"] = "expired"
+            t["expired_at"] = now
+            # Archive to vector memory
+            if _memory_store:
+                try:
+                    _memory_store.append(
+                        content=f"EXPIRED THESIS: {t['title']} | {t.get('implication', '')} | evidence_count={len(t.get('evidence', []))}",
+                        memory_type="thesis_archived",
+                        metadata={"thesis_id": t["id"], "event_ticker": t.get("event_ticker", "")},
+                    )
+                except Exception:
+                    pass
+
+    active_theses = [t for t in theses if t.get("status") in ("active", "validating")]
+
+    if action == "list":
+        _save()
+        return {
+            "active_theses": [
+                {
+                    "id": t["id"],
+                    "title": t["title"],
+                    "event_ticker": t.get("event_ticker", ""),
+                    "confidence": t.get("confidence", 0.3),
+                    "evidence_count": len(t.get("evidence", [])),
+                    "status": t["status"],
+                    "age_hours": round((now - t.get("created_at", now)) / 3600, 1),
+                    "implication": t.get("implication", ""),
+                }
+                for t in active_theses
+            ],
+            "total_active": len(active_theses),
+            "total_archived": len([t for t in theses if t["status"] in ("expired", "invalidated", "validated")]),
+        }
+
+    if action == "create":
+        if not title or not event_ticker:
+            return {"error": "create requires title and event_ticker"}
+        if len(active_theses) >= 5:
+            return {"error": "Max 5 active theses. Invalidate or expire one first."}
+
+        import hashlib
+        thesis_id = f"T-{hashlib.md5(f'{title}{now}'.encode()).hexdigest()[:6].upper()}"
+
+        # Get current price snapshot
+        price_snapshot = {}
+        if _index:
+            event = _index.events.get(event_ticker)
+            if event:
+                for ticker, m in event.markets.items():
+                    if m.yes_bid is not None:
+                        price_snapshot[ticker] = {"yes_bid": m.yes_bid, "yes_ask": m.yes_ask}
+
+        new_thesis = {
+            "id": thesis_id,
+            "title": title,
+            "event_ticker": event_ticker,
+            "implication": implication,
+            "confidence": 0.3,
+            "status": "active",
+            "evidence": [{"text": evidence, "ts": now}] if evidence else [],
+            "price_at_creation": price_snapshot,
+            "created_at": now,
+            "last_evidence_ts": now,
+        }
+        theses.append(new_thesis)
+        _save()
+        _update_theses_md(theses)
+        return {"status": "created", "thesis_id": thesis_id, "confidence": 0.3}
+
+    if action == "add_evidence":
+        if not thesis_id or not evidence:
+            return {"error": "add_evidence requires thesis_id and evidence"}
+
+        target = next((t for t in theses if t["id"] == thesis_id), None)
+        if not target:
+            return {"error": f"Thesis {thesis_id} not found"}
+        if target["status"] not in ("active", "validating"):
+            return {"error": f"Thesis {thesis_id} is {target['status']}, cannot add evidence"}
+
+        target["evidence"].append({"text": evidence, "ts": now})
+        target["last_evidence_ts"] = now
+
+        # Adjust confidence (capped at +0.1 per cycle)
+        delta = min(confidence_delta, 0.1) if confidence_delta > 0 else max(confidence_delta, -0.2)
+        target["confidence"] = max(0.0, min(1.0, target["confidence"] + delta))
+
+        # Auto-promote to validating at 3+ evidence
+        if len(target["evidence"]) >= 3 and target["status"] == "active":
+            target["status"] = "validating"
+
+        _save()
+        _update_theses_md(theses)
+        return {
+            "status": "evidence_added",
+            "thesis_id": thesis_id,
+            "confidence": target["confidence"],
+            "evidence_count": len(target["evidence"]),
+            "thesis_status": target["status"],
+        }
+
+    if action == "validate":
+        if not thesis_id:
+            return {"error": "validate requires thesis_id"}
+        target = next((t for t in theses if t["id"] == thesis_id), None)
+        if not target:
+            return {"error": f"Thesis {thesis_id} not found"}
+        if target["confidence"] < 0.6:
+            return {"error": f"Confidence {target['confidence']:.2f} < 0.6 required for validation"}
+        if len(target["evidence"]) < 3:
+            return {"error": f"Need 3+ evidence points, have {len(target['evidence'])}"}
+        target["status"] = "validated"
+        target["validated_at"] = now
+        _save()
+        _update_theses_md(theses)
+        return {"status": "validated", "thesis_id": thesis_id}
+
+    if action == "invalidate":
+        if not thesis_id:
+            return {"error": "invalidate requires thesis_id"}
+        target = next((t for t in theses if t["id"] == thesis_id), None)
+        if not target:
+            return {"error": f"Thesis {thesis_id} not found"}
+        target["status"] = "invalidated"
+        target["invalidated_at"] = now
+        target["invalidation_reason"] = evidence
+        _save()
+        _update_theses_md(theses)
+        # Archive to vector memory
+        if _memory_store:
+            try:
+                _memory_store.append(
+                    content=f"INVALIDATED THESIS: {target['title']} | reason: {evidence}",
+                    memory_type="thesis_archived",
+                    metadata={"thesis_id": thesis_id, "event_ticker": target.get("event_ticker", "")},
+                )
+            except Exception:
+                pass
+        return {"status": "invalidated", "thesis_id": thesis_id}
+
+    return {"error": f"Unknown action: {action}. Use create/add_evidence/validate/invalidate/list."}
+
+
+def _update_theses_md(theses: list) -> None:
+    """Write active theses to THESES.md for Captain system prompt."""
+    import os as _os
+
+    theses_md_path = _os.path.join(
+        _os.path.dirname(_os.path.abspath(__file__)), "memory", "data", "THESES.md"
+    )
+
+    active = [t for t in theses if t.get("status") in ("active", "validating", "validated")]
+    now = time.time()
+
+    lines = ["# Active Theses\n", "\n"]
+    if not active:
+        lines.append("(No active theses. Use manage_thesis(action='create') to start one.)\n")
+    else:
+        for t in active[:5]:
+            age_days = (now - t.get("created_at", now)) / 86400
+            lines.append(
+                f"## {t['id']} | {t['title']} | confidence: {t.get('confidence', 0.3):.1f} | "
+                f"status: {t['status']} | age: {age_days:.0f}d\n"
+            )
+            if t.get("implication"):
+                lines.append(f"Implication: {t['implication']}\n")
+            evidence_list = t.get("evidence", [])
+            lines.append(f"Evidence: {len(evidence_list)} points\n")
+            # Show last 2 evidence items
+            for e in evidence_list[-2:]:
+                lines.append(f"  - {e.get('text', '')[:100]}\n")
+            lines.append("\n")
+
+    _os.makedirs(_os.path.dirname(theses_md_path), exist_ok=True)
+    with open(theses_md_path, "w") as f:
+        f.writelines(lines)
+
+
+# --- Sniper Execution Layer Tools ---
+
+
+@tool
+async def configure_sniper(**kwargs) -> Dict[str, Any]:
+    """Configure the Sniper execution layer at runtime.
+
+    The Sniper handles sub-second S1_ARB market rebalancing execution.
+    You own strategy; Sniper owns speed. Tune these parameters based on
+    market conditions and your risk appetite.
+
+    Settable fields:
+      - enabled (bool): Master switch. Set True to activate Sniper execution.
+      - max_position (int): Max contracts per market per arb (default 25).
+      - max_capital (int): Max active capital at risk in cents (default 5000 = $50).
+      - cooldown (float): Seconds between trades on same event (default 10.0).
+      - max_trades_per_cycle (int): Max trades between your cycles (default 5).
+      - arb_min_edge (float): Min edge in cents after fees for S1_ARB (default 3.0).
+      - vpin_reject_threshold (float): VPIN above this = toxic flow, skip (default 0.7).
+      - order_ttl (int): Order time-to-live in seconds (default 30).
+      - leg_timeout (float): Per-leg placement timeout in seconds (default 5.0).
+      - s4_obi_enabled (bool): Enable OBI momentum strategy (default False).
+      - s6_spread_enabled (bool): Enable spread capture (default False).
+      - s7_sweep_enabled (bool): Enable sweep following (default False).
+
+    Note: Typo'd field names are detected and returned in 'unknown_fields'.
+
+    Example: configure_sniper(enabled=True, arb_min_edge=2.5, max_position=15)
+
+    Returns:
+        Current config with list of changed fields (and unknown fields if any typos).
+    """
+    if not _sniper_config:
+        return {"error": "Sniper not initialized. Is sniper_enabled=true in config?"}
+
+    changed, unknown = _sniper_config.update(**kwargs)
+    result = {
+        "config": _sniper_config.to_dict(),
+        "changed": changed,
+    }
+    if unknown:
+        result["unknown_fields"] = unknown
+        result["warning"] = f"Unknown fields ignored: {unknown}. Check spelling."
+    if changed:
+        logger.info(f"[SNIPER:CONFIG] Captain updated: {changed}")
+    return result
+
+
+@tool
+async def get_sniper_status() -> Dict[str, Any]:
+    """Get Sniper execution layer status and telemetry.
+
+    Returns real-time Sniper state including:
+      - Running status and current config
+      - Trade counts (this cycle, total, executed, rejected)
+      - Capital deployed, active orders
+      - Last rejection reason (for diagnosing risk gate blocks)
+      - Recent execution actions with latency
+
+    Use this to monitor Sniper performance and diagnose issues.
+    """
+    if not _sniper:
+        return {"error": "Sniper not initialized. Is sniper_enabled=true in config?"}
+
+    return {
+        "config": _sniper.config.to_dict(),
+        "state": _sniper.state.to_dict(),
+    }
+
+
+@tool
+async def kill_sniper_positions(reason: str = "captain_request") -> Dict[str, Any]:
+    """Emergency: cancel ALL active Sniper orders immediately.
+
+    Use when:
+      - Market conditions have changed and you want to stop Sniper activity
+      - You detect adverse selection or toxic flow across multiple markets
+      - You want to reset Sniper state before reconfiguring
+
+    Args:
+        reason: Why you're killing positions (logged for audit)
+
+    Returns:
+        Dict with cancelled count and any errors.
+    """
+    if not _sniper:
+        return {"error": "Sniper not initialized. Is sniper_enabled=true in config?"}
+
+    result = await _sniper.kill_positions(reason=reason)
+    logger.info(f"[SNIPER:KILL] Captain killed positions: {result}")
+    return result
+
+
+@tool
+async def get_orderbook_intelligence(event_ticker: str) -> Dict[str, Any]:
+    """Synthesize orderbook microstructure intelligence for an event.
+
+    Aggregates microprice, OFI, VPIN, sweep status, and liquidity-adjusted
+    edge across all markets in an event. Use before making trading decisions
+    to understand the microstructure regime.
+
+    Returns per-market:
+      - microprice: Depth-weighted fair value (better than mid)
+      - ofi / ofi_ema: Order flow imbalance (positive = buy pressure)
+      - vpin: Volume-synchronized PIN (>0.7 = toxic informed flow)
+      - sweep_active/direction: Aggressive sweep in progress
+      - book_imbalance: Bid vs ask depth ratio
+
+    Returns event-level:
+      - liquidity_adjusted_edge: Edge after walking depth (not just BBO)
+      - regime: "normal", "toxic" (high VPIN), "sweep" (active sweep), "thin" (low depth)
+
+    Args:
+        event_ticker: Event to analyze
+    """
+    if not _index:
+        return {"error": "EventArbIndex not available"}
+
+    event = _index.events.get(event_ticker)
+    if not event:
+        return {"error": f"Event {event_ticker} not found"}
+
+    markets_intel = {}
+    regime_flags = set()
+
+    for ticker, m in event.markets.items():
+        intel = {
+            "microprice": round(m.microprice, 2) if m.microprice is not None else None,
+            "yes_mid": m.yes_mid,
+            "spread": m.spread,
+            "ofi": round(m.micro.ofi, 3),
+            "ofi_ema": round(m.micro.ofi_ema, 3),
+            "vpin": round(m.micro.vpin, 3),
+            "book_imbalance": round(m.micro.book_imbalance, 3),
+            "total_bid_depth": m.micro.total_bid_depth,
+            "total_ask_depth": m.micro.total_ask_depth,
+            "sweep_active": m.micro.sweep_active,
+            "sweep_direction": m.micro.sweep_direction,
+            "sweep_size": m.micro.sweep_size,
+            "volume_5m": m.micro.volume_5m,
+            "buy_sell_ratio": round(m.micro.buy_sell_ratio, 2),
+        }
+        markets_intel[ticker] = intel
+
+        # Flag regime (use config threshold if available, else default 0.7)
+        vpin_threshold = _sniper_config.vpin_reject_threshold if _sniper_config else 0.7
+        if m.micro.vpin > vpin_threshold:
+            regime_flags.add("toxic")
+        if m.micro.sweep_active:
+            regime_flags.add("sweep")
+        if (m.micro.total_bid_depth + m.micro.total_ask_depth) < 20:
+            regime_flags.add("thin")
+
+    # Liquidity-adjusted edge (walk depth levels)
+    la_long = event.liquidity_adjusted_edge("long", target_contracts=10)
+    la_short = event.liquidity_adjusted_edge("short", target_contracts=10)
+
+    regime = "normal"
+    if "toxic" in regime_flags:
+        regime = "toxic"
+    elif "sweep" in regime_flags:
+        regime = "sweep"
+    elif "thin" in regime_flags:
+        regime = "thin"
+
+    return {
+        "event_ticker": event_ticker,
+        "regime": regime,
+        "regime_flags": list(regime_flags),
+        "markets": markets_intel,
+        "liquidity_adjusted_edge_long": la_long,
+        "liquidity_adjusted_edge_short": la_short,
     }

@@ -1,6 +1,6 @@
 ---
 name: iterate-captain
-description: Step-by-step Captain debugging. Runs one cycle, pauses, debugs issues, then resumes or restarts based on what changed.
+description: Step-by-step Captain debugging. Runs cycles, pauses, debugs issues, then resumes or restarts based on what changed.
 argument-hint: [iterations]
 user-invocable: true
 allowed-tools: Bash, Read, Write, Edit, Grep, Glob, Task, TaskCreate, TaskUpdate, TaskList, AskUserQuestion
@@ -9,11 +9,10 @@ allowed-tools: Bash, Read, Write, Edit, Grep, Glob, Task, TaskCreate, TaskUpdate
 # Iterate Captain - Step-by-Step Debugging
 
 Debug the Captain in 2-cycle batches. After every 2 cycles:
-1. Auto-pause
+1. Auto-pause via REST endpoint
 2. Analyze logs for issues
 3. Fix issues
 4. Resume or Restart (if Python files changed)
-5. Validate system is working
 
 **Iterations**: `$ARGUMENTS` (default: 3 batches = 6 cycles)
 
@@ -22,31 +21,10 @@ Debug the Captain in 2-cycle batches. After every 2 cycles:
 ## System Info
 
 - **Backend**: Port 8005
-- **Frontend**: http://localhost:5173/arb
-- **Log file**: backend/logs/v3-trader.log
-- **Log markers**: `[SINGLE_ARB:*]`
-
----
-
-## Helper: Send WebSocket Command
-
-Use this Python snippet to send pause/resume commands:
-
-```bash
-cd /Users/samuelclark/Desktop/kalshiflow/backend && uv run python -c "
-import asyncio, websockets, json
-async def send(cmd):
-    try:
-        async with websockets.connect('ws://localhost:8005/v3/ws') as ws:
-            await ws.send(json.dumps({'type': cmd}))
-            print(f'{cmd} sent')
-    except Exception as e:
-        print(f'Error: {e}')
-asyncio.run(send('$CMD'))
-"
-```
-
-Replace `$CMD` with `captain_pause` or `captain_resume`.
+- **Log file**: `backend/logs/v3-trader.log`
+- **Pause**: `curl -s -X POST -H 'Content-Type: application/json' -d '{"type":"captain_pause"}' http://localhost:8005/v3/captain/control`
+- **Resume**: `curl -s -X POST -H 'Content-Type: application/json' -d '{"type":"captain_resume"}' http://localhost:8005/v3/captain/control`
+- **Status**: `curl -s http://localhost:8005/v3/status`
 
 ---
 
@@ -61,20 +39,35 @@ sleep 2
 
 ### 1b. Start system in background
 ```bash
-cd /Users/samuelclark/Desktop/kalshiflow && ./scripts/run-v3.sh paper 2>&1 | tee backend/logs/v3-trader.log &
+cd /Users/samuelclark/Desktop/kalshiflow && ./scripts/run-captain.sh paper 2>&1 | tee backend/logs/v3-trader.log &
 ```
 Use `run_in_background: true`.
 
-### 1c. Wait for startup
-Poll until `[SINGLE_ARB:STARTUP]` or `[SINGLE_ARB:CAPTAIN_START]` appears (timeout 90s):
+### 1c. Wait for Captain to be running
+Poll `/v3/status` until Captain is running (timeout 90s):
 ```bash
-for i in $(seq 1 18); do
-  grep -q "SINGLE_ARB:STARTUP\|SINGLE_ARB:CAPTAIN_START" backend/logs/v3-trader.log 2>/dev/null && echo "READY" && break
-  sleep 5
+for i in $(seq 1 45); do
+  RUNNING=$(curl -sf http://localhost:8005/v3/status 2>/dev/null | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    c = d.get('components', {}).get('single_arb_coordinator', {}).get('captain', {})
+    print(c.get('running', False))
+except: print('False')
+" 2>/dev/null || echo "False")
+  if [ "$RUNNING" = "True" ]; then
+    echo "Captain running"
+    break
+  fi
+  sleep 2
 done
 ```
 
 If startup fails, read the log file to diagnose.
+
+**Note**: Captain starts its run loop immediately but waits for background initialization
+(understanding, lifecycle, causal models) before executing the first cycle. Look for
+`[DEFERRED_INIT]` log markers to track background init progress.
 
 ---
 
@@ -105,7 +98,9 @@ done
 ```
 
 ### 2b. Pause after 2 cycles
-Send `captain_pause` via WebSocket (use helper above).
+```bash
+curl -s -X POST -H 'Content-Type: application/json' -d '{"type":"captain_pause"}' http://localhost:8005/v3/captain/control
+```
 
 ### 2c. Extract the last 2 cycles' log segments
 Get lines from the start of the first of the 2 cycles to the end:
@@ -124,32 +119,17 @@ Look for in the cycle segment:
 - Failed tool calls or API errors
 - Timeouts or connection issues
 
-**Mentions-specific issues to watch for:**
-- `mentions_specialist` subagent not being invoked for mentions markets
-- `simulate_probability` or `trigger_simulation` failures
-- Missing `gather_mention_contexts` or `gather_blind_context` calls
-- Edge computation errors (spread/fee awareness issues)
-- Context cache failures (4-hour TTL system)
-- LLM simulation timeouts or rate limits
-
-**How to trigger mentions testing:**
-The Captain should auto-detect mentions markets (markets with "mention" rules).
-If not seeing mentions activity, check:
-1. Are mentions markets in the index? (`get_events_summary` output)
-2. Is `mentions_enabled` config True?
-3. Does `get_mentions_rules(event_ticker)` return parsed rules?
-
 List issues by priority:
 1. **Critical**: Crashes, exceptions, failed trades
-2. **High**: Tool failures, missing data, mentions not detected
-3. **Medium**: Warnings, slow performance, simulation timeouts
+2. **High**: Tool failures, missing data
+3. **Medium**: Warnings, slow performance
 4. **Low**: Improvements
 
 ### 2e. Fix issues (if any)
 
 **MAJOR vs MINOR changes:**
-- **MINOR**: Single-line fixes, typos, simple bug fixes, logging changes → Apply directly
-- **MAJOR**: Architectural changes, new functions, refactors, multi-file changes, prompt rewrites → **STOP and create plan file**
+- **MINOR**: Single-line fixes, typos, simple bug fixes, logging changes -> Apply directly
+- **MAJOR**: Architectural changes, new functions, refactors, multi-file changes, prompt rewrites -> **STOP and create plan file**
 
 **For MINOR fixes:**
 1. Locate source file using Grep/Glob
@@ -159,96 +139,52 @@ List issues by priority:
 
 **For MAJOR changes:**
 1. **DO NOT apply the change**
-2. Create a plan file at `backend/logs/iterate-captain-plan.md`:
-```markdown
-# Iterate Captain - Proposed Major Change
-
-## Issue
-[Description of the issue]
-
-## Proposed Change
-[What needs to change and why]
-
-## Files Affected
-- file1.py: [what changes]
-- file2.py: [what changes]
-
-## Risk Assessment
-[Low/Medium/High] - [Why]
-
-## Waiting for approval...
-```
+2. Create a plan file at `backend/logs/iterate-captain-plan.md`
 3. Tell the user: "Found a major change needed. Plan written to `backend/logs/iterate-captain-plan.md`. Review and approve before I proceed."
 4. **STOP the iteration loop** and wait for user response
-5. Only proceed with the change after explicit user approval
 
 Key files:
 - Captain: `backend/src/kalshiflow_rl/traderv3/single_arb/captain.py`
 - Tools: `backend/src/kalshiflow_rl/traderv3/single_arb/tools.py`
 - Coordinator: `backend/src/kalshiflow_rl/traderv3/single_arb/coordinator.py`
 - Index/Monitor: `backend/src/kalshiflow_rl/traderv3/single_arb/index.py`, `monitor.py`
-- Mentions Tools: `backend/src/kalshiflow_rl/traderv3/single_arb/mentions_tools.py`
-- Mentions Context: `backend/src/kalshiflow_rl/traderv3/single_arb/mentions_context.py`
-- Mentions Simulator: `backend/src/kalshiflow_rl/traderv3/single_arb/mentions_simulator.py`
-
-For complex fixes, use:
-```
-Task tool with subagent_type: "kalshi-flow-trader-specialist"
-```
+- Mentions: `backend/src/kalshiflow_rl/traderv3/single_arb/mentions_tools.py`
 
 ### 2f. Decide: Resume or Restart
 
-**If MODIFIED_PY_FILES is not empty** → RESTART
-- Python changes require process restart to take effect
-- Go to Step 3 (Restart) which includes validation
+**If MODIFIED_PY_FILES is not empty** -> RESTART (go to Step 3)
+**If no .py files changed** -> RESUME:
 
-**If no .py files changed** → RESUME
-- Frontend, config, or no changes
-- Send `captain_resume` via WebSocket
-- Go to Step 2g (Validate Resume)
-
-### 2g. Validate Resume
-After sending `captain_resume`, verify system is healthy:
 ```bash
-# Wait 10s for system to resume
-sleep 10
-
-# Check health endpoint
-curl -s http://localhost:8005/v3/health | jq -e '.healthy == true'
-
-# Check captain is running (not paused)
-curl -s http://localhost:8005/v3/status | jq -e '.captain.paused == false'
-
-# Watch for next CYCLE_START to confirm agent resumed
-for i in $(seq 1 12); do
-  grep -q "SINGLE_ARB:CYCLE_START" backend/logs/v3-trader.log 2>/dev/null && echo "Captain resumed OK" && break
-  sleep 5
-done
+curl -s -X POST -H 'Content-Type: application/json' -d '{"type":"captain_resume"}' http://localhost:8005/v3/captain/control
 ```
 
-If validation fails, investigate before continuing.
+Then validate resume:
+```bash
+sleep 10
+curl -sf http://localhost:8005/v3/health | python3 -c "import sys,json; d=json.load(sys.stdin); print('Health OK' if d.get('healthy') else 'Health FAIL')"
+curl -sf http://localhost:8005/v3/status | python3 -c "import sys,json; d=json.load(sys.stdin); c=d.get('components',{}).get('single_arb_coordinator',{}).get('captain',{}); print('Captain OK' if not c.get('paused') else 'Captain still paused')"
+```
 
-### 2h. Increment and check
+### 2g. Increment and check
 ```
 ITERATION += 1
 if ITERATION > MAX_ITERATIONS:
     Stop and report
 else:
-    Continue to Step 2a (wait for next 2 cycles)
+    Continue to Step 2a
 ```
 
 ---
 
 ## Step 3: Restart (When Python Files Changed)
 
-### 3a. Graceful stop (faster than SIGKILL)
+### 3a. Graceful stop
 ```bash
-# Try graceful shutdown first (SIGTERM allows cleanup)
 PID=$(lsof -ti:8005)
 if [ -n "$PID" ]; then
   kill -TERM $PID 2>/dev/null
   sleep 1
-  # Only SIGKILL if still running
   lsof -ti:8005 | xargs kill -9 2>/dev/null || true
 fi
 ```
@@ -263,57 +199,37 @@ MODIFIED_PY_FILES = []
 
 ### 3c. Start system fresh
 ```bash
-cd /Users/samuelclark/Desktop/kalshiflow && ./scripts/run-v3.sh paper 2>&1 | tee backend/logs/v3-trader.log &
+cd /Users/samuelclark/Desktop/kalshiflow && ./scripts/run-captain.sh paper 2>&1 | tee backend/logs/v3-trader.log &
 ```
 Use `run_in_background: true`.
 
 ### 3d. Fast Startup Validation
-Optimized for speed - poll aggressively, fail fast:
 ```bash
-# Fast poll for startup (check every 2s, timeout 60s)
-for i in $(seq 1 30); do
-  if grep -q "SINGLE_ARB:CAPTAIN_START" backend/logs/v3-trader.log 2>/dev/null; then
+for i in $(seq 1 45); do
+  RUNNING=$(curl -sf http://localhost:8005/v3/status 2>/dev/null | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    c = d.get('components', {}).get('single_arb_coordinator', {}).get('captain', {})
+    print(c.get('running', False))
+except: print('False')
+" 2>/dev/null || echo "False")
+  if [ "$RUNNING" = "True" ]; then
     echo "Captain started in $((i*2))s"
     break
   fi
-  # Check for startup errors early
-  if grep -q "ERROR\|Failed to start" backend/logs/v3-trader.log 2>/dev/null; then
-    echo "Startup error detected!"
+  if grep -q "Failed to start\|CRITICAL" backend/logs/v3-trader.log 2>/dev/null; then
+    echo "Startup error!"
     tail -20 backend/logs/v3-trader.log
     break
   fi
   sleep 2
 done
 
-# Quick health check
 curl -sf http://localhost:8005/v3/health > /dev/null && echo "Health OK" || echo "Health FAIL"
 ```
 
-If validation fails, read logs and diagnose before continuing.
-
 Then go to Step 2a (wait for 2 cycles).
-
----
-
-## Fast Restart Optimizations
-
-The restart is inherently slow due to:
-1. Python process startup + imports (~5-10s)
-2. Market discovery via REST API (~3-5s)
-3. Orderbook WebSocket connections (~5-10s)
-4. Index initialization waiting for data (~10-30s)
-
-**Current optimizations in skill:**
-- Graceful SIGTERM before SIGKILL (faster cleanup)
-- Aggressive polling (2s intervals vs 5s)
-- Early error detection (fail fast on startup errors)
-- Skip unnecessary waits (60s timeout vs 90s)
-
-**Future optimizations (not in this PR):**
-1. **Hot module reload** - Reload only changed Python modules without full restart
-2. **Market cache** - Cache discovered markets to skip REST call on restart
-3. **Persistent orderbook connections** - Keep WS connections across restarts
-4. **Index warmup from DB** - Load last known orderbook state from database
 
 ---
 
@@ -344,9 +260,9 @@ After all iterations complete:
 ## Important Notes
 
 - **Never commit automatically** - only when user asks
-- **Major changes need approval** - create plan file at `backend/logs/iterate-captain-plan.md` and STOP
+- **Major changes need approval** - create plan file and STOP
 - **2 cycles per batch** - pause after every 2 cycles for analysis
 - **Always validate** - check health after BOTH resume and restart
-- **Restart if .py changed** - Python needs process restart
+- **Restart if .py changed** - Python needs process restart (no --reload)
 - **Resume if only frontend/config** - faster iteration
-- **Focus on real issues** - don't over-engineer fixes
+- **Deferred init**: Captain starts fast, but first cycle waits for `[DEFERRED_INIT]` completion

@@ -97,6 +97,7 @@ class DualMemoryStore:
         limit: int = 5,
         memory_types: Optional[List[str]] = None,
         event_ticker: Optional[str] = None,
+        min_recency_hours: Optional[float] = None,
     ) -> List[Dict[str, Any]]:
         """
         Hybrid search: semantic (vector) + keyword (file), merged and deduped.
@@ -115,6 +116,7 @@ class DualMemoryStore:
                     limit=limit,
                     memory_types=memory_types,
                     event_ticker=event_ticker,
+                    min_recency_hours=min_recency_hours,
                 )
             except Exception as e:
                 logger.warning(f"Vector search failed, using keyword-only: {e}")

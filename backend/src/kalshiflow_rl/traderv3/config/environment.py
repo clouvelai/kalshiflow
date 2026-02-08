@@ -110,11 +110,21 @@ class V3Config:
     single_arb_order_ttl: int = 30  # Order TTL in seconds (auto-cancel)
     single_arb_cheval_model: str = "claude-haiku-4-5-20251001"  # ChevalDeTroie model (configurable)
 
+    # Sniper Execution Layer Configuration
+    sniper_enabled: bool = False                    # V3_SNIPER_ENABLED - master kill switch
+    sniper_max_position: int = 25                   # V3_SNIPER_MAX_POSITION - max contracts per market
+    sniper_max_capital: int = 5000                  # V3_SNIPER_MAX_CAPITAL - max capital at risk (cents = $50)
+    sniper_cooldown: float = 10.0                   # V3_SNIPER_COOLDOWN - seconds between trades on same market
+    sniper_max_trades_per_cycle: int = 5            # V3_SNIPER_MAX_TRADES_PER_CYCLE - between Captain cycles
+    sniper_arb_min_edge: float = 3.0               # V3_SNIPER_ARB_MIN_EDGE - min edge cents for S1_ARB
+    sniper_order_ttl: int = 30                     # V3_SNIPER_ORDER_TTL - order TTL in seconds
+    sniper_leg_timeout: float = 5.0                # V3_SNIPER_LEG_TIMEOUT - per-leg placement timeout in seconds
+
     # Tavily Search Configuration
     tavily_api_key: str = ""                    # TAVILY_API_KEY env var
     tavily_enabled: bool = True                 # V3_TAVILY_ENABLED (auto-disable if no key)
     tavily_search_depth: str = "advanced"       # V3_TAVILY_SEARCH_DEPTH (basic=1 credit, advanced=2)
-    tavily_monthly_budget: int = 1000           # V3_TAVILY_MONTHLY_BUDGET
+    tavily_monthly_budget: int = 10000          # V3_TAVILY_MONTHLY_BUDGET
     tavily_news_time_range: str = "week"        # V3_TAVILY_NEWS_TIME_RANGE (day/week/month)
     tavily_max_results: int = 20                # V3_TAVILY_MAX_RESULTS
 
@@ -255,6 +265,16 @@ class V3Config:
         single_arb_order_ttl = int(os.environ.get("V3_SINGLE_ARB_ORDER_TTL", "30"))
         single_arb_cheval_model = os.environ.get("V3_SINGLE_ARB_CHEVAL_MODEL", "claude-haiku-4-5-20251001")
 
+        # Sniper execution layer configuration
+        sniper_enabled = os.environ.get("V3_SNIPER_ENABLED", "false").lower() == "true"
+        sniper_max_position = int(os.environ.get("V3_SNIPER_MAX_POSITION", "25"))
+        sniper_max_capital = int(os.environ.get("V3_SNIPER_MAX_CAPITAL", "5000"))
+        sniper_cooldown = float(os.environ.get("V3_SNIPER_COOLDOWN", "10.0"))
+        sniper_max_trades_per_cycle = int(os.environ.get("V3_SNIPER_MAX_TRADES_PER_CYCLE", "5"))
+        sniper_arb_min_edge = float(os.environ.get("V3_SNIPER_ARB_MIN_EDGE", "3.0"))
+        sniper_order_ttl = int(os.environ.get("V3_SNIPER_ORDER_TTL", "30"))
+        sniper_leg_timeout = float(os.environ.get("V3_SNIPER_LEG_TIMEOUT", "5.0"))
+
         # Tavily search configuration
         tavily_api_key = os.environ.get("TAVILY_API_KEY", "")
         tavily_enabled = os.environ.get("V3_TAVILY_ENABLED", "true").lower() == "true"
@@ -262,7 +282,7 @@ class V3Config:
         if not tavily_api_key:
             tavily_enabled = False
         tavily_search_depth = os.environ.get("V3_TAVILY_SEARCH_DEPTH", "advanced")
-        tavily_monthly_budget = int(os.environ.get("V3_TAVILY_MONTHLY_BUDGET", "1000"))
+        tavily_monthly_budget = int(os.environ.get("V3_TAVILY_MONTHLY_BUDGET", "10000"))
         tavily_news_time_range = os.environ.get("V3_TAVILY_NEWS_TIME_RANGE", "week")
         tavily_max_results = int(os.environ.get("V3_TAVILY_MAX_RESULTS", "20"))
 
@@ -327,6 +347,14 @@ class V3Config:
             single_arb_captain_enabled=single_arb_captain_enabled,
             single_arb_order_ttl=single_arb_order_ttl,
             single_arb_cheval_model=single_arb_cheval_model,
+            sniper_enabled=sniper_enabled,
+            sniper_max_position=sniper_max_position,
+            sniper_max_capital=sniper_max_capital,
+            sniper_cooldown=sniper_cooldown,
+            sniper_max_trades_per_cycle=sniper_max_trades_per_cycle,
+            sniper_arb_min_edge=sniper_arb_min_edge,
+            sniper_order_ttl=sniper_order_ttl,
+            sniper_leg_timeout=sniper_leg_timeout,
             tavily_api_key=tavily_api_key,
             tavily_enabled=tavily_enabled,
             tavily_search_depth=tavily_search_depth,
@@ -395,6 +423,12 @@ class V3Config:
             logger.info(f"  - Tavily search: ENABLED (depth={tavily_search_depth}, budget={tavily_monthly_budget}, max_results={tavily_max_results})")
         else:
             logger.info(f"  - Tavily search: DISABLED (no TAVILY_API_KEY)")
+
+        # Log sniper config
+        if sniper_enabled:
+            logger.info(f"  - Sniper: ENABLED (max_pos={sniper_max_position}, max_cap=${sniper_max_capital/100:.0f}, cooldown={sniper_cooldown}s, arb_edge>{sniper_arb_min_edge}c)")
+        else:
+            logger.info(f"  - Sniper: DISABLED")
 
         # Log single-arb config
         if single_arb_enabled:

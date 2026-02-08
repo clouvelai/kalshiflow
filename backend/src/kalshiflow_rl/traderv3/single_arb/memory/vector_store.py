@@ -102,17 +102,30 @@ class VectorMemoryService:
 
             confidence = metadata.get("confidence", "medium")
 
+            # Extract news-specific fields (NULL for non-news types)
+            news_url = metadata.get("news_url")
+            news_title = metadata.get("news_title")
+            news_published_at = metadata.get("news_published_at") or None
+            news_source = metadata.get("news_source")
+            price_snapshot = (
+                json.dumps(metadata["price_snapshot"])
+                if metadata.get("price_snapshot")
+                else None
+            )
+
             # INSERT
             row_id = await conn.fetchval(
                 """
                 INSERT INTO agent_memories (
                     memory_type, content, content_hash, embedding,
                     market_tickers, event_tickers, confidence,
-                    source_session, trade_id, trade_result, pnl_cents
+                    source_session, trade_id, trade_result, pnl_cents,
+                    news_url, news_title, news_published_at, news_source, price_snapshot
                 ) VALUES (
                     $1, $2, $3, $4::vector,
                     $5, $6, $7,
-                    $8, $9, $10, $11
+                    $8, $9, $10, $11,
+                    $12, $13, $14::timestamptz, $15, $16::jsonb
                 )
                 RETURNING id
                 """,
@@ -127,6 +140,11 @@ class VectorMemoryService:
                 metadata.get("trade_id"),
                 metadata.get("trade_result"),
                 metadata.get("pnl_cents"),
+                news_url,
+                news_title,
+                news_published_at,
+                news_source,
+                price_snapshot,
             )
 
             logger.debug(f"Stored vector memory {row_id} (type={memory_type})")
@@ -138,6 +156,7 @@ class VectorMemoryService:
         limit: int = 5,
         memory_types: Optional[List[str]] = None,
         event_ticker: Optional[str] = None,
+        min_recency_hours: Optional[float] = None,
     ) -> List[Dict[str, Any]]:
         """
         Semantic search over agent_memories using search_agent_memories RPC.
@@ -150,13 +169,14 @@ class VectorMemoryService:
             rows = await conn.fetch(
                 """
                 SELECT * FROM search_agent_memories(
-                    $1::vector, $2, $3, $4, NULL, $5, 0.3
+                    $1::vector, $2, $3, $4, $5, $6, 0.3
                 )
                 """,
                 str(embedding),
                 memory_types,
                 None,  # p_market_ticker
                 event_ticker,
+                min_recency_hours,
                 limit,
             )
 

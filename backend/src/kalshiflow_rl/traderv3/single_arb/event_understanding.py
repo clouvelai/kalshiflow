@@ -790,24 +790,18 @@ Rules:
 - trading_considerations: mention spreads, fee impact, time decay
 - Return ONLY valid JSON"""
 
-            response = await llm.ainvoke(prompt)
-            content = response.content.strip()
+            from .llm_schemas import EventUnderstandingExtraction
 
-            # Parse JSON
-            if content.startswith("```"):
-                content = content.split("```")[1]
-                if content.startswith("json"):
-                    content = content[4:]
-            content = content.strip()
+            structured_llm = llm.with_structured_output(EventUnderstandingExtraction)
+            parsed = await structured_llm.ainvoke(prompt)
 
-            parsed = json.loads(content)
-            u.trading_summary = parsed.get("trading_summary", "")
-            u.key_factors = parsed.get("key_factors", [])[:5]
-            u.trading_considerations = parsed.get("trading_considerations", [])[:3]
+            u.trading_summary = parsed.trading_summary
+            u.key_factors = parsed.key_factors[:5]
+            u.trading_considerations = parsed.trading_considerations[:3]
 
             # Only use LLM timeline if we don't already have one
             if not u.timeline:
-                u.timeline = parsed.get("timeline", [])[:5]
+                u.timeline = [seg.model_dump() for seg in parsed.timeline[:5]]
 
         except Exception as e:
             logger.warning(f"[UNDERSTANDING] LLM synthesis failed: {e}")

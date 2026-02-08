@@ -748,7 +748,7 @@ class V3StateContainer:
 
         return formatted_orders
 
-    def get_trading_summary(self, order_group_id: Optional[str] = None) -> Dict[str, Any]:
+    def get_trading_summary(self, order_group_id: Optional[str] = None, tracked_event_tickers: Optional[set] = None) -> Dict[str, Any]:
         """
         Get trading state summary for broadcasting.
 
@@ -819,7 +819,7 @@ class V3StateContainer:
 
         # Add detailed position data with per-position P&L
         # (computed first so we can pass to compute_pnl for aggregation)
-        positions_details = self._format_position_details()
+        positions_details = self._format_position_details(tracked_event_tickers)
         summary["positions_details"] = positions_details
 
         # Add session P&L if initialized (includes realized/unrealized breakdown)
@@ -904,7 +904,7 @@ class V3StateContainer:
         self._trading_state_version += 1
         self._last_update = time.time()
 
-    def _format_position_details(self) -> List[Dict[str, Any]]:
+    def _format_position_details(self, tracked_event_tickers: Optional[set] = None) -> List[Dict[str, Any]]:
         """
         Format positions with P&L and market data for frontend display.
 
@@ -935,6 +935,12 @@ class V3StateContainer:
 
         details = []
         for ticker, pos in self._trading_state.positions.items():
+            # Server-side filter: only include positions for tracked events
+            if tracked_event_tickers is not None:
+                event_ticker = pos.get("event_ticker", "")
+                if event_ticker not in tracked_event_tickers:
+                    continue
+
             position_count = pos.get("position", 0)
             market_exposure = pos.get("market_exposure", 0)
             qty = abs(position_count)

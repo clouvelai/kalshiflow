@@ -251,25 +251,19 @@ CRITICAL RULES:
 
 Return ONLY valid JSON, no explanation."""
 
-        response = await llm.ainvoke(prompt)
-        content = response.content
+        from .llm_schemas import LexemePackExtraction
 
-        # Parse JSON from response
-        if "```json" in content:
-            content = content.split("```json")[1].split("```")[0]
-        elif "```" in content:
-            content = content.split("```")[1].split("```")[0]
-
-        parsed = json.loads(content.strip())
+        structured_llm = llm.with_structured_output(LexemePackExtraction)
+        result = await structured_llm.ainvoke(prompt)
 
         return LexemePackLite(
-            entity=parsed.get("entity", ""),
-            accepted_forms=parsed.get("accepted_forms", []),
-            prohibited_forms=parsed.get("prohibited_forms", []),
-            source_type=parsed.get("source_type", "any"),
-            speaker=parsed.get("speaker"),
-            time_window_start=parsed.get("time_window_start"),
-            time_window_end=parsed.get("time_window_end"),
+            entity=result.entity,
+            accepted_forms=result.accepted_forms,
+            prohibited_forms=result.prohibited_forms,
+            source_type=result.source_type,
+            speaker=result.speaker,
+            time_window_start=result.time_window_start,
+            time_window_end=result.time_window_end,
             raw_rules=rules_text,
         )
 
@@ -434,6 +428,16 @@ async def simulate_probability(
 
         current_estimates = result.get("estimates", {})
         news_snippets = result.get("news_snippets", [])[:3]  # Top 3 news headlines
+
+        # Merge event-level news from understanding (richer signal, no extra API calls)
+        if _index:
+            understanding = getattr(event, "understanding", None) or {}
+            for article in understanding.get("news_articles", [])[:3]:
+                headline = article.get("title", "")
+                if headline and headline not in news_snippets:
+                    news_snippets.append(headline[:150])
+            news_snippets = news_snippets[:5]  # Cap at 5 total
+
         current_ts = time.time()
 
         # --- History Tracking Logic ---

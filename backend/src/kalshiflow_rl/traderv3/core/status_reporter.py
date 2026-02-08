@@ -289,7 +289,12 @@ class V3StatusReporter:
             if self._trading_client_integration:
                 order_group_id = self._trading_client_integration.get_order_group_id()
 
-            trading_summary = self._state_container.get_trading_summary(order_group_id)
+            # Get tracked event tickers for position filtering
+            tracked_event_tickers = None
+            if self._tracked_markets_state:
+                tracked_event_tickers = set(self._tracked_markets_state.get_markets_by_event().keys())
+
+            trading_summary = self._state_container.get_trading_summary(order_group_id, tracked_event_tickers)
 
             if not trading_summary.get("has_state"):
                 return  # No trading state to broadcast
@@ -396,8 +401,14 @@ class V3StatusReporter:
                 logger.error(f"Error in status reporting: {e}")
     
     async def _monitor_trading_state(self) -> None:
-        """Monitor trading state version for broadcasts."""
+        """Monitor trading state version for broadcasts.
+
+        Broadcasts on version change (every 1s check) and forces a
+        refresh every 60s even without version changes, so late-joining
+        frontend clients always see fresh balance/P&L data.
+        """
         last_version = -1  # Start at -1 to ensure first check always broadcasts
+        last_forced_at = 0.0
 
         while self._running:
             try:
@@ -405,11 +416,13 @@ class V3StatusReporter:
 
                 # Check for version changes
                 current_version = self._state_container.trading_state_version
+                now = time.time()
 
-                # Only broadcast if state changed
-                if current_version > last_version:
+                # Broadcast if state changed OR 60s since last forced refresh
+                if current_version > last_version or (now - last_forced_at) >= 60.0:
                     await self.emit_trading_state()
                     last_version = current_version
+                    last_forced_at = now
 
             except asyncio.CancelledError:
                 break

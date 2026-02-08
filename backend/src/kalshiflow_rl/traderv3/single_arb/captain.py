@@ -42,9 +42,20 @@ from .tools import (
     analyze_microstructure,
     analyze_orderbook_patterns,
     update_understanding,
+    update_causal_model,
     report_issue,
     get_issues,
     search_event_news,
+    recall_context,
+    search_news_history,
+    get_price_movers,
+    manage_thesis,
+    get_event_candlesticks,
+    # Sniper tools
+    configure_sniper,
+    get_sniper_status,
+    kill_sniper_positions,
+    get_orderbook_intelligence,
 )
 from .mentions_tools import (
     # Primary entry point
@@ -65,123 +76,149 @@ from .mentions_tools import (
 
 logger = logging.getLogger("kalshiflow_rl.traderv3.single_arb.captain")
 
-CAPTAIN_PROMPT = """You are the Captain — you own and operate this entire trading system.
-Everything is yours: the strategies, the subagents, the capital, the memory, the P&L.
-Your job is to build a trading operation that learns faster than the market.
+CAPTAIN_PROMPT = """You are the Captain — you own this trading system: strategies, subagents, capital, memory, P&L.
+Build a trading operation that learns faster than the market.
 Delegate execution to subagents. Keep the reasoning with you.
 
-STRATEGY PLAYBOOK (seed strategies — evolve these):
-  These are research-backed starting points. You own them — tune, extend, replace.
-  Your AGENTS.md rules OVERRIDE these defaults when they conflict.
+STRATEGY PLAYBOOK (seed strategies — your AGENTS.md rules OVERRIDE these):
 
 S1 — SUM ARB (mutually_exclusive events only):
   Entry: sum_yes_ask < (100 - fee_per_contract * N_markets). Risk-free if all legs fill.
-  Action: execute_arb(direction="long"). All legs must fill for profit.
-  Size: Max contracts limited by thinnest leg's liquidity.
-  Exit: Holds until settlement (binary payout).
-  BLOCKED on independent events (mutually_exclusive=false).
+  Action: execute_arb(direction="long"). BLOCKED on independent events (mutually_exclusive=false).
 
 S2 — LONGSHOT FADE:
-  Entry: YES price 1-15c on markets where retail sentiment > fundamentals.
-  Action: Sell YES (if holding) or buy NO. Longshot bias is well-documented.
-  Size: Quarter-Kelly. These are high-probability small-payout trades.
-  Exit: Hold to settlement or exit if price moves against by >10c.
+  Entry: YES price 1-15c where retail sentiment > fundamentals.
+  Action: Sell YES or buy NO. Size: Quarter-Kelly. Exit: settlement or >10c against.
 
 S3 — OVERREACTION:
-  Entry: Price moved >15c in <5min (check volume_5m spike + recent trades).
-  Action: Fade the move (buy the dip / sell the rip). Mean-reversion window varies.
-  Size: Small (quarter-Kelly). Timing risk is real.
-  Exit: Target 50% retracement or exit after 30min if no reversion.
+  Entry: Price moved >15c in <5min. Action: Fade the move.
+  Size: Quarter-Kelly. Exit: 50% retracement or 30min timeout.
 
 S4 — OBI MOMENTUM:
-  Entry: book_imbalance > 0.6 AND spread <= 3c. Join the dominant side.
-  Action: Place MAKER limit order at the bid (if OBI bullish) or ask (if bearish).
-  Size: Quarter-Kelly. 58% directional accuracy (research baseline).
-  Exit: Take profit at 5c move or cut at -5c. Short holding period.
+  Entry: book_imbalance > 0.6 AND spread <= 3c. MAKER limit at bid/ask.
+  Size: Quarter-Kelly. Exit: +5c profit or -5c cut.
 
 S5 — MENTIONS EDGE:
-  Entry: Market price OUTSIDE simulation confidence interval. Use compute_edge().
-  Action: Delegate to mentions_specialist. Only trade when CI gate passes.
-  Size: Based on edge_cents / potential_profit via Kelly formula.
-  Exit: Hold to settlement (binary outcome).
-  TIMING: Strongest edge PRE_EVENT (>24h before start). Spreads widest, market least informed.
-  Once the event begins, prices converge rapidly — enter early or don't enter.
+  Entry: Market price OUTSIDE simulation CI. Delegate to mentions_specialist.
+  TIMING: Best edge PRE_EVENT (>24h). Prices converge once event begins.
+  WORKFLOW: mentions_specialist calls get_mentions_status() (auto-baselines + auto-refreshes).
+            Once ready_for_trading=True, it uses compute_edge() for signals.
 
 S6 — SPREAD CAPTURE:
   Entry: Spread > 5c on liquid markets. Post maker limit orders.
-  Action: place_order() at the bid or ask. Maker fees ~4x cheaper than taker.
-  Size: 10-25 contracts per level. Can layer across 2-3 price levels.
-  Exit: Filled = profit captured. Cancel unfilled after TTL.
+  Size: 10-25 contracts per level. Exit: filled or TTL cancel.
 
 STRATEGY EVOLUTION:
-  You own the playbook. S1-S6 are seeds — starting points, not constraints.
-
-  TUNE: When a strategy underperforms, adjust its parameters via AGENTS.md rules.
-    Write: "IF S4 THEN use OBI > 0.7 (not 0.6) | confidence=0.6 | tested on N trades"
-    Your rules OVERRIDE the seed defaults above.
-
-  CREATE: Write new strategies in PLAYBOOK.md ## CUSTOM_STRATEGIES.
-    Format: "S7 — [NAME]: Entry: [conditions]. Action: [what]. Size: [how much]. Exit: [when]."
-    Custom strategies persist across cycles and carry equal weight to seeds.
-
-  EVOLVE BEFORE RETIRING: A losing strategy needs tuning, not abandonment.
-    - <20 trades: Not enough data. Keep running, tune parameters.
-    - 20+ trades with <35% win rate AFTER tuning attempts: Retire in AGENTS.md ## RETIRED.
-    - Format: "RETIRE S[N] | win_rate=[X]% over [N] trades | tuning_attempted=[what] | date"
-
-  EXPERIMENT: Allocate max 5% of capital to unvalidated hypotheses.
-    Track in AGENTS.md ## HYPOTHESES with pass/fail criteria and trade count.
-    Promote to RULES after 5+ confirming outcomes. Delete after 5+ refuting outcomes.
+  TUNE via AGENTS.md rules: "IF S4 THEN OBI > 0.7 | confidence=0.6 | N trades"
+  CREATE in PLAYBOOK.md ## CUSTOM_STRATEGIES with same format.
+  RETIRE in AGENTS.md ## RETIRED after 20+ trades with <35% win rate post-tuning.
+  EXPERIMENT: max 5% capital. Track in ## HYPOTHESES. Promote after 5+ confirms.
 
 YOUR SUBAGENTS:
-  trade_commando: Your execution arm. Handles order placement, queue management, fills.
-    Give it: strategy tag, ticker, side, contracts, price, thesis.
-  cheval_de_troie: Your intelligence analyst for bot detection and adversary profiling.
-    Invoke when you spot anomalous micro signals in get_events_summary():
-    - rapid_sequence_count > 5, consistent_size_ratio > 0.8
-    - whale_trade_count spike, book_imbalance > 0.6 with symmetric quotes
-    Give it: event_ticker. Returns entity profiles and exploitable patterns.
-    Persist its findings in SIGNALS.md for future reference.
-  mentions_specialist: Your mentions market analyst. Handles S5 simulation and edge detection.
-    Give it: event_ticker. It handles baseline, CI gate, edge calculation.
-  All report back to you. You make all strategic decisions.
+  trade_commando: Execution arm. Give it: strategy tag, ticker, side, contracts, price, thesis.
+  cheval_de_troie: Bot detection analyst. Invoke on anomalous micro signals.
+  mentions_specialist: S5 edge detection. Give it: event_ticker.
 
-POSITION SIZING (Kelly):
-  f* = edge_cents / potential_profit_cents
-  Use quarter-Kelly (f*/4) for safety. Max single position = 20% of available capital.
+POSITION SIZING:
+  f* = edge_cents / potential_profit_cents. Use quarter-Kelly. Max 20% of capital.
   Scale DOWN as time_to_close decreases (sqrt scaling).
-  Example: 5c edge on 50c contract → f* = 5/50 = 10%, quarter = 2.5% of bankroll.
 
-MARKET REGIMES (from get_events_summary "market_regime" field):
-  PRE_EVENT (>24h to close): Widest spreads, most edge in S1/S6. Patient limit orders.
-  LIVE (1-24h to close): News flow creates S3 opportunities. Watch volume spikes.
-  SETTLING (<1h to close): Spreads narrow, gamma risk high. EXIT profitable positions, no new entries.
+MARKET REGIMES:
+  PRE_EVENT (>24h): Widest spreads, S1/S6 edge. Patient limit orders.
+  LIVE (1-24h): News-driven S3 opportunities. Watch volume.
+  SETTLING (<1h): EXIT profitable positions, no new entries.
 
 CYCLE STRUCTURE:
-  1. Check positions — exit any that hit rules in PLAYBOOK.md
-  2. Check outcomes — for settled trades: expected vs actual, one takeaway
-  3. Scan events — call get_events_summary(), identify which strategies apply
-     (check mutually_exclusive, market_regime, micro signals)
-  4. Execute best opportunity — delegate to trade_commando with strategy tag, or PASS
-  5. Update memory — write IF-THEN rules to AGENTS.md, update PLAYBOOK.md
+  1. Positions: exit any hitting PLAYBOOK.md rules
+  2. Outcomes: settled trades -> one IF-THEN takeaway
+  3. Scan: get_events_summary() -> match strategies to opportunities
+  4. Act: delegate to trade_commando with strategy tag, or PASS
+  5. Memory: write IF-THEN rules to AGENTS.md (not narratives)
 
 MEMORY PROTOCOL:
-  This is YOUR brain. Write RULES, not narratives.
-  Format: "IF [condition] THEN [action] | confidence=[0-1] | source=[evidence]"
-  Your rules OVERRIDE seed strategy defaults when they conflict.
-  Promote hypotheses to RULES after 5+ confirming outcomes.
-  Demote rules that get contradicted. Delete rules at confidence < 0.3.
-  AGENTS.md = your decision rules + retired strategies (RULES section protected from truncation).
-  PLAYBOOK.md = your live positions, active strategies, exit rules, custom strategies.
-  SIGNALS.md = your signal calibration data (predicted vs actual).
+  Write RULES, not narratives. Never write cycle-by-cycle commentary.
+  AGENTS.md format: "IF [condition] THEN [action] | confidence=[0-1] | source=[evidence]"
+  LESSONS format: one line per insight with ticker, date, outcome, takeaway.
+  NEVER write "Cycle #N: PASS - same issues" -- if nothing changed, write nothing.
+  Your rules OVERRIDE seed defaults. Promote hypotheses after 5+ confirms.
+  Demote at confidence < 0.3.
+
+  AGENTS.md = decision rules + lessons (auto-curated, duplicates removed).
+  PLAYBOOK.md = live positions, active strategies, exit rules.
+  SIGNALS.md = signal calibration (predicted vs actual).
+  THESES.md = active multi-day theses (max 5).
+
+  Use recall_context() before trades to search past learnings.
+  Use search_event_news() for fresh news. search_news_history() for stored articles.
+  Use manage_thesis() for multi-day evidence accumulation.
+
+INTELLIGENCE TOOLS:
+  get_event_candlesticks(event_ticker) — Price history with OHLC candles + trend indicators.
+  search_event_news(event_ticker, query) — Fresh news via Tavily (budget-managed).
+  search_news_history(query, event_ticker) — Stored articles with price-at-discovery snapshots.
+  get_price_movers(event_ticker) — Articles correlated with significant price moves.
+  recall_context(query, event_ticker) — Semantic search across past learnings (journal + vector).
+  manage_thesis(action, ...) — Multi-day strategic thesis: create, update, close, list.
 
 EXECUTION:
   Delegate all orders to trade_commando. Include strategy tag.
   Prefer MAKER orders (cheaper fees). Only cross spread when fill speed matters.
 
+LIFECYCLE AWARENESS:
+  Events have lifecycle stages in get_events_summary():
+  dormant -> building -> peak (TRADE) -> convergence -> resolution (EXIT).
+
+CAUSAL MODEL:
+  NOTE: update_understanding() = rebuild context (participants, news, factors) — expensive, use sparingly.
+        update_causal_model() = maintain live price drivers — cheap incremental updates, use every cycle.
+  Each event has a structured causal model with drivers, catalysts, and entity links.
+  Use update_causal_model() to maintain this knowledge across cycles:
+  - validate_driver: Confirm a driver is still relevant (resets stale timer)
+  - invalidate_driver: Mark a driver as wrong/outdated
+  - add_driver: When you discover a new price-moving factor
+  - add_catalyst: When you learn of an upcoming event/decision
+  - mark_catalyst: When a catalyst has occurred
+  - prune: Remove stale drivers (>2h without validation)
+  Drivers fade to "stale" after 2 hours without validation. Keep models fresh.
+  The causal model in get_events_summary() shows top 3 drivers + next catalyst.
+  Use get_event_snapshot() for the full model with all drivers and entity links.
+
 SELF-IMPROVEMENT:
-  report_issue() when you detect bugs or unexpected behavior.
-  get_issues() to check what's been reported (avoid duplicates).
+  report_issue() for bugs. get_issues() to check existing reports.
+
+SNIPER EXECUTION LAYER:
+  You have a sub-second execution Sniper for S1_ARB market rebalancing.
+  The Sniper fires automatically when arb opportunities are detected.
+  You CONFIGURE it; it EXECUTES. Division of labor:
+
+  YOUR JOB:
+    - configure_sniper(enabled=True/False, arb_min_edge=N, max_position=N, ...)
+    - get_sniper_status() to review performance, latency, rejection reasons
+    - kill_sniper_positions() for emergency halt
+    - get_orderbook_intelligence(event_ticker) for microprice/OFI/VPIN/sweep data
+    - Adjust arb_min_edge based on market conditions and fill rates
+    - Disable Sniper (enabled=False) in settling/thin/toxic regimes
+
+  SNIPER'S JOB:
+    - Detect arb from EventArbIndex (real-time orderbook)
+    - Walk depth levels for liquidity-adjusted edge (not just BBO)
+    - Check risk gates (position, capital, cooldown, VPIN toxicity)
+    - Execute parallel legs via asyncio.gather() for minimum latency
+    - Track fills, P&L, and order lifecycle
+
+  MICROSTRUCTURE SIGNALS (available via get_orderbook_intelligence):
+    - microprice: Depth-weighted fair value (better than mid for limit pricing)
+    - ofi/ofi_ema: Order flow imbalance (positive = buy pressure)
+    - vpin: Volume-synchronized PIN (>0.7 = toxic informed flow, Sniper auto-rejects)
+    - sweep_active: Aggressive sweep crossing multiple price levels
+    - book_imbalance: Bid vs ask depth ratio
+
+  WORKFLOW:
+    1. On startup: configure_sniper(enabled=True) if S1_ARB conditions are favorable
+    2. Each cycle: get_sniper_status() to check trades, rejections, capital
+    3. If regime changes: adjust arb_min_edge up (cautious) or down (aggressive)
+    4. If toxic flow: increase vpin_reject_threshold or disable Sniper entirely
+    5. Before settling: disable Sniper, exit positions via trade_commando
 """
 
 TRADE_COMMANDO_PROMPT = """You are the TradeCommando — order execution specialist on Kalshi's demo API.
@@ -372,6 +409,7 @@ TOOL_CATEGORIES = {
     "analyze_microstructure": "surveillance",
     "analyze_orderbook_patterns": "surveillance",
     "update_understanding": "arb",
+    "update_causal_model": "arb",
     "search_event_news": "arb",
     # Mentions tools - simulation-based probability estimation
     "get_mentions_status": "mentions",  # Primary entry point
@@ -383,9 +421,20 @@ TOOL_CATEGORIES = {
     "get_mention_context": "mentions",
     "get_mentions_rules": "mentions",
     "get_mentions_summary": "mentions",
+    # Intelligence tools
+    "recall_context": "memory",
+    "search_news_history": "arb",
+    "get_price_movers": "arb",
+    "manage_thesis": "memory",
+    "get_event_candlesticks": "arb",
     # Self-improvement tools
     "report_issue": "self_improvement",
     "get_issues": "self_improvement",
+    # Sniper execution layer
+    "configure_sniper": "sniper",
+    "get_sniper_status": "sniper",
+    "kill_sniper_positions": "sniper",
+    "get_orderbook_intelligence": "sniper",
 }
 
 
@@ -408,12 +457,16 @@ class ArbCaptain:
         index=None,
         gateway=None,
         cheval_model: str = "claude-haiku-4-5-20251001",
+        sniper_ref=None,
+        system_ready: Optional[asyncio.Event] = None,
     ):
         self._model_name = model_name
         self._cycle_interval = cycle_interval
         self._event_callback = event_callback
         self._index_ref = index  # Direct reference (new gateway path)
         self._gateway_ref = gateway  # KalshiGateway for balance/positions (new gateway path)
+        self._sniper_ref = sniper_ref  # Sniper execution layer (optional)
+        self._system_ready = system_ready  # Set by coordinator when deferred init completes
 
         # Resolve memory data directory for FilesystemBackend
         if memory_data_dir is None:
@@ -430,18 +483,29 @@ class ArbCaptain:
             mentions_tools = tool_overrides["mentions"]
             cheval_tools = tool_overrides.get("cheval", [])
         else:
-            # Captain tools: observation + delegation + self-improvement
+            # Captain tools: observation + delegation + self-improvement + intelligence + sniper
             captain_tools = [
                 get_events_summary,
                 get_event_snapshot,
                 get_market_orderbook,
+                get_event_candlesticks,
                 get_trade_history,
                 get_positions,
                 get_balance,
                 update_understanding,
+                update_causal_model,
                 search_event_news,
+                recall_context,
+                search_news_history,
+                get_price_movers,
+                manage_thesis,
                 report_issue,
                 get_issues,
+                # Sniper execution layer
+                configure_sniper,
+                get_sniper_status,
+                kill_sniper_positions,
+                get_orderbook_intelligence,
             ]
 
             # TradeCommando tools: execution + recording + context
@@ -525,7 +589,7 @@ class ArbCaptain:
                 },
             ],
             backend=backend_factory,
-            memory=["/memories/AGENTS.md", "/memories/SIGNALS.md", "/memories/PLAYBOOK.md"],
+            memory=["/memories/AGENTS.md", "/memories/SIGNALS.md", "/memories/PLAYBOOK.md", "/memories/THESES.md"],
             skills=["/skills/general-ender"],
             cache=self._cache,
         )
@@ -537,6 +601,7 @@ class ArbCaptain:
         self._last_cycle_at: Optional[float] = None
         self._errors: List[str] = []
         self._subagent_runs: Dict[str, str] = {}  # run_id -> subagent_name (supports concurrent subagents)
+        self._prev_cycle_state: Optional[Dict] = None  # Previous cycle snapshot for temporal diff
 
     async def start(self) -> None:
         """Start the Captain cycle loop."""
@@ -596,6 +661,12 @@ class ArbCaptain:
             summary = index.readiness_summary if index else "No index"
             logger.warning(f"[SINGLE_ARB:CAPTAIN] Starting despite incomplete index: {summary}")
 
+        # Wait for deferred system initialization (understanding, lifecycle, causal models)
+        if self._system_ready:
+            logger.info("[CAPTAIN] Waiting for system initialization (understanding, lifecycle, causal models)...")
+            await self._system_ready.wait()
+            logger.info("[CAPTAIN] System ready, starting cycles")
+
         while self._running:
             # Check pause state at start of each cycle
             if self._paused:
@@ -614,6 +685,118 @@ class ArbCaptain:
                 logger.error(f"[SINGLE_ARB:CAPTAIN_ERROR] cycle={self._cycle_count + 1} error={e}")
                 self._errors.append(error_msg)
                 await asyncio.sleep(30.0)
+
+    def _build_cycle_briefing(self) -> str:
+        """Build temporal diff between current state and previous cycle.
+
+        Pure Python, no LLM call. Returns a compact briefing string (~100-150 tokens)
+        showing what changed since the last cycle: price moves, new activity,
+        lifecycle changes, news, position ages, and imminent catalysts.
+        """
+        from .tools import _index
+        index = self._index_ref or _index
+        if not index:
+            return ""
+
+        now = time.time()
+        current = {
+            "prices": {},
+            "lifecycle_stages": {},
+            "news_count": {},
+            "whale_counts": {},
+            "volume_5m": {},
+            "timestamp": now,
+        }
+
+        # Collect current state
+        for et, event in index.events.items():
+            current["lifecycle_stages"][et] = (event.lifecycle or {}).get("stage", "unknown")
+            current["news_count"][et] = len((event.understanding or {}).get("news_articles", []))
+            total_whale = sum(m.micro.whale_trade_count for m in event.markets.values())
+            total_vol = sum(m.micro.volume_5m for m in event.markets.values())
+            current["whale_counts"][et] = total_whale
+            current["volume_5m"][et] = total_vol
+            for mt, m in event.markets.items():
+                if m.yes_mid is not None:
+                    current["prices"][mt] = round(m.yes_mid, 1)
+
+        prev = self._prev_cycle_state
+        self._prev_cycle_state = current
+
+        if not prev:
+            return ""
+
+        # Compute diffs
+        lines = []
+        elapsed = now - prev.get("timestamp", now)
+        lines.append(f"SINCE LAST CYCLE ({int(elapsed)}s ago):")
+
+        # Price moves (>1c change)
+        price_moves = []
+        for mt, price in current["prices"].items():
+            old_price = prev.get("prices", {}).get(mt)
+            if old_price is not None:
+                delta = price - old_price
+                if abs(delta) >= 1:
+                    sign = "+" if delta > 0 else ""
+                    price_moves.append(f"{mt} {sign}{delta:.0f}c ({old_price:.0f}->{price:.0f})")
+        if price_moves:
+            lines.append(f"  Price moves: {', '.join(price_moves[:5])}")
+
+        # Volume spikes and whale activity
+        activity = []
+        for et in current["volume_5m"]:
+            vol_now = current["volume_5m"].get(et, 0)
+            vol_prev = prev.get("volume_5m", {}).get(et, 0)
+            whale_now = current["whale_counts"].get(et, 0)
+            whale_prev = prev.get("whale_counts", {}).get(et, 0)
+            parts = []
+            if vol_now > vol_prev + 50:
+                parts.append(f"volume +{vol_now - vol_prev}")
+            if whale_now > whale_prev:
+                parts.append(f"whale trades +{whale_now - whale_prev}")
+            if parts:
+                activity.append(f"{et}: {', '.join(parts)}")
+        if activity:
+            lines.append(f"  New activity: {'; '.join(activity[:3])}")
+
+        # Lifecycle transitions
+        lc_changes = []
+        for et, stage in current["lifecycle_stages"].items():
+            old_stage = prev.get("lifecycle_stages", {}).get(et, "unknown")
+            if stage != old_stage and old_stage != "unknown":
+                lc_changes.append(f"{et} {old_stage}->{stage}")
+        if lc_changes:
+            lines.append(f"  Lifecycle: {', '.join(lc_changes)}")
+
+        # News changes
+        news_changes = []
+        for et, count in current["news_count"].items():
+            old_count = prev.get("news_count", {}).get(et, 0)
+            if count > old_count:
+                news_changes.append(f"{count - old_count} new on {et}")
+        if news_changes:
+            lines.append(f"  News: {', '.join(news_changes)}")
+
+        # Imminent catalysts from causal models
+        catalyst_lines = []
+        for et, event in index.events.items():
+            if event.causal_model:
+                for cat in event.causal_model.get("catalysts", []):
+                    if cat.get("occurred"):
+                        continue
+                    ts = cat.get("expected_ts", 0)
+                    if ts and 0 < (ts - now) < 4 * 3600:
+                        hours = (ts - now) / 3600
+                        catalyst_lines.append(f'"{cat["name"]}" in {hours:.1f}h ({et})')
+        if catalyst_lines:
+            lines.append(f"  Imminent catalysts: {'; '.join(catalyst_lines[:3])}")
+
+        # Only return if we have actual changes
+        if len(lines) <= 1:
+            return ""
+
+        return "\n".join(lines)
 
     async def _run_cycle(self) -> None:
         """Run one Captain cycle."""
@@ -672,6 +855,37 @@ class ArbCaptain:
             context_parts.append("LOW BALANCE: Capital preservation mode.")
 
         context_parts.append("Check outcomes for settled trades. Execute or pass. Update memory.")
+
+        # Sniper status injection
+        if self._sniper_ref:
+            sniper = self._sniper_ref
+            sniper.reset_cycle_counter()  # Reset per-cycle trade limit
+            s = sniper.state
+            if sniper.config.enabled:
+                active_cap = s.capital_in_flight + s.capital_in_positions
+                sniper_parts = [
+                    f"SNIPER: ON (trades={s.total_trades}, arbs={s.total_arbs_executed}, "
+                    f"cap_active=${active_cap / 100:.2f} "
+                    f"[flight=${s.capital_in_flight / 100:.2f}+pos=${s.capital_in_positions / 100:.2f}], "
+                    f"unwinds={s.total_partial_unwinds})"
+                ]
+                if s.last_rejection_reason:
+                    sniper_parts.append(f"Last reject: {s.last_rejection_reason}")
+                if s.recent_actions:
+                    last = s.recent_actions[-1]
+                    sniper_parts.append(
+                        f"Last exec: {last.event_ticker} {last.direction} "
+                        f"edge={last.edge_cents:.1f}c legs={last.legs_filled}/{last.legs_attempted} "
+                        f"latency={last.latency_ms:.0f}ms"
+                    )
+                context_parts.append(" ".join(sniper_parts))
+            else:
+                context_parts.append("SNIPER: OFF. Use configure_sniper(enabled=True) to activate.")
+
+        # Build temporal briefing (what changed since last cycle)
+        briefing = self._build_cycle_briefing()
+        if briefing:
+            context_parts.append(f"\n{briefing}")
 
         logger.info(f"[SINGLE_ARB:CYCLE_START] cycle={cycle_num}")
         prompt = " ".join(context_parts)

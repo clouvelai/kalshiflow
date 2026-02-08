@@ -143,10 +143,54 @@ export const useArbWebSocket = () => {
             legs_executed: data.data.legs_executed,
             total_cost_cents: data.data.total_cost_cents,
             order_id: data.data.order_id,
+            status: data.data.status || 'placed',
             reasoning: data.data.reasoning,
             timestamp: data.data.timestamp || new Date().toISOString(),
           };
           setArbTrades(prev => [trade, ...prev].slice(0, 100));
+        }
+        break;
+      }
+
+      case 'order_status_update': {
+        if (data.data?.order_id) {
+          const update = data.data;
+          setArbTrades(prev =>
+            prev.map(trade =>
+              trade.order_id === update.order_id
+                ? {
+                    ...trade,
+                    status: update.status,
+                    fill_count: update.fill_count,
+                    remaining_count: update.remaining_count,
+                    status_updated_at: update.updated_at,
+                  }
+                : trade
+            )
+          );
+        }
+        break;
+      }
+
+      case 'order_tracker_snapshot': {
+        if (data.data?.orders) {
+          const orderMap = {};
+          data.data.orders.forEach(o => { orderMap[o.order_id] = o; });
+          setArbTrades(prev =>
+            prev.map(trade => {
+              const tracked = orderMap[trade.order_id];
+              if (tracked) {
+                return {
+                  ...trade,
+                  status: tracked.status,
+                  fill_count: tracked.fill_count,
+                  remaining_count: tracked.remaining_count,
+                  status_updated_at: tracked.updated_at,
+                };
+              }
+              return trade;
+            })
+          );
         }
         break;
       }
@@ -167,6 +211,7 @@ export const useArbWebSocket = () => {
               pnl: data.data.pnl ?? null,
               sync_timestamp: data.data.sync_timestamp,
               market_prices: data.data.market_prices || prev?.market_prices || {},
+              event_exposure: data.data.event_exposure || prev?.event_exposure || null,
             };
           });
         }
@@ -267,6 +312,36 @@ export const useArbWebSocket = () => {
             const existing = next.get(et);
             if (existing) {
               next.set(et, { ...existing, understanding, updated_at: Date.now() });
+            }
+            return next;
+          });
+        }
+        break;
+      }
+
+      case 'causal_model_update': {
+        if (data.data?.event_ticker && data.data?.causal_model) {
+          const { event_ticker: et, causal_model } = data.data;
+          setEvents(prev => {
+            const next = new Map(prev);
+            const existing = next.get(et);
+            if (existing) {
+              next.set(et, { ...existing, causal_model, updated_at: Date.now() });
+            }
+            return next;
+          });
+        }
+        break;
+      }
+
+      case 'lifecycle_update': {
+        if (data.data?.event_ticker && data.data?.lifecycle) {
+          const { event_ticker: et, lifecycle } = data.data;
+          setEvents(prev => {
+            const next = new Map(prev);
+            const existing = next.get(et);
+            if (existing) {
+              next.set(et, { ...existing, lifecycle, updated_at: Date.now() });
             }
             return next;
           });

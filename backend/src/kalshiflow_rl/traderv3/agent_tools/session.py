@@ -20,9 +20,11 @@ class TradingSession:
     order_group_id: str = ""
     order_ttl: int = 60  # seconds
     captain_order_ids: Set[str] = field(default_factory=set)
+    sniper_order_ids: Set[str] = field(default_factory=set)
     started_at: float = field(default_factory=time.time)
 
     def reset(self) -> None:
         """Clear session state (e.g. on order group reset)."""
         self.captain_order_ids.clear()
+        self.sniper_order_ids.clear()
         self.started_at = time.time()

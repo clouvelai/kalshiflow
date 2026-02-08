@@ -15,11 +15,18 @@ logger = logging.getLogger("kalshiflow_rl.traderv3.single_arb.index")
 
 MAX_RECENT_TRADES = 50
 MAX_ORDERBOOK_LEVELS = 5
+MAX_BBO_HISTORY = 60        # Ring buffer for BBO snapshots (OFI computation)
+VPIN_BUCKET_SIZE = 50       # Volume per VPIN bucket (contracts)
+MAX_VPIN_BUCKETS = 20       # Rolling window of VPIN buckets
 
 # Microstructure constants
 WHALE_THRESHOLD = 100       # Contracts per trade to qualify as whale
 RAPID_TRADE_MS = 100        # Max inter-trade gap for rapid sequence
 VOLUME_WINDOW_SECONDS = 300 # 5-minute rolling window for volume stats
+SWEEP_WINDOW_SECONDS = 2.0  # Max time window for sweep detection
+SWEEP_MIN_TRADES = 5        # Min trades in window to qualify as sweep
+SWEEP_MIN_LEVELS = 2        # Min price levels crossed for sweep
+OFI_EMA_ALPHA = 0.3         # EMA smoothing for OFI
 
 
 @dataclass
@@ -65,6 +72,16 @@ class ArbOpportunity:
 
 
 @dataclass
+class BBOSnapshot:
+    """Point-in-time best bid/offer for OFI computation."""
+    ts: float = 0.0
+    bid: Optional[int] = None
+    ask: Optional[int] = None
+    bid_size: int = 0
+    ask_size: int = 0
+
+
+@dataclass
 class MicrostructureSignals:
     """Incrementally computed microstructure signals per market."""
     # Whale detection
@@ -92,6 +109,20 @@ class MicrostructureSignals:
     sell_volume_5m: int = 0
     buy_sell_ratio: float = 0.5          # 0.0 = all sells, 1.0 = all buys
 
+    # Order Flow Imbalance (Cont/Kukanov/Stoikov 2014)
+    ofi: float = 0.0                     # Instantaneous OFI
+    ofi_ema: float = 0.0                 # Smoothed OFI (EMA alpha=0.3)
+
+    # Sweep detection
+    sweep_active: bool = False
+    sweep_direction: Optional[str] = None  # "buy" or "sell"
+    sweep_size: int = 0
+    sweep_levels: int = 0
+    last_sweep_ts: float = 0.0
+
+    # VPIN (Easley/Lopez de Prado/O'Hara 2010)
+    vpin: float = 0.0                    # 0-1, >0.7 = toxic informed flow
+
     def to_dict(self) -> Dict:
         return {
             "whale_trade_count": self.whale_trade_count,
@@ -109,6 +140,14 @@ class MicrostructureSignals:
             "buy_volume_5m": self.buy_volume_5m,
             "sell_volume_5m": self.sell_volume_5m,
             "buy_sell_ratio": round(self.buy_sell_ratio, 2),
+            "ofi": round(self.ofi, 3),
+            "ofi_ema": round(self.ofi_ema, 3),
+            "sweep_active": self.sweep_active,
+            "sweep_direction": self.sweep_direction,
+            "sweep_size": self.sweep_size,
+            "sweep_levels": self.sweep_levels,
+            "last_sweep_ts": self.last_sweep_ts,
+            "vpin": round(self.vpin, 3),
         }
 
 
@@ -159,9 +198,16 @@ class MarketMeta:
     ws_updated_at: float = 0.0
     api_updated_at: float = 0.0
 
+    # Microprice (Stoikov 2018) - depth-weighted fair value
+    microprice: Optional[float] = None
+
     # Microstructure signals (computed incrementally)
     micro: MicrostructureSignals = field(default_factory=MicrostructureSignals)
     _last_trade_ts: float = 0.0  # For inter-trade delta computation
+    _bbo_history: List[BBOSnapshot] = field(default_factory=list)  # Ring buffer for OFI
+    _vpin_buy_bucket: int = 0     # Current VPIN bucket buy volume
+    _vpin_sell_bucket: int = 0    # Current VPIN bucket sell volume
+    _vpin_buckets: List[float] = field(default_factory=list)  # Completed VPIN bucket values
 
     @classmethod
     def from_api(cls, market_data: Dict, event_ticker: str) -> "MarketMeta":
@@ -188,7 +234,15 @@ class MarketMeta:
         ask_size: int = 0,
         source: str = "ws",
     ) -> None:
-        """Update BBO and recompute derived fields."""
+        """Update BBO, compute microprice, OFI, and recompute derived fields."""
+        now = time.time()
+
+        # --- OFI computation (before updating stored BBO) ---
+        prev_bid = self.yes_bid
+        prev_ask = self.yes_ask
+        prev_bid_size = self.yes_bid_size
+        prev_ask_size = self.yes_ask_size
+
         self.yes_bid = yes_bid
         self.yes_ask = yes_ask
         self.yes_bid_size = bid_size
@@ -196,9 +250,9 @@ class MarketMeta:
         self.source = source
 
         if source == "ws":
-            self.ws_updated_at = time.time()
+            self.ws_updated_at = now
         elif source == "api":
-            self.api_updated_at = time.time()
+            self.api_updated_at = now
 
         # Derived
         if yes_bid is not None and yes_ask is not None:
@@ -213,6 +267,45 @@ class MarketMeta:
         else:
             self.yes_mid = None
             self.spread = None
+
+        # Microprice (Stoikov 2018): depth-weighted fair value
+        if yes_bid is not None and yes_ask is not None and (bid_size + ask_size) > 0:
+            imbalance = bid_size / (bid_size + ask_size)
+            self.microprice = yes_ask * imbalance + yes_bid * (1 - imbalance)
+        else:
+            self.microprice = self.yes_mid
+
+        # OFI (Cont/Kukanov/Stoikov 2014)
+        if prev_bid is not None and prev_ask is not None and yes_bid is not None and yes_ask is not None:
+            # Bid-side contribution
+            if yes_bid > prev_bid:
+                delta_bid = bid_size
+            elif yes_bid == prev_bid:
+                delta_bid = bid_size - prev_bid_size
+            else:
+                delta_bid = -prev_bid_size
+
+            # Ask-side contribution
+            if yes_ask < prev_ask:
+                delta_ask = ask_size
+            elif yes_ask == prev_ask:
+                delta_ask = ask_size - prev_ask_size
+            else:
+                delta_ask = -prev_ask_size
+
+            self.micro.ofi = float(delta_bid - delta_ask)
+            self.micro.ofi_ema = (
+                OFI_EMA_ALPHA * self.micro.ofi
+                + (1 - OFI_EMA_ALPHA) * self.micro.ofi_ema
+            )
+
+        # BBO history ring buffer
+        self._bbo_history.append(BBOSnapshot(
+            ts=now, bid=yes_bid, ask=yes_ask,
+            bid_size=bid_size, ask_size=ask_size,
+        ))
+        if len(self._bbo_history) > MAX_BBO_HISTORY:
+            self._bbo_history = self._bbo_history[-MAX_BBO_HISTORY:]
 
     def update_orderbook(
         self,
@@ -292,6 +385,12 @@ class MarketMeta:
         # Size consistency (recompute from recent 20 trades)
         self._recompute_size_consistency()
 
+        # Sweep detection
+        self._detect_sweep()
+
+        # VPIN update
+        self._update_vpin(trade_count, taker_side)
+
     def _recompute_volume_window(self) -> None:
         """Recompute 5-minute volume stats from ring buffer."""
         cutoff = time.time() - VOLUME_WINDOW_SECONDS
@@ -330,6 +429,93 @@ class MarketMeta:
         counter = Counter(sizes)
         self.micro.modal_trade_size = counter.most_common(1)[0][0]
 
+    def _detect_sweep(self) -> None:
+        """Detect sweep: last N trades within SWEEP_WINDOW same-side and price-monotonic."""
+        if len(self.recent_trades) < SWEEP_MIN_TRADES:
+            self.micro.sweep_active = False
+            return
+
+        now = time.time()
+        window_trades = []
+        for t in self.recent_trades[:10]:  # Check last 10 trades max
+            ts = t.get("ts", 0)
+            if now - ts > SWEEP_WINDOW_SECONDS:
+                break
+            window_trades.append(t)
+
+        if len(window_trades) < SWEEP_MIN_TRADES:
+            self.micro.sweep_active = False
+            return
+
+        # Check same-side
+        sides = {t.get("taker_side", "") for t in window_trades}
+        if len(sides) != 1 or "" in sides:
+            self.micro.sweep_active = False
+            return
+
+        direction = sides.pop()
+
+        # Check price-monotonic across 2+ levels
+        prices = [t.get("yes_price", 0) for t in reversed(window_trades) if t.get("yes_price")]
+        if len(prices) < SWEEP_MIN_TRADES:
+            self.micro.sweep_active = False
+            return
+
+        unique_prices = len(set(prices))
+        if unique_prices < SWEEP_MIN_LEVELS:
+            self.micro.sweep_active = False
+            return
+
+        # Check monotonicity
+        is_monotonic = True
+        for i in range(1, len(prices)):
+            if direction == "yes" and prices[i] < prices[i - 1]:
+                is_monotonic = False
+                break
+            elif direction == "no" and prices[i] > prices[i - 1]:
+                is_monotonic = False
+                break
+
+        if is_monotonic:
+            self.micro.sweep_active = True
+            self.micro.sweep_direction = direction
+            self.micro.sweep_size = sum(t.get("count", 1) for t in window_trades)
+            self.micro.sweep_levels = unique_prices
+            self.micro.last_sweep_ts = now
+        else:
+            self.micro.sweep_active = False
+
+    def _update_vpin(self, trade_count: int, taker_side: str) -> None:
+        """Update VPIN using volume-time buckets.
+
+        VPIN = mean(|V_buy - V_sell| / V_bucket) over rolling window.
+        Kalshi provides taker_side directly (no need for bulk classification).
+        """
+        if taker_side == "yes":
+            self._vpin_buy_bucket += trade_count
+        elif taker_side == "no":
+            self._vpin_sell_bucket += trade_count
+
+        bucket_volume = self._vpin_buy_bucket + self._vpin_sell_bucket
+        if bucket_volume >= VPIN_BUCKET_SIZE:
+            # Bucket complete — compute VPIN for this bucket
+            if bucket_volume > 0:
+                bucket_vpin = abs(self._vpin_buy_bucket - self._vpin_sell_bucket) / bucket_volume
+            else:
+                bucket_vpin = 0.0
+
+            self._vpin_buckets.append(bucket_vpin)
+            if len(self._vpin_buckets) > MAX_VPIN_BUCKETS:
+                self._vpin_buckets = self._vpin_buckets[-MAX_VPIN_BUCKETS:]
+
+            # Reset current bucket
+            self._vpin_buy_bucket = 0
+            self._vpin_sell_bucket = 0
+
+            # Recompute VPIN as mean of completed buckets
+            if self._vpin_buckets:
+                self.micro.vpin = sum(self._vpin_buckets) / len(self._vpin_buckets)
+
     @property
     def has_data(self) -> bool:
         return self.yes_bid is not None or self.yes_ask is not None
@@ -356,6 +542,7 @@ class MarketMeta:
             "yes_levels": self.yes_levels,
             "no_levels": self.no_levels,
             "yes_mid": self.yes_mid,
+            "microprice": round(self.microprice, 2) if self.microprice is not None else None,
             "spread": self.spread,
             "source": self.source,
             "ws_updated_at": self.ws_updated_at,
@@ -403,6 +590,14 @@ class EventMeta:
     # Structured event understanding (populated by UnderstandingBuilder)
     # Contains: participants, key_factors, trading_summary, timeline, extensions, etc.
     understanding: Optional[Dict[str, Any]] = None
+
+    # Lifecycle classification (populated by LifecycleClassifier)
+    # Contains: {stage, confidence, reasoning, recommended_action}
+    lifecycle: Optional[Dict[str, Any]] = None
+
+    # Causal model (populated by CausalModelBuilder, maintained by Captain)
+    # Contains: drivers, catalysts, entity_links, dominant_narrative, consensus_direction, etc.
+    causal_model: Optional[Dict[str, Any]] = None
 
     # Mentions-specific data (CUMULATIVE STATE across Captain sessions)
     # Contains:
@@ -692,6 +887,82 @@ class EventMeta:
                 most = m
         return most
 
+    def liquidity_adjusted_edge(
+        self, direction: str, target_contracts: int = 10, fee_per_contract: int = 1,
+    ) -> Dict:
+        """Walk depth levels to compute realistic fill cost instead of assuming BBO.
+
+        Args:
+            direction: "long" (buy all YES) or "short" (buy all NO)
+            target_contracts: desired contracts per leg
+            fee_per_contract: fee in cents per contract
+
+        Returns:
+            Dict with edge_per_contract, fillable_contracts, slippage_from_bbo, partial_fill_risk
+        """
+        total_cost = 0
+        min_fillable = target_contracts
+        total_slippage = 0
+        partial_legs = 0
+
+        for m in self.markets.values():
+            if direction == "long":
+                levels = m.yes_levels  # bid levels in [[price, size], ...]
+                # For buying YES, we need the ask side = no_levels inverted
+                ask_levels = [[100 - lv[0], lv[1]] for lv in m.no_levels] if m.no_levels else []
+                bbo = m.yes_ask
+            else:
+                # For buying NO, we use no_levels directly
+                ask_levels = m.no_levels[:] if m.no_levels else []
+                bbo = (100 - m.yes_bid) if m.yes_bid is not None else None
+
+            if not ask_levels or bbo is None:
+                return {"error": f"No orderbook data for {m.ticker}"}
+
+            # Walk levels to fill target_contracts
+            remaining = target_contracts
+            leg_cost = 0
+            leg_filled = 0
+            for price, size in ask_levels:
+                fill = min(remaining, size)
+                leg_cost += fill * price
+                leg_filled += fill
+                remaining -= fill
+                if remaining <= 0:
+                    break
+
+            if leg_filled < target_contracts:
+                partial_legs += 1
+            min_fillable = min(min_fillable, leg_filled)
+
+            # Slippage = (avg fill price - BBO) per contract
+            if leg_filled > 0:
+                avg_price = leg_cost / leg_filled
+                total_slippage += avg_price - bbo
+
+            total_cost += leg_cost
+
+        n_markets = len(self.markets)
+        total_fees = fee_per_contract * n_markets * min_fillable
+
+        if direction == "long" and min_fillable > 0:
+            # Edge = (100 * min_fillable) - total_cost - total_fees, per contract
+            edge_total = (100 * min_fillable) - total_cost - total_fees
+            edge_per = edge_total / min_fillable
+        elif direction == "short" and min_fillable > 0:
+            edge_total = total_cost - (100 * min_fillable) - total_fees
+            edge_per = edge_total / min_fillable
+        else:
+            edge_per = 0.0
+
+        return {
+            "edge_per_contract": round(edge_per, 2),
+            "fillable_contracts": min_fillable,
+            "slippage_from_bbo": round(total_slippage / n_markets, 2) if n_markets > 0 else 0.0,
+            "partial_fill_risk": partial_legs > 0,
+            "partial_legs": partial_legs,
+        }
+
     @property
     def all_markets_have_data(self) -> bool:
         return (
@@ -753,6 +1024,14 @@ class EventMeta:
         # Add structured understanding if available
         if self.understanding:
             result["understanding"] = self.understanding
+
+        # Add lifecycle classification if available
+        if self.lifecycle:
+            result["lifecycle"] = self.lifecycle
+
+        # Add causal model if available
+        if self.causal_model:
+            result["causal_model"] = self.causal_model
 
         # Add mentions info if available (for Captain visibility)
         if self.mentions_data:

@@ -1,5 +1,5 @@
 import React, { memo, useMemo, useState } from 'react';
-import { List, BarChart2, ExternalLink } from 'lucide-react';
+import { List, BarChart2, ExternalLink, Sparkles, TrendingUp, TrendingDown, Minus, Brain, Loader2 } from 'lucide-react';
 import EdgeBadge from '../ui/EdgeBadge';
 import EventTradeFeed from '../ui/EventTradeFeed';
 import MarketOrderbook from '../ui/MarketOrderbook';
@@ -27,7 +27,7 @@ TabButton.displayName = 'TabButton';
 /**
  * SingleArbDetailsView - Full event detail with markets, orderbook, trades.
  */
-const SingleArbDetailsView = memo(({ event, eventTrades = [], arbTrades = [], positionsByTicker = {} }) => {
+const SingleArbDetailsView = memo(({ event, eventTrades = [], arbTrades = [], positionsByTicker = {}, mentionsData = null }) => {
   const [selectedMarket, setSelectedMarket] = useState(null);
   const [activeTab, setActiveTab] = useState('orderbook');
 
@@ -148,7 +148,17 @@ const SingleArbDetailsView = memo(({ event, eventTrades = [], arbTrades = [], po
           (event.understanding.participants && event.understanding.participants.length > 0) ||
           (event.understanding.key_factors && event.understanding.key_factors.length > 0)
         ) && (
-          <EventUnderstandingCard understanding={event.understanding} />
+          <EventUnderstandingCard
+            understanding={event.understanding}
+            lifecycle={event.lifecycle || null}
+            causalModel={event.causal_model || null}
+            markets={rawMarkets || null}
+          />
+        )}
+
+        {/* Mentions Strategy - only for mentions events */}
+        {mentionsData && (
+          <MentionsStrategySection mentions={mentionsData} markets={rawMarkets} />
         )}
 
         {/* Prob Sums & Signals */}
@@ -340,7 +350,128 @@ const SingleArbDetailsView = memo(({ event, eventTrades = [], arbTrades = [], po
   );
 });
 
-const EventDetailsPanel = ({ selectedEventTicker, events, eventTrades = [], arbTrades = [], tradingState }) => {
+/**
+ * MentionsTermRow - Single term probability row with edge calculation.
+ */
+const MentionsTermRow = memo(function MentionsTermRow({ term, delta, markets }) {
+  const prob = term.probability || 0;
+
+  // Try to find a matching market for this term
+  const termPrefix = term.term?.toLowerCase().slice(0, 4) || '';
+  const market = markets?.find(m =>
+    m.ticker?.toLowerCase().includes(termPrefix)
+  );
+
+  const marketYes = market?.yes_bid || market?.yes_mid || 50;
+  const simProbCents = Math.round(prob * 100);
+  const edge = simProbCents - marketYes;
+
+  const trend = delta?.trend || '\u2192';
+  const TrendIcon = trend === '\u2191' ? TrendingUp : trend === '\u2193' ? TrendingDown : Minus;
+  const trendColor = trend === '\u2191' ? 'text-emerald-400' : trend === '\u2193' ? 'text-red-400' : 'text-gray-500';
+
+  const edgeColor = Math.abs(edge) >= 10
+    ? (edge > 0 ? 'text-emerald-400' : 'text-red-400')
+    : 'text-gray-400';
+
+  const rowBg = Math.abs(edge) >= 15
+    ? (edge > 0 ? 'bg-emerald-950/15' : 'bg-red-950/15')
+    : '';
+
+  return (
+    <div className={`flex items-center justify-between text-[10px] py-1 border-b border-gray-700/15 last:border-0 ${rowBg}`}>
+      <div className="flex items-center gap-2">
+        <span className="font-medium text-gray-300 w-24 truncate" title={term.term}>
+          {term.term}
+        </span>
+        <TrendIcon className={`w-2.5 h-2.5 ${trendColor}`} />
+      </div>
+      <div className="flex items-center gap-3 tabular-nums">
+        <span className="text-cyan-400/90 font-mono w-12 text-right">
+          {(prob * 100).toFixed(0)}%
+        </span>
+        <span className="text-gray-600 w-8 text-center text-[9px]">vs</span>
+        <span className="text-gray-300 font-mono w-10 text-right">
+          {marketYes}c
+        </span>
+        <span className={`font-mono font-semibold w-12 text-right ${edgeColor}`}>
+          {edge > 0 ? '+' : ''}{edge}c
+        </span>
+      </div>
+    </div>
+  );
+});
+
+/**
+ * MentionsStrategySection - Displays mentions simulation data within EventDetailsPanel.
+ */
+const MentionsStrategySection = memo(function MentionsStrategySection({ mentions, markets }) {
+  if (!mentions) return null;
+
+  const hasTerms = mentions.terms?.length > 0;
+  const marketList = markets ? Object.values(markets) : [];
+
+  return (
+    <div className="bg-gray-800/20 rounded-lg p-3 border border-amber-500/10">
+      <div className="flex items-center justify-between mb-2">
+        <div className="flex items-center gap-2">
+          <Sparkles className="w-3.5 h-3.5 text-amber-400/80" />
+          <span className="text-[9px] font-semibold text-amber-400/70 uppercase tracking-wider">
+            Mentions Strategy
+          </span>
+        </div>
+        <div className="flex items-center gap-2">
+          {mentions.simulation_in_progress && (
+            <span className="flex items-center gap-1 text-[9px] text-violet-400/80">
+              <Loader2 className="w-2.5 h-2.5 animate-spin" />
+              Simulating
+            </span>
+          )}
+          {mentions.history_count > 0 && (
+            <span className="text-[9px] text-gray-500 font-mono tabular-nums bg-gray-800/40 rounded-full px-2 py-0.5">
+              {mentions.history_count} sim{mentions.history_count !== 1 ? 's' : ''}
+            </span>
+          )}
+        </div>
+      </div>
+
+      {hasTerms ? (
+        <div className="space-y-1">
+          <div className="flex items-center justify-between text-[9px] text-gray-500 uppercase tracking-wider pb-1 border-b border-gray-700/20">
+            <span className="w-24">Term</span>
+            <div className="flex items-center gap-3">
+              <span className="w-12 text-right">Sim P</span>
+              <span className="w-8 text-center">vs</span>
+              <span className="w-10 text-right">Mkt</span>
+              <span className="w-12 text-right">Edge</span>
+            </div>
+          </div>
+          {mentions.terms.map(t => (
+            <MentionsTermRow
+              key={t.term}
+              term={t}
+              delta={mentions.deltas?.[t.term]}
+              markets={marketList}
+            />
+          ))}
+        </div>
+      ) : (
+        <div className="text-[10px] text-gray-600 italic">
+          No simulation data yet
+        </div>
+      )}
+
+      {mentions.news_context?.length > 0 && (
+        <div className="text-[9px] text-gray-500 italic border-t border-gray-700/20 pt-2 mt-2">
+          <Brain className="w-2.5 h-2.5 inline mr-1 text-violet-400/60" />
+          {mentions.news_context[0]}
+        </div>
+      )}
+    </div>
+  );
+});
+
+const EventDetailsPanel = ({ selectedEventTicker, events, eventTrades = [], arbTrades = [], tradingState, mentionsState }) => {
   const event = useMemo(() => {
     if (!selectedEventTicker || !events) return null;
     return events.get(selectedEventTicker) || null;
@@ -367,7 +498,7 @@ const EventDetailsPanel = ({ selectedEventTicker, events, eventTrades = [], arbT
 
   return (
     <div className="bg-gradient-to-br from-gray-900/80 to-gray-950/80 rounded-2xl border border-cyan-500/8 shadow-lg shadow-cyan-500/3 overflow-hidden flex flex-col">
-      <SingleArbDetailsView event={event} eventTrades={eventTrades} arbTrades={arbTrades} positionsByTicker={positionsByTicker} />
+      <SingleArbDetailsView event={event} eventTrades={eventTrades} arbTrades={arbTrades} positionsByTicker={positionsByTicker} mentionsData={mentionsState?.[selectedEventTicker] || null} />
     </div>
   );
 };

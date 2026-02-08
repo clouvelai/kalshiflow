@@ -308,6 +308,31 @@ class V3WebSocketManager:
                     "data": {"paused": is_paused}
                 })
 
+            # Send feed_stats snapshot so the header renders immediately
+            if self._single_arb_coordinator and client_id in self._clients:
+                try:
+                    monitor = getattr(self._single_arb_coordinator, "_monitor", None)
+                    if monitor:
+                        await self._send_to_client(client_id, {
+                            "type": "feed_stats",
+                            "data": monitor.get_stats(),
+                        })
+                except Exception as e:
+                    logger.debug(f"Could not send feed_stats to {client_id}: {e}")
+
+            # Send single-arb event snapshot so all events render immediately
+            if self._single_arb_coordinator and client_id in self._clients:
+                try:
+                    snapshot = self._single_arb_coordinator.get_snapshot()
+                    if snapshot:
+                        await self._send_to_client(client_id, {
+                            "type": "event_arb_snapshot",
+                            "data": snapshot,
+                        })
+                        logger.debug(f"Sent event_arb_snapshot to {client_id}")
+                except Exception as e:
+                    logger.warning(f"Could not send arb snapshot to {client_id}: {e}")
+
             # Handle incoming messages
             async for message in websocket.iter_text():
                 await self._handle_client_message(client_id, message)

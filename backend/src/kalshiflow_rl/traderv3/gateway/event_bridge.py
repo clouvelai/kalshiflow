@@ -73,9 +73,26 @@ class GatewayEventBridge:
         self._events_bridged += 1
 
     async def _on_trade(self, msg: Dict[str, Any]) -> None:
-        """Handle trade channel messages."""
+        """Handle trade channel messages.
+
+        Emits both MARKET_TRADE (for EventArbMonitor) and
+        PUBLIC_TRADE_RECEIVED (for trade flow / microstructure).
+        """
+        market_ticker = msg.get("market_ticker", "")
+
+        # Emit MARKET_TRADE for the single-arb monitor
+        trade_metadata = {
+            "yes_price": msg.get("yes_price", 0),
+            "no_price": msg.get("no_price", 0),
+            "count": msg.get("count", 0),
+            "taker_side": msg.get("taker_side", ""),
+            "ts": msg.get("ts", 0),
+        }
+        await self._event_bus.emit_market_trade(market_ticker, trade_metadata)
+
+        # Also emit PUBLIC_TRADE_RECEIVED for other subscribers
         trade_data = {
-            "market_ticker": msg.get("market_ticker", ""),
+            "market_ticker": market_ticker,
             "timestamp_ms": msg.get("ts", 0) * 1000 if msg.get("ts") else 0,
             "taker_side": msg.get("taker_side", ""),
             "yes_price": msg.get("yes_price", 0),
@@ -86,11 +103,30 @@ class GatewayEventBridge:
         self._events_bridged += 1
 
     async def _on_ticker(self, msg: Dict[str, Any]) -> None:
-        """Handle ticker channel messages."""
+        """Handle ticker channel messages.
+
+        Emits both TICKER_UPDATE (for EventArbMonitor) and
+        MARKET_TICKER_UPDATE (for position pricing / other subscribers).
+        """
         ticker = msg.get("market_ticker", "")
         if not ticker:
             return
 
+        # Emit TICKER_UPDATE for the single-arb monitor
+        ticker_metadata = {
+            "price": msg.get("price", 0),
+            "yes_bid": msg.get("yes_bid", 0),
+            "yes_ask": msg.get("yes_ask", 0),
+            "volume": msg.get("volume", 0),
+            "volume_delta": msg.get("volume_delta", 0),
+            "open_interest": msg.get("open_interest", 0),
+            "open_interest_delta": msg.get("open_interest_delta", 0),
+            "dollar_volume_delta": msg.get("dollar_volume_delta", 0),
+            "ts": msg.get("ts"),
+        }
+        await self._event_bus.emit_ticker_update(ticker, ticker_metadata)
+
+        # Also emit MARKET_TICKER_UPDATE for other subscribers
         price_data = {
             "price": msg.get("price", 0),
             "yes_bid": msg.get("yes_bid", 0),

@@ -448,6 +448,59 @@ async def websocket_endpoint(websocket: WebSocket):
     await coordinator._websocket_manager.handle_websocket(websocket)
 
 
+async def captain_control_endpoint(request: Request):
+    """
+    Captain pause/resume control endpoint.
+
+    POST /v3/captain/control
+    Body: {"type": "captain_pause"} or {"type": "captain_resume"}
+
+    Returns:
+        JSON with current captain status
+    """
+    if not coordinator:
+        return JSONResponse(
+            {"error": "System not initialized"},
+            status_code=503
+        )
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse(
+            {"error": "Invalid JSON body"},
+            status_code=400
+        )
+
+    cmd_type = body.get("type", "")
+
+    # Access the single-arb coordinator via the V3 coordinator
+    single_arb = getattr(coordinator, "_single_arb_coordinator", None)
+    if not single_arb:
+        return JSONResponse(
+            {"error": "Single-arb coordinator not available"},
+            status_code=400
+        )
+
+    if cmd_type == "captain_pause":
+        single_arb.pause_captain()
+        return JSONResponse({
+            "status": "paused",
+            "paused": True,
+        })
+    elif cmd_type == "captain_resume":
+        single_arb.resume_captain()
+        return JSONResponse({
+            "status": "resumed",
+            "paused": False,
+        })
+    else:
+        return JSONResponse(
+            {"error": f"Unknown command type: {cmd_type}. Use 'captain_pause' or 'captain_resume'."},
+            status_code=400
+        )
+
+
 async def export_order_contexts_endpoint(request: Request):
     """
     Export order contexts as CSV for quant analysis.
@@ -537,6 +590,7 @@ app = Starlette(
         Route("/v3/health", health_endpoint),
         Route("/v3/status", status_endpoint),
         Route("/v3/cleanup", cleanup_endpoint, methods=["POST"]),
+        Route("/v3/captain/control", captain_control_endpoint, methods=["POST"]),
         Route("/v3/export/order-contexts", export_order_contexts_endpoint),
         WebSocketRoute("/v3/ws", websocket_endpoint),
     ]

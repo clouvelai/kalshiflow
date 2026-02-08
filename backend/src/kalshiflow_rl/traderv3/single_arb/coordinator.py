@@ -67,6 +67,7 @@ class SingleArbCoordinator:
         self._index: Optional[EventArbIndex] = None
         self._monitor: Optional[EventArbMonitor] = None
         self._captain = None
+        self._sniper = None  # Sniper execution layer
         self._memory_store = None
 
         self._order_group_id: Optional[str] = None
@@ -74,9 +75,22 @@ class SingleArbCoordinator:
         self._budget_manager: Optional[SimulationBudgetManager] = None
         self._tavily_budget = None  # TavilyBudgetManager
         self._search_service = None  # TavilySearchService
+        self._news_store = None     # NewsStore for persisting articles
+        self._impact_tracker = None # PriceImpactTracker for news-price correlation
+        self._lifecycle_classifier = None  # LifecycleClassifier for event stages
+        self._causal_model_builder = None  # CausalModelBuilder for structured drivers
         self._simulation_scheduler_task: Optional[asyncio.Task] = None
+        self._news_refresh_task: Optional[asyncio.Task] = None
+        self._distillation_task: Optional[asyncio.Task] = None
+        self._mentions_baseline_task: Optional[asyncio.Task] = None
+        self._deferred_init_task: Optional[asyncio.Task] = None
+        self._system_ready = asyncio.Event()  # Set when deferred init completes
         self._running = False
         self._started_at: Optional[float] = None
+
+        # Order lifecycle tracking
+        self._order_tracker_task: Optional[asyncio.Task] = None
+        self._tracked_orders: Dict[str, dict] = {}
 
         # Exchange status monitoring
         self._exchange_active: bool = True
@@ -134,10 +148,7 @@ class SingleArbCoordinator:
             logger.error("No events loaded - single-arb system cannot start")
             return
 
-        # 2a. Fetch candlesticks for all events
-        await self._fetch_all_candlesticks()
-
-        # 2b. Initialize Tavily search service (before understanding build)
+        # 2b. Initialize Tavily search service (sync object creation only)
         if self._config.tavily_enabled and self._config.tavily_api_key:
             from .tavily_budget import TavilyBudgetManager
             from .tavily_service import TavilySearchService
@@ -156,23 +167,36 @@ class SingleArbCoordinator:
                 f"budget={self._config.tavily_monthly_budget})"
             )
 
-        # 2c. Build event understanding for all events
-        await self._build_all_understanding()
+        # 2c. Create builder objects (sync, no LLM calls yet)
+        understanding_cache_dir = os.path.join(DEFAULT_MEMORY_DIR, "understanding")
+        self._understanding_builder = UnderstandingBuilder(
+            cache_dir=understanding_cache_dir,
+            search_service=self._search_service,
+        )
+        self._understanding_builder.register_extension(MentionsExtension())
+        logger.info("[UNDERSTANDING] Builder created (LLM builds deferred)")
 
-        # 2c. Initialize mentions for applicable events
+        try:
+            from .lifecycle_classifier import LifecycleClassifier
+            lifecycle_model = getattr(self._config, "single_arb_cheval_model", "haiku")
+            self._lifecycle_classifier = LifecycleClassifier(model=lifecycle_model)
+            logger.info(f"[LIFECYCLE] Classifier created (model={lifecycle_model}, classification deferred)")
+        except Exception as e:
+            logger.warning(f"[LIFECYCLE] Classifier creation failed: {e}")
+
+        try:
+            from .causal_model import CausalModelBuilder
+            self._causal_model_builder = CausalModelBuilder()
+            logger.info("[CAUSAL] Builder created (model builds deferred)")
+        except Exception as e:
+            logger.warning(f"[CAUSAL] Builder creation failed: {e}")
+
+        # 2c-2. Initialize mentions for applicable events (rule parsing is fast, ~5s)
         mentions_enabled = getattr(self._config, "mentions_enabled", True)
         mentions_prewarm = getattr(self._config, "mentions_prewarm_enabled", False)
         if mentions_enabled:
             await self._initialize_mentions_events()
-            # Pre-warm WordNet (downloads on first use if not present)
             self._initialize_wordnet()
-            # ALWAYS establish baselines for mentions markets (critical for Captain)
-            # This runs blind simulations synchronously on startup (~20s per event)
-            await self._establish_mentions_baselines()
-            # Pre-warm informed simulations (optional, can be slow)
-            if mentions_prewarm:
-                await self._prewarm_mentions_simulations()
-            # 2d. Initialize simulation budget manager for mentions events
             self._initialize_budget_manager()
 
         # 3. Subscribe all market tickers to orderbook WS
@@ -188,6 +212,11 @@ class SingleArbCoordinator:
 
         # 4. Setup memory store
         self._setup_memory()
+        if not self._memory_store:
+            logger.warning("[SINGLE_ARB] Memory store unavailable - Captain memory will be degraded")
+
+        # 4a. Setup news intelligence (NewsStore + ImpactTracker)
+        self._setup_news_intelligence()
 
         # 5. Create session order group for the captain
         self._order_group_id = None
@@ -258,6 +287,8 @@ class SingleArbCoordinator:
                     memory_data_dir=DEFAULT_MEMORY_DIR,
                     tool_overrides=tool_overrides,
                     cheval_model=cheval_model,
+                    sniper_ref=self._sniper,
+                    system_ready=self._system_ready,
                 )
                 if use_new_gateway:
                     captain_kwargs["index"] = self._index
@@ -281,15 +312,35 @@ class SingleArbCoordinator:
             except Exception as e:
                 logger.error(f"Failed to start ArbCaptain: {e}")
 
+        # 9b. Launch deferred initialization (LLM builds) in background
+        self._deferred_init_task = asyncio.create_task(
+            self._run_deferred_init(mentions_enabled, mentions_prewarm)
+        )
+        logger.info("[DEFERRED_INIT] Background initialization launched")
+
         # 10. Start exchange status monitor
         self._exchange_monitor_task = asyncio.create_task(self._exchange_monitor_loop())
+
+        # 10-pre. Start order lifecycle tracker (15s polling)
+        self._order_tracker_task = asyncio.create_task(self._order_tracker_loop())
 
         # 10a. Start candlestick refresh loop
         self._candlestick_refresh_task = asyncio.create_task(self._candlestick_refresh_loop())
 
+        # 10a2. Start news refresh loop (refreshes stale understanding every 30 min)
+        if self._understanding_builder:
+            self._news_refresh_task = asyncio.create_task(self._news_refresh_loop())
+
         # 10b. Start simulation budget scheduler (mentions)
         if mentions_enabled and self._budget_manager:
             self._simulation_scheduler_task = asyncio.create_task(self._simulation_scheduler_loop())
+
+        # 10c. Start impact tracker (news-price correlation)
+        if self._impact_tracker:
+            await self._impact_tracker.start()
+
+        # 10d. Run initial journal distillation + start periodic loop (4h)
+        self._distillation_task = asyncio.create_task(self._distillation_loop())
 
         # 11. Broadcast initial snapshot
         await self._broadcast_snapshot()
@@ -312,6 +363,15 @@ class SingleArbCoordinator:
         """Stop the single-arb system."""
         self._running = False
 
+        # Stop order tracker
+        if self._order_tracker_task:
+            self._order_tracker_task.cancel()
+            try:
+                await self._order_tracker_task
+            except asyncio.CancelledError:
+                pass
+            self._order_tracker_task = None
+
         # Stop exchange monitor
         if self._exchange_monitor_task:
             self._exchange_monitor_task.cancel()
@@ -330,6 +390,15 @@ class SingleArbCoordinator:
                 pass
             self._candlestick_refresh_task = None
 
+        # Stop news refresh
+        if getattr(self, "_news_refresh_task", None):
+            self._news_refresh_task.cancel()
+            try:
+                await self._news_refresh_task
+            except asyncio.CancelledError:
+                pass
+            self._news_refresh_task = None
+
         # Stop simulation scheduler
         if getattr(self, "_simulation_scheduler_task", None):
             self._simulation_scheduler_task.cancel()
@@ -339,6 +408,39 @@ class SingleArbCoordinator:
                 pass
             self._simulation_scheduler_task = None
 
+        # Stop distillation loop
+        if getattr(self, "_distillation_task", None):
+            self._distillation_task.cancel()
+            try:
+                await self._distillation_task
+            except asyncio.CancelledError:
+                pass
+            self._distillation_task = None
+
+        # Stop deferred init task
+        if getattr(self, "_deferred_init_task", None):
+            self._deferred_init_task.cancel()
+            try:
+                await self._deferred_init_task
+            except asyncio.CancelledError:
+                pass
+            self._deferred_init_task = None
+
+        # Stop mentions baseline task
+        if getattr(self, "_mentions_baseline_task", None):
+            self._mentions_baseline_task.cancel()
+            try:
+                await self._mentions_baseline_task
+            except asyncio.CancelledError:
+                pass
+            self._mentions_baseline_task = None
+
+        # Stop impact tracker
+        if self._impact_tracker:
+            await self._impact_tracker.stop()
+
+        if self._sniper:
+            await self._sniper.stop()
         if self._captain:
             await self._captain.stop()
         if self._monitor:
@@ -489,6 +591,256 @@ class SingleArbCoordinator:
 
         logger.info("[SINGLE_ARB] Exchange monitor stopped")
 
+    async def _order_tracker_loop(self) -> None:
+        """Background task that polls order statuses every 15 seconds.
+
+        Tracks Captain orders through their lifecycle (placed → resting → executed/expired/cancelled)
+        and broadcasts status changes to the frontend.
+        """
+        logger.info("[ORDER_TRACKER] Started (15s interval)")
+
+        while self._running:
+            try:
+                await asyncio.sleep(15)
+                if not self._running:
+                    break
+                await self._poll_order_statuses()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"[ORDER_TRACKER] Loop error: {e}")
+                await asyncio.sleep(5)
+
+        logger.info("[ORDER_TRACKER] Stopped")
+
+    async def _poll_order_statuses(self) -> None:
+        """Poll Kalshi API for current order statuses and broadcast changes."""
+        from .tools import _captain_order_ids, _order_initial_states
+
+        if not _captain_order_ids:
+            return
+
+        client = self._get_trading_client()
+        if not client:
+            return
+
+        try:
+            # Fetch all orders (no status filter to catch all states)
+            orders_resp = await client.get_orders()
+            api_orders = {
+                o.get("order_id"): o
+                for o in orders_resp.get("orders", [])
+            }
+
+            # Fetch fills for our order group
+            fills_resp = {}
+            if self._order_group_id:
+                try:
+                    fills_resp = await client.get_fills(order_group_id=self._order_group_id)
+                except Exception:
+                    pass
+            fills_by_order = {}
+            for f in fills_resp.get("fills", []):
+                oid = f.get("order_id")
+                if oid:
+                    fills_by_order.setdefault(oid, []).append(f)
+
+            now = time.time()
+
+            for order_id in list(_captain_order_ids):
+                # Seed from initial state if first seen
+                if order_id not in self._tracked_orders:
+                    initial = _order_initial_states.get(order_id, {})
+                    self._tracked_orders[order_id] = {
+                        "order_id": order_id,
+                        "ticker": initial.get("ticker", ""),
+                        "side": initial.get("side", ""),
+                        "action": initial.get("action", "buy"),
+                        "contracts": initial.get("contracts", 0),
+                        "price_cents": initial.get("price_cents", 0),
+                        "placed_at": initial.get("placed_at", now),
+                        "ttl_seconds": initial.get("ttl_seconds", 60),
+                        "status": initial.get("status", "placed"),
+                        "fill_count": 0,
+                        "remaining_count": initial.get("contracts", 0),
+                        "updated_at": now,
+                    }
+
+                prev = self._tracked_orders[order_id]
+                prev_status = prev["status"]
+
+                # Skip terminal states
+                if prev_status in ("executed", "filled", "expired", "canceled", "cancelled"):
+                    continue
+
+                api_order = api_orders.get(order_id)
+                order_fills = fills_by_order.get(order_id, [])
+                total_filled = sum(f.get("count", 0) for f in order_fills)
+                original_count = prev["contracts"]
+
+                if api_order:
+                    # Order still exists in API
+                    api_status = api_order.get("status", "unknown")
+                    remaining = api_order.get("remaining_count", original_count - total_filled)
+
+                    if api_status == "executed":
+                        new_status = "executed"
+                    elif api_status == "resting":
+                        new_status = "partial" if total_filled > 0 else "resting"
+                    elif api_status == "canceled" or api_status == "cancelled":
+                        new_status = "cancelled"
+                    else:
+                        new_status = api_status
+                else:
+                    # Order not in API response - determine why
+                    remaining = max(0, original_count - total_filled)
+
+                    if total_filled >= original_count:
+                        new_status = "executed"
+                    elif total_filled > 0:
+                        # Partially filled then disappeared (cancelled remainder or expired)
+                        new_status = "cancelled"
+                    else:
+                        # Never filled - check TTL
+                        placed_at = prev.get("placed_at", now)
+                        ttl = prev.get("ttl_seconds", 60)
+                        if now - placed_at > ttl:
+                            new_status = "expired"
+                        else:
+                            new_status = "cancelled"
+
+                # Update tracked state
+                self._tracked_orders[order_id].update({
+                    "status": new_status,
+                    "fill_count": total_filled,
+                    "remaining_count": remaining,
+                    "updated_at": now,
+                })
+
+                # Broadcast if status changed
+                if new_status != prev_status:
+                    logger.info(
+                        f"[ORDER_TRACKER] {order_id[:8]}... {prev_status} → {new_status} "
+                        f"(fills={total_filled}/{original_count})"
+                    )
+                    await self._broadcast({
+                        "type": "order_status_update",
+                        "data": {
+                            "order_id": order_id,
+                            "status": new_status,
+                            "previous_status": prev_status,
+                            "ticker": prev.get("ticker", ""),
+                            "side": prev.get("side", ""),
+                            "contracts": original_count,
+                            "price_cents": prev.get("price_cents", 0),
+                            "fill_count": total_filled,
+                            "remaining_count": remaining,
+                            "placed_at": prev.get("placed_at"),
+                            "updated_at": now,
+                        },
+                    })
+
+        except Exception as e:
+            logger.warning(f"[ORDER_TRACKER] Poll error: {e}")
+
+    async def _run_deferred_init(self, mentions_enabled: bool, mentions_prewarm: bool) -> None:
+        """Run heavy LLM initialization in background.
+
+        Performs candlestick fetch, understanding builds, lifecycle classification,
+        causal model builds, and mentions baselines. Sets system_ready when done,
+        which unblocks the Captain's first cycle.
+        """
+        init_start = time.time()
+        logger.info("[DEFERRED_INIT] Starting background initialization...")
+
+        try:
+            # 1. Fetch candlesticks
+            await self._fetch_all_candlesticks()
+
+            # 2. Build understanding for each event (LLM calls)
+            if self._understanding_builder and self._index:
+                logger.info("[DEFERRED_INIT] Building event understanding...")
+                built_count = 0
+                for event_ticker, event in self._index.events.items():
+                    try:
+                        understanding = await self._understanding_builder.build(event)
+                        event.understanding = understanding.to_dict()
+                        built_count += 1
+                    except Exception as e:
+                        logger.warning(f"[DEFERRED_INIT] Understanding failed for {event_ticker}: {e}")
+                logger.info(f"[DEFERRED_INIT] Built {built_count}/{len(self._index.events)} understandings")
+
+            # 3. Classify lifecycle for each event (LLM calls)
+            if self._lifecycle_classifier and self._index:
+                logger.info("[DEFERRED_INIT] Classifying event lifecycles...")
+                classified = 0
+                for event_ticker, event in self._index.events.items():
+                    try:
+                        result = await self._lifecycle_classifier.classify(event)
+                        event.lifecycle = result
+                        classified += 1
+                        await self._broadcast({
+                            "type": "lifecycle_update",
+                            "data": {
+                                "event_ticker": event_ticker,
+                                "lifecycle": event.lifecycle,
+                            },
+                        })
+                    except Exception as e:
+                        logger.debug(f"[DEFERRED_INIT] Lifecycle failed for {event_ticker}: {e}")
+                if classified > 0:
+                    logger.info(f"[DEFERRED_INIT] Classified {classified}/{len(self._index.events)} lifecycles")
+
+            # 4. Build causal models for each event (LLM calls)
+            if self._causal_model_builder and self._index:
+                logger.info("[DEFERRED_INIT] Building causal models...")
+                built = 0
+                for event_ticker, event in self._index.events.items():
+                    try:
+                        model = await self._causal_model_builder.build(event)
+                        event.causal_model = model.to_dict()
+                        built += 1
+                        await self._broadcast({
+                            "type": "causal_model_update",
+                            "data": {
+                                "event_ticker": event_ticker,
+                                "causal_model": event.causal_model,
+                            },
+                        })
+                    except Exception as e:
+                        logger.warning(f"[DEFERRED_INIT] Causal model failed for {event_ticker}: {e}")
+                if built > 0:
+                    logger.info(f"[DEFERRED_INIT] Built {built}/{len(self._index.events)} causal models")
+
+            # 5. Mentions baselines (background)
+            if mentions_enabled:
+                self._mentions_baseline_task = asyncio.create_task(self._establish_mentions_baselines())
+                self._mentions_baseline_task.add_done_callback(
+                    lambda t: logger.info("[MENTIONS] Baselines established") if not t.exception()
+                    else logger.warning(f"[MENTIONS] Baseline task failed: {t.exception()}")
+                )
+                if mentions_prewarm:
+                    await self._prewarm_mentions_simulations()
+
+            elapsed = time.time() - init_start
+            logger.info(f"[DEFERRED_INIT] Background initialization complete in {elapsed:.1f}s")
+
+        except asyncio.CancelledError:
+            logger.info("[DEFERRED_INIT] Background initialization cancelled")
+            raise
+        except Exception as e:
+            logger.error(f"[DEFERRED_INIT] Background initialization failed: {e}")
+        finally:
+            # Always set system_ready so Captain can start (even if some init failed)
+            self._system_ready.set()
+            logger.info("[DEFERRED_INIT] System ready event set")
+
+            # Broadcast updated snapshot with all deferred data
+            try:
+                await self._broadcast_snapshot()
+            except Exception:
+                pass
+
     async def _fetch_all_candlesticks(self) -> None:
         """Fetch 7-day hourly candlesticks for all loaded events."""
         if not self._index:
@@ -553,6 +905,169 @@ class SingleArbCoordinator:
                 logger.error(f"[CANDLESTICKS] Refresh error: {e}")
                 await asyncio.sleep(60)
         logger.info("[CANDLESTICKS] Refresh loop stopped")
+
+    async def _news_refresh_loop(self) -> None:
+        """Background task to refresh stale event understanding (news) every 30 minutes.
+
+        Checks each event's understanding for staleness (>4h) and refreshes
+        at most 1 event per loop iteration to stay within Tavily budget.
+        """
+        logger.info("[NEWS_REFRESH] Loop started (30 min interval)")
+        while self._running:
+            try:
+                await asyncio.sleep(30 * 60)  # 30 minutes
+                if not self._running:
+                    break
+                if not self._understanding_builder or not self._index:
+                    continue
+
+                # Check Tavily budget before refreshing
+                if self._tavily_budget and self._tavily_budget.should_fallback:
+                    logger.info("[NEWS_REFRESH] Skipping - Tavily budget exhausted")
+                    continue
+
+                refreshed = 0
+                for event_ticker, event in self._index.events.items():
+                    if not event.understanding:
+                        continue
+
+                    # Check staleness via the understanding's stale flag or news_fetched_at
+                    is_stale = event.understanding.get("stale", False)
+                    news_fetched_at = event.understanding.get("news_fetched_at", 0)
+                    if news_fetched_at:
+                        hours_old = (time.time() - news_fetched_at) / 3600
+                        is_stale = is_stale or hours_old > 4.0
+
+                    if not is_stale:
+                        continue
+
+                    # Limit to 1 refresh per loop iteration
+                    if refreshed >= 1:
+                        break
+
+                    try:
+                        logger.info(f"[NEWS_REFRESH] Refreshing understanding for {event_ticker}")
+                        understanding = await self._understanding_builder.build(
+                            event, force_refresh=True
+                        )
+                        event.understanding = understanding.to_dict()
+                        refreshed += 1
+
+                        # Persist new articles via NewsStore
+                        if self._news_store and event.understanding.get("news_articles"):
+                            try:
+                                stored = await self._news_store.persist_articles(
+                                    event.understanding["news_articles"],
+                                    event_ticker,
+                                )
+                                if stored > 0:
+                                    logger.info(f"[NEWS_REFRESH] Persisted {stored} new articles for {event_ticker}")
+                            except Exception as ne:
+                                logger.warning(f"[NEWS_REFRESH] Article persistence failed: {ne}")
+
+                        # Broadcast update to frontend
+                        await self._broadcast({
+                            "type": "event_understanding_update",
+                            "data": {
+                                "event_ticker": event_ticker,
+                                "understanding": event.understanding,
+                            },
+                        })
+                        logger.info(f"[NEWS_REFRESH] Refreshed {event_ticker}")
+
+                    except Exception as e:
+                        logger.warning(f"[NEWS_REFRESH] Failed for {event_ticker}: {e}")
+
+                if refreshed > 0:
+                    logger.info(f"[NEWS_REFRESH] Refreshed {refreshed} event(s)")
+
+                # Re-classify lifecycle stages for all events (every 30 min)
+                if self._lifecycle_classifier and self._index:
+                    classified = 0
+                    for event_ticker, event in self._index.events.items():
+                        try:
+                            result = await self._lifecycle_classifier.classify(event)
+                            event.lifecycle = result
+                            classified += 1
+                            await self._broadcast({
+                                "type": "lifecycle_update",
+                                "data": {
+                                    "event_ticker": event_ticker,
+                                    "lifecycle": event.lifecycle,
+                                },
+                            })
+                        except Exception as le:
+                            logger.warning(f"[LIFECYCLE] Refresh failed for {event_ticker}: {le}")
+                    if classified > 0:
+                        logger.info(f"[NEWS_REFRESH] Re-classified lifecycle for {classified} event(s)")
+
+                # Rebuild causal models (every 30 min, after fresh understanding + lifecycle)
+                if self._causal_model_builder and self._index:
+                    rebuilt = 0
+                    for event_ticker, event in self._index.events.items():
+                        try:
+                            model = await self._causal_model_builder.build(event)
+                            event.causal_model = model.to_dict()
+                            rebuilt += 1
+                            await self._broadcast({
+                                "type": "causal_model_update",
+                                "data": {
+                                    "event_ticker": event_ticker,
+                                    "causal_model": event.causal_model,
+                                },
+                            })
+                        except Exception as ce:
+                            logger.warning(f"[CAUSAL] Refresh failed for {event_ticker}: {ce}")
+                    if rebuilt > 0:
+                        logger.info(f"[NEWS_REFRESH] Rebuilt causal models for {rebuilt} event(s)")
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"[NEWS_REFRESH] Loop error: {e}")
+                await asyncio.sleep(60)
+
+        logger.info("[NEWS_REFRESH] Loop stopped")
+
+    async def _distillation_loop(self) -> None:
+        """Background task that distills journal.jsonl into DATA_LESSONS every 4 hours.
+
+        Runs once immediately on startup, then every DISTILL_INTERVAL_SECONDS.
+        Pure Python analysis of trade outcomes → data-grounded lessons in AGENTS.md.
+        """
+        from .memory.auto_curator import distill_journal, DISTILL_INTERVAL_SECONDS, _read_distill_state
+
+        logger.info("[DISTILL] Distillation loop started (4h interval)")
+
+        # Run once immediately on startup
+        try:
+            result = distill_journal(DEFAULT_MEMORY_DIR)
+            logger.info(f"[DISTILL] Initial distillation: {result}")
+        except Exception as e:
+            logger.error(f"[DISTILL] Initial distillation failed: {e}")
+
+        while self._running:
+            try:
+                # Check if enough time has passed since last distillation
+                state = _read_distill_state(DEFAULT_MEMORY_DIR)
+                last_ts = state.get("last_distill_ts", 0)
+                elapsed = time.time() - last_ts
+                sleep_time = max(60, DISTILL_INTERVAL_SECONDS - elapsed)
+
+                await asyncio.sleep(sleep_time)
+                if not self._running:
+                    break
+
+                result = distill_journal(DEFAULT_MEMORY_DIR)
+                logger.info(f"[DISTILL] Periodic distillation: {result}")
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"[DISTILL] Loop error: {e}")
+                await asyncio.sleep(300)  # 5 min backoff on error
+
+        logger.info("[DISTILL] Distillation loop stopped")
 
     def _initialize_budget_manager(self) -> None:
         """Initialize the SimulationBudgetManager and register all mentions events."""
@@ -931,13 +1446,17 @@ class SingleArbCoordinator:
         set_tool_dependencies(
             index=self._index,
             trading_client=client,
-            file_store=self._memory_store,
+            memory_store=self._memory_store,
             config=self._config,
             order_group_id=self._order_group_id,
             order_ttl=order_ttl,
             broadcast_callback=self._broadcast,
             understanding_builder=self._understanding_builder,
             search_service=self._search_service,
+            news_store=getattr(self, "_news_store", None),
+            impact_tracker=getattr(self, "_impact_tracker", None),
+            causal_model_builder=self._causal_model_builder,
+            sniper=self._sniper,
         )
 
         # Mentions tool dependencies
@@ -988,6 +1507,30 @@ class SingleArbCoordinator:
             order_ttl=order_ttl,
         )
 
+        # Create Sniper execution layer (if enabled)
+        if self._config.sniper_enabled:
+            from .sniper import Sniper, SniperConfig
+            sniper_config = SniperConfig(
+                enabled=self._config.sniper_enabled,
+                max_position=self._config.sniper_max_position,
+                max_capital=self._config.sniper_max_capital,
+                cooldown=self._config.sniper_cooldown,
+                max_trades_per_cycle=self._config.sniper_max_trades_per_cycle,
+                arb_min_edge=self._config.sniper_arb_min_edge,
+                order_ttl=getattr(self._config, "sniper_order_ttl", 30),
+                leg_timeout=getattr(self._config, "sniper_leg_timeout", 5.0),
+            )
+            self._sniper = Sniper(
+                gateway=self._gateway,
+                index=self._index,
+                event_bus=self._event_bus,
+                session=self._trading_session,
+                config=sniper_config,
+                broadcast_callback=self._broadcast,
+            )
+            await self._sniper.start()
+            logger.info("[GATEWAY] Sniper execution layer initialized")
+
         # Get the file store from the dual memory store
         file_store = self._memory_store
 
@@ -1035,14 +1578,33 @@ class SingleArbCoordinator:
         set_context_cache_dir(DEFAULT_MEMORY_DIR)
         restore_mentions_state_from_disk()
 
+        # Wire Sniper into legacy tools globals (sniper tools still live in tools.py)
+        if self._sniper:
+            set_tool_dependencies(sniper=self._sniper, index=self._index)
+
+        # Subscribe gateway WS channels for single-arb market tickers
+        market_tickers = list(self._index.market_tickers) if self._index else []
+        if market_tickers:
+            ws_mux = self._gateway.get_ws()
+            for channel in ("orderbook_delta", "ticker", "trade"):
+                await ws_mux.subscribe_tickers(channel, market_tickers)
+            logger.info(
+                f"[GATEWAY] Subscribed {len(market_tickers)} tickers to "
+                f"orderbook_delta+ticker+trade channels"
+            )
+
         logger.info("[GATEWAY] New agent_tools layer wired (captain + commando + mentions)")
 
     def _build_gateway_tool_overrides(self) -> Dict:
         """Build tool override lists from the new agent_tools module."""
         from ..agent_tools import captain_tools, commando_tools, mentions_tools as new_mentions
 
-        # Import the self-improvement + surveillance + search tools from legacy (not yet in agent_tools)
-        from .tools import report_issue, get_issues, analyze_microstructure, analyze_orderbook_patterns, search_event_news
+        # Import the self-improvement + surveillance + search + sniper tools from legacy (not yet in agent_tools)
+        from .tools import (
+            report_issue, get_issues, analyze_microstructure, analyze_orderbook_patterns,
+            search_event_news, configure_sniper, get_sniper_status, kill_sniper_positions,
+            get_orderbook_intelligence,
+        )
 
         return {
             "captain": [
@@ -1056,6 +1618,11 @@ class SingleArbCoordinator:
                 search_event_news,
                 report_issue,
                 get_issues,
+                # Sniper execution layer
+                configure_sniper,
+                get_sniper_status,
+                kill_sniper_positions,
+                get_orderbook_intelligence,
             ],
             "commando": [
                 commando_tools.place_order,
@@ -1185,6 +1752,130 @@ class SingleArbCoordinator:
                 )
             logger.info("Created seed PLAYBOOK.md")
 
+        # Seed THESES.md (active theses, loaded into Captain system prompt)
+        theses_md_path = os.path.join(DEFAULT_MEMORY_DIR, "THESES.md")
+        if not os.path.exists(theses_md_path):
+            with open(theses_md_path, "w") as f:
+                f.write(
+                    "# Active Theses (max 5)\n"
+                    "\n"
+                    "_No active theses yet._\n"
+                )
+            logger.info("Created seed THESES.md")
+
+    async def _initialize_lifecycle_classifier(self) -> None:
+        """Initialize LifecycleClassifier and run initial classification for all events."""
+        if not self._index:
+            return
+
+        try:
+            from .lifecycle_classifier import LifecycleClassifier
+            lifecycle_model = getattr(self._config, "single_arb_cheval_model", "haiku")
+            self._lifecycle_classifier = LifecycleClassifier(model=lifecycle_model)
+            logger.info(f"[LIFECYCLE] Classifier initialized (model={lifecycle_model})")
+
+            # Run initial classification for all events
+            classified = 0
+            for event_ticker, event in self._index.events.items():
+                try:
+                    result = await self._lifecycle_classifier.classify(event)
+                    event.lifecycle = result
+                    classified += 1
+                    await self._broadcast({
+                        "type": "lifecycle_update",
+                        "data": {
+                            "event_ticker": event_ticker,
+                            "lifecycle": event.lifecycle,
+                        },
+                    })
+                except Exception as e:
+                    logger.debug(f"[LIFECYCLE] Initial classification failed for {event_ticker}: {e}")
+
+            if classified > 0:
+                logger.info(f"[LIFECYCLE] Classified {classified}/{len(self._index.events)} events")
+
+        except Exception as e:
+            logger.warning(f"[LIFECYCLE] Classifier init failed: {e}")
+
+    async def _build_all_causal_models(self) -> None:
+        """Build CausalModel for all loaded events using CausalModelBuilder.
+
+        Runs after understanding + lifecycle are available. Results stored on EventMeta.causal_model.
+        """
+        if not self._index:
+            return
+
+        try:
+            from .causal_model import CausalModelBuilder
+            self._causal_model_builder = CausalModelBuilder()
+            logger.info("[CAUSAL] Builder initialized")
+
+            built = 0
+            for event_ticker, event in self._index.events.items():
+                try:
+                    model = await self._causal_model_builder.build(event)
+                    event.causal_model = model.to_dict()
+                    built += 1
+                    logger.debug(
+                        f"[CAUSAL] Built for {event_ticker}: "
+                        f"drivers={len(model.drivers)} catalysts={len(model.catalysts)}"
+                    )
+                    # Broadcast to frontend
+                    await self._broadcast({
+                        "type": "causal_model_update",
+                        "data": {
+                            "event_ticker": event_ticker,
+                            "causal_model": event.causal_model,
+                        },
+                    })
+                except Exception as e:
+                    logger.warning(f"[CAUSAL] Build failed for {event_ticker}: {e}")
+
+            if built > 0:
+                logger.info(f"[CAUSAL] Built {built}/{len(self._index.events)} causal models")
+
+        except Exception as e:
+            logger.warning(f"[CAUSAL] Builder init failed: {e}")
+
+    def _setup_news_intelligence(self) -> None:
+        """Setup NewsStore and PriceImpactTracker for news intelligence."""
+        if not self._memory_store or not self._index:
+            return
+
+        try:
+            from .news_store import NewsStore
+            # Impact tracker is created below; we'll wire it after
+            self._news_store = NewsStore(
+                memory_store=self._memory_store,
+                index=self._index,
+            )
+            logger.info("[NEWS_INTELLIGENCE] NewsStore initialized")
+        except Exception as e:
+            logger.warning(f"[NEWS_INTELLIGENCE] NewsStore init failed: {e}")
+
+        try:
+            from .impact_tracker import PriceImpactTracker
+
+            db = None
+            try:
+                from kalshiflow_rl.data.database import rl_db
+                db = rl_db
+            except Exception:
+                pass
+
+            self._impact_tracker = PriceImpactTracker(
+                index=self._index,
+                db=db,
+            )
+            logger.info(f"[NEWS_INTELLIGENCE] PriceImpactTracker initialized (db={'yes' if db else 'no'})")
+
+            # Wire impact tracker into NewsStore so articles trigger snapshot scheduling
+            if self._news_store:
+                self._news_store._impact_tracker = self._impact_tracker
+                logger.info("[NEWS_INTELLIGENCE] PriceImpactTracker wired to NewsStore")
+        except Exception as e:
+            logger.warning(f"[NEWS_INTELLIGENCE] PriceImpactTracker init failed: {e}")
+
     async def _broadcast(self, message: Dict) -> None:
         """Broadcast message to all frontend WebSocket clients."""
         if self._websocket_manager:
@@ -1206,13 +1897,30 @@ class SingleArbCoordinator:
             "data": snapshot,
         })
 
+        # Send order tracker snapshot for reconnecting clients
+        if self._tracked_orders:
+            await self._broadcast({
+                "type": "order_tracker_snapshot",
+                "data": {"orders": list(self._tracked_orders.values())},
+            })
+
     async def _on_opportunity(self, opportunity) -> None:
-        """Handle detected arb opportunity."""
+        """Handle detected arb opportunity.
+
+        Broadcasts to frontend and feeds Sniper for sub-second execution.
+        """
         # Broadcast to frontend
         await self._broadcast({
             "type": "arb_opportunity",
             "data": opportunity.to_dict(),
         })
+
+        # Feed Sniper (non-blocking — Sniper checks its own risk gates)
+        if self._sniper:
+            try:
+                await self._sniper.on_arb_opportunity(opportunity)
+            except Exception as e:
+                logger.warning(f"[SNIPER] Execution error: {e}")
 
     async def _emit_agent_event(self, event_data: Dict) -> None:
         """Forward agent events to frontend WebSocket."""
@@ -1232,6 +1940,12 @@ class SingleArbCoordinator:
     def is_captain_paused(self) -> bool:
         """Check if Captain is paused."""
         return self._captain.is_paused if self._captain else False
+
+    def get_snapshot(self) -> Optional[Dict]:
+        """Get full event arb snapshot for on-connect delivery."""
+        if self._index:
+            return self._index.get_snapshot()
+        return None
 
     # Health check interface
     def is_healthy(self) -> bool:
@@ -1259,6 +1973,9 @@ class SingleArbCoordinator:
             captain_stats = self._captain.get_stats()
             captain_stats["paused_by_exchange"] = self._captain_paused_by_exchange
             details["captain"] = captain_stats
+
+        if self._sniper:
+            details["sniper"] = self._sniper.get_health_details()
 
         if self._budget_manager:
             details["simulation_budgets"] = self._budget_manager.get_all_budgets()

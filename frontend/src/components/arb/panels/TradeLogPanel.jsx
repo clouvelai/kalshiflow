@@ -1,5 +1,6 @@
 import React, { memo } from 'react';
 import { Zap, Clock } from 'lucide-react';
+import { StatusBadge } from '../ui/EventTradeFeed';
 
 /**
  * Format an ISO timestamp to a short time string
@@ -60,6 +61,7 @@ const TradeLogPanel = ({ arbTrades = [] }) => {
                   <th className="px-3 py-2.5 text-right text-[10px] text-gray-500 uppercase font-semibold tracking-wider">Qty</th>
                   <th className="px-3 py-2.5 text-right text-[10px] text-gray-500 uppercase font-semibold tracking-wider">Price</th>
                   <th className="px-3 py-2.5 text-right text-[10px] text-gray-500 uppercase font-semibold tracking-wider">Spread</th>
+                  <th className="px-3 py-2.5 text-center text-[10px] text-gray-500 uppercase font-semibold tracking-wider">Status</th>
                 </tr>
               </thead>
               <tbody>
@@ -93,6 +95,16 @@ const TradeLogPanel = ({ arbTrades = [] }) => {
                       </td>
                       <td className="px-3 py-2 text-right font-mono text-gray-400">
                         {trade.spread_at_entry != null ? `${trade.spread_at_entry.toFixed(1)}c` : '--'}
+                      </td>
+                      <td className="px-3 py-2 text-center">
+                        <div className="flex flex-col items-center gap-0.5">
+                          <StatusBadge status={trade.status} />
+                          {trade.fill_count != null && (
+                            <span className="text-[9px] text-gray-500 font-mono">
+                              {trade.fill_count}/{trade.contracts}
+                            </span>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   );

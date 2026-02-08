@@ -1,17 +1,14 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useCallback } from 'react';
 import { useArbWebSocket, useArbAgent } from '../../hooks/arb';
 import ArbHeader from './layout/ArbHeader';
-import ArbMetricsBar from './layout/ArbMetricsBar';
-import EventIndexPanel from './panels/EventIndexPanel';
-import EventDetailsPanel from './panels/EventDetailsPanel';
-import AgentChatPanel from './panels/AgentChatPanel';
-import PositionPanel from './panels/PositionPanel';
-import MentionsPanel from './panels/MentionsPanel';
+import LeftSidebar from './layout/LeftSidebar';
+import RightSidebar from './layout/RightSidebar';
+import CenterContent from './center/CenterContent';
 
 /**
- * ArbDashboard - Single-event arbitrage trading console.
+ * ArbDashboard - Three-panel command center for Captain agent trading.
  *
- * Monitors mutually exclusive events for probability completeness violations.
+ * Layout: LeftSidebar (events + portfolio) | Center (dashboard/event detail) | RightSidebar (agent)
  */
 const ArbDashboard = () => {
   const {
@@ -42,8 +39,12 @@ const ArbDashboard = () => {
   } = useArbAgent(agentMessages);
 
   const [selectedEventTicker, setSelectedEventTicker] = useState(null);
+  const [leftCollapsed, setLeftCollapsed] = useState(false);
+  const [rightCollapsed, setRightCollapsed] = useState(false);
 
-  // Convert events Map to sorted array for EventIndexPanel
+  const handleDeselectEvent = useCallback(() => setSelectedEventTicker(null), []);
+
+  // Convert events Map to sorted array for left sidebar
   const eventList = useMemo(() => {
     if (!events || events.size === 0) return [];
     return Array.from(events.values()).map(event => {
@@ -68,11 +69,16 @@ const ArbDashboard = () => {
         updated_at: event.updated_at,
         markets,
       };
+    }).sort((a, b) => {
+      // Sort by best edge descending
+      const edgeA = Math.max(a.long_edge || 0, a.short_edge || 0);
+      const edgeB = Math.max(b.long_edge || 0, b.short_edge || 0);
+      return edgeB - edgeA;
     });
   }, [events]);
 
   return (
-    <div id="arb-dashboard" data-testid="arb-dashboard" className="min-h-screen bg-gray-950 text-white">
+    <div id="arb-dashboard" data-testid="arb-dashboard" className="h-screen flex flex-col bg-gray-950 text-white overflow-hidden">
       <ArbHeader
         connectionStatus={connectionStatus}
         systemState={systemState}
@@ -82,57 +88,40 @@ const ArbDashboard = () => {
         exchangeStatus={exchangeStatus}
       />
 
-      <div className="max-w-[1600px] mx-auto px-6 py-6 space-y-6">
-        <div id="metrics-bar" data-testid="metrics-bar">
-          <ArbMetricsBar
-            tradingState={tradingState}
-            arbTradeCount={arbTrades.length}
-            events={events}
-          />
-        </div>
+      <div className="flex-1 flex overflow-hidden min-h-0">
+        <LeftSidebar
+          collapsed={leftCollapsed}
+          onToggle={() => setLeftCollapsed(c => !c)}
+          tradingState={tradingState}
+          events={eventList}
+          selectedEventTicker={selectedEventTicker}
+          onSelectEvent={setSelectedEventTicker}
+        />
 
-        {/* Agent Chat - full width */}
-        <AgentChatPanel
-          thinking={thinking}
-          activeToolCall={activeToolCall}
-          toolCalls={toolCalls}
+        <CenterContent
+          selectedEventTicker={selectedEventTicker}
+          events={events}
+          eventTrades={eventTrades}
           arbTrades={arbTrades}
+          tradingState={tradingState}
+          mentionsState={mentionsState}
+          onDeselectEvent={handleDeselectEvent}
+        />
+
+        <RightSidebar
+          collapsed={rightCollapsed}
+          onToggle={() => setRightCollapsed(c => !c)}
           isRunning={agentIsRunning}
           currentSubagent={currentSubagent}
           cycleCount={cycleCount}
+          thinking={thinking}
+          activeToolCall={activeToolCall}
+          toolCalls={toolCalls}
           todos={todos}
           memoryOps={memoryOps}
           commandoSessions={commandoSessions}
+          arbTrades={arbTrades}
         />
-
-        {/* Mentions Panel - shows mentions market probability estimates */}
-        <MentionsPanel mentionsState={mentionsState} events={events} />
-
-        {/* Event Index - full width */}
-        <div id="event-index-container" data-testid="event-index-container">
-          <EventIndexPanel
-            events={eventList}
-            selectedEventTicker={selectedEventTicker}
-            onSelectEvent={setSelectedEventTicker}
-          />
-        </div>
-
-        {/* Event Details - full width, only shown when event selected */}
-        {selectedEventTicker && (
-          <div id="event-details-container" data-testid="event-details-container">
-            <EventDetailsPanel
-              selectedEventTicker={selectedEventTicker}
-              events={events}
-              eventTrades={eventTrades}
-              arbTrades={arbTrades}
-              tradingState={tradingState}
-            />
-          </div>
-        )}
-
-        <div id="position-container" data-testid="position-container">
-          <PositionPanel tradingState={tradingState} />
-        </div>
       </div>
     </div>
   );

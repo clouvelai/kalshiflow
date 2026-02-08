@@ -34,9 +34,12 @@ const StatusBadge = memo(({ status }) => {
 
   const statusConfig = {
     filled: { bg: 'bg-emerald-500/15', text: 'text-emerald-400/80', label: 'FILLED' },
+    executed: { bg: 'bg-emerald-500/15', text: 'text-emerald-400/80', label: 'FILLED' },
     partial: { bg: 'bg-amber-500/15', text: 'text-amber-400/80', label: 'PARTIAL' },
     cancelled: { bg: 'bg-red-500/15', text: 'text-red-400/80', label: 'CANCEL' },
+    expired: { bg: 'bg-red-500/15', text: 'text-red-400/80', label: 'EXPRD' },
     pending: { bg: 'bg-gray-500/15', text: 'text-gray-400/80', label: 'PEND' },
+    placed: { bg: 'bg-gray-500/15', text: 'text-gray-400/80', label: 'PLACED' },
     resting: { bg: 'bg-blue-500/15', text: 'text-blue-400/80', label: 'REST' },
   };
 
@@ -161,4 +164,5 @@ const EventTradeFeed = ({ trades = [], maxHeight = 280, showSource = false }) =>
   );
 };
 
+export { StatusBadge };
 export default memo(EventTradeFeed);

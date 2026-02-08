@@ -55,3 +55,24 @@ export const TEXT_MEDIUM = 'text-[11px]';
 
 export const ANIMATE_SPIN = 'animate-spin';
 export const ANIMATE_PULSE = 'animate-pulse';
+
+// ─── Layout Dimensions ──────────────────────────────────────────────────────
+
+export const LEFT_SIDEBAR_WIDTH = 300;
+export const LEFT_SIDEBAR_COLLAPSED = 40;
+export const RIGHT_SIDEBAR_WIDTH = 360;
+export const RIGHT_SIDEBAR_COLLAPSED = 40;
+export const HEADER_HEIGHT = 44;
+
+// ─── Panel Dividers ─────────────────────────────────────────────────────────
+
+export const PANEL_DIVIDER = 'border-r border-gray-800/40';
+
+// ─── Agent State Colors ─────────────────────────────────────────────────────
+
+export const AGENT_STATE_COLORS = {
+  idle: { bg: 'bg-gray-500', text: 'text-gray-400', label: 'Idle' },
+  thinking: { bg: 'bg-violet-500', text: 'text-violet-400', label: 'Thinking' },
+  acting: { bg: 'bg-cyan-500', text: 'text-cyan-400', label: 'Acting' },
+  complete: { bg: 'bg-emerald-500', text: 'text-emerald-400', label: 'Complete' },
+};

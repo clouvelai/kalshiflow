@@ -15,8 +15,8 @@ from typing import Any, Dict, Set
 
 logger = logging.getLogger("kalshiflow_rl.traderv3.single_arb.tavily_budget")
 
-DEFAULT_MONTHLY_LIMIT = 1000
-WARNING_THRESHOLDS = [500, 750, 900]
+DEFAULT_MONTHLY_LIMIT = 10000
+WARNING_THRESHOLDS = [5000, 7500, 9000]
 
 
 @dataclass
