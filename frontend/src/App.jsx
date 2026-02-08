@@ -7,10 +7,7 @@ import MarketGrid from './components/MarketGrid';
 import TradeFlowRiver from './components/TradeFlowRiver';
 import TopTradesList from './components/TopTradesList';
 import FAQ from './components/FAQ';
-import RLTraderDashboard from './components/RLTraderDashboard';
-import V3TraderConsole from './components/V3TraderConsole';
-import EventsPage from './components/v3-trader/pages/EventsPage';
-import { LifecycleDiscovery } from './components/lifecycle';
+import { ArbDashboard } from './components/arb';
 
 const MainDashboard = () => {
   const {
@@ -79,29 +76,17 @@ function App() {
             </TradeProvider>
           } 
         />
-        <Route 
-          path="/rl-trader" 
-          element={<RLTraderDashboard />} 
-        />
-        <Route 
-          path="/trader" 
-          element={<RLTraderDashboard />} 
-        />
-        <Route 
-          path="/v3-trader" 
-          element={<V3TraderConsole />} 
+        <Route
+          path="/v3-trader"
+          element={<ArbDashboard />}
         />
         <Route
           path="/v3"
-          element={<V3TraderConsole />}
+          element={<ArbDashboard />}
         />
         <Route
-          path="/v3-trader/events"
-          element={<EventsPage />}
-        />
-        <Route
-          path="/lifecycle"
-          element={<LifecycleDiscovery />}
+          path="/arb"
+          element={<ArbDashboard />}
         />
       </Routes>
     </Router>

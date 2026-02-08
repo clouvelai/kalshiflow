@@ -65,7 +65,7 @@ class V3TradingClientIntegration:
         trading_client: KalshiDemoTradingClient,
         event_bus: EventBus,
         max_orders: int = 10,
-        max_position_size: int = 100
+        max_position_size: int = 500
     ):
         """
         Initialize trading client integration.
@@ -1031,10 +1031,9 @@ class V3TradingClientIntegration:
         get markets closing after N hours. Results sorted by close_time ascending
         (soonest first), filtered to exclude markets settling too far out.
 
-        Time-to-settlement filter rationale (from quant research):
-        - Skip <4 hours: Not enough time for RLM pattern to form
+        Time-to-settlement filter rationale:
+        - Skip <4 hours: Too close to settlement for meaningful analysis
         - Skip >30 days: Capital inefficiency (long-dated markets tie up capital)
-        - Edge is HIGHER in short-dated markets (Sports +17.9%, Media +24.1%)
 
         Args:
             categories: Optional list of category substrings to filter by
@@ -1078,7 +1077,7 @@ class V3TradingClientIntegration:
 
             # Calculate time bounds for filtering
             now_ts = int(datetime.now(timezone.utc).timestamp())
-            # Min: skip markets settling too soon (need time for RLM pattern)
+            # Min: skip markets settling too soon
             min_close_ts = now_ts + int(min_hours_to_settlement * 3600) if min_hours_to_settlement > 0 else None
             # Max: skip markets settling too far out (capital efficiency)
             max_close_ts = now_ts + (max_days_to_settlement * 24 * 3600) if max_days_to_settlement > 0 else None
@@ -1137,6 +1136,8 @@ class V3TradingClientIntegration:
                                 continue  # Too far out, skip for capital efficiency
                             market["category"] = event.get("category", "")
                             market["event_ticker"] = event.get("event_ticker", "")
+                            market["event_title"] = event.get("title", "")
+                            market["event_subtitle"] = event.get("subtitle", "")
                             all_markets.append(market)
 
                 if not cursor:
@@ -1214,6 +1215,12 @@ class V3TradingClientIntegration:
             return None
 
         except Exception as e:
+            error_str = str(e)
+            # 404 means market is settled/expired - return None instead of raising
+            if "404" in error_str:
+                logger.info(f"Market {ticker} not found (404) - likely settled/expired")
+                self._metrics.api_calls += 1
+                return None
             logger.error(f"Failed to get market {ticker}: {e}")
             self._metrics.api_errors += 1
             self._consecutive_api_errors += 1
@@ -1250,7 +1257,102 @@ class V3TradingClientIntegration:
             return event
 
         except Exception as e:
+            error_str = str(e)
+            # 404 means event is settled/expired - return empty dict instead of raising
+            if "404" in error_str:
+                logger.info(f"Event {event_ticker} not found (404) - likely settled/expired")
+                self._metrics.api_calls += 1
+                return {}
             logger.error(f"Failed to get event {event_ticker}: {e}")
+            self._metrics.api_errors += 1
+            self._consecutive_api_errors += 1
+            raise
+
+    async def get_series(
+        self,
+        category: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Fetch series list with optional category filter.
+
+        GET /trade-api/v2/series
+
+        Uses the API's native category parameter for server-side filtering.
+
+        Args:
+            category: Filter by category (e.g., "Politics", "Economics")
+
+        Returns:
+            List of series dicts with series_ticker, title, category, etc.
+
+        Raises:
+            RuntimeError: If not connected
+        """
+        if not self._connected:
+            raise RuntimeError("Cannot fetch series - not connected")
+
+        try:
+            result = await self._client.get_series(category=category)
+            self._metrics.api_calls += 1
+            self._consecutive_api_errors = 0
+            logger.debug(f"Retrieved {len(result)} series (category={category})")
+            return result
+
+        except Exception as e:
+            logger.error(f"Failed to get series: {e}")
+            self._metrics.api_errors += 1
+            self._consecutive_api_errors += 1
+            raise
+
+    async def get_events(
+        self,
+        series_ticker: Optional[str] = None,
+        status: Optional[str] = None,
+        cursor: Optional[str] = None,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        """
+        Fetch events with optional filtering.
+
+        GET /trade-api/v2/events
+
+        Args:
+            series_ticker: Filter events by series ticker (API-level filter)
+            status: Filter by status ("open", "closed", etc.)
+            cursor: Pagination cursor for next page
+            limit: Maximum events to return (default 100)
+
+        Returns:
+            List of event dicts
+
+        Raises:
+            RuntimeError: If trading client not connected
+        """
+        if not self._connected:
+            raise RuntimeError("Cannot fetch events - not connected")
+
+        try:
+            # Fetch events with nested markets for complete data
+            result = await self._client.get_events(
+                status=status,
+                with_nested_markets=True,
+                cursor=cursor,
+                limit=limit,
+                series_ticker=series_ticker,
+            )
+            self._metrics.api_calls += 1
+            self._consecutive_api_errors = 0
+
+            events = result.get("events", [])
+            if series_ticker:
+                logger.debug(
+                    f"Retrieved {len(events)} events for series '{series_ticker}'"
+                )
+
+            return events
+
+        except Exception as e:
+            logger.error(f"Failed to get events: {e}")
             self._metrics.api_errors += 1
             self._consecutive_api_errors += 1
             raise
@@ -1401,3 +1503,62 @@ class V3TradingClientIntegration:
                 pass
 
         return None
+
+    async def get_event_candlesticks(
+        self,
+        series_ticker: str,
+        event_ticker: str,
+        start_ts: int,
+        end_ts: int,
+        period_interval: int = 60,
+    ) -> Dict[str, Any]:
+        """
+        Get candlestick OHLC data for ALL markets in an event at once.
+
+        GET /trade-api/v2/series/{series_ticker}/events/{event_ticker}/candlesticks
+
+        This is more efficient than fetching candlesticks per-market because it
+        returns data for all markets in a single API call.
+
+        Args:
+            series_ticker: Series ticker (e.g., "KXPRESNOMD")
+            event_ticker: Event ticker (e.g., "KXPRESNOMD-28")
+            start_ts: Start timestamp (Unix seconds)
+            end_ts: End timestamp (Unix seconds)
+            period_interval: Candle period in minutes - 1 (1-min), 60 (1-hour), 1440 (1-day)
+
+        Returns:
+            Dict with:
+            - market_tickers: List of market tickers
+            - market_candlesticks: List of candlestick arrays (one per market)
+            Each candlestick has:
+            - end_period_ts: Unix timestamp for period end
+            - yes_bid: OHLC for YES buy offers
+            - yes_ask: OHLC for YES sell offers
+            - price: Trade price OHLC
+            - volume: Contracts traded
+            - open_interest: Total contracts by period end
+
+        Raises:
+            RuntimeError: If trading client not connected
+        """
+        if not self._connected:
+            raise RuntimeError(f"Cannot fetch event candlesticks for {event_ticker} - not connected")
+
+        try:
+            response = await self._client.get_event_candlesticks(
+                series_ticker=series_ticker,
+                event_ticker=event_ticker,
+                start_ts=start_ts,
+                end_ts=end_ts,
+                period_interval=period_interval,
+            )
+            self._metrics.api_calls += 1
+            self._consecutive_api_errors = 0
+            return response
+
+        except Exception as e:
+            logger.error(f"Failed to get event candlesticks for {event_ticker}: {e}")
+            self._metrics.api_errors += 1
+            self._consecutive_api_errors += 1
+            raise

@@ -26,7 +26,6 @@ if TYPE_CHECKING:
     from ..clients.fill_listener import FillListener
     from ..services.market_price_syncer import MarketPriceSyncer
     from ..services.trading_state_syncer import TradingStateSyncer
-    from ..strategies import StrategyCoordinator
     from ..config.environment import V3Config
 
 logger = logging.getLogger("kalshiflow_rl.traderv3.core.health_monitor")
@@ -49,7 +48,6 @@ NON_CRITICAL_COMPONENTS: Set[str] = {
     # Services
     "market_price_syncer",
     "trading_state_syncer",
-    "strategy_coordinator",  # Plugin-based strategy management
 }
 
 
@@ -108,7 +106,6 @@ class V3HealthMonitor:
         self._fill_listener: Optional['FillListener'] = None  # Set via setter during startup
         self._market_price_syncer = market_price_syncer
         self._trading_state_syncer = None  # Set via setter during startup
-        self._strategy_coordinator: Optional['StrategyCoordinator'] = None  # Set via setter during lifecycle startup
 
         # Component registration for dynamic health monitoring
         # Allows new components to be registered without modifying _check_components_health()
@@ -118,6 +115,8 @@ class V3HealthMonitor:
         self._monitoring_task: Optional[asyncio.Task] = None
         self._running = False
         self._health_check_count = 0
+        self._was_all_healthy = True  # Track health state for change detection
+        self._error_state_count = 0  # Counter for ERROR state cycles
 
         logger.info("Health monitor initialized")
 
@@ -175,11 +174,6 @@ class V3HealthMonitor:
         """Set trading state syncer reference (created during startup)."""
         self._trading_state_syncer = syncer
         self.register_component("trading_state_syncer", syncer, critical=False)
-
-    def set_strategy_coordinator(self, coordinator: Optional['StrategyCoordinator']) -> None:
-        """Set strategy coordinator reference (created during lifecycle startup)."""
-        self._strategy_coordinator = coordinator
-        self.register_component("strategy_coordinator", coordinator, critical=False)
 
     async def start(self) -> None:
         """Start health monitoring."""
@@ -326,15 +320,20 @@ class V3HealthMonitor:
         all_critical_healthy = all(critical_health.values()) if critical_health else True
         all_non_critical_healthy = all(non_critical_health.values()) if non_critical_health else True
 
-        # Emit health check activity (only occasionally to avoid spam)
+        # Emit health check activity only when state changes (to reduce spam)
         if current_state == V3State.READY:
             self._health_check_count += 1
 
-            # Emit every 5th check or if any component is unhealthy
-            if not all_healthy or self._health_check_count % 5 == 0:
+            # Only emit when health state changes (healthy -> degraded or vice versa)
+            if all_healthy != self._was_all_healthy:
+                unhealthy = [k for k, v in components_health.items() if not v]
+                logger.info(
+                    f"[V3:HEALTH_CHANGE] healthy={all_healthy} "
+                    f"unhealthy_components={','.join(unhealthy) if unhealthy else 'none'}"
+                )
                 await self._event_bus.emit_system_activity(
                     activity_type="health_check",
-                    message=f"Health check: {'All components healthy' if all_healthy else 'Some components degraded'}",
+                    message=f"Health: {'Recovered - all components healthy' if all_healthy else 'Degraded - some components unhealthy'}",
                     metadata={
                         "components": components_health,
                         "all_healthy": all_healthy,
@@ -342,6 +341,7 @@ class V3HealthMonitor:
                         "non_critical_healthy": all_non_critical_healthy
                     }
                 )
+                self._was_all_healthy = all_healthy
 
         # Handle READY state
         if current_state == V3State.READY:
@@ -410,7 +410,7 @@ class V3HealthMonitor:
                 await self._attempt_recovery()
             else:
                 # Still have critical failures
-                self._error_state_count = getattr(self, '_error_state_count', 0) + 1
+                self._error_state_count += 1
                 if self._error_state_count % 12 == 1:
                     unhealthy_critical = [k for k, v in critical_health.items() if not v]
                     logger.info(f"Waiting for critical components to recover: {unhealthy_critical}")

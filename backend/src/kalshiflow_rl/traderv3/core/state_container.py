@@ -748,7 +748,7 @@ class V3StateContainer:
 
         return formatted_orders
 
-    def get_trading_summary(self, order_group_id: Optional[str] = None) -> Dict[str, Any]:
+    def get_trading_summary(self, order_group_id: Optional[str] = None, tracked_event_tickers: Optional[set] = None) -> Dict[str, Any]:
         """
         Get trading state summary for broadcasting.
 
@@ -819,7 +819,7 @@ class V3StateContainer:
 
         # Add detailed position data with per-position P&L
         # (computed first so we can pass to compute_pnl for aggregation)
-        positions_details = self._format_position_details()
+        positions_details = self._format_position_details(tracked_event_tickers)
         summary["positions_details"] = positions_details
 
         # Add session P&L if initialized (includes realized/unrealized breakdown)
@@ -904,7 +904,7 @@ class V3StateContainer:
         self._trading_state_version += 1
         self._last_update = time.time()
 
-    def _format_position_details(self) -> List[Dict[str, Any]]:
+    def _format_position_details(self, tracked_event_tickers: Optional[set] = None) -> List[Dict[str, Any]]:
         """
         Format positions with P&L and market data for frontend display.
 
@@ -935,6 +935,12 @@ class V3StateContainer:
 
         details = []
         for ticker, pos in self._trading_state.positions.items():
+            # Server-side filter: only include positions for tracked events
+            if tracked_event_tickers is not None:
+                event_ticker = pos.get("event_ticker", "")
+                if event_ticker not in tracked_event_tickers:
+                    continue
+
             position_count = pos.get("position", 0)
             market_exposure = pos.get("market_exposure", 0)
             qty = abs(position_count)
@@ -998,12 +1004,11 @@ class V3StateContainer:
             # Build position dict
             position_data = {
                 "ticker": ticker,
+                "event_ticker": pos.get("event_ticker", ""),  # From raw Kalshi position data
                 "position": position_count,
                 "side": side,
                 "total_cost": total_cost,            # Cost basis (cents) - from tracked orders or approximated
                 "current_value": current_value,      # Current market value (price × qty)
-                "total_traded": pos.get("total_traded", 0),  # DEPRECATED: Raw Kalshi value, don't use for P&L
-                "market_exposure": market_exposure,  # DEPRECATED: Kalshi's cost field, use total_cost instead
                 "realized_pnl": pos.get("realized_pnl", 0),
                 "unrealized_pnl": unrealized_pnl,    # current_value - total_cost
                 "fees_paid": pos.get("fees_paid", 0),
@@ -1275,8 +1280,14 @@ class V3StateContainer:
                         ]
                         if filled_orders:
                             # Compute cost basis from our tracked orders
+                            # Defense-in-depth: validate fill_avg_price is in binary range (1-99c)
+                            # Demo API sometimes returns impossible prices (>100c)
                             computed_cost = sum(
-                                order.fill_count * (order.fill_avg_price if order.fill_avg_price > 0 else order.price)
+                                order.fill_count * (
+                                    order.fill_avg_price
+                                    if 0 < order.fill_avg_price <= 99
+                                    else order.price
+                                )
                                 for order in filled_orders
                             )
                             computed_count = sum(order.fill_count for order in filled_orders)

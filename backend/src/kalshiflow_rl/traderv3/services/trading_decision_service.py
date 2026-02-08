@@ -1,17 +1,18 @@
 """
 Trading Decision Service for V3 trader.
 
-Handles trading logic and decision-making for the V3 trading system.
-This service is designed to be the single point for all trading decisions.
+Handles trade execution and safety checks for the V3 trading system.
+The deep agent bypasses evaluate_market() and calls trading_client.place_order()
+directly. This service remains for balance protection, event exposure checks,
+and order context staging.
 
 Key Responsibilities:
-    1. Evaluate market conditions and generate trading decisions
-    2. Execute trades through the trading client
-    3. Support HOLD and RLM_NO strategies
+    1. Execute trades through the trading client
+    2. Balance protection and event exposure checks
+    3. Order context staging for quant analysis
 
 Design Principles:
-    - Single point for all trading decisions
-    - Strategy pattern for easy extension
+    - Single point for trade execution safety checks
     - Event-driven updates via EventBus
 """
 
@@ -19,7 +20,6 @@ import asyncio
 import logging
 import time
 from typing import Dict, Any, Optional, TYPE_CHECKING
-from enum import Enum
 from dataclasses import dataclass, field
 
 from ..state.trading_attachment import TrackedMarketOrder
@@ -46,12 +46,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger("kalshiflow_rl.traderv3.services.trading_decision")
 
 
-class TradingStrategy(Enum):
-    """Available trading strategies."""
-    HOLD = "hold"  # Never trade (safe default)
-    RLM_NO = "rlm_no"  # Reverse Line Movement NO (validated +17.38% edge)
-
-
 @dataclass
 class TradingDecision:
     """
@@ -65,9 +59,7 @@ class TradingDecision:
         price: Limit price in cents (None for market order)
         reason: Human-readable explanation
         confidence: Confidence score (0.0 - 1.0)
-        strategy: DEPRECATED - Use strategy_id instead. Kept for backward compatibility.
-        strategy_id: String identifier for the strategy (e.g., "rlm_no", "s013").
-                    This is the preferred field for strategy attribution.
+        strategy_id: String identifier for the strategy (e.g., "rlm_no", "s013")
         signal_params: Strategy-specific parameters for quant analysis
     """
     action: str  # "buy", "sell", "hold"
@@ -77,26 +69,20 @@ class TradingDecision:
     price: Optional[int] = None  # If None, use market order
     reason: str = ""
     confidence: float = 0.0
-    strategy: TradingStrategy = TradingStrategy.HOLD  # DEPRECATED: Use strategy_id
-    strategy_id: str = ""  # New: String identifier for plugin system
+    strategy_id: str = ""  # String identifier for the strategy (e.g., "rlm_no", "s013")
     signal_params: Dict[str, Any] = field(default_factory=dict)  # Strategy-specific params for quant analysis
-
-    def __post_init__(self):
-        """Set strategy_id from strategy enum if not provided."""
-        if not self.strategy_id and self.strategy != TradingStrategy.HOLD:
-            self.strategy_id = self.strategy.value
 
 
 class TradingDecisionService:
     """
-    Service for making trading decisions in the V3 trader.
+    Service for executing trades with safety checks in the V3 trader.
 
     Responsibilities:
-    - Evaluate market conditions
-    - Generate trading decisions
     - Execute trades through trading client
-    - Track decision history
-    - Support HOLD and RLM_NO strategies
+    - Balance protection checks
+    - Event exposure checks
+    - Order context staging for quant analysis
+    - Track execution history
     """
 
     def __init__(
@@ -104,7 +90,6 @@ class TradingDecisionService:
         trading_client: Optional['V3TradingClientIntegration'],
         state_container: 'V3StateContainer',
         event_bus: 'EventBus',
-        strategy: TradingStrategy = TradingStrategy.HOLD,
         config: Optional['V3Config'] = None,
         orderbook_integration: Optional['V3OrderbookIntegration'] = None
     ):
@@ -115,14 +100,12 @@ class TradingDecisionService:
             trading_client: Trading client integration for order execution
             state_container: State container for accessing system state
             event_bus: Event bus for emitting trading events
-            strategy: Trading strategy to use
             config: Optional V3 config for balance protection settings
             orderbook_integration: Optional orderbook integration for session_id and orderbook access
         """
         self._trading_client = trading_client
         self._state_container = state_container
         self._event_bus = event_bus
-        self._strategy = strategy
         self._orderbook_integration = orderbook_integration
 
         # Balance protection (from config or default $100.00)
@@ -146,64 +129,24 @@ class TradingDecisionService:
             "event_alerted": 0,  # Trades with event exposure alerts (but allowed)
         }
 
-        logger.info(f"Trading Decision Service initialized with strategy: {strategy.value}")
+        logger.info("Trading Decision Service initialized")
 
     async def evaluate_market(
-        self, 
-        market: str, 
+        self,
+        market: str,
         orderbook: Optional['OrderbookSnapshot'] = None
     ) -> Optional[TradingDecision]:
         """
         Evaluate a market and generate a trading decision.
-        
-        Args:
-            market: Market ticker to evaluate
-            orderbook: Current orderbook snapshot (optional)
-        
+
+        The deep agent bypasses this method entirely and calls
+        trading_client.place_order() directly. This stub remains
+        for interface compatibility.
+
         Returns:
-            Trading decision or None if no action needed
+            Always None - trading decisions are made by the deep agent.
         """
-        self._decision_count += 1
-        
-        # Get current positions and orders
-        trading_state = self._state_container.trading_state
-        positions = trading_state.positions if trading_state else {}
-        orders = trading_state.orders if trading_state else {}
-
-        # Check if we already have exposure in this market
-        has_position = market in positions
-        # orders is Dict[order_id, order_data] where order_data has 'ticker' key
-        has_orders = any(o.get("ticker") == market for o in orders.values())
-        
-        if has_orders:
-            logger.debug(f"Skipping {market} - has open orders")
-            return None
-        
-        # Apply strategy
-        decision = None
-
-        if self._strategy == TradingStrategy.HOLD:
-            # Never trade
-            decision = TradingDecision(
-                action="hold",
-                market=market,
-                side="",
-                quantity=0,
-                reason="HOLD strategy - no trading",
-                strategy=self._strategy
-            )
-        # Note: RLM_NO strategy is handled by RLMNoStrategy plugin via event-driven architecture
-
-        # Store decision
-        if decision and decision.action != "hold":
-            self._last_decision = decision
-            logger.info(
-                f"Trading decision for {market}: {decision.action} "
-                f"{decision.quantity} {decision.side} @ {decision.price or 'market'} "
-                f"(reason: {decision.reason})"
-            )
-        
-        return decision
+        return None
 
     async def execute_decision(self, decision: TradingDecision) -> bool:
         """
@@ -324,7 +267,7 @@ class TradingDecisionService:
         try:
             # Emit decision event
             # Use strategy_id if available, fall back to strategy enum for backward compat
-            strategy_name = decision.strategy_id or decision.strategy.value
+            strategy_name = decision.strategy_id or "hold"
             await self._event_bus.emit_system_activity(
                 activity_type="trading_decision",
                 message=f"Executing {decision.action} {decision.quantity} {decision.side} on {decision.market}",
@@ -441,7 +384,7 @@ class TradingDecisionService:
 
             # Create staged context
             # Use strategy_id if available, fall back to strategy enum for backward compat
-            strategy_name = decision.strategy_id or decision.strategy.value
+            strategy_name = decision.strategy_id or "hold"
             context = StagedOrderContext(
                 order_id=order_id,
                 market_ticker=decision.market,
@@ -469,7 +412,7 @@ class TradingDecisionService:
 
             logger.debug(
                 f"Staged order context: order_id={order_id[:8]}..., "
-                f"strategy={decision.strategy.value}, ticker={decision.market}, "
+                f"strategy={decision.strategy_id or 'hold'}, ticker={decision.market}, "
                 f"session={session_id}, ob_captured={orderbook_snapshot.best_bid_cents is not None}"
             )
 
@@ -516,7 +459,7 @@ class TradingDecisionService:
             # Track order in trading attachment for tracked markets
             # Status is "resting" since API confirmed the order is on the book
             signal_id = f"{decision.reason}:{decision.market}:{int(time.time() * 1000)}"
-            strategy_id = decision.strategy_id or decision.strategy.value
+            strategy_id = decision.strategy_id or "hold"
             await self._state_container.update_order_in_attachment(
                 ticker=decision.market,
                 order_id=order_id,
@@ -537,7 +480,7 @@ class TradingDecisionService:
             await self._stage_order_context(order_id, decision, signal_id)
 
             # Emit order_placed activity for frontend visibility
-            strategy_name = decision.strategy_id or decision.strategy.value
+            strategy_name = decision.strategy_id or "hold"
             await self._event_bus.emit_system_activity(
                 activity_type="order_placed",
                 message=f"Order placed: BUY {decision.quantity} {decision.side.upper()} @ {decision.price}c",
@@ -606,7 +549,7 @@ class TradingDecisionService:
             # Track order in trading attachment for tracked markets
             # Status is "resting" since API confirmed the order is on the book
             signal_id = f"{decision.reason}:{decision.market}:{int(time.time() * 1000)}"
-            strategy_id = decision.strategy_id or decision.strategy.value
+            strategy_id = decision.strategy_id or "hold"
             await self._state_container.update_order_in_attachment(
                 ticker=decision.market,
                 order_id=order_id,
@@ -627,7 +570,7 @@ class TradingDecisionService:
             await self._stage_order_context(order_id, decision, signal_id)
 
             # Emit order_placed activity for frontend visibility
-            strategy_name = decision.strategy_id or decision.strategy.value
+            strategy_name = decision.strategy_id or "hold"
             await self._event_bus.emit_system_activity(
                 activity_type="order_placed",
                 message=f"Order placed: SELL {decision.quantity} {decision.side.upper()} @ {decision.price}c",
@@ -660,11 +603,6 @@ class TradingDecisionService:
             )
             return False
     
-    def set_strategy(self, strategy: TradingStrategy) -> None:
-        """Change the trading strategy."""
-        logger.info(f"Changing strategy from {self._strategy.value} to {strategy.value}")
-        self._strategy = strategy
-
     def set_event_tracker(self, tracker: 'EventPositionTracker') -> None:
         """
         Set the event position tracker for pre-trade exposure checks.
@@ -678,7 +616,6 @@ class TradingDecisionService:
     def get_stats(self) -> Dict[str, Any]:
         """Get service statistics."""
         return {
-            "strategy": self._strategy.value,
             "decision_count": self._decision_count,
             "trade_count": self._trade_count,
             "last_decision": self._last_decision.__dict__ if self._last_decision else None,

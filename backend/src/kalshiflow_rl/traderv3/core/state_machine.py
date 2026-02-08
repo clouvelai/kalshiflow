@@ -512,8 +512,8 @@ class TraderStateMachine:
             "last_error": metrics.last_error,
             "is_terminal": self.is_terminal_state,
             "is_operational": self.is_operational_state,
-            "state_timeout": self._state_timeouts.get(self._current_state, float('inf')),
-            "timeout_remaining": max(0, self._state_timeouts.get(self._current_state, float('inf')) - metrics.time_in_state),
+            "state_timeout": self._state_timeouts.get(self._current_state) or None,  # None for infinite (JSON-safe)
+            "timeout_remaining": max(0, (self._state_timeouts.get(self._current_state) or 9999) - metrics.time_in_state),
             "last_transition": {
                 "from": metrics.last_transition.from_state.value,
                 "to": metrics.last_transition.to_state.value,

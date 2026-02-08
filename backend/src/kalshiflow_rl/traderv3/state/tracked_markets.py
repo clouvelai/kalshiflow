@@ -77,6 +77,7 @@ class TrackedMarket:
     event_ticker: str = ""
     title: str = ""
     category: str = ""
+    event_title: str = ""
 
     # Rich market data from Kalshi API (note: "title" field is DEPRECATED, use yes_sub_title)
     yes_sub_title: str = ""     # Actual outcome/candidate name (e.g., "Joe Biden")
@@ -121,6 +122,7 @@ class TrackedMarket:
             "event_ticker": self.event_ticker,
             "title": self.title,
             "category": self.category,
+            "event_title": self.event_title,
             # Rich market data from Kalshi API
             "yes_sub_title": self.yes_sub_title,
             "no_sub_title": self.no_sub_title,
@@ -165,6 +167,7 @@ class TrackedMarket:
             event_ticker=data.get("event_ticker", ""),
             title=data.get("title", ""),
             category=data.get("category", ""),
+            event_title=data.get("event_title", ""),
             # Rich market data from Kalshi API
             yes_sub_title=data.get("yes_sub_title", ""),
             no_sub_title=data.get("no_sub_title", ""),
@@ -448,6 +451,18 @@ class TrackedMarketsState:
     def get_by_category(self, category: str) -> List[TrackedMarket]:
         """Get markets by category."""
         return [m for m in self._markets.values() if m.category.lower() == category.lower()]
+
+    def get_markets_by_event(self) -> Dict[str, List[TrackedMarket]]:
+        """Get markets grouped by event_ticker."""
+        result: Dict[str, List[TrackedMarket]] = {}
+        for market in self._markets.values():
+            if market.status != MarketStatus.ACTIVE:
+                continue
+            event_ticker = market.event_ticker or "unknown"
+            if event_ticker not in result:
+                result[event_ticker] = []
+            result[event_ticker].append(market)
+        return result
 
     # ======== Capacity Management ========
 

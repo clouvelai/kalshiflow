@@ -38,6 +38,7 @@ class TradesClient:
         on_trade_callback: Optional[Callable[[Dict[str, Any]], Any]] = None,
         max_reconnect_attempts: int = 10,
         base_reconnect_delay: float = 1.0,
+        market_tickers: Optional[List[str]] = None,
     ):
         """
         Initialize trades client.
@@ -48,12 +49,14 @@ class TradesClient:
             on_trade_callback: Async callback function(trade_data: dict) for trade events
             max_reconnect_attempts: Maximum reconnection attempts before giving up
             base_reconnect_delay: Base delay for exponential backoff
+            market_tickers: Optional list of tickers to filter trades for
         """
         self.ws_url = ws_url
         self.auth = auth
         self.on_trade_callback = on_trade_callback
         self.max_reconnect_attempts = max_reconnect_attempts
         self.base_reconnect_delay = base_reconnect_delay
+        self.market_tickers: Optional[List[str]] = list(market_tickers) if market_tickers else None
 
         # Connection state
         self._websocket: Optional[websockets.WebSocketClientProtocol] = None
@@ -177,13 +180,15 @@ class TradesClient:
         self._connection_established.clear()
 
     async def _subscribe_to_trades(self) -> None:
-        """Subscribe to the public trades channel."""
+        """Subscribe to the public trades channel, optionally filtered by market tickers."""
+        params = {"channels": ["trade"]}
+        if self.market_tickers:
+            params["market_tickers"] = self.market_tickers
+
         subscription_message = {
             "id": 1,
             "cmd": "subscribe",
-            "params": {
-                "channels": ["trade"]
-            }
+            "params": params,
         }
 
         logger.info(f"Sending trades subscription: {json.dumps(subscription_message)}")
@@ -204,6 +209,67 @@ class TradesClient:
         except asyncio.TimeoutError:
             logger.warning("Trade subscription response timeout, assuming subscribed")
             self._connection_established.set()
+
+    async def subscribe_tickers(self, tickers: List[str]) -> bool:
+        """Subscribe to additional market tickers on the live connection."""
+        if not tickers:
+            return True
+
+        new_tickers = [t for t in tickers if not self.market_tickers or t not in self.market_tickers]
+        if not new_tickers:
+            return True
+
+        if self.market_tickers is None:
+            self.market_tickers = []
+        self.market_tickers.extend(new_tickers)
+
+        if not self._websocket:
+            logger.info(f"Queued {len(new_tickers)} tickers for trade subscription (not connected)")
+            return True
+
+        msg = {
+            "id": 2,
+            "cmd": "subscribe",
+            "params": {
+                "channels": ["trade"],
+                "market_tickers": new_tickers,
+            },
+        }
+        try:
+            await self._websocket.send(json.dumps(msg))
+            logger.info(f"Subscribed to {len(new_tickers)} additional trade tickers")
+            return True
+        except Exception as e:
+            logger.warning(f"Failed to subscribe trade tickers: {e}")
+            return False
+
+    async def unsubscribe_tickers(self, tickers: List[str]) -> bool:
+        """Unsubscribe from market tickers."""
+        if not tickers or not self.market_tickers:
+            return True
+
+        for t in tickers:
+            if t in self.market_tickers:
+                self.market_tickers.remove(t)
+
+        if not self._websocket:
+            return True
+
+        msg = {
+            "id": 3,
+            "cmd": "unsubscribe",
+            "params": {
+                "channels": ["trade"],
+                "market_tickers": tickers,
+            },
+        }
+        try:
+            await self._websocket.send(json.dumps(msg))
+            logger.info(f"Unsubscribed from {len(tickers)} trade tickers")
+            return True
+        except Exception as e:
+            logger.warning(f"Failed to unsubscribe trade tickers: {e}")
+            return False
 
     async def _message_loop(self) -> None:
         """Process incoming WebSocket messages."""
@@ -372,6 +438,7 @@ class TradesClient:
             "uptime_seconds": uptime,
             "last_message_time": self._last_message_time,
             "last_message_age_seconds": message_age,
+            "market_tickers": self.market_tickers,
         }
 
     def get_health_details(self) -> Dict[str, Any]:

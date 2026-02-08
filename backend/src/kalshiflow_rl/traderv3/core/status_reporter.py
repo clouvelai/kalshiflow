@@ -289,7 +289,12 @@ class V3StatusReporter:
             if self._trading_client_integration:
                 order_group_id = self._trading_client_integration.get_order_group_id()
 
-            trading_summary = self._state_container.get_trading_summary(order_group_id)
+            # Get tracked event tickers for position filtering
+            tracked_event_tickers = None
+            if self._tracked_markets_state:
+                tracked_event_tickers = set(self._tracked_markets_state.get_markets_by_event().keys())
+
+            trading_summary = self._state_container.get_trading_summary(order_group_id, tracked_event_tickers)
 
             if not trading_summary.get("has_state"):
                 return  # No trading state to broadcast
@@ -332,24 +337,6 @@ class V3StatusReporter:
                     "sync_errors": health.get("sync_errors", 0),
                 }
 
-            # Build Truth Social cache health info
-            truth_social_cache_health = None
-            try:
-                from ..services.truth_social_cache import get_truth_social_cache
-                truth_cache = get_truth_social_cache()
-                if truth_cache:
-                    ts_health = truth_cache.get_health_details()
-                    truth_social_cache_health = {
-                        "healthy": ts_health.get("healthy", False),
-                        "available": ts_health.get("available", False),
-                        "cached_posts_count": ts_health.get("cached_posts_count", 0),
-                        "followed_handles_count": ts_health.get("followed_handles_count", 0),
-                        "last_refresh_age_seconds": ts_health.get("last_refresh_age_seconds"),
-                        "refresh_errors": ts_health.get("refresh_errors", 0),
-                        "following_discovery_failed": ts_health.get("following_discovery_failed", False),
-                    }
-            except Exception:
-                pass  # Truth Social cache not available
 
             # Build event position tracker data
             event_exposure_data = None
@@ -383,23 +370,12 @@ class V3StatusReporter:
                 "market_ticker_listener": market_ticker_listener_health,
                 # Market price syncer health (REST API price refresh)
                 "market_price_syncer": market_price_syncer_health,
-                # Truth Social cache health (evidence gathering)
-                "truth_social_cache": truth_social_cache_health,
                 # Settlements history for UI display
                 "settlements": trading_summary.get("settlements", []),
                 "settlements_count": trading_summary.get("settlements_count", 0),
                 # Market prices from ticker WebSocket (real-time bid/ask prices)
                 # Note: Market data is also merged into positions_details for convenience
                 "market_prices": trading_summary.get("market_prices"),
-                # RLM strategy configuration for frontend display
-                "rlm_config": {
-                    "min_trades": self._config.rlm_min_trades,
-                    "yes_threshold": self._config.rlm_yes_threshold,
-                    "min_price_drop": self._config.rlm_min_price_drop,
-                    "min_no_price": self._config.rlm_min_no_price,
-                    "contracts": self._config.rlm_contracts,
-                    "max_concurrent": self._config.rlm_max_concurrent,
-                },
                 # Event position tracking (correlated exposure detection)
                 "event_exposure": event_exposure_data,
                 # Event research results for initial snapshot (Events tab)
@@ -425,8 +401,14 @@ class V3StatusReporter:
                 logger.error(f"Error in status reporting: {e}")
     
     async def _monitor_trading_state(self) -> None:
-        """Monitor trading state version for broadcasts."""
+        """Monitor trading state version for broadcasts.
+
+        Broadcasts on version change (every 1s check) and forces a
+        refresh every 60s even without version changes, so late-joining
+        frontend clients always see fresh balance/P&L data.
+        """
         last_version = -1  # Start at -1 to ensure first check always broadcasts
+        last_forced_at = 0.0
 
         while self._running:
             try:
@@ -434,11 +416,13 @@ class V3StatusReporter:
 
                 # Check for version changes
                 current_version = self._state_container.trading_state_version
+                now = time.time()
 
-                # Only broadcast if state changed
-                if current_version > last_version:
+                # Broadcast if state changed OR 60s since last forced refresh
+                if current_version > last_version or (now - last_forced_at) >= 60.0:
                     await self.emit_trading_state()
                     last_version = current_version
+                    last_forced_at = now
 
             except asyncio.CancelledError:
                 break

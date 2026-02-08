@@ -7,6 +7,8 @@ Runs on port 8005 with minimal dependencies.
 
 import asyncio
 import logging
+import logging.handlers
+import os
 import sys
 from pathlib import Path
 from contextlib import asynccontextmanager
@@ -46,12 +48,101 @@ from src.kalshiflow_rl.traderv3.services.order_context_service import get_order_
 from src.kalshiflow_rl.data.database import rl_db
 from src.kalshiflow_rl.data.write_queue import get_write_queue
 
-# Configure logging
+# Configure logging - file handler writes to log file, stream handler writes to stderr.
+# run-captain.sh redirects stdout (not stderr) to the log file, so we use stderr
+# for the stream handler to avoid duplicate lines in the log file.
+_log_fmt = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+_log_dir = Path(__file__).parent.parent.parent.parent / "logs"
+_log_dir.mkdir(exist_ok=True)
+_file_handler = logging.handlers.RotatingFileHandler(
+    _log_dir / "v3-trader.log",
+    maxBytes=10 * 1024 * 1024,  # 10 MB
+    backupCount=3,
+)
+_file_handler.setFormatter(logging.Formatter(_log_fmt))
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format=_log_fmt,
+    handlers=[_file_handler],
 )
 logger = logging.getLogger("kalshiflow_rl.traderv3")
+
+
+def _configure_logging() -> None:
+    """Suppress noisy third-party and internal loggers.
+
+    Each suppression documents the real bug/noise source with issue numbers.
+    """
+    # ── Third-party loggers ──────────────────────────────────────────────
+    # Suppress noisy third-party loggers to WARNING (errors still surface).
+    for name in (
+        "httpx",                    # HTTP client debug
+        "httpcore",                 # HTTP connection pool debug
+        "hpack",                    # HTTP/2 header compression debug
+        "websockets",               # WebSocket protocol debug
+        "asyncio",                  # Event loop debug
+        "realtime._async.client",   # Supabase Realtime full JSON payloads
+        "realtime._async.channel",  # Supabase Realtime channel events
+        "realtime",                 # Supabase Realtime parent
+        "urllib3.connectionpool",   # ~633 lines – HTTP pool debug (keepalive)
+        "kalshiflow.auth",          # ~2,104 lines – RSA signature debug
+    ):
+        logging.getLogger(name).setLevel(logging.WARNING)
+
+    # BUG-4 (HIGH): OpenAI and Anthropic _base_client DEBUG loggers dump entire HTML
+    # pages and full request/response payloads (including system prompts, tool
+    # definitions, and third-party API keys embedded in error pages).
+    for name in ("openai", "openai._base_client",
+                 "anthropic", "anthropic._base_client"):
+        logging.getLogger(name).setLevel(logging.INFO)
+
+    # IMP-1: Event bus DEBUG logging is ~33% of all output.
+    # "Processing event: public_trade_received" and orderbook_delta events produce
+    # ~9,759 lines in 3 minutes. Set to INFO to keep operational messages only.
+    logging.getLogger("kalshiflow_rl.traderv3.event_bus").setLevel(logging.INFO)
+
+    # ── Problem 1 fix: Internal V3 loggers (CORRECTED logger names) ──────
+    # Round 2 suppressions had wrong logger names (services.* vs core.*, extra
+    # path segments). These are the ACTUAL getLogger() names from each module.
+    # All set to WARNING so ERRORs still surface.
+    for name in (
+        # 28.4% of output – lifecycle client heartbeat/sync chatter
+        "kalshiflow_rl.traderv3.clients.lifecycle_client",
+        # ~3,486 lines – "Broadcast trading state" every 0.5s
+        # WAS: "kalshiflow_rl.traderv3.services.status_reporter" (wrong path)
+        "kalshiflow_rl.traderv3.core.status_reporter",
+        # ~2,339 lines – "Market price updated" on every tick
+        # WAS: "kalshiflow_rl.traderv3.services.state_container" (wrong path)
+        "kalshiflow_rl.traderv3.core.state_container",
+        # ~5,651 lines – "Ticker update" per update
+        # WAS: "kalshiflow_rl.traderv3.clients.market_ticker_listener" (wrong path)
+        "kalshiflow_rl.traderv3.market_ticker_listener",
+        # ~4,252 lines – trading sync chatter
+        "kalshiflow_rl.traderv3.clients.trading_client_integration",
+        # ~1,031 lines – "Retrieved X markets" every sync
+        "kalshiflow_rl.traderv3.clients.demo_client",
+        # ~809 lines – connection mgmt debug
+        # WAS: "kalshiflow_rl.traderv3.core.websocket_manager" (wrong path)
+        "kalshiflow_rl.traderv3.websocket_manager",
+        # ~715 lines – lifecycle event processing
+        "kalshiflow_rl.traderv3.services.event_lifecycle_service",
+        # ~716 lines – "Lifecycle event stored" per DB write
+        # WAS: "kalshiflow_rl.traderv3.database" (wrong path – actual is data layer)
+        "kalshiflow_rl.database",
+        # ~285 lines – "Orderbook unhealthy" every 5s
+        # WAS: "kalshiflow_rl.traderv3.services.health_monitor" (wrong path)
+        "kalshiflow_rl.traderv3.core.health_monitor",
+        # Additional noisy data-layer loggers
+        "kalshiflow_rl.orderbook_client",
+        "kalshiflow_rl.write_queue",
+    ):
+        logging.getLogger(name).setLevel(logging.WARNING)
+
+    # Sniper rejection DEBUG logs are ~1500 lines/cycle when capital_limit blocks
+    logging.getLogger("kalshiflow_rl.traderv3.single_arb.sniper").setLevel(logging.INFO)
+
+
+_configure_logging()
 
 # Global coordinator instance
 coordinator: V3Coordinator = None
@@ -71,19 +162,23 @@ async def lifespan(app):
         load_dotenv()
         config = load_config()
         
-        # Initialize database for orderbook data persistence
+        # Initialize database for orderbook data persistence (non-fatal)
         logger.info("Initializing database...")
-        await rl_db.initialize()
+        try:
+            await rl_db.initialize()
 
-        # Initialize order context service with database pool
-        logger.info("Initializing order context service...")
-        order_context_service = get_order_context_service()
-        await order_context_service.initialize(db_pool=rl_db._pool)
+            # Initialize order context service with database pool
+            logger.info("Initializing order context service...")
+            order_context_service = get_order_context_service()
+            await order_context_service.initialize(db_pool=rl_db._pool)
 
-        # Start write queue for async database writes
-        logger.info("Starting write queue...")
-        write_queue = get_write_queue()
-        await write_queue.start()
+            # Start write queue for async database writes
+            logger.info("Starting write queue...")
+            write_queue = get_write_queue()
+            await write_queue.start()
+        except Exception as e:
+            logger.warning(f"Database initialization failed (non-fatal): {e}")
+            logger.warning("Continuing without database - orderbook persistence disabled")
         
         # Create core components
         logger.info("Creating V3 components...")
@@ -97,18 +192,12 @@ async def lifespan(app):
         # 3. WebSocket manager for frontend
         websocket_manager = V3WebSocketManager(event_bus=event_bus, state_machine=state_machine)
         
-        # 4. Select market tickers (discovery or config mode)
-        if config.market_tickers == ["DISCOVERY"]:
-            # Discovery/Lifecycle mode - start with EMPTY tickers
-            # TrackedMarketsState will manage subscriptions via callbacks
-            # This prevents duplicate subscription tracking
-            logger.info("Discovery/Lifecycle mode: starting with empty orderbook subscriptions")
-            logger.info("TrackedMarketsState will control subscriptions via callbacks")
-            market_tickers = []
+        # 4. Select market tickers
+        market_tickers = config.market_tickers
+        if market_tickers:
+            logger.info(f"Using {len(market_tickers)} target tickers")
         else:
-            # Config mode - use specified tickers
-            market_tickers = config.market_tickers
-            logger.info(f"Config mode: using {len(market_tickers)} configured markets")
+            logger.info("No target tickers - lifecycle discovery will manage subscriptions")
         
         # 5. Create orderbook client with selected markets and V3 event bus
         # Pass V3's event bus to OrderbookClient for direct integration
@@ -157,13 +246,9 @@ async def lifespan(app):
         # 8. Create trades client (required for strategies that need PUBLIC_TRADE_RECEIVED events)
         trades_integration = None
 
-        # Enable trades stream for:
-        # 1. RLM strategy (legacy - needs trade data for signal detection)
-        # 2. Lifecycle mode (strategies like agentic_research need PUBLIC_TRADE_RECEIVED events)
-        needs_trades_stream = config.trading_strategy_str == "rlm_no" or config.market_mode == "lifecycle"
-
-        if needs_trades_stream:
-            logger.info(f"Creating trades client (strategy={config.trading_strategy_str}, mode={config.market_mode})...")
+        # Trades stream always enabled (TradeFlowService + deep agent need it)
+        if config.enable_trading_client:
+            logger.info("Creating trades client...")
 
             # Create KalshiAuth for trades WebSocket
             auth = KalshiAuth.from_env()
@@ -182,7 +267,7 @@ async def lifespan(app):
 
             logger.info("Trades stream ENABLED - strategies will receive PUBLIC_TRADE_RECEIVED events")
         else:
-            logger.info(f"Trades stream disabled (strategy={config.trading_strategy_str}, mode={config.market_mode})")
+            logger.info("Trades stream disabled (trading client disabled)")
 
         # 9. Create coordinator with discovered/configured markets
         # Update config with the actual markets being used
@@ -201,6 +286,9 @@ async def lifespan(app):
         # Start the system
         await coordinator.start()
         
+        logger.info("[V3:STARTUP] environment=%s markets=%d single_arb=%s",
+                     config.get_environment_name(), len(config.market_tickers),
+                     config.single_arb_enabled)
         logger.info("TRADER V3 ready to serve requests")
         
         yield
@@ -242,6 +330,7 @@ async def lifespan(app):
         except Exception as e:
             logger.error(f"Error closing database: {e}")
         
+        logger.info("[V3:SHUTDOWN] complete")
         logger.info("TRADER V3 shutdown complete")
 
 
@@ -361,6 +450,59 @@ async def websocket_endpoint(websocket: WebSocket):
     await coordinator._websocket_manager.handle_websocket(websocket)
 
 
+async def captain_control_endpoint(request: Request):
+    """
+    Captain pause/resume control endpoint.
+
+    POST /v3/captain/control
+    Body: {"type": "captain_pause"} or {"type": "captain_resume"}
+
+    Returns:
+        JSON with current captain status
+    """
+    if not coordinator:
+        return JSONResponse(
+            {"error": "System not initialized"},
+            status_code=503
+        )
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse(
+            {"error": "Invalid JSON body"},
+            status_code=400
+        )
+
+    cmd_type = body.get("type", "")
+
+    # Access the single-arb coordinator via the V3 coordinator
+    single_arb = getattr(coordinator, "_single_arb_coordinator", None)
+    if not single_arb:
+        return JSONResponse(
+            {"error": "Single-arb coordinator not available"},
+            status_code=400
+        )
+
+    if cmd_type == "captain_pause":
+        single_arb.pause_captain()
+        return JSONResponse({
+            "status": "paused",
+            "paused": True,
+        })
+    elif cmd_type == "captain_resume":
+        single_arb.resume_captain()
+        return JSONResponse({
+            "status": "resumed",
+            "paused": False,
+        })
+    else:
+        return JSONResponse(
+            {"error": f"Unknown command type: {cmd_type}. Use 'captain_pause' or 'captain_resume'."},
+            status_code=400
+        )
+
+
 async def export_order_contexts_endpoint(request: Request):
     """
     Export order contexts as CSV for quant analysis.
@@ -442,6 +584,7 @@ async def export_order_contexts_endpoint(request: Request):
         )
 
 
+
 # Create Starlette application
 app = Starlette(
     lifespan=lifespan,
@@ -449,8 +592,9 @@ app = Starlette(
         Route("/v3/health", health_endpoint),
         Route("/v3/status", status_endpoint),
         Route("/v3/cleanup", cleanup_endpoint, methods=["POST"]),
+        Route("/v3/captain/control", captain_control_endpoint, methods=["POST"]),
         Route("/v3/export/order-contexts", export_order_contexts_endpoint),
-        WebSocketRoute("/v3/ws", websocket_endpoint)
+        WebSocketRoute("/v3/ws", websocket_endpoint),
     ]
 )
 

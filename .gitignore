@@ -113,3 +113,6 @@ backups/
 # Research cache and backups
 research/data/cache/
 *.bak.*.csv
+
+# Captain agent runtime data (journals, memories, simulations)
+backend/src/kalshiflow_rl/traderv3/single_arb/memory/data/

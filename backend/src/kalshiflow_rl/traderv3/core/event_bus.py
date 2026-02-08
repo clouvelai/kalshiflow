@@ -17,6 +17,7 @@ Key Responsibilities:
     4. **Performance Monitoring** - Tracks event throughput and errors
     5. **Type Safety** - Strongly-typed events with dataclasses
     6. **Circuit Breaking** - Protects against cascading failures
+    7. **Batch Draining** - Processes events in batches to handle bursty traffic
 
 Event Types:
     - ORDERBOOK_SNAPSHOT/DELTA: Market data updates from Kalshi
@@ -41,15 +42,23 @@ Design Principles:
     - **Scalable**: Queue-based with configurable capacity
 
 Performance Characteristics:
-    - Queue capacity: 1000 events (configurable)
+    - Queue capacity: 10,000 events (configurable via QUEUE_CAPACITY)
+    - Batch drain: Up to 500 events per processing cycle (configurable via BATCH_SIZE)
+    - Ticker coalescing: Duplicate market_ticker_update events within a batch
+      are collapsed to keep only the latest per market ticker
+    - Critical events (trades, fills, state transitions): concurrent subscriber
+      notification via asyncio.gather for lowest latency
+    - Non-critical events: sequential subscriber notification to reduce task overhead
     - Processing timeout: 5 seconds per batch
-    - Callback timeout: 5 seconds per subscriber group
+    - Callback timeout: 5 seconds per subscriber group (critical path only)
     - Circuit breaker: Triggers at 100 callback errors
+    - Drop reporting: Aggregated every 30 seconds to avoid log spam
 """
 
 import asyncio
 import logging
 import time
+from collections import defaultdict
 from typing import Dict, List, Callable, Any, Optional
 
 from .events import (
@@ -65,74 +74,117 @@ from .events import (
     MarketLifecycleEvent,
     MarketTrackedEvent,
     MarketDeterminedEvent,
-    RLMMarketUpdateEvent,
-    RLMTradeArrivedEvent,
+    TradeFlowMarketUpdateEvent,
+    TradeFlowTradeArrivedEvent,
     TMOFetchedEvent,
 )
 
 logger = logging.getLogger("kalshiflow_rl.traderv3.event_bus")
 
+# ============================================================
+# Tunable constants
+# ============================================================
+
+# Maximum number of events the queue can hold before dropping.
+# 50K provides ~7+ hours of headroom given the pre-filter reduces
+# inbound trade volume by ~80% and steady-state production is ~10 ev/s.
+QUEUE_CAPACITY = 50_000
+
+# How many queued events to drain per processing cycle.  Keeps the
+# consumer from falling behind during bursty traffic while still
+# yielding to the event loop between batches.
+BATCH_SIZE = 10000
+
+# How often (seconds) to log aggregated drop statistics.
+# Prevents per-event warning spam during sustained back-pressure.
+DROP_REPORT_INTERVAL = 30.0
+
+# Event types that use concurrent subscriber notification (asyncio.gather).
+# All other event types use sequential notification to reduce task overhead.
+# Only latency-sensitive events that benefit from parallelism should be here.
+CRITICAL_EVENT_TYPES = frozenset({
+    "public_trade_received",
+    "order_fill",
+    "state_transition",
+    "orderbook_snapshot",
+    "orderbook_delta",
+    "poly_price_update",
+    "kalshi_api_price_update",
+})
+
 
 class EventBus:
     """
     Async event bus for TRADER V3 - the system's nervous system.
-    
+
     Implements a high-performance publish-subscribe pattern with
     async processing, error isolation, and comprehensive monitoring.
     All events flow through a queue for non-blocking operation.
-    
+
     Core Features:
         - **Non-blocking emission**: Publishers never wait
-        - **Async processing**: Background task processes events
+        - **Async processing**: Background task processes events in batches
         - **Error isolation**: Subscriber errors are contained
-        - **Performance monitoring**: Tracks throughput and errors
+        - **Performance monitoring**: Tracks throughput, errors, and drops
         - **Circuit breaker**: Protects against failure cascades
         - **Type-safe events**: Strongly typed event dataclasses
-    
+        - **Burst tolerance**: 10k queue + batch drain handles WebSocket bursts
+
     Key Attributes:
         _subscribers: Dict mapping event types to callback lists
-        _event_queue: Async queue for event processing (max 1000)
+        _event_queue: Async queue for event processing (max QUEUE_CAPACITY)
         _processing_task: Background task processing events
         _running: Whether the bus is operational
         _events_emitted: Counter of events published
         _events_processed: Counter of events delivered
+        _events_dropped: Counter of events dropped due to full queue
+        _drops_by_type: Per-EventType drop counters for diagnostics
         _callback_errors: Counter of subscriber errors
-    
+
     Thread Safety:
         Designed for single event loop operation. All methods
         should be called from the same asyncio event loop.
-    
+
     Usage Pattern:
         ```python
         bus = EventBus()
         await bus.start()
-        
+
         # Subscribe to events
         bus.subscribe(EventType.STATE_TRANSITION, my_callback)
-        
+
         # Emit events (non-blocking)
         await bus.emit_state_transition("idle", "ready", "System started")
-        
+
         await bus.stop()
         ```
     """
-    
+
     def __init__(self):
-        """Initialize event bus."""
+        """Initialize event bus with 10k queue and batch drain support."""
         self._subscribers: Dict[EventType, List[Callable]] = {}
-        self._event_queue: asyncio.Queue = asyncio.Queue(maxsize=1000)
+        self._event_queue: asyncio.Queue = asyncio.Queue(maxsize=QUEUE_CAPACITY)
         self._processing_task: Optional[asyncio.Task] = None
         self._running = False
         self._shutdown_requested = False
-        
+
         # Performance monitoring
         self._events_emitted = 0
         self._events_processed = 0
+        self._events_coalesced = 0
         self._callback_errors = 0
         self._last_error: Optional[str] = None
         self._started_at: Optional[float] = None
-        
-        logger.info("TRADER V3 EventBus initialized")
+
+        # Drop tracking -- aggregated to avoid per-event log spam
+        self._events_dropped = 0
+        self._drops_by_type: Dict[str, int] = defaultdict(int)
+        self._last_drop_report_time: float = 0.0
+
+        logger.info(
+            "TRADER V3 EventBus initialized "
+            f"(queue_capacity={QUEUE_CAPACITY}, batch_size={BATCH_SIZE})"
+        )
     
     async def start(self) -> None:
         """Start the event bus processing loop."""
@@ -170,7 +222,16 @@ class EventBus:
         # Clear subscribers
         self._subscribers.clear()
         
-        logger.info(f"✅ TRADER V3 EventBus stopped. Events emitted: {self._events_emitted}, processed: {self._events_processed}")
+        # Log final drop report if there were any drops
+        if self._events_dropped > 0:
+            self._log_drop_report()
+
+        logger.info(
+            f"TRADER V3 EventBus stopped. "
+            f"emitted={self._events_emitted}, "
+            f"processed={self._events_processed}, "
+            f"dropped={self._events_dropped}"
+        )
     
     def subscribe(self, event_type: EventType, callback: Callable) -> None:
         """
@@ -201,6 +262,31 @@ class EventBus:
             except ValueError:
                 logger.warning(f"Callback not found in subscribers: {callback.__name__}")
     
+    async def emit(self, event_type: EventType, event: Any) -> bool:
+        """
+        Emit an arbitrary event through the bus.
+
+        Generic emit for event types that don't have a dedicated emit_* method
+        (e.g., arb events: POLY_PRICE_UPDATE, SPREAD_UPDATE, SPREAD_TRADE_EXECUTED).
+
+        The event object must have an `event_type` attribute matching the EventType
+        so _notify_subscribers can route it correctly.
+
+        Args:
+            event_type: Type of event (used for subscriber lookup)
+            event: Event dataclass with event_type attribute
+
+        Returns:
+            True if event was queued, False if queue full or bus not running
+        """
+        if not self._running:
+            return False
+
+        if not hasattr(event, "event_type"):
+            event.event_type = event_type
+
+        return await self._queue_event(event)
+
     async def emit_market_event(
         self,
         event_type: EventType,
@@ -766,23 +852,23 @@ class EventBus:
         logger.debug(f"Added market determined subscriber: {callback.__name__}")
 
     # ============================================================
-    # RLM (Reverse Line Movement) Event Methods
+    # Trade Flow Event Methods
     # ============================================================
 
-    async def emit_rlm_market_update(
+    async def emit_trade_flow_market_update(
         self,
         market_ticker: str,
         state: Dict[str, Any],
     ) -> bool:
         """
-        Emit an RLM market state update event (non-blocking).
+        Emit a trade flow market state update event (non-blocking).
 
-        Called by RLMService when a tracked market's trade state changes.
+        Called by MarketStateAgent when a tracked market's trade state changes.
         Used for real-time UI updates showing trade direction and price movement.
 
         Args:
             market_ticker: Market ticker for this update
-            state: Dictionary containing RLM state (yes_trades, no_trades, etc.)
+            state: Dictionary containing trade flow state (yes_trades, no_trades, etc.)
 
         Returns:
             True if event was queued, False if queue full
@@ -790,8 +876,8 @@ class EventBus:
         if not self._running:
             return False
 
-        event = RLMMarketUpdateEvent(
-            event_type=EventType.RLM_MARKET_UPDATE,
+        event = TradeFlowMarketUpdateEvent(
+            event_type=EventType.TRADE_FLOW_MARKET_UPDATE,
             market_ticker=market_ticker,
             state=state,
             timestamp=time.time(),
@@ -799,24 +885,26 @@ class EventBus:
 
         return await self._queue_event(event)
 
-    async def emit_rlm_trade_arrived(
+    async def emit_trade_flow_trade_arrived(
         self,
         market_ticker: str,
         side: str,
         count: int,
-        price_cents: int,
+        yes_price: int,
+        event_ticker: str = "",
     ) -> bool:
         """
-        Emit an RLM trade arrived event (non-blocking).
+        Emit a trade flow trade arrived event (non-blocking).
 
-        Called by RLMService for every trade in a tracked market.
+        Called by MarketStateAgent for every trade in a tracked market.
         Used for real-time UI pulse/glow animations on trade arrival.
 
         Args:
             market_ticker: Market ticker where trade occurred
             side: Trade side ("yes" or "no")
             count: Number of contracts in this trade
-            price_cents: Trade price in cents
+            yes_price: YES price in cents
+            event_ticker: Event ticker this market belongs to
 
         Returns:
             True if event was queued, False if queue full
@@ -824,42 +912,43 @@ class EventBus:
         if not self._running:
             return False
 
-        event = RLMTradeArrivedEvent(
-            event_type=EventType.RLM_TRADE_ARRIVED,
+        event = TradeFlowTradeArrivedEvent(
+            event_type=EventType.TRADE_FLOW_TRADE_ARRIVED,
             market_ticker=market_ticker,
+            event_ticker=event_ticker,
             side=side,
             count=count,
-            price_cents=price_cents,
+            price_cents=yes_price,
             timestamp=time.time(),
         )
 
         return await self._queue_event(event)
 
-    async def subscribe_to_rlm_market_update(self, callback: Callable) -> None:
+    async def subscribe_to_trade_flow_market_update(self, callback: Callable) -> None:
         """
-        Subscribe to RLM market update events.
+        Subscribe to trade flow market update events.
 
         Args:
-            callback: Async function(event: RLMMarketUpdateEvent) to call on update
+            callback: Async function(event: TradeFlowMarketUpdateEvent) to call on update
         """
-        if EventType.RLM_MARKET_UPDATE not in self._subscribers:
-            self._subscribers[EventType.RLM_MARKET_UPDATE] = []
+        if EventType.TRADE_FLOW_MARKET_UPDATE not in self._subscribers:
+            self._subscribers[EventType.TRADE_FLOW_MARKET_UPDATE] = []
 
-        self._subscribers[EventType.RLM_MARKET_UPDATE].append(callback)
-        logger.debug(f"Added RLM market update subscriber: {callback.__name__}")
+        self._subscribers[EventType.TRADE_FLOW_MARKET_UPDATE].append(callback)
+        logger.debug(f"Added trade flow market update subscriber: {callback.__name__}")
 
-    async def subscribe_to_rlm_trade_arrived(self, callback: Callable) -> None:
+    async def subscribe_to_trade_flow_trade_arrived(self, callback: Callable) -> None:
         """
-        Subscribe to RLM trade arrived events.
+        Subscribe to trade flow trade arrived events.
 
         Args:
-            callback: Async function(event: RLMTradeArrivedEvent) to call on trade
+            callback: Async function(event: TradeFlowTradeArrivedEvent) to call on trade
         """
-        if EventType.RLM_TRADE_ARRIVED not in self._subscribers:
-            self._subscribers[EventType.RLM_TRADE_ARRIVED] = []
+        if EventType.TRADE_FLOW_TRADE_ARRIVED not in self._subscribers:
+            self._subscribers[EventType.TRADE_FLOW_TRADE_ARRIVED] = []
 
-        self._subscribers[EventType.RLM_TRADE_ARRIVED].append(callback)
-        logger.debug(f"Added RLM trade arrived subscriber: {callback.__name__}")
+        self._subscribers[EventType.TRADE_FLOW_TRADE_ARRIVED].append(callback)
+        logger.debug(f"Added trade flow trade arrived subscriber: {callback.__name__}")
 
     # ============================================================
     # True Market Open (TMO) Event Methods
@@ -898,6 +987,68 @@ class EventBus:
 
         return await self._queue_event(event)
 
+    async def emit_ticker_update(
+        self,
+        market_ticker: str,
+        metadata: Dict[str, Any],
+    ) -> bool:
+        """
+        Emit a ticker_v2 update event for single-arb enrichment.
+
+        Uses the MarketEvent type with TICKER_UPDATE EventType so the
+        EventArbMonitor receives (market_ticker, metadata) via
+        _notify_subscribers' market-event path.
+
+        Args:
+            market_ticker: Market ticker for this update
+            metadata: Price/volume/OI data from the ticker channel
+
+        Returns:
+            True if event was queued, False if queue full
+        """
+        if not self._running:
+            return False
+
+        ts = metadata.get("timestamp_ms", int(time.time() * 1000))
+        return await self.emit_market_event(
+            event_type=EventType.TICKER_UPDATE,
+            market_ticker=market_ticker,
+            sequence_number=0,
+            timestamp_ms=ts,
+            metadata=metadata,
+        )
+
+    async def emit_market_trade(
+        self,
+        market_ticker: str,
+        metadata: Dict[str, Any],
+    ) -> bool:
+        """
+        Emit a public trade event for single-arb enrichment.
+
+        Uses the MarketEvent type with MARKET_TRADE EventType so the
+        EventArbMonitor receives (market_ticker, metadata) via
+        _notify_subscribers' market-event path.
+
+        Args:
+            market_ticker: Market ticker for this trade
+            metadata: Trade data (yes_price, no_price, count, taker_side, ts)
+
+        Returns:
+            True if event was queued, False if queue full
+        """
+        if not self._running:
+            return False
+
+        ts = metadata.get("ts", 0) * 1000 if metadata.get("ts") else int(time.time() * 1000)
+        return await self.emit_market_event(
+            event_type=EventType.MARKET_TRADE,
+            market_ticker=market_ticker,
+            sequence_number=0,
+            timestamp_ms=ts,
+            metadata=metadata,
+        )
+
     async def subscribe_to_tmo_fetched(self, callback: Callable) -> None:
         """
         Subscribe to TMO fetched events.
@@ -914,10 +1065,15 @@ class EventBus:
     async def _queue_event(self, event: Any) -> bool:
         """
         Queue an event for processing.
-        
+
+        On queue-full, the event is dropped and the drop is recorded by
+        event type. Drop statistics are logged periodically (every
+        DROP_REPORT_INTERVAL seconds) instead of per-event to prevent
+        log spam during sustained back-pressure.
+
         Args:
             event: Event object to queue
-            
+
         Returns:
             True if event was queued, False if queue full
         """
@@ -926,115 +1082,265 @@ class EventBus:
             self._event_queue.put_nowait(event)
             self._events_emitted += 1
             return True
-            
+
         except asyncio.QueueFull:
-            logger.warning(f"Event queue full, dropping event of type {event.event_type.value}")
+            # Track drop by event type
+            event_type_value = event.event_type.value if hasattr(event, "event_type") else "unknown"
+            self._events_dropped += 1
+            self._drops_by_type[event_type_value] += 1
+
+            # Periodic aggregated drop report (avoids per-event log spam)
+            now = time.time()
+            if now - self._last_drop_report_time >= DROP_REPORT_INTERVAL:
+                self._log_drop_report()
+                self._last_drop_report_time = now
+
             return False
         except Exception as e:
             logger.error(f"Error queuing event: {e}")
             return False
+
+    def _log_drop_report(self) -> None:
+        """
+        Log aggregated drop statistics and reset per-type counters.
+
+        Called at most every DROP_REPORT_INTERVAL seconds from _queue_event
+        to provide actionable diagnostics without flooding logs.
+        """
+        if not self._drops_by_type:
+            return
+
+        breakdown = ", ".join(
+            f"{etype}={count}" for etype, count in sorted(
+                self._drops_by_type.items(), key=lambda x: x[1], reverse=True
+            )
+        )
+        logger.warning(
+            f"EventBus dropped {self._events_dropped} events total "
+            f"(queue_capacity={QUEUE_CAPACITY}). "
+            f"Recent breakdown: {breakdown}. "
+            f"Queue size: {self._event_queue.qsize()}/{QUEUE_CAPACITY}"
+        )
+        # Reset per-type counters after reporting (total stays cumulative)
+        self._drops_by_type.clear()
     
     async def _process_events(self) -> None:
         """
         Main event processing loop (runs in background).
-        
+
         This is the heart of the event bus - a background task that
         continuously pulls events from the queue and distributes them
         to subscribers. It provides error isolation and timeout protection.
-        
+
         Processing Flow:
-            1. Wait for event from queue (1s timeout)
-            2. Identify subscribers for event type
-            3. Call all subscribers concurrently
-            4. Isolate any subscriber errors
-            5. Continue to next event
-        
+            1. Wait for first event from queue (1s timeout)
+            2. Drain up to BATCH_SIZE events from the queue (non-blocking)
+            3. Process all drained events sequentially
+            4. Yield to event loop between batches
+            5. Repeat
+
+        Batch Draining:
+            After receiving the first event via blocking get(), the loop
+            drains up to (BATCH_SIZE - 1) additional events using
+            get_nowait(). This lets the consumer keep pace with bursty
+            WebSocket traffic (e.g. 30-40 orderbook deltas arriving in
+            the same millisecond) without falling behind.
+
         Error Handling:
             - Subscriber errors are logged but don't stop processing
             - Queue timeouts just continue the loop
             - CancelledError stops the loop gracefully
-        
+
         Performance:
-            - Processes events as fast as subscribers can handle
+            - Batch drain keeps consumer from falling behind bursts
             - Concurrent subscriber notification for parallelism
             - 5-second timeout on subscriber batch completion
         """
         logger.info("TRADER V3 event processing loop started")
-        
+
         while not self._shutdown_requested:
             try:
-                # Wait for events with timeout
+                # Block-wait for the first event (1s timeout)
                 try:
-                    event = await asyncio.wait_for(self._event_queue.get(), timeout=1.0)
+                    first_event = await asyncio.wait_for(
+                        self._event_queue.get(), timeout=1.0
+                    )
                 except asyncio.TimeoutError:
                     continue
-                
-                # Debug log event processing
-                logger.debug(f"Processing event: {event.event_type.value if hasattr(event, 'event_type') else type(event).__name__}")
-                
-                # Process event by notifying all subscribers
-                await self._notify_subscribers(event)
-                
-                # Mark task as done
-                self._event_queue.task_done()
-                self._events_processed += 1
-                
+
+                # Drain up to BATCH_SIZE events from the queue (non-blocking).
+                batch = [first_event]
+                for _ in range(BATCH_SIZE - 1):
+                    try:
+                        batch.append(self._event_queue.get_nowait())
+                    except asyncio.QueueEmpty:
+                        break
+
+                # Coalesce market_ticker_update events: keep only the
+                # latest update per market ticker to reduce subscriber load.
+                batch = self._coalesce_ticker_updates(batch)
+
+                # Process each event in the batch
+                for event in batch:
+                    try:
+                        logger.debug(
+                            f"Processing event: "
+                            f"{event.event_type.value if hasattr(event, 'event_type') else type(event).__name__}"
+                        )
+                        await self._notify_subscribers(event)
+                    except Exception as e:
+                        logger.error(f"Error notifying subscribers for event: {e}")
+                    finally:
+                        self._event_queue.task_done()
+                        self._events_processed += 1
+
             except asyncio.CancelledError:
                 logger.info("Event processing loop cancelled")
                 break
             except Exception as e:
                 logger.error(f"Error in event processing loop: {e}")
                 await asyncio.sleep(0.1)  # Brief pause on error
-        
+
         logger.info("TRADER V3 event processing loop stopped")
     
+    def _coalesce_ticker_updates(self, batch: list) -> list:
+        """
+        Coalesce high-frequency events within a batch.
+
+        For "latest-wins" event types, only the most recent event per key
+        is kept. All earlier events for the same key are dropped since
+        only the most recent data matters. Non-coalescable event types
+        pass through unchanged.
+
+        Coalesced event types and their dedup keys:
+            - market_ticker_update: market_ticker
+            - orderbook_delta: market_ticker
+            - orderbook_snapshot: market_ticker
+
+        Args:
+            batch: List of events drained from the queue
+
+        Returns:
+            Filtered batch with deduplicated events
+        """
+        # Fast path: nothing to coalesce in small batches
+        if len(batch) <= 1:
+            return batch
+
+        # Per-type seen sets for dedup keys
+        seen_ticker: set = set()       # market_ticker_update
+        seen_ob_delta: set = set()     # orderbook_delta
+        seen_ob_snap: set = set()      # orderbook_snapshot
+
+        coalesced: list = []
+        coalesced_count = 0
+
+        # Walk in reverse so the LAST (most recent) event per key survives
+        for event in reversed(batch):
+            if not hasattr(event, "event_type"):
+                coalesced.append(event)
+                continue
+
+            et = event.event_type
+            drop = False
+
+            if et == EventType.MARKET_TICKER_UPDATE and hasattr(event, "market_ticker"):
+                key = event.market_ticker
+                if key in seen_ticker:
+                    drop = True
+                else:
+                    seen_ticker.add(key)
+
+            elif et == EventType.ORDERBOOK_DELTA and hasattr(event, "market_ticker"):
+                key = event.market_ticker
+                if key in seen_ob_delta:
+                    drop = True
+                else:
+                    seen_ob_delta.add(key)
+
+            elif et == EventType.ORDERBOOK_SNAPSHOT and hasattr(event, "market_ticker"):
+                key = event.market_ticker
+                if key in seen_ob_snap:
+                    drop = True
+                else:
+                    seen_ob_snap.add(key)
+
+            if drop:
+                self._event_queue.task_done()
+                self._events_coalesced += 1
+                coalesced_count += 1
+            else:
+                coalesced.append(event)
+
+        # Reverse back to original order
+        coalesced.reverse()
+
+        if coalesced_count > 0:
+            logger.debug(
+                f"Coalesced {coalesced_count} events "
+                f"({len(batch)} -> {len(coalesced)} events)"
+            )
+
+        return coalesced
+
     async def _notify_subscribers(self, event: Any) -> None:
         """
         Notify all subscribers of an event with error isolation.
-        
+
         Distributes an event to all registered subscribers for that
-        event type. Calls are made concurrently for performance, with
-        error isolation to prevent one bad subscriber from affecting others.
-        
+        event type. For critical event types (trades, fills, state transitions),
+        subscribers are called concurrently via asyncio.gather for lowest
+        latency. For all other event types, subscribers are called sequentially
+        to avoid the overhead of creating N async tasks per event.
+
         Special Handling:
             - MarketEvent: Extracts market_ticker and metadata parameters
             - Other events: Passes full event object to callback
-        
+
         Args:
             event: Event object to distribute to subscribers
-        
+
         Implementation Notes:
-            - Creates async tasks for concurrent execution
-            - 5-second timeout on all subscriber callbacks
+            - Critical events: concurrent tasks with 5-second timeout
+            - Non-critical events: sequential calls with per-subscriber error isolation
             - Logs but doesn't fail on individual callback errors
         """
         # Copy subscriber list to prevent mutation during iteration
         subscribers = list(self._subscribers.get(event.event_type, []))
-        
+
         if not subscribers:
-            logger.debug(f"No subscribers for event type: {event.event_type.value}")
             return
-        
+
         logger.debug(f"Notifying {len(subscribers)} subscribers for {event.event_type.value}")
-        
-        # Call all subscribers concurrently with error isolation
+
+        # Determine call args based on event type
+        # MarketEvents with metadata use (market_ticker, metadata) signature for callbacks
+        is_market_event_with_metadata = isinstance(event, MarketEvent) and event.event_type in [
+            EventType.ORDERBOOK_SNAPSHOT, EventType.ORDERBOOK_DELTA,
+            EventType.TICKER_UPDATE, EventType.MARKET_TRADE,
+        ]
+
+        # All events use concurrent notification for maximum throughput
         tasks = []
         for callback in subscribers:
-            # For orderbook events, extract the parameters for callbacks
-            if isinstance(event, MarketEvent) and event.event_type in [EventType.ORDERBOOK_SNAPSHOT, EventType.ORDERBOOK_DELTA]:
-                # Call with extracted parameters (market_ticker, metadata)
-                task = asyncio.create_task(self._safe_call_subscriber(callback, event.market_ticker, event.metadata or {}))
+            if is_market_event_with_metadata:
+                task = asyncio.create_task(
+                    self._safe_call_subscriber(callback, event.market_ticker, event.metadata or {})
+                )
             else:
-                # Call with the full event object
-                task = asyncio.create_task(self._safe_call_subscriber(callback, event))
+                task = asyncio.create_task(
+                    self._safe_call_subscriber(callback, event)
+                )
             tasks.append(task)
-        
-        # Wait for all callbacks to complete (with timeout)
+
         if tasks:
             try:
-                await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=5.0)
+                await asyncio.wait_for(
+                    asyncio.gather(*tasks, return_exceptions=True), timeout=5.0
+                )
             except asyncio.TimeoutError:
-                logger.warning(f"Subscriber callbacks timeout for {event.event_type.value}")
+                event_type_value = event.event_type.value if hasattr(event, "event_type") else ""
+                logger.warning(f"Subscriber callbacks timeout for {event_type_value}")
     
     async def _safe_call_subscriber(self, callback: Callable, *args) -> None:
         """
@@ -1056,19 +1362,22 @@ class EventBus:
             logger.error(f"Error in subscriber callback {callback.__name__}: {e}")
     
     def get_stats(self) -> Dict[str, Any]:
-        """Get event bus statistics."""
+        """Get event bus statistics including drop metrics."""
         uptime = time.time() - self._started_at if self._started_at else 0
-        
+
         return {
             "running": self._running,
             "events_emitted": self._events_emitted,
             "events_processed": self._events_processed,
+            "events_coalesced": self._events_coalesced,
+            "events_dropped": self._events_dropped,
             "callback_errors": self._callback_errors,
             "last_error": self._last_error,
             "queue_size": self._event_queue.qsize(),
+            "queue_capacity": QUEUE_CAPACITY,
             "subscriber_count": sum(len(subs) for subs in self._subscribers.values()),
             "uptime_seconds": uptime,
-            "events_per_second": self._events_processed / max(uptime, 1)
+            "events_per_second": self._events_processed / max(uptime, 1),
         }
     
     def is_healthy(self) -> bool:
@@ -1103,7 +1412,7 @@ class EventBus:
     def get_health_details(self) -> Dict[str, Any]:
         """
         Get detailed health information.
-        
+
         Returns:
             Dictionary with health status and operational details
         """
@@ -1115,7 +1424,10 @@ class EventBus:
             ),
             "events_emitted": stats.get("events_emitted", 0),
             "events_processed": stats.get("events_processed", 0),
+            "events_dropped": stats.get("events_dropped", 0),
+            "events_coalesced": stats.get("events_coalesced", 0),
             "queue_size": stats.get("queue_size", 0),
+            "queue_capacity": stats.get("queue_capacity", QUEUE_CAPACITY),
             "subscriber_count": stats.get("subscriber_count", 0),
             "callback_errors": stats.get("callback_errors", 0),
             "last_error": stats.get("last_error"),

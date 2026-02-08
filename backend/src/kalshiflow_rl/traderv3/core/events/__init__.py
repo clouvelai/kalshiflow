@@ -7,7 +7,7 @@ the V3 trading system. Events are organized by category:
 - types: EventType enum defining all event types
 - market_events: Market data, positions, tickers, and fills
 - lifecycle_events: Market creation, tracking, and determination
-- rlm_events: Reverse Line Movement and True Market Open
+- trade_flow_events: Trade flow tracking and True Market Open
 - system_events: System activity and status
 
 Usage:
@@ -34,9 +34,9 @@ from .lifecycle_events import (
     MarketDeterminedEvent,
 )
 
-from .rlm_events import (
-    RLMMarketUpdateEvent,
-    RLMTradeArrivedEvent,
+from .trade_flow_events import (
+    TradeFlowMarketUpdateEvent,
+    TradeFlowTradeArrivedEvent,
     TMOFetchedEvent,
 )
 
@@ -59,9 +59,9 @@ __all__ = [
     "MarketLifecycleEvent",
     "MarketTrackedEvent",
     "MarketDeterminedEvent",
-    # RLM events
-    "RLMMarketUpdateEvent",
-    "RLMTradeArrivedEvent",
+    # Trade flow events
+    "TradeFlowMarketUpdateEvent",
+    "TradeFlowTradeArrivedEvent",
     "TMOFetchedEvent",
     # System events
     "StateTransitionEvent",

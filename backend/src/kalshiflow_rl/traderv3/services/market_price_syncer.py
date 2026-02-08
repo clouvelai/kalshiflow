@@ -65,6 +65,7 @@ class MarketPriceSyncer:
         self._tickers_synced: int = 0
         self._sync_errors: int = 0
         self._last_error: Optional[str] = None
+        self._logged_sample_keys: bool = False
 
         logger.info(f"MarketPriceSyncer initialized (sync_interval={sync_interval}s)")
 
@@ -152,14 +153,15 @@ class MarketPriceSyncer:
             synced_count = 0
             now = time.time()
 
-            # Log first market response for debugging
-            if markets:
+            # Log sample market response keys only on first sync (avoid ~68 lines/session spam)
+            if markets and not self._logged_sample_keys:
                 sample = markets[0]
                 logger.info(f"Sample market API response keys: {list(sample.keys())}")
                 logger.info(f"Sample market prices: ticker={sample.get('ticker')}, "
                            f"yes_bid={sample.get('yes_bid')}, yes_ask={sample.get('yes_ask')}, "
                            f"no_bid={sample.get('no_bid')}, no_ask={sample.get('no_ask')}, "
                            f"last_price={sample.get('last_price')}")
+                self._logged_sample_keys = True
 
             for market in markets:
                 ticker = market.get("ticker")

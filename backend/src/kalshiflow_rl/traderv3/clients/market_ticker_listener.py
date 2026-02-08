@@ -226,74 +226,22 @@ class MarketTickerListener:
                     await self._process_subscription_changes()
 
     async def _setup_auth(self) -> None:
-        """
-        Set up authentication for WebSocket connection.
-        """
-        import tempfile
-        import os
-
-        if not config.KALSHI_API_KEY_ID:
-            raise MarketTickerListenerAuthError("KALSHI_API_KEY_ID not configured")
-
-        if not config.KALSHI_PRIVATE_KEY_CONTENT:
-            raise MarketTickerListenerAuthError("KALSHI_PRIVATE_KEY_CONTENT not configured")
+        """Set up authentication for WebSocket connection."""
+        from .auth_utils import setup_kalshi_auth
 
         try:
-            # Create temporary file for private key
-            temp_fd, temp_path = tempfile.mkstemp(suffix='.pem', prefix='market_ticker_key_')
-            self._temp_key_file = temp_path
-
-            with os.fdopen(temp_fd, 'w') as temp_file:
-                private_key_content = config.KALSHI_PRIVATE_KEY_CONTENT
-
-                if not private_key_content.startswith('-----BEGIN'):
-                    formatted_key = f"-----BEGIN PRIVATE KEY-----\n{private_key_content}\n-----END PRIVATE KEY-----"
-                else:
-                    formatted_key = private_key_content.replace('\\n', '\n')
-
-                    # Handle case where newlines might be lost
-                    if '\n' not in formatted_key and '-----BEGIN' in formatted_key:
-                        begin_marker = '-----BEGIN'
-                        end_marker = '-----END'
-                        begin_idx = formatted_key.find(begin_marker)
-                        end_idx = formatted_key.find(end_marker)
-
-                        if begin_idx != -1 and end_idx != -1:
-                            begin_end = formatted_key.find('-----', begin_idx + len(begin_marker))
-                            if begin_end != -1:
-                                begin_end += 5
-                                content = formatted_key[begin_end:end_idx].strip()
-                                formatted_key = (
-                                    formatted_key[:begin_end] + '\n' +
-                                    content + '\n' +
-                                    formatted_key[end_idx:]
-                                )
-
-                temp_file.write(formatted_key)
-
-            self._auth = KalshiAuth(
-                api_key_id=config.KALSHI_API_KEY_ID,
-                private_key_path=temp_path
-            )
-
+            self._auth, self._temp_key_file = setup_kalshi_auth(prefix="market_ticker_key_")
             logger.debug("MarketTickerListener authentication initialized")
-
         except Exception as e:
             self._cleanup_auth()
             raise MarketTickerListenerAuthError(f"Failed to initialize auth: {e}")
 
     def _cleanup_auth(self) -> None:
         """Clean up temporary authentication files."""
-        import os
+        from .auth_utils import cleanup_kalshi_auth
 
-        if self._temp_key_file:
-            try:
-                os.unlink(self._temp_key_file)
-                logger.debug("Cleaned up temporary key file")
-            except Exception as e:
-                logger.warning(f"Failed to clean up temp key file: {e}")
-            self._temp_key_file = None
-
+        cleanup_kalshi_auth(self._temp_key_file)
+        self._temp_key_file = None
         self._auth = None
 
     def _get_next_message_id(self) -> int:

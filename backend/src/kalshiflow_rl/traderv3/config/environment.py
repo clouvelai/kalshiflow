@@ -6,17 +6,22 @@ Loads from environment variables with sensible defaults.
 """
 
 import os
-from typing import List, Optional, TYPE_CHECKING
+from typing import List, Optional
 from dataclasses import dataclass, field
-from enum import Enum
 import logging
 
-# Import TradingStrategy for type annotation
-# Use string annotation to avoid circular import
-if TYPE_CHECKING:
-    from ..services.trading_decision_service import TradingStrategy as TradingStrategyType
-
 logger = logging.getLogger("kalshiflow_rl.traderv3.config.environment")
+
+# Canonical list of allowed Kalshi API categories for lifecycle discovery.
+# Validated against GET /search/tags_by_categories (2025-01-28).
+# All 13 Kalshi categories: Climate and Weather, Companies, Crypto, Economics,
+# Elections, Entertainment, Financials, Mentions, Politics, Science and Technology,
+# Social, Sports, World
+DEFAULT_LIFECYCLE_CATEGORIES = [
+    "climate and weather", "companies", "crypto", "economics",
+    "elections", "entertainment", "financials", "mentions",
+    "politics", "science and technology", "social", "sports", "world",
+]
 
 
 @dataclass
@@ -42,26 +47,10 @@ class V3Config:
     snapshot_interval: float = 1.0  # seconds
     
     # Trading Client Configuration (optional, only for paper/live trading)
-    enable_trading_client: bool = False
+    enable_trading_client: bool = True
     trading_max_orders: int = 1000
-    trading_max_position_size: int = 100
+    trading_max_position_size: int = 500
     trading_mode: str = "paper"  # paper or production
-    trading_strategy_str: str = "hold"  # Strategy string: "hold", "rlm_no"
-
-    # RLM (Reverse Line Movement) Strategy Configuration (for RLM_NO strategy)
-    # High reliability config: YES>70%, min_trades=25 gives 2.2% false positive rate
-    # S-001 optimization: min_price_drop=5 skips weak signals (<5c has nearly zero edge)
-    rlm_yes_threshold: float = 0.70  # Minimum YES trade ratio to trigger signal
-    rlm_min_trades: int = 25  # Minimum trades before evaluating signal
-    rlm_min_price_drop: int = 5  # Minimum YES price drop in cents (research: <5c has ~2% edge, skip)
-    rlm_min_no_price: int = 35  # Minimum NO entry price in cents (backtest: <35c NO has -32% edge)
-    rlm_contracts: int = 10  # Base contracts per trade (scaled by signal strength)
-    rlm_max_concurrent: int = 1000  # Maximum concurrent positions
-    rlm_allow_reentry: bool = True  # Allow adding to position on stronger signal
-    rlm_orderbook_timeout: float = 2.0  # Timeout for orderbook fetch (seconds)
-    rlm_tight_spread: int = 2  # Spread <= this: aggressive fill (ask - 1c)
-    rlm_normal_spread: int = 4  # Spread <= this: price improvement (midpoint)
-    rlm_max_spread: int = 10  # Spread > this: skip signal (protect from bad fills)
 
     # Balance Protection Configuration
     min_trader_cash: int = 1000  # Minimum balance in cents ($10.00 default). Set to 0 to disable.
@@ -75,7 +64,7 @@ class V3Config:
 
     # Order TTL Configuration
     order_ttl_enabled: bool = True  # Enable automatic cancellation of stale orders
-    order_ttl_seconds: int = 90  # Cancel resting orders older than this (90s - orders either fill quickly or not at all)
+    order_ttl_seconds: int = 300  # Cancel resting orders older than this (5min - gives passive orders time to fill)
 
     # Event Position Tracking Configuration
     # Tracks positions grouped by event_ticker to detect correlated exposure
@@ -86,19 +75,11 @@ class V3Config:
     event_loss_threshold_cents: int = 100  # NO_sum > this = GUARANTEED_LOSS (block)
     event_risk_threshold_cents: int = 95   # NO_sum > this = HIGH_RISK (alert/warn)
 
-    # Market selection mode: "config", "discovery", or "lifecycle" (default)
-    # - config: Use static market_tickers list
-    # - discovery: Auto-discover from REST API
-    # - lifecycle: Market lifecycle events via WebSocket (NEW - default)
-    market_mode: str = "lifecycle"
-
-    # Lifecycle Mode Configuration (RL_MODE=lifecycle)
-    # Categories: politics, media_mentions, entertainment, crypto, sports
-    # Sports markets are filtered by prefix (default: KXNFL only)
-    lifecycle_categories: List[str] = field(default_factory=lambda: ["politics", "media_mentions", "entertainment", "crypto", "sports"])
+    # Lifecycle Mode Configuration
+    lifecycle_categories: List[str] = field(default_factory=lambda: list(DEFAULT_LIFECYCLE_CATEGORIES))
     # Sports prefix filter - only allow sports markets with these event_ticker prefixes
     # Set to empty list to allow ALL sports markets
-    sports_allowed_prefixes: List[str] = field(default_factory=lambda: ["KXNFL"])
+    sports_allowed_prefixes: List[str] = field(default_factory=list)
     lifecycle_max_markets: int = 1000  # Maximum tracked markets (orderbook WS limit)
     lifecycle_sync_interval: int = 30  # Seconds between market info syncs
 
@@ -108,17 +89,47 @@ class V3Config:
     api_discovery_batch_size: int = 200  # Maximum markets to fetch per API call
 
     # Discovery Filtering Configuration
-    # Time-to-settlement filter: Focus on short-dated markets for capital efficiency
-    # Research shows: Sports (+17.9% edge), Media (+24.1%), Crypto (+12.8%) are all short-dated
-    # Politics (+10.1% weak edge) is mostly long-dated - naturally excluded by time filter
-    discovery_min_hours_to_settlement: float = 4.0  # Skip markets closing <4 hours (need time for RLM pattern)
-    discovery_max_days_to_settlement: int = 30  # Skip markets settling >30 days out (capital efficiency)
+    discovery_min_hours_to_settlement: float = 0.5  # Skip markets closing <30min
+    discovery_max_days_to_settlement: int = 90  # Skip markets settling >90 days out
 
     # Dormant Market Detection Configuration
     # Automatically unsubscribe markets with zero trading activity to free subscription slots
     dormant_detection_enabled: bool = True  # Enable/disable dormant market cleanup
     dormant_volume_threshold: int = 0  # volume_24h <= this is "dormant" (default 0 = no activity)
     dormant_grace_period_hours: float = 1.0  # Minimum hours tracked before considering dormant
+
+    # Single-Event Arbitrage Configuration
+    single_arb_enabled: bool = False  # Enable single-event arb system
+    single_arb_event_tickers: List[str] = field(default_factory=list)  # Events to monitor
+    single_arb_poll_interval: float = 5.0  # REST fallback interval (seconds)
+    single_arb_captain_interval: float = 60.0  # Captain cycle interval (seconds)
+    single_arb_min_edge_cents: float = 0.5  # Min edge after fees to trigger detection (low = let captain decide)
+    single_arb_fee_per_contract: int = 1  # Kalshi fee per contract (demo ~1c)
+    single_arb_max_contracts: int = 50  # Max contracts per leg
+    single_arb_captain_enabled: bool = True  # Enable LLM Captain
+    single_arb_order_ttl: int = 30  # Order TTL in seconds (auto-cancel)
+    single_arb_cheval_model: str = "claude-haiku-4-5-20251001"  # ChevalDeTroie model (configurable)
+
+    # Sniper Execution Layer Configuration
+    sniper_enabled: bool = False                    # V3_SNIPER_ENABLED - master kill switch
+    sniper_max_position: int = 25                   # V3_SNIPER_MAX_POSITION - max contracts per market
+    sniper_max_capital: int = 5000                  # V3_SNIPER_MAX_CAPITAL - max capital at risk (cents = $50)
+    sniper_cooldown: float = 10.0                   # V3_SNIPER_COOLDOWN - seconds between trades on same market
+    sniper_max_trades_per_cycle: int = 5            # V3_SNIPER_MAX_TRADES_PER_CYCLE - between Captain cycles
+    sniper_arb_min_edge: float = 3.0               # V3_SNIPER_ARB_MIN_EDGE - min edge cents for S1_ARB
+    sniper_order_ttl: int = 30                     # V3_SNIPER_ORDER_TTL - order TTL in seconds
+    sniper_leg_timeout: float = 5.0                # V3_SNIPER_LEG_TIMEOUT - per-leg placement timeout in seconds
+
+    # Tavily Search Configuration
+    tavily_api_key: str = ""                    # TAVILY_API_KEY env var
+    tavily_enabled: bool = True                 # V3_TAVILY_ENABLED (auto-disable if no key)
+    tavily_search_depth: str = "advanced"       # V3_TAVILY_SEARCH_DEPTH (basic=1 credit, advanced=2)
+    tavily_monthly_budget: int = 10000          # V3_TAVILY_MONTHLY_BUDGET
+    tavily_news_time_range: str = "week"        # V3_TAVILY_NEWS_TIME_RANGE (day/week/month)
+    tavily_max_results: int = 20                # V3_TAVILY_MAX_RESULTS
+
+    # Gateway Configuration (new unified client)
+    use_new_gateway: bool = True  # Use KalshiGateway instead of demo_client + WS clients
 
     # State Machine Configuration
     sync_duration: float = 10.0  # seconds for Kalshi data sync
@@ -168,47 +179,30 @@ class V3Config:
         if missing:
             raise ValueError(f"Missing required environment variables: {', '.join(missing)}")
         
-        # Market configuration - use same variables as RL trader
-        # Mode options: "config", "discovery", "lifecycle" (default)
-        market_mode = os.environ.get("RL_MODE", "lifecycle")
-        market_limit = int(os.environ.get("RL_ORDERBOOK_MARKET_LIMIT", "10"))
-
-        # Handle market selection based on mode
-        if market_mode == "lifecycle":
-            # Lifecycle mode - markets discovered via lifecycle WebSocket events
-            market_tickers = []  # Empty - lifecycle events will populate
-            logger.info(f"Lifecycle mode enabled - markets will be discovered via lifecycle events")
-        elif market_mode == "discovery":
-            # Discovery mode - OrderbookClient will auto-discover markets
-            market_tickers = ["DISCOVERY"]  # Special marker for discovery mode
-            logger.info(f"Discovery mode enabled with limit of {market_limit} markets")
-        else:
-            # Config mode - use specific market tickers
-            market_tickers_str = os.environ.get("RL_MARKET_TICKERS", "INXD-25JAN03")
+        # Market configuration
+        market_tickers_str = os.environ.get("V3_MARKET_TICKERS", "")
+        if market_tickers_str.strip():
             market_tickers = [t.strip() for t in market_tickers_str.split(",") if t.strip()]
-            if not market_tickers:
-                logger.warning("No market tickers configured, using default: INXD-25JAN03")
-                market_tickers = ["INXD-25JAN03"]
-        
+            logger.info(f"Target tickers specified: {', '.join(market_tickers)}")
+        else:
+            market_tickers = []  # Lifecycle discovery will populate
+            logger.info("No target tickers - lifecycle discovery will populate markets")
+
         # Optional configuration with defaults
-        max_markets = market_limit  # Use the market limit as max markets
+        max_markets = int(os.environ.get("V3_MAX_MARKETS", "10"))
         orderbook_depth = int(os.environ.get("V3_ORDERBOOK_DEPTH", "5"))
         snapshot_interval = float(os.environ.get("V3_SNAPSHOT_INTERVAL", "1.0"))
         
         # Trading client configuration
-        enable_trading_client = os.environ.get("V3_ENABLE_TRADING_CLIENT", "false").lower() == "true"
+        enable_trading_client = os.environ.get("V3_ENABLE_TRADING_CLIENT", "true").lower() == "true"
         trading_max_orders = int(os.environ.get("V3_TRADING_MAX_ORDERS", "1000"))
-        trading_max_position_size = int(os.environ.get("V3_TRADING_MAX_POSITION_SIZE", "100"))
+        trading_max_position_size = int(os.environ.get("V3_TRADING_MAX_POSITION_SIZE", "500"))
         # Determine trading mode based on environment or explicit setting
         environment = os.environ.get("ENVIRONMENT", "local")
         if environment == "paper" or "demo-api" in ws_url.lower():
             trading_mode = "paper"
         else:
             trading_mode = os.environ.get("V3_TRADING_MODE", "paper")
-
-        # Trading strategy configuration
-        # Options: "hold", "rlm_no"
-        trading_strategy_str = os.environ.get("V3_TRADING_STRATEGY", "hold").lower()
 
         # Balance protection configuration - minimum cash to continue trading
         min_trader_cash = int(os.environ.get("MIN_TRADER_CASH", "1000"))  # Default $10.00 in cents
@@ -232,28 +226,12 @@ class V3Config:
         event_loss_threshold_cents = int(os.environ.get("V3_EVENT_LOSS_THRESHOLD", "100"))
         event_risk_threshold_cents = int(os.environ.get("V3_EVENT_RISK_THRESHOLD", "95"))
 
-        # RLM (Reverse Line Movement) strategy configuration
-        # High reliability config: YES>70%, min_trades=25 (2.2% false positive rate)
-        # See RLM_IMPROVEMENTS.md Section 10 for full reliability analysis
-        rlm_yes_threshold = float(os.environ.get("RLM_YES_THRESHOLD", "0.70"))
-        rlm_min_trades = int(os.environ.get("RLM_MIN_TRADES", "25"))
-        rlm_min_price_drop = int(os.environ.get("RLM_MIN_PRICE_DROP", "5"))
-        rlm_min_no_price = int(os.environ.get("RLM_MIN_NO_PRICE", "35"))
-        rlm_contracts = int(os.environ.get("RLM_CONTRACTS", "3"))
-        rlm_max_concurrent = int(os.environ.get("RLM_MAX_CONCURRENT", "1000"))
-        rlm_allow_reentry = os.environ.get("RLM_ALLOW_REENTRY", "true").lower() == "true"
-        rlm_orderbook_timeout = float(os.environ.get("RLM_ORDERBOOK_TIMEOUT", "2.0"))
-        rlm_tight_spread = int(os.environ.get("RLM_TIGHT_SPREAD", "2"))
-        rlm_normal_spread = int(os.environ.get("RLM_NORMAL_SPREAD", "4"))
-        rlm_max_spread = int(os.environ.get("RLM_MAX_SPREAD", "10"))
-
         # Lifecycle discovery mode configuration
-        # Default: politics, media_mentions, entertainment, crypto, sports (NFL only via prefix filter)
-        lifecycle_categories_str = os.environ.get("LIFECYCLE_CATEGORIES", "politics,media_mentions,entertainment,crypto,sports")
+        lifecycle_categories_str = os.environ.get("LIFECYCLE_CATEGORIES", ",".join(DEFAULT_LIFECYCLE_CATEGORIES))
         lifecycle_categories = [c.strip() for c in lifecycle_categories_str.split(",") if c.strip()]
         # Sports prefix filter - only allow sports markets with these event_ticker prefixes
         # Default: KXNFL (NFL markets only). Set empty to allow all sports.
-        sports_prefixes_str = os.environ.get("SPORTS_ALLOWED_PREFIXES", "KXNFL")
+        sports_prefixes_str = os.environ.get("SPORTS_ALLOWED_PREFIXES", "")
         sports_allowed_prefixes = [p.strip() for p in sports_prefixes_str.split(",") if p.strip()]
         lifecycle_max_markets = int(os.environ.get("LIFECYCLE_MAX_MARKETS", "1000"))
         lifecycle_sync_interval = int(os.environ.get("LIFECYCLE_SYNC_INTERVAL", "30"))
@@ -264,15 +242,52 @@ class V3Config:
         api_discovery_batch_size = int(os.environ.get("API_DISCOVERY_BATCH_SIZE", "200"))
 
         # Discovery Filtering configuration - time-to-settlement filter
-        # Focus on short-dated markets for capital efficiency (4h to 30d window)
-        discovery_min_hours_to_settlement = float(os.environ.get("DISCOVERY_MIN_HOURS_TO_SETTLEMENT", "4.0"))
-        discovery_max_days_to_settlement = int(os.environ.get("DISCOVERY_MAX_DAYS_TO_SETTLEMENT", "30"))
+        # Focus on tradeable markets (0.5h to 90d window)
+        discovery_min_hours_to_settlement = float(os.environ.get("DISCOVERY_MIN_HOURS_TO_SETTLEMENT", "0.5"))
+        discovery_max_days_to_settlement = int(os.environ.get("DISCOVERY_MAX_DAYS_TO_SETTLEMENT", "90"))
 
         # Dormant Market Detection configuration
         # Automatically unsubscribe markets with zero 24h volume to free slots
         dormant_detection_enabled = os.environ.get("DORMANT_DETECTION_ENABLED", "true").lower() == "true"
         dormant_volume_threshold = int(os.environ.get("DORMANT_VOLUME_THRESHOLD", "0"))
         dormant_grace_period_hours = float(os.environ.get("DORMANT_GRACE_PERIOD_HOURS", "1.0"))
+
+        # Single-event arb configuration
+        single_arb_enabled = os.environ.get("V3_SINGLE_ARB_ENABLED", "false").lower() == "true"
+        single_arb_event_tickers_str = os.environ.get("V3_SINGLE_ARB_EVENT_TICKERS", "")
+        single_arb_event_tickers = [t.strip() for t in single_arb_event_tickers_str.split(",") if t.strip()]
+        single_arb_poll_interval = float(os.environ.get("V3_SINGLE_ARB_POLL_INTERVAL", "5.0"))
+        single_arb_captain_interval = float(os.environ.get("V3_SINGLE_ARB_CAPTAIN_INTERVAL", "60.0"))
+        single_arb_min_edge_cents = float(os.environ.get("V3_SINGLE_ARB_MIN_EDGE_CENTS", "0.5"))
+        single_arb_fee_per_contract = int(os.environ.get("V3_SINGLE_ARB_FEE_PER_CONTRACT", "1"))
+        single_arb_max_contracts = int(os.environ.get("V3_SINGLE_ARB_MAX_CONTRACTS", "50"))
+        single_arb_captain_enabled = os.environ.get("V3_SINGLE_ARB_CAPTAIN_ENABLED", "true").lower() == "true"
+        single_arb_order_ttl = int(os.environ.get("V3_SINGLE_ARB_ORDER_TTL", "30"))
+        single_arb_cheval_model = os.environ.get("V3_SINGLE_ARB_CHEVAL_MODEL", "claude-haiku-4-5-20251001")
+
+        # Sniper execution layer configuration
+        sniper_enabled = os.environ.get("V3_SNIPER_ENABLED", "false").lower() == "true"
+        sniper_max_position = int(os.environ.get("V3_SNIPER_MAX_POSITION", "25"))
+        sniper_max_capital = int(os.environ.get("V3_SNIPER_MAX_CAPITAL", "5000"))
+        sniper_cooldown = float(os.environ.get("V3_SNIPER_COOLDOWN", "10.0"))
+        sniper_max_trades_per_cycle = int(os.environ.get("V3_SNIPER_MAX_TRADES_PER_CYCLE", "5"))
+        sniper_arb_min_edge = float(os.environ.get("V3_SNIPER_ARB_MIN_EDGE", "3.0"))
+        sniper_order_ttl = int(os.environ.get("V3_SNIPER_ORDER_TTL", "30"))
+        sniper_leg_timeout = float(os.environ.get("V3_SNIPER_LEG_TIMEOUT", "5.0"))
+
+        # Tavily search configuration
+        tavily_api_key = os.environ.get("TAVILY_API_KEY", "")
+        tavily_enabled = os.environ.get("V3_TAVILY_ENABLED", "true").lower() == "true"
+        # Auto-disable if no API key
+        if not tavily_api_key:
+            tavily_enabled = False
+        tavily_search_depth = os.environ.get("V3_TAVILY_SEARCH_DEPTH", "advanced")
+        tavily_monthly_budget = int(os.environ.get("V3_TAVILY_MONTHLY_BUDGET", "10000"))
+        tavily_news_time_range = os.environ.get("V3_TAVILY_NEWS_TIME_RANGE", "week")
+        tavily_max_results = int(os.environ.get("V3_TAVILY_MAX_RESULTS", "20"))
+
+        # Gateway configuration
+        use_new_gateway = os.environ.get("V3_USE_NEW_GATEWAY", "true").lower() == "true"
 
         sync_duration = float(os.environ.get("V3_SYNC_DURATION", os.environ.get("V3_CALIBRATION_DURATION", "10.0")))
         health_check_interval = float(os.environ.get("V3_HEALTH_CHECK_INTERVAL", "5.0"))
@@ -294,25 +309,12 @@ class V3Config:
             private_key_content=private_key_content,
             market_tickers=market_tickers,
             max_markets=max_markets,
-            market_mode=market_mode,
             orderbook_depth=orderbook_depth,
             snapshot_interval=snapshot_interval,
             enable_trading_client=enable_trading_client,
             trading_max_orders=trading_max_orders,
             trading_max_position_size=trading_max_position_size,
             trading_mode=trading_mode,
-            trading_strategy_str=trading_strategy_str,
-            rlm_yes_threshold=rlm_yes_threshold,
-            rlm_min_trades=rlm_min_trades,
-            rlm_min_price_drop=rlm_min_price_drop,
-            rlm_min_no_price=rlm_min_no_price,
-            rlm_contracts=rlm_contracts,
-            rlm_max_concurrent=rlm_max_concurrent,
-            rlm_allow_reentry=rlm_allow_reentry,
-            rlm_orderbook_timeout=rlm_orderbook_timeout,
-            rlm_tight_spread=rlm_tight_spread,
-            rlm_normal_spread=rlm_normal_spread,
-            rlm_max_spread=rlm_max_spread,
             min_trader_cash=min_trader_cash,
             cleanup_on_startup=cleanup_on_startup,
             allow_multiple_positions_per_market=allow_multiple_positions_per_market,
@@ -335,6 +337,31 @@ class V3Config:
             dormant_detection_enabled=dormant_detection_enabled,
             dormant_volume_threshold=dormant_volume_threshold,
             dormant_grace_period_hours=dormant_grace_period_hours,
+            single_arb_enabled=single_arb_enabled,
+            single_arb_event_tickers=single_arb_event_tickers,
+            single_arb_poll_interval=single_arb_poll_interval,
+            single_arb_captain_interval=single_arb_captain_interval,
+            single_arb_min_edge_cents=single_arb_min_edge_cents,
+            single_arb_fee_per_contract=single_arb_fee_per_contract,
+            single_arb_max_contracts=single_arb_max_contracts,
+            single_arb_captain_enabled=single_arb_captain_enabled,
+            single_arb_order_ttl=single_arb_order_ttl,
+            single_arb_cheval_model=single_arb_cheval_model,
+            sniper_enabled=sniper_enabled,
+            sniper_max_position=sniper_max_position,
+            sniper_max_capital=sniper_max_capital,
+            sniper_cooldown=sniper_cooldown,
+            sniper_max_trades_per_cycle=sniper_max_trades_per_cycle,
+            sniper_arb_min_edge=sniper_arb_min_edge,
+            sniper_order_ttl=sniper_order_ttl,
+            sniper_leg_timeout=sniper_leg_timeout,
+            tavily_api_key=tavily_api_key,
+            tavily_enabled=tavily_enabled,
+            tavily_search_depth=tavily_search_depth,
+            tavily_monthly_budget=tavily_monthly_budget,
+            tavily_news_time_range=tavily_news_time_range,
+            tavily_max_results=tavily_max_results,
+            use_new_gateway=use_new_gateway,
             sync_duration=sync_duration,
             health_check_interval=health_check_interval,
             error_recovery_delay=error_recovery_delay,
@@ -349,30 +376,20 @@ class V3Config:
         logger.info(f"Loaded V3 configuration:")
         logger.info(f"  - API URL: {api_url}")
         logger.info(f"  - WebSocket URL: {ws_url}")
-        logger.info(f"  - Market mode: {market_mode.upper()}")
-        if market_mode == "lifecycle":
-            logger.info(f"    - Categories: {', '.join(lifecycle_categories)}")
-            if "sports" in [c.lower() for c in lifecycle_categories] and sports_allowed_prefixes:
-                logger.info(f"    - Sports filter: {', '.join(sports_allowed_prefixes)} prefixes only")
-            logger.info(f"    - Max tracked: {lifecycle_max_markets}")
+        if market_tickers:
+            logger.info(f"  - Target tickers: {', '.join(market_tickers[:3])}{'...' if len(market_tickers) > 3 else ''} ({len(market_tickers)} total)")
+        else:
+            logger.info(f"  - Discovery: lifecycle (categories={', '.join(lifecycle_categories)}, max={lifecycle_max_markets})")
             if api_discovery_enabled:
-                logger.info(f"    - API discovery: ENABLED (interval={api_discovery_interval}s, batch={api_discovery_batch_size})")
-                logger.info(f"    - Time filter: {discovery_min_hours_to_settlement}h to {discovery_max_days_to_settlement}d (capital efficiency)")
-            else:
-                logger.info(f"    - API discovery: DISABLED")
+                logger.info(f"    - API discovery: interval={api_discovery_interval}s, time={discovery_min_hours_to_settlement}h-{discovery_max_days_to_settlement}d")
             if dormant_detection_enabled:
-                logger.info(f"    - Dormant detection: ENABLED (volume<={dormant_volume_threshold}, grace={dormant_grace_period_hours}h)")
-            else:
-                logger.info(f"    - Dormant detection: DISABLED")
-        elif market_tickers:
-            logger.info(f"  - Markets: {', '.join(market_tickers[:3])}{'...' if len(market_tickers) > 3 else ''} ({len(market_tickers)} total)")
+                logger.info(f"    - Dormant detection: volume<={dormant_volume_threshold}, grace={dormant_grace_period_hours}h")
         logger.info(f"  - Max markets: {max_markets}")
         logger.info(f"  - Sync duration: {sync_duration}s")
         logger.info(f"  - Server: {host}:{port}")
         logger.info(f"  - Log level: {log_level}")
         if enable_trading_client:
             logger.info(f"  - Trading enabled: {trading_mode} mode")
-            logger.info(f"  - Trading strategy: {trading_strategy_str.upper()}")
             logger.info(f"  - Max orders: {trading_max_orders}, Max position: {trading_max_position_size}")
             logger.info(f"  - Cleanup on startup: {cleanup_on_startup}")
             if min_trader_cash > 0:
@@ -389,24 +406,37 @@ class V3Config:
             logger.info(f"  - Order TTL: {order_ttl_seconds}s (auto-cancel stale resting orders)")
         else:
             logger.info(f"  - Order TTL: DISABLED")
-
         # Log event tracking config
         if event_tracking_enabled:
             logger.info(f"  - Event tracking: ENABLED (action={event_exposure_action}, loss>{event_loss_threshold_cents}c, risk>{event_risk_threshold_cents}c)")
         else:
             logger.info(f"  - Event tracking: DISABLED")
 
-        # Log RLM config if strategy is enabled
-        if trading_strategy_str == "rlm_no":
-            logger.info(f"  - RLM (Reverse Line Movement) Strategy: ENABLED")
-            logger.info(f"    - YES threshold: {rlm_yes_threshold:.0%}")
-            logger.info(f"    - Min trades: {rlm_min_trades}")
-            logger.info(f"    - Min price drop: {rlm_min_price_drop}c")
-            logger.info(f"    - Contracts: {rlm_contracts}")
-            logger.info(f"    - Max concurrent: {rlm_max_concurrent} positions")
-            logger.info(f"    - Re-entry: {'ENABLED' if rlm_allow_reentry else 'DISABLED'}")
-            logger.info(f"    - Orderbook timeout: {rlm_orderbook_timeout}s")
-            logger.info(f"    - Spread thresholds: tight={rlm_tight_spread}c, normal={rlm_normal_spread}c, max={rlm_max_spread}c")
+        # Log gateway config
+        if use_new_gateway:
+            logger.info(f"  - Gateway: NEW (KalshiGateway + unified WS)")
+        else:
+            logger.info(f"  - Gateway: LEGACY (demo_client + separate WS clients)")
+
+        # Log Tavily config
+        if tavily_enabled:
+            logger.info(f"  - Tavily search: ENABLED (depth={tavily_search_depth}, budget={tavily_monthly_budget}, max_results={tavily_max_results})")
+        else:
+            logger.info(f"  - Tavily search: DISABLED (no TAVILY_API_KEY)")
+
+        # Log sniper config
+        if sniper_enabled:
+            logger.info(f"  - Sniper: ENABLED (max_pos={sniper_max_position}, max_cap=${sniper_max_capital/100:.0f}, cooldown={sniper_cooldown}s, arb_edge>{sniper_arb_min_edge}c)")
+        else:
+            logger.info(f"  - Sniper: DISABLED")
+
+        # Log single-arb config
+        if single_arb_enabled:
+            logger.info(f"  - Single-event arb: ENABLED (events={','.join(single_arb_event_tickers)}, edge>{single_arb_min_edge_cents}c, fee={single_arb_fee_per_contract}c)")
+            logger.info(f"    - Captain: {'ENABLED' if single_arb_captain_enabled else 'DISABLED'} (interval={single_arb_captain_interval}s)")
+            logger.info(f"    - ChevalDeTroie model: {single_arb_cheval_model}")
+        else:
+            logger.info(f"  - Single-event arb: DISABLED")
 
         return config
     
@@ -421,27 +451,6 @@ class V3Config:
         else:
             return "PRODUCTION"
 
-    @property
-    def trading_strategy(self):
-        """
-        Get the trading strategy as an enum.
-
-        Converts the string trading_strategy_str to TradingStrategy enum.
-        Import is done here to avoid circular imports.
-
-        Returns:
-            TradingStrategy enum value
-        """
-        # Import here to avoid circular import
-        from ..services.trading_decision_service import TradingStrategy
-
-        strategy_map = {
-            "hold": TradingStrategy.HOLD,
-            "rlm_no": TradingStrategy.RLM_NO,
-        }
-
-        return strategy_map.get(self.trading_strategy_str, TradingStrategy.HOLD)
-
     def validate(self) -> bool:
         """
         Validate configuration.
@@ -452,9 +461,7 @@ class V3Config:
         Raises:
             ValueError: If configuration is invalid
         """
-        # Validate market configuration (skip for lifecycle mode which uses empty tickers)
-        if not self.market_tickers and self.market_mode != "lifecycle":
-            raise ValueError("No market tickers configured")
+        # market_tickers can be empty (lifecycle discovery populates)
         
         if self.max_markets < 1:
             raise ValueError(f"Invalid max_markets: {self.max_markets}")

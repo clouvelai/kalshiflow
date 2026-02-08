@@ -307,15 +307,26 @@ class V3OrderbookIntegration:
     async def wait_for_first_snapshot(self, timeout: float = 10.0) -> bool:
         """
         Wait for first orderbook snapshot to confirm data flow.
-        
+
         Args:
             timeout: Maximum time to wait in seconds
-            
+
         Returns:
-            True if snapshot received, False if timeout
+            True if snapshot received, False if timeout.
+            Returns True immediately (no warning) when 0 markets are
+            subscribed (lifecycle discovery mode), since no snapshot is expected.
         """
+        # In lifecycle discovery mode (0 initial markets), no snapshot is expected.
+        # Return True immediately to avoid misleading "no snapshot" warnings.
+        if not self._market_tickers:
+            logger.info(
+                "No initial markets subscribed (lifecycle discovery mode) "
+                "- skipping snapshot wait"
+            )
+            return True
+
         logger.info(f"Waiting up to {timeout}s for first orderbook snapshot...")
-        
+
         start_time = time.time()
         while time.time() - start_time < timeout:
             # Wait for actual metrics update via event bus, not just client's report
@@ -339,8 +350,8 @@ class V3OrderbookIntegration:
                 await asyncio.sleep(0.1)
                 continue
             await asyncio.sleep(0.1)
-        
-        logger.warning(f"⚠️ No snapshot received within {timeout}s")
+
+        logger.warning(f"No snapshot received within {timeout}s")
         return False
     
     def get_metrics(self) -> Dict[str, Any]:
