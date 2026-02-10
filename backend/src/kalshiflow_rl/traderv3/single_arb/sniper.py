@@ -26,6 +26,7 @@ Concurrency note:
 import asyncio
 import collections
 import logging
+import random
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Coroutine, Dict, List, Optional, Set, Tuple
@@ -34,6 +35,11 @@ from ..core.events.types import EventType
 from .index import ArbOpportunity, EventArbIndex
 
 logger = logging.getLogger("kalshiflow_rl.traderv3.single_arb.sniper")
+
+
+# Type alias for order registration callback
+# Signature: (order_id, ticker, side, action, contracts, price_cents, ttl_seconds) -> None
+OrderRegisterCallback = Callable[[str, str, str, str, int, int, int], None]
 
 
 # ---------------------------------------------------------------------------
@@ -46,11 +52,11 @@ class SniperConfig:
 
     enabled: bool = False
     max_position: int = 25          # Max contracts per market
-    max_capital: int = 5000         # Max capital at risk in cents ($50)
+    max_capital: int = 100000       # Max capital at risk in cents ($1000)
     cooldown: float = 10.0          # Seconds between trades on same event
     max_trades_per_cycle: int = 5   # Between Captain cycles
     arb_min_edge: float = 3.0       # Min edge cents for S1_ARB
-    vpin_reject_threshold: float = 0.7  # VPIN > this → toxic flow, skip
+    vpin_reject_threshold: float = 0.85  # VPIN > this → toxic flow, skip
     order_ttl: int = 30             # Order TTL in seconds
     leg_timeout: float = 5.0        # Timeout per leg placement in seconds
 
@@ -140,11 +146,13 @@ class SniperState:
     total_arbs_executed: int = 0
     total_arbs_rejected: int = 0
     total_partial_unwinds: int = 0
-    # Capital lifecycle accounting
-    capital_in_flight: int = 0          # Cents in resting orders (not yet filled/expired)
-    capital_in_positions: int = 0       # Cents in filled positions
+    capital_active: int = 0  # Cost of sniper orders this session (not yet settled)
     capital_deployed_lifetime: int = 0  # Cumulative audit trail (never decreases)
+    # Balance telemetry from API (populated on each risk gate check)
+    last_balance_cents: Optional[int] = None
+    last_portfolio_value_cents: Optional[int] = None
     active_order_ids: Set[str] = field(default_factory=set)
+    unhedged_positions: List[Dict] = field(default_factory=list)  # Filled legs from partial arbs
     last_trade_at: Optional[float] = None
     last_rejection_reason: Optional[str] = None
     recent_actions: collections.deque = field(default_factory=lambda: collections.deque(maxlen=20))
@@ -160,11 +168,12 @@ class SniperState:
             "total_arbs_executed": self.total_arbs_executed,
             "total_arbs_rejected": self.total_arbs_rejected,
             "total_partial_unwinds": self.total_partial_unwinds,
-            "capital_in_flight": self.capital_in_flight,
-            "capital_in_positions": self.capital_in_positions,
+            "capital_active": self.capital_active,
             "capital_deployed_lifetime": self.capital_deployed_lifetime,
-            "capital_active": self.capital_in_flight + self.capital_in_positions,
+            "last_balance_cents": self.last_balance_cents,
+            "last_portfolio_value_cents": self.last_portfolio_value_cents,
             "active_orders": len(self.active_order_ids),
+            "unhedged_positions": self.unhedged_positions,
             "last_trade_at": self.last_trade_at,
             "last_rejection_reason": self.last_rejection_reason,
             "recent_actions": [a.to_dict() for a in list(self.recent_actions)[-10:]],
@@ -190,6 +199,7 @@ class Sniper:
         session,
         config: SniperConfig,
         broadcast_callback: Optional[Callable[..., Coroutine]] = None,
+        order_register_callback: Optional[OrderRegisterCallback] = None,
     ):
         self._gateway = gateway
         self._index = index
@@ -197,12 +207,10 @@ class Sniper:
         self._session = session  # TradingSession (shared with Captain tools)
         self.config = config
         self._broadcast = broadcast_callback
+        self._register_order = order_register_callback
 
         self.state = SniperState()
         self._running = False
-
-        # Per-order capital tracking: order_id -> (cost_cents, placed_at_ts)
-        self._order_capital: Dict[str, Tuple[int, float]] = {}
 
     async def start(self) -> None:
         """Subscribe to EventBus and mark as running."""
@@ -231,50 +239,6 @@ class Sniper:
         self.state.trades_this_cycle = 0
 
     # ------------------------------------------------------------------
-    # Capital lifecycle management
-    # ------------------------------------------------------------------
-
-    def _track_order_capital(self, order_id: str, cost_cents: int) -> None:
-        """Track capital for a newly placed order (in-flight)."""
-        self._order_capital[order_id] = (cost_cents, time.time())
-        self.state.capital_in_flight += cost_cents
-        self.state.capital_deployed_lifetime += cost_cents
-
-    def _release_order_capital(self, order_id: str, reason: str) -> int:
-        """Release capital for a cancelled/expired order. Returns cents released."""
-        entry = self._order_capital.pop(order_id, None)
-        if not entry:
-            return 0
-        cost_cents, _ = entry
-        self.state.capital_in_flight = max(0, self.state.capital_in_flight - cost_cents)
-        self.state.active_order_ids.discard(order_id)
-        logger.debug(f"[SNIPER:CAPITAL] Released {cost_cents}c for {order_id[:8]}... ({reason})")
-        return cost_cents
-
-    def _promote_order_to_position(self, order_id: str) -> None:
-        """Move capital from in-flight to in-positions (order filled)."""
-        entry = self._order_capital.pop(order_id, None)
-        if not entry:
-            return
-        cost_cents, _ = entry
-        self.state.capital_in_flight = max(0, self.state.capital_in_flight - cost_cents)
-        self.state.capital_in_positions += cost_cents
-
-    def _cleanup_stale_orders(self) -> int:
-        """Remove orders past TTL + 10s buffer. Returns count cleaned."""
-        now = time.time()
-        ttl_with_buffer = self.config.order_ttl + 10
-        stale_ids = [
-            oid for oid, (_, placed_at) in self._order_capital.items()
-            if (now - placed_at) > ttl_with_buffer
-        ]
-        for oid in stale_ids:
-            self._release_order_capital(oid, "ttl_expired")
-        if stale_ids:
-            logger.info(f"[SNIPER:CLEANUP] Released {len(stale_ids)} stale orders")
-        return len(stale_ids)
-
-    # ------------------------------------------------------------------
     # Hot path: arb opportunity handler
     # ------------------------------------------------------------------
 
@@ -288,11 +252,8 @@ class Sniper:
         if not self.config.enabled or not self._running:
             return None
 
-        # Cleanup stale orders before checking capital gate
-        self._cleanup_stale_orders()
-
-        # Risk gates
-        rejection = self._check_risk_gates(opportunity)
+        # Risk gates (async — queries real API balance)
+        rejection = await self._check_risk_gates(opportunity)
         if rejection:
             self.state.total_arbs_rejected += 1
             self.state.last_rejection_reason = rejection
@@ -329,7 +290,7 @@ class Sniper:
     # Risk gates
     # ------------------------------------------------------------------
 
-    def _check_risk_gates(self, opportunity: ArbOpportunity) -> Optional[str]:
+    async def _check_risk_gates(self, opportunity: ArbOpportunity) -> Optional[str]:
         """Check all risk gates. Returns rejection reason or None if clear."""
 
         # 1. Per-cycle trade limit
@@ -347,19 +308,28 @@ class Sniper:
         if elapsed < self.config.cooldown:
             return f"cooldown ({elapsed:.0f}s < {self.config.cooldown}s)"
 
-        # 4. Capital limit (lifecycle-aware: only count active capital)
+        # 4. Balance check via real API (replaces shadow capital accounting)
         contracts_per_leg = self.config.max_position
         for leg in opportunity.legs:
             contracts_per_leg = min(contracts_per_leg, leg.size_available)
         contracts_per_leg = max(1, contracts_per_leg)
         est_cost = sum(leg.price_cents for leg in opportunity.legs) * contracts_per_leg
-        active_capital = self.state.capital_in_flight + self.state.capital_in_positions
-        if active_capital + est_cost > self.config.max_capital:
-            return (
-                f"capital_limit (active={active_capital}c "
-                f"[flight={self.state.capital_in_flight}c + pos={self.state.capital_in_positions}c] "
-                f"+ est={est_cost}c > max={self.config.max_capital}c)"
-            )
+        try:
+            balance = await self._gateway.get_balance()
+            self.state.last_balance_cents = balance.balance
+            self.state.last_portfolio_value_cents = balance.portfolio_value
+            if balance.balance < est_cost:
+                return (
+                    f"insufficient_balance (available={balance.balance}c, est_cost={est_cost}c)"
+                )
+            if self.state.capital_active + est_cost > self.config.max_capital:
+                return (
+                    f"sniper_capital_limit (active={self.state.capital_active}c "
+                    f"+ est={est_cost}c > max={self.config.max_capital}c)"
+                )
+        except Exception as e:
+            logger.warning(f"[SNIPER:GATE] Balance API failed, rejecting conservatively: {e}")
+            return f"balance_api_error ({e})"
 
         # 5. VPIN toxicity check (any market with VPIN > threshold)
         event = self._index.events.get(et)
@@ -452,15 +422,22 @@ class Sniper:
                     action.error_type = error_type
             elif result:
                 order_id, cost = result
+                leg = opportunity.legs[i]
                 action.order_ids.append(order_id)
                 total_cost += cost
                 filled += 1
                 successful_order_ids.append(order_id)
 
-                # Track in session and capital lifecycle
+                # Track in session for attribution
                 self._session.sniper_order_ids.add(order_id)
                 self.state.active_order_ids.add(order_id)
-                self._track_order_capital(order_id, cost)
+
+                # Register with Captain's order tracking (enables polling, capital release, fills)
+                if self._register_order:
+                    self._register_order(
+                        order_id, leg.ticker, leg.side, leg.action,
+                        contracts_per_leg, leg.price_cents, self.config.order_ttl,
+                    )
 
         action.legs_filled = filled
         action.total_cost_cents = total_cost
@@ -473,7 +450,7 @@ class Sniper:
                 f"[SNIPER:S1_ARB] PARTIAL {opportunity.event_ticker} {opportunity.direction} "
                 f"legs={filled}/{len(opportunity.legs)} — UNWINDING successful legs"
             )
-            cancelled = await self._unwind_legs(successful_order_ids)
+            cancelled = await self._unwind_legs(successful_order_ids, opportunity)
             action.unwound = True
             action.error = f"partial_fill_unwound (cancelled={cancelled}/{filled})"
             action.error_type = "partial_unwind"
@@ -487,6 +464,8 @@ class Sniper:
             self.state.total_arbs_executed += 1
             self.state.last_trade_at = time.time()
             self.state._event_last_trade[opportunity.event_ticker] = time.time()
+            self.state.capital_active += total_cost  # Session-scoped active capital
+            self.state.capital_deployed_lifetime += total_cost  # Audit trail only
             logger.info(
                 f"[SNIPER:S1_ARB] EXECUTED {opportunity.event_ticker} {opportunity.direction} "
                 f"edge={opportunity.edge_after_fees:.1f}c legs={filled}/{len(opportunity.legs)} "
@@ -510,20 +489,48 @@ class Sniper:
 
         return action
 
-    async def _unwind_legs(self, order_ids: List[str]) -> int:
-        """Cancel successfully placed legs after partial fill. Returns count cancelled."""
-        cancel_coros = [
-            self._cancel_leg_safe(oid) for oid in order_ids
-        ]
-        results = await asyncio.gather(*cancel_coros, return_exceptions=True)
+    async def _unwind_legs(self, order_ids: List[str], opportunity: "ArbOpportunity" = None) -> int:
+        """Cancel or track successfully placed legs after partial fill.
+
+        For each order: check if it has already filled. If resting, cancel it.
+        If already filled, track as an unhedged position (Captain must exit manually).
+        Returns count of orders successfully cancelled.
+        """
         cancelled = 0
-        for oid, result in zip(order_ids, results):
-            if isinstance(result, Exception):
-                logger.warning(f"[SNIPER:UNWIND] Failed to cancel {oid[:8]}...: {result}")
-            elif result:
+        for oid in order_ids:
+            # Try to cancel first — if order already filled, cancel will fail
+            success = await self._cancel_leg_safe(oid)
+            if success:
                 cancelled += 1
-                self._release_order_capital(oid, "partial_unwind")
+            else:
+                # Order couldn't be cancelled — likely already filled
+                # Track as unhedged position for Captain visibility
+                leg_info = self._find_leg_for_order(oid, opportunity)
+                self.state.unhedged_positions.append({
+                    "order_id": oid,
+                    "ticker": leg_info.get("ticker", ""),
+                    "side": leg_info.get("side", ""),
+                    "contracts": leg_info.get("contracts", 0),
+                    "price_cents": leg_info.get("price_cents", 0),
+                    "event_ticker": opportunity.event_ticker if opportunity else "",
+                    "reason": "partial_fill_unwind_failed",
+                    "ts": time.time(),
+                })
+                logger.warning(
+                    f"[SNIPER:UNWIND] Order {oid[:8]}... already filled — "
+                    f"tracked as unhedged position ({leg_info.get('ticker', '?')})"
+                )
         return cancelled
+
+    def _find_leg_for_order(self, order_id: str, opportunity: "ArbOpportunity" = None) -> Dict:
+        """Find leg details for an order ID from the opportunity."""
+        if not opportunity:
+            return {}
+        # Match by position in action order_ids (best effort)
+        for leg in opportunity.legs:
+            # We don't have a direct order_id→leg mapping, return the leg info
+            return {"ticker": leg.ticker, "side": leg.side, "contracts": 0, "price_cents": leg.price_cents}
+        return {}
 
     async def _cancel_leg_safe(self, order_id: str) -> bool:
         """Cancel a single order with timeout. Returns True on success."""
@@ -591,11 +598,13 @@ class Sniper:
             try:
                 await self._gateway.cancel_order(order_id)
                 cancelled += 1
-                self._release_order_capital(order_id, reason)
+                self.state.active_order_ids.discard(order_id)
             except Exception as e:
                 errors.append(f"{order_id[:8]}: {e}")
-                # Still release capital — order likely already filled/expired
-                self._release_order_capital(order_id, f"{reason}_error")
+                self.state.active_order_ids.discard(order_id)
+
+        # Reset active capital since all orders are cancelled/gone
+        self.state.capital_active = 0
 
         logger.info(
             f"[SNIPER:KILL] Cancelled {cancelled} orders (reason={reason}, "

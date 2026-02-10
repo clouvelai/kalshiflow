@@ -280,26 +280,6 @@ class V3WebSocketManager:
                 except Exception as e:
                     logger.warning(f"Could not send trading state to client {client_id}: {e}")
 
-            # Send tracked markets snapshot
-            if self._tracked_markets_state and client_id in self._clients:
-                await self._send_tracked_markets_snapshot(client_id)
-
-            # Send trade flow market states snapshot
-            if self._trade_flow_service and client_id in self._clients:
-                await self._send_trade_flow_states_snapshot(client_id)
-
-            # Send upcoming markets snapshot
-            if self._upcoming_markets_syncer and client_id in self._clients:
-                await self._send_upcoming_markets_snapshot(client_id)
-
-            # Send event research snapshot
-            if self._state_container and client_id in self._clients:
-                await self._send_event_research_snapshot(client_id)
-
-            # Send activity feed history
-            if self._activity_feed_history and client_id in self._clients:
-                await self._send_activity_feed_history(client_id)
-
             # Send captain paused state to new client
             if self._single_arb_coordinator and client_id in self._clients:
                 is_paused = self._single_arb_coordinator.is_captain_paused()
@@ -332,6 +312,59 @@ class V3WebSocketManager:
                         logger.debug(f"Sent event_arb_snapshot to {client_id}")
                 except Exception as e:
                     logger.warning(f"Could not send arb snapshot to {client_id}: {e}")
+
+            # Send sniper status snapshot so the strip renders correctly on load
+            if self._single_arb_coordinator and client_id in self._clients:
+                try:
+                    sniper = getattr(self._single_arb_coordinator, "_sniper", None)
+                    if sniper:
+                        from dataclasses import asdict
+                        sniper_data = {
+                            "config": {
+                                "enabled": sniper.config.enabled,
+                                "max_capital": sniper.config.max_capital,
+                            },
+                            "state": sniper.state.to_dict(),
+                        }
+                        await self._send_to_client(client_id, {
+                            "type": "sniper_status",
+                            "data": sniper_data,
+                        })
+                except Exception as e:
+                    logger.debug(f"Could not send sniper_status to {client_id}: {e}")
+
+            # Send account health snapshot so health data is available on load
+            if self._single_arb_coordinator and client_id in self._clients:
+                try:
+                    health_svc = getattr(self._single_arb_coordinator, "_health_service", None)
+                    if health_svc:
+                        status = health_svc.get_health_status()
+                        await self._send_to_client(client_id, {
+                            "type": "account_health_update",
+                            "data": status.model_dump(),
+                        })
+                except Exception as e:
+                    logger.debug(f"Could not send account_health to {client_id}: {e}")
+
+            # Send task ledger snapshot so todos render immediately
+            if self._single_arb_coordinator and client_id in self._clients:
+                try:
+                    captain = getattr(self._single_arb_coordinator, "_captain", None)
+                    if captain:
+                        ledger = getattr(captain, "_task_ledger", None)
+                        if ledger:
+                            tasks = ledger.to_broadcast()
+                            if tasks:
+                                await self._send_to_client(client_id, {
+                                    "type": "agent_message",
+                                    "data": {
+                                        "subtype": "todo_update",
+                                        "agent": "single_arb_captain",
+                                        "todos": tasks,
+                                    },
+                                })
+                except Exception as e:
+                    logger.debug(f"Could not send task_ledger to {client_id}: {e}")
 
             # Handle incoming messages
             async for message in websocket.iter_text():

@@ -59,19 +59,22 @@ class KalshiDemoTradingClient:
     - Credential isolation from production
     """
     
-    def __init__(self, mode: str = "paper"):
+    def __init__(self, mode: str = "paper", subaccount: int = 0):
         """
         Initialize demo trading client.
-        
+
         Args:
             mode: Trading mode - must be "paper" for demo client
-            
+            subaccount: Kalshi subaccount number (0=primary, 1-32=sub)
+
         Raises:
-            ValueError: If mode is not "paper" 
+            ValueError: If mode is not "paper"
             KalshiDemoAuthError: If demo credentials are missing
         """
         if mode != "paper":
             raise ValueError(f"KalshiDemoTradingClient only supports 'paper' mode, got: {mode}")
+
+        self._subaccount = subaccount
         
         # Validate demo credentials are configured
         if not config.KALSHI_API_KEY_ID:
@@ -342,26 +345,47 @@ class KalshiDemoTradingClient:
     async def get_account_info(self) -> Dict[str, Any]:
         """
         Get demo account information including balance and portfolio_value.
-        
+
+        Uses the subaccounts/balances endpoint when available, falling
+        back to /portfolio/balance for demo API compatibility.
+
         Returns:
             Account information including balance and portfolio_value
-            
+
         Raises:
             KalshiDemoTradingClientError: If request fails
             ValueError: If response structure is invalid
         """
         try:
+            # Try subaccounts endpoint first
+            try:
+                data = await self._make_request("GET", "/portfolio/subaccounts/balances")
+                for entry in data.get("subaccount_balances", []):
+                    if entry.get("subaccount_number") == self._subaccount:
+                        balance_dollars = entry.get("balance", "0")
+                        balance_cents = int(round(float(balance_dollars) * 100))
+                        response = {
+                            "balance": balance_cents,
+                            "portfolio_value": 0,  # Computed from positions downstream
+                        }
+                        self._validate_balance_response(response)
+                        self.balance = Decimal(str(balance_cents)) / 100
+                        logger.debug(f"Demo account balance (sub #{self._subaccount}): ${self.balance}")
+                        return response
+                logger.warning(f"Subaccount #{self._subaccount} not found, falling back to /portfolio/balance")
+            except Exception as e:
+                if self._subaccount > 0:
+                    raise KalshiDemoTradingClientError(
+                        f"Subaccount #{self._subaccount} balance fetch failed: {e}. "
+                        f"Refusing fallback to /portfolio/balance (would return wrong account)."
+                    )
+
             response = await self._make_request("GET", "/portfolio/balance")
-            
-            # Validate response structure strictly
             self._validate_balance_response(response)
-            
-            # Update balance tracking - Kalshi returns balance in cents
-            self.balance = Decimal(str(response["balance"])) / 100  # Convert cents to dollars
-            
+            self.balance = Decimal(str(response["balance"])) / 100
             logger.debug(f"Demo account balance: ${self.balance}, portfolio_value: {response.get('portfolio_value', 'N/A')}")
             return response
-            
+
         except ValueError as e:
             raise KalshiDemoTradingClientError(f"Invalid balance response structure: {e}")
         except Exception as e:
@@ -396,16 +420,19 @@ class KalshiDemoTradingClient:
     async def get_positions(self) -> Dict[str, Any]:
         """
         Get current positions on demo account.
-        
+
         Returns:
             Dictionary of positions by market ticker
-            
+
         Raises:
             KalshiDemoTradingClientError: If request fails
             ValueError: If response structure is invalid
         """
         try:
-            response = await self._make_request("GET", "/portfolio/positions")
+            path = "/portfolio/positions"
+            if self._subaccount is not None:
+                path += f"?subaccount={self._subaccount}"
+            response = await self._make_request("GET", path)
             
             # Validate response structure
             self._validate_positions_response(response)
@@ -466,9 +493,15 @@ class KalshiDemoTradingClient:
         try:
             # Build path - only use ticker filter in API call
             # Status filter is applied locally because demo API has signature issues with it
-            path = "/portfolio/orders"
+            params = []
             if ticker:
-                path += f"?ticker={ticker}"
+                params.append(f"ticker={ticker}")
+            if self._subaccount is not None:
+                params.append(f"subaccount={self._subaccount}")
+
+            path = "/portfolio/orders"
+            if params:
+                path += "?" + "&".join(params)
 
             response = await self._make_request("GET", path)
 
@@ -530,6 +563,8 @@ class KalshiDemoTradingClient:
                 params.append(f"market_tickers={market_tickers}")
             if event_ticker:
                 params.append(f"event_ticker={event_ticker}")
+            if self._subaccount is not None:
+                params.append(f"subaccount={self._subaccount}")
             if params:
                 path += "?" + "&".join(params)
 
@@ -587,6 +622,9 @@ class KalshiDemoTradingClient:
             if expiration_ts is not None:
                 order_data["expiration_ts"] = expiration_ts
             
+            if self._subaccount is not None:
+                order_data["subaccount"] = self._subaccount
+
             # Kalshi API requires specific price field names based on contract side
             if price is not None:
                 if side.lower() == "yes":
@@ -595,7 +633,7 @@ class KalshiDemoTradingClient:
                     order_data["no_price"] = price
                 else:
                     raise KalshiDemoOrderError(f"Invalid contract side: {side}. Must be 'yes' or 'no'")
-            
+
             if order_group_id:
                 logger.info(f"Creating demo order: {action} {count} {side} contracts of {ticker} @ {price}¢ (group: {order_group_id[:8]}...)")
             else:
@@ -730,6 +768,8 @@ class KalshiDemoTradingClient:
                 params.append(f"order_group_id={order_group_id}")
             if limit != 100:
                 params.append(f"limit={limit}")
+            if self._subaccount is not None:
+                params.append(f"subaccount={self._subaccount}")
 
             path = "/portfolio/fills"
             if params:
@@ -1121,6 +1161,8 @@ class KalshiDemoTradingClient:
             while len(all_settlements) < max_settlements:
                 # Build path with query parameters
                 path = "/portfolio/settlements?limit=200"
+                if self._subaccount is not None:
+                    path += f"&subaccount={self._subaccount}"
                 if cursor:
                     path += f"&cursor={cursor}"
 
@@ -1184,7 +1226,9 @@ class KalshiDemoTradingClient:
             data = {
                 "contracts_limit": contracts_limit
             }
-            
+            if self._subaccount is not None:
+                data["subaccount"] = self._subaccount
+
             response = await self._make_request("POST", "/portfolio/order_groups/create", data)
             
             if not response.get("order_group_id"):

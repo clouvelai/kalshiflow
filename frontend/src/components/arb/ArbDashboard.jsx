@@ -2,13 +2,13 @@ import React, { useState, useMemo, useCallback } from 'react';
 import { useArbWebSocket, useArbAgent } from '../../hooks/arb';
 import ArbHeader from './layout/ArbHeader';
 import LeftSidebar from './layout/LeftSidebar';
-import RightSidebar from './layout/RightSidebar';
 import CenterContent from './center/CenterContent';
+import OrdersSidebar from './panels/OrdersDrawer';
 
 /**
  * ArbDashboard - Three-panel command center for Captain agent trading.
  *
- * Layout: LeftSidebar (events + portfolio) | Center (dashboard/event detail) | RightSidebar (agent)
+ * Layout: LeftSidebar (events + portfolio) | Center (Event/Agent tabs) | OrdersSidebar (trades/fills)
  */
 const ArbDashboard = () => {
   const {
@@ -23,24 +23,25 @@ const ArbDashboard = () => {
     captainPaused,
     sendCaptainPauseToggle,
     exchangeStatus,
-    mentionsState,
+    sniperState,
+    startupMessages,
+    accountHealth,
   } = useArbWebSocket();
 
   const {
     isRunning: agentIsRunning,
-    currentSubagent,
     cycleCount,
     thinking,
     activeToolCall,
     toolCalls,
     todos,
     memoryOps,
-    commandoSessions,
   } = useArbAgent(agentMessages);
 
   const [selectedEventTicker, setSelectedEventTicker] = useState(null);
   const [leftCollapsed, setLeftCollapsed] = useState(false);
   const [rightCollapsed, setRightCollapsed] = useState(false);
+  const [activeMainTab, setActiveMainTab] = useState('agent');
 
   const handleDeselectEvent = useCallback(() => setSelectedEventTicker(null), []);
 
@@ -104,23 +105,33 @@ const ArbDashboard = () => {
           eventTrades={eventTrades}
           arbTrades={arbTrades}
           tradingState={tradingState}
-          mentionsState={mentionsState}
           onDeselectEvent={handleDeselectEvent}
-        />
-
-        <RightSidebar
-          collapsed={rightCollapsed}
-          onToggle={() => setRightCollapsed(c => !c)}
+          // Agent tab props
+          activeMainTab={activeMainTab}
+          setActiveMainTab={setActiveMainTab}
           isRunning={agentIsRunning}
-          currentSubagent={currentSubagent}
           cycleCount={cycleCount}
           thinking={thinking}
           activeToolCall={activeToolCall}
           toolCalls={toolCalls}
           todos={todos}
           memoryOps={memoryOps}
-          commandoSessions={commandoSessions}
-          arbTrades={arbTrades}
+          sniperState={sniperState}
+          captainPaused={captainPaused}
+          exchangeStatus={exchangeStatus}
+          feedStats={feedStats}
+          connectionStatus={connectionStatus}
+          systemState={systemState}
+          startupMessages={startupMessages}
+        />
+
+        <OrdersSidebar
+          trades={arbTrades}
+          tradingState={tradingState}
+          collapsed={rightCollapsed}
+          onToggle={() => setRightCollapsed(c => !c)}
+          sniperOrderIds={sniperState?.recentActions?.flatMap(a => a.order_ids || []) || []}
+          accountHealth={accountHealth}
         />
       </div>
     </div>

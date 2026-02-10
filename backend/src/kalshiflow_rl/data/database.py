@@ -91,7 +91,6 @@ class RLDatabase:
         """Create all RL-specific database tables and indexes."""
         async with self.get_connection() as conn:
             # Create tables in dependency order
-            await self._create_orderbook_sessions_table(conn)
             await self._create_orderbook_snapshots_table(conn)
             await self._create_orderbook_deltas_table(conn)
             await self._create_models_table(conn)
@@ -106,7 +105,6 @@ class RLDatabase:
             await self._create_orderbook_signals_table(conn)
 
             # Analyze tables for optimal query planning
-            await conn.execute("ANALYZE rl_orderbook_sessions")
             await conn.execute("ANALYZE rl_orderbook_snapshots")
             await conn.execute("ANALYZE rl_orderbook_deltas")
             await conn.execute("ANALYZE rl_models")
@@ -132,75 +130,12 @@ class RLDatabase:
         except Exception as e:
             logger.warning(f"Failed to add constraint {constraint_name}: {e}")
     
-    async def _create_orderbook_sessions_table(self, conn: asyncpg.Connection):
-        """Create orderbook_sessions table for tracking WebSocket connection sessions."""
-        await conn.execute('''
-            CREATE TABLE IF NOT EXISTS rl_orderbook_sessions (
-                session_id BIGSERIAL PRIMARY KEY,
-                market_tickers TEXT[] NOT NULL,  -- Array of market tickers for this session
-                started_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                ended_at TIMESTAMPTZ,  -- NULL while session is active
-                status VARCHAR(20) NOT NULL DEFAULT 'active',  -- active, closed, error
-                websocket_url TEXT,
-                environment TEXT,  -- Environment where session was collected (local/production/paper)
-                connection_metadata JSONB,  -- Additional connection info
-                messages_received BIGINT DEFAULT 0,
-                snapshots_count INTEGER DEFAULT 0,
-                deltas_count INTEGER DEFAULT 0,
-                last_message_at TIMESTAMPTZ,
-                error_message TEXT,  -- If session ended with error
-                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
-                CONSTRAINT chk_sessions_environment CHECK (environment IN ('local', 'production', 'paper', 'test'))
-            );
-        ''')
-        
-        # Create indexes
-        await conn.execute('''
-            CREATE INDEX IF NOT EXISTS idx_sessions_status_started 
-                ON rl_orderbook_sessions(status, started_at DESC);
-        ''')
-        
-        await conn.execute('''
-            CREATE INDEX IF NOT EXISTS idx_sessions_active 
-                ON rl_orderbook_sessions(status) 
-                WHERE status = 'active';
-        ''')
-        
-        await conn.execute('''
-            CREATE INDEX IF NOT EXISTS idx_sessions_markets 
-                ON rl_orderbook_sessions USING GIN(market_tickers);
-        ''')
-        
-        await conn.execute('''
-            CREATE INDEX IF NOT EXISTS idx_sessions_environment 
-                ON rl_orderbook_sessions(environment, started_at DESC);
-        ''')
-        
-        # Add constraints
-        await self._add_constraint_if_not_exists(
-            conn,
-            'rl_orderbook_sessions',
-            'chk_sessions_status',
-            "CHECK (status IN ('active', 'closed', 'error'))"
-        )
-        
-        await self._add_constraint_if_not_exists(
-            conn,
-            'rl_orderbook_sessions',
-            'chk_sessions_dates',
-            'CHECK (ended_at IS NULL OR ended_at >= started_at)'
-        )
-        
-        await conn.execute('''
-            COMMENT ON TABLE rl_orderbook_sessions IS 'WebSocket connection sessions for orderbook data collection';
-        ''')
-    
     async def _create_orderbook_snapshots_table(self, conn: asyncpg.Connection):
         """Create orderbook_snapshots table with full state snapshots."""
         await conn.execute('''
             CREATE TABLE IF NOT EXISTS rl_orderbook_snapshots (
                 id BIGSERIAL PRIMARY KEY,
-                session_id BIGINT NOT NULL REFERENCES rl_orderbook_sessions(session_id),
+                session_id BIGINT NOT NULL,
                 market_ticker VARCHAR(100) NOT NULL,
                 timestamp_ms BIGINT NOT NULL,
                 sequence_number BIGINT NOT NULL,
@@ -265,7 +200,7 @@ class RLDatabase:
         await conn.execute('''
             CREATE TABLE IF NOT EXISTS rl_orderbook_deltas (
                 id BIGSERIAL PRIMARY KEY,
-                session_id BIGINT NOT NULL REFERENCES rl_orderbook_sessions(session_id),
+                session_id BIGINT NOT NULL,
                 market_ticker VARCHAR(100) NOT NULL,
                 timestamp_ms BIGINT NOT NULL,
                 sequence_number BIGINT NOT NULL,
@@ -567,7 +502,7 @@ class RLDatabase:
         await conn.execute('''
             CREATE TABLE IF NOT EXISTS orderbook_signals (
                 id BIGSERIAL PRIMARY KEY,
-                session_id BIGINT REFERENCES rl_orderbook_sessions(session_id),
+                session_id BIGINT,
                 market_ticker VARCHAR(100) NOT NULL,
                 bucket_timestamp TIMESTAMPTZ NOT NULL,  -- Start of 10-second bucket
                 bucket_seconds INTEGER DEFAULT 10,  -- Bucket duration (default 10s)
@@ -640,79 +575,14 @@ class RLDatabase:
             conn,
             'orderbook_signals',
             'chk_signals_imbalance_ratio',
-            'CHECK ((no_imbalance_ratio IS NULL OR (no_imbalance_ratio >= 0 AND no_imbalance_ratio <= 1)) AND '
-            '(yes_imbalance_ratio IS NULL OR (yes_imbalance_ratio >= 0 AND yes_imbalance_ratio <= 1)))'
+            'CHECK ((no_imbalance_ratio IS NULL OR (no_imbalance_ratio >= -1 AND no_imbalance_ratio <= 1)) AND '
+            '(yes_imbalance_ratio IS NULL OR (yes_imbalance_ratio >= -1 AND yes_imbalance_ratio <= 1)))'
         )
 
         await conn.execute('''
             COMMENT ON TABLE orderbook_signals IS 'Aggregated orderbook metrics in 10-second buckets for signal generation';
         ''')
 
-    async def close(self):
-        """Close database connection pool."""
-        if self._pool:
-            await self._pool.close()
-            self._initialized = False
-            logger.info("RL database connection pool closed")
-    
-    # Session management operations
-    
-    async def create_session(self, market_tickers: List[str], websocket_url: str = None, environment: str = None) -> int:
-        """Create a new orderbook session and return its ID."""
-        async with self.get_connection() as conn:
-            session_id = await conn.fetchval('''
-                INSERT INTO rl_orderbook_sessions (
-                    market_tickers, websocket_url, environment, status, started_at
-                ) VALUES ($1, $2, $3, 'active', CURRENT_TIMESTAMP)
-                RETURNING session_id
-            ''', market_tickers, websocket_url, environment)
-            
-            logger.info(f"Created orderbook session {session_id} for {len(market_tickers)} markets (env: {environment})")
-            return session_id
-    
-    async def update_session_stats(self, session_id: int, messages: int = 0, snapshots: int = 0, deltas: int = 0) -> None:
-        """Update session statistics."""
-        async with self.get_connection() as conn:
-            await conn.execute('''
-                UPDATE rl_orderbook_sessions 
-                SET messages_received = messages_received + $2,
-                    snapshots_count = snapshots_count + $3,
-                    deltas_count = deltas_count + $4,
-                    last_message_at = CURRENT_TIMESTAMP
-                WHERE session_id = $1
-            ''', session_id, messages, snapshots, deltas)
-    
-    async def close_session(self, session_id: int, status: str = 'closed', error_message: str = None) -> None:
-        """Close an orderbook session."""
-        async with self.get_connection() as conn:
-            await conn.execute('''
-                UPDATE rl_orderbook_sessions 
-                SET status = $2, 
-                    ended_at = CURRENT_TIMESTAMP,
-                    error_message = $3
-                WHERE session_id = $1
-            ''', session_id, status, error_message)
-            
-            logger.info(f"Closed orderbook session {session_id} with status: {status}")
-    
-    async def get_active_sessions(self) -> List[Dict[str, Any]]:
-        """Get all active sessions."""
-        async with self.get_connection() as conn:
-            rows = await conn.fetch('''
-                SELECT * FROM rl_orderbook_sessions 
-                WHERE status = 'active' 
-                ORDER BY started_at DESC
-            ''')
-            return [dict(row) for row in rows]
-    
-    async def get_session(self, session_id: int) -> Optional[Dict[str, Any]]:
-        """Get session by ID."""
-        async with self.get_connection() as conn:
-            row = await conn.fetchrow('''
-                SELECT * FROM rl_orderbook_sessions WHERE session_id = $1
-            ''', session_id)
-            return dict(row) if row else None
-    
     # Batch write operations for high-performance ingestion
     
     async def batch_insert_snapshots(self, snapshots: List[Dict[str, Any]], session_id: int) -> int:
@@ -1198,174 +1068,6 @@ class RLDatabase:
             self._initialized = False
             logger.info("RL database connection pool closed")
     
-    # Session Cleanup Operations
-    
-    async def delete_session(self, session_id: int) -> Dict[str, Any]:
-        """
-        Delete a session and all related data (cascading delete).
-        
-        Returns dict with deletion statistics.
-        """
-        async with self.get_connection() as conn:
-            async with conn.transaction():
-                # Get session info before deletion
-                session = await conn.fetchrow(
-                    "SELECT * FROM rl_orderbook_sessions WHERE session_id = $1",
-                    session_id
-                )
-                
-                if not session:
-                    return {"error": f"Session {session_id} not found"}
-                
-                # Count related data before deletion
-                snapshot_count = await conn.fetchval(
-                    "SELECT COUNT(*) FROM rl_orderbook_snapshots WHERE session_id = $1",
-                    session_id
-                )
-                delta_count = await conn.fetchval(
-                    "SELECT COUNT(*) FROM rl_orderbook_deltas WHERE session_id = $1",
-                    session_id
-                )
-                
-                # Delete related data (order matters due to foreign keys)
-                await conn.execute("DELETE FROM rl_orderbook_deltas WHERE session_id = $1", session_id)
-                await conn.execute("DELETE FROM rl_orderbook_snapshots WHERE session_id = $1", session_id)
-                await conn.execute("DELETE FROM rl_orderbook_sessions WHERE session_id = $1", session_id)
-                
-                return {
-                    "session_id": session_id,
-                    "markets": session['market_tickers'],
-                    "duration": str(session['ended_at'] - session['started_at']) if session['ended_at'] else "N/A",
-                    "snapshots_deleted": snapshot_count,
-                    "deltas_deleted": delta_count,
-                    "status": "deleted"
-                }
-    
-    async def delete_sessions(self, session_ids: List[int]) -> List[Dict[str, Any]]:
-        """
-        Batch delete multiple sessions with progress tracking.
-        
-        Returns list of deletion results for each session.
-        """
-        results = []
-        for session_id in session_ids:
-            try:
-                result = await self.delete_session(session_id)
-                results.append(result)
-            except Exception as e:
-                results.append({
-                    "session_id": session_id,
-                    "error": str(e),
-                    "status": "failed"
-                })
-        return results
-    
-    async def get_empty_sessions(self) -> List[Dict[str, Any]]:
-        """Get all sessions with no snapshots or deltas."""
-        async with self.get_connection() as conn:
-            rows = await conn.fetch("""
-                SELECT 
-                    session_id,
-                    market_tickers,
-                    started_at,
-                    ended_at,
-                    status,
-                    snapshots_count,
-                    deltas_count,
-                    CASE 
-                        WHEN ended_at IS NOT NULL THEN ended_at - started_at
-                        ELSE NULL
-                    END as duration
-                FROM rl_orderbook_sessions
-                WHERE snapshots_count = 0 AND deltas_count = 0
-                ORDER BY session_id
-            """)
-            
-            return [dict(row) for row in rows]
-    
-    async def get_test_sessions(self, max_duration_minutes: int = 5, max_markets: int = 5) -> List[Dict[str, Any]]:
-        """Get sessions that appear to be test runs (short duration, few markets)."""
-        async with self.get_connection() as conn:
-            rows = await conn.fetch("""
-                SELECT 
-                    session_id,
-                    market_tickers,
-                    started_at,
-                    ended_at,
-                    status,
-                    snapshots_count,
-                    deltas_count,
-                    CASE 
-                        WHEN ended_at IS NOT NULL THEN ended_at - started_at
-                        ELSE NULL
-                    END as duration
-                FROM rl_orderbook_sessions
-                WHERE 
-                    status = 'closed'
-                    AND array_length(market_tickers, 1) <= $1
-                    AND (
-                        ended_at IS NULL 
-                        OR EXTRACT(EPOCH FROM (ended_at - started_at))/60 <= $2
-                    )
-                ORDER BY session_id
-            """, max_markets, max_duration_minutes)
-            
-            return [dict(row) for row in rows]
-    
-    async def get_sessions_by_date_range(self, start_date: datetime, end_date: datetime) -> List[Dict[str, Any]]:
-        """Get sessions within a specific date range."""
-        async with self.get_connection() as conn:
-            rows = await conn.fetch("""
-                SELECT 
-                    session_id,
-                    market_tickers,
-                    started_at,
-                    ended_at,
-                    status,
-                    snapshots_count,
-                    deltas_count,
-                    CASE 
-                        WHEN ended_at IS NOT NULL THEN ended_at - started_at
-                        ELSE NULL
-                    END as duration
-                FROM rl_orderbook_sessions
-                WHERE started_at >= $1 AND started_at <= $2
-                ORDER BY started_at DESC
-            """, start_date, end_date)
-            
-            return [dict(row) for row in rows]
-    
-    async def get_session_statistics(self) -> Dict[str, Any]:
-        """Get overall statistics about all sessions."""
-        async with self.get_connection() as conn:
-            stats = await conn.fetchrow("""
-                SELECT 
-                    COUNT(*) as total_sessions,
-                    COUNT(CASE WHEN snapshots_count > 0 OR deltas_count > 0 THEN 1 END) as sessions_with_data,
-                    COUNT(CASE WHEN snapshots_count = 0 AND deltas_count = 0 THEN 1 END) as empty_sessions,
-                    COUNT(CASE WHEN array_length(market_tickers, 1) <= 5 
-                          AND EXTRACT(EPOCH FROM (ended_at - started_at))/60 <= 5 THEN 1 END) as test_sessions,
-                    SUM(snapshots_count) as total_snapshots,
-                    SUM(deltas_count) as total_deltas
-                FROM rl_orderbook_sessions
-                WHERE status = 'closed'
-            """)
-            
-            return dict(stats)
-    
-    async def get_environment_statistics(self) -> Dict[str, int]:
-        """Get session count breakdown by environment."""
-        async with self.get_connection() as conn:
-            rows = await conn.fetch("""
-                SELECT environment, COUNT(*) as count
-                FROM rl_orderbook_sessions
-                WHERE status = 'closed'
-                GROUP BY environment
-                ORDER BY count DESC
-            """)
-            
-            return {row['environment']: row['count'] for row in rows}
-
     # ============================================================
     # Lifecycle Events CRUD Operations (Audit Trail)
     # ============================================================

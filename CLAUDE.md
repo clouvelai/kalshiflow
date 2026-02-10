@@ -113,11 +113,11 @@ cd frontend && npm run dev
 ### V3 Trader (Captain Development)
 
 ```bash
-# Start V3 trader (paper trading, auto-discovers markets, port 8005)
-./scripts/run-v3.sh
+# Start Captain (paper trading, auto-discovers markets, port 8005)
+./scripts/run-captain.sh
 
 # Start with custom settings: [env] [mode] [market_limit]
-./scripts/run-v3.sh paper discovery 20
+./scripts/run-captain.sh paper discovery 20
 
 # Frontend for arb dashboard
 cd frontend && npm run dev
@@ -140,12 +140,39 @@ cd frontend && npm run dev
 ### Testing
 
 ```bash
+# V3 Trader unit tests (214 tests, ~3s, no network/LLM/DB required)
+cd backend && uv run pytest tests/traderv3/ -v --tb=short
+
 # Backend E2E (golden standard - MUST pass before deploy)
 cd backend && uv run pytest tests/test_backend_e2e_regression.py -v
 
 # Frontend E2E (requires backend on :8000)
 cd frontend && npm run test:frontend-regression
+
+# Captain E2E smoke test (~30-60s, requires .env.paper credentials)
+cd backend && uv run pytest tests/test_captain_e2e_smoke.py -v
+
+# Against already-running server
+V3_SMOKE_EXTERNAL_URL=http://localhost:8005 uv run pytest tests/test_captain_e2e_smoke.py -v
+
+# Run everything (unit + E2E)
+cd backend && uv run pytest tests/traderv3/ tests/test_backend_e2e_regression.py tests/test_captain_e2e_smoke.py -v --tb=short
 ```
+
+**Unit test files** (`backend/tests/traderv3/`):
+
+| File | Tests | Scope |
+|------|-------|-------|
+| `test_index.py` | ~40 | MarketMeta, EventMeta, arb detection (pure) |
+| `test_auto_curator.py` | ~25 | Memory curation (pure) |
+| `test_config.py` | ~15 | V3Config validation (pure) |
+| `test_tools_helpers.py` | ~13 | Entity fingerprint, clustering (pure) |
+| `test_mentions_simulator.py` | ~13 | Wilson CI, term scanning (pure) |
+| `test_state_machine.py` | ~22 | State transitions (mocked) |
+| `test_event_bus.py` | ~17 | Pub/sub, coalescing (mocked) |
+| `test_captain_tools.py` | ~22 | LangChain tools (mocked) |
+| `test_issues.py` | ~14 | Issue lifecycle (tmp_path) |
+| `test_sniper.py` | 30 | Sniper execution layer (mocked) |
 
 ### Deployment
 
@@ -259,6 +286,25 @@ thread_id = str(uuid.uuid4())
 
 ## Configuration
 
+### Model Configuration
+
+LLM model selection is centralized into 4 tiers, configured via env vars or `V3Config` fields.
+All consumers read from `mentions_models.py` getters after `configure(config)` is called at startup.
+
+| Tier | Env Var | Default | Used By |
+|------|---------|---------|---------|
+| **captain** | `V3_MODEL_CAPTAIN` | `claude-sonnet-4-20250514` | Captain agent, CausalModel |
+| **subagent** | `V3_MODEL_SUBAGENT` | `claude-haiku-4-5-20251001` | TradeCommando, ChevalDeTroie, MentionsSpecialist, EventUnderstanding synthesis, LifecycleClassifier |
+| **utility** | `V3_MODEL_UTILITY` | `gemini-2.0-flash` | Mentions simulation/extraction |
+| **embedding** | `V3_MODEL_EMBEDDING` | `text-embedding-3-small` | VectorMemoryService (pgvector) |
+
+**Why subagent tier for structured output consumers**: Gemini Flash has a known issue dropping list fields in `.with_structured_output()`. EventUnderstanding, CausalModel, and LifecycleClassifier all use structured output with lists, so they use the subagent tier (Haiku) instead of utility tier.
+
+**Deprecated env vars** (still work as overrides):
+- `V3_SINGLE_ARB_CHEVAL_MODEL` → use `V3_MODEL_SUBAGENT`
+- `MENTIONS_SIMULATION_MODEL` → use `V3_MODEL_UTILITY`
+- `MENTIONS_EXTRACTION_MODEL` → use `V3_MODEL_UTILITY`
+
 ### Key Environment Variables
 
 ```bash
@@ -274,6 +320,12 @@ V3_SINGLE_ARB_CAPTAIN_INTERVAL=60
 V3_SINGLE_ARB_MIN_EDGE_CENTS=0.5
 V3_SINGLE_ARB_ORDER_TTL=30
 
+# LLM Models (centralized tiers)
+V3_MODEL_CAPTAIN=claude-sonnet-4-20250514
+V3_MODEL_SUBAGENT=claude-haiku-4-5-20251001
+V3_MODEL_UTILITY=gemini-2.0-flash
+V3_MODEL_EMBEDDING=text-embedding-3-small
+
 # Mentions
 V3_MENTIONS_ENABLED=true
 ```
@@ -285,6 +337,31 @@ V3_MENTIONS_ENABLED=true
 - `.env.production` - Production
 
 Switch with: `./scripts/switch-env.sh paper`
+
+### Subaccount Management
+
+The V3 trader uses Kalshi subaccounts to isolate Captain's balance from the main account. CLI tool: `scripts/manage_subaccount.py` (must run via `cd backend && uv run python ../scripts/manage_subaccount.py`).
+
+```bash
+# Show all subaccount balances
+cd backend && uv run python ../scripts/manage_subaccount.py balances
+
+# Create a new subaccount
+cd backend && uv run python ../scripts/manage_subaccount.py create
+
+# Transfer $10,000 from subaccount 0 (main) to subaccount 1
+cd backend && uv run python ../scripts/manage_subaccount.py transfer 0 1 10000
+```
+
+After creating/transferring, update `.env.paper`:
+```bash
+V3_SUBACCOUNT=1  # Set to the subaccount number the Captain should trade on
+```
+
+**API notes** (Kalshi subaccounts endpoint quirks):
+- `GET /portfolio/subaccounts/balances` returns `balance` as a **string in dollars** (e.g. `"56.0000"`), not int cents
+- The endpoint does **not** return `portfolio_value` -- it's computed from positions' `market_exposure` downstream
+- `POST /portfolio/subaccounts/transfer` requires `client_transfer_id` (UUID), `from_subaccount`, `to_subaccount`, `amount_cents`
 
 ## Subagent Selection Guide
 
@@ -343,9 +420,10 @@ logger = logging.getLogger("kalshiflow_rl.traderv3.component_name")
 
 ### Before Deployment (Mandatory)
 
-1. Backend E2E test passes
-2. Frontend E2E test passes
-3. Health endpoints responding
+1. V3 unit tests pass: `cd backend && uv run pytest tests/traderv3/ --tb=short`
+2. Backend E2E test passes: `cd backend && uv run pytest tests/test_backend_e2e_regression.py -v`
+3. Frontend E2E test passes
+4. Health endpoints responding
 
 ### Captain Iteration
 

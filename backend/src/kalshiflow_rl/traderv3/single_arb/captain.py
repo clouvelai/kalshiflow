@@ -1,16 +1,11 @@
-"""
-ArbCaptain - LLM agent for single-event arbitrage.
+"""Captain V2 - Single-agent LLM Captain for single-event arbitrage.
 
-Uses create_deep_agent (deepagents framework) with Claude Sonnet.
-Runs on a configurable cycle interval.
-Streams thinking/tool-call events to the frontend via event callback.
-
-Memory architecture:
-- AGENTS.md: Distilled learnings loaded into system prompt every cycle via MemoryMiddleware.
-- SIGNALS.md: Auto-computed microstructure intel, Captain can annotate.
-- PLAYBOOK.md: Active strategies, in-flight plans, exit watchlist.
-- journal.jsonl: Structured trade records via record_learning tool. Append-only.
-- Auto-curator: Pure Python, zero LLM calls, truncates files at cycle start.
+Key simplifications over V1:
+- Single agent with 10 tools (no subagents, no tool duplication)
+- Structured JSON context (MarketState + PortfolioState + SniperStatus)
+- Session memory via FAISS (no markdown files)
+- ~400 tokens system prompt (down from ~800 + 500-2000 memory files)
+- 60-75% fewer input tokens per cycle
 """
 
 import asyncio
@@ -18,599 +13,114 @@ import json
 import logging
 import os
 import time
+import traceback
 import uuid
 from typing import Any, Callable, Coroutine, Dict, List, Optional
 
 from deepagents import create_deep_agent
-from deepagents.backends import CompositeBackend, FilesystemBackend, StateBackend
+from deepagents.backends import StateBackend
 from langchain_core.messages import HumanMessage
 from langgraph.cache.memory import InMemoryCache
 
-from .tools import (
-    get_event_snapshot,
-    get_events_summary,
-    get_recent_trades,
-    get_market_orderbook,
-    get_trade_history,
-    execute_arb,
-    place_order,
-    cancel_order,
-    get_resting_orders,
-    record_learning,
-    get_positions,
-    get_balance,
-    analyze_microstructure,
-    analyze_orderbook_patterns,
-    update_understanding,
-    update_causal_model,
-    report_issue,
-    get_issues,
-    search_event_news,
-    recall_context,
-    search_news_history,
-    get_price_movers,
-    manage_thesis,
-    get_event_candlesticks,
-    # Sniper tools
-    configure_sniper,
-    get_sniper_status,
-    kill_sniper_positions,
-    get_orderbook_intelligence,
-)
-from .mentions_tools import (
-    # Primary entry point
-    get_mentions_status,  # Simplified status + auto-baseline + auto-refresh
-    # Simulation tools
-    simulate_probability,
-    trigger_simulation,  # Async non-blocking version
-    compute_edge,
-    # Context tools
-    get_event_context,
-    get_mention_context,
-    # Semantic tools
-    query_wordnet,
-    # State tools
-    get_mentions_rules,
-    get_mentions_summary,
-)
+from .context_builder import ContextBuilder
+from .models import MarketState, PortfolioState, SniperStatus, CycleDiff
+from .task_ledger import TaskLedger
+from .tools import ALL_TOOLS, TOOL_CATEGORIES
 
 logger = logging.getLogger("kalshiflow_rl.traderv3.single_arb.captain")
 
-CAPTAIN_PROMPT = """You are the Captain — you own this trading system: strategies, subagents, capital, memory, P&L.
-Build a trading operation that learns faster than the market.
-Delegate execution to subagents. Keep the reasoning with you.
-
-PRICING UNITS (critical — all tools use this convention):
-  Kalshi prices are in CENTS (0-100 scale). 1 cent = $0.01.
-  A YES contract at 60c costs $0.60. If YES wins, it pays out 100c ($1.00). Profit = 40c ($0.40).
-  All tool return values — prices, edge, cost, P&L, balance — are in CENTS unless labeled otherwise.
-  "edge=2.5" means 2.5 cents ($0.025) of expected profit per contract.
-  "balance_cents=50000" means $500.00. "total_cost=2500" means $25.00.
-  When this prompt says "5c", "10c", "15c" — that's cents. 5c = $0.05, 10c = $0.10, 15c = $0.15.
-
-STRATEGY PLAYBOOK (seed strategies — your AGENTS.md rules OVERRIDE these):
-
-S1 — SUM ARB (mutually_exclusive events only):
-  Entry: sum_yes_ask < (100 - fee_per_contract * N_markets). Risk-free if all legs fill.
-  Action: execute_arb(direction="long"). BLOCKED on independent events (mutually_exclusive=false).
-
-S2 — LONGSHOT FADE:
-  Entry: YES price 1-15c where retail sentiment > fundamentals.
-  Action: Sell YES or buy NO. Size: Quarter-Kelly. Exit: settlement or >10c against.
-
-S3 — OVERREACTION:
-  Entry: Price moved >15c in <5min. Action: Fade the move.
-  Size: Quarter-Kelly. Exit: 50% retracement or 30min timeout.
-
-S4 — OBI MOMENTUM:
-  Entry: book_imbalance > 0.6 AND spread <= 3c. MAKER limit at bid/ask.
-  Size: Quarter-Kelly. Exit: +5c profit or -5c cut.
-
-S5 — MENTIONS EDGE:
-  Entry: Market price OUTSIDE simulation CI. Delegate to mentions_specialist.
-  TIMING: Best edge PRE_EVENT (>24h). Prices converge once event begins.
-  WORKFLOW: mentions_specialist calls get_mentions_status() (auto-baselines + auto-refreshes).
-            Once ready_for_trading=True, it uses compute_edge() for signals.
-
-S6 — SPREAD CAPTURE:
-  Entry: Spread > 5c on liquid markets. Post maker limit orders.
-  Size: 10-25 contracts per level. Exit: filled or TTL cancel.
-
-STRATEGY EVOLUTION:
-  TUNE via AGENTS.md rules: "IF S4 THEN OBI > 0.7 | confidence=0.6 | N trades"
-  CREATE in PLAYBOOK.md ## CUSTOM_STRATEGIES with same format.
-  RETIRE in AGENTS.md ## RETIRED after 20+ trades with <35% win rate post-tuning.
-  EXPERIMENT: max 5% capital. Track in ## HYPOTHESES. Promote after 5+ confirms.
-
-YOUR SUBAGENTS:
-  trade_commando: Execution arm. Give it: strategy tag, ticker, side, contracts, price, thesis.
-  cheval_de_troie: Bot detection analyst. Invoke on anomalous micro signals.
-  mentions_specialist: S5 edge detection. Give it: event_ticker.
-
-POSITION SIZING:
-  f* = edge_cents / potential_profit_cents (both in cents, e.g., edge=3c, profit=40c → f*=0.075). Use quarter-Kelly. Max 20% of capital.
-  Scale DOWN as time_to_close decreases (sqrt scaling).
-
-MARKET REGIMES:
-  PRE_EVENT (>24h): Widest spreads, S1/S6 edge. Patient limit orders.
-  LIVE (1-24h): News-driven S3 opportunities. Watch volume.
-  SETTLING (<1h): EXIT profitable positions, no new entries.
-
-CYCLE STRUCTURE:
-  1. Positions: exit any hitting PLAYBOOK.md rules
-  2. Outcomes: settled trades -> one IF-THEN takeaway
-  3. Scan: get_events_summary() -> match strategies to opportunities
-  4. Act: delegate to trade_commando with strategy tag, or PASS
-  5. Memory: write IF-THEN rules to AGENTS.md (not narratives)
-
-MEMORY PROTOCOL:
-  Write RULES, not narratives. Never write cycle-by-cycle commentary.
-  AGENTS.md format: "IF [condition] THEN [action] | confidence=[0-1] | source=[evidence]"
-  LESSONS format: one line per insight with ticker, date, outcome, takeaway.
-  NEVER write "Cycle #N: PASS - same issues" -- if nothing changed, write nothing.
-  Your rules OVERRIDE seed defaults. Promote hypotheses after 5+ confirms.
-  Demote at confidence < 0.3.
-
-  AGENTS.md = decision rules + lessons (auto-curated, duplicates removed).
-  PLAYBOOK.md = live positions, active strategies, exit rules.
-  SIGNALS.md = signal calibration (predicted vs actual).
-  THESES.md = active multi-day theses (max 5).
-
-  Use recall_context() before trades to search past learnings.
-  Use search_event_news() for fresh news. search_news_history() for stored articles.
-  Use manage_thesis() for multi-day evidence accumulation.
-
-INTELLIGENCE TOOLS:
-  get_event_candlesticks(event_ticker) — Price history with OHLC candles + trend indicators.
-  search_event_news(event_ticker, query) — Fresh news via Tavily (budget-managed).
-  search_news_history(query, event_ticker) — Stored articles with price-at-discovery snapshots.
-  get_price_movers(event_ticker) — Articles correlated with significant price moves.
-  recall_context(query, event_ticker) — Semantic search across past learnings (journal + vector).
-  manage_thesis(action, ...) — Multi-day strategic thesis: create, update, close, list.
-
-EXECUTION:
-  Delegate all orders to trade_commando. Include strategy tag.
-  Prefer MAKER orders (cheaper fees). Only cross spread when fill speed matters.
-
-LIFECYCLE AWARENESS:
-  Events have lifecycle stages in get_events_summary():
-  dormant -> building -> peak (TRADE) -> convergence -> resolution (EXIT).
-
-CAUSAL MODEL:
-  NOTE: update_understanding() = rebuild context (participants, news, factors) — expensive, use sparingly.
-        update_causal_model() = maintain live price drivers — cheap incremental updates, use every cycle.
-  Each event has a structured causal model with drivers, catalysts, and entity links.
-  Use update_causal_model() to maintain this knowledge across cycles:
-  - validate_driver: Confirm a driver is still relevant (resets stale timer)
-  - invalidate_driver: Mark a driver as wrong/outdated
-  - add_driver: When you discover a new price-moving factor
-  - add_catalyst: When you learn of an upcoming event/decision
-  - mark_catalyst: When a catalyst has occurred
-  - prune: Remove stale drivers (>2h without validation)
-  Drivers fade to "stale" after 2 hours without validation. Keep models fresh.
-  The causal model in get_events_summary() shows top 3 drivers + next catalyst.
-  Use get_event_snapshot() for the full model with all drivers and entity links.
-
-CYCLE BUDGET:
-  You have a HARD LIMIT of ~40 tool calls per cycle. Plan your calls.
-  Typical efficient cycle: 3-5 observation calls, 0-2 trade actions, 0-1 memory writes.
-  NEVER call the same tool twice with the same arguments in one cycle.
-  When you have enough information to decide, STOP calling tools and respond with your summary.
-  If no opportunities meet your criteria, say "PASS" and end the cycle.
-
-SELF-IMPROVEMENT:
-  report_issue() for bugs. get_issues() to check existing reports.
-
-SNIPER EXECUTION LAYER:
-  You have a sub-second execution Sniper for S1_ARB market rebalancing.
-  The Sniper fires automatically when arb opportunities are detected.
-  You CONFIGURE it; it EXECUTES. Division of labor:
-
-  YOUR JOB:
-    - configure_sniper(enabled=True/False, arb_min_edge=N, max_position=N, ...)
-    - get_sniper_status() to review performance, latency, rejection reasons
-    - kill_sniper_positions() for emergency halt
-    - get_orderbook_intelligence(event_ticker) for microprice/OFI/VPIN/sweep data
-    - Adjust arb_min_edge based on market conditions and fill rates
-    - Disable Sniper (enabled=False) in settling/thin/toxic regimes
-
-  SNIPER'S JOB:
-    - Detect arb from EventArbIndex (real-time orderbook)
-    - Walk depth levels for liquidity-adjusted edge (not just BBO)
-    - Check risk gates (position, capital, cooldown, VPIN toxicity)
-    - Execute parallel legs via asyncio.gather() for minimum latency
-    - Track fills, P&L, and order lifecycle
-
-  MICROSTRUCTURE SIGNALS (available via get_orderbook_intelligence):
-    - microprice: Depth-weighted fair value (better than mid for limit pricing)
-    - ofi/ofi_ema: Order flow imbalance (positive = buy pressure)
-    - vpin: Volume-synchronized PIN (>0.7 = toxic informed flow, Sniper auto-rejects)
-    - sweep_active: Aggressive sweep crossing multiple price levels
-    - book_imbalance: Bid vs ask depth ratio
-
-  WORKFLOW:
-    1. On startup: configure_sniper(enabled=True) if S1_ARB conditions are favorable
-    2. Each cycle: get_sniper_status() to check trades, rejections, capital
-    3. If regime changes: adjust arb_min_edge (in cents, e.g., 3.0 = 3 cents) up (cautious) or down (aggressive)
-    4. If toxic flow: increase vpin_reject_threshold or disable Sniper entirely
-    5. Before settling: disable Sniper, exit positions via trade_commando
-"""
-
-TRADE_COMMANDO_PROMPT = """You are the TradeCommando — order execution specialist on Kalshi's demo API.
-
-You receive a strategy tag (S1-S6), thesis, and trade parameters from the Captain.
-Execute precisely and report results with the strategy tag for outcome attribution.
-
-PRICING UNITS:
-  All prices are in CENTS (1-99). 1c = $0.01. A 50c contract costs $0.50.
-  Profit on a winning contract = (100 - price) cents. E.g., buy at 30c → win 70c ($0.70).
-  balance_cents from get_balance() is in cents: 50000 = $500.00.
-
-MAKER vs TAKER:
-- Post LIMIT orders (maker) when possible. Maker fees are ~4x cheaper than taker.
-- Only cross the spread (taker) when fill speed matters more than cost.
-- For S6 (spread capture), ALWAYS use maker orders.
-
-KALSHI ORDER MECHANICS:
-- BUY YES at Xc: pay X, profit (100-X) if YES wins. Max loss = X.
-- BUY NO at Xc: pay X, profit (100-X) if NO wins. Max loss = X.
-- SELL YES/NO: close existing position. Check get_positions() for quantity first.
-- Orders auto-cancel after TTL. Session order group tracks all orders.
-
-EXECUTION PROTOCOL:
-1. get_balance() — never trade more than you can afford.
-2. Single-leg: place_order(). Multi-leg arbs: execute_arb().
-3. After placing: get_resting_orders() for queue position.
-4. Report: strategy_tag, order_id, status, price, contracts, queue position.
-
-FILL PROBABILITY:
-- queue_position > 50 with 60s TTL = unlikely fill. Consider improving price by 1c.
-- queue_position > 20: warn the Captain — fill unlikely before TTL.
-- Low-liquidity markets (ask_size < 5): consider crossing the spread.
-
-ORDER SPLITTING:
-- Orders > 50 contracts: split across 2-3 price levels to reduce market impact.
-- Example: 80 contracts → 30@bid, 30@bid+1c, 20@bid+2c.
-
-SELLING / EXITING:
-- YES position: place_order(action="sell", side="yes", ...)
-- NO position: place_order(action="sell", side="no", ...)
-- Quick exits: sell at current bid (yes_bid for YES, 100-yes_ask for NO).
-
-REPORT FORMAT:
-[Strategy_Tag] order_id | ticker | side | contracts@price | status | queue_position
-Example: [S4] abc123 | KXMARKET-YES | buy yes | 15@42c | resting | queue=8
-
-ERROR HANDLING:
-- "insufficient_balance": report exact shortfall.
-- "order_not_found" on cancel: order already filled or expired.
-- API errors: record via record_learning() with full context.
-
-Execute precisely. Report facts, not opinions.
-"""
-
-CHEVAL_DE_TROIE_PROMPT = """You are ChevalDeTroie — bot detection and adversary profiling intelligence analyst.
-
-Your job: turn raw microstructure data into actionable adversary intelligence.
-The signals are already computed. Your value is INTERPRETATION and STRATEGIC INFERENCE.
-
-ENTITY PROFILING:
-  Classify detected entities from analyze_microstructure() fingerprints:
-  - MM_BOT: consistent_size_ratio > 0.8, symmetric bid/ask quotes, rapid cancels
-  - ARB_BOT: trades across multiple markets simultaneously, sub-100ms timing
-  - TWAP: evenly-spaced trades, consistent size, persistent direction
-  - MOMENTUM: trades accelerate with price movement, increasing size
-  - WHALE: single large trades (>= 100 contracts), irregular timing
-  - RETAIL: random sizes, irregular timing, often crosses spread
-
-STRATEGY INFERENCE:
-  For each entity detected, answer:
-  1. What are they doing? (accumulating, distributing, providing liquidity, arbing)
-  2. Informed or mechanical? (MM = mechanical, WHALE = likely informed)
-  3. Time horizon? (MM = continuous, TWAP = hours, MOMENTUM = minutes)
-  4. What would force them to stop? (inventory limits, time, price level)
-
-CROSS-MARKET CORRELATION:
-  Same fingerprint across multiple markets in an event = coordinated actor.
-  - Simultaneous orderbook updates across markets = MM_BOT or ARB_BOT
-  - Sequential trades across markets = TWAP or informed accumulation
-  - Leading/lagging: which market moves first? That's where information enters.
-
-EXPLOITABLE PATTERNS:
-  - MM_BOT: fade their quotes when book_imbalance shifts (they lag real flow)
-  - ARB_BOT: don't compete — they're faster. Trade AFTER they correct the spread.
-  - TWAP: front-run predictable flow. If TWAP is buying, buy ahead and sell to them.
-  - MOMENTUM: fade after the burst. rapid_sequence_count spike + price move = reversion soon.
-  - WHALE: wait for post-whale reversion (mean reversion within 5-15 min).
-  - RETAIL: no edge — they're noise. Ignore unless volume_5m is unusually high.
-
-STRUCTURED REPORT FORMAT:
-  ## ENTITIES DETECTED
-  [entity_type] on [market_ticker]: [evidence from data]
-
-  ## CROSS-MARKET INTEL
-  [Patterns across markets within the event, if any]
-
-  ## RECOMMENDATIONS FOR CAPTAIN
-  [Specific, actionable: "Fade MM quotes on TICKER-X when OBI shifts" or "TWAP detected on TICKER-Y, front-run at Xc"]
-
-  ## CONFIDENCE ASSESSMENT
-  [high/medium/low] based on trade count and signal strength
-
-DATA HONESTY:
-  < 10 trades on a market = INSUFFICIENT DATA. Say so. Never fabricate entity types.
-  Low volume markets may show spurious patterns. Flag uncertainty explicitly.
-
-TOOL WORKFLOW:
-  1. analyze_microstructure(event_ticker) — entity fingerprints, trade flow, timing
-  2. analyze_orderbook_patterns(market_ticker) — MM detection, book structure (on active markets)
-  3. get_event_snapshot(event_ticker) — full event context with micro summary
-  4. get_recent_trades(market_ticker) — raw trade data for pattern confirmation
-  5. get_market_orderbook(market_ticker) — current book depth
-  6. record_learning(content, memory_type="observation") — persist significant findings
-
-Investigate thoroughly. Report concisely. Persist important findings.
-"""
-
-MENTIONS_SPECIALIST_PROMPT = """You are the MentionsSpecialist — edge detector for Kalshi mentions markets (S5 strategy).
-
-MISSION: Find mispricings in "will X say Y?" markets. Only recommend trades where
-the market price is OUTSIDE the simulation confidence interval.
-
-CONFIDENCE INTERVAL GATE (PRIMARY FILTER):
-The CI gate is your first and most important check.
-If the market price falls within your CI, STOP — there is no edge. Report PASS.
-This prevents trading on uncertain point estimates.
-
-SIMULATION ARCHITECTURE:
-Simulations now run PER-SEGMENT for better coverage. Each high-yield broadcast segment
-(pre-game, halftime, post-game, etc.) gets independent simulations, then results are
-recombined. This produces more grounded, event-specific transcripts vs. monolithic generation.
-The tools handle this automatically — no change in your workflow.
-
-WORKFLOW:
-
-1. Call get_mentions_status(event_ticker)
-   - If no baseline: blocks to establish it (~20s, one-time)
-   - If baseline exists but stale: triggers background refresh
-   - Returns: baseline_estimates, current_estimates, ready_for_trading
-
-2. If NOT ready_for_trading: report status, try next cycle.
-
-3. Call compute_edge() with CI bounds from baseline_estimates:
-   - baseline_probability = baseline_estimates[entity]["probability"]
-   - informed_probability = current_estimates[entity]["probability"]
-   - ci_lower = baseline_estimates[entity]["confidence_interval"][0]
-   - ci_upper = baseline_estimates[entity]["confidence_interval"][1]
-   - market_yes_price, market_no_price from orderbook
-
-4. If compute_edge returns "PASS" (market within CI), STOP. No trade.
-
-5. If edge detected, report to Captain:
-   "[S5] [Entity]: Baseline [X]%, CI [{L}%, {U}%], Market [M]c.
-    Edge: [E]c [BUY_YES/BUY_NO]. Blended P=[W]%."
-
-TIMING GUIDANCE:
-- PRE_EVENT (>24h before start): Best edge window. Widest spreads, market least informed.
-- LIVE: Prices converge rapidly once event begins. Exit or hold, don't enter new positions.
-
-CALIBRATION TRACKING:
-After each settled mentions trade, record in SIGNALS.md:
-- Predicted P vs actual outcome (YES=1, NO=0)
-- Track systematic bias: are you consistently over/under-estimating?
-- CI coverage: how often does actual outcome fall within CI?
-Format: "MENTIONS_CAL: [ticker] predicted=[P] actual=[0/1] CI=[L,U] [hit/miss]"
-
-STRICT RULES:
-- ONLY accepted_forms count per settlement rules
-- Synonyms NEVER count — use query_wordnet to understand
-- Confidence must be >= 0.6 (n_simulations >= 10)
-- ALWAYS pass ci_lower/ci_upper to compute_edge from baseline_estimates
-- When uncertain, PASS
-"""
-
-# Tool categorization for frontend event routing
-TOOL_CATEGORIES = {
-    "write_todos": "todo",
-    "read_todos": "todo",
-    "task": "subagent",
-    "record_learning": "memory",
-    "get_event_snapshot": "arb",
-    "get_events_summary": "arb",
-    "get_recent_trades": "arb",
-    "get_market_orderbook": "arb",
-    "get_trade_history": "arb",
-    "execute_arb": "arb",
-    "place_order": "arb",
-    "cancel_order": "arb",
-    "get_resting_orders": "arb",
-    "get_positions": "arb",
-    "get_balance": "arb",
-    "analyze_microstructure": "surveillance",
-    "analyze_orderbook_patterns": "surveillance",
-    "update_understanding": "arb",
-    "update_causal_model": "arb",
-    "search_event_news": "arb",
-    # Mentions tools - simulation-based probability estimation
-    "get_mentions_status": "mentions",  # Primary entry point
-    "simulate_probability": "mentions",
-    "trigger_simulation": "mentions",  # Async non-blocking version
-    "compute_edge": "mentions",
-    "query_wordnet": "mentions",
-    "get_event_context": "mentions",
-    "get_mention_context": "mentions",
-    "get_mentions_rules": "mentions",
-    "get_mentions_summary": "mentions",
-    # Intelligence tools
-    "recall_context": "memory",
-    "search_news_history": "arb",
-    "get_price_movers": "arb",
-    "manage_thesis": "memory",
-    "get_event_candlesticks": "arb",
-    # Self-improvement tools
-    "report_issue": "self_improvement",
-    "get_issues": "self_improvement",
-    # Sniper execution layer
-    "configure_sniper": "sniper",
-    "get_sniper_status": "sniper",
-    "kill_sniper_positions": "sniper",
-    "get_orderbook_intelligence": "sniper",
-}
+CAPTAIN_PROMPT_TEMPLATE = """You are the Captain — an autonomous Kalshi prediction market trader.
+Your job: extract profit from mispriced prediction markets. Act on edge. Manage positions. Build memory.
+
+PRICING: cents (0-100). YES@60c costs $0.60, pays $1.00 if YES wins. Tool inputs use cents. Balance in briefing is DOLLARS.
+
+EACH CYCLE you receive live JSON: MARKET_STATE, PORTFOLIO, SNIPER, CHANGES.
+
+DECISION RULES:
+- Edge >= 5c AND spread < 10c → execute_arb or place_order (5-25 contracts based on liquidity)
+- Edge 2-5c AND spread < 8c → place_order (1-5 contracts)
+- Position PnL > +10c/contract → take profit (sell)
+- Position PnL < -12c/contract → cut loss (sell)
+- Position with < 1h to close → exit unless high conviction
+- No edge above 2c → configure sniper, update todos, move on
+
+FLOW: write_todos → check exits → scan edge → research if needed → trade → store_insight
+
+TASK PLANNING: write_todos EVERY cycle. Without it you lose all context between cycles.
+Track: positions to manage, edge opportunities, sniper config. Prefix [HIGH]/[MED]/[LOW].
+
+EXITS: sell the side you hold. NEVER buy the opposite side to "hedge."
+SNIPER: Auto-executes S1_ARB. You CONFIGURE it (edge threshold, capital, cooldown), it EXECUTES.
+REGIME: Per-market vpin/sweep is informational. Only hard stops: negative edge, spread > 15c.
+
+{guidance_section}"""
+
+# Path to the trading guidance file
+_GUIDANCE_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "skills", "trading-guidance", "GUIDANCE.md",
+)
+
+_guidance_cache: Optional[str] = None
+
+
+def _load_guidance() -> str:
+    """Load trading guidance from file (cached after first read)."""
+    global _guidance_cache
+    if _guidance_cache is not None:
+        return _guidance_cache
+    try:
+        with open(_GUIDANCE_PATH, "r") as f:
+            _guidance_cache = f.read()
+        return _guidance_cache
+    except FileNotFoundError:
+        logger.warning(f"[CAPTAIN] Trading guidance not found: {_GUIDANCE_PATH}")
+        return ""
 
 
 class ArbCaptain:
-    """
-    LLM Captain for single-event arb.
+    """Single-agent LLM Captain for single-event arbitrage.
 
-    Runs create_deep_agent with tools + subagent. Streams events to frontend.
-    Uses CompositeBackend: /memories/ -> FilesystemBackend (persistent), rest -> StateBackend (ephemeral).
-    AGENTS.md loaded into system prompt every cycle via memory parameter.
+    Uses create_deep_agent with 10 tools (no subagents).
+    Structured JSON context injected each cycle.
+    Session memory via FAISS + pgvector.
     """
 
     def __init__(
         self,
-        model_name: str = "claude-sonnet-4-20250514",
+        context_builder: ContextBuilder,
+        model_name: Optional[str] = None,
         cycle_interval: float = 60.0,
         event_callback: Optional[Callable[..., Coroutine]] = None,
-        memory_data_dir: Optional[str] = None,
-        tool_overrides: Optional[Dict[str, List]] = None,
-        index=None,
-        gateway=None,
-        cheval_model: str = "claude-haiku-4-5-20251001",
         sniper_ref=None,
         system_ready: Optional[asyncio.Event] = None,
     ):
+        from .mentions_models import get_captain_model
+        model_name = model_name or get_captain_model()
+
         self._model_name = model_name
         self._cycle_interval = cycle_interval
         self._event_callback = event_callback
-        self._index_ref = index  # Direct reference (new gateway path)
-        self._gateway_ref = gateway  # KalshiGateway for balance/positions (new gateway path)
-        self._sniper_ref = sniper_ref  # Sniper execution layer (optional)
-        self._system_ready = system_ready  # Set by coordinator when deferred init completes
+        self._ctx = context_builder
+        self._sniper_ref = sniper_ref
+        self._system_ready = system_ready
 
-        # Resolve memory data directory for FilesystemBackend
-        if memory_data_dir is None:
-            memory_data_dir = os.path.join(
-                os.path.dirname(os.path.abspath(__file__)), "memory", "data"
-            )
-        os.makedirs(memory_data_dir, exist_ok=True)
-        self._memory_data_dir = memory_data_dir
-
-        # Tool lists: use overrides if provided (new gateway path), else legacy imports
-        if tool_overrides:
-            captain_tools = tool_overrides["captain"]
-            commando_tools = tool_overrides["commando"]
-            mentions_tools = tool_overrides["mentions"]
-            cheval_tools = tool_overrides.get("cheval", [])
-        else:
-            # Captain tools: observation + delegation + self-improvement + intelligence + sniper
-            captain_tools = [
-                get_events_summary,
-                get_event_snapshot,
-                get_market_orderbook,
-                get_event_candlesticks,
-                get_trade_history,
-                get_positions,
-                get_balance,
-                update_understanding,
-                update_causal_model,
-                search_event_news,
-                recall_context,
-                search_news_history,
-                get_price_movers,
-                manage_thesis,
-                report_issue,
-                get_issues,
-                # Sniper execution layer
-                configure_sniper,
-                get_sniper_status,
-                kill_sniper_positions,
-                get_orderbook_intelligence,
-            ]
-
-            # TradeCommando tools: execution + recording + context
-            commando_tools = [
-                place_order,
-                execute_arb,
-                cancel_order,
-                get_resting_orders,
-                get_market_orderbook,
-                get_recent_trades,
-                get_balance,
-                get_positions,
-                record_learning,
-            ]
-
-            # MentionsSpecialist tools: edge detection + grounded extraction + strict counting
-            mentions_tools = [
-                # Primary entry point (simplified workflow)
-                get_mentions_status,  # Auto-baseline + auto-refresh + ready_for_trading
-                compute_edge,
-                # Simulation tools (advanced)
-                simulate_probability,
-                trigger_simulation,  # Async non-blocking version
-                # Context tools
-                get_event_context,
-                get_mention_context,
-                # Semantic tools
-                query_wordnet,
-                # State tools
-                get_mentions_rules,
-                get_mentions_summary,
-                record_learning,
-            ]
-
-            # ChevalDeTroie tools: observation + memory (NO execution)
-            cheval_tools = [
-                analyze_microstructure,
-                analyze_orderbook_patterns,
-                get_event_snapshot,
-                get_recent_trades,
-                get_market_orderbook,
-                record_learning,
-            ]
-
-        # CompositeBackend: /memories/ and /skills/ persist on disk, everything else is ephemeral
-        memory_backend = FilesystemBackend(root_dir=memory_data_dir, virtual_mode=True)
-        backend_factory = lambda rt: CompositeBackend(
-            default=StateBackend(rt),
-            routes={
-                "/memories/": memory_backend,
-                "/skills/": memory_backend,
-            },
-        )
-
-        # Node-level cache for tool results
+        # Node-level cache
         self._cache = InMemoryCache()
+
+        # StateBackend only (no FilesystemBackend - memory is in SessionMemoryStore)
+        backend_factory = lambda rt: StateBackend(rt)
+
+        # Load guidance once at agent creation (cached in system prompt for Anthropic prompt caching)
+        guidance_text = _load_guidance()
+        guidance_section = f"TRADING GUIDANCE:\n{guidance_text}" if guidance_text else ""
+        system_prompt = CAPTAIN_PROMPT_TEMPLATE.format(guidance_section=guidance_section)
 
         self._agent = create_deep_agent(
             model=model_name,
-            tools=captain_tools,
-            system_prompt=CAPTAIN_PROMPT,
-            subagents=[
-                {
-                    "name": "trade_commando",
-                    "description": "Order execution specialist. Give it: ticker, side, contracts, price, and your thesis. It handles order mechanics, queue management, and error recovery.",
-                    "system_prompt": TRADE_COMMANDO_PROMPT,
-                    "tools": commando_tools,
-                },
-                {
-                    "name": "cheval_de_troie",
-                    "description": "Bot detection and adversary profiling analyst. Invoke when micro signals are anomalous: rapid_sequence_count > 5, consistent_size_ratio > 0.8, whale_trade_count spike, or book_imbalance > 0.6 with symmetric quotes. Give it: event_ticker. Returns entity profiles and exploitable patterns.",
-                    "system_prompt": CHEVAL_DE_TROIE_PROMPT,
-                    "model": cheval_model,
-                    "tools": cheval_tools,
-                },
-                {
-                    "name": "mentions_specialist",
-                    "description": "Mentions market counting specialist. Use for mentions markets to count literal mentions using grounded extraction. Give it: event_ticker and source text (transcript/tweet/article). Returns confirmed count with evidence.",
-                    "system_prompt": MENTIONS_SPECIALIST_PROMPT,
-                    "tools": mentions_tools,
-                },
-            ],
+            tools=ALL_TOOLS,
+            system_prompt=system_prompt,
             backend=backend_factory,
-            memory=["/memories/AGENTS.md", "/memories/SIGNALS.md", "/memories/PLAYBOOK.md", "/memories/THESES.md"],
-            skills=["/skills/general-ender"],
             cache=self._cache,
         )
 
@@ -620,8 +130,9 @@ class ArbCaptain:
         self._cycle_count = 0
         self._last_cycle_at: Optional[float] = None
         self._errors: List[str] = []
-        self._subagent_runs: Dict[str, str] = {}  # run_id -> subagent_name (supports concurrent subagents)
-        self._prev_cycle_state: Optional[Dict] = None  # Previous cycle snapshot for temporal diff
+        self._prev_market_state: Optional[MarketState] = None
+        self._full_scan_ts: Dict[str, float] = {}  # event_ticker -> last full scan timestamp
+        self._task_ledger = TaskLedger(session_id=str(uuid.uuid4()))
 
     async def start(self) -> None:
         """Start the Captain cycle loop."""
@@ -629,7 +140,7 @@ class ArbCaptain:
             return
         self._running = True
         self._task = asyncio.create_task(self._run_loop())
-        logger.info(f"[SINGLE_ARB:CAPTAIN_START] model={self._model_name} interval={self._cycle_interval}s")
+        logger.info(f"[CAPTAIN:START] model={self._model_name} interval={self._cycle_interval}s")
 
     async def stop(self) -> None:
         """Stop the Captain."""
@@ -640,275 +151,275 @@ class ArbCaptain:
                 await self._task
             except asyncio.CancelledError:
                 pass
-        logger.info(f"[SINGLE_ARB:CAPTAIN_STOP] cycles={self._cycle_count}")
+        await self._task_ledger.flush(timeout=3.0)
+        logger.info(f"[CAPTAIN:STOP] cycles={self._cycle_count}")
 
     def pause(self) -> None:
         """Pause Captain after current cycle completes."""
         self._paused = True
-        logger.info("[SINGLE_ARB:CAPTAIN_PAUSE] Captain paused")
+        logger.info("[CAPTAIN:PAUSE]")
 
     def resume(self) -> None:
         """Resume Captain cycles."""
         self._paused = False
-        logger.info("[SINGLE_ARB:CAPTAIN_RESUME] Captain resumed")
+        logger.info("[CAPTAIN:RESUME]")
 
     @property
     def is_paused(self) -> bool:
-        """Check if Captain is paused."""
         return self._paused
 
     async def _run_loop(self) -> None:
         """Main cycle loop."""
-        # Wait for index to be ready (all events loaded, all markets have orderbook data)
-        # Use direct reference if available (new gateway path), else legacy global
-        index = self._index_ref
-        if index is None:
-            from .tools import _index
-            index = _index
+        index = self._ctx._index
 
-        max_wait = 60  # Max 60 seconds
+        # Wait for index readiness (short timeout - REST prefetch should have populated data)
+        max_wait = 10
         waited = 0
         while waited < max_wait:
             if index and index.is_ready:
-                logger.info(f"[SINGLE_ARB:CAPTAIN] Index ready after {waited}s: {index.readiness_summary}")
+                logger.info(f"[CAPTAIN] Index ready after {waited}s: {index.readiness_summary}")
                 break
-            await asyncio.sleep(2.0)
-            waited += 2
-            if waited % 10 == 0:
+            await asyncio.sleep(1.0)
+            waited += 1
+            if waited % 5 == 0:
                 summary = index.readiness_summary if index else "No index"
-                logger.info(f"[SINGLE_ARB:CAPTAIN] Waiting for index ({waited}s): {summary}")
+                logger.info(f"[CAPTAIN] Waiting for index ({waited}s): {summary}")
         else:
             summary = index.readiness_summary if index else "No index"
-            logger.warning(f"[SINGLE_ARB:CAPTAIN] Starting despite incomplete index: {summary}")
+            logger.warning(f"[CAPTAIN] Starting despite incomplete index: {summary}")
 
-        # Wait for deferred system initialization (understanding, lifecycle, causal models)
+        # Wait for system initialization (understanding builds, etc.) with timeout
         if self._system_ready:
-            logger.info("[CAPTAIN] Waiting for system initialization (understanding, lifecycle, causal models)...")
-            await self._system_ready.wait()
-            logger.info("[CAPTAIN] System ready, starting cycles")
+            logger.info("[CAPTAIN] Waiting for system initialization...")
+            try:
+                await asyncio.wait_for(self._system_ready.wait(), timeout=300.0)
+                logger.info("[CAPTAIN] System ready, starting cycles")
+            except asyncio.TimeoutError:
+                logger.warning("[CAPTAIN] System init timeout after 5min, starting anyway")
 
         while self._running:
-            # Check pause state at start of each cycle
             if self._paused:
                 await asyncio.sleep(self._cycle_interval)
                 continue
-
             try:
-                await self._run_cycle()
+                cycle_timeout = max(self._cycle_interval * 2, 120.0)
+                await asyncio.wait_for(self._run_cycle(), timeout=cycle_timeout)
+                self._cycle_count += 1
+                self._last_cycle_at = time.time()
+                await asyncio.sleep(self._cycle_interval)
+            except asyncio.TimeoutError:
+                logger.warning(f"[CAPTAIN:TIMEOUT] cycle={self._cycle_count + 1} exceeded {cycle_timeout:.0f}s")
+                logger.info(f"[CAPTAIN:CYCLE_END] cycle={self._cycle_count + 1} status=timeout")
+                self._errors.append(f"cycle_timeout_{self._cycle_count + 1}")
+                if len(self._errors) > 50:
+                    self._errors = self._errors[-50:]
                 self._cycle_count += 1
                 self._last_cycle_at = time.time()
                 await asyncio.sleep(self._cycle_interval)
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                error_msg = f"Captain cycle error: {e}"
-                logger.error(f"[SINGLE_ARB:CAPTAIN_ERROR] cycle={self._cycle_count + 1} error={e}")
-                self._errors.append(error_msg)
+                logger.error(f"[CAPTAIN:ERROR] cycle={self._cycle_count + 1} error={e}\n{traceback.format_exc()}")
+                self._errors.append(str(e))
+                if len(self._errors) > 50:
+                    self._errors = self._errors[-50:]
                 await asyncio.sleep(30.0)
 
-    def _build_cycle_briefing(self) -> str:
-        """Build temporal diff between current state and previous cycle.
-
-        Pure Python, no LLM call. Returns a compact briefing string (~100-150 tokens)
-        showing what changed since the last cycle: price moves, new activity,
-        lifecycle changes, news, position ages, and imminent catalysts.
-        """
-        from .tools import _index
-        index = self._index_ref or _index
-        if not index:
-            return ""
-
-        now = time.time()
-        current = {
-            "prices": {},
-            "lifecycle_stages": {},
-            "news_count": {},
-            "whale_counts": {},
-            "volume_5m": {},
-            "timestamp": now,
-        }
-
-        # Collect current state
-        for et, event in index.events.items():
-            current["lifecycle_stages"][et] = (event.lifecycle or {}).get("stage", "unknown")
-            current["news_count"][et] = len((event.understanding or {}).get("news_articles", []))
-            total_whale = sum(m.micro.whale_trade_count for m in event.markets.values())
-            total_vol = sum(m.micro.volume_5m for m in event.markets.values())
-            current["whale_counts"][et] = total_whale
-            current["volume_5m"][et] = total_vol
-            for mt, m in event.markets.items():
-                if m.yes_mid is not None:
-                    current["prices"][mt] = round(m.yes_mid, 1)
-
-        prev = self._prev_cycle_state
-        self._prev_cycle_state = current
-
-        if not prev:
-            return ""
-
-        # Compute diffs
-        lines = []
-        elapsed = now - prev.get("timestamp", now)
-        lines.append(f"SINCE LAST CYCLE ({int(elapsed)}s ago):")
-
-        # Price moves (>1c change)
-        price_moves = []
-        for mt, price in current["prices"].items():
-            old_price = prev.get("prices", {}).get(mt)
-            if old_price is not None:
-                delta = price - old_price
-                if abs(delta) >= 1:
-                    sign = "+" if delta > 0 else ""
-                    price_moves.append(f"{mt} {sign}{delta:.0f}c ({old_price:.0f}->{price:.0f})")
-        if price_moves:
-            lines.append(f"  Price moves: {', '.join(price_moves[:5])}")
-
-        # Volume spikes and whale activity
-        activity = []
-        for et in current["volume_5m"]:
-            vol_now = current["volume_5m"].get(et, 0)
-            vol_prev = prev.get("volume_5m", {}).get(et, 0)
-            whale_now = current["whale_counts"].get(et, 0)
-            whale_prev = prev.get("whale_counts", {}).get(et, 0)
-            parts = []
-            if vol_now > vol_prev + 50:
-                parts.append(f"volume +{vol_now - vol_prev}")
-            if whale_now > whale_prev:
-                parts.append(f"whale trades +{whale_now - whale_prev}")
-            if parts:
-                activity.append(f"{et}: {', '.join(parts)}")
-        if activity:
-            lines.append(f"  New activity: {'; '.join(activity[:3])}")
-
-        # Lifecycle transitions
-        lc_changes = []
-        for et, stage in current["lifecycle_stages"].items():
-            old_stage = prev.get("lifecycle_stages", {}).get(et, "unknown")
-            if stage != old_stage and old_stage != "unknown":
-                lc_changes.append(f"{et} {old_stage}->{stage}")
-        if lc_changes:
-            lines.append(f"  Lifecycle: {', '.join(lc_changes)}")
-
-        # News changes
-        news_changes = []
-        for et, count in current["news_count"].items():
-            old_count = prev.get("news_count", {}).get(et, 0)
-            if count > old_count:
-                news_changes.append(f"{count - old_count} new on {et}")
-        if news_changes:
-            lines.append(f"  News: {', '.join(news_changes)}")
-
-        # Imminent catalysts from causal models
-        catalyst_lines = []
-        for et, event in index.events.items():
-            if event.causal_model:
-                for cat in event.causal_model.get("catalysts", []):
-                    if cat.get("occurred"):
-                        continue
-                    ts = cat.get("expected_ts", 0)
-                    if ts and 0 < (ts - now) < 4 * 3600:
-                        hours = (ts - now) / 3600
-                        catalyst_lines.append(f'"{cat["name"]}" in {hours:.1f}h ({et})')
-        if catalyst_lines:
-            lines.append(f"  Imminent catalysts: {'; '.join(catalyst_lines[:3])}")
-
-        # Only return if we have actual changes
-        if len(lines) <= 1:
-            return ""
-
-        return "\n".join(lines)
-
     async def _run_cycle(self) -> None:
-        """Run one Captain cycle."""
+        """Run one Captain cycle with structured JSON context."""
         cycle_num = self._cycle_count + 1
         cycle_start = time.time()
 
-        # Auto-curate memory files (pure Python, no LLM calls)
-        try:
-            from .memory.auto_curator import auto_curate
-            actions = auto_curate(self._memory_data_dir)
-            if actions:
-                logger.info(f"[SINGLE_ARB:CURATE] cycle={cycle_num} actions={actions}")
-        except Exception as e:
-            logger.debug(f"Auto-curation error: {e}")
-
-        # Build structured cycle context (compensates for fresh thread_id each cycle)
-        context_parts = [f"Cycle #{cycle_num}."]
-
-        # Build state-dependent cycle prompt
-        balance_cents = 0
-        tracked_positions = []
-        try:
-            if self._gateway_ref:
-                # New gateway path
-                balance = await self._gateway_ref.get_balance()
-                balance_cents = balance.balance
-                context_parts.append(f"Balance: ${balance_cents / 100:.2f}.")
-
-                if self._index_ref:
-                    positions = await self._gateway_ref.get_positions()
-                    tracked = set(self._index_ref.market_tickers)
-                    tracked_positions = [p for p in positions if p.ticker in tracked]
-            else:
-                # Legacy path
-                from .tools import _index, _trading_client
-                if _trading_client:
-                    balance_resp = await _trading_client.get_account_info()
-                    balance_cents = balance_resp.get("balance", 0)
-                    context_parts.append(f"Balance: ${balance_cents / 100:.2f}.")
-
-                if _index and _trading_client:
-                    positions_resp = await _trading_client.get_positions()
-                    all_positions = positions_resp.get("market_positions", positions_resp.get("positions", []))
-                    tracked = set(_index.market_tickers)
-                    tracked_positions = [p for p in all_positions if p.get("ticker") in tracked]
-        except Exception:
-            pass  # Non-critical, proceed with basic prompt
-
-        # State-dependent instructions
-        if tracked_positions:
-            context_parts.append(f"Positions: {len(tracked_positions)}. Review exits first, then scan.")
-        else:
-            context_parts.append("No positions. Scan for opportunities.")
-
-        if balance_cents and balance_cents < 500_00:
-            context_parts.append("LOW BALANCE: Capital preservation mode.")
-
-        context_parts.append("Check outcomes for settled trades. Execute or pass. Update memory.")
-
-        # Sniper status injection
+        # Reset sniper cycle counter
         if self._sniper_ref:
-            sniper = self._sniper_ref
-            sniper.reset_cycle_counter()  # Reset per-cycle trade limit
-            s = sniper.state
-            if sniper.config.enabled:
-                active_cap = s.capital_in_flight + s.capital_in_positions
-                sniper_parts = [
-                    f"SNIPER: ON (trades={s.total_trades}, arbs={s.total_arbs_executed}, "
-                    f"cap_active=${active_cap / 100:.2f} "
-                    f"[flight=${s.capital_in_flight / 100:.2f}+pos=${s.capital_in_positions / 100:.2f}], "
-                    f"unwinds={s.total_partial_unwinds})"
-                ]
-                if s.last_rejection_reason:
-                    sniper_parts.append(f"Last reject: {s.last_rejection_reason}")
-                if s.recent_actions:
-                    last = s.recent_actions[-1]
-                    sniper_parts.append(
-                        f"Last exec: {last.event_ticker} {last.direction} "
-                        f"edge={last.edge_cents:.1f}c legs={last.legs_filled}/{last.legs_attempted} "
-                        f"latency={last.latency_ms:.0f}ms"
-                    )
-                context_parts.append(" ".join(sniper_parts))
+            self._sniper_ref.reset_cycle_counter()
+
+        # Reset per-cycle capital budget
+        from .tools import _ctx as tool_ctx_local
+        if tool_ctx_local:
+            tool_ctx_local.cycle_capital_spent_cents = 0
+
+        # Tick task ledger (stale detection, pruning)
+        self._task_ledger.tick(cycle_num)
+
+        # Build structured context (0 API calls for market data)
+        market_state = self._ctx.build_market_state()
+
+        # Build portfolio (1-2 API calls)
+        from .tools import _ctx as tool_ctx
+        gateway = tool_ctx.gateway if tool_ctx else None
+        portfolio = await self._ctx.build_portfolio_state(gateway) if gateway else PortfolioState()
+
+        # Build sniper status (0 API calls)
+        sniper_status = self._ctx.build_sniper_status(self._sniper_ref)
+
+        # Compute diffs since last cycle
+        diffs = self._ctx.compute_diffs(market_state)
+
+        # Build the prompt with structured JSON context
+        FULL_SCAN_TTL = 3600  # 1 hour
+
+        # Find best opportunity across all events for headline
+        best_edge = None
+        best_event = None
+        for ev in market_state.events:
+            edge = max(ev.long_edge or 0, ev.short_edge or 0)
+            if best_edge is None or edge > best_edge:
+                best_edge = edge
+                best_event = ev
+
+        context_parts = [f"Cycle #{cycle_num}."]
+        if best_event and best_edge and best_edge > 0:
+            direction = "long" if (best_event.long_edge or 0) >= (best_event.short_edge or 0) else "short"
+            context_parts.append(
+                f"BEST_EDGE: {best_event.event_ticker} {direction} edge={best_edge:.1f}c "
+                f"regime={best_event.regime}"
+            )
+
+        # Compact market state with TTL-based full scan
+        now = time.time()
+        compact_events = []
+        for ev in market_state.events:
+            compact_ev = {
+                "event_ticker": ev.event_ticker,
+                "title": ev.title,
+                "me": ev.mutually_exclusive,
+                "markets": ev.market_count,
+                "long_edge": ev.long_edge,
+                "short_edge": ev.short_edge,
+                "vol_5m": ev.total_volume_5m,
+                "regime": ev.regime,
+                "ttc_hours": ev.time_to_close_hours,
+            }
+            if ev.semantics and ev.semantics.what:
+                compact_ev["context"] = ev.semantics.what[:100]
+
+            # TTL-based market selection: full scan on first see or TTL expiry, top 10 otherwise
+            all_mkts = sorted(ev.markets.values(), key=lambda m: m.volume_5m, reverse=True)
+            last_scan = self._full_scan_ts.get(ev.event_ticker, 0)
+            if now - last_scan > FULL_SCAN_TTL:
+                show_mkts = all_mkts
+                self._full_scan_ts[ev.event_ticker] = now
             else:
-                context_parts.append("SNIPER: OFF. Use configure_sniper(enabled=True) to activate.")
+                show_mkts = all_mkts[:10]
 
-        # Build temporal briefing (what changed since last cycle)
-        briefing = self._build_cycle_briefing()
-        if briefing:
-            context_parts.append(f"\n{briefing}")
+            compact_ev["top_markets"] = [
+                {"t": m.ticker, "n": m.title[:40] if m.title else None,
+                 "bid": m.yes_bid, "ask": m.yes_ask, "sp": m.spread,
+                 "mp": round(m.microprice, 1) if m.microprice else None,
+                 "vol": m.volume_5m, "vpin": m.vpin, "regime": m.regime}
+                for m in show_mkts
+            ]
+            compact_events.append(compact_ev)
 
-        logger.info(f"[SINGLE_ARB:CYCLE_START] cycle={cycle_num}")
-        prompt = " ".join(context_parts)
+        context_parts.append(f"MARKET_STATE: {json.dumps(compact_events, separators=(',', ':'))}")
+
+        # Portfolio
+        if portfolio.positions:
+            compact_portfolio = {
+                "balance_dollars": f"${portfolio.balance_dollars:,.2f}",
+                "positions": portfolio.total_positions,
+                "pnl": f"${portfolio.total_unrealized_pnl_cents / 100:+.2f}",
+                "top": [
+                    {"t": p.ticker, "side": p.side, "qty": p.quantity,
+                     "exit": p.exit_price, "pnl": p.unrealized_pnl_cents,
+                     "pnl_ct": round(p.unrealized_pnl_cents / p.quantity) if p.quantity else 0}
+                    for p in portfolio.positions[:5]
+                ],
+            }
+            context_parts.append(f"PORTFOLIO: {json.dumps(compact_portfolio, separators=(',', ':'))}")
+
+            # Time pressure flag for positions nearing settlement
+            time_flags = []
+            for ev in market_state.events:
+                if ev.time_to_close_hours is not None and ev.time_to_close_hours < 1.0:
+                    for p in portfolio.positions:
+                        if p.event_ticker == ev.event_ticker and p.quantity > 0:
+                            time_flags.append(f"{p.ticker} ttc={ev.time_to_close_hours:.1f}h")
+            if time_flags:
+                context_parts.append(f"TIME_PRESSURE: {', '.join(time_flags)}")
+        else:
+            context_parts.append(f"PORTFOLIO: balance=${portfolio.balance_dollars:,.2f} ({portfolio.balance_cents} cents), no positions.")
+
+        # Sniper: only inject detail if there was activity, otherwise one word
+        if sniper_status.enabled:
+            has_sniper_activity = (
+                sniper_status.total_trades > 0
+                or sniper_status.last_action_summary
+                or sniper_status.last_rejection_reason
+            )
+            if has_sniper_activity:
+                compact_sniper = {
+                    "trades": sniper_status.total_trades,
+                    "arbs": sniper_status.total_arbs_executed,
+                    "capital_active": sniper_status.capital_in_flight + sniper_status.capital_in_positions,
+                    "unwinds": sniper_status.total_partial_unwinds,
+                }
+                if sniper_status.last_rejection_reason:
+                    compact_sniper["last_reject"] = sniper_status.last_rejection_reason
+                if sniper_status.last_action_summary:
+                    compact_sniper["last_exec"] = sniper_status.last_action_summary
+                context_parts.append(f"SNIPER: {json.dumps(compact_sniper, separators=(',', ':'))}")
+            else:
+                context_parts.append("SNIPER: enabled")
+        else:
+            context_parts.append("SNIPER: OFF")
+
+        # Health: only inject if drawdown > 5% or alerts exist
+        if tool_ctx and tool_ctx.health_service:
+            try:
+                hs = tool_ctx.health_service.get_health_status()
+                if hs.drawdown_pct > 5.0 or hs.alerts:
+                    context_parts.append(
+                        f"HEALTH: {{\"drawdown\":\"{hs.drawdown_pct}%\","
+                        f"\"realized_pnl\":{hs.total_realized_pnl_cents},"
+                        f"\"settlements\":{hs.settlement_count_session}}}"
+                    )
+            except Exception:
+                pass
+
+        # Diffs
+        if diffs.has_changes:
+            diff_parts = []
+            if diffs.price_moves:
+                diff_parts.append(f"price_moves: {', '.join(diffs.price_moves)}")
+            if diffs.volume_spikes:
+                diff_parts.append(f"volume: {', '.join(diffs.volume_spikes)}")
+            context_parts.append(f"CHANGES ({int(diffs.elapsed_seconds)}s): {'; '.join(diff_parts)}")
+
+        # Inject relevant past memories for events with edge
+        if tool_ctx and tool_ctx.memory:
+            memory_hints = []
+            for ev in market_state.events:
+                has_edge = (ev.long_edge and ev.long_edge > 2.0) or (ev.short_edge and ev.short_edge > 2.0)
+                if has_edge:
+                    try:
+                        recalled = await tool_ctx.memory.recall(
+                            query=f"trades outcomes {ev.event_ticker}", limit=2,
+                        )
+                        if recalled and recalled.results:
+                            for r in recalled.results:
+                                memory_hints.append(f"[{ev.event_ticker}] {r.content[:120]}")
+                    except Exception:
+                        pass
+            if memory_hints:
+                context_parts.append("MEMORY:\n" + "\n".join(memory_hints[:5]))
+
+        # Session memory: inject journal of what we've done/learned this session
+        if tool_ctx and hasattr(tool_ctx.memory, "journal_summary"):
+            journal = tool_ctx.memory.journal_summary(max_entries=5)
+            if journal:
+                context_parts.append(journal)
+
+        # Task ledger: inject active tasks from previous cycles
+        task_section = self._task_ledger.to_prompt_section()
+        if task_section:
+            context_parts.append(task_section)
+        if self._task_ledger.needs_replan():
+            context_parts.append("REPLAN: Multiple stale tasks. Re-evaluate your plan.")
+
+        logger.info(f"[CAPTAIN:CYCLE_START] cycle={cycle_num}")
+        prompt = "\n".join(context_parts)
 
         await self._emit_event({
             "type": "agent_message",
@@ -927,34 +438,13 @@ class ArbCaptain:
         })
 
         cycle_duration = time.time() - cycle_start
-        logger.info(f"[SINGLE_ARB:CYCLE_END] cycle={cycle_num} duration={cycle_duration:.1f}s")
-
-    def _categorize_tool(self, tool_name, tool_input=None):
-        """Categorize a tool call. Returns (category, suppress)."""
-        # Suppress execute (sandbox) — let everything else through
-        if tool_name == "execute":
-            return "system", True
-        # Filesystem tools targeting /memories/ are memory ops, otherwise system
-        if tool_name in ("read_file", "write_file", "edit_file"):
-            input_str = str(tool_input) if tool_input else ""
-            if "/memories/" in input_str:
-                return "memory", False
-            return "system", False
-        return TOOL_CATEGORIES.get(tool_name, "system"), False
-
-    def _parse_todos(self, tool_output) -> list:
-        """Parse write_todos output into [{text, status}] list."""
-        try:
-            data = tool_output
-            if isinstance(data, str):
-                data = json.loads(data)
-            if isinstance(data, dict):
-                return data.get("todos", [])
-            if isinstance(data, list):
-                return data
-        except Exception:
-            pass
-        return []
+        balance_str = f"${portfolio.balance_dollars}" if portfolio.balance_cents else "?"
+        logger.info(
+            f"[CAPTAIN:SUMMARY] cycle={cycle_num} duration={cycle_duration:.1f}s "
+            f"events={len(market_state.events)} positions={portfolio.total_positions} "
+            f"errors={len(self._errors)} balance={balance_str}"
+        )
+        logger.info(f"[CAPTAIN:CYCLE_END] cycle={cycle_num} status=ok duration={cycle_duration:.1f}s")
 
     async def _run_agent(self, prompt: str) -> Optional[str]:
         """Run the agent, streaming categorized tool call events."""
@@ -963,11 +453,9 @@ class ArbCaptain:
             token_buffer = []
             token_count = 0
 
-            # Unique thread_id per cycle so conversation history doesn't accumulate,
-            # but /memories/ files persist across all threads via FilesystemBackend
             config = {
                 "configurable": {"thread_id": str(uuid.uuid4())},
-                "recursion_limit": 200,  # Must set explicitly; LangGraph default is 25
+                "recursion_limit": 100,
             }
 
             async for event in self._agent.astream_events(
@@ -977,7 +465,7 @@ class ArbCaptain:
             ):
                 kind = event.get("event")
 
-                # Stream LLM thinking tokens
+                # Stream thinking tokens
                 if kind == "on_chat_model_stream":
                     chunk = event.get("data", {}).get("chunk")
                     if chunk and hasattr(chunk, "content") and chunk.content:
@@ -995,7 +483,6 @@ class ArbCaptain:
 
                 # Tool call start
                 elif kind == "on_tool_start":
-                    # Flush thinking buffer before tool call
                     if token_buffer:
                         await self._emit_event({
                             "type": "agent_message",
@@ -1008,77 +495,50 @@ class ArbCaptain:
 
                     tool_name = event.get("name", "unknown")
                     tool_input = event.get("data", {}).get("input", "")
-                    category, suppress = self._categorize_tool(tool_name, tool_input)
+                    category = TOOL_CATEGORIES.get(tool_name, "system")
 
-                    if suppress:
+                    if tool_name == "execute":
                         continue
 
-                    if tool_name == "task":
-                        # Determine which subagent is being invoked
-                        subagent_name = "trade_commando"  # default
-                        input_str = str(tool_input).lower()
-                        if "cheval" in input_str or "surveillance" in input_str or "micro" in input_str:
-                            subagent_name = "cheval_de_troie"
-                        elif "mention" in input_str or "count" in input_str or "transcript" in input_str or "extract" in input_str:
-                            subagent_name = "mentions_specialist"
-                        # Track by run_id to support concurrent subagents
-                        run_id = event.get("run_id")
-                        if run_id:
-                            self._subagent_runs[run_id] = subagent_name
-                        logger.info(f"[SINGLE_ARB:SUBAGENT_START] subagent={subagent_name}")
+                    # Intercept write_todos: enrich via TaskLedger and broadcast
+                    if tool_name == "write_todos":
+                        raw_todos = tool_input.get("todos", []) if isinstance(tool_input, dict) else []
+                        self._task_ledger.reconcile(raw_todos, self._cycle_count + 1)
+                        await self._persist_tasks()
                         await self._emit_event({
                             "type": "agent_message",
-                            "subtype": "subagent_start",
-                            "agent": subagent_name,
-                            "prompt": str(tool_input)[:200],
-                        })
-                    else:
-                        await self._emit_event({
-                            "type": "agent_message",
-                            "subtype": "tool_call",
-                            "category": category,
+                            "subtype": "todo_update",
                             "agent": "single_arb_captain",
-                            "tool_name": tool_name,
-                            "tool_input": str(tool_input)[:200],
+                            "todos": self._task_ledger.to_broadcast(),
                         })
+                        continue
+
+                    await self._emit_event({
+                        "type": "agent_message",
+                        "subtype": "tool_call",
+                        "category": category,
+                        "agent": "single_arb_captain",
+                        "tool_name": tool_name,
+                        "tool_input": str(tool_input)[:200],
+                    })
 
                 # Tool call end
                 elif kind == "on_tool_end":
                     tool_name = event.get("name", "unknown")
                     tool_output = event.get("data", {}).get("output", "")
-                    category, suppress = self._categorize_tool(tool_name)
+                    category = TOOL_CATEGORIES.get(tool_name, "system")
 
-                    if suppress:
+                    if tool_name in ("execute", "write_todos"):
                         continue
 
-                    if tool_name == "task":
-                        # Look up subagent by run_id (supports concurrent subagents)
-                        run_id = event.get("run_id")
-                        subagent_name = self._subagent_runs.pop(run_id, "trade_commando") if run_id else "trade_commando"
-                        logger.info(f"[SINGLE_ARB:SUBAGENT_COMPLETE] subagent={subagent_name}")
-                        await self._emit_event({
-                            "type": "agent_message",
-                            "subtype": "subagent_complete",
-                            "agent": subagent_name,
-                            "response_preview": str(tool_output)[:500],
-                        })
-                    elif tool_name in ("write_todos", "read_todos"):
-                        todos = self._parse_todos(tool_output)
-                        await self._emit_event({
-                            "type": "agent_message",
-                            "subtype": "todo_update",
-                            "category": "todo",
-                            "todos": todos,
-                        })
-                    else:
-                        await self._emit_event({
-                            "type": "agent_message",
-                            "subtype": "tool_result",
-                            "category": category,
-                            "agent": "single_arb_captain",
-                            "tool_name": tool_name,
-                            "tool_output": str(tool_output)[:300],
-                        })
+                    await self._emit_event({
+                        "type": "agent_message",
+                        "subtype": "tool_result",
+                        "category": category,
+                        "agent": "single_arb_captain",
+                        "tool_name": tool_name,
+                        "tool_output": str(tool_output)[:300],
+                    })
 
                 # Extract final response
                 elif kind == "on_chain_end":
@@ -1087,6 +547,20 @@ class ArbCaptain:
                         messages = output.get("messages", [])
                         if messages:
                             result_text = self._extract_text(messages[-1].content)
+                        # Fallback: extract todos from chain output
+                        todos = output.get("todos")
+                        if todos is not None:
+                            self._task_ledger.reconcile(
+                                todos if isinstance(todos, list) else [],
+                                self._cycle_count + 1,
+                            )
+                            await self._persist_tasks()
+                            await self._emit_event({
+                                "type": "agent_message",
+                                "subtype": "todo_update",
+                                "agent": "single_arb_captain",
+                                "todos": self._task_ledger.to_broadcast(),
+                            })
 
             if token_buffer:
                 await self._emit_event({
@@ -1099,7 +573,7 @@ class ArbCaptain:
             return result_text
 
         except Exception as e:
-            logger.error(f"[SINGLE_ARB:CAPTAIN_ERROR] agent error: {e}")
+            logger.error(f"[CAPTAIN:ERROR] agent error: {e}")
             await self._emit_event({
                 "type": "agent_message",
                 "subtype": "subagent_error",
@@ -1107,6 +581,15 @@ class ArbCaptain:
                 "error": str(e),
             })
             return None
+
+    async def _persist_tasks(self):
+        """Fire-and-forget task ledger persistence."""
+        try:
+            from kalshiflow_rl.data.database import rl_db
+            pool = await rl_db.get_pool()
+            self._task_ledger.persist(pool)
+        except Exception:
+            pass  # Non-critical audit trail
 
     @staticmethod
     def _extract_text(content) -> str:
@@ -1131,7 +614,7 @@ class ArbCaptain:
             event_data.setdefault("timestamp", time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
             await self._event_callback(event_data)
         except Exception as e:
-            logger.debug(f"Event emit error: {e}")
+            logger.warning(f"[CAPTAIN:BROADCAST_ERROR] {e}")
 
     def get_stats(self) -> Dict:
         """Get Captain stats."""
@@ -1143,5 +626,5 @@ class ArbCaptain:
             "errors": self._errors[-5:],
             "model": self._model_name,
             "cycle_interval": self._cycle_interval,
+            "version": "v2",
         }
-

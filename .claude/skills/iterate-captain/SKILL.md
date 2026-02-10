@@ -84,12 +84,12 @@ CYCLES_BEFORE = (count of CYCLE_END in logs)
 ```
 
 ### 2a. Wait for 2 cycles to complete
-Poll until 2 new `[SINGLE_ARB:CYCLE_END]` markers appear:
+Poll until 2 new `[CAPTAIN:CYCLE_END]` markers appear:
 ```bash
-START_COUNT=$(grep -c 'SINGLE_ARB:CYCLE_END' backend/logs/v3-trader.log 2>/dev/null || echo 0)
+START_COUNT=$(grep -c 'CAPTAIN:CYCLE_END' backend/logs/v3-trader.log 2>/dev/null || echo 0)
 TARGET=$((START_COUNT + 2))
 for i in $(seq 1 120); do
-  CURRENT=$(grep -c 'SINGLE_ARB:CYCLE_END' backend/logs/v3-trader.log 2>/dev/null || echo 0)
+  CURRENT=$(grep -c 'CAPTAIN:CYCLE_END' backend/logs/v3-trader.log 2>/dev/null || echo 0)
   if [ "$CURRENT" -ge "$TARGET" ]; then
     echo "2 cycles complete (total: $CURRENT)"
     break
@@ -108,8 +108,8 @@ curl -s -X POST -H 'Content-Type: application/json' -d '{"type":"captain_pause"}
 Get lines from the start of the first of the 2 cycles to the end:
 ```bash
 # Get line numbers for the last 2 cycle starts and the final cycle end
-STARTS=$(grep -n 'SINGLE_ARB:CYCLE_START' backend/logs/v3-trader.log | tail -2 | head -1 | cut -d: -f1)
-LAST_END=$(grep -n 'SINGLE_ARB:CYCLE_END' backend/logs/v3-trader.log | tail -1 | cut -d: -f1)
+STARTS=$(grep -n 'CAPTAIN:CYCLE_START' backend/logs/v3-trader.log | tail -2 | head -1 | cut -d: -f1)
+LAST_END=$(grep -n 'CAPTAIN:CYCLE_END' backend/logs/v3-trader.log | tail -1 | cut -d: -f1)
 sed -n "${STARTS},${LAST_END}p" backend/logs/v3-trader.log
 ```
 

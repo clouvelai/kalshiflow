@@ -10,6 +10,7 @@ const ActivityEntry = memo(({ entry }) => {
   const category = getToolCategory(entry.tool_name);
   const style = CATEGORY_STYLES[category];
   const isMemory = entry.source === 'memory';
+  const hasError = entry.tool_output && String(entry.tool_output).toLowerCase().includes('"error"');
 
   const preview = entry.tool_output
     ? String(entry.tool_output).slice(0, 80)
@@ -27,7 +28,9 @@ const ActivityEntry = memo(({ entry }) => {
     >
       <button
         onClick={() => setExpanded(!expanded)}
-        className="w-full flex items-center gap-1.5 px-2 py-1 text-left hover:bg-gray-800/20 transition-colors rounded"
+        className={`w-full flex items-center gap-1.5 px-2 py-1 text-left transition-colors rounded ${
+          hasError ? 'bg-red-500/8 hover:bg-red-500/15 border-l-2 border-red-500/40' : 'hover:bg-gray-800/20'
+        }`}
       >
         <Icon className={`w-2.5 h-2.5 ${style.text} shrink-0 opacity-70`} />
         <span className={`px-1 py-px rounded text-[7px] font-semibold uppercase tracking-wider ${style.bg} ${style.text}`}>

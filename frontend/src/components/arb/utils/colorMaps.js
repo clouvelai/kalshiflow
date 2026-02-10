@@ -6,7 +6,7 @@
 
 import {
   Database, Globe, FileText, ShoppingCart, Crosshair,
-  AlertTriangle, Clock, Search, Wallet, Wrench,
+  AlertTriangle, Clock, Search, Wallet, Wrench, HeartPulse,
 } from 'lucide-react';
 
 // ─── Tool Category Mapping ───────────────────────────────────────────────────
@@ -14,15 +14,17 @@ import {
 /**
  * Map tool name to category.
  * @param {string} toolName - Name of the tool
- * @returns {'arb'|'memory'|'portfolio'|'surveillance'|'market'|'mentions'|'other'}
+ * @returns {'arb'|'memory'|'portfolio'|'surveillance'|'market'|'sniper'|'other'}
  */
 export const getToolCategory = (toolName) => {
   if (['execute_arb', 'place_order', 'cancel_order', 'get_resting_orders'].includes(toolName)) return 'arb';
-  if (['memory_store', 'memory_search', 'edit_file', 'write_file', 'read_file'].includes(toolName)) return 'memory';
-  if (['get_positions', 'get_balance', 'get_trade_history'].includes(toolName)) return 'portfolio';
-  if (['get_event_snapshot', 'get_events_summary', 'get_all_events'].includes(toolName)) return 'surveillance';
+  if (['recall_memory', 'store_insight'].includes(toolName)) return 'memory';
+  if (['get_portfolio'].includes(toolName)) return 'portfolio';
+  if (['get_events_summary', 'get_market_state', 'search_news'].includes(toolName)) return 'surveillance';
   if (['get_market_orderbook', 'get_recent_trades'].includes(toolName)) return 'market';
-  if (['simulate_probability', 'trigger_simulation', 'compute_edge', 'query_wordnet', 'get_event_context', 'get_mention_context'].includes(toolName)) return 'mentions';
+  if (['configure_sniper'].includes(toolName)) return 'sniper';
+  if (['get_account_health'].includes(toolName)) return 'system';
+  if (['write_todos'].includes(toolName)) return 'todo';
   return 'other';
 };
 
@@ -35,27 +37,30 @@ export const CATEGORY_STYLES = {
   portfolio: { bg: 'bg-emerald-500/10', text: 'text-emerald-400/80', dot: 'bg-emerald-500', label: 'PORT' },
   surveillance: { bg: 'bg-orange-500/10', text: 'text-orange-400/80', dot: 'bg-orange-500', label: 'SURV' },
   market: { bg: 'bg-blue-500/10', text: 'text-blue-400/80', dot: 'bg-blue-500', label: 'MKT' },
-  mentions: { bg: 'bg-amber-500/10', text: 'text-amber-400/80', dot: 'bg-amber-500', label: 'MENT' },
+  sniper: { bg: 'bg-rose-500/10', text: 'text-rose-400/80', dot: 'bg-rose-500', label: 'SNPR' },
+  system: { bg: 'bg-teal-500/10', text: 'text-teal-400/80', dot: 'bg-teal-500', label: 'SYS' },
+  todo: { bg: 'bg-amber-500/10', text: 'text-amber-400/80', dot: 'bg-amber-500', label: 'TODO' },
   other: { bg: 'bg-gray-800/40', text: 'text-gray-400', dot: 'bg-gray-500', label: 'TOOL' },
 };
 
 // ─── Tool Icons ──────────────────────────────────────────────────────────────
 
 export const TOOL_ICONS = {
-  get_event_snapshot: Database,
-  get_all_events: Globe,
-  get_events_summary: Globe,
-  get_market_orderbook: Database,
-  get_recent_trades: Globe,
-  get_trade_history: FileText,
   execute_arb: ShoppingCart,
   place_order: Crosshair,
   cancel_order: AlertTriangle,
   get_resting_orders: Clock,
-  memory_store: Database,
-  memory_search: Search,
-  get_positions: Wallet,
-  get_balance: Wallet,
+  // V2 tools
+  get_events_summary: Globe,
+  get_market_state: Globe,
+  get_market_orderbook: Database,
+  get_recent_trades: Globe,
+  get_portfolio: Wallet,
+  search_news: Search,
+  recall_memory: Search,
+  store_insight: Database,
+  configure_sniper: Crosshair,
+  get_account_health: HeartPulse,
 };
 
 /**
@@ -115,4 +120,5 @@ export const TODO_STATUS_ICONS = {
   completed: { icon: '\u2713', color: 'text-emerald-400' },
   in_progress: { icon: '\u25CE', color: 'text-amber-400' },
   pending: { icon: '\u25CB', color: 'text-gray-500' },
+  stale: { icon: '\u26A0', color: 'text-red-400' },
 };

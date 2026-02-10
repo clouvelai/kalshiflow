@@ -20,7 +20,7 @@ TabButton.displayName = 'TabButton';
 
 const BookTradesTab = memo(({ event, eventTrades = [], arbTrades = [], selectedMarket, onSelectMarket }) => {
   const markets = event.markets || {};
-  const selectedMarketData = selectedMarket ? markets[selectedMarket] : null;
+  const marketList = useMemo(() => Object.values(markets), [markets]);
 
   const mergedTrades = useMemo(() => {
     const eventMarkets = new Set(Object.keys(markets));
@@ -35,32 +35,43 @@ const BookTradesTab = memo(({ event, eventTrades = [], arbTrades = [], selectedM
 
   const [activeView, setActiveView] = React.useState('orderbook');
 
+  const marketsWithBook = useMemo(() =>
+    marketList.filter(m => (m.yes_levels?.length > 0 || m.no_levels?.length > 0)),
+    [marketList]
+  );
+
   return (
     <div className="space-y-3">
       {/* Tab bar */}
       <div className="flex items-center gap-2">
-        <TabButton active={activeView === 'orderbook'} onClick={() => setActiveView('orderbook')} icon={BarChart2} label="Orderbook" />
+        <TabButton active={activeView === 'orderbook'} onClick={() => setActiveView('orderbook')} icon={BarChart2} label={`Orderbooks (${marketsWithBook.length})`} />
         <TabButton active={activeView === 'trades'} onClick={() => setActiveView('trades')} icon={List} label={`Trades (${mergedTrades.length})`} />
-        {selectedMarket && (
-          <span className="ml-auto text-[10px] text-gray-500 font-mono">{selectedMarket}</span>
-        )}
       </div>
 
       {/* Content */}
-      <div className="bg-gray-800/15 rounded-lg border border-gray-800/20 p-3">
-        {activeView === 'orderbook' ? (
-          selectedMarketData ? (
-            <MarketOrderbook market={selectedMarketData} />
-          ) : (
+      {activeView === 'orderbook' ? (
+        marketsWithBook.length > 0 ? (
+          <div
+            className="grid grid-cols-2 gap-2 overflow-y-auto pr-1"
+            style={{ maxHeight: 'calc(5 * 220px)' }}
+          >
+            {marketsWithBook.map(m => (
+              <MarketOrderbook key={m.ticker} market={m} maxLevels={5} />
+            ))}
+          </div>
+        ) : (
+          <div className="bg-gray-800/15 rounded-lg border border-gray-800/20 p-3">
             <div className="text-center py-8 text-gray-600">
               <BarChart2 className="w-5 h-5 mx-auto mb-1.5 opacity-40" />
-              <p className="text-[11px]">Select a market from the Markets tab</p>
+              <p className="text-[11px]">No orderbook data available yet</p>
             </div>
-          )
-        ) : (
+          </div>
+        )
+      ) : (
+        <div className="bg-gray-800/15 rounded-lg border border-gray-800/20 p-3">
           <EventTradeFeed trades={mergedTrades} arbTrades={arbTrades} showSource={true} />
-        )}
-      </div>
+        </div>
+      )}
     </div>
   );
 });

@@ -45,7 +45,7 @@ const ArbMetricsBar = ({ tradingState, arbTradeCount, events }) => {
     return `$${dollars.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   };
 
-  const pnlCents = pnl?.realized_pnl_cents ?? pnl?.total_pnl_cents ?? 0;
+  const pnlCents = pnl?.total_pnl_cents ?? 0;
   const pnlDollars = pnlCents / 100;
   const pnlPrefix = pnlDollars >= 0 ? '+' : '';
   const pnlDisplay = `${pnlPrefix}$${Math.abs(pnlDollars).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;

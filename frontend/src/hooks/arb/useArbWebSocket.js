@@ -4,10 +4,12 @@ import { useState, useEffect, useRef, useCallback } from 'react';
  * useArbWebSocket - WebSocket hook for the Single-Event Arb Dashboard
  *
  * Handles message types:
- *   event_arb_snapshot, event_arb_update, event_arb_ticker, event_arb_trade,
- *   arb_opportunity, arb_trade_executed,
+ *   event_arb_snapshot, event_arb_update,
+ *   arb_opportunity, arb_trade_executed, order_status_update, order_tracker_snapshot,
  *   trading_state, agent_message, system_activity,
- *   trader_status, connection, ping/pong
+ *   feed_stats, captain_paused, exchange_status,
+ *   account_health_update, sniper_status, sniper_execution,
+ *   connection, ping/pong
  */
 
 const INITIAL_TRADING_STATE = {
@@ -37,8 +39,12 @@ export const useArbWebSocket = () => {
   const [captainPaused, setCaptainPaused] = useState(false);
   // Exchange status (active/down)
   const [exchangeStatus, setExchangeStatus] = useState({ active: true, error: null, lastCheck: null });
-  // Mentions strategy state: Map<event_ticker, MentionsState>
-  const [mentionsState, setMentionsState] = useState({});
+  // Sniper execution state
+  const [sniperState, setSniperState] = useState({ enabled: false, lastAction: null, capitalActive: 0, capitalLimit: 0, recentActions: [] });
+  // Startup progress messages
+  const [startupMessages, setStartupMessages] = useState([]);
+  // Account health from background service
+  const [accountHealth, setAccountHealth] = useState(null);
 
   const wsRef = useRef(null);
   const reconnectTimeoutRef = useRef(null);
@@ -70,43 +76,6 @@ export const useArbWebSocket = () => {
             next.set(d.event_ticker, { ...existing, ...d, updated_at: Date.now() });
             return next;
           });
-        }
-        break;
-      }
-
-      case 'event_arb_ticker': {
-        // Ticker V2 update: price, volume, OI delta for a market
-        if (data.data?.event_ticker && data.data?.market_ticker) {
-          const d = data.data;
-          setEvents(prev => {
-            const next = new Map(prev);
-            const event = next.get(d.event_ticker);
-            if (event?.markets?.[d.market_ticker]) {
-              const m = { ...event.markets[d.market_ticker] };
-              if (d.price != null) m.last_price = d.price;
-              m.volume_delta_total = (m.volume_delta_total || 0) + (d.volume_delta || 0);
-              m.oi_delta_total = (m.oi_delta_total || 0) + (d.open_interest_delta || 0);
-              next.set(d.event_ticker, {
-                ...event,
-                markets: { ...event.markets, [d.market_ticker]: m },
-                updated_at: Date.now(),
-              });
-            }
-            return next;
-          });
-        }
-        break;
-      }
-
-      case 'event_arb_trade': {
-        // Public trade from trade channel
-        if (data.data) {
-          const trade = {
-            id: `trade-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-            ...data.data,
-            received_at: Date.now(),
-          };
-          setEventTrades(prev => [trade, ...prev].slice(0, 200));
         }
         break;
       }
@@ -201,6 +170,7 @@ export const useArbWebSocket = () => {
             if (prev?.version === data.data.version) return prev;
             return {
               version: data.data.version,
+              subaccount_number: data.data.subaccount_number ?? 0,
               balance: data.data.balance ?? 0,
               portfolio_value: data.data.portfolio_value ?? 0,
               position_count: data.data.position_count ?? 0,
@@ -253,9 +223,17 @@ export const useArbWebSocket = () => {
 
       case 'system_activity': {
         if (data.data) {
-          const { activity_type, metadata } = data.data;
+          const { activity_type, metadata, message } = data.data;
           if (activity_type === 'state_transition' && metadata?.to_state) {
             setSystemState(metadata.to_state);
+          }
+          if (activity_type === 'startup_progress' || activity_type === 'state_transition') {
+            setStartupMessages(prev => [...prev, {
+              message: message || metadata?.to_state || '',
+              step: data.data.step,
+              totalSteps: data.data.total_steps,
+              timestamp: Date.now(),
+            }].slice(-20));
           }
         }
         break;
@@ -268,13 +246,6 @@ export const useArbWebSocket = () => {
         lastPingRef.current = Date.now();
         if (ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({ type: 'pong', timestamp: Date.now() }));
-        }
-        break;
-      }
-
-      case 'trader_status': {
-        if (data.data?.state) {
-          setSystemState(data.data.state);
         }
         break;
       }
@@ -304,67 +275,48 @@ export const useArbWebSocket = () => {
         break;
       }
 
-      case 'event_understanding_update': {
-        if (data.data?.event_ticker && data.data?.understanding) {
-          const { event_ticker: et, understanding } = data.data;
-          setEvents(prev => {
-            const next = new Map(prev);
-            const existing = next.get(et);
-            if (existing) {
-              next.set(et, { ...existing, understanding, updated_at: Date.now() });
-            }
-            return next;
-          });
+      case 'account_health_update': {
+        if (data.data) {
+          setAccountHealth(data.data);
         }
         break;
       }
 
-      case 'causal_model_update': {
-        if (data.data?.event_ticker && data.data?.causal_model) {
-          const { event_ticker: et, causal_model } = data.data;
-          setEvents(prev => {
-            const next = new Map(prev);
-            const existing = next.get(et);
-            if (existing) {
-              next.set(et, { ...existing, causal_model, updated_at: Date.now() });
-            }
-            return next;
-          });
-        }
-        break;
-      }
-
-      case 'lifecycle_update': {
-        if (data.data?.event_ticker && data.data?.lifecycle) {
-          const { event_ticker: et, lifecycle } = data.data;
-          setEvents(prev => {
-            const next = new Map(prev);
-            const existing = next.get(et);
-            if (existing) {
-              next.set(et, { ...existing, lifecycle, updated_at: Date.now() });
-            }
-            return next;
-          });
-        }
-        break;
-      }
-
-      case 'mentions_update': {
-        if (data.data?.event_ticker) {
+      case 'sniper_status': {
+        if (data.data) {
           const d = data.data;
-          setMentionsState(prev => ({
+          setSniperState(prev => ({
             ...prev,
-            [d.event_ticker]: {
-              terms: d.terms || [],
-              mode: d.mode,
-              baseline_estimates: d.baseline_estimates || {},
-              deltas: d.deltas || {},
-              news_context: d.news_context || [],
-              history_count: d.history_count || 0,
-              simulation_in_progress: d.simulation_in_progress || false,
-              updated_at: Date.now(),
-            }
+            enabled: d.config?.enabled ?? d.enabled ?? prev.enabled,
+            capitalActive: d.state?.capital_active ?? prev.capitalActive,
+            capitalLimit: d.config?.max_capital ?? prev.capitalLimit,
+            recentActions: (d.state?.recent_actions || []).concat(prev.recentActions || []).slice(0, 20),
           }));
+        }
+        break;
+      }
+
+      case 'sniper_execution': {
+        if (data.data) {
+          const d = data.data;
+          setSniperState(prev => ({
+            ...prev,
+            enabled: true,
+            lastAction: d,
+            recentActions: [d, ...(prev.recentActions || [])].slice(0, 20),
+          }));
+          // Also surface as agent message for activity feed
+          const msg = {
+            id: `sniper-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+            type: 'agent_message',
+            subtype: 'sniper_execution',
+            agent: 'sniper',
+            text: d.error
+              ? `SNIPER REJECTED ${d.event_ticker}: ${d.error}`
+              : `SNIPER ${d.direction?.toUpperCase()} ${d.event_ticker} legs=${d.legs_filled}/${d.legs_attempted} cost=${d.total_cost_cents}c edge=${d.edge_cents}c`,
+            timestamp: new Date().toISOString(),
+          };
+          setAgentMessages(prev => [msg, ...prev].slice(0, 200));
         }
         break;
       }
@@ -483,7 +435,9 @@ export const useArbWebSocket = () => {
     captainPaused,
     sendCaptainPauseToggle,
     exchangeStatus,
-    mentionsState,
+    sniperState,
+    startupMessages,
+    accountHealth,
   };
 };
 

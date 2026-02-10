@@ -60,8 +60,6 @@ export const ANIMATE_PULSE = 'animate-pulse';
 
 export const LEFT_SIDEBAR_WIDTH = 300;
 export const LEFT_SIDEBAR_COLLAPSED = 40;
-export const RIGHT_SIDEBAR_WIDTH = 360;
-export const RIGHT_SIDEBAR_COLLAPSED = 40;
 export const HEADER_HEIGHT = 44;
 
 // ─── Panel Dividers ─────────────────────────────────────────────────────────

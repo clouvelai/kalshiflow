@@ -57,7 +57,7 @@ _log_dir.mkdir(exist_ok=True)
 _file_handler = logging.handlers.RotatingFileHandler(
     _log_dir / "v3-trader.log",
     maxBytes=10 * 1024 * 1024,  # 10 MB
-    backupCount=3,
+    backupCount=7,
 )
 _file_handler.setFormatter(logging.Formatter(_log_fmt))
 logging.basicConfig(
@@ -223,7 +223,7 @@ async def lifespan(app):
             from src.kalshiflow_rl.traderv3.clients.demo_client import KalshiDemoTradingClient
             
             # Create trading client (paper mode for now)
-            trading_client = KalshiDemoTradingClient(mode="paper")
+            trading_client = KalshiDemoTradingClient(mode="paper", subaccount=config.subaccount)
             
             # Create integration wrapper
             trading_client_integration = V3TradingClientIntegration(

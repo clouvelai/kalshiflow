@@ -5,21 +5,28 @@ import OverviewTab from './tabs/OverviewTab';
 import MarketsTab from './tabs/MarketsTab';
 import BookTradesTab from './tabs/BookTradesTab';
 import HeatmapTab from './tabs/HeatmapTab';
+import MentionsTab from './tabs/MentionsTab';
 
-const TABS = [
-  { id: 'overview', label: 'Overview' },
-  { id: 'markets', label: 'Markets' },
-  { id: 'book', label: 'Book & Trades' },
-  { id: 'heatmap', label: 'Heatmap' },
-];
-
-const EventView = memo(({ event, eventTrades, arbTrades, positionsByTicker, mentionsData, onClose }) => {
+const EventView = memo(({ event, eventTrades, arbTrades, positionsByTicker, onClose }) => {
   const [activeTab, setActiveTab] = useState('markets');
   const [selectedMarket, setSelectedMarket] = useState(null);
 
   if (!event) return null;
 
   const { event_ticker, title, category, mutually_exclusive } = event;
+
+  const tabs = useMemo(() => {
+    const base = [
+      { id: 'overview', label: 'Overview' },
+      { id: 'markets', label: 'Markets' },
+      { id: 'book', label: 'Book & Trades' },
+      { id: 'heatmap', label: 'Heatmap' },
+    ];
+    if (event?.mentions_term_count > 0 || event?.mentions_all_terms?.length > 0) {
+      base.splice(1, 0, { id: 'mentions', label: `Mentions (${event.mentions_term_count || event.mentions_all_terms?.length || ''})` });
+    }
+    return base;
+  }, [event]);
 
   return (
     <motion.div
@@ -79,7 +86,7 @@ const EventView = memo(({ event, eventTrades, arbTrades, positionsByTicker, ment
 
       {/* Tab bar */}
       <div className="flex items-center gap-1 px-4 py-1.5 border-b border-gray-800/30 shrink-0 bg-gray-950/20">
-        {TABS.map(tab => (
+        {tabs.map(tab => (
           <button
             key={tab.id}
             onClick={() => setActiveTab(tab.id)}
@@ -105,13 +112,13 @@ const EventView = memo(({ event, eventTrades, arbTrades, positionsByTicker, ment
             transition={{ duration: 0.1 }}
           >
             {activeTab === 'overview' && <OverviewTab event={event} />}
+            {activeTab === 'mentions' && <MentionsTab event={event} />}
             {activeTab === 'markets' && (
               <MarketsTab
                 event={event}
                 positionsByTicker={positionsByTicker}
                 selectedMarket={selectedMarket}
                 onSelectMarket={setSelectedMarket}
-                mentionsData={mentionsData}
               />
             )}
             {activeTab === 'book' && (

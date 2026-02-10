@@ -64,7 +64,7 @@ class V3Config:
 
     # Order TTL Configuration
     order_ttl_enabled: bool = True  # Enable automatic cancellation of stale orders
-    order_ttl_seconds: int = 300  # Cancel resting orders older than this (5min - gives passive orders time to fill)
+    order_ttl_seconds: int = 3600  # Dead-letter backstop (1hr) - AccountHealth handles cleanup at 30min with order-group awareness
 
     # Event Position Tracking Configuration
     # Tracks positions grouped by event_ticker to detect correlated exposure
@@ -110,15 +110,27 @@ class V3Config:
     single_arb_order_ttl: int = 30  # Order TTL in seconds (auto-cancel)
     single_arb_cheval_model: str = "claude-haiku-4-5-20251001"  # ChevalDeTroie model (configurable)
 
+    # Subaccount Configuration
+    subaccount: int = 0  # V3_SUBACCOUNT - 0=primary, 1-32=sub
+
     # Sniper Execution Layer Configuration
     sniper_enabled: bool = False                    # V3_SNIPER_ENABLED - master kill switch
     sniper_max_position: int = 25                   # V3_SNIPER_MAX_POSITION - max contracts per market
-    sniper_max_capital: int = 5000                  # V3_SNIPER_MAX_CAPITAL - max capital at risk (cents = $50)
+    sniper_max_capital: int = 100000                 # V3_SNIPER_MAX_CAPITAL - max capital at risk (cents = $1000)
     sniper_cooldown: float = 10.0                   # V3_SNIPER_COOLDOWN - seconds between trades on same market
     sniper_max_trades_per_cycle: int = 5            # V3_SNIPER_MAX_TRADES_PER_CYCLE - between Captain cycles
     sniper_arb_min_edge: float = 3.0               # V3_SNIPER_ARB_MIN_EDGE - min edge cents for S1_ARB
     sniper_order_ttl: int = 30                     # V3_SNIPER_ORDER_TTL - order TTL in seconds
     sniper_leg_timeout: float = 5.0                # V3_SNIPER_LEG_TIMEOUT - per-leg placement timeout in seconds
+
+    # Account Health Configuration
+    max_drawdown_pct: float = 25.0                 # V3_MAX_DRAWDOWN_PCT - pause Captain when drawdown exceeds this
+
+    # LLM Model Configuration (centralized tiers)
+    model_captain: str = "claude-sonnet-4-20250514"      # V3_MODEL_CAPTAIN
+    model_subagent: str = "claude-haiku-4-5-20251001"    # V3_MODEL_SUBAGENT
+    model_utility: str = "gemini-2.0-flash"              # V3_MODEL_UTILITY
+    model_embedding: str = "text-embedding-3-small"      # V3_MODEL_EMBEDDING
 
     # Tavily Search Configuration
     tavily_api_key: str = ""                    # TAVILY_API_KEY env var
@@ -127,9 +139,6 @@ class V3Config:
     tavily_monthly_budget: int = 10000          # V3_TAVILY_MONTHLY_BUDGET
     tavily_news_time_range: str = "week"        # V3_TAVILY_NEWS_TIME_RANGE (day/week/month)
     tavily_max_results: int = 20                # V3_TAVILY_MAX_RESULTS
-
-    # Gateway Configuration (new unified client)
-    use_new_gateway: bool = True  # Use KalshiGateway instead of demo_client + WS clients
 
     # State Machine Configuration
     sync_duration: float = 10.0  # seconds for Kalshi data sync
@@ -217,7 +226,7 @@ class V3Config:
 
         # Order TTL configuration - cancel stale resting orders
         order_ttl_enabled = os.environ.get("V3_ORDER_TTL_ENABLED", "true").lower() == "true"
-        order_ttl_seconds = int(os.environ.get("V3_ORDER_TTL_SECONDS", "90"))
+        order_ttl_seconds = int(os.environ.get("V3_ORDER_TTL_SECONDS", "3600"))
 
         # Event Position Tracking configuration
         # Tracks positions by event_ticker to prevent guaranteed losses from correlated exposure
@@ -263,17 +272,46 @@ class V3Config:
         single_arb_max_contracts = int(os.environ.get("V3_SINGLE_ARB_MAX_CONTRACTS", "50"))
         single_arb_captain_enabled = os.environ.get("V3_SINGLE_ARB_CAPTAIN_ENABLED", "true").lower() == "true"
         single_arb_order_ttl = int(os.environ.get("V3_SINGLE_ARB_ORDER_TTL", "30"))
-        single_arb_cheval_model = os.environ.get("V3_SINGLE_ARB_CHEVAL_MODEL", "claude-haiku-4-5-20251001")
+        # single_arb_cheval_model is set in the LLM Model Configuration block above
+
+        # Subaccount configuration (REQUIRED - no default)
+        subaccount_raw = os.environ.get("V3_SUBACCOUNT")
+        if subaccount_raw is None:
+            raise ValueError(
+                "V3_SUBACCOUNT is required. Set V3_SUBACCOUNT=0 for primary account "
+                "or V3_SUBACCOUNT=1-32 for a dedicated subaccount."
+            )
+        subaccount = int(subaccount_raw)
 
         # Sniper execution layer configuration
         sniper_enabled = os.environ.get("V3_SNIPER_ENABLED", "false").lower() == "true"
         sniper_max_position = int(os.environ.get("V3_SNIPER_MAX_POSITION", "25"))
-        sniper_max_capital = int(os.environ.get("V3_SNIPER_MAX_CAPITAL", "5000"))
+        sniper_max_capital = int(os.environ.get("V3_SNIPER_MAX_CAPITAL", "100000"))
         sniper_cooldown = float(os.environ.get("V3_SNIPER_COOLDOWN", "10.0"))
         sniper_max_trades_per_cycle = int(os.environ.get("V3_SNIPER_MAX_TRADES_PER_CYCLE", "5"))
         sniper_arb_min_edge = float(os.environ.get("V3_SNIPER_ARB_MIN_EDGE", "3.0"))
         sniper_order_ttl = int(os.environ.get("V3_SNIPER_ORDER_TTL", "30"))
         sniper_leg_timeout = float(os.environ.get("V3_SNIPER_LEG_TIMEOUT", "5.0"))
+
+        # Account Health Configuration
+        max_drawdown_pct = float(os.environ.get("V3_MAX_DRAWDOWN_PCT", "25.0"))
+
+        # LLM Model Configuration (centralized tiers)
+        model_captain = os.environ.get("V3_MODEL_CAPTAIN", "claude-sonnet-4-20250514")
+        model_subagent = os.environ.get("V3_MODEL_SUBAGENT", "claude-haiku-4-5-20251001")
+        model_utility = os.environ.get("V3_MODEL_UTILITY", "gemini-2.0-flash")
+        model_embedding = os.environ.get("V3_MODEL_EMBEDDING", "text-embedding-3-small")
+
+        # Backward compat: V3_SINGLE_ARB_CHEVAL_MODEL overrides model_subagent for cheval
+        cheval_override = os.environ.get("V3_SINGLE_ARB_CHEVAL_MODEL")
+        if cheval_override:
+            logger.warning(
+                f"V3_SINGLE_ARB_CHEVAL_MODEL is deprecated, use V3_MODEL_SUBAGENT instead. "
+                f"Using override: {cheval_override}"
+            )
+            single_arb_cheval_model = cheval_override
+        else:
+            single_arb_cheval_model = model_subagent
 
         # Tavily search configuration
         tavily_api_key = os.environ.get("TAVILY_API_KEY", "")
@@ -285,9 +323,6 @@ class V3Config:
         tavily_monthly_budget = int(os.environ.get("V3_TAVILY_MONTHLY_BUDGET", "10000"))
         tavily_news_time_range = os.environ.get("V3_TAVILY_NEWS_TIME_RANGE", "week")
         tavily_max_results = int(os.environ.get("V3_TAVILY_MAX_RESULTS", "20"))
-
-        # Gateway configuration
-        use_new_gateway = os.environ.get("V3_USE_NEW_GATEWAY", "true").lower() == "true"
 
         sync_duration = float(os.environ.get("V3_SYNC_DURATION", os.environ.get("V3_CALIBRATION_DURATION", "10.0")))
         health_check_interval = float(os.environ.get("V3_HEALTH_CHECK_INTERVAL", "5.0"))
@@ -347,6 +382,11 @@ class V3Config:
             single_arb_captain_enabled=single_arb_captain_enabled,
             single_arb_order_ttl=single_arb_order_ttl,
             single_arb_cheval_model=single_arb_cheval_model,
+            model_captain=model_captain,
+            model_subagent=model_subagent,
+            model_utility=model_utility,
+            model_embedding=model_embedding,
+            subaccount=subaccount,
             sniper_enabled=sniper_enabled,
             sniper_max_position=sniper_max_position,
             sniper_max_capital=sniper_max_capital,
@@ -355,13 +395,13 @@ class V3Config:
             sniper_arb_min_edge=sniper_arb_min_edge,
             sniper_order_ttl=sniper_order_ttl,
             sniper_leg_timeout=sniper_leg_timeout,
+            max_drawdown_pct=max_drawdown_pct,
             tavily_api_key=tavily_api_key,
             tavily_enabled=tavily_enabled,
             tavily_search_depth=tavily_search_depth,
             tavily_monthly_budget=tavily_monthly_budget,
             tavily_news_time_range=tavily_news_time_range,
             tavily_max_results=tavily_max_results,
-            use_new_gateway=use_new_gateway,
             sync_duration=sync_duration,
             health_check_interval=health_check_interval,
             error_recovery_delay=error_recovery_delay,
@@ -388,6 +428,11 @@ class V3Config:
         logger.info(f"  - Sync duration: {sync_duration}s")
         logger.info(f"  - Server: {host}:{port}")
         logger.info(f"  - Log level: {log_level}")
+        logger.info(f"  - Models: captain={model_captain}, subagent={model_subagent}, utility={model_utility}, embedding={model_embedding}")
+        if subaccount > 0:
+            logger.info(f"  - Subaccount: #{subaccount}")
+        else:
+            logger.info(f"  - Subaccount: #0 (primary)")
         if enable_trading_client:
             logger.info(f"  - Trading enabled: {trading_mode} mode")
             logger.info(f"  - Max orders: {trading_max_orders}, Max position: {trading_max_position_size}")
@@ -413,10 +458,7 @@ class V3Config:
             logger.info(f"  - Event tracking: DISABLED")
 
         # Log gateway config
-        if use_new_gateway:
-            logger.info(f"  - Gateway: NEW (KalshiGateway + unified WS)")
-        else:
-            logger.info(f"  - Gateway: LEGACY (demo_client + separate WS clients)")
+        logger.info(f"  - Gateway: KalshiGateway + unified WS")
 
         # Log Tavily config
         if tavily_enabled:

@@ -9,7 +9,6 @@ import {
   Globe,
   Tv,
   MapPin,
-  Tag,
   FileText,
   TrendingUp,
   ChevronDown,
@@ -211,6 +210,11 @@ const EventUnderstandingCard = ({ understanding, compact = false, lifecycle = nu
               {lifecycle.stage}
             </Pill>
           )}
+          {lifecycle?.recommended_action && (
+            <span className="text-[9px] text-gray-500 italic truncate max-w-[180px]" title={lifecycle.recommended_action}>
+              {lifecycle.recommended_action}
+            </span>
+          )}
 
           {/* Right: time to close */}
           <div className="ml-auto flex items-center gap-1.5">
@@ -384,7 +388,7 @@ const EventUnderstandingCard = ({ understanding, compact = false, lifecycle = nu
         {markets && (() => {
           const marketEntries = Object.values(markets).filter(m => m.micro &&
             (m.micro.whale_trade_count > 0 || m.micro.rapid_sequence_count > 0 ||
-             Math.abs(m.micro.book_imbalance || 0) > 0.3 || m.micro.buy_sell_ratio != null));
+             Math.abs(m.micro.book_imbalance || 0) > 0.15 || m.micro.buy_sell_ratio != null));
           if (marketEntries.length === 0) return null;
           return (
             <div>
@@ -410,7 +414,7 @@ const EventUnderstandingCard = ({ understanding, compact = false, lifecycle = nu
                             {'\u26A1'} {micro.rapid_sequence_count}
                           </span>
                         )}
-                        {micro.book_imbalance != null && Math.abs(micro.book_imbalance) > 0.3 && (
+                        {micro.book_imbalance != null && Math.abs(micro.book_imbalance) > 0.15 && (
                           <span className={`font-mono text-[9px] ${micro.book_imbalance > 0 ? 'text-emerald-400' : 'text-red-400'}`} title={`Book imbalance: ${micro.book_imbalance.toFixed(2)}`}>
                             {micro.book_imbalance > 0 ? '\u2191' : '\u2193'}
                           </span>
@@ -431,72 +435,6 @@ const EventUnderstandingCard = ({ understanding, compact = false, lifecycle = nu
             </div>
           );
         })()}
-
-        {/* Mentions extension */}
-        {extensions.mentions && (
-          <div className="bg-violet-500/5 rounded-lg px-3 py-2 border border-violet-500/10 space-y-2">
-            <SectionLabel icon={Tag}>Mentions</SectionLabel>
-            {/* Row 1: Core metrics */}
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-x-4 gap-y-1 text-[10px]">
-              <div>
-                <span className="text-gray-500">Entity</span>
-                <div className="text-gray-200 font-mono">{extensions.mentions.entity}</div>
-              </div>
-              {extensions.mentions.speaker && (
-                <div>
-                  <span className="text-gray-500">Speaker</span>
-                  <div className="text-gray-200">{extensions.mentions.speaker}</div>
-                </div>
-              )}
-              {extensions.mentions.baseline_probability != null && (
-                <div>
-                  <span className="text-gray-500">Baseline P</span>
-                  <div className="text-cyan-400 font-mono">{(extensions.mentions.baseline_probability * 100).toFixed(1)}%</div>
-                </div>
-              )}
-              {extensions.mentions.current_probability != null && extensions.mentions.current_probability !== extensions.mentions.baseline_probability && (
-                <div>
-                  <span className="text-gray-500">Informed P</span>
-                  <div className="text-violet-400 font-mono">{(extensions.mentions.current_probability * 100).toFixed(1)}%</div>
-                </div>
-              )}
-              <div>
-                <span className="text-gray-500">Count</span>
-                <div className="text-gray-200 font-mono">{extensions.mentions.current_count ?? 0}</div>
-              </div>
-            </div>
-            {/* Row 2: CI + Simulation info */}
-            <div className="flex items-center gap-3 flex-wrap text-[10px]">
-              {extensions.mentions.ci_lower != null && extensions.mentions.ci_upper != null && (
-                <span className="text-gray-500">
-                  CI: <span className="text-gray-300 font-mono">
-                    {(extensions.mentions.ci_lower * 100).toFixed(0)}%-{(extensions.mentions.ci_upper * 100).toFixed(0)}%
-                  </span>
-                </span>
-              )}
-              {extensions.mentions.simulation_count > 0 && (
-                <span className="text-gray-500">
-                  Sims: <span className="text-gray-300 font-mono">{extensions.mentions.simulation_count}</span>
-                </span>
-              )}
-            </div>
-            {/* Row 3: Accepted/Prohibited forms */}
-            {((extensions.mentions.accepted_forms?.length > 0) || (extensions.mentions.prohibited_forms?.length > 0)) && (
-              <div className="flex items-center gap-2 flex-wrap">
-                {extensions.mentions.accepted_forms?.slice(0, 5).map((form, i) => (
-                  <span key={`a-${i}`} className="text-[9px] bg-emerald-500/10 text-emerald-400/70 border border-emerald-500/15 px-1.5 py-0.5 rounded font-mono">
-                    {form}
-                  </span>
-                ))}
-                {extensions.mentions.prohibited_forms?.slice(0, 3).map((form, i) => (
-                  <span key={`p-${i}`} className="text-[9px] bg-red-500/10 text-red-400/60 border border-red-500/15 px-1.5 py-0.5 rounded font-mono line-through">
-                    {form}
-                  </span>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
 
         {/* Recent News */}
         {news_articles.length > 0 && (

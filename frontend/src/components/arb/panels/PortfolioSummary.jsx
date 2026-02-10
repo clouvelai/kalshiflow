@@ -10,8 +10,9 @@ const PortfolioSummary = memo(({ tradingState }) => {
   const balance = tradingState?.balance ?? 0;
   const pnl = tradingState?.pnl;
   const posCount = tradingState?.position_count ?? 0;
+  const subNum = tradingState?.subaccount_number ?? 0;
 
-  const pnlCents = pnl?.realized_pnl_cents ?? pnl?.total_pnl_cents ?? 0;
+  const pnlCents = pnl?.total_pnl_cents ?? 0;
   const pnlDollars = pnlCents / 100;
   const pnlColor = pnlDollars >= 0 ? 'text-emerald-400' : 'text-red-400';
 
@@ -22,6 +23,7 @@ const PortfolioSummary = memo(({ tradingState }) => {
           <div className="flex items-center gap-1.5 text-[10px] text-gray-500">
             <DollarSign className="w-3 h-3" />
             Balance
+            <span className="text-[9px] text-gray-600 ml-1">Sub #{subNum}</span>
           </div>
           <span className="text-[13px] font-mono font-semibold text-cyan-400 tabular-nums">
             {formatDollars(balance)}

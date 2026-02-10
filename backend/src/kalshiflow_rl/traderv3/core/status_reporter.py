@@ -289,12 +289,7 @@ class V3StatusReporter:
             if self._trading_client_integration:
                 order_group_id = self._trading_client_integration.get_order_group_id()
 
-            # Get tracked event tickers for position filtering
-            tracked_event_tickers = None
-            if self._tracked_markets_state:
-                tracked_event_tickers = set(self._tracked_markets_state.get_markets_by_event().keys())
-
-            trading_summary = self._state_container.get_trading_summary(order_group_id, tracked_event_tickers)
+            trading_summary = self._state_container.get_trading_summary(order_group_id)
 
             if not trading_summary.get("has_state"):
                 return  # No trading state to broadcast
@@ -349,6 +344,7 @@ class V3StatusReporter:
             # Broadcast trading state via websocket
             await self._websocket_manager.broadcast_message("trading_state", {
                 "timestamp": time.time(),
+                "subaccount_number": self._config.subaccount,
                 "version": trading_summary["version"],
                 "balance": trading_summary["balance"],
                 "min_trader_cash": self._config.min_trader_cash,

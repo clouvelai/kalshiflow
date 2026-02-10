@@ -114,9 +114,16 @@ class TraderState:
             if order_id and status == "resting":
                 orders_by_id[order_id] = order
         
+        # Compute portfolio_value from positions (sum of market_exposure)
+        # since the subaccounts balance endpoint doesn't provide it
+        portfolio_value = sum(
+            pos.get("market_exposure", 0)
+            for pos in positions_by_ticker.values()
+        )
+
         return cls(
             balance=balance_data.get("balance", 0),  # Already in cents
-            portfolio_value=balance_data.get("portfolio_value", 0),  # Already in cents
+            portfolio_value=portfolio_value,
             positions=positions_by_ticker,
             position_count=len(positions_by_ticker),
             orders=orders_by_id,

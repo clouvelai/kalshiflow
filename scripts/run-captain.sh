@@ -3,7 +3,7 @@
 # Captain Quick Launcher
 # =============================================================================
 # Streamlined launcher for Captain agent development.
-# Faster than run-v3.sh: no --reload, relaxed env validation, shorter timeouts.
+# No --reload, relaxed env validation, shorter timeouts.
 #
 # Usage:
 #   ./scripts/run-captain.sh              # Default: paper trading
@@ -105,9 +105,8 @@ fi
 # Start frontend dev server if not already running
 if ! lsof -ti:5173 >/dev/null 2>&1; then
     echo -e "${CYAN}[$(ts)] Starting frontend dev server...${NC}"
-    cd frontend && npm run dev > /dev/null 2>&1 &
+    (cd frontend && npm run dev > /dev/null 2>&1) &
     FRONTEND_PID=$!
-    cd ..
     echo -e "${GREEN}[$(ts)] Frontend starting on http://localhost:5173${NC}"
 else
     echo -e "${DIM}[$(ts)] Frontend already running on port 5173${NC}"

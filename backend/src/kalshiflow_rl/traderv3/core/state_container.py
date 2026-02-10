@@ -645,9 +645,9 @@ class V3StateContainer:
             # Recalculate aggregates
             self._trading_state.position_count = len(self._trading_state.positions)
 
-            # NOTE: Do NOT recalculate portfolio_value here.
-            # Kalshi REST API sync provides authoritative balance/portfolio_value.
-            # WebSocket position updates should only update position-specific fields.
+            # Recalculate portfolio_value from positions (sum of market_exposure)
+            # since subaccounts endpoint doesn't provide it
+            self._trading_state.portfolio_value = self._compute_invested_amount()
 
             # Update version and timestamp
             self._trading_state_version += 1
@@ -758,6 +758,8 @@ class V3StateContainer:
 
         Args:
             order_group_id: Optional order group ID to filter orders by.
+            tracked_event_tickers: Deprecated. No longer used for filtering
+                since positions are scoped by subaccount at the API level.
 
         Returns:
             Dict containing:
@@ -819,7 +821,8 @@ class V3StateContainer:
 
         # Add detailed position data with per-position P&L
         # (computed first so we can pass to compute_pnl for aggregation)
-        positions_details = self._format_position_details(tracked_event_tickers)
+        # No event_ticker filter needed - positions are scoped by subaccount at the API level
+        positions_details = self._format_position_details()
         summary["positions_details"] = positions_details
 
         # Add session P&L if initialized (includes realized/unrealized breakdown)
@@ -935,12 +938,6 @@ class V3StateContainer:
 
         details = []
         for ticker, pos in self._trading_state.positions.items():
-            # Server-side filter: only include positions for tracked events
-            if tracked_event_tickers is not None:
-                event_ticker = pos.get("event_ticker", "")
-                if event_ticker not in tracked_event_tickers:
-                    continue
-
             position_count = pos.get("position", 0)
             market_exposure = pos.get("market_exposure", 0)
             qty = abs(position_count)

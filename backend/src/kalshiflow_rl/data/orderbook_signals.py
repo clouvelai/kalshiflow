@@ -204,7 +204,8 @@ class BucketState:
             total = total_bid + total_ask
             if total == 0:
                 return 0.0  # Neutral when no volume
-            return round((total_bid - total_ask) / total, 4)
+            ratio = (total_bid - total_ask) / total
+            return round(max(-1.0, min(1.0, ratio)), 4)
 
         return {
             "bucket_seconds": self.bucket_seconds,

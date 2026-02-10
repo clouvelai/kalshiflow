@@ -454,13 +454,7 @@ class V3HealthMonitor:
         from .state_machine import TraderState as V3State
         
         logger.info("All components healthy, attempting recovery from ERROR state...")
-        
-        # Ensure session is ready for recovery
-        session_ready = await self._orderbook_integration.ensure_session_for_recovery()
-        if not session_ready:
-            logger.warning("Session not ready for recovery, will retry next health check")
-            return
-        
+
         # Check if orderbook integration has received snapshots
         orderbook_metrics = self._orderbook_integration.get_metrics()
         has_data = orderbook_metrics["snapshots_received"] > 0
@@ -473,7 +467,6 @@ class V3HealthMonitor:
                 context=f"Recovered from error - {orderbook_metrics['markets_connected']} markets operational",
                 metadata={
                     "recovery": True,
-                    "session_recovery": session_ready,
                     "markets_connected": orderbook_metrics["markets_connected"],
                     "snapshots_received": orderbook_metrics["snapshots_received"]
                 }
@@ -486,7 +479,6 @@ class V3HealthMonitor:
                 context="Recovering connection after components healthy",
                 metadata={
                     "recovery": True,
-                    "session_recovery": session_ready
                 }
             )
     

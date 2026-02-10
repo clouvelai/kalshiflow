@@ -250,6 +250,66 @@ class EventArbMonitor:
                 logger.error(f"REST poller error: {e}")
                 await asyncio.sleep(5.0)
 
+    async def prefetch_all_orderbooks(self) -> int:
+        """Fetch orderbooks via REST for ALL markets in the index.
+
+        Called at startup to populate BBO data immediately instead of waiting
+        for WebSocket snapshots (which can take 30-60s+ for thin markets).
+
+        Returns:
+            Number of markets successfully fetched.
+        """
+        all_tickers = []
+        for event in self._index.events.values():
+            for market in event.markets.values():
+                all_tickers.append(market.ticker)
+
+        if not all_tickers:
+            return 0
+
+        logger.info(f"[PREFETCH] Fetching orderbooks for {len(all_tickers)} markets via REST")
+        fetched = 0
+        errors = 0
+
+        for ticker in all_tickers:
+            try:
+                resp = await self._trading_client.get_orderbook(ticker, depth=5)
+                if not resp:
+                    errors += 1
+                    continue
+                orderbook = resp.get("orderbook", resp)
+                if not orderbook or not isinstance(orderbook, dict):
+                    errors += 1
+                    continue
+
+                yes_levels = orderbook.get("yes") or []
+                no_levels = orderbook.get("no") or []
+
+                self._index.on_orderbook_update(
+                    market_ticker=ticker,
+                    yes_levels=yes_levels,
+                    no_levels=no_levels,
+                    source="api",
+                )
+
+                fetched += 1
+                self._poll_count += 1
+                self._last_poll_at = time.time()
+
+            except Exception as e:
+                errors += 1
+                logger.debug(f"[PREFETCH] Failed for {ticker}: {e}")
+
+            # Brief pause to avoid rate limiting (10 req/s limit)
+            if fetched % 8 == 0 and fetched > 0:
+                await asyncio.sleep(0.5)
+
+        logger.info(
+            f"[PREFETCH] Complete: {fetched}/{len(all_tickers)} markets fetched "
+            f"({errors} errors). Index ready={self._index.is_ready}"
+        )
+        return fetched
+
     async def _poll_stale_markets(self) -> None:
         """Poll orderbooks for markets with stale WS data (depth=5)."""
         now = time.time()

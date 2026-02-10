@@ -121,7 +121,7 @@ class MicrostructureSignals:
     last_sweep_ts: float = 0.0
 
     # VPIN (Easley/Lopez de Prado/O'Hara 2010)
-    vpin: float = 0.0                    # 0-1, >0.7 = toxic informed flow
+    vpin: float = 0.0                    # 0-1, >0.85 = toxic informed flow
 
     def to_dict(self) -> Dict:
         return {
@@ -818,34 +818,39 @@ class EventMeta:
     # ---- Signal Operators ----
 
     def market_sum(self) -> Optional[float]:
-        """Sum of YES mids across all markets. Should be ~100 in balanced market."""
+        """Sum of YES mids across markets with data. Returns None only if no markets have data."""
         total = 0.0
+        count = 0
         for m in self.markets.values():
-            if m.yes_mid is None:
-                return None
-            total += m.yes_mid
-        return total if self.markets else None
+            if m.yes_mid is not None:
+                total += m.yes_mid
+                count += 1
+        return total if count > 0 else None
 
     def market_sum_bid(self) -> Optional[int]:
-        """Sum of YES bids. >100 = short arb opportunity."""
+        """Sum of YES bids across markets with data. >100 = short arb opportunity."""
         total = 0
+        count = 0
         for m in self.markets.values():
-            if m.yes_bid is None:
-                return None
-            total += m.yes_bid
-        return total if self.markets else None
+            if m.yes_bid is not None:
+                total += m.yes_bid
+                count += 1
+        return total if count > 0 else None
 
     def market_sum_ask(self) -> Optional[int]:
-        """Sum of YES asks. <100 = long arb opportunity."""
+        """Sum of YES asks across markets with data. <100 = long arb opportunity."""
         total = 0
+        count = 0
         for m in self.markets.values():
-            if m.yes_ask is None:
-                return None
-            total += m.yes_ask
-        return total if self.markets else None
+            if m.yes_ask is not None:
+                total += m.yes_ask
+                count += 1
+        return total if count > 0 else None
 
     def long_edge(self, fee_per_contract: int = 1) -> Optional[float]:
-        """100 - sum_ask - total_fees. Positive = profitable long arb."""
+        """100 - sum_ask - total_fees. Positive = profitable long arb. Requires all markets."""
+        if not self.all_markets_have_data:
+            return None
         sum_ask = self.market_sum_ask()
         if sum_ask is None:
             return None
@@ -853,7 +858,9 @@ class EventMeta:
         return 100 - sum_ask - total_fees
 
     def short_edge(self, fee_per_contract: int = 1) -> Optional[float]:
-        """sum_bid - 100 - total_fees. Positive = profitable short arb."""
+        """sum_bid - 100 - total_fees. Positive = profitable short arb. Requires all markets."""
+        if not self.all_markets_have_data:
+            return None
         sum_bid = self.market_sum_bid()
         if sum_bid is None:
             return None
@@ -861,7 +868,9 @@ class EventMeta:
         return sum_bid - 100 - total_fees
 
     def deviation(self) -> Optional[float]:
-        """abs(market_sum - 100). How far from equilibrium."""
+        """abs(market_sum - 100). How far from equilibrium. Requires all markets."""
+        if not self.all_markets_have_data:
+            return None
         ms = self.market_sum()
         if ms is None:
             return None
@@ -1033,16 +1042,34 @@ class EventMeta:
         if self.causal_model:
             result["causal_model"] = self.causal_model
 
-        # Add mentions info if available (for Captain visibility)
+        # Add mentions info if available (for Captain visibility + frontend)
         if self.mentions_data:
             lexeme_pack = self.mentions_data.get("lexeme_pack", {})
             result["mentions_speaker"] = lexeme_pack.get("speaker")
             result["mentions_entity"] = lexeme_pack.get("entity")
             result["mentions_current_count"] = self.mentions_data.get("current_count", 0)
             result["mentions_evidence_count"] = len(self.mentions_data.get("evidence", []))
-            # Include simulation status
-            result["mentions_has_baseline"] = bool(self.mentions_data.get("baseline_estimates"))
-            result["mentions_last_simulation_ts"] = self.mentions_data.get("last_simulation_ts")
+
+            # Multi-term data (from Phase 1 fix)
+            all_terms = self.mentions_data.get("all_terms", [])
+            result["mentions_all_terms"] = all_terms
+            result["mentions_term_count"] = len(all_terms)
+
+            # Per-term market prices from live orderbook
+            term_to_ticker = self.mentions_data.get("term_to_ticker", {})
+            term_prices = {}
+            for entity, ticker in term_to_ticker.items():
+                market = self.markets.get(ticker)
+                if market:
+                    term_prices[entity] = {
+                        "ticker": ticker,
+                        "yes_bid": market.yes_bid,
+                        "yes_ask": market.yes_ask,
+                        "yes_mid": market.yes_mid,
+                        "spread": market.spread,
+                        "volume_24h": market.volume_24h,
+                    }
+            result["mentions_term_prices"] = term_prices
 
         return result
 
@@ -1255,6 +1282,33 @@ class EventArbIndex:
                     size_available=m.yes_bid_size,
                 ))
         return legs
+
+    def cleanup_settled_events(self) -> int:
+        """Remove events where all markets are closed or settled.
+
+        Prevents unbounded growth of _events dict over weeks of operation.
+        Returns number of events removed.
+        """
+        to_remove = []
+        for event_ticker, event in self._events.items():
+            if not event.markets:
+                to_remove.append(event_ticker)
+                continue
+            all_terminal = all(
+                m.status in ("closed", "settled", "finalized")
+                for m in event.markets.values()
+            )
+            if all_terminal:
+                to_remove.append(event_ticker)
+
+        for event_ticker in to_remove:
+            event = self._events.pop(event_ticker)
+            # Clean up ticker-to-event mapping
+            for ticker in list(event.markets.keys()):
+                self._ticker_to_event.pop(ticker, None)
+            logger.info(f"[INDEX:CLEANUP] Removed settled event {event_ticker} ({len(event.markets)} markets)")
+
+        return len(to_remove)
 
     def get_snapshot(self) -> Dict:
         """Full state for WebSocket broadcast."""

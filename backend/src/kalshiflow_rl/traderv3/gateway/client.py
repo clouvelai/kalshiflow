@@ -62,6 +62,7 @@ class KalshiGateway:
         ws_url: str,
         rate: float = 10.0,
         burst: int = 20,
+        subaccount: int = 0,
     ):
         """
         Args:
@@ -69,9 +70,11 @@ class KalshiGateway:
             ws_url: Kalshi WebSocket URL (e.g. "wss://demo-api.kalshi.co/trade-api/ws/v2")
             rate: Sustained requests per second.
             burst: Burst capacity for rapid order placement.
+            subaccount: Kalshi subaccount number (0=primary, 1-32=sub).
         """
         self._api_url = api_url.rstrip("/")
         self._ws_url = ws_url
+        self._subaccount = subaccount
 
         self._auth = GatewayAuth()
         self._limiter = GatewayRateLimiter(rate=rate, burst=burst)
@@ -118,6 +121,10 @@ class KalshiGateway:
     @property
     def is_connected(self) -> bool:
         return self._connected
+
+    @property
+    def subaccount(self) -> int:
+        return self._subaccount
 
     # ------------------------------------------------------------------
     # WebSocket management
@@ -238,7 +245,36 @@ class KalshiGateway:
     # ------------------------------------------------------------------
 
     async def get_balance(self) -> Balance:
-        """GET /portfolio/balance."""
+        """Get balance for the configured subaccount.
+
+        Uses GET /portfolio/subaccounts/balances and filters to
+        ``self._subaccount``.  Falls back to GET /portfolio/balance
+        when the subaccounts endpoint is unavailable (e.g. demo API).
+        """
+        try:
+            data = await self._request("GET", "/portfolio/subaccounts/balances")
+            for entry in data.get("subaccount_balances", []):
+                if entry.get("subaccount_number") == self._subaccount:
+                    balance_dollars = entry.get("balance", "0")
+                    balance_cents = int(round(float(balance_dollars) * 100))
+                    return Balance(
+                        balance=balance_cents,
+                        portfolio_value=0,  # Computed from positions downstream
+                    )
+            # Subaccount not found in response - fall through to legacy
+            logger.warning(
+                f"Subaccount #{self._subaccount} not in subaccount_balances, "
+                f"falling back to /portfolio/balance"
+            )
+        except Exception as e:
+            if self._subaccount > 0:
+                raise KalshiError(
+                    f"Subaccount #{self._subaccount} balance fetch failed: {e}. "
+                    f"Refusing fallback to /portfolio/balance (would return wrong account)."
+                )
+            logger.debug(f"Subaccount balance endpoint unavailable ({e}), using /portfolio/balance")
+
+        # Fallback only reached for subaccount 0
         data = await self._request("GET", "/portfolio/balance")
         return Balance.model_validate(data)
 
@@ -246,9 +282,21 @@ class KalshiGateway:
     # Portfolio: Positions
     # ------------------------------------------------------------------
 
-    async def get_positions(self) -> List[Position]:
-        """GET /portfolio/positions. Returns list of positions."""
-        data = await self._request("GET", "/portfolio/positions")
+    async def get_positions(
+        self,
+        event_ticker: Optional[str] = None,
+    ) -> List[Position]:
+        """GET /portfolio/positions. Returns list of positions.
+
+        Args:
+            event_ticker: Filter by event ticker(s). Comma-separated for multiple (max 10).
+        """
+        params: Dict[str, Any] = {}
+        if event_ticker:
+            params["event_ticker"] = event_ticker
+        if self._subaccount is not None:
+            params["subaccount"] = self._subaccount
+        data = await self._request("GET", "/portfolio/positions", params=params or None)
         raw = data.get("market_positions", data.get("positions", []))
         return [Position.model_validate(p) for p in raw]
 
@@ -297,6 +345,8 @@ class KalshiGateway:
             body["order_group_id"] = order_group_id
         if expiration_ts is not None:
             body["expiration_ts"] = expiration_ts
+        if self._subaccount is not None:
+            body["subaccount"] = self._subaccount
 
         data = await self._request("POST", "/portfolio/orders", data=body)
         return OrderResponse.model_validate(data)
@@ -311,9 +361,15 @@ class KalshiGateway:
         status: str = "resting",
     ) -> List[Order]:
         """GET /portfolio/orders with optional filters."""
-        path = "/portfolio/orders"
+        params = []
         if ticker:
-            path += f"?ticker={ticker}"
+            params.append(f"ticker={ticker}")
+        if self._subaccount is not None:
+            params.append(f"subaccount={self._subaccount}")
+
+        path = "/portfolio/orders"
+        if params:
+            path += "?" + "&".join(params)
 
         data = await self._request("GET", path)
         all_orders = data.get("orders", [])
@@ -328,9 +384,15 @@ class KalshiGateway:
         market_tickers: Optional[str] = None,
     ) -> List[QueuePosition]:
         """GET /portfolio/orders/queue_positions."""
-        path = "/portfolio/orders/queue_positions"
+        params = []
         if market_tickers:
-            path += f"?market_tickers={market_tickers}"
+            params.append(f"market_tickers={market_tickers}")
+        if self._subaccount is not None:
+            params.append(f"subaccount={self._subaccount}")
+
+        path = "/portfolio/orders/queue_positions"
+        if params:
+            path += "?" + "&".join(params)
 
         data = await self._request("GET", path)
         raw = data.get("queue_positions", [])
@@ -343,6 +405,8 @@ class KalshiGateway:
     async def create_order_group(self, contracts_limit: int = 10000) -> OrderGroup:
         """POST /portfolio/order_groups."""
         body = {"contracts_limit": contracts_limit}
+        if self._subaccount is not None:
+            body["subaccount"] = self._subaccount
         data = await self._request("POST", "/portfolio/order_groups", data=body)
         return OrderGroup.model_validate(data)
 
@@ -350,6 +414,17 @@ class KalshiGateway:
         """POST /portfolio/order_groups/{id}/reset - cancels all resting orders in group."""
         return await self._request(
             "POST", f"/portfolio/order_groups/{order_group_id}/reset"
+        )
+
+    async def list_order_groups(self) -> List[Dict]:
+        """GET /portfolio/order_groups."""
+        data = await self._request("GET", "/portfolio/order_groups")
+        return data.get("order_groups", [])
+
+    async def delete_order_group(self, order_group_id: str) -> Dict[str, Any]:
+        """DELETE /portfolio/order_groups/{order_group_id}."""
+        return await self._request(
+            "DELETE", f"/portfolio/order_groups/{order_group_id}"
         )
 
     # ------------------------------------------------------------------
@@ -370,6 +445,8 @@ class KalshiGateway:
             params.append(f"order_group_id={order_group_id}")
         if limit != 100:
             params.append(f"limit={limit}")
+        if self._subaccount is not None:
+            params.append(f"subaccount={self._subaccount}")
 
         path = "/portfolio/fills"
         if params:
@@ -388,6 +465,8 @@ class KalshiGateway:
             params = [f"limit={min(200, limit - len(all_settlements))}"]
             if cursor:
                 params.append(f"cursor={cursor}")
+            if self._subaccount is not None:
+                params.append(f"subaccount={self._subaccount}")
 
             path = "/portfolio/settlements?" + "&".join(params)
             data = await self._request("GET", path)

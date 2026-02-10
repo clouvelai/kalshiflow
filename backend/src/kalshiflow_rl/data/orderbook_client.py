@@ -15,14 +15,13 @@ from typing import Dict, Any, Optional, Callable, List, Set
 import websockets
 from websockets.exceptions import ConnectionClosed, InvalidMessage, InvalidStatus
 
-from .auth import get_rl_auth
+from kalshiflow.auth import KalshiAuth
 from .orderbook_state import (
     get_shared_orderbook_state,
     SharedOrderbookState,
     remove_shared_orderbook_states,
 )
 from .write_queue import get_write_queue
-from .database import rl_db
 from ..config import config
 
 logger = logging.getLogger("kalshiflow_rl.orderbook_client")
@@ -66,7 +65,6 @@ class OrderbookClient:
         self._websocket: Optional[websockets.WebSocketServerProtocol] = None
         self._running = False
         self._reconnect_count = 0
-        self._session_id: Optional[int] = None
         
         # Per-market tracking
         self._last_sequences: Dict[str, int] = {ticker: 0 for ticker in self.market_tickers}
@@ -91,9 +89,8 @@ class OrderbookClient:
         # Stats collector for metrics tracking
         self._stats_collector = stats_collector
         
-        # Health state tracking for session management
+        # Health state tracking
         self._last_health_state = False
-        self._session_state = "inactive"  # inactive, active, closed
         
         # V3 integration: Use provided event bus or fallback to global
         # This allows V3 trader to receive events directly without global coupling
@@ -119,10 +116,7 @@ class OrderbookClient:
         for market_ticker in self.market_tickers:
             self._orderbook_states[market_ticker] = await get_shared_orderbook_state(market_ticker)
             logger.info(f"Initialized orderbook state for: {market_ticker}")
-        
-        # Initialize database
-        await rl_db.initialize()
-        
+
         # Start connection loop
         await self._connection_loop()
     
@@ -130,26 +124,15 @@ class OrderbookClient:
         """Stop the orderbook client."""
         logger.info("Stopping OrderbookClient...")
         self._running = False
-        
+
         if self._websocket:
             await self._websocket.close()
             self._websocket = None
-        
-        # Close session if active
-        if self._session_id:
-            try:
-                await rl_db.close_session(self._session_id, status='closed')
-                logger.info(f"Closed session {self._session_id}")
-            except Exception as e:
-                logger.error(f"Failed to close session {self._session_id}: {e}")
-            self._session_id = None
-            self._session_state = "closed"
-        
+
         logger.info(
             f"OrderbookClient stopped. Final stats: "
             f"messages={self._messages_received}, snapshots={self._snapshots_received}, "
-            f"deltas={self._deltas_received}, reconnects={self._reconnect_count}, "
-            f"session_state={self._session_state}"
+            f"deltas={self._deltas_received}, reconnects={self._reconnect_count}"
         )
     
     async def wait_for_connection(self, timeout: float = 30.0) -> bool:
@@ -197,8 +180,8 @@ class OrderbookClient:
     
     async def _connect_and_subscribe(self) -> None:
         """Connect to WebSocket and subscribe to orderbook."""
-        auth = get_rl_auth()
-        headers = auth.create_websocket_headers()
+        auth = KalshiAuth.from_env()
+        headers = auth.create_auth_headers("GET", "/trade-api/ws/v2")
         logger.info(f"Connecting to WebSocket: {self.ws_url} (reconnect_count={self._reconnect_count})")
         
         async with websockets.connect(
@@ -217,24 +200,7 @@ class OrderbookClient:
                 logger.info(f"Reconnect successful (attempt {self._reconnect_count})")
             self._reconnect_count = 0
 
-            # Session continuity: Only create new session on FIRST connect, reuse on reconnect
-            # This ensures one database session per trader session (not per WebSocket connection)
-            if self._session_id is None:
-                self._session_id = await rl_db.create_session(
-                    market_tickers=self.market_tickers,
-                    websocket_url=self.ws_url,
-                    environment=config.ENVIRONMENT
-                )
-                logger.info(f"Created new orderbook session {self._session_id}")
-            else:
-                logger.info(f"Reusing existing session {self._session_id} after reconnect")
-
-            self._session_state = "active"
-            
-            # Pass session ID to write queue
-            get_write_queue().set_session_id(self._session_id)
-            
-            logger.info(f"WebSocket connected for {len(self.market_tickers)} markets, session {self._session_id}")
+            logger.info(f"WebSocket connected for {len(self.market_tickers)} markets")
             
             if self._on_connected:
                 try:
@@ -320,22 +286,6 @@ class OrderbookClient:
             # Clear connection event since we're disconnected
             self._connection_established.clear()
 
-            # Session continuity: Do NOT close session on disconnect, just update stats
-            # Session will be reused on reconnect, only closed on trader stop()
-            if self._session_id:
-                try:
-                    await rl_db.update_session_stats(
-                        self._session_id,
-                        messages=self._messages_received,
-                        snapshots=self._snapshots_received,
-                        deltas=self._deltas_received
-                    )
-                    logger.info(f"Session {self._session_id} stats updated on disconnect (session preserved for reconnect)")
-                except Exception as e:
-                    logger.error(f"Failed to update session stats on disconnect: {e}")
-                # DO NOT clear session_id - it will be reused on reconnect
-                self._session_state = "disconnected"
-            
             if self._on_disconnected:
                 try:
                     await self._on_disconnected()
@@ -883,8 +833,6 @@ class OrderbookClient:
             "uptime_seconds": uptime,
             "last_message_time": self._last_message_time,
             "last_message_age_seconds": message_age,
-            "session_id": self._session_id,
-            "session_state": self._session_state,
             "health_state": "healthy" if self._last_health_state else "unhealthy"
         }
         
@@ -945,107 +893,16 @@ class OrderbookClient:
         return True
     
     async def _handle_health_state_change(self, new_health_state: bool) -> None:
-        """
-        Handle health state transitions for session management.
-        
-        When health transitions from True -> False, close current session
-        while preserving metrics for continuity.
-        """
+        """Handle health state transitions for logging."""
         if self._last_health_state == new_health_state:
             return  # No state change
-        
+
         previous_state = "healthy" if self._last_health_state else "unhealthy"
         new_state = "healthy" if new_health_state else "unhealthy"
-        
+
         logger.info(f"Health state transition: {previous_state} -> {new_state}")
-        
-        # When transitioning to unhealthy, close session but preserve metrics
-        if self._last_health_state and not new_health_state:
-            logger.info("Health failure detected - closing current session while preserving metrics")
-            await self._cleanup_session_on_health_failure()
-        
+
         self._last_health_state = new_health_state
-    
-    async def _cleanup_session_on_health_failure(self) -> None:
-        """
-        Close current session on health failure while preserving metrics.
-        
-        This ensures clean session lifecycle without losing data continuity.
-        Metrics are preserved to maintain monitoring and debugging capabilities.
-        """
-        if not self._session_id or self._session_state != "active":
-            logger.debug("No active session to cleanup on health failure")
-            return
-        
-        try:
-            # Update session stats before closing
-            await rl_db.update_session_stats(
-                self._session_id,
-                messages=self._messages_received,
-                snapshots=self._snapshots_received,
-                deltas=self._deltas_received
-            )
-            
-            # Close session with health failure status
-            await rl_db.close_session(
-                self._session_id,
-                status='health_failure',
-                error_message='Health check failed - session closed for cleanup'
-            )
-            
-            logger.info(f"Closed session {self._session_id} due to health failure (metrics preserved)")
-            
-            # Mark session as closed but preserve metrics
-            # DO NOT reset _messages_received, _snapshots_received, _deltas_received
-            # These metrics should continue across health failures for monitoring continuity
-            self._session_id = None
-            self._session_state = "closed"
-            
-            # Clear write queue session reference
-            get_write_queue().set_session_id(None)
-            
-        except Exception as e:
-            logger.error(f"Failed to cleanup session on health failure: {e}")
-    
-    async def _ensure_session_for_recovery(self) -> bool:
-        """
-        Ensure a session exists for recovery scenarios.
-        
-        Returns True if session is ready, False if creation failed.
-        """
-        if self._session_id and self._session_state == "active":
-            logger.debug("Active session already exists for recovery")
-            return True
-        
-        # Only create new session if we have an active websocket connection
-        if not self._websocket:
-            logger.debug("No websocket connection - cannot create session yet")
-            return False
-        
-        try:
-            # Create new session for recovery
-            self._session_id = await rl_db.create_session(
-                market_tickers=self.market_tickers,
-                websocket_url=self.ws_url,
-                environment=config.ENVIRONMENT
-            )
-            
-            self._session_state = "active"
-            
-            # Pass session ID to write queue
-            get_write_queue().set_session_id(self._session_id)
-            
-            logger.info(
-                f"Created recovery session {self._session_id} "
-                f"(preserved metrics: messages={self._messages_received}, "
-                f"snapshots={self._snapshots_received}, deltas={self._deltas_received})"
-            )
-            
-            return True
-            
-        except Exception as e:
-            logger.error(f"Failed to create recovery session: {e}")
-            return False
     
     def get_health_details(self) -> Dict[str, Any]:
         """
@@ -1067,8 +924,6 @@ class OrderbookClient:
             "last_message_time": stats.get("last_message_time"),
             "uptime_seconds": stats.get("uptime_seconds"),
             "reconnect_count": stats.get("reconnect_count", 0),
-            "session_id": stats.get("session_id"),
-            "session_state": stats.get("session_state", "unknown"),
             "health_state": stats.get("health_state", "unknown"),
             # Message-based health (websockets handles ping/pong at protocol level)
             "last_message_age_seconds": stats.get("last_message_age_seconds")

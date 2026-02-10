@@ -7,10 +7,12 @@ with HNSW index for sub-10ms similarity search.
 Design:
 - Lazy OpenAI client init (works even if OPENAI_API_KEY is missing at import time)
 - All methods are async (uses asyncpg via rl_db)
+- Embedding calls run via asyncio.to_thread() to avoid blocking the event loop
 - Dedup on store via find_similar_memories RPC
 - Access-based ranking via touch_memories RPC after each recall
 """
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -43,14 +45,24 @@ class VectorMemoryService:
             logger.info("OpenAI client initialized for embeddings")
         return self._openai_client
 
-    def _get_embedding(self, text: str) -> List[float]:
-        """Get 1536-dim embedding from text-embedding-3-small."""
+    def _get_embedding_sync(self, text: str) -> List[float]:
+        """Get 1536-dim embedding using configured embedding model (synchronous).
+
+        Must be called via asyncio.to_thread() from async contexts to avoid
+        blocking the event loop.
+        """
+        from ..mentions_models import get_embedding_model
+
         client = self._get_openai_client()
         response = client.embeddings.create(
-            model="text-embedding-3-small",
+            model=get_embedding_model(),
             input=text,
         )
         return response.data[0].embedding
+
+    async def _get_embedding(self, text: str) -> List[float]:
+        """Get embedding without blocking the event loop."""
+        return await asyncio.to_thread(self._get_embedding_sync, text)
 
     async def store(
         self,
@@ -70,8 +82,8 @@ class VectorMemoryService:
         metadata = metadata or {}
         content_hash = hashlib.sha256(content.encode()).hexdigest()
 
-        # Get embedding
-        embedding = self._get_embedding(content)
+        # Get embedding (non-blocking)
+        embedding = await self._get_embedding(content)
 
         async with self._db.get_connection() as conn:
             # Check for near-duplicates (threshold=0.88)
@@ -163,7 +175,7 @@ class VectorMemoryService:
 
         Returns list of dicts with content, memory_type, similarity, etc.
         """
-        embedding = self._get_embedding(query)
+        embedding = await self._get_embedding(query)
 
         async with self._db.get_connection() as conn:
             rows = await conn.fetch(

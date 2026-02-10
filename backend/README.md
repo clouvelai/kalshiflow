@@ -6,7 +6,7 @@ The repo uses dotenv-style env files for different environments. For TRADER V3 p
 
 - `backend/.env.paper` (existing convention)
 - `backend/.paper.env` (also supported)
-- `.paper.env` at repo root (also supported by `scripts/run-v3.sh`)
+- `.paper.env` at repo root (also supported by `scripts/run-captain.sh`)
 
 ### Truth Social evidence (optional)
 

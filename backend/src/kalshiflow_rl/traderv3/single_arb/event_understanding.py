@@ -6,9 +6,7 @@ Three layers + extensible plugins:
 2. Timeline + Key Actors (structured, machine-readable)
 3. LLM Synthesis (market-focused trading insights)
 
-Plus extensions dict for domain-specific plugins (mentions, sports, etc.)
-
-Reuses Wikipedia/domain helpers from mentions_context.py to avoid duplication.
+All domain-detection, Wikipedia, and entity-extraction helpers are self-contained.
 Cached to disk with 4-hour TTL.
 """
 
@@ -19,10 +17,150 @@ import re
 import time
 from dataclasses import asdict, dataclass, field
 from typing import Any, Callable, Dict, List, Optional
+from urllib.parse import quote_plus
+
+from pydantic import BaseModel, Field
 
 logger = logging.getLogger("kalshiflow_rl.traderv3.single_arb.event_understanding")
 
-_UNDERSTANDING_CACHE_TTL = 4 * 60 * 60  # 4 hours
+_UNDERSTANDING_CACHE_TTL_DEFAULT = 4 * 60 * 60  # 4 hours minimum
+_UNDERSTANDING_CACHE_TTL_FALLBACK = 24 * 60 * 60  # 24 hours when no time info
+
+
+# =============================================================================
+# PYDANTIC MODELS (for LLM structured output)
+# =============================================================================
+
+
+class TimelineSegment(BaseModel):
+    name: str = ""
+    start_offset_min: int = 0
+    duration_min: int = 0
+    description: str = ""
+
+
+class EventUnderstandingExtraction(BaseModel):
+    trading_summary: str = ""
+    key_factors: List[str] = Field(default_factory=list)
+    trading_considerations: List[str] = Field(default_factory=list)
+    timeline: List[TimelineSegment] = Field(default_factory=list)
+
+
+# =============================================================================
+# DOMAIN / ENTITY HELPERS
+# =============================================================================
+
+
+def _detect_domain(event_ticker: str, event_title: str, category: str = "") -> str:
+    """Detect event domain from ticker, title, and category."""
+    ticker_upper = event_ticker.upper()
+    title_upper = event_title.upper() if event_title else ""
+    category_lower = category.lower() if category else ""
+    if category_lower in ("sports",):
+        return "sports"
+    if category_lower in ("elections", "politics"):
+        return "politics"
+    if category_lower in ("companies",):
+        return "corporate"
+    if category_lower in ("entertainment",):
+        return "entertainment"
+    if category_lower in ("crypto",):
+        return "crypto"
+    if any(
+        s in ticker_upper or s in title_upper
+        for s in [
+            "NFL", "NBA", "MLB", "NHL", "SUPER BOWL", "WORLD SERIES",
+            "PLAYOFFS", "CHAMPIONSHIP", "CHAMPION", "FOOTBALL", "BASEBALL",
+            "BASKETBALL", "HOCKEY", "SOCCER", "GAME", "MATCH",
+        ]
+    ):
+        return "sports"
+    if any(c in title_upper for c in ["EARNINGS", "CALL", "INVESTOR", "QUARTERLY"]):
+        return "corporate"
+    if any(
+        p in title_upper
+        for p in [
+            "TRUMP", "BIDEN", "PRESIDENT", "CONGRESS", "SPEECH", "ADDRESS",
+            "BRIEFING", "NOMINEE", "NOMINATION", "DEMOCRATIC", "REPUBLICAN",
+            "ELECTION", "VOTE", "GOVERNOR", "SENATE", "HOUSE",
+        ]
+    ):
+        return "politics"
+    if any(e in title_upper for e in ["OSCAR", "GRAMMY", "EMMY", "AWARD", "SHOW"]):
+        return "entertainment"
+    return "generic"
+
+
+async def _fetch_wikipedia(title: str) -> Optional[Dict[str, Any]]:
+    """Fetch Wikipedia summary via REST API, with search fallback on 404."""
+    try:
+        import httpx
+
+        encoded_title = quote_plus(title)
+        url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{encoded_title}"
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(url, follow_redirects=True)
+            if resp.status_code == 200:
+                data = resp.json()
+                return {
+                    "title": data.get("title", ""),
+                    "description": data.get("description", ""),
+                    "extract": data.get("extract", ""),
+                    "url": data.get("content_urls", {}).get("desktop", {}).get("page", ""),
+                }
+            elif resp.status_code == 404:
+                search_url = (
+                    f"https://en.wikipedia.org/w/api.php"
+                    f"?action=query&list=search&srsearch={encoded_title}&format=json"
+                )
+                search_resp = await client.get(search_url)
+                if search_resp.status_code == 200:
+                    results = search_resp.json().get("query", {}).get("search", [])
+                    if results:
+                        return await _fetch_wikipedia(results[0].get("title", ""))
+        return None
+    except Exception as e:
+        logger.warning(f"Wikipedia fetch failed for '{title}': {e}")
+        return None
+
+
+def _extract_teams_from_title(title: str) -> List[str]:
+    """Extract team names from 'Team A vs Team B' style titles."""
+    patterns = [r"(.+?)\s+(?:vs\.?|versus|at|@)\s+(.+)"]
+    for pattern in patterns:
+        match = re.search(pattern, title, re.IGNORECASE)
+        if match:
+            teams = [match.group(1).strip(), match.group(2).strip()]
+            teams = [t for t in teams if t.lower() not in ["super bowl", "championship", "game"]]
+            return teams[:2]
+    return []
+
+
+def _extract_company_from_title(title: str) -> Optional[str]:
+    """Extract company name from earnings/call style titles."""
+    patterns = [
+        r"^(\w+(?:\s+\w+)?)\s+(?:Q[1-4]|quarterly|earnings)",
+        r"^(\w+(?:\s+\w+)?)\s+call",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, title, re.IGNORECASE)
+        if match:
+            return match.group(1).strip()
+    words = title.split()
+    return words[0] if words else None
+
+
+def _extract_speaker_from_title(title: str) -> Optional[str]:
+    """Extract speaker name from political event titles."""
+    common_politicians = ["trump", "biden", "harris", "pence", "obama", "clinton"]
+    title_lower = title.lower()
+    for pol in common_politicians:
+        if pol in title_lower:
+            return pol.title()
+    match = re.search(r"President\s+(\w+)", title, re.IGNORECASE)
+    if match:
+        return match.group(1).strip()
+    return None
 
 
 # =============================================================================
@@ -93,13 +231,15 @@ class EventUnderstanding:
 
     # === META ===
     gathered_at: float = 0.0
+    cache_ttl_seconds: float = 0.0  # Per-instance TTL, set at build time
     version: int = 1
 
     @property
     def stale(self) -> bool:
         if self.gathered_at == 0:
             return True
-        return (time.time() - self.gathered_at) > _UNDERSTANDING_CACHE_TTL
+        ttl = self.cache_ttl_seconds if self.cache_ttl_seconds > 0 else _UNDERSTANDING_CACHE_TTL_DEFAULT
+        return (time.time() - self.gathered_at) > ttl
 
     def to_dict(self) -> Dict[str, Any]:
         d = asdict(self)
@@ -137,73 +277,13 @@ class UnderstandingExtension:
         pass
 
 
-class MentionsExtension(UnderstandingExtension):
-    """Adds speaker personas and template info from mentions system."""
-
-    key = "mentions"
-
-    async def enrich(self, understanding: EventUnderstanding, event_meta: Any) -> None:
-        mentions_data = getattr(event_meta, "mentions_data", None)
-        if not mentions_data or not mentions_data.get("lexeme_pack"):
-            return
-
-        lexeme_pack = mentions_data["lexeme_pack"]
-        entity = lexeme_pack.get("entity", "")
-        ext = {
-            "entity": entity,
-            "accepted_forms": lexeme_pack.get("accepted_forms", []),
-            "prohibited_forms": lexeme_pack.get("prohibited_forms", []),
-            "speaker": lexeme_pack.get("speaker"),
-            "time_window_start": lexeme_pack.get("time_window_start"),
-            "time_window_end": lexeme_pack.get("time_window_end"),
-            "has_baseline": bool(mentions_data.get("baseline_estimates")),
-            "current_count": mentions_data.get("current_count", 0),
-        }
-
-        # Include baseline probability and CI if available
-        baseline = mentions_data.get("baseline_estimates", {})
-        if entity and entity in baseline:
-            est = baseline[entity]
-            ext["baseline_probability"] = est.get("probability")
-            ci = est.get("confidence_interval")
-            if ci and len(ci) == 2:
-                ext["ci_lower"] = ci[0]
-                ext["ci_upper"] = ci[1]
-
-        # Include current (informed) probability if available
-        current = mentions_data.get("current_estimates", {})
-        if entity and entity in current:
-            ext["current_probability"] = current[entity].get("probability")
-
-        # Include simulation phase from budget manager
-        ext["simulation_count"] = baseline.get(entity, {}).get("n_simulations", 0) if entity else 0
-
-        understanding.extensions["mentions"] = ext
-
-        # Add monitored speaker as key figure so downstream consumers know WHO is being watched
-        speaker = lexeme_pack.get("speaker")
-        if speaker:
-            existing_names = {fig.get("name", "").lower() for fig in understanding.key_figures if isinstance(fig, dict)}
-            existing_strs = {fig.lower() for fig in understanding.key_figures if isinstance(fig, str)}
-            if speaker.lower() not in existing_names and speaker.lower() not in existing_strs:
-                understanding.key_figures.append({
-                    "name": speaker,
-                    "role": "monitored_speaker",
-                    "relevance": "Person being monitored for mentions",
-                    "summary": "",
-                })
-
-
 # =============================================================================
 # BUILDER
 # =============================================================================
 
 
 class UnderstandingBuilder:
-    """Pipeline: Kalshi API identity -> Wikipedia context -> extensions -> LLM synthesis -> cache.
-
-    Reuses Wikipedia/domain helpers from mentions_context.py.
-    """
+    """Pipeline: Kalshi API identity -> Wikipedia context -> extensions -> LLM synthesis -> cache."""
 
     def __init__(self, cache_dir: Optional[str] = None, search_service=None):
         self._cache_dir = cache_dir
@@ -267,7 +347,10 @@ class UnderstandingBuilder:
         # Step 4: LLM synthesis
         await self._synthesize_trading_context(u)
 
-        # Step 5: Cache
+        # Step 5: Compute event-aware cache TTL
+        u.cache_ttl_seconds = self._compute_cache_ttl(u)
+
+        # Step 6: Cache
         u.gathered_at = time.time()
         self._save_cache(event_ticker, u)
 
@@ -279,10 +362,22 @@ class UnderstandingBuilder:
         )
         return u
 
+    @staticmethod
+    def _compute_cache_ttl(u: EventUnderstanding) -> float:
+        """Compute event-duration-aware cache TTL.
+
+        If time_to_close is known: TTL = max(80% of remaining time, 4 hours).
+        This means short events (~4h) cache for ~4h, multi-day events cache for days.
+        Fallback: 24 hours if no time info available.
+        """
+        if u.time_to_close_hours is not None and u.time_to_close_hours > 0:
+            remaining_seconds = u.time_to_close_hours * 3600
+            duration_ttl = remaining_seconds * 0.8
+            return max(duration_ttl, _UNDERSTANDING_CACHE_TTL_DEFAULT)
+        return _UNDERSTANDING_CACHE_TTL_FALLBACK
+
     def _build_identity(self, event_meta: Any) -> EventUnderstanding:
         """Extract identity fields from Kalshi API data."""
-        from .mentions_context import _detect_domain
-
         raw = getattr(event_meta, "raw", {})
         markets = getattr(event_meta, "markets", {})
 
@@ -348,15 +443,7 @@ class UnderstandingBuilder:
         )
 
     async def _enrich_wikipedia(self, u: EventUnderstanding, event_meta: Any) -> None:
-        """Enrich with Wikipedia data, reusing helpers from mentions_context.py."""
-        from .mentions_context import (
-            _detect_domain,
-            _extract_company_from_title,
-            _extract_speaker_from_title,
-            _extract_teams_from_title,
-            _fetch_wikipedia,
-        )
-
+        """Enrich with Wikipedia data using domain/entity helpers."""
         domain = u.domain
         title = u.title
 
@@ -372,8 +459,6 @@ class UnderstandingBuilder:
         # Generic fallback: if domain-specific enrichment yielded nothing useful,
         # try Wikipedia with cleaned keywords from the title
         if not u.participants and not u.event_summary:
-            from .mentions_context import _fetch_wikipedia
-
             keywords = self._extract_keywords_from_title(title)
             if len(keywords) > 3:
                 wiki = await _fetch_wikipedia(keywords)
@@ -407,8 +492,6 @@ class UnderstandingBuilder:
         return cleaned if len(cleaned) > 3 else title
 
     async def _enrich_sports(self, u: EventUnderstanding, title: str) -> None:
-        from .mentions_context import _extract_teams_from_title, _fetch_wikipedia
-
         title_lower = title.lower()
 
         teams = _extract_teams_from_title(title)
@@ -461,9 +544,6 @@ class UnderstandingBuilder:
 
     async def _find_specific_super_bowl(self, u: EventUnderstanding, title: str) -> bool:
         """Try to find the specific Super Bowl edition and populate detailed context."""
-        from .mentions_context import _fetch_wikipedia
-        import re
-
         # Extract Super Bowl number from ticker or title
         # Look for patterns like "SB26", "Super Bowl LIX", "Super Bowl 59"
         ticker = u.event_ticker
@@ -567,8 +647,6 @@ class UnderstandingBuilder:
 
         For mentions markets, knowing WHO is speaking is critical for simulation quality.
         """
-        from .mentions_context import _fetch_wikipedia
-
         # Try to find broadcast team info
         # Common Super Bowl broadcast searches
         broadcast_searches = []
@@ -605,8 +683,6 @@ class UnderstandingBuilder:
                 break  # Stop after first successful search
 
     async def _enrich_corporate(self, u: EventUnderstanding, title: str) -> None:
-        from .mentions_context import _extract_company_from_title, _fetch_wikipedia
-
         company = _extract_company_from_title(title)
         if company:
             wiki = await _fetch_wikipedia(company)
@@ -623,8 +699,6 @@ class UnderstandingBuilder:
             u.participants.append(participant)
 
     async def _enrich_politics(self, u: EventUnderstanding, title: str) -> None:
-        from .mentions_context import _extract_speaker_from_title, _fetch_wikipedia
-
         speaker = _extract_speaker_from_title(title)
         if speaker:
             wiki = await _fetch_wikipedia(speaker)
@@ -650,8 +724,6 @@ class UnderstandingBuilder:
                     u.wikipedia_urls.append(wiki.get("url", ""))
 
     async def _enrich_generic(self, u: EventUnderstanding, title: str) -> None:
-        from .mentions_context import _fetch_wikipedia
-
         wiki = await _fetch_wikipedia(title)
         if wiki:
             u.event_summary = wiki.get("extract", "")[:300]
@@ -726,53 +798,67 @@ class UnderstandingBuilder:
         u.key_factors = factors[:5]
 
     async def _synthesize_trading_context(self, u: EventUnderstanding) -> None:
-        """Use LLM to produce trading_summary, key_factors, trading_considerations."""
-        try:
-            from .mentions_models import get_extraction_llm
+        """Use LLM to produce trading_summary, key_factors, trading_considerations.
 
-            # Use haiku (Anthropic) since we always have ANTHROPIC_API_KEY
-            llm = get_extraction_llm(model="haiku", temperature=0.2, max_tokens=800)
+        Invests more in initial quality (1200 tokens) since results are cached for
+        the event's lifetime. Retries once on failure before falling back to heuristic.
+        """
+        for attempt in range(2):
+            try:
+                return await self._synthesize_trading_context_inner(u)
+            except Exception as e:
+                if attempt == 0:
+                    logger.warning(f"[UNDERSTANDING] LLM synthesis attempt 1 failed, retrying: {e}")
+                    continue
+                logger.warning(f"[UNDERSTANDING] LLM synthesis failed after 2 attempts: {e}")
+                self._generate_fallback_summary(u)
 
-            # Build compact context for synthesis
-            context_parts = [f"Event: {u.title}"]
-            if u.category:
-                context_parts.append(f"Category: {u.category}")
-            if u.domain:
-                context_parts.append(f"Domain: {u.domain}")
-            if u.participants:
-                names = [p["name"] for p in u.participants[:5]]
-                context_parts.append(f"Participants: {', '.join(names)}")
-            if u.event_summary:
-                context_parts.append(f"Summary: {u.event_summary[:300]}")
-            if u.settlement_summary:
-                context_parts.append(f"Settlement: {u.settlement_summary}")
-            if u.time_to_close_hours is not None:
-                context_parts.append(f"Time to close: {u.time_to_close_hours:.1f} hours")
-            if u.mutually_exclusive:
-                context_parts.append("Outcomes are mutually exclusive (prob sums to ~100%)")
-            else:
-                context_parts.append("Outcomes are independent")
+    async def _synthesize_trading_context_inner(self, u: EventUnderstanding) -> None:
+        """Inner LLM synthesis call."""
+        from .mentions_models import get_extraction_llm, get_subagent_model
 
-            # Include news context if available
-            if u.news_articles:
-                news_snippets = []
-                for article in u.news_articles[:5]:
-                    title = article.get("title", "")
-                    content = article.get("content", "")[:200]
-                    date = article.get("published_date", "")
-                    if title:
-                        snippet = f"- {title}"
-                        if date:
-                            snippet += f" ({date})"
-                        if content:
-                            snippet += f": {content}"
-                        news_snippets.append(snippet)
-                if news_snippets:
-                    context_parts.append(f"Recent news:\n" + "\n".join(news_snippets))
+        llm = get_extraction_llm(model=get_subagent_model(), temperature=0.2, max_tokens=1200)
 
-            context_text = "\n".join(context_parts)
+        # Build compact context for synthesis
+        context_parts = [f"Event: {u.title}"]
+        if u.category:
+            context_parts.append(f"Category: {u.category}")
+        if u.domain:
+            context_parts.append(f"Domain: {u.domain}")
+        if u.participants:
+            names = [p["name"] for p in u.participants[:5]]
+            context_parts.append(f"Participants: {', '.join(names)}")
+        if u.event_summary:
+            context_parts.append(f"Summary: {u.event_summary[:300]}")
+        if u.settlement_summary:
+            context_parts.append(f"Settlement: {u.settlement_summary}")
+        if u.time_to_close_hours is not None:
+            context_parts.append(f"Time to close: {u.time_to_close_hours:.1f} hours")
+        if u.mutually_exclusive:
+            context_parts.append("Outcomes are mutually exclusive (prob sums to ~100%)")
+        else:
+            context_parts.append("Outcomes are independent")
 
-            prompt = f"""Analyze this prediction market event for a trader. Focus on what affects pricing.
+        # Include news context if available
+        if u.news_articles:
+            news_snippets = []
+            for article in u.news_articles[:5]:
+                title = article.get("title", "")
+                content = article.get("content", "")[:200]
+                date = article.get("published_date", "")
+                if title:
+                    snippet = f"- {title}"
+                    if date:
+                        snippet += f" ({date})"
+                    if content:
+                        snippet += f": {content}"
+                    news_snippets.append(snippet)
+            if news_snippets:
+                context_parts.append(f"Recent news:\n" + "\n".join(news_snippets))
+
+        context_text = "\n".join(context_parts)
+
+        prompt = f"""Analyze this prediction market event for a trader. Focus on what affects pricing.
 
 {context_text}
 
@@ -790,23 +876,16 @@ Rules:
 - trading_considerations: mention spreads, fee impact, time decay
 - Return ONLY valid JSON"""
 
-            from .llm_schemas import EventUnderstandingExtraction
+        structured_llm = llm.with_structured_output(EventUnderstandingExtraction)
+        parsed = await structured_llm.ainvoke(prompt)
 
-            structured_llm = llm.with_structured_output(EventUnderstandingExtraction)
-            parsed = await structured_llm.ainvoke(prompt)
+        u.trading_summary = parsed.trading_summary
+        u.key_factors = parsed.key_factors[:5]
+        u.trading_considerations = parsed.trading_considerations[:3]
 
-            u.trading_summary = parsed.trading_summary
-            u.key_factors = parsed.key_factors[:5]
-            u.trading_considerations = parsed.trading_considerations[:3]
-
-            # Only use LLM timeline if we don't already have one
-            if not u.timeline:
-                u.timeline = [seg.model_dump() for seg in parsed.timeline[:5]]
-
-        except Exception as e:
-            logger.warning(f"[UNDERSTANDING] LLM synthesis failed: {e}")
-            # Fallback: generate useful summary from available data without LLM
-            self._generate_fallback_summary(u)
+        # Only use LLM timeline if we don't already have one
+        if not u.timeline:
+            u.timeline = [seg.model_dump() for seg in parsed.timeline[:5]]
 
     # === CACHE ===
 

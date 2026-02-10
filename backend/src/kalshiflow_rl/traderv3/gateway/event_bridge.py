@@ -31,9 +31,10 @@ class GatewayEventBridge:
     translates the messages into EventBus emit calls.
     """
 
-    def __init__(self, event_bus: "EventBus", ws: "WSMultiplexer"):
+    def __init__(self, event_bus: "EventBus", ws: "WSMultiplexer", subaccount: int = 0):
         self._event_bus = event_bus
         self._ws = ws
+        self._subaccount = subaccount
         self._events_bridged = 0
 
     def wire(self) -> None:
@@ -139,6 +140,11 @@ class GatewayEventBridge:
 
     async def _on_fill(self, msg: Dict[str, Any]) -> None:
         """Handle fill channel messages."""
+        # Filter by subaccount if present in message
+        msg_sub = msg.get("subaccount")
+        if msg_sub is not None and msg_sub != self._subaccount:
+            return
+
         # Determine price in cents
         side = msg.get("side", "yes")
         if side == "yes":
@@ -162,6 +168,11 @@ class GatewayEventBridge:
 
     async def _on_position(self, msg: Dict[str, Any]) -> None:
         """Handle market_positions channel messages."""
+        # Filter by subaccount if present in message
+        msg_sub = msg.get("subaccount")
+        if msg_sub is not None and msg_sub != self._subaccount:
+            return
+
         ticker = msg.get("market_ticker", "")
         if not ticker:
             return

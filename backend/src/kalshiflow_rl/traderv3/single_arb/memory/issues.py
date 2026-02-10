@@ -8,6 +8,7 @@ Captain reports issues it discovers; scripts/self-fix.sh reads and resolves them
 import json
 import logging
 import os
+import tempfile
 import time
 import uuid
 from typing import Any, Dict, List, Optional
@@ -54,11 +55,21 @@ def _read_all_issues(data_dir: str = DEFAULT_DATA_DIR) -> List[Dict[str, Any]]:
 
 
 def _write_all_issues(issues: List[Dict[str, Any]], data_dir: str = DEFAULT_DATA_DIR) -> None:
-    """Rewrite the entire issues file (used for updates)."""
+    """Rewrite the entire issues file atomically (write to temp, then rename)."""
     path = _issues_path(data_dir)
-    with open(path, "w") as f:
-        for issue in issues:
-            f.write(json.dumps(issue) + "\n")
+    fd, tmp_path = tempfile.mkstemp(dir=data_dir, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            for issue in issues:
+                f.write(json.dumps(issue) + "\n")
+        os.rename(tmp_path, path)
+    except Exception:
+        # Clean up temp file on failure
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 def report_issue(

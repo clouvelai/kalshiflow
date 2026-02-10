@@ -165,19 +165,14 @@ class V3OrderbookIntegration:
         Lazy initialization of signal aggregator on first snapshot.
 
         Called when signal aggregation is enabled but no aggregator was provided.
-        Creates an aggregator using the session_id from the orderbook client.
+        Uses a timestamp-based session ID since session tracking has been removed.
         """
         if self._aggregator_initialized:
             return
 
         try:
-            # Get session_id from the orderbook client
-            client_stats = self._client.get_stats()
-            session_id = client_stats.get("session_id")
-
-            if not session_id:
-                logger.warning("Cannot initialize signal aggregator: no session_id available yet")
-                return
+            # Use epoch-based session ID (rl_orderbook_sessions table removed)
+            session_id = int(time.time())
 
             # Create the signal aggregator
             self._signal_aggregator = OrderbookSignalAggregator(
@@ -188,7 +183,7 @@ class V3OrderbookIntegration:
             await self._signal_aggregator.start()
             self._aggregator_initialized = True
 
-            logger.info(f"✅ Signal aggregator initialized with session_id={session_id}")
+            logger.info(f"Signal aggregator initialized with session_id={session_id}")
 
         except Exception as e:
             logger.error(f"Failed to initialize signal aggregator: {e}")
@@ -255,27 +250,6 @@ class V3OrderbookIntegration:
         self._metrics.markets_connected.clear()
 
         logger.info(f"✅ V3 Orderbook Integration stopped - Metrics: {self.get_metrics()}")
-    
-    async def ensure_session_for_recovery(self) -> bool:
-        """
-        Ensure session is ready for recovery scenarios.
-        
-        This is called by the coordinator when recovering from ERROR state
-        to ensure the session lifecycle is properly managed.
-        
-        Returns:
-            True if session is ready, False if session creation failed
-        """
-        if not self._running:
-            logger.warning("Cannot ensure session - integration not running")
-            return False
-        
-        if hasattr(self._client, '_ensure_session_for_recovery'):
-            logger.info("Ensuring session is ready for recovery")
-            return await self._client._ensure_session_for_recovery()
-        else:
-            logger.debug("Client does not support session recovery - assuming ready")
-            return True
     
     async def wait_for_connection(self, timeout: float = 30.0) -> bool:
         """

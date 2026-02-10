@@ -1,7 +1,7 @@
-"""Unit tests for Sniper execution layer hardening.
+"""Unit tests for Sniper execution layer.
 
-Tests cover all 13 fixes from the Sniper hardening plan:
-  1. Capital accounting lifecycle (in_flight → in_positions, release on expiry)
+Tests cover:
+  1. Balance-based capital gating (real API balance, portfolio limit, API failure)
   2. Partial fill unwinding (cancel successful legs on partial)
   3. Leg timeout (asyncio.wait_for wrapping)
   4. Config TTL (order_ttl from SniperConfig)
@@ -10,10 +10,9 @@ Tests cover all 13 fixes from the Sniper hardening plan:
   7. Deque for recent_actions (auto-eviction)
   8. Unknown config fields reported
   9. VPIN threshold from config (tested via tools separately)
-  10. Stale order cleanup
-  11. Error type classification
-  12. Edge logging (edge_net_cents in SniperAction)
-  13. Concurrency docstring (verified by existence)
+  10. Error type classification
+  11. Edge logging (edge_net_cents in SniperAction)
+  12. Concurrency docstring (verified by existence)
 """
 
 import asyncio
@@ -35,6 +34,12 @@ from kalshiflow_rl.traderv3.single_arb.sniper import (
 # ---------------------------------------------------------------------------
 # Fixtures & helpers
 # ---------------------------------------------------------------------------
+
+@dataclass
+class MockBalance:
+    balance: int = 100_000  # 100_000c = $1000
+    portfolio_value: int = 0
+
 
 @dataclass
 class MockOrderResponse:
@@ -124,6 +129,7 @@ def make_sniper(
     gateway = AsyncMock()
     gateway.create_order = AsyncMock(return_value=MockOrderResponse())
     gateway.cancel_order = AsyncMock()
+    gateway.get_balance = AsyncMock(return_value=MockBalance())
 
     index = MagicMock()
     index.events = {"EVENT-1": MockEvent()}
@@ -156,59 +162,96 @@ def make_sniper(
 
 
 # ---------------------------------------------------------------------------
-# Issue #1: Capital accounting lifecycle
+# Balance-based capital gating
 # ---------------------------------------------------------------------------
 
-class TestCapitalAccounting:
-    def test_track_order_capital(self):
-        sniper = make_sniper()
-        sniper._track_order_capital("order-1", 400)
-        assert sniper.state.capital_in_flight == 400
-        assert sniper.state.capital_deployed_lifetime == 400
-        assert "order-1" in sniper._order_capital
+class TestBalanceGating:
+    @pytest.mark.asyncio
+    async def test_sufficient_balance_passes(self):
+        """With enough balance, capital gate should pass."""
+        sniper = make_sniper(max_capital=50000)
+        sniper._gateway.get_balance = AsyncMock(return_value=MockBalance(balance=100_000, portfolio_value=0))
 
-    def test_release_order_capital(self):
-        sniper = make_sniper()
-        sniper._track_order_capital("order-1", 400)
-        sniper.state.active_order_ids.add("order-1")
-
-        released = sniper._release_order_capital("order-1", "cancel")
-        assert released == 400
-        assert sniper.state.capital_in_flight == 0
-        assert sniper.state.capital_deployed_lifetime == 400  # Never decreases
-        assert "order-1" not in sniper.state.active_order_ids
-
-    def test_release_nonexistent_returns_zero(self):
-        sniper = make_sniper()
-        released = sniper._release_order_capital("nonexistent", "test")
-        assert released == 0
-
-    def test_promote_order_to_position(self):
-        sniper = make_sniper()
-        sniper._track_order_capital("order-1", 400)
-
-        sniper._promote_order_to_position("order-1")
-        assert sniper.state.capital_in_flight == 0
-        assert sniper.state.capital_in_positions == 400
-        assert "order-1" not in sniper._order_capital
-
-    def test_capital_gate_uses_active_not_lifetime(self):
-        """Capital gate should check active capital, not cumulative lifetime."""
-        sniper = make_sniper(max_capital=1000)
-
-        # Deploy 800c and then release it (order expired)
-        sniper._track_order_capital("order-1", 800)
-        sniper._release_order_capital("order-1", "expired")
-
-        # State: lifetime=800, active=0. New 900c should pass.
         opp = MockArbOpportunity()
-        rejection = sniper._check_risk_gates(opp)
-        assert rejection is None  # Should pass capital gate
+        rejection = await sniper._check_risk_gates(opp)
+        assert rejection is None
+
+    @pytest.mark.asyncio
+    async def test_insufficient_balance_rejects(self):
+        """If available balance < estimated cost, reject."""
+        sniper = make_sniper(max_capital=50000)
+        # Only 100c available, but est_cost = 3 legs × 10 contracts × (40+30+20) = 900c
+        sniper._gateway.get_balance = AsyncMock(return_value=MockBalance(balance=100, portfolio_value=0))
+
+        opp = MockArbOpportunity()
+        rejection = await sniper._check_risk_gates(opp)
+        assert rejection is not None
+        assert "insufficient_balance" in rejection
+
+    @pytest.mark.asyncio
+    async def test_capital_active_plus_est_exceeds_max_rejects(self):
+        """If capital_active + est_cost > max_capital, reject."""
+        sniper = make_sniper(max_capital=5000)
+        sniper._gateway.get_balance = AsyncMock(return_value=MockBalance(balance=100_000, portfolio_value=0))
+        # Set capital_active to 4200c. Est cost = 3 legs x 10 x (40+30+20) = 900c.
+        # 4200 + 900 = 5100 > 5000 → should reject
+        sniper.state.capital_active = 4200
+
+        opp = MockArbOpportunity()
+        rejection = await sniper._check_risk_gates(opp)
+        assert rejection is not None
+        assert "sniper_capital_limit" in rejection
+
+    @pytest.mark.asyncio
+    async def test_capital_active_plus_est_within_max_passes(self):
+        """If capital_active + est_cost <= max_capital, pass."""
+        sniper = make_sniper(max_capital=5000)
+        sniper._gateway.get_balance = AsyncMock(return_value=MockBalance(balance=100_000, portfolio_value=0))
+        # Set capital_active to 4000c. Est cost = 900c. 4000 + 900 = 4900 <= 5000 → should pass
+        sniper.state.capital_active = 4000
+
+        opp = MockArbOpportunity()
+        rejection = await sniper._check_risk_gates(opp)
+        assert rejection is None
+
+    @pytest.mark.asyncio
+    async def test_zero_capital_active_passes(self):
+        """Fresh session with no capital deployed should pass."""
+        sniper = make_sniper(max_capital=5000)
+        sniper._gateway.get_balance = AsyncMock(return_value=MockBalance(balance=100_000, portfolio_value=8000))
+        # portfolio_value is high but irrelevant now; capital_active=0, est=900 <= 5000
+
+        opp = MockArbOpportunity()
+        rejection = await sniper._check_risk_gates(opp)
+        assert rejection is None
+
+    @pytest.mark.asyncio
+    async def test_balance_api_failure_rejects_conservatively(self):
+        """If balance API fails, reject conservatively."""
+        sniper = make_sniper(max_capital=50000)
+        sniper._gateway.get_balance = AsyncMock(side_effect=Exception("API down"))
+
+        opp = MockArbOpportunity()
+        rejection = await sniper._check_risk_gates(opp)
+        assert rejection is not None
+        assert "balance_api_error" in rejection
+
+    @pytest.mark.asyncio
+    async def test_balance_telemetry_populated(self):
+        """Risk gate check should populate balance telemetry on state."""
+        sniper = make_sniper(max_capital=50000)
+        sniper._gateway.get_balance = AsyncMock(return_value=MockBalance(balance=55_000, portfolio_value=1200))
+
+        opp = MockArbOpportunity()
+        await sniper._check_risk_gates(opp)
+
+        assert sniper.state.last_balance_cents == 55_000
+        assert sniper.state.last_portfolio_value_cents == 1200
 
     @pytest.mark.asyncio
     async def test_full_execution_tracks_capital(self):
+        """Full execution should increment both capital_active and capital_deployed_lifetime."""
         sniper = make_sniper(max_capital=50000)
-        # Set up unique order IDs per call
         order_ids = iter(["ord-a", "ord-b", "ord-c"])
         sniper._gateway.create_order = AsyncMock(
             side_effect=lambda **kw: MockOrderResponse(order_id=next(order_ids))
@@ -219,8 +262,8 @@ class TestCapitalAccounting:
 
         assert action is not None
         assert action.legs_filled == 3
-        # 3 legs × 10 contracts × (40+30+20) per leg
-        assert sniper.state.capital_in_flight == 400 + 300 + 200  # 900c
+        # 3 legs × 10 contracts × (40+30+20) = 900c
+        assert sniper.state.capital_active == 900
         assert sniper.state.capital_deployed_lifetime == 900
 
 
@@ -358,25 +401,29 @@ class TestConfigTTL:
 # ---------------------------------------------------------------------------
 
 class TestCapitalGateCostEstimate:
-    def test_cost_estimate_uses_actual_contracts(self):
-        sniper = make_sniper(max_capital=500, max_position=10)
-        # 3 legs × 10 contracts × (40+30+20) = 900c > max 500c
+    @pytest.mark.asyncio
+    async def test_insufficient_balance_for_estimated_cost(self):
+        sniper = make_sniper(max_capital=50000, max_position=10)
+        # 3 legs × 10 contracts × (40+30+20) = 900c. Balance only 500c.
+        sniper._gateway.get_balance = AsyncMock(return_value=MockBalance(balance=500, portfolio_value=0))
         opp = MockArbOpportunity()
-        rejection = sniper._check_risk_gates(opp)
+        rejection = await sniper._check_risk_gates(opp)
         assert rejection is not None
-        assert "capital_limit" in rejection
+        assert "insufficient_balance" in rejection
 
-    def test_cost_estimate_with_size_limited_legs(self):
-        sniper = make_sniper(max_capital=200, max_position=25)
-        # size_available=2 limits contracts. Cost = 3 legs × 2 contracts × ~30 avg = ~180
+    @pytest.mark.asyncio
+    async def test_cost_estimate_with_size_limited_legs(self):
+        sniper = make_sniper(max_capital=50000, max_position=25)
+        # size_available=2 limits contracts. Cost = 2 × (30+30+30) = 180c
+        sniper._gateway.get_balance = AsyncMock(return_value=MockBalance(balance=200, portfolio_value=0))
         opp = MockArbOpportunity()
         opp.legs = [
             MockLeg(ticker="A", price_cents=30, size_available=2),
             MockLeg(ticker="B", price_cents=30, size_available=2),
             MockLeg(ticker="C", price_cents=30, size_available=2),
         ]
-        # 2 contracts × (30+30+30) = 180c < 200c max
-        rejection = sniper._check_risk_gates(opp)
+        # 180c < 200c balance, should pass
+        rejection = await sniper._check_risk_gates(opp)
         assert rejection is None
 
 
@@ -421,61 +468,6 @@ class TestConfigUnknownFields:
         changed, unknown = config.update(cooldown=15.0)
         assert "cooldown" in changed
         assert unknown == []
-
-
-# ---------------------------------------------------------------------------
-# Issue #10: Stale order cleanup
-# ---------------------------------------------------------------------------
-
-class TestStaleOrderCleanup:
-    def test_cleanup_removes_expired_orders(self):
-        sniper = make_sniper(order_ttl=30)
-        # Fake an old order (placed 60 seconds ago)
-        sniper._order_capital["old-order"] = (500, time.time() - 60)
-        sniper.state.capital_in_flight = 500
-        sniper.state.active_order_ids.add("old-order")
-
-        cleaned = sniper._cleanup_stale_orders()
-        assert cleaned == 1
-        assert sniper.state.capital_in_flight == 0
-        assert "old-order" not in sniper.state.active_order_ids
-
-    def test_cleanup_keeps_fresh_orders(self):
-        sniper = make_sniper(order_ttl=30)
-        sniper._order_capital["fresh-order"] = (500, time.time())
-        sniper.state.capital_in_flight = 500
-        sniper.state.active_order_ids.add("fresh-order")
-
-        cleaned = sniper._cleanup_stale_orders()
-        assert cleaned == 0
-        assert sniper.state.capital_in_flight == 500
-
-    @pytest.mark.asyncio
-    async def test_cleanup_runs_before_opportunity_check(self):
-        """Ensure stale cleanup runs before capital gate check."""
-        sniper = make_sniper(max_capital=500, order_ttl=5)
-        # Fill capital with an old order
-        sniper._order_capital["old"] = (500, time.time() - 20)
-        sniper.state.capital_in_flight = 500
-        sniper.state.active_order_ids.add("old")
-
-        # New opportunity should pass because cleanup frees capital
-        order_ids = iter(["a", "b", "c"])
-        sniper._gateway.create_order = AsyncMock(
-            side_effect=lambda **kw: MockOrderResponse(order_id=next(order_ids))
-        )
-
-        opp = MockArbOpportunity()
-        # Adjust to a small opportunity that fits in 500c
-        opp.legs = [
-            MockLeg(ticker="A", price_cents=50, size_available=1),
-            MockLeg(ticker="B", price_cents=50, size_available=1),
-            MockLeg(ticker="C", price_cents=50, size_available=1),
-        ]
-        action = await sniper.on_arb_opportunity(opp)
-        # Should succeed since stale order was cleaned first
-        assert action is not None
-        assert action.legs_filled == 3
 
 
 # ---------------------------------------------------------------------------
@@ -546,31 +538,25 @@ class TestConcurrencyDocs:
 
 class TestKillPositions:
     @pytest.mark.asyncio
-    async def test_kill_releases_capital(self):
+    async def test_kill_cancels_active_orders(self):
         sniper = make_sniper()
-        # Simulate 2 active orders with capital
-        sniper._track_order_capital("kill-1", 200)
-        sniper._track_order_capital("kill-2", 300)
         sniper.state.active_order_ids.update(["kill-1", "kill-2"])
 
         result = await sniper.kill_positions(reason="test")
 
         assert result["cancelled"] == 2
-        assert sniper.state.capital_in_flight == 0
         assert len(sniper.state.active_order_ids) == 0
 
     @pytest.mark.asyncio
-    async def test_kill_with_errors_still_releases(self):
+    async def test_kill_with_errors_still_clears_order_ids(self):
         sniper = make_sniper()
-        sniper._track_order_capital("err-1", 200)
         sniper.state.active_order_ids.add("err-1")
         sniper._gateway.cancel_order = AsyncMock(side_effect=Exception("not found"))
 
         result = await sniper.kill_positions(reason="test")
 
         assert len(result["errors"]) == 1
-        # Capital still released even on error
-        assert sniper.state.capital_in_flight == 0
+        assert len(sniper.state.active_order_ids) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -578,16 +564,17 @@ class TestKillPositions:
 # ---------------------------------------------------------------------------
 
 class TestSniperStateDict:
-    def test_to_dict_has_capital_fields(self):
+    def test_to_dict_has_balance_fields(self):
         state = SniperState()
-        state.capital_in_flight = 100
-        state.capital_in_positions = 200
+        state.capital_active = 300
         state.capital_deployed_lifetime = 500
+        state.last_balance_cents = 90_000
+        state.last_portfolio_value_cents = 1200
         d = state.to_dict()
-        assert d["capital_in_flight"] == 100
-        assert d["capital_in_positions"] == 200
-        assert d["capital_deployed_lifetime"] == 500
         assert d["capital_active"] == 300
+        assert d["capital_deployed_lifetime"] == 500
+        assert d["last_balance_cents"] == 90_000
+        assert d["last_portfolio_value_cents"] == 1200
         assert d["total_partial_unwinds"] == 0
 
 
@@ -601,3 +588,49 @@ class TestSniperConfigDict:
         d = config.to_dict()
         assert d["order_ttl"] == 45
         assert d["leg_timeout"] == 3.0
+
+
+# ---------------------------------------------------------------------------
+# kill_positions capital reset (Gap 2)
+# ---------------------------------------------------------------------------
+
+
+class TestKillPositionsCapitalReset:
+    @pytest.mark.asyncio
+    async def test_kill_positions_resets_capital_active(self):
+        """kill_positions() should reset capital_active to 0."""
+        gateway = MagicMock()
+        gateway.cancel_order = AsyncMock(return_value={})
+        index = MagicMock()
+        event_bus = MagicMock()
+        session = MockTradingSession()
+        config = SniperConfig(enabled=True)
+
+        sniper = Sniper(gateway=gateway, index=index, event_bus=event_bus,
+                        session=session, config=config)
+        sniper.state.capital_active = 5000
+        sniper.state.active_order_ids = {"ord-1", "ord-2"}
+
+        result = await sniper.kill_positions(reason="test")
+        assert sniper.state.capital_active == 0
+        assert result["cancelled"] == 2
+
+    @pytest.mark.asyncio
+    async def test_kill_positions_resets_capital_even_on_errors(self):
+        """capital_active resets to 0 even if cancels fail."""
+        gateway = MagicMock()
+        gateway.cancel_order = AsyncMock(side_effect=Exception("API error"))
+        index = MagicMock()
+        event_bus = MagicMock()
+        session = MockTradingSession()
+        config = SniperConfig(enabled=True)
+
+        sniper = Sniper(gateway=gateway, index=index, event_bus=event_bus,
+                        session=session, config=config)
+        sniper.state.capital_active = 3000
+        sniper.state.active_order_ids = {"ord-1"}
+
+        result = await sniper.kill_positions(reason="test")
+        assert sniper.state.capital_active == 0
+        assert result["cancelled"] == 0
+        assert len(result["errors"]) == 1

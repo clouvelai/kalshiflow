@@ -38,10 +38,10 @@ curl -s http://localhost:8005/v3/status | python -m json.tool
 ### Step 4: Start V3 trader if not running
 ```bash
 # Default: paper trading with discovery mode (10 markets)
-./scripts/run-v3.sh
+./scripts/run-captain.sh
 
 # Or with specific arguments: [environment] [mode] [market_limit]
-./scripts/run-v3.sh paper discovery 10
+./scripts/run-captain.sh paper discovery 10
 ```
 
 ## V3 Architecture Knowledge
@@ -124,7 +124,7 @@ STARTUP → INITIALIZING → ORDERBOOK_CONNECT → [TRADING_CLIENT_CONNECT → K
 The V3 trader typically runs in **discovery mode** which auto-discovers active markets:
 
 ```bash
-# Controlled by run-v3.sh script - sets these automatically:
+# Controlled by run-captain.sh script - sets these automatically:
 ENVIRONMENT=paper           # or "production"
 RL_MODE=discovery           # Uses auto-discovery (default)
 RL_ORDERBOOK_MARKET_LIMIT=10  # Max markets to subscribe
