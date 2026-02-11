@@ -685,3 +685,64 @@ class TestBuildDeepScanContext:
         portfolio = PortfolioState(balance_cents=50000, balance_dollars=500.0)
         result = builder.build_deep_scan_context(market_state, portfolio, market_movers=None)
         assert "NEWS_IMPACT" not in result
+
+
+# ===========================================================================
+# TestSubaccountBalanceDiagnostics
+# ===========================================================================
+
+class TestSubaccountBalanceDiagnostics:
+    """Verify subaccount-aware balance messages in prompt output."""
+
+    def _make_builder(self, subaccount: int = 0):
+        event = make_event_meta("EVT-1", n_markets=2)
+        index = make_index(events=[event])
+        return ContextBuilder(index=index, subaccount=subaccount)
+
+    def _item(self):
+        from kalshiflow_rl.traderv3.single_arb.models import AttentionItem
+        return AttentionItem(event_ticker="EVT-1", summary="test")
+
+    def test_subaccount_zero_balance_warns(self):
+        builder = self._make_builder(subaccount=1)
+        portfolio = PortfolioState(balance_cents=0, balance_dollars=0.0)
+        result = builder.build_reactive_context(
+            [self._item()], portfolio
+        )
+        assert "subaccount #1" in result
+        assert "zero balance" in result
+        assert "transfer funds" in result
+
+    def test_subaccount_unavailable_balance_shows_error(self):
+        builder = self._make_builder(subaccount=2)
+        portfolio = PortfolioState(balance_cents=0, balance_dollars=None)
+        result = builder.build_strategic_context(portfolio, [])
+        assert "subaccount #2" in result
+        assert "balance fetch failed" in result
+
+    def test_primary_account_unavailable_shows_generic(self):
+        builder = self._make_builder(subaccount=0)
+        portfolio = PortfolioState(balance_cents=0, balance_dollars=None)
+        result = builder.build_strategic_context(portfolio, [])
+        assert "$unavailable" in result
+        assert "subaccount" not in result
+
+    def test_subaccount_normal_balance_no_warning(self):
+        builder = self._make_builder(subaccount=1)
+        portfolio = PortfolioState(balance_cents=50000, balance_dollars=500.0)
+        result = builder.build_reactive_context(
+            [self._item()], portfolio
+        )
+        assert "$500.00" in result
+        assert "WARNING" not in result
+        assert "ERROR" not in result
+
+    def test_primary_account_zero_balance_no_warning(self):
+        """$0 on primary account is not flagged (could be legitimate)."""
+        builder = self._make_builder(subaccount=0)
+        portfolio = PortfolioState(balance_cents=0, balance_dollars=0.0)
+        result = builder.build_reactive_context(
+            [self._item()], portfolio
+        )
+        assert "$0.00" in result
+        assert "WARNING" not in result

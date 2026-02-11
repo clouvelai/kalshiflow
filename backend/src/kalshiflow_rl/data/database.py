@@ -78,12 +78,23 @@ class RLDatabase:
                 logger.error(f"Failed to initialize RL database: {e}")
                 raise
     
+    async def get_pool(self):
+        """Get the raw asyncpg connection pool.
+
+        Callers use pool.acquire() directly for cases where a context manager
+        is not appropriate (e.g., passing to fire-and-forget background tasks).
+        Initializes the pool lazily if not yet created.
+        """
+        if not self._pool:
+            await self.initialize()
+        return self._pool
+
     @asynccontextmanager
     async def get_connection(self):
         """Get database connection from pool."""
         if not self._pool:
             await self.initialize()
-        
+
         async with self._pool.acquire() as conn:
             yield conn
     

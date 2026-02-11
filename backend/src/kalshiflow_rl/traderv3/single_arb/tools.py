@@ -753,7 +753,7 @@ async def store_insight(
 
     Args:
         content: The insight to store (e.g., "IF VPIN > 0.85 THEN reduce position size")
-        memory_type: Category: learning, observation, rule, mistake (default "learning")
+        memory_type: Category: learning, observation, pattern, mistake (default "learning")
 
     Returns:
         Confirmation dict

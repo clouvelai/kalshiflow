@@ -296,7 +296,7 @@ class SingleArbCoordinator:
                 from .captain import ArbCaptain
                 from .context_builder import ContextBuilder
 
-                ctx_builder = ContextBuilder(index=self._index)
+                ctx_builder = ContextBuilder(index=self._index, subaccount=self._config.subaccount)
                 self._captain = ArbCaptain(
                     context_builder=ctx_builder,
                     attention_router=self._attention_router,
@@ -1338,7 +1338,7 @@ class SingleArbCoordinator:
         session_memory = SessionMemoryStore(vector_store=vector_store)
 
         # Build context builder
-        ctx_builder = ContextBuilder(index=self._index)
+        ctx_builder = ContextBuilder(index=self._index, subaccount=self._config.subaccount)
 
         # Get sniper config if available
         sniper_config = self._sniper.config if self._sniper else None
