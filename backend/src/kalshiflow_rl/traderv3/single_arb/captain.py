@@ -145,7 +145,7 @@ class ArbCaptain:
         self._task: Optional[asyncio.Task] = None
         self._cycle_count = 0
         self._last_cycle_at: Optional[float] = None
-        self._errors: List[str] = []
+        self._errors: List[str] = []  # Capped at 50 entries
         self._task_ledger = TaskLedger(session_id=str(uuid.uuid4()))
 
         # Mode counters for stats
@@ -189,6 +189,12 @@ class ArbCaptain:
     @property
     def is_paused(self) -> bool:
         return self._paused
+
+    def _record_error(self, error: str) -> None:
+        """Append an error and cap the list at 50 entries."""
+        self._errors.append(error)
+        if len(self._errors) > 50:
+            self._errors = self._errors[-50:]
 
     async def _run_loop(self) -> None:
         """Event-driven main loop with three invocation modes.
@@ -294,9 +300,7 @@ class ArbCaptain:
                 break
             except Exception as e:
                 logger.error(f"[CAPTAIN:ERROR] cycle={self._cycle_count + 1} error={e}\n{traceback.format_exc()}")
-                self._errors.append(str(e))
-                if len(self._errors) > 50:
-                    self._errors = self._errors[-50:]
+                self._record_error(str(e))
                 await asyncio.sleep(30.0)
 
     async def _run_loop_legacy(self) -> None:
@@ -317,9 +321,7 @@ class ArbCaptain:
                 break
             except Exception as e:
                 logger.error(f"[CAPTAIN:ERROR] cycle={self._cycle_count + 1} error={e}\n{traceback.format_exc()}")
-                self._errors.append(str(e))
-                if len(self._errors) > 50:
-                    self._errors = self._errors[-50:]
+                self._record_error(str(e))
                 await asyncio.sleep(30.0)
 
     async def _run_with_timeout(self, coro, mode: str) -> None:
@@ -331,9 +333,7 @@ class ArbCaptain:
             cycle_num = self._cycle_count + 1
             logger.warning(f"[CAPTAIN:TIMEOUT] cycle={cycle_num} mode={mode} exceeded {cycle_timeout:.0f}s")
             logger.info(f"[CAPTAIN:CYCLE_END] cycle={cycle_num} mode={mode} status=timeout duration={cycle_timeout:.0f}s")
-            self._errors.append(f"timeout_{mode}_{cycle_num}")
-            if len(self._errors) > 50:
-                self._errors = self._errors[-50:]
+            self._record_error(f"timeout_{mode}_{cycle_num}")
 
     async def _wait_for_trigger(
         self, last_strategic: float, last_deep_scan: float,
@@ -415,6 +415,13 @@ class ArbCaptain:
 
         return cycle_num
 
+    def _build_task_section(self) -> str:
+        """Build task ledger section with replan hint if needed."""
+        section = self._task_ledger.to_prompt_section() or ""
+        if self._task_ledger.needs_replan():
+            section += "\nREPLAN: Multiple stale tasks. Re-evaluate your plan."
+        return section
+
     async def _cycle_postamble(self, mode: str, cycle_num: int, cycle_start: float,
                                 portfolio: PortfolioState) -> None:
         """Shared post-cycle logging."""
@@ -445,6 +452,30 @@ class ArbCaptain:
             return await self._ctx.build_portfolio_state(gateway)
         return PortfolioState()
 
+    async def _invoke_agent(self, mode: str, cycle_num: int, prompt: str, trigger_items: int = 0) -> None:
+        """Shared pattern: emit cycle_start, run agent, emit completion events."""
+        await self._emit_event({
+            "type": "captain_cycle_start",
+            "data": {"mode": mode, "cycle_num": cycle_num, "trigger_items": trigger_items},
+        })
+        await self._emit_event({
+            "type": "agent_message",
+            "subtype": "subagent_start",
+            "agent": "single_arb_captain",
+            "mode": mode,
+            "prompt": prompt[:200],
+        })
+
+        result = await self._run_agent(prompt)
+
+        await self._emit_event({
+            "type": "agent_message",
+            "subtype": "subagent_complete",
+            "agent": "single_arb_captain",
+            "mode": mode,
+            "response_preview": str(result)[:500] if result else "",
+        })
+
     # ------------------------------------------------------------------
     # Mode 1: REACTIVE — attention-driven, compact prompt
     # ------------------------------------------------------------------
@@ -468,33 +499,7 @@ class ArbCaptain:
             f"items={len(items)} urgencies={[i.urgency for i in items]}"
         )
 
-        await self._emit_event({
-            "type": "captain_cycle_start",
-            "data": {
-                "mode": "reactive",
-                "cycle_num": cycle_num,
-                "trigger_items": len(items),
-            },
-        })
-
-        await self._emit_event({
-            "type": "agent_message",
-            "subtype": "subagent_start",
-            "agent": "single_arb_captain",
-            "mode": "reactive",
-            "prompt": prompt[:200],
-        })
-
-        result = await self._run_agent(prompt)
-
-        await self._emit_event({
-            "type": "agent_message",
-            "subtype": "subagent_complete",
-            "agent": "single_arb_captain",
-            "mode": "reactive",
-            "response_preview": str(result)[:500] if result else "",
-        })
-
+        await self._invoke_agent("reactive", cycle_num, prompt, trigger_items=len(items))
         await self._cycle_postamble("reactive", cycle_num, cycle_start, portfolio)
 
     # ------------------------------------------------------------------
@@ -515,12 +520,7 @@ class ArbCaptain:
         if self._attention_router:
             pending = self._attention_router.pending_items()
 
-        # Task ledger
-        task_section = self._task_ledger.to_prompt_section()
-        if self._task_ledger.needs_replan():
-            task_section = (task_section or "") + "\nREPLAN: Multiple stale tasks. Re-evaluate your plan."
-
-        body = self._ctx.build_strategic_context(portfolio, pending, sniper_status, task_section or "")
+        body = self._ctx.build_strategic_context(portfolio, pending, sniper_status, self._build_task_section())
         prompt = f"Cycle #{cycle_num} STRATEGIC.\n{body}"
 
         logger.info(
@@ -528,33 +528,7 @@ class ArbCaptain:
             f"positions={portfolio.total_positions} pending_attention={len(pending)}"
         )
 
-        await self._emit_event({
-            "type": "captain_cycle_start",
-            "data": {
-                "mode": "strategic",
-                "cycle_num": cycle_num,
-                "trigger_items": len(pending),
-            },
-        })
-
-        await self._emit_event({
-            "type": "agent_message",
-            "subtype": "subagent_start",
-            "agent": "single_arb_captain",
-            "mode": "strategic",
-            "prompt": prompt[:200],
-        })
-
-        result = await self._run_agent(prompt)
-
-        await self._emit_event({
-            "type": "agent_message",
-            "subtype": "subagent_complete",
-            "agent": "single_arb_captain",
-            "mode": "strategic",
-            "response_preview": str(result)[:500] if result else "",
-        })
-
+        await self._invoke_agent("strategic", cycle_num, prompt, trigger_items=len(pending))
         await self._cycle_postamble("strategic", cycle_num, cycle_start, portfolio)
 
     # ------------------------------------------------------------------
@@ -638,15 +612,10 @@ class ArbCaptain:
         except Exception:
             pass  # DB not available or table empty — non-critical
 
-        # Task ledger
-        task_section = self._task_ledger.to_prompt_section()
-        if self._task_ledger.needs_replan():
-            task_section = (task_section or "") + "\nREPLAN: Multiple stale tasks. Re-evaluate your plan."
-
         body = self._ctx.build_deep_scan_context(
             market_state, portfolio, sniper_status, health,
             trade_memories=trade_memories, news_memories=news_memories,
-            task_section=task_section or "", market_movers=market_movers,
+            task_section=self._build_task_section(), market_movers=market_movers,
         )
         prompt = f"Cycle #{cycle_num} DEEP_SCAN.\n{body}"
 
@@ -655,33 +624,7 @@ class ArbCaptain:
             f"events={len(market_state.events)} positions={portfolio.total_positions}"
         )
 
-        await self._emit_event({
-            "type": "captain_cycle_start",
-            "data": {
-                "mode": "deep_scan",
-                "cycle_num": cycle_num,
-                "trigger_items": 0,
-            },
-        })
-
-        await self._emit_event({
-            "type": "agent_message",
-            "subtype": "subagent_start",
-            "agent": "single_arb_captain",
-            "mode": "deep_scan",
-            "prompt": prompt[:200],
-        })
-
-        result = await self._run_agent(prompt)
-
-        await self._emit_event({
-            "type": "agent_message",
-            "subtype": "subagent_complete",
-            "agent": "single_arb_captain",
-            "mode": "deep_scan",
-            "response_preview": str(result)[:500] if result else "",
-        })
-
+        await self._invoke_agent("deep_scan", cycle_num, prompt)
         await self._cycle_postamble("deep_scan", cycle_num, cycle_start, portfolio)
 
     async def _run_agent(self, prompt: str) -> Optional[str]:
@@ -735,9 +678,6 @@ class ArbCaptain:
                     tool_input = event.get("data", {}).get("input", "")
                     category = TOOL_CATEGORIES.get(tool_name, "system")
 
-                    if tool_name == "execute":
-                        continue
-
                     # Track tool calls per cycle
                     self._current_cycle_tools[tool_name] = self._current_cycle_tools.get(tool_name, 0) + 1
 
@@ -769,7 +709,7 @@ class ArbCaptain:
                     tool_output = event.get("data", {}).get("output", "")
                     category = TOOL_CATEGORIES.get(tool_name, "system")
 
-                    if tool_name in ("execute", "write_todos"):
+                    if tool_name == "write_todos":
                         continue
 
                     await self._emit_event({

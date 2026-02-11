@@ -1042,35 +1042,6 @@ class EventMeta:
         if self.causal_model:
             result["causal_model"] = self.causal_model
 
-        # Add mentions info if available (for Captain visibility + frontend)
-        if self.mentions_data:
-            lexeme_pack = self.mentions_data.get("lexeme_pack", {})
-            result["mentions_speaker"] = lexeme_pack.get("speaker")
-            result["mentions_entity"] = lexeme_pack.get("entity")
-            result["mentions_current_count"] = self.mentions_data.get("current_count", 0)
-            result["mentions_evidence_count"] = len(self.mentions_data.get("evidence", []))
-
-            # Multi-term data (from Phase 1 fix)
-            all_terms = self.mentions_data.get("all_terms", [])
-            result["mentions_all_terms"] = all_terms
-            result["mentions_term_count"] = len(all_terms)
-
-            # Per-term market prices from live orderbook
-            term_to_ticker = self.mentions_data.get("term_to_ticker", {})
-            term_prices = {}
-            for entity, ticker in term_to_ticker.items():
-                market = self.markets.get(ticker)
-                if market:
-                    term_prices[entity] = {
-                        "ticker": ticker,
-                        "yes_bid": market.yes_bid,
-                        "yes_ask": market.yes_ask,
-                        "yes_mid": market.yes_mid,
-                        "spread": market.spread,
-                        "volume_24h": market.volume_24h,
-                    }
-            result["mentions_term_prices"] = term_prices
-
         return result
 
 

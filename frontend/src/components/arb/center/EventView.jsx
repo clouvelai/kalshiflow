@@ -5,7 +5,6 @@ import OverviewTab from './tabs/OverviewTab';
 import MarketsTab from './tabs/MarketsTab';
 import BookTradesTab from './tabs/BookTradesTab';
 import HeatmapTab from './tabs/HeatmapTab';
-import MentionsTab from './tabs/MentionsTab';
 
 const EventView = memo(({ event, eventTrades, arbTrades, positionsByTicker, onClose }) => {
   const [activeTab, setActiveTab] = useState('markets');
@@ -22,9 +21,6 @@ const EventView = memo(({ event, eventTrades, arbTrades, positionsByTicker, onCl
       { id: 'book', label: 'Book & Trades' },
       { id: 'heatmap', label: 'Heatmap' },
     ];
-    if (event?.mentions_term_count > 0 || event?.mentions_all_terms?.length > 0) {
-      base.splice(1, 0, { id: 'mentions', label: `Mentions (${event.mentions_term_count || event.mentions_all_terms?.length || ''})` });
-    }
     return base;
   }, [event]);
 
@@ -112,7 +108,6 @@ const EventView = memo(({ event, eventTrades, arbTrades, positionsByTicker, onCl
             transition={{ duration: 0.1 }}
           >
             {activeTab === 'overview' && <OverviewTab event={event} />}
-            {activeTab === 'mentions' && <MentionsTab event={event} />}
             {activeTab === 'markets' && (
               <MarketsTab
                 event={event}

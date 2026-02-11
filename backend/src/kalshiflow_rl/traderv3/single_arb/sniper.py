@@ -366,12 +366,12 @@ class Sniper:
         if opportunity.edge_after_fees < self.config.arb_min_edge:
             return f"edge={opportunity.edge_after_fees:.1f}c < min={self.config.arb_min_edge}c", 0
 
-        # 3. Per-event cooldown
+        # 3. Per-event cooldown (skip check on first trade for this event)
         et = opportunity.event_ticker
-        last_trade = self.state._event_last_trade.get(et, 0)
-        elapsed = time.time() - last_trade
-        if elapsed < self.config.cooldown:
-            return f"cooldown ({elapsed:.0f}s < {self.config.cooldown}s)", 0
+        if et in self.state._event_last_trade:
+            elapsed = time.time() - self.state._event_last_trade[et]
+            if elapsed < self.config.cooldown:
+                return f"cooldown ({elapsed:.0f}s < {self.config.cooldown}s)", 0
 
         # 4. Balance + capital scaling (scale down instead of all-or-nothing reject)
         liquidity_contracts = self.config.max_position

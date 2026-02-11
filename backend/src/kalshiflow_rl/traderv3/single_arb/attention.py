@@ -403,8 +403,6 @@ class AttentionRouter:
             category = "regime_change"
         elif edge_delta > 2.0:
             category = "edge_emergence"
-        elif best_edge >= EDGE_MIN_CENTS:
-            category = "arb_opportunity"
         else:
             category = "arb_opportunity"
 

@@ -364,41 +364,17 @@ class SingleArbCoordinator:
         """Stop the single-arb system."""
         self._running = False
 
-        # Stop order tracker
-        if self._order_tracker_task:
-            self._order_tracker_task.cancel()
-            try:
-                await self._order_tracker_task
-            except asyncio.CancelledError:
-                pass
-            self._order_tracker_task = None
-
-        # Stop exchange monitor
-        if self._exchange_monitor_task:
-            self._exchange_monitor_task.cancel()
-            try:
-                await self._exchange_monitor_task
-            except asyncio.CancelledError:
-                pass
-            self._exchange_monitor_task = None
-
-        # Stop news impact tracker
-        if self._news_impact_task:
-            self._news_impact_task.cancel()
-            try:
-                await self._news_impact_task
-            except asyncio.CancelledError:
-                pass
-            self._news_impact_task = None
-
-        # Stop deferred init task
-        if self._deferred_init_task:
-            self._deferred_init_task.cancel()
-            try:
-                await self._deferred_init_task
-            except asyncio.CancelledError:
-                pass
-            self._deferred_init_task = None
+        # Cancel all background tasks
+        for attr in ("_order_tracker_task", "_exchange_monitor_task",
+                      "_news_impact_task", "_deferred_init_task"):
+            task = getattr(self, attr, None)
+            if task:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+                setattr(self, attr, None)
 
         # Flush pending memory writes before stopping components
         try:
@@ -1074,30 +1050,19 @@ class SingleArbCoordinator:
 
                     # Fill windows as time passes
                     updates = {}
-
-                    if existing["price_after_1h"] is None and age_hours >= 1.0:
-                        snap_now = self._get_market_snapshot(market_ticker)
-                        if snap_now:
-                            mid_now = snap_now.get("yes_mid")
-                            change = round(mid_now - original_mid, 2) if mid_now is not None else None
-                            updates["price_after_1h"] = json.dumps(snap_now)
-                            updates["change_1h_cents"] = change
-
-                    if existing["price_after_4h"] is None and age_hours >= 4.0:
-                        snap_now = self._get_market_snapshot(market_ticker)
-                        if snap_now:
-                            mid_now = snap_now.get("yes_mid")
-                            change = round(mid_now - original_mid, 2) if mid_now is not None else None
-                            updates["price_after_4h"] = json.dumps(snap_now)
-                            updates["change_4h_cents"] = change
-
-                    if existing["price_after_24h"] is None and age_hours >= 24.0:
-                        snap_now = self._get_market_snapshot(market_ticker)
-                        if snap_now:
-                            mid_now = snap_now.get("yes_mid")
-                            change = round(mid_now - original_mid, 2) if mid_now is not None else None
-                            updates["price_after_24h"] = json.dumps(snap_now)
-                            updates["change_24h_cents"] = change
+                    windows = [
+                        (1.0, "price_after_1h", "change_1h_cents"),
+                        (4.0, "price_after_4h", "change_4h_cents"),
+                        (24.0, "price_after_24h", "change_24h_cents"),
+                    ]
+                    for min_hours, price_col, change_col in windows:
+                        if existing[price_col] is None and age_hours >= min_hours:
+                            snap_now = self._get_market_snapshot(market_ticker)
+                            if snap_now:
+                                mid_now = snap_now.get("yes_mid")
+                                change = round(mid_now - original_mid, 2) if mid_now is not None else None
+                                updates[price_col] = json.dumps(snap_now)
+                                updates[change_col] = change
 
                     if not updates:
                         continue

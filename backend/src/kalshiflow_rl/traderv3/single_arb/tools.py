@@ -139,6 +139,26 @@ def cleanup_terminal_orders(max_age_seconds: float = 86400) -> int:
     return len(stale_ids)
 
 
+async def _fetch_balance_with_budget_check(label: str) -> tuple:
+    """Fetch balance and warn if cycle capital spend exceeds 30%.
+
+    Returns (balance_cents, balance_dollars) or (None, None) on failure.
+    """
+    try:
+        bal = await _ctx.gateway.get_balance()
+        balance_cents = bal.balance
+        balance_dollars = round(balance_cents / 100, 2)
+        if balance_cents and _ctx.cycle_capital_spent_cents > balance_cents * 0.3:
+            logger.warning(
+                f"[TOOLS:BUDGET] Cycle capital spend {_ctx.cycle_capital_spent_cents}c "
+                f"exceeds 30% of balance {balance_cents}c"
+            )
+        return balance_cents, balance_dollars
+    except Exception as e:
+        logger.warning(f"[TOOLS:{label}] Balance fetch failed: {e}")
+        return None, None
+
+
 # --- Tool 1: get_market_state ---
 
 @tool
@@ -284,21 +304,7 @@ async def place_order(
         # Track cycle capital spend
         _ctx.cycle_capital_spent_cents += contracts * price_cents
 
-        # Fetch new balance (warn on failure instead of silent pass)
-        new_balance_cents = None
-        new_balance_dollars = None
-        try:
-            bal = await gw.get_balance()
-            new_balance_cents = bal.balance
-            new_balance_dollars = round(new_balance_cents / 100, 2)
-            # Warn if cycle spend exceeds 30% of balance
-            if new_balance_cents and _ctx.cycle_capital_spent_cents > new_balance_cents * 0.3:
-                logger.warning(
-                    f"[TOOLS:BUDGET] Cycle capital spend {_ctx.cycle_capital_spent_cents}c "
-                    f"exceeds 30% of balance {new_balance_cents}c"
-                )
-        except Exception as bal_err:
-            logger.warning(f"[TOOLS:TRADE] Balance fetch failed after order: {bal_err}")
+        new_balance_cents, new_balance_dollars = await _fetch_balance_with_budget_check("TRADE")
 
         # Auto-record to memory (fire-and-forget)
         asyncio.create_task(_ctx.memory.store(
@@ -488,21 +494,7 @@ async def execute_arb(
     # Track cycle capital spend for arb legs
     _ctx.cycle_capital_spent_cents += exec_cost
 
-    # Get new balance (warn on failure instead of silent pass)
-    new_balance_cents = None
-    new_balance_dollars = None
-    try:
-        bal = await gw.get_balance()
-        new_balance_cents = bal.balance
-        new_balance_dollars = round(new_balance_cents / 100, 2)
-        # Warn if cycle spend exceeds 30% of balance
-        if new_balance_cents and _ctx.cycle_capital_spent_cents > new_balance_cents * 0.3:
-            logger.warning(
-                f"[TOOLS:BUDGET] Cycle capital spend {_ctx.cycle_capital_spent_cents}c "
-                f"exceeds 30% of balance {new_balance_cents}c"
-            )
-    except Exception as bal_err:
-        logger.warning(f"[TOOLS:ARB] Balance fetch failed after arb: {bal_err}")
+    new_balance_cents, new_balance_dollars = await _fetch_balance_with_budget_check("ARB")
 
     # Record + broadcast
     asyncio.create_task(_ctx.memory.store(

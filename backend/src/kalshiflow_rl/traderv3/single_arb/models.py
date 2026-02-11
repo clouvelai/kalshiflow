@@ -85,7 +85,7 @@ class Position(BaseModel):
 class PortfolioState(BaseModel):
     """Balance + positions. Single API call to construct."""
     balance_cents: int = 0
-    balance_dollars: float = 0.0
+    balance_dollars: Optional[float] = 0.0
     positions: List[Position] = Field(default_factory=list)
     total_positions: int = 0
     total_unrealized_pnl_cents: int = 0

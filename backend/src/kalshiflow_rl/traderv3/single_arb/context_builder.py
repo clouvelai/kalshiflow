@@ -29,6 +29,13 @@ if TYPE_CHECKING:
 logger = logging.getLogger("kalshiflow_rl.traderv3.single_arb.context_builder")
 
 
+def _fmt_balance(portfolio: "PortfolioState") -> str:
+    """Format balance for prompt, showing 'unavailable' if API call failed."""
+    if portfolio.balance_dollars is None:
+        return "$unavailable"
+    return f"${portfolio.balance_dollars:,.2f}"
+
+
 def _market_snapshot(m: "MarketMeta") -> MarketSnapshot:
     """Build MarketSnapshot from a live MarketMeta. Pure Python, no I/O."""
     return MarketSnapshot(
@@ -190,7 +197,7 @@ class ContextBuilder:
             balance_cents = balance_obj.balance
         except Exception as e:
             logger.warning(f"Balance fetch failed: {e}")
-            balance_cents = 0
+            balance_cents = None
 
         positions = []
         total_pnl = 0
@@ -234,8 +241,8 @@ class ContextBuilder:
             logger.warning(f"Position fetch failed: {e}")
 
         return PortfolioState(
-            balance_cents=balance_cents,
-            balance_dollars=round(balance_cents / 100, 2),
+            balance_cents=balance_cents or 0,
+            balance_dollars=round(balance_cents / 100, 2) if balance_cents is not None else None,
             positions=sorted(positions, key=lambda p: p.unrealized_pnl_cents, reverse=True),
             total_positions=len(positions),
             total_unrealized_pnl_cents=total_pnl,
@@ -297,7 +304,7 @@ class ContextBuilder:
         # Compact portfolio
         if portfolio.positions:
             parts.append(
-                f"PORTFOLIO: balance=${portfolio.balance_dollars:,.2f}, "
+                f"PORTFOLIO: balance={_fmt_balance(portfolio)}, "
                 f"{portfolio.total_positions} positions, "
                 f"pnl=${portfolio.total_unrealized_pnl_cents / 100:+.2f}"
             )
@@ -315,7 +322,7 @@ class ContextBuilder:
                         f"exit={p.exit_price} pnl={pnl_ct:+d}c/ct"
                     )
         else:
-            parts.append(f"PORTFOLIO: balance=${portfolio.balance_dollars:,.2f}, no positions")
+            parts.append(f"PORTFOLIO: balance={_fmt_balance(portfolio)}, no positions")
 
         # Sniper (one line)
         if sniper_status and sniper_status.enabled:
@@ -343,7 +350,7 @@ class ContextBuilder:
         # Portfolio summary
         if portfolio.positions:
             parts.append(
-                f"PORTFOLIO: balance=${portfolio.balance_dollars:,.2f}, "
+                f"PORTFOLIO: balance={_fmt_balance(portfolio)}, "
                 f"{portfolio.total_positions} pos, "
                 f"pnl=${portfolio.total_unrealized_pnl_cents / 100:+.2f}"
             )
@@ -354,7 +361,7 @@ class ContextBuilder:
                     f"exit={p.exit_price} pnl={pnl_ct:+d}c/ct"
                 )
         else:
-            parts.append(f"PORTFOLIO: balance=${portfolio.balance_dollars:,.2f}, no positions")
+            parts.append(f"PORTFOLIO: balance={_fmt_balance(portfolio)}, no positions")
 
         # Pending attention (sub-threshold items for awareness)
         if pending_items:
@@ -416,7 +423,7 @@ class ContextBuilder:
         # Full portfolio
         if portfolio.positions:
             parts.append(
-                f"PORTFOLIO: balance=${portfolio.balance_dollars:,.2f}, "
+                f"PORTFOLIO: balance={_fmt_balance(portfolio)}, "
                 f"{portfolio.total_positions} pos, "
                 f"pnl=${portfolio.total_unrealized_pnl_cents / 100:+.2f}, "
                 f"cost=${portfolio.total_cost_cents / 100:.2f}"
@@ -428,7 +435,7 @@ class ContextBuilder:
                     f"cost={p.cost_cents}c exit={p.exit_price} pnl={pnl_ct:+d}c/ct"
                 )
         else:
-            parts.append(f"PORTFOLIO: balance=${portfolio.balance_dollars:,.2f}, no positions")
+            parts.append(f"PORTFOLIO: balance={_fmt_balance(portfolio)}, no positions")
 
         # Sniper performance
         if sniper_status and sniper_status.enabled:

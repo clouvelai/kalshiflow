@@ -80,6 +80,7 @@ class AutoActionManager:
         # Cooldown tracking
         self._regime_gate_last: Dict[str, float] = {}  # event_ticker -> last gate time
         self._action_log: List[Dict] = []  # recent actions for stats
+        self._pending_resume_tasks: List[asyncio.Task] = []  # for cleanup on stop()
 
     async def on_attention_item(self, item: AttentionItem) -> None:
         """Called by AttentionRouter for each item before Captain sees it.
@@ -239,7 +240,9 @@ class AutoActionManager:
         # Actually pause the sniper and schedule resume after cooldown
         self._sniper.pause(f"toxic regime on {event_ticker}")
         self._regime_gate_last[event_ticker] = time.time()
-        asyncio.create_task(self._resume_sniper_after(event_ticker))
+        task = asyncio.create_task(self._resume_sniper_after(event_ticker))
+        self._pending_resume_tasks.append(task)
+        task.add_done_callback(lambda t: self._pending_resume_tasks.remove(t) if t in self._pending_resume_tasks else None)
 
         return AutoActionResult(
             acted=True,
@@ -324,6 +327,12 @@ class AutoActionManager:
         if action_name:
             return configs.get(action_name, {"error": f"Unknown: {action_name}"})
         return configs
+
+    def stop(self) -> None:
+        """Cancel pending resume tasks on shutdown."""
+        for task in self._pending_resume_tasks:
+            task.cancel()
+        self._pending_resume_tasks.clear()
 
     def get_stats(self) -> Dict[str, Any]:
         """Get auto-action stats."""
