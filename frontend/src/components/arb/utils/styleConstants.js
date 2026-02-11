@@ -69,8 +69,10 @@ export const PANEL_DIVIDER = 'border-r border-gray-800/40';
 // ─── Agent State Colors ─────────────────────────────────────────────────────
 
 export const AGENT_STATE_COLORS = {
-  idle: { bg: 'bg-gray-500', text: 'text-gray-400', label: 'Idle' },
-  thinking: { bg: 'bg-violet-500', text: 'text-violet-400', label: 'Thinking' },
-  acting: { bg: 'bg-cyan-500', text: 'text-cyan-400', label: 'Acting' },
-  complete: { bg: 'bg-emerald-500', text: 'text-emerald-400', label: 'Complete' },
+  observing: { bg: 'bg-gray-500', text: 'text-gray-400', label: 'Observing' },
+  reactive:  { bg: 'bg-amber-500', text: 'text-amber-400', label: 'Reactive' },
+  strategic: { bg: 'bg-violet-500', text: 'text-violet-400', label: 'Strategic' },
+  deep_scan: { bg: 'bg-blue-500', text: 'text-blue-400', label: 'Deep Scan' },
+  thinking:  { bg: 'bg-violet-500', text: 'text-violet-400', label: 'Thinking' },
+  acting:    { bg: 'bg-cyan-500', text: 'text-cyan-400', label: 'Acting' },
 };

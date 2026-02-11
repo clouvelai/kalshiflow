@@ -73,6 +73,10 @@ class TradingStateSyncer:
         self._sync_errors: int = 0
         self._last_error: Optional[str] = None
 
+        # Debounce for on-demand sync_now() calls
+        self._sync_now_event: asyncio.Event = asyncio.Event()
+        self._min_sync_gap: float = 2.0  # Minimum seconds between syncs
+
         # Configuration for TTL cleanup
         self._config: Optional[V3Config] = None
 
@@ -116,11 +120,31 @@ class TradingStateSyncer:
 
         logger.info(f"TradingStateSyncer stopped (syncs: {self._sync_count})")
 
+    async def sync_now(self) -> None:
+        """Trigger an out-of-band sync (debounced).
+
+        Safe to call from fill handlers — multiple rapid calls collapse
+        into a single sync after a short debounce gap.
+        """
+        self._sync_now_event.set()
+
     async def _sync_loop(self) -> None:
-        """Periodic sync every N seconds."""
+        """Periodic sync every N seconds, or on-demand via sync_now()."""
         while self._running:
             try:
-                await asyncio.sleep(self._sync_interval)
+                # Wait for either the interval OR an on-demand signal
+                try:
+                    await asyncio.wait_for(
+                        self._sync_now_event.wait(),
+                        timeout=self._sync_interval,
+                    )
+                    # On-demand signal received — debounce to coalesce rapid fills
+                    self._sync_now_event.clear()
+                    if self._last_sync_time and (time.time() - self._last_sync_time) < self._min_sync_gap:
+                        await asyncio.sleep(self._min_sync_gap)
+                except asyncio.TimeoutError:
+                    pass  # Normal periodic interval elapsed
+
                 await self._sync_trading_state()
             except asyncio.CancelledError:
                 break

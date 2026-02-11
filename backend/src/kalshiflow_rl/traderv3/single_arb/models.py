@@ -4,7 +4,8 @@ All tool returns and context injections use these models. No more ad-hoc dicts.
 Serialized to JSON for the LLM prompt via .model_dump_json().
 """
 
-from typing import Dict, List, Optional
+from dataclasses import dataclass, field as dc_field
+from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 
 
@@ -247,3 +248,86 @@ class AccountHealthStatus(BaseModel):
 
 # Rebuild forward refs for nested models
 EventSnapshot.model_rebuild()
+
+
+# --- Attention Router Models (dataclasses, not Pydantic - internal only) ---
+
+@dataclass
+class AttentionItem:
+    """A scored signal that may warrant Captain's attention.
+
+    Produced by AttentionRouter, consumed by Captain's reactive/strategic loops.
+    """
+    event_ticker: str
+    market_ticker: Optional[str] = None  # None = event-level signal
+    urgency: str = "normal"              # immediate, high, normal
+    category: str = "arb_opportunity"
+    summary: str = ""                    # human-readable, ~20 words
+    data: Dict[str, Any] = dc_field(default_factory=dict)
+    score: float = 0.0                   # composite 0-100
+    created_at: float = dc_field(default_factory=lambda: __import__("time").time())
+    ttl_seconds: float = 120.0           # auto-expire
+
+    @property
+    def is_expired(self) -> bool:
+        import time
+        return time.time() - self.created_at > self.ttl_seconds
+
+    @property
+    def key(self) -> str:
+        """Dedup key: (event_ticker, category)."""
+        return f"{self.event_ticker}:{self.category}"
+
+    def to_prompt(self) -> str:
+        """Compact string for injection into Captain prompt."""
+        urgency_tag = self.urgency.upper()
+        parts = [f"[{urgency_tag}]", self.event_ticker]
+        if self.market_ticker:
+            parts.append(self.market_ticker)
+        parts.append(self.summary)
+        if self.data.get("auto_handled"):
+            parts.append(f"(auto: {self.data['auto_handled']})")
+        return " ".join(parts)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "event_ticker": self.event_ticker,
+            "market_ticker": self.market_ticker,
+            "urgency": self.urgency,
+            "category": self.category,
+            "summary": self.summary,
+            "data": self.data,
+            "score": round(self.score, 1),
+            "created_at": self.created_at,
+            "ttl_seconds": self.ttl_seconds,
+        }
+
+
+# --- Context Mode Dataclasses ---
+
+@dataclass
+class ReactiveContext:
+    """Context for reactive Captain cycles (attention-driven)."""
+    cycle_num: int = 0
+    items: List[AttentionItem] = dc_field(default_factory=list)
+    portfolio: Optional[PortfolioState] = None
+    sniper: Optional[SniperStatus] = None
+
+@dataclass
+class StrategicContext:
+    """Context for strategic Captain cycles (every 5 min)."""
+    cycle_num: int = 0
+    portfolio: Optional[PortfolioState] = None
+    pending_items: List[AttentionItem] = dc_field(default_factory=list)
+    sniper: Optional[SniperStatus] = None
+    tasks: str = ""  # task ledger section
+
+@dataclass
+class DeepScanContext:
+    """Context for deep scan Captain cycles (every 30 min)."""
+    cycle_num: int = 0
+    market_state: Optional[MarketState] = None
+    portfolio: Optional[PortfolioState] = None
+    sniper: Optional[SniperStatus] = None
+    health: Optional[Dict] = None
+    memories: Optional[List[str]] = None

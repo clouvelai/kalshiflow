@@ -775,6 +775,10 @@ class V3Coordinator:
                 if removed:
                     await self._status_reporter.emit_trading_state()
 
+            # Trigger out-of-band balance refresh so P&L updates immediately
+            if self._trading_state_syncer:
+                asyncio.create_task(self._trading_state_syncer.sync_now())
+
         except Exception as e:
             logger.error(f"Error handling order fill event: {e}")
 

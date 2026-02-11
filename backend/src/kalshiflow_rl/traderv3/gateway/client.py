@@ -261,11 +261,20 @@ class KalshiGateway:
                         balance=balance_cents,
                         portfolio_value=0,  # Computed from positions downstream
                     )
-            # Subaccount not found in response - fall through to legacy
+            # Subaccount not found in response
+            if self._subaccount > 0:
+                raise KalshiError(
+                    f"Subaccount #{self._subaccount} not found in "
+                    f"/portfolio/subaccounts/balances response. "
+                    f"Available: {[e.get('subaccount_number') for e in data.get('subaccount_balances', [])]}. "
+                    f"Refusing fallback to /portfolio/balance."
+                )
             logger.warning(
                 f"Subaccount #{self._subaccount} not in subaccount_balances, "
                 f"falling back to /portfolio/balance"
             )
+        except KalshiError:
+            raise  # Don't re-wrap intentional errors (e.g. subaccount not found)
         except Exception as e:
             if self._subaccount > 0:
                 raise KalshiError(

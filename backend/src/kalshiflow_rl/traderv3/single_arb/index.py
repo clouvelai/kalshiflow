@@ -1093,6 +1093,10 @@ class EventArbIndex:
         return self._events
 
     @property
+    def fee_per_contract(self) -> int:
+        return self._fee_per_contract
+
+    @property
     def market_tickers(self) -> List[str]:
         """All market tickers across all events."""
         return list(self._ticker_to_event.keys())

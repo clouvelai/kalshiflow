@@ -3,7 +3,7 @@ Centralized LLM model configuration for mentions system and all V3 consumers.
 
 Tier system (configured via V3Config or env vars):
 - captain: Main Captain agent (Sonnet default)
-- subagent: TradeCommando, ChevalDeTroie, MentionsSpecialist, EventUnderstanding, LifecycleClassifier (Haiku default)
+- subagent: EventUnderstanding (Haiku default)
 - utility: Mentions sim/extraction (Gemini Flash default)
 - embedding: Vector store (text-embedding-3-small default)
 

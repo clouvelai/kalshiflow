@@ -23,6 +23,7 @@ from kalshiflow_rl.traderv3.single_arb.tools import (
     get_context,
     set_context,
     get_market_state,
+    get_market_movers,
     get_portfolio,
     place_order,
     execute_arb,
@@ -126,8 +127,8 @@ def inject_v2_context(
 
 
 class TestToolList:
-    def test_11_tools(self):
-        assert len(ALL_TOOLS) == 11
+    def test_13_tools(self):
+        assert len(ALL_TOOLS) == 13
 
     def test_all_categorized(self):
         for tool in ALL_TOOLS:
@@ -494,3 +495,31 @@ class TestCycleCapitalBudget:
         index = make_index(events=[event])
         with inject_v2_context(index=index) as ctx:
             assert ctx.cycle_capital_spent_cents == 0
+
+
+# ===========================================================================
+# TestGetMarketMovers
+# ===========================================================================
+
+
+class TestGetMarketMovers:
+    @pytest.mark.asyncio
+    async def test_no_context_returns_error(self):
+        """get_market_movers without ToolContext should return error."""
+        from kalshiflow_rl.traderv3.single_arb import tools
+        saved = tools._ctx
+        try:
+            tools._ctx = None
+            result = await get_market_movers.ainvoke({"event_ticker": "EVT-1"})
+            assert "error" in result
+        finally:
+            tools._ctx = saved
+
+    @pytest.mark.asyncio
+    async def test_db_not_available_returns_graceful_error(self):
+        """get_market_movers should return graceful error when DB unavailable."""
+        with inject_v2_context():
+            # rl_db is not configured in test environment, so import/pool will fail
+            result = await get_market_movers.ainvoke({"event_ticker": "EVT-1"})
+        assert "error" in result
+        assert result.get("movers") == [] or result.get("movers") is None

@@ -1,14 +1,16 @@
 import React, { memo, useMemo } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { BarChart3, Brain } from 'lucide-react';
+import { BarChart3, Brain, Layers } from 'lucide-react';
 import DashboardOverview from './DashboardOverview';
 import EventView from './EventView';
 import AgentPanel from './AgentPanel';
 import StartupProgress from './StartupProgress';
+import DiscoveryPanel from '../panels/discovery/DiscoveryPanel';
 
 const MAIN_TABS = [
   { id: 'event', label: 'Event', icon: BarChart3 },
   { id: 'agent', label: 'Agent', icon: Brain },
+  { id: 'discovery', label: 'Discovery', icon: Layers },
 ];
 
 const CenterContent = memo(({
@@ -16,10 +18,13 @@ const CenterContent = memo(({
   tradingState, onDeselectEvent,
   // Agent props
   activeMainTab, setActiveMainTab,
-  isRunning, cycleCount,
+  isRunning, cycleCount, cycleMode,
   thinking, activeToolCall, toolCalls,
   todos, memoryOps,
   sniperState, captainPaused, exchangeStatus, feedStats,
+  attentionItems, attentionStats, autoActions, captainMode, captainTiming,
+  // Discovery props
+  discoveryState,
   // Startup props
   connectionStatus, systemState, startupMessages,
 }) => {
@@ -36,6 +41,8 @@ const CenterContent = memo(({
 
   const isStartingUp = (systemState === 'initializing' || systemState === 'startup' || events.size === 0)
     && connectionStatus === 'connected';
+
+  const discoveryCount = discoveryState?.events?.length || 0;
 
   return (
     <div className="flex-1 min-w-0 flex flex-col overflow-hidden bg-gray-950/30">
@@ -56,7 +63,7 @@ const CenterContent = memo(({
             >
               <Icon className="w-3.5 h-3.5" />
               {tab.label}
-              {/* Pulsing dot on Agent tab when Captain is running and user is on Event tab */}
+              {/* Pulsing dot on Agent tab when Captain is running and user is on another tab */}
               {tab.id === 'agent' && isRunning && !isActive && (
                 <span className="absolute -top-0.5 -right-0.5 flex h-2.5 w-2.5">
                   <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-violet-400 opacity-75" />
@@ -66,6 +73,10 @@ const CenterContent = memo(({
               {/* Static dot on Agent tab when active and running */}
               {tab.id === 'agent' && isRunning && isActive && (
                 <span className="w-1.5 h-1.5 rounded-full bg-violet-400 ml-0.5" />
+              )}
+              {/* Series count badge on Discovery tab */}
+              {tab.id === 'discovery' && discoveryCount > 0 && !isActive && (
+                <span className="text-[8px] font-mono text-cyan-400/60 ml-0.5 tabular-nums">{discoveryCount}</span>
               )}
             </button>
           );
@@ -86,6 +97,7 @@ const CenterContent = memo(({
             <AgentPanel
               isRunning={isRunning}
               cycleCount={cycleCount}
+              cycleMode={cycleMode}
               thinking={thinking}
               activeToolCall={activeToolCall}
               toolCalls={toolCalls}
@@ -95,6 +107,26 @@ const CenterContent = memo(({
               captainPaused={captainPaused}
               exchangeStatus={exchangeStatus}
               feedStats={feedStats}
+              attentionItems={attentionItems}
+              attentionStats={attentionStats}
+              autoActions={autoActions}
+              captainMode={captainMode}
+              captainTiming={captainTiming}
+              connectionStatus={connectionStatus}
+            />
+          </motion.div>
+        ) : activeMainTab === 'discovery' ? (
+          <motion.div
+            key="discovery"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.12 }}
+            className="flex-1 min-h-0 flex flex-col"
+          >
+            <DiscoveryPanel
+              discoveryState={discoveryState}
+              events={events}
             />
           </motion.div>
         ) : isStartingUp && !event ? (

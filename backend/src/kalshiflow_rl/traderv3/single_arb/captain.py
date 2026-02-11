@@ -1,21 +1,23 @@
-"""Captain V2 - Single-agent LLM Captain for single-event arbitrage.
+"""Captain V2 - Attention-driven LLM Captain for single-event arbitrage.
 
-Key simplifications over V1:
-- Single agent with 10 tools (no subagents, no tool duplication)
-- Structured JSON context (MarketState + PortfolioState + SniperStatus)
-- Session memory via FAISS (no markdown files)
-- ~400 tokens system prompt (down from ~800 + 500-2000 memory files)
-- 60-75% fewer input tokens per cycle
+Architecture: Infrastructure is the main loop, LLM is a judgment function called on-demand.
+
+  Index → AttentionRouter → [only what matters, when it matters] → Captain LLM
+
+Three invocation modes:
+- REACTIVE: Fired by AttentionRouter when high-urgency signals emerge. Compact prompt
+  with only attention items + relevant positions. (~200-400 tokens)
+- STRATEGIC: Every 5 minutes. Portfolio review, sniper tuning, task planning. (~400-600 tokens)
+- DEEP_SCAN: Every 30 minutes. All events, full positions, health, memories. (~800-1200 tokens)
 """
 
 import asyncio
-import json
 import logging
 import os
 import time
 import traceback
 import uuid
-from typing import Any, Callable, Coroutine, Dict, List, Optional
+from typing import Any, Callable, Coroutine, Dict, List, Optional, TYPE_CHECKING
 
 from deepagents import create_deep_agent
 from deepagents.backends import StateBackend
@@ -23,35 +25,41 @@ from langchain_core.messages import HumanMessage
 from langgraph.cache.memory import InMemoryCache
 
 from .context_builder import ContextBuilder
-from .models import MarketState, PortfolioState, SniperStatus, CycleDiff
+from .models import MarketState, PortfolioState, SniperStatus
 from .task_ledger import TaskLedger
 from .tools import ALL_TOOLS, TOOL_CATEGORIES
+
+if TYPE_CHECKING:
+    from .attention import AttentionRouter
 
 logger = logging.getLogger("kalshiflow_rl.traderv3.single_arb.captain")
 
 CAPTAIN_PROMPT_TEMPLATE = """You are the Captain — an autonomous Kalshi prediction market trader.
-Your job: extract profit from mispriced prediction markets. Act on edge. Manage positions. Build memory.
+Your job: extract profit from mispriced prediction markets using judgment the infrastructure can't provide.
 
 PRICING: cents (0-100). YES@60c costs $0.60, pays $1.00 if YES wins. Tool inputs use cents. Balance in briefing is DOLLARS.
 
-EACH CYCLE you receive live JSON: MARKET_STATE, PORTFOLIO, SNIPER, CHANGES.
+INVOCATION MODES:
+You are invoked in one of three modes. Each cycle header tells you which mode you're in.
 
-DECISION RULES:
-- Edge >= 5c AND spread < 10c → execute_arb or place_order (5-25 contracts based on liquidity)
-- Edge 2-5c AND spread < 8c → place_order (1-5 contracts)
-- Position PnL > +10c/contract → take profit (sell)
-- Position PnL < -12c/contract → cut loss (sell)
-- Position with < 1h to close → exit unless high conviction
-- No edge above 2c → configure sniper, update todos, move on
+REACTIVE — You are called because something urgent happened. The ATTENTION section lists
+signals that crossed scoring thresholds. Respond to them: trade, exit, or note why you're
+passing. Be fast and decisive. Only the relevant context is provided.
 
-FLOW: write_todos → check exits → scan edge → research if needed → trade → store_insight
+STRATEGIC — You are called on a regular interval for planning. Review your portfolio,
+tune sniper configuration, plan news research, manage positions. No urgency unless
+PENDING_ATTENTION items are close to threshold.
 
-TASK PLANNING: write_todos EVERY cycle. Without it you lose all context between cycles.
-Track: positions to manage, edge opportunities, sniper config. Prefix [HIGH]/[MED]/[LOW].
+DEEP_SCAN — You are called for comprehensive review. All events are summarized.
+Full positions with P&L. Health metrics. Recent memories. Rebalance, store learnings,
+adjust overall strategy.
 
 EXITS: sell the side you hold. NEVER buy the opposite side to "hedge."
 SNIPER: Auto-executes S1_ARB. You CONFIGURE it (edge threshold, capital, cooldown), it EXECUTES.
 REGIME: Per-market vpin/sweep is informational. Only hard stops: negative edge, spread > 15c.
+
+TASK PLANNING: write_todos in STRATEGIC and DEEP_SCAN cycles. Without it you lose context.
+Track: positions to manage, edge opportunities, sniper config. Prefix [HIGH]/[MED]/[LOW].
 
 {guidance_section}"""
 
@@ -79,16 +87,18 @@ def _load_guidance() -> str:
 
 
 class ArbCaptain:
-    """Single-agent LLM Captain for single-event arbitrage.
+    """Attention-driven LLM Captain for single-event arbitrage.
 
-    Uses create_deep_agent with 10 tools (no subagents).
-    Structured JSON context injected each cycle.
-    Session memory via FAISS + pgvector.
+    Uses create_deep_agent with 12 tools (no subagents).
+    Three invocation modes: reactive, strategic, deep_scan.
+    AttentionRouter drives reactive cycles; timers drive strategic/deep_scan.
     """
 
     def __init__(
         self,
         context_builder: ContextBuilder,
+        attention_router: Optional["AttentionRouter"] = None,
+        config=None,
         model_name: Optional[str] = None,
         cycle_interval: float = 60.0,
         event_callback: Optional[Callable[..., Coroutine]] = None,
@@ -104,6 +114,12 @@ class ArbCaptain:
         self._ctx = context_builder
         self._sniper_ref = sniper_ref
         self._system_ready = system_ready
+        self._attention_router = attention_router
+        self._config = config
+
+        # Intervals from config or defaults
+        self._strategic_interval = getattr(config, "strategic_interval", 300.0) if config else 300.0
+        self._deep_scan_interval = getattr(config, "deep_scan_interval", 1800.0) if config else 1800.0
 
         # Node-level cache
         self._cache = InMemoryCache()
@@ -130,9 +146,15 @@ class ArbCaptain:
         self._cycle_count = 0
         self._last_cycle_at: Optional[float] = None
         self._errors: List[str] = []
-        self._prev_market_state: Optional[MarketState] = None
-        self._full_scan_ts: Dict[str, float] = {}  # event_ticker -> last full scan timestamp
         self._task_ledger = TaskLedger(session_id=str(uuid.uuid4()))
+
+        # Mode counters for stats
+        self._reactive_count = 0
+        self._strategic_count = 0
+        self._deep_scan_count = 0
+
+        # Per-cycle tool call tracking (reset in _cycle_preamble)
+        self._current_cycle_tools: Dict[str, int] = {}
 
     async def start(self) -> None:
         """Start the Captain cycle loop."""
@@ -169,7 +191,14 @@ class ArbCaptain:
         return self._paused
 
     async def _run_loop(self) -> None:
-        """Main cycle loop."""
+        """Event-driven main loop with three invocation modes.
+
+        Reactive: fires when AttentionRouter has high-urgency items.
+        Strategic: fires every strategic_interval (default 5 min).
+        Deep scan: fires every deep_scan_interval (default 30 min).
+
+        Falls back to fixed-interval polling if no AttentionRouter is available.
+        """
         index = self._ctx._index
 
         # Wait for index readiness (short timeout - REST prefetch should have populated data)
@@ -197,22 +226,90 @@ class ArbCaptain:
             except asyncio.TimeoutError:
                 logger.warning("[CAPTAIN] System init timeout after 5min, starting anyway")
 
+        last_strategic = time.time()
+        last_deep_scan = time.time()
+
+        # If no attention router, fall back to fixed-interval cycling
+        if not self._attention_router:
+            logger.info("[CAPTAIN] No AttentionRouter — falling back to fixed-interval mode")
+            await self._run_loop_legacy()
+            return
+
+        logger.info(
+            f"[CAPTAIN] Attention-driven mode: strategic={self._strategic_interval}s "
+            f"deep_scan={self._deep_scan_interval}s"
+        )
+
+        # Emit config so frontend can show countdown timers
+        await self._emit_event({
+            "type": "captain_config",
+            "data": {
+                "strategic_interval": self._strategic_interval,
+                "deep_scan_interval": self._deep_scan_interval,
+            },
+        })
+
+        # Run initial deep_scan so there's always activity on startup
+        try:
+            logger.info("[CAPTAIN] Running initial deep_scan on startup")
+            await self._run_with_timeout(self._run_deep_scan(), "deep_scan")
+            self._cycle_count += 1
+            self._last_cycle_at = time.time()
+            last_deep_scan = time.time()
+            last_strategic = time.time()
+        except Exception as e:
+            logger.warning(f"[CAPTAIN] Initial deep_scan failed: {e}")
+
+        while self._running:
+            if self._paused:
+                await asyncio.sleep(5.0)
+                continue
+
+            try:
+                trigger = await self._wait_for_trigger(
+                    last_strategic, last_deep_scan,
+                )
+
+                if trigger == "reactive":
+                    items = self._attention_router.drain_items(min_urgency="high")
+                    if items:
+                        await self._run_with_timeout(
+                            self._run_reactive(items), "reactive"
+                        )
+                elif trigger == "strategic":
+                    await self._run_with_timeout(
+                        self._run_strategic(), "strategic"
+                    )
+                    last_strategic = time.time()
+                elif trigger == "deep_scan":
+                    await self._run_with_timeout(
+                        self._run_deep_scan(), "deep_scan"
+                    )
+                    last_deep_scan = time.time()
+
+                self._cycle_count += 1
+                self._last_cycle_at = time.time()
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"[CAPTAIN:ERROR] cycle={self._cycle_count + 1} error={e}\n{traceback.format_exc()}")
+                self._errors.append(str(e))
+                if len(self._errors) > 50:
+                    self._errors = self._errors[-50:]
+                await asyncio.sleep(30.0)
+
+    async def _run_loop_legacy(self) -> None:
+        """Fixed-interval fallback loop (no AttentionRouter)."""
         while self._running:
             if self._paused:
                 await asyncio.sleep(self._cycle_interval)
                 continue
             try:
-                cycle_timeout = max(self._cycle_interval * 2, 120.0)
-                await asyncio.wait_for(self._run_cycle(), timeout=cycle_timeout)
-                self._cycle_count += 1
-                self._last_cycle_at = time.time()
-                await asyncio.sleep(self._cycle_interval)
-            except asyncio.TimeoutError:
-                logger.warning(f"[CAPTAIN:TIMEOUT] cycle={self._cycle_count + 1} exceeded {cycle_timeout:.0f}s")
-                logger.info(f"[CAPTAIN:CYCLE_END] cycle={self._cycle_count + 1} status=timeout")
-                self._errors.append(f"cycle_timeout_{self._cycle_count + 1}")
-                if len(self._errors) > 50:
-                    self._errors = self._errors[-50:]
+                # Run a deep scan every cycle in legacy mode (same as old _run_cycle)
+                await self._run_with_timeout(
+                    self._run_deep_scan(), "deep_scan"
+                )
                 self._cycle_count += 1
                 self._last_cycle_at = time.time()
                 await asyncio.sleep(self._cycle_interval)
@@ -225,10 +322,81 @@ class ArbCaptain:
                     self._errors = self._errors[-50:]
                 await asyncio.sleep(30.0)
 
-    async def _run_cycle(self) -> None:
-        """Run one Captain cycle with structured JSON context."""
+    async def _run_with_timeout(self, coro, mode: str) -> None:
+        """Run a cycle coroutine with timeout and error tracking."""
+        cycle_timeout = max(self._cycle_interval * 2, 120.0)
+        try:
+            await asyncio.wait_for(coro, timeout=cycle_timeout)
+        except asyncio.TimeoutError:
+            cycle_num = self._cycle_count + 1
+            logger.warning(f"[CAPTAIN:TIMEOUT] cycle={cycle_num} mode={mode} exceeded {cycle_timeout:.0f}s")
+            logger.info(f"[CAPTAIN:CYCLE_END] cycle={cycle_num} mode={mode} status=timeout duration={cycle_timeout:.0f}s")
+            self._errors.append(f"timeout_{mode}_{cycle_num}")
+            if len(self._errors) > 50:
+                self._errors = self._errors[-50:]
+
+    async def _wait_for_trigger(
+        self, last_strategic: float, last_deep_scan: float,
+    ) -> str:
+        """Wait for the next trigger: reactive event, strategic timer, or deep scan timer.
+
+        Returns "reactive", "strategic", or "deep_scan".
+        """
+        router = self._attention_router
+        now = time.time()
+
+        # Check if deep scan or strategic are already due
+        if now - last_deep_scan >= self._deep_scan_interval:
+            return "deep_scan"
+        if now - last_strategic >= self._strategic_interval:
+            return "strategic"
+
+        # Update positions in router for P&L scoring
+        from .tools import _ctx as tool_ctx
+        gateway = tool_ctx.gateway if tool_ctx else None
+        if gateway and router:
+            try:
+                portfolio = await self._ctx.build_portfolio_state(gateway)
+                positions_for_router = [
+                    {
+                        "ticker": p.ticker,
+                        "event_ticker": p.event_ticker,
+                        "side": p.side,
+                        "quantity": p.quantity,
+                        "pnl_per_ct": round(p.unrealized_pnl_cents / p.quantity) if p.quantity else 0,
+                    }
+                    for p in portfolio.positions
+                ]
+                router.update_positions(positions_for_router)
+            except Exception:
+                pass
+
+        # Wait for attention router notification OR next timer, whichever comes first
+        time_to_strategic = max(0.1, self._strategic_interval - (now - last_strategic))
+        time_to_deep_scan = max(0.1, self._deep_scan_interval - (now - last_deep_scan))
+        next_timer = min(time_to_strategic, time_to_deep_scan)
+
+        try:
+            await asyncio.wait_for(router.notify_event.wait(), timeout=next_timer)
+            # Attention router fired — peek (not drain) to check if items qualify
+            if router.has_items:
+                return "reactive"
+        except asyncio.TimeoutError:
+            pass
+
+        # Timer expired — figure out which one
+        now = time.time()
+        if now - last_deep_scan >= self._deep_scan_interval:
+            return "deep_scan"
+        return "strategic"
+
+    # ------------------------------------------------------------------
+    # Cycle pre-work (shared across all modes)
+    # ------------------------------------------------------------------
+
+    def _cycle_preamble(self) -> int:
+        """Shared pre-cycle work. Returns cycle number."""
         cycle_num = self._cycle_count + 1
-        cycle_start = time.time()
 
         # Reset sniper cycle counter
         if self._sniper_ref:
@@ -239,192 +407,81 @@ class ArbCaptain:
         if tool_ctx_local:
             tool_ctx_local.cycle_capital_spent_cents = 0
 
+        # Reset per-cycle tool call tracking
+        self._current_cycle_tools = {}
+
         # Tick task ledger (stale detection, pruning)
         self._task_ledger.tick(cycle_num)
 
-        # Build structured context (0 API calls for market data)
-        market_state = self._ctx.build_market_state()
+        return cycle_num
 
-        # Build portfolio (1-2 API calls)
+    async def _cycle_postamble(self, mode: str, cycle_num: int, cycle_start: float,
+                                portfolio: PortfolioState) -> None:
+        """Shared post-cycle logging."""
+        cycle_duration = time.time() - cycle_start
+        balance_str = f"${portfolio.balance_dollars}" if portfolio.balance_cents else "?"
+        tools_str = ",".join(f"{k}:{v}" for k, v in sorted(self._current_cycle_tools.items())) or "none"
+        logger.info(
+            f"[CAPTAIN:SUMMARY] cycle={cycle_num} mode={mode} duration={cycle_duration:.1f}s "
+            f"positions={portfolio.total_positions} errors={len(self._errors)} balance={balance_str} "
+            f"tools={tools_str}"
+        )
+        logger.info(f"[CAPTAIN:CYCLE_END] cycle={cycle_num} mode={mode} status=ok duration={cycle_duration:.1f}s")
+
+        await self._emit_event({
+            "type": "captain_cycle_complete",
+            "data": {
+                "mode": mode,
+                "cycle_num": cycle_num,
+                "duration_s": round(cycle_duration, 1),
+            },
+        })
+
+    async def _get_portfolio(self) -> PortfolioState:
+        """Build portfolio state (1-2 API calls)."""
         from .tools import _ctx as tool_ctx
         gateway = tool_ctx.gateway if tool_ctx else None
-        portfolio = await self._ctx.build_portfolio_state(gateway) if gateway else PortfolioState()
+        if gateway:
+            return await self._ctx.build_portfolio_state(gateway)
+        return PortfolioState()
 
-        # Build sniper status (0 API calls)
+    # ------------------------------------------------------------------
+    # Mode 1: REACTIVE — attention-driven, compact prompt
+    # ------------------------------------------------------------------
+
+    async def _run_reactive(self, items) -> None:
+        """Reactive cycle: respond to high-urgency attention items."""
+        from .models import AttentionItem
+        cycle_num = self._cycle_preamble()
+        cycle_start = time.time()
+        self._reactive_count += 1
+
+        portfolio = await self._get_portfolio()
         sniper_status = self._ctx.build_sniper_status(self._sniper_ref)
 
-        # Compute diffs since last cycle
-        diffs = self._ctx.compute_diffs(market_state)
+        # Build compact reactive context via context builder
+        body = self._ctx.build_reactive_context(items, portfolio, sniper_status)
+        prompt = f"Cycle #{cycle_num} REACTIVE.\n{body}"
 
-        # Build the prompt with structured JSON context
-        FULL_SCAN_TTL = 3600  # 1 hour
+        logger.info(
+            f"[CAPTAIN:CYCLE_START] cycle={cycle_num} mode=reactive "
+            f"items={len(items)} urgencies={[i.urgency for i in items]}"
+        )
 
-        # Find best opportunity across all events for headline
-        best_edge = None
-        best_event = None
-        for ev in market_state.events:
-            edge = max(ev.long_edge or 0, ev.short_edge or 0)
-            if best_edge is None or edge > best_edge:
-                best_edge = edge
-                best_event = ev
-
-        context_parts = [f"Cycle #{cycle_num}."]
-        if best_event and best_edge and best_edge > 0:
-            direction = "long" if (best_event.long_edge or 0) >= (best_event.short_edge or 0) else "short"
-            context_parts.append(
-                f"BEST_EDGE: {best_event.event_ticker} {direction} edge={best_edge:.1f}c "
-                f"regime={best_event.regime}"
-            )
-
-        # Compact market state with TTL-based full scan
-        now = time.time()
-        compact_events = []
-        for ev in market_state.events:
-            compact_ev = {
-                "event_ticker": ev.event_ticker,
-                "title": ev.title,
-                "me": ev.mutually_exclusive,
-                "markets": ev.market_count,
-                "long_edge": ev.long_edge,
-                "short_edge": ev.short_edge,
-                "vol_5m": ev.total_volume_5m,
-                "regime": ev.regime,
-                "ttc_hours": ev.time_to_close_hours,
-            }
-            if ev.semantics and ev.semantics.what:
-                compact_ev["context"] = ev.semantics.what[:100]
-
-            # TTL-based market selection: full scan on first see or TTL expiry, top 10 otherwise
-            all_mkts = sorted(ev.markets.values(), key=lambda m: m.volume_5m, reverse=True)
-            last_scan = self._full_scan_ts.get(ev.event_ticker, 0)
-            if now - last_scan > FULL_SCAN_TTL:
-                show_mkts = all_mkts
-                self._full_scan_ts[ev.event_ticker] = now
-            else:
-                show_mkts = all_mkts[:10]
-
-            compact_ev["top_markets"] = [
-                {"t": m.ticker, "n": m.title[:40] if m.title else None,
-                 "bid": m.yes_bid, "ask": m.yes_ask, "sp": m.spread,
-                 "mp": round(m.microprice, 1) if m.microprice else None,
-                 "vol": m.volume_5m, "vpin": m.vpin, "regime": m.regime}
-                for m in show_mkts
-            ]
-            compact_events.append(compact_ev)
-
-        context_parts.append(f"MARKET_STATE: {json.dumps(compact_events, separators=(',', ':'))}")
-
-        # Portfolio
-        if portfolio.positions:
-            compact_portfolio = {
-                "balance_dollars": f"${portfolio.balance_dollars:,.2f}",
-                "positions": portfolio.total_positions,
-                "pnl": f"${portfolio.total_unrealized_pnl_cents / 100:+.2f}",
-                "top": [
-                    {"t": p.ticker, "side": p.side, "qty": p.quantity,
-                     "exit": p.exit_price, "pnl": p.unrealized_pnl_cents,
-                     "pnl_ct": round(p.unrealized_pnl_cents / p.quantity) if p.quantity else 0}
-                    for p in portfolio.positions[:5]
-                ],
-            }
-            context_parts.append(f"PORTFOLIO: {json.dumps(compact_portfolio, separators=(',', ':'))}")
-
-            # Time pressure flag for positions nearing settlement
-            time_flags = []
-            for ev in market_state.events:
-                if ev.time_to_close_hours is not None and ev.time_to_close_hours < 1.0:
-                    for p in portfolio.positions:
-                        if p.event_ticker == ev.event_ticker and p.quantity > 0:
-                            time_flags.append(f"{p.ticker} ttc={ev.time_to_close_hours:.1f}h")
-            if time_flags:
-                context_parts.append(f"TIME_PRESSURE: {', '.join(time_flags)}")
-        else:
-            context_parts.append(f"PORTFOLIO: balance=${portfolio.balance_dollars:,.2f} ({portfolio.balance_cents} cents), no positions.")
-
-        # Sniper: only inject detail if there was activity, otherwise one word
-        if sniper_status.enabled:
-            has_sniper_activity = (
-                sniper_status.total_trades > 0
-                or sniper_status.last_action_summary
-                or sniper_status.last_rejection_reason
-            )
-            if has_sniper_activity:
-                compact_sniper = {
-                    "trades": sniper_status.total_trades,
-                    "arbs": sniper_status.total_arbs_executed,
-                    "capital_active": sniper_status.capital_in_flight + sniper_status.capital_in_positions,
-                    "unwinds": sniper_status.total_partial_unwinds,
-                }
-                if sniper_status.last_rejection_reason:
-                    compact_sniper["last_reject"] = sniper_status.last_rejection_reason
-                if sniper_status.last_action_summary:
-                    compact_sniper["last_exec"] = sniper_status.last_action_summary
-                context_parts.append(f"SNIPER: {json.dumps(compact_sniper, separators=(',', ':'))}")
-            else:
-                context_parts.append("SNIPER: enabled")
-        else:
-            context_parts.append("SNIPER: OFF")
-
-        # Health: only inject if drawdown > 5% or alerts exist
-        if tool_ctx and tool_ctx.health_service:
-            try:
-                hs = tool_ctx.health_service.get_health_status()
-                if hs.drawdown_pct > 5.0 or hs.alerts:
-                    context_parts.append(
-                        f"HEALTH: {{\"drawdown\":\"{hs.drawdown_pct}%\","
-                        f"\"realized_pnl\":{hs.total_realized_pnl_cents},"
-                        f"\"settlements\":{hs.settlement_count_session}}}"
-                    )
-            except Exception:
-                pass
-
-        # Diffs
-        if diffs.has_changes:
-            diff_parts = []
-            if diffs.price_moves:
-                diff_parts.append(f"price_moves: {', '.join(diffs.price_moves)}")
-            if diffs.volume_spikes:
-                diff_parts.append(f"volume: {', '.join(diffs.volume_spikes)}")
-            context_parts.append(f"CHANGES ({int(diffs.elapsed_seconds)}s): {'; '.join(diff_parts)}")
-
-        # Inject relevant past memories for events with edge
-        if tool_ctx and tool_ctx.memory:
-            memory_hints = []
-            for ev in market_state.events:
-                has_edge = (ev.long_edge and ev.long_edge > 2.0) or (ev.short_edge and ev.short_edge > 2.0)
-                if has_edge:
-                    try:
-                        recalled = await tool_ctx.memory.recall(
-                            query=f"trades outcomes {ev.event_ticker}", limit=2,
-                        )
-                        if recalled and recalled.results:
-                            for r in recalled.results:
-                                memory_hints.append(f"[{ev.event_ticker}] {r.content[:120]}")
-                    except Exception:
-                        pass
-            if memory_hints:
-                context_parts.append("MEMORY:\n" + "\n".join(memory_hints[:5]))
-
-        # Session memory: inject journal of what we've done/learned this session
-        if tool_ctx and hasattr(tool_ctx.memory, "journal_summary"):
-            journal = tool_ctx.memory.journal_summary(max_entries=5)
-            if journal:
-                context_parts.append(journal)
-
-        # Task ledger: inject active tasks from previous cycles
-        task_section = self._task_ledger.to_prompt_section()
-        if task_section:
-            context_parts.append(task_section)
-        if self._task_ledger.needs_replan():
-            context_parts.append("REPLAN: Multiple stale tasks. Re-evaluate your plan.")
-
-        logger.info(f"[CAPTAIN:CYCLE_START] cycle={cycle_num}")
-        prompt = "\n".join(context_parts)
+        await self._emit_event({
+            "type": "captain_cycle_start",
+            "data": {
+                "mode": "reactive",
+                "cycle_num": cycle_num,
+                "trigger_items": len(items),
+            },
+        })
 
         await self._emit_event({
             "type": "agent_message",
             "subtype": "subagent_start",
             "agent": "single_arb_captain",
+            "mode": "reactive",
             "prompt": prompt[:200],
         })
 
@@ -434,17 +491,198 @@ class ArbCaptain:
             "type": "agent_message",
             "subtype": "subagent_complete",
             "agent": "single_arb_captain",
+            "mode": "reactive",
             "response_preview": str(result)[:500] if result else "",
         })
 
-        cycle_duration = time.time() - cycle_start
-        balance_str = f"${portfolio.balance_dollars}" if portfolio.balance_cents else "?"
+        await self._cycle_postamble("reactive", cycle_num, cycle_start, portfolio)
+
+    # ------------------------------------------------------------------
+    # Mode 2: STRATEGIC — every 5 min, planning and tuning
+    # ------------------------------------------------------------------
+
+    async def _run_strategic(self) -> None:
+        """Strategic cycle: portfolio review, sniper tuning, task planning."""
+        cycle_num = self._cycle_preamble()
+        cycle_start = time.time()
+        self._strategic_count += 1
+
+        portfolio = await self._get_portfolio()
+        sniper_status = self._ctx.build_sniper_status(self._sniper_ref)
+
+        # Pending attention items (sub-threshold, for awareness)
+        pending = []
+        if self._attention_router:
+            pending = self._attention_router.pending_items()
+
+        # Task ledger
+        task_section = self._task_ledger.to_prompt_section()
+        if self._task_ledger.needs_replan():
+            task_section = (task_section or "") + "\nREPLAN: Multiple stale tasks. Re-evaluate your plan."
+
+        body = self._ctx.build_strategic_context(portfolio, pending, sniper_status, task_section or "")
+        prompt = f"Cycle #{cycle_num} STRATEGIC.\n{body}"
+
         logger.info(
-            f"[CAPTAIN:SUMMARY] cycle={cycle_num} duration={cycle_duration:.1f}s "
-            f"events={len(market_state.events)} positions={portfolio.total_positions} "
-            f"errors={len(self._errors)} balance={balance_str}"
+            f"[CAPTAIN:CYCLE_START] cycle={cycle_num} mode=strategic "
+            f"positions={portfolio.total_positions} pending_attention={len(pending)}"
         )
-        logger.info(f"[CAPTAIN:CYCLE_END] cycle={cycle_num} status=ok duration={cycle_duration:.1f}s")
+
+        await self._emit_event({
+            "type": "captain_cycle_start",
+            "data": {
+                "mode": "strategic",
+                "cycle_num": cycle_num,
+                "trigger_items": len(pending),
+            },
+        })
+
+        await self._emit_event({
+            "type": "agent_message",
+            "subtype": "subagent_start",
+            "agent": "single_arb_captain",
+            "mode": "strategic",
+            "prompt": prompt[:200],
+        })
+
+        result = await self._run_agent(prompt)
+
+        await self._emit_event({
+            "type": "agent_message",
+            "subtype": "subagent_complete",
+            "agent": "single_arb_captain",
+            "mode": "strategic",
+            "response_preview": str(result)[:500] if result else "",
+        })
+
+        await self._cycle_postamble("strategic", cycle_num, cycle_start, portfolio)
+
+    # ------------------------------------------------------------------
+    # Mode 3: DEEP SCAN — every 30 min, comprehensive review
+    # ------------------------------------------------------------------
+
+    async def _run_deep_scan(self) -> None:
+        """Deep scan cycle: all events, full positions, health, memories."""
+        cycle_num = self._cycle_preamble()
+        cycle_start = time.time()
+        self._deep_scan_count += 1
+
+        market_state = self._ctx.build_market_state()
+        portfolio = await self._get_portfolio()
+        sniper_status = self._ctx.build_sniper_status(self._sniper_ref)
+
+        # Health snapshot
+        health = None
+        from .tools import _ctx as tool_ctx
+        if tool_ctx and tool_ctx.health_service:
+            try:
+                hs = tool_ctx.health_service.get_health_status()
+                health = {
+                    "drawdown_pct": hs.drawdown_pct,
+                    "total_realized_pnl_cents": hs.total_realized_pnl_cents,
+                    "settlement_count_session": hs.settlement_count_session,
+                }
+            except Exception:
+                pass
+
+        # Trade outcome memories — what worked, what didn't
+        trade_memories = None
+        if tool_ctx and tool_ctx.memory:
+            try:
+                recalled = await tool_ctx.memory.recall(
+                    query="trade outcomes profit loss executed cancelled",
+                    limit=3, memory_types=["trade_outcome"],
+                )
+                if recalled and recalled.results:
+                    trade_memories = [r.content[:120] for r in recalled.results]
+            except Exception:
+                pass
+
+        # High-signal news memories — event-aware query using top tracked events
+        news_memories = None
+        if tool_ctx and tool_ctx.memory:
+            try:
+                top_tickers = [ev.event_ticker for ev in market_state.events[:3]]
+                news_query = f"news price impact {' '.join(top_tickers)}"
+                recalled = await tool_ctx.memory.recall(
+                    query=news_query, limit=3, memory_types=["news"],
+                )
+                if recalled and recalled.results:
+                    news_memories = [r.content[:120] for r in recalled.results]
+            except Exception:
+                pass
+
+        # News-price impact learnings (market movers from last 48h)
+        market_movers = None
+        try:
+            from kalshiflow_rl.data.database import rl_db
+            pool = await rl_db.get_pool()
+            async with pool.acquire() as conn:
+                # Query across all monitored events, top 5 movers
+                rows = await conn.fetch(
+                    """SELECT am.news_title, npi.market_ticker, npi.event_ticker,
+                              GREATEST(ABS(COALESCE(npi.change_1h_cents,0)),
+                                       ABS(COALESCE(npi.change_4h_cents,0)),
+                                       ABS(COALESCE(npi.change_24h_cents,0))) AS change_cents,
+                              CASE WHEN COALESCE(npi.change_1h_cents,0) > 0 THEN 'up' ELSE 'down' END AS direction
+                       FROM news_price_impacts npi
+                       JOIN agent_memories am ON am.id = npi.news_memory_id
+                       WHERE npi.created_at >= NOW() - INTERVAL '48 hours'
+                         AND GREATEST(ABS(COALESCE(npi.change_1h_cents,0)),
+                                      ABS(COALESCE(npi.change_4h_cents,0)),
+                                      ABS(COALESCE(npi.change_24h_cents,0))) >= 3
+                       ORDER BY change_cents DESC LIMIT 5"""
+                )
+                if rows:
+                    market_movers = [dict(r) for r in rows]
+        except Exception:
+            pass  # DB not available or table empty — non-critical
+
+        # Task ledger
+        task_section = self._task_ledger.to_prompt_section()
+        if self._task_ledger.needs_replan():
+            task_section = (task_section or "") + "\nREPLAN: Multiple stale tasks. Re-evaluate your plan."
+
+        body = self._ctx.build_deep_scan_context(
+            market_state, portfolio, sniper_status, health,
+            trade_memories=trade_memories, news_memories=news_memories,
+            task_section=task_section or "", market_movers=market_movers,
+        )
+        prompt = f"Cycle #{cycle_num} DEEP_SCAN.\n{body}"
+
+        logger.info(
+            f"[CAPTAIN:CYCLE_START] cycle={cycle_num} mode=deep_scan "
+            f"events={len(market_state.events)} positions={portfolio.total_positions}"
+        )
+
+        await self._emit_event({
+            "type": "captain_cycle_start",
+            "data": {
+                "mode": "deep_scan",
+                "cycle_num": cycle_num,
+                "trigger_items": 0,
+            },
+        })
+
+        await self._emit_event({
+            "type": "agent_message",
+            "subtype": "subagent_start",
+            "agent": "single_arb_captain",
+            "mode": "deep_scan",
+            "prompt": prompt[:200],
+        })
+
+        result = await self._run_agent(prompt)
+
+        await self._emit_event({
+            "type": "agent_message",
+            "subtype": "subagent_complete",
+            "agent": "single_arb_captain",
+            "mode": "deep_scan",
+            "response_preview": str(result)[:500] if result else "",
+        })
+
+        await self._cycle_postamble("deep_scan", cycle_num, cycle_start, portfolio)
 
     async def _run_agent(self, prompt: str) -> Optional[str]:
         """Run the agent, streaming categorized tool call events."""
@@ -499,6 +737,9 @@ class ArbCaptain:
 
                     if tool_name == "execute":
                         continue
+
+                    # Track tool calls per cycle
+                    self._current_cycle_tools[tool_name] = self._current_cycle_tools.get(tool_name, 0) + 1
 
                     # Intercept write_todos: enrich via TaskLedger and broadcast
                     if tool_name == "write_todos":
@@ -618,6 +859,7 @@ class ArbCaptain:
 
     def get_stats(self) -> Dict:
         """Get Captain stats."""
+        has_router = self._attention_router is not None
         return {
             "running": self._running,
             "paused": self._paused,
@@ -627,4 +869,14 @@ class ArbCaptain:
             "model": self._model_name,
             "cycle_interval": self._cycle_interval,
             "version": "v2",
+            "attention_driven": has_router,
+            "mode_counts": {
+                "reactive": self._reactive_count,
+                "strategic": self._strategic_count,
+                "deep_scan": self._deep_scan_count,
+            },
+            "intervals": {
+                "strategic": self._strategic_interval,
+                "deep_scan": self._deep_scan_interval,
+            },
         }

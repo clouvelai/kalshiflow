@@ -65,7 +65,10 @@ class SingleArbCoordinator:
         self._captain = None
         self._sniper = None  # Sniper execution layer
         self._health_service = None  # AccountHealthService
+        self._attention_router = None  # AttentionRouter
+        self._auto_actions = None  # AutoActionManager
 
+        self._discovery = None  # SeriesDiscovery
         self._order_group_id: Optional[str] = None
         self._understanding_builder: Optional[UnderstandingBuilder] = None
         self._tavily_budget = None  # TavilyBudgetManager
@@ -108,40 +111,37 @@ class SingleArbCoordinator:
             min_edge_cents=min_edge,
         )
 
-        # 2. Load events
-        event_tickers = getattr(self._config, "single_arb_event_tickers", [])
-        if not event_tickers:
-            logger.warning("No single_arb_event_tickers configured")
-            return
-
-        # Need a trading client for REST calls
+        # 2. Discover top-N events by volume
         client = self._get_trading_client()
         if not client:
             logger.error("No trading client available for single-arb REST calls")
             return
 
-        loaded_events = 0
-        for event_ticker in event_tickers:
-            state = None
-            for attempt in range(3):  # 3 attempts per event
-                state = await self._index.load_event(event_ticker, client)
-                if state:
-                    loaded_events += 1
-                    break
-                logger.warning(f"Failed to load event {event_ticker} (attempt {attempt + 1}/3)")
-                await asyncio.sleep(1.0)  # 1s backoff between retries
+        from .discovery import TopVolumeDiscovery
 
-            if not state:
-                logger.error(f"Failed to load event after 3 attempts: {event_ticker}")
+        seed_events = getattr(self._config, "discovery_seed_events", [])
+        legacy_seeds = getattr(self._config, "single_arb_event_tickers", [])
+        all_seeds = list(dict.fromkeys(seed_events + legacy_seeds))
 
-            # Small delay between events to avoid rate limiting
-            await asyncio.sleep(0.5)
+        self._discovery = TopVolumeDiscovery(
+            index=self._index,
+            trading_client=client,
+            event_count=getattr(self._config, "discovery_event_count", 10),
+            seed_event_tickers=all_seeds,
+            max_markets_per_event=getattr(self._config, "discovery_max_markets_per_event", 50),
+            refresh_interval=getattr(self._config, "discovery_refresh_interval", 300.0),
+            subscribe_callback=self._subscribe_new_markets,
+            unsubscribe_callback=self._unsubscribe_markets,
+            broadcast_callback=self._broadcast,
+        )
 
-        if loaded_events == 0:
-            logger.error("No events loaded - single-arb system cannot start")
-            return
+        # Initial discovery pass (blocking - fetches all open events, ranks by volume)
+        loaded_events = await self._discovery.discover()
 
-        await self._broadcast_startup(f"Loaded {loaded_events} events ({len(self._index.market_tickers)} markets)", 1, 10)
+        if loaded_events == 0 and not self._index.events:
+            logger.warning("No events discovered - single-arb system starting with empty index")
+
+        await self._broadcast_startup(f"Discovered {loaded_events} events ({len(self._index.market_tickers)} markets)", 1, 10)
 
         # 3. Initialize Tavily search service (sync object creation only)
         if self._config.tavily_enabled and self._config.tavily_api_key:
@@ -230,6 +230,42 @@ class SingleArbCoordinator:
         except Exception as e:
             logger.warning(f"[PREFETCH] Orderbook prefetch failed: {e}")
 
+        # 9c. Create AttentionRouter + AutoActionManager
+        try:
+            from .attention import AttentionRouter
+            from .auto_actions import AutoActionManager
+
+            self._auto_actions = AutoActionManager(
+                gateway=self._gateway,
+                index=self._index,
+                sniper=self._sniper,
+                config=self._config,
+                broadcast_callback=self._broadcast,
+            )
+            self._attention_router = AttentionRouter(
+                index=self._index,
+                config=self._config,
+                auto_action_callback=self._auto_actions.on_attention_item,
+                broadcast_callback=self._broadcast,
+            )
+            self._attention_router.subscribe(self._event_bus)
+            await self._attention_router.start()
+
+            # Wire attention callback into Sniper (deferred from step 7)
+            if self._sniper:
+                self._sniper._attention_callback = self._attention_router.inject_item
+
+            # Wire auto_actions into ToolContext
+            from .tools import _ctx as tool_ctx
+            if tool_ctx:
+                tool_ctx.auto_actions = self._auto_actions
+
+            logger.info("[ATTENTION] AttentionRouter + AutoActionManager wired")
+        except Exception as e:
+            logger.warning(f"[ATTENTION] AttentionRouter setup failed, Captain will use legacy mode: {e}")
+            self._attention_router = None
+            self._auto_actions = None
+
         # 10. Check exchange status before starting Captain
         is_exchange_active, exchange_error = await self._check_exchange_status()
         self._exchange_active = is_exchange_active
@@ -263,12 +299,15 @@ class SingleArbCoordinator:
                 ctx_builder = ContextBuilder(index=self._index)
                 self._captain = ArbCaptain(
                     context_builder=ctx_builder,
+                    attention_router=self._attention_router,
+                    config=self._config,
                     cycle_interval=captain_interval,
                     event_callback=self._emit_agent_event,
                     sniper_ref=self._sniper,
                     system_ready=self._system_ready,
                 )
-                logger.info("[CAPTAIN] Using single-agent Captain with 10 tools")
+                mode = "attention-driven" if self._attention_router else "legacy (fixed-interval)"
+                logger.info(f"[CAPTAIN] Using single-agent Captain, mode={mode}")
 
                 if is_exchange_active:
                     await self._captain.start()
@@ -296,6 +335,10 @@ class SingleArbCoordinator:
         self._exchange_monitor_task = asyncio.create_task(self._exchange_monitor_loop())
         self._order_tracker_task = asyncio.create_task(self._order_tracker_loop())
         self._news_impact_task = asyncio.create_task(self._news_impact_tracker_loop())
+
+        # Start discovery background refresh (periodic re-scan for new events)
+        if self._discovery:
+            await self._discovery.start()
         if self._health_service:
             await self._health_service.start()
             logger.info("[HEALTH] AccountHealthService background loop started")
@@ -366,6 +409,10 @@ class SingleArbCoordinator:
         except Exception as e:
             logger.debug(f"Memory flush during shutdown: {e}")
 
+        if self._discovery:
+            await self._discovery.stop()
+        if self._attention_router:
+            await self._attention_router.stop()
         if self._health_service:
             await self._health_service.stop()
         if self._sniper:
@@ -407,6 +454,93 @@ class SingleArbCoordinator:
                 return self._trading_client._client
             return self._trading_client
         return None
+
+    # ------------------------------------------------------------------ #
+    #  Discovery: subscribe new markets to WS channels                    #
+    # ------------------------------------------------------------------ #
+
+    async def _subscribe_new_markets(self, market_tickers: list) -> None:
+        """Subscribe newly discovered market tickers to orderbook WS + gateway channels.
+
+        Also prefetches orderbooks via REST so new markets have data immediately
+        instead of waiting 30-60s+ for WS snapshots.
+        """
+        if not market_tickers:
+            return
+
+        # Subscribe to orderbook integration (V3 event bus)
+        if self._orderbook_integration:
+            for ticker in market_tickers:
+                try:
+                    await self._orderbook_integration.subscribe_market(ticker)
+                except Exception as e:
+                    logger.warning(f"[DISCOVERY] Failed to subscribe {ticker} to orderbook: {e}")
+
+        # Subscribe to gateway WS channels
+        if getattr(self, "_gateway", None):
+            ws_mux = self._gateway.get_ws()
+            for channel in ("orderbook_delta", "ticker", "trade"):
+                try:
+                    await ws_mux.subscribe_tickers(channel, market_tickers)
+                except Exception as e:
+                    logger.warning(f"[DISCOVERY] Failed to subscribe {channel}: {e}")
+
+        logger.info(f"[DISCOVERY] Subscribed {len(market_tickers)} new markets to WS channels")
+
+        # Prefetch orderbooks via REST so index has data immediately
+        client = self._get_trading_client()
+        if client and self._index:
+            prefetched = 0
+            for ticker in market_tickers:
+                try:
+                    resp = await client.get_orderbook(ticker, depth=5)
+                    if not resp:
+                        continue
+                    orderbook = resp.get("orderbook", resp)
+                    if not orderbook or not isinstance(orderbook, dict):
+                        continue
+
+                    yes_levels = orderbook.get("yes") or []
+                    no_levels = orderbook.get("no") or []
+
+                    self._index.on_orderbook_update(
+                        market_ticker=ticker,
+                        yes_levels=yes_levels,
+                        no_levels=no_levels,
+                        source="api",
+                    )
+                    prefetched += 1
+                except Exception as e:
+                    logger.debug(f"[DISCOVERY] Prefetch failed for {ticker}: {e}")
+
+                # Rate limit protection (Kalshi 10 req/s)
+                if prefetched % 8 == 0 and prefetched > 0:
+                    await asyncio.sleep(0.5)
+
+            if prefetched:
+                logger.info(f"[DISCOVERY] Prefetched {prefetched}/{len(market_tickers)} new markets via REST")
+
+    async def _unsubscribe_markets(self, market_tickers: list) -> None:
+        """Unsubscribe evicted market tickers from orderbook WS + gateway channels."""
+        if not market_tickers:
+            return
+
+        if self._orderbook_integration:
+            for ticker in market_tickers:
+                try:
+                    await self._orderbook_integration.unsubscribe_market(ticker)
+                except Exception as e:
+                    logger.warning(f"[DISCOVERY] Failed to unsubscribe {ticker} from orderbook: {e}")
+
+        if getattr(self, "_gateway", None):
+            ws_mux = self._gateway.get_ws()
+            for channel in ("orderbook_delta", "ticker", "trade"):
+                try:
+                    await ws_mux.unsubscribe_tickers(channel, market_tickers)
+                except Exception as e:
+                    logger.warning(f"[DISCOVERY] Failed to unsubscribe {channel}: {e}")
+
+        logger.info(f"[DISCOVERY] Unsubscribed {len(market_tickers)} evicted markets from WS channels")
 
     # ------------------------------------------------------------------ #
     #  Sniper → Captain order registration                                #
@@ -600,9 +734,10 @@ class SingleArbCoordinator:
                     from .tools import cleanup_terminal_orders
                     cleanup_terminal_orders(max_age_seconds=86400)
 
-                # Settled event cleanup every ~30 minutes (120 iterations * 15s)
+                # Settled event cleanup every ~10 minutes (40 iterations * 15s)
+                # Safety net — primary eviction happens via discovery refresh
                 event_cleanup_counter += 1
-                if event_cleanup_counter >= 120:
+                if event_cleanup_counter >= 40:
                     event_cleanup_counter = 0
                     if self._index:
                         removed = self._index.cleanup_settled_events()
@@ -986,7 +1121,20 @@ class SingleArbCoordinator:
                                     all_changes.append(abs(prev_row[key]))
 
                     if all_changes:
-                        updates["magnitude"] = self._classify_magnitude(max(all_changes))
+                        magnitude = self._classify_magnitude(max(all_changes))
+                        updates["magnitude"] = magnitude
+
+                        # Write signal_quality back to source memory (feedback loop)
+                        # GREATEST ensures quality only goes UP over time
+                        signal_map = {"large": 1.0, "medium": 0.8, "small": 0.6, "none": 0.3}
+                        sq = signal_map.get(magnitude, 0.5)
+                        try:
+                            await conn.execute(
+                                "UPDATE agent_memories SET signal_quality = GREATEST(signal_quality, $1) WHERE id = $2",
+                                sq, memory_id,
+                            )
+                        except Exception as e:
+                            logger.debug(f"[NEWS_IMPACT] signal_quality update failed for {memory_id}: {e}")
 
                     # Build UPDATE query
                     set_clauses = []
@@ -1142,6 +1290,15 @@ class SingleArbCoordinator:
         await self._gateway.connect()
         logger.info(f"[GATEWAY] KalshiGateway connected (subaccount #{self._config.subaccount})")
 
+        # Validate subaccount works before proceeding
+        if self._config.subaccount > 0:
+            try:
+                bal = await self._gateway.get_balance()
+                logger.info(f"[GATEWAY] Subaccount #{self._config.subaccount} verified: {bal.balance}c")
+            except Exception as e:
+                logger.error(f"[GATEWAY] Subaccount #{self._config.subaccount} validation failed: {e}")
+                raise
+
         # Bridge gateway WS events -> EventBus
         self._event_bridge = GatewayEventBridge(
             event_bus=self._event_bus,
@@ -1178,6 +1335,7 @@ class SingleArbCoordinator:
                 config=sniper_config,
                 broadcast_callback=self._broadcast,
                 order_register_callback=self._register_sniper_order,
+                attention_callback=None,  # Wired after AttentionRouter created in step 9c
             )
             await self._sniper.start()
             logger.info("[GATEWAY] Sniper execution layer initialized")
@@ -1196,7 +1354,7 @@ class SingleArbCoordinator:
         logger.info("[GATEWAY] Gateway layer wired")
 
     def _setup_tools(self, order_ttl: int) -> None:
-        """Wire the V2 single-agent tool context (10 tools, 1 ToolContext)."""
+        """Wire the V2 single-agent tool context (12 tools, 1 ToolContext)."""
         from .tools import ToolContext, set_context
         from .memory.session_store import SessionMemoryStore
         from .memory.vector_store import VectorMemoryService
@@ -1248,7 +1406,7 @@ class SingleArbCoordinator:
             health_service=self._health_service,
         )
         set_context(ctx)
-        logger.info("[TOOLS] ToolContext wired (11 tools, single agent)")
+        logger.info("[TOOLS] ToolContext wired (12 tools, single agent)")
 
     # ------------------------------------------------------------------ #
     #  Broadcast helpers                                                  #
@@ -1350,6 +1508,12 @@ class SingleArbCoordinator:
             return self._index.get_snapshot()
         return None
 
+    def get_discovery_snapshot(self) -> Optional[Dict]:
+        """Get discovery state snapshot for on-connect delivery."""
+        if self._discovery:
+            return self._discovery.get_discovery_snapshot()
+        return None
+
     def is_healthy(self) -> bool:
         """Health check for health monitor (must be callable method, not property)."""
         return self._running and self._index is not None
@@ -1378,6 +1542,9 @@ class SingleArbCoordinator:
 
         if self._sniper:
             details["sniper"] = self._sniper.get_health_details()
+
+        if self._discovery:
+            details["discovery"] = self._discovery.get_stats()
 
         if self._tavily_budget:
             details["tavily_budget"] = self._tavily_budget.get_budget_status()

@@ -150,7 +150,7 @@ Key files:
 - Tools: `backend/src/kalshiflow_rl/traderv3/single_arb/tools.py`
 - Coordinator: `backend/src/kalshiflow_rl/traderv3/single_arb/coordinator.py`
 - Index/Monitor: `backend/src/kalshiflow_rl/traderv3/single_arb/index.py`, `monitor.py`
-- Mentions: `backend/src/kalshiflow_rl/traderv3/single_arb/mentions_tools.py`
+- Attention: `backend/src/kalshiflow_rl/traderv3/single_arb/attention.py`
 
 ### 2f. Decide: Resume or Restart
 

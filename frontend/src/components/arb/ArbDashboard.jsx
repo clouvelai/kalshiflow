@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useCallback } from 'react';
+import React, { useState, useMemo, useCallback, useEffect } from 'react';
 import { useArbWebSocket, useArbAgent } from '../../hooks/arb';
 import ArbHeader from './layout/ArbHeader';
 import LeftSidebar from './layout/LeftSidebar';
@@ -26,11 +26,18 @@ const ArbDashboard = () => {
     sniperState,
     startupMessages,
     accountHealth,
+    attentionItems,
+    attentionStats,
+    autoActions,
+    captainMode,
+    captainTiming,
+    discoveryState,
   } = useArbWebSocket();
 
   const {
     isRunning: agentIsRunning,
     cycleCount,
+    cycleMode,
     thinking,
     activeToolCall,
     toolCalls,
@@ -44,6 +51,13 @@ const ArbDashboard = () => {
   const [activeMainTab, setActiveMainTab] = useState('agent');
 
   const handleDeselectEvent = useCallback(() => setSelectedEventTicker(null), []);
+
+  // Clear selection if selected event was evicted (no longer in events Map)
+  useEffect(() => {
+    if (selectedEventTicker && events && events.size > 0 && !events.has(selectedEventTicker)) {
+      setSelectedEventTicker(null);
+    }
+  }, [selectedEventTicker, events]);
 
   // Convert events Map to sorted array for left sidebar
   const eventList = useMemo(() => {
@@ -111,6 +125,7 @@ const ArbDashboard = () => {
           setActiveMainTab={setActiveMainTab}
           isRunning={agentIsRunning}
           cycleCount={cycleCount}
+          cycleMode={cycleMode}
           thinking={thinking}
           activeToolCall={activeToolCall}
           toolCalls={toolCalls}
@@ -120,6 +135,12 @@ const ArbDashboard = () => {
           captainPaused={captainPaused}
           exchangeStatus={exchangeStatus}
           feedStats={feedStats}
+          attentionItems={attentionItems}
+          attentionStats={attentionStats}
+          autoActions={autoActions}
+          captainMode={captainMode}
+          captainTiming={captainTiming}
+          discoveryState={discoveryState}
           connectionStatus={connectionStatus}
           systemState={systemState}
           startupMessages={startupMessages}

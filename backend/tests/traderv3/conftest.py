@@ -6,8 +6,7 @@ Context manager for tool dependency injection to prevent cross-test contaminatio
 
 import time
 from contextlib import contextmanager
-from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Set
+from typing import Dict, List, Optional
 from unittest.mock import AsyncMock, MagicMock
 
 from kalshiflow_rl.traderv3.single_arb.index import (
@@ -174,70 +173,46 @@ def make_config(**overrides) -> V3Config:
 
 
 @contextmanager
-def inject_tool_deps(
+def inject_tool_context(
     index=None,
-    trading_client=None,
-    memory_store=None,
-    config=None,
-    order_group_id="test-group-001",
-    order_ttl=60,
-    broadcast_callback=None,
+    gateway=None,
+    memory=None,
+    search=None,
     sniper=None,
+    sniper_config=None,
+    session=None,
+    context_builder=None,
+    broadcast=None,
+    health_service=None,
+    auto_actions=None,
 ):
-    """Context manager to inject and reset tools.py module-level globals.
+    """Context manager to inject and reset V2 ToolContext.
 
     Usage:
-        with inject_tool_deps(index=mock_index, trading_client=mock_client):
+        with inject_tool_context(index=mock_index, gateway=mock_gw):
             result = await some_tool.ainvoke({...})
-        # Globals are auto-reset after the block
+        # ToolContext is auto-reset after the block
     """
-    from kalshiflow_rl.traderv3.single_arb import tools
+    from kalshiflow_rl.traderv3.single_arb.tools import ToolContext, set_context, get_context
 
-    # Save originals
-    saved = {
-        "_index": tools._index,
-        "_trading_client": tools._trading_client,
-        "_memory_store": tools._memory_store,
-        "_config": tools._config,
-        "_order_group_id": tools._order_group_id,
-        "_order_ttl": tools._order_ttl,
-        "_broadcast_callback": tools._broadcast_callback,
-        "_captain_order_ids": tools._captain_order_ids.copy(),
-        "_order_initial_states": tools._order_initial_states.copy(),
-        "_sniper": tools._sniper,
-        "_sniper_config": tools._sniper_config,
-    }
+    saved = get_context()
 
-    # Clear tool cache before injecting (prevent cross-test cache bleed)
-    tools.clear_tool_cache()
-
-    # Inject
-    tools.set_dependencies(
-        index=index,
-        trading_client=trading_client,
-        memory_store=memory_store,
-        config=config,
-        order_group_id=order_group_id,
-        order_ttl=order_ttl,
-        broadcast_callback=broadcast_callback,
+    ctx = ToolContext(
+        gateway=gateway or MagicMock(),
+        index=index or make_index(),
+        memory=memory or MagicMock(),
+        search=search,
         sniper=sniper,
-        reset_session=True,
+        sniper_config=sniper_config,
+        session=session or MagicMock(),
+        context_builder=context_builder or MagicMock(),
+        broadcast=broadcast,
+        health_service=health_service,
+        auto_actions=auto_actions,
     )
+    set_context(ctx)
 
     try:
-        yield
+        yield ctx
     finally:
-        # Clear tool cache on teardown
-        tools.clear_tool_cache()
-        # Restore originals
-        tools._index = saved["_index"]
-        tools._trading_client = saved["_trading_client"]
-        tools._memory_store = saved["_memory_store"]
-        tools._config = saved["_config"]
-        tools._order_group_id = saved["_order_group_id"]
-        tools._order_ttl = saved["_order_ttl"]
-        tools._broadcast_callback = saved["_broadcast_callback"]
-        tools._captain_order_ids = saved["_captain_order_ids"]
-        tools._order_initial_states = saved["_order_initial_states"]
-        tools._sniper = saved["_sniper"]
-        tools._sniper_config = saved["_sniper_config"]
+        set_context(saved)

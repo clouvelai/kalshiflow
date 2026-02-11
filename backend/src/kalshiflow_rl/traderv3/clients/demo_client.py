@@ -372,7 +372,17 @@ class KalshiDemoTradingClient:
                         self.balance = Decimal(str(balance_cents)) / 100
                         logger.debug(f"Demo account balance (sub #{self._subaccount}): ${self.balance}")
                         return response
+                if self._subaccount > 0:
+                    available = [e.get("subaccount_number") for e in data.get("subaccount_balances", [])]
+                    raise KalshiDemoTradingClientError(
+                        f"Subaccount #{self._subaccount} not found in "
+                        f"/portfolio/subaccounts/balances response. "
+                        f"Available: {available}. "
+                        f"Refusing fallback to /portfolio/balance."
+                    )
                 logger.warning(f"Subaccount #{self._subaccount} not found, falling back to /portfolio/balance")
+            except KalshiDemoTradingClientError:
+                raise  # Don't re-wrap intentional errors (e.g. subaccount not found)
             except Exception as e:
                 if self._subaccount > 0:
                     raise KalshiDemoTradingClientError(

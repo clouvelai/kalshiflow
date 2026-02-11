@@ -870,6 +870,10 @@ class V3TradingClientIntegration:
             return True
 
         except Exception as e:
+            err_str = str(e)
+            if "404" in err_str or "not_found" in err_str:
+                logger.debug(f"Order group {order_group_id[:8]}... already gone (404)")
+                return False
             logger.error(f"Failed to reset order group {order_group_id[:8]}...: {e}")
             return False
 
@@ -882,6 +886,10 @@ class V3TradingClientIntegration:
             logger.info(f"Deleted order group: {order_group_id[:8]}...")
             return True
         except Exception as e:
+            err_str = str(e)
+            if "404" in err_str or "not_found" in err_str:
+                logger.debug(f"Order group {order_group_id[:8]}... already gone (404)")
+                return False
             logger.error(f"Failed to delete order group {order_group_id[:8]}...: {e}")
             return False
 

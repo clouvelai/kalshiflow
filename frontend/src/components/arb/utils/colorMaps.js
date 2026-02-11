@@ -20,9 +20,9 @@ export const getToolCategory = (toolName) => {
   if (['execute_arb', 'place_order', 'cancel_order', 'get_resting_orders'].includes(toolName)) return 'arb';
   if (['recall_memory', 'store_insight'].includes(toolName)) return 'memory';
   if (['get_portfolio'].includes(toolName)) return 'portfolio';
-  if (['get_events_summary', 'get_market_state', 'search_news'].includes(toolName)) return 'surveillance';
+  if (['get_events_summary', 'get_market_state', 'search_news', 'get_market_movers'].includes(toolName)) return 'surveillance';
   if (['get_market_orderbook', 'get_recent_trades'].includes(toolName)) return 'market';
-  if (['configure_sniper'].includes(toolName)) return 'sniper';
+  if (['configure_sniper', 'configure_automation'].includes(toolName)) return 'sniper';
   if (['get_account_health'].includes(toolName)) return 'system';
   if (['write_todos'].includes(toolName)) return 'todo';
   return 'other';
@@ -60,7 +60,9 @@ export const TOOL_ICONS = {
   recall_memory: Search,
   store_insight: Database,
   configure_sniper: Crosshair,
+  configure_automation: Wrench,
   get_account_health: HeartPulse,
+  get_market_movers: Globe,
 };
 
 /**
@@ -112,6 +114,32 @@ export const STATUS_STYLES = {
  */
 export const getStatusStyle = (status) => {
   return STATUS_STYLES[status?.toLowerCase()] || STATUS_STYLES.pending;
+};
+
+// ─── Todo Status Icons ───────────────────────────────────────────────────────
+
+// ─── Attention Urgency Styles ────────────────────────────────────────────────
+
+export const ATTENTION_URGENCY_STYLES = {
+  immediate: { bg: 'bg-red-500/15', text: 'text-red-400', dot: 'bg-red-500', pulse: true },
+  high:      { bg: 'bg-amber-500/15', text: 'text-amber-400', dot: 'bg-amber-500', pulse: false },
+  normal:    { bg: 'bg-gray-800/40', text: 'text-gray-400', dot: 'bg-gray-600', pulse: false },
+};
+
+// ─── Auto-Action Styles ─────────────────────────────────────────────────────
+
+export const AUTO_ACTION_STYLES = {
+  stop_loss:    { bg: 'bg-red-500/10', text: 'text-red-400', label: 'STOP' },
+  time_exit:    { bg: 'bg-amber-500/10', text: 'text-amber-400', label: 'TIME' },
+  regime_gate:  { bg: 'bg-violet-500/10', text: 'text-violet-400', label: 'GATE' },
+};
+
+// ─── Captain Mode Styles ────────────────────────────────────────────────────
+
+export const CAPTAIN_MODE_STYLES = {
+  reactive:  { bg: 'bg-amber-500/15', text: 'text-amber-300', border: 'border-amber-500/20' },
+  strategic: { bg: 'bg-violet-500/15', text: 'text-violet-300', border: 'border-violet-500/20' },
+  deep_scan: { bg: 'bg-blue-500/15', text: 'text-blue-300', border: 'border-blue-500/20' },
 };
 
 // ─── Todo Status Icons ───────────────────────────────────────────────────────

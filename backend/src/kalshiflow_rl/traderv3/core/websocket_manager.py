@@ -366,6 +366,19 @@ class V3WebSocketManager:
                 except Exception as e:
                     logger.debug(f"Could not send task_ledger to {client_id}: {e}")
 
+            # Send discovery_state snapshot so Discovery tab renders immediately
+            if self._single_arb_coordinator and client_id in self._clients:
+                try:
+                    discovery_snapshot = self._single_arb_coordinator.get_discovery_snapshot()
+                    if discovery_snapshot:
+                        await self._send_to_client(client_id, {
+                            "type": "discovery_state",
+                            "data": discovery_snapshot,
+                        })
+                        logger.debug(f"Sent discovery_state to {client_id}")
+                except Exception as e:
+                    logger.debug(f"Could not send discovery_state to {client_id}: {e}")
+
             # Handle incoming messages
             async for message in websocket.iter_text():
                 await self._handle_client_message(client_id, message)

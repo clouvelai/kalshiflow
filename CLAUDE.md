@@ -14,8 +14,8 @@ Project guidance for Claude Code. Focus: Captain agent development on Kalshi pre
 
 2. **V3 Trader + Captain** (active development)
    - LLM-powered Captain agent for autonomous trading
-   - Single-event arbitrage detection
-   - Mentions market probability estimation
+   - Single-event arbitrage detection with attention-driven invocation
+   - Sniper auto-execution layer for arb opportunities
    - Paper trading on demo-api.kalshi.co
 
 ## Production
@@ -72,13 +72,13 @@ Key modules:
 ┌─────────────────────────────────────────────────────────────────┐
 │                    Single-Arb System                            │
 │  ┌──────────┐  ┌──────────┐  ┌──────────────────────────────┐  │
-│  │EventArb  │──│ Monitor  │──│         Captain              │  │
+│  │EventArb  │──│ Monitor  │──│    Captain (single agent)    │  │
 │  │Index     │  │          │  │  ┌────────────────────────┐  │  │
-│  │(markets) │  │(data in) │  │  │ Subagents:             │  │  │
-│  └──────────┘  └──────────┘  │  │ - TradeCommando (exec) │  │  │
-│                              │  │ - ChevalDeTroie (surv) │  │  │
-│                              │  │ - MentionsSpecialist   │  │  │
-│                              │  │ - MemoryCurator        │  │  │
+│  │(markets) │  │(data in) │  │  │ AttentionRouter        │  │  │
+│  └──────────┘  └──────────┘  │  │ AutoActionManager      │  │  │
+│                              │  │ Sniper (auto-exec)     │  │  │
+│                              │  │ SessionMemoryStore     │  │  │
+│                              │  │ TaskLedger             │  │  │
 │                              │  └────────────────────────┘  │  │
 │                              └──────────────────────────────┘  │
 └─────────────────────────────────────────────────────────────────┘
@@ -92,7 +92,13 @@ Key modules:
 | Event Bus | `backend/src/kalshiflow_rl/traderv3/core/event_bus.py` |
 | **Captain Agent** | `backend/src/kalshiflow_rl/traderv3/single_arb/captain.py` |
 | Captain Tools | `backend/src/kalshiflow_rl/traderv3/single_arb/tools.py` |
-| Mentions Tools | `backend/src/kalshiflow_rl/traderv3/single_arb/mentions_tools.py` |
+| Captain Models | `backend/src/kalshiflow_rl/traderv3/single_arb/models.py` |
+| Context Builder | `backend/src/kalshiflow_rl/traderv3/single_arb/context_builder.py` |
+| AttentionRouter | `backend/src/kalshiflow_rl/traderv3/single_arb/attention.py` |
+| AutoActionManager | `backend/src/kalshiflow_rl/traderv3/single_arb/auto_actions.py` |
+| Sniper Execution | `backend/src/kalshiflow_rl/traderv3/single_arb/sniper.py` |
+| Task Ledger | `backend/src/kalshiflow_rl/traderv3/single_arb/task_ledger.py` |
+| Account Health | `backend/src/kalshiflow_rl/traderv3/single_arb/account_health.py` |
 | Single-Arb Coordinator | `backend/src/kalshiflow_rl/traderv3/single_arb/coordinator.py` |
 | EventArb Index | `backend/src/kalshiflow_rl/traderv3/single_arb/index.py` |
 | Memory System | `backend/src/kalshiflow_rl/traderv3/single_arb/memory/` |
@@ -164,15 +170,16 @@ cd backend && uv run pytest tests/traderv3/ tests/test_backend_e2e_regression.py
 | File | Tests | Scope |
 |------|-------|-------|
 | `test_index.py` | ~40 | MarketMeta, EventMeta, arb detection (pure) |
-| `test_auto_curator.py` | ~25 | Memory curation (pure) |
 | `test_config.py` | ~15 | V3Config validation (pure) |
-| `test_tools_helpers.py` | ~13 | Entity fingerprint, clustering (pure) |
-| `test_mentions_simulator.py` | ~13 | Wilson CI, term scanning (pure) |
 | `test_state_machine.py` | ~22 | State transitions (mocked) |
 | `test_event_bus.py` | ~17 | Pub/sub, coalescing (mocked) |
-| `test_captain_tools.py` | ~22 | LangChain tools (mocked) |
-| `test_issues.py` | ~14 | Issue lifecycle (tmp_path) |
+| `test_tools.py` | ~60 | V2 Captain tools with ToolContext (mocked) |
 | `test_sniper.py` | 30 | Sniper execution layer (mocked) |
+| `test_attention.py` | ~50 | AttentionRouter signal scoring (pure) |
+| `test_auto_actions.py` | ~40 | AutoActionManager rules (mocked) |
+| `test_context_builder.py` | ~40 | Mode-specific context injection (pure) |
+| `test_models_v2.py` | ~30 | Pydantic model validation (pure) |
+| `test_issues.py` | ~14 | Issue lifecycle (tmp_path) |
 
 ### Deployment
 
@@ -185,79 +192,89 @@ cd backend && uv run pytest tests/traderv3/ tests/test_backend_e2e_regression.py
 
 ### Overview
 
-The Captain is a multi-agent LLM system using `deepagents` framework with Claude Sonnet. It runs on a 60-second cycle, observing markets, delegating to specialized subagents, and learning from experience.
+The Captain is a single-agent, attention-driven LLM system using `deepagents` framework with Claude Sonnet. It has 3 invocation modes driven by an AttentionRouter (reactive) and timers (strategic every 5min, deep_scan every 30min).
 
-### Subagents
+### Invocation Modes
 
-| Agent | Role | Key Tools |
-|-------|------|-----------|
-| **TradeCommando** | Execution specialist | `place_order`, `execute_arb`, `cancel_order`, `get_resting_orders` |
-| **ChevalDeTroie** | Surveillance/bot detection | `analyze_microstructure`, `analyze_orderbook_patterns` |
-| **MentionsSpecialist** | Mentions market edge | `simulate_probability`, `trigger_simulation`, `compute_edge` |
-| **MemoryCurator** | Memory maintenance | `memory_store`, file operations |
+| Mode | Trigger | Context Size | Purpose |
+|------|---------|-------------|---------|
+| **Reactive** | AttentionRouter signal | ~200-400 tokens | Respond to urgent signals (edge shifts, fills, regime changes) |
+| **Strategic** | Every 5 minutes | ~400-600 tokens | Portfolio review, sniper tuning, task planning |
+| **Deep Scan** | Every 30 minutes | ~800-1200 tokens | Full event scan, health check, memory recall, rebalancing |
+
+### Key Subsystems
+
+| System | File | Role |
+|--------|------|------|
+| **AttentionRouter** | `attention.py` | Scores signals, emits AttentionItems, notifies Captain via asyncio.Event |
+| **AutoActionManager** | `auto_actions.py` | Deterministic rules: stop_loss, time_exit, regime_gate (Captain can override) |
+| **Sniper** | `sniper.py` | Auto-executes arb opportunities through risk gates (edge, capital, VPIN, cooldown) |
+| **TaskLedger** | `task_ledger.py` | Externalized working memory — intercepts write_todos, tracks priority/staleness |
+| **ContextBuilder** | `context_builder.py` | Mode-specific prompt construction with token budget awareness |
+| **SessionMemoryStore** | `memory/session_store.py` | FAISS (session, <1ms) + pgvector (persistent, fire-and-forget) |
 
 ### Memory Architecture
 
 ```
-┌────────────────┐   ┌─────────────────┐   ┌────────────────┐
-│  AGENTS.md     │   │  journal.jsonl  │   │   pgvector     │
-│  (persistent)  │   │  (append-only)  │   │  (semantic)    │
-│                │   │                 │   │                │
-│  Learnings     │   │  Trade records  │   │  Search across │
-│  loaded into   │   │  via memory_    │   │  historical    │
-│  system prompt │   │  store tool     │   │  context       │
-└────────────────┘   └─────────────────┘   └────────────────┘
+┌────────────────────┐   ┌─────────────────┐   ┌────────────────┐
+│  FAISS (session)   │   │  Task Ledger    │   │   pgvector     │
+│  <1ms retrieval    │   │  (working mem)  │   │  (persistent)  │
+│                    │   │                 │   │                │
+│  Recent insights,  │   │  [HIGH]/[MED]/  │   │  Cross-session │
+│  via recall_memory │   │  [LOW] tasks    │   │  semantic      │
+│  LRU @ 2000 items  │   │  Stale detect   │   │  search        │
+└────────────────────┘   └─────────────────┘   └────────────────┘
 ```
 
 ### Captain Tools (13 total)
 
 **Observation:**
-- `get_events_summary()` - All events with edge calculations
-- `get_event_snapshot(event_ticker)` - Full orderbook depth for one event
-- `get_market_orderbook(ticker)` - 5 levels of orderbook
-- `get_trade_history(ticker)` - Fills, settlements, P&L
-- `get_positions()` - Current positions (captain vs legacy split)
-- `get_balance()` - Account balance
+- `get_market_state(event_ticker)` - Market data with orderbook, microstructure, edge
+- `get_portfolio()` - Positions, P&L, balance
+- `get_account_health()` - Drawdown, risk metrics, retention policy
+- `get_resting_orders()` - Open orders with fill status
 
 **Execution:**
 - `place_order(ticker, side, contracts, price, reasoning)` - Single-leg order
 - `execute_arb(event_ticker, direction, max_contracts, reasoning)` - Multi-leg arb
 - `cancel_order(order_id, reason)` - Cancel resting order
 
-**Memory:**
-- `memory_store(content, memory_type, metadata)` - Persist learnings
+**Configuration:**
+- `configure_sniper(settings)` - Tune sniper edge threshold, capital limits, cooldowns
+- `configure_automation(settings)` - Tune auto-action rules (stop_loss, time_exit, regime_gate)
 
-### Mentions Strategy System
-
-Blind LLM simulation for mentions markets (e.g., "Will Trump say 'tariff'?"):
-
-1. **Blind transcript generation** - LLM generates realistic speech without knowing target terms
-2. **Post-hoc scanning** - Count term appearances in generated text
-3. **P(term) estimation** - appearances / n_simulations
-4. **Edge calculation** - Blend baseline + informed probabilities
-
-Key tools: `simulate_probability`, `trigger_simulation` (async), `compute_edge`, `query_wordnet`
+**Intelligence:**
+- `search_news(query)` - Search news for event context
+- `recall_memory(query)` - Semantic search across FAISS + pgvector
+- `store_insight(content, tags)` - Persist learnings to memory
+- `get_market_movers(event_ticker)` - Find news articles that moved prices (from news_price_impacts)
 
 ## Development Patterns
 
 ### LangChain Tools Pattern
 
 ```python
-# Tools use module-level globals for dependency injection
-_index: Optional[EventArbIndex] = None
-_trading_client: Optional[KalshiDemoTradingClient] = None
+# ToolContext dataclass replaces module-level globals
+@dataclass
+class ToolContext:
+    index: EventArbIndex
+    trading_client: KalshiDemoTradingClient
+    order_tracker: OrderTracker
+    sniper: Optional[SniperExecutor] = None
+    auto_actions: Optional[AutoActionManager] = None
+    # ... all dependencies in one place
 
-def set_dependencies(index, client, order_group_id, order_ttl):
-    """Called by coordinator at startup"""
-    global _index, _trading_client, _order_group_id, _order_ttl
-    _index = index
-    _trading_client = client
-    # ...
+_ctx: Optional[ToolContext] = None
+
+def set_context(ctx: ToolContext):
+    """Called by coordinator._setup_tools() at startup."""
+    global _ctx
+    _ctx = ctx
 
 @tool
-async def get_events_summary() -> str:
-    """Get summary of all events with edge calculations."""
-    # Implementation using _index
+async def get_market_state(event_ticker: str) -> str:
+    """Get market data with orderbook, microstructure, edge."""
+    # All tools access dependencies via _ctx
 ```
 
 ### EventBus Pattern
@@ -276,12 +293,15 @@ async def _on_orderbook(self, market_ticker: str, metadata: Dict):
 ### Memory Persistence Pattern
 
 ```python
-# File-based persistence via FilesystemBackend
-# /memories/ and /skills/ routes → FilesystemBackend (persistent)
-# Everything else → StateBackend (ephemeral per thread_id)
+# SessionMemoryStore: dual-layer memory
+# FAISS (session) — <1ms retrieval, LRU eviction at 2000 entries
+# pgvector (persistent) — fire-and-forget writes, semantic search
 
-# Each cycle gets unique thread_id to prevent history accumulation
+# Each Captain cycle gets unique thread_id to prevent history accumulation
 thread_id = str(uuid.uuid4())
+
+# Tools: recall_memory (search), store_insight (persist)
+# Shutdown: SessionMemoryStore.flush() awaits pending pgvector writes
 ```
 
 ## Configuration
@@ -293,17 +313,12 @@ All consumers read from `mentions_models.py` getters after `configure(config)` i
 
 | Tier | Env Var | Default | Used By |
 |------|---------|---------|---------|
-| **captain** | `V3_MODEL_CAPTAIN` | `claude-sonnet-4-20250514` | Captain agent, CausalModel |
-| **subagent** | `V3_MODEL_SUBAGENT` | `claude-haiku-4-5-20251001` | TradeCommando, ChevalDeTroie, MentionsSpecialist, EventUnderstanding synthesis, LifecycleClassifier |
-| **utility** | `V3_MODEL_UTILITY` | `gemini-2.0-flash` | Mentions simulation/extraction |
+| **captain** | `V3_MODEL_CAPTAIN` | `claude-sonnet-4-20250514` | Captain agent |
+| **subagent** | `V3_MODEL_SUBAGENT` | `claude-haiku-4-5-20251001` | EventUnderstanding synthesis |
+| **utility** | `V3_MODEL_UTILITY` | `gemini-2.0-flash` | (reserved for future use) |
 | **embedding** | `V3_MODEL_EMBEDDING` | `text-embedding-3-small` | VectorMemoryService (pgvector) |
 
-**Why subagent tier for structured output consumers**: Gemini Flash has a known issue dropping list fields in `.with_structured_output()`. EventUnderstanding, CausalModel, and LifecycleClassifier all use structured output with lists, so they use the subagent tier (Haiku) instead of utility tier.
-
-**Deprecated env vars** (still work as overrides):
-- `V3_SINGLE_ARB_CHEVAL_MODEL` → use `V3_MODEL_SUBAGENT`
-- `MENTIONS_SIMULATION_MODEL` → use `V3_MODEL_UTILITY`
-- `MENTIONS_EXTRACTION_MODEL` → use `V3_MODEL_UTILITY`
+**Why subagent tier for structured output consumers**: Gemini Flash has a known issue dropping list fields in `.with_structured_output()`. EventUnderstanding uses structured output with lists, so it uses the subagent tier (Haiku) instead of utility tier.
 
 ### Key Environment Variables
 
@@ -325,9 +340,6 @@ V3_MODEL_CAPTAIN=claude-sonnet-4-20250514
 V3_MODEL_SUBAGENT=claude-haiku-4-5-20251001
 V3_MODEL_UTILITY=gemini-2.0-flash
 V3_MODEL_EMBEDDING=text-embedding-3-small
-
-# Mentions
-V3_MENTIONS_ENABLED=true
 ```
 
 ### Environment Files

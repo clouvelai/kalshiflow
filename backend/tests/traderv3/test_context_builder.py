@@ -431,3 +431,257 @@ class TestTimePressureFlag:
                         time_flags.append(f"{p.ticker} ttc={ev.time_to_close_hours:.1f}h")
 
         assert len(time_flags) == 0
+
+
+# ===========================================================================
+# TestBuildReactiveContext
+# ===========================================================================
+
+class TestBuildReactiveContext:
+    def _make_builder(self):
+        event = make_event_meta("EVT-1", n_markets=3)
+        index = make_index(events=[event])
+        return ContextBuilder(index=index)
+
+    def _make_items(self):
+        from kalshiflow_rl.traderv3.single_arb.models import AttentionItem
+        return [
+            AttentionItem(
+                event_ticker="EVT-1",
+                urgency="immediate",
+                category="arb_opportunity",
+                score=75.0,
+                summary="long edge=8.2c, regime=normal",
+            ),
+            AttentionItem(
+                event_ticker="EVT-1",
+                market_ticker="EVT-1-MKT-A",
+                urgency="high",
+                category="position_risk",
+                score=60.0,
+                summary="pnl=-11c/ct",
+            ),
+        ]
+
+    def test_contains_attention_section(self):
+        builder = self._make_builder()
+        items = self._make_items()
+        portfolio = PortfolioState(balance_cents=50000, balance_dollars=500.0)
+        result = builder.build_reactive_context(items, portfolio)
+        assert "ATTENTION:" in result
+        assert "[IMMEDIATE]" in result
+        assert "[HIGH]" in result
+
+    def test_contains_portfolio(self):
+        builder = self._make_builder()
+        items = self._make_items()
+        portfolio = PortfolioState(balance_cents=50000, balance_dollars=500.0)
+        result = builder.build_reactive_context(items, portfolio)
+        assert "PORTFOLIO:" in result
+        assert "$500.00" in result
+
+    def test_contains_action_directive(self):
+        builder = self._make_builder()
+        items = self._make_items()
+        portfolio = PortfolioState(balance_cents=50000, balance_dollars=500.0)
+        result = builder.build_reactive_context(items, portfolio)
+        assert "ACTION:" in result
+
+    def test_shows_relevant_positions(self):
+        from kalshiflow_rl.traderv3.single_arb.models import Position
+        builder = self._make_builder()
+        items = self._make_items()
+        portfolio = PortfolioState(
+            balance_cents=50000,
+            balance_dollars=500.0,
+            positions=[
+                Position(ticker="EVT-1-MKT-A", event_ticker="EVT-1",
+                         side="yes", quantity=10, cost_cents=400,
+                         unrealized_pnl_cents=-110),
+            ],
+            total_positions=1,
+            total_unrealized_pnl_cents=-110,
+        )
+        result = builder.build_reactive_context(items, portfolio)
+        assert "EVT-1-MKT-A" in result
+        assert "yes" in result
+
+    def test_includes_sniper_when_enabled(self):
+        builder = self._make_builder()
+        items = self._make_items()
+        portfolio = PortfolioState(balance_cents=50000, balance_dollars=500.0)
+        sniper = SniperStatus(enabled=True, total_arbs_executed=3, capital_in_flight=100)
+        result = builder.build_reactive_context(items, portfolio, sniper)
+        assert "SNIPER:" in result
+        assert "3 arbs" in result
+
+
+# ===========================================================================
+# TestBuildStrategicContext
+# ===========================================================================
+
+class TestBuildStrategicContext:
+    def _make_builder(self):
+        event = make_event_meta("EVT-1", n_markets=3)
+        index = make_index(events=[event])
+        return ContextBuilder(index=index)
+
+    def test_contains_portfolio(self):
+        builder = self._make_builder()
+        portfolio = PortfolioState(balance_cents=50000, balance_dollars=500.0)
+        result = builder.build_strategic_context(portfolio, [])
+        assert "PORTFOLIO:" in result
+
+    def test_contains_pending_attention(self):
+        from kalshiflow_rl.traderv3.single_arb.models import AttentionItem
+        builder = self._make_builder()
+        portfolio = PortfolioState(balance_cents=50000, balance_dollars=500.0)
+        pending = [
+            AttentionItem(
+                event_ticker="EVT-1",
+                urgency="normal",
+                category="edge_emergence",
+                score=42.0,
+                summary="edge=3.1c",
+            ),
+        ]
+        result = builder.build_strategic_context(portfolio, pending)
+        assert "PENDING_ATTENTION:" in result
+        assert "1 items" in result
+
+    def test_contains_task_section(self):
+        builder = self._make_builder()
+        portfolio = PortfolioState(balance_cents=50000, balance_dollars=500.0)
+        result = builder.build_strategic_context(portfolio, [], task_section="TASKS:\n[>] Monitor EVT-1")
+        assert "TASKS:" in result
+
+    def test_contains_action_directive(self):
+        builder = self._make_builder()
+        portfolio = PortfolioState(balance_cents=50000, balance_dollars=500.0)
+        result = builder.build_strategic_context(portfolio, [])
+        assert "ACTION:" in result
+
+    def test_contains_sniper_stats(self):
+        builder = self._make_builder()
+        portfolio = PortfolioState(balance_cents=50000, balance_dollars=500.0)
+        sniper = SniperStatus(
+            enabled=True, total_arbs_executed=5, total_trades=8,
+            last_rejection_reason="vpin_toxic",
+        )
+        result = builder.build_strategic_context(portfolio, [], sniper)
+        assert "SNIPER:" in result
+        assert "5 arbs" in result
+        assert "vpin_toxic" in result
+
+
+# ===========================================================================
+# TestBuildDeepScanContext
+# ===========================================================================
+
+class TestBuildDeepScanContext:
+    def _make_builder(self):
+        event = make_event_meta("EVT-1", n_markets=3)
+        index = make_index(events=[event])
+        return ContextBuilder(index=index)
+
+    def test_contains_events_json(self):
+        builder = self._make_builder()
+        market_state = builder.build_market_state()
+        portfolio = PortfolioState(balance_cents=50000, balance_dollars=500.0)
+        result = builder.build_deep_scan_context(market_state, portfolio)
+        assert "EVENTS:" in result
+        assert "EVT-1" in result
+
+    def test_contains_full_portfolio(self):
+        from kalshiflow_rl.traderv3.single_arb.models import Position
+        builder = self._make_builder()
+        market_state = builder.build_market_state()
+        portfolio = PortfolioState(
+            balance_cents=50000,
+            balance_dollars=500.0,
+            positions=[
+                Position(ticker="EVT-1-MKT-A", event_ticker="EVT-1",
+                         side="yes", quantity=10, cost_cents=400,
+                         unrealized_pnl_cents=-50),
+            ],
+            total_positions=1,
+            total_unrealized_pnl_cents=-50,
+            total_cost_cents=400,
+        )
+        result = builder.build_deep_scan_context(market_state, portfolio)
+        assert "EVT-1-MKT-A" in result
+        assert "cost=" in result
+
+    def test_contains_health(self):
+        builder = self._make_builder()
+        market_state = builder.build_market_state()
+        portfolio = PortfolioState(balance_cents=50000, balance_dollars=500.0)
+        health = {"drawdown_pct": 8.5, "total_realized_pnl_cents": 1200, "settlement_count_session": 3}
+        result = builder.build_deep_scan_context(market_state, portfolio, health=health)
+        assert "HEALTH:" in result
+        assert "8.5%" in result
+
+    def test_contains_trade_memories(self):
+        builder = self._make_builder()
+        market_state = builder.build_market_state()
+        portfolio = PortfolioState(balance_cents=50000, balance_dollars=500.0)
+        trade_mems = ["OUTCOME: buy 5/5 yes EVT-1-MKT-A @40c -> executed", "OUTCOME: sell cancelled"]
+        result = builder.build_deep_scan_context(market_state, portfolio, trade_memories=trade_mems)
+        assert "TRADE_LEARNINGS:" in result
+        assert "executed" in result
+
+    def test_contains_news_memories(self):
+        builder = self._make_builder()
+        market_state = builder.build_market_state()
+        portfolio = PortfolioState(balance_cents=50000, balance_dollars=500.0)
+        news_mems = ["Fed rate decision moved markets 8c", "Jobs report missed expectations"]
+        result = builder.build_deep_scan_context(market_state, portfolio, news_memories=news_mems)
+        assert "NEWS_LEARNINGS:" in result
+        assert "Fed rate" in result
+
+    def test_no_memories_omits_sections(self):
+        builder = self._make_builder()
+        market_state = builder.build_market_state()
+        portfolio = PortfolioState(balance_cents=50000, balance_dollars=500.0)
+        result = builder.build_deep_scan_context(market_state, portfolio)
+        assert "TRADE_LEARNINGS:" not in result
+        assert "NEWS_LEARNINGS:" not in result
+
+    def test_contains_sniper_perf(self):
+        builder = self._make_builder()
+        market_state = builder.build_market_state()
+        portfolio = PortfolioState(balance_cents=50000, balance_dollars=500.0)
+        sniper = SniperStatus(
+            enabled=True, total_arbs_executed=10, total_trades=15,
+            total_partial_unwinds=2, capital_deployed_lifetime=5000,
+        )
+        result = builder.build_deep_scan_context(market_state, portfolio, sniper)
+        assert "SNIPER_PERF:" in result
+        assert "arbs=10" in result
+
+    def test_contains_action_directive(self):
+        builder = self._make_builder()
+        market_state = builder.build_market_state()
+        portfolio = PortfolioState(balance_cents=50000, balance_dollars=500.0)
+        result = builder.build_deep_scan_context(market_state, portfolio)
+        assert "ACTION:" in result
+
+    def test_contains_market_movers(self):
+        builder = self._make_builder()
+        market_state = builder.build_market_state()
+        portfolio = PortfolioState(balance_cents=50000, balance_dollars=500.0)
+        movers = [
+            {"news_title": "Fed cuts rates", "market_ticker": "MKT-A", "change_cents": 8, "direction": "up"},
+            {"news_title": "Jobs report miss", "market_ticker": "MKT-B", "change_cents": 5, "direction": "down"},
+        ]
+        result = builder.build_deep_scan_context(market_state, portfolio, market_movers=movers)
+        assert "NEWS_IMPACT" in result
+        assert "Fed cuts rates" in result
+        assert "8c" in result
+
+    def test_no_market_movers_omits_section(self):
+        builder = self._make_builder()
+        market_state = builder.build_market_state()
+        portfolio = PortfolioState(balance_cents=50000, balance_dollars=500.0)
+        result = builder.build_deep_scan_context(market_state, portfolio, market_movers=None)
+        assert "NEWS_IMPACT" not in result

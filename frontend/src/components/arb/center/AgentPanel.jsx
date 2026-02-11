@@ -3,6 +3,8 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { Loader2, Eye, Terminal, Crosshair, AlertTriangle, Radio } from 'lucide-react';
 import CaptainHeader from '../panels/agent/CaptainHeader';
 import AgentStateIndicator from '../panels/agent/AgentStateIndicator';
+import AttentionFeed from '../panels/agent/AttentionFeed';
+import AutoActionStrip from '../panels/agent/AutoActionStrip';
 import ActivityFeed from '../panels/agent/ActivityFeed';
 import TodoListSection from '../panels/agent/TodoListSection';
 import renderThinkingMarkdown from '../../../utils/renderThinkingMarkdown';
@@ -187,13 +189,19 @@ const AgentPanel = memo(({
   thinking, activeToolCall, toolCalls,
   todos, memoryOps,
   sniperState, captainPaused, exchangeStatus, feedStats,
+  attentionItems, attentionStats, autoActions, captainMode, captainTiming, cycleMode,
+  connectionStatus,
 }) => {
+  const attentionCount = attentionItems?.length || 0;
+
   return (
     <div className="flex-1 min-h-0 flex flex-col bg-gray-950/30">
-      <CaptainHeader isRunning={isRunning} cycleCount={cycleCount} captainPaused={captainPaused} exchangeStatus={exchangeStatus} />
+      <CaptainHeader isRunning={isRunning} cycleCount={cycleCount} captainPaused={captainPaused} exchangeStatus={exchangeStatus} captainMode={captainMode} captainTiming={captainTiming} attentionCount={attentionCount} connectionStatus={connectionStatus} />
       <FreshnessBar exchangeStatus={exchangeStatus} feedStats={feedStats} />
       <SniperStatusStrip sniperState={sniperState} />
-      <AgentStateIndicator isRunning={isRunning} activeToolCall={activeToolCall} thinking={thinking} />
+      <AutoActionStrip autoActions={autoActions} />
+      <AgentStateIndicator isRunning={isRunning} activeToolCall={activeToolCall} thinking={thinking} cycleMode={cycleMode} attentionCount={attentionCount} />
+      <AttentionFeed attentionItems={attentionItems} attentionStats={attentionStats} />
       <ThinkingPanel thinking={thinking} activeToolCall={activeToolCall} isRunning={isRunning} />
 
       {/* Activity content */}

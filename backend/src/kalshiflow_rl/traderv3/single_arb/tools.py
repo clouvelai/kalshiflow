@@ -1,4 +1,4 @@
-"""Captain V2 tools - 10 tools for single-agent Captain.
+"""Captain V2 tools - 12 tools for single-agent Captain.
 
 Single ToolContext dataclass replaces 14 module-level globals.
 All tools return Pydantic models (serialized via .model_dump()).
@@ -28,6 +28,7 @@ from .models import (
 
 if TYPE_CHECKING:
     from .account_health import AccountHealthService
+    from .auto_actions import AutoActionManager
     from .context_builder import ContextBuilder
     from .index import EventArbIndex
     from .memory.session_store import SessionMemoryStore
@@ -87,6 +88,7 @@ class ToolContext:
     context_builder: "ContextBuilder"
     broadcast: Optional[Callable[..., Coroutine]] = None
     health_service: Optional["AccountHealthService"] = None
+    auto_actions: Optional["AutoActionManager"] = None
     captain_order_ids: Set[str] = field(default_factory=set)
     order_initial_states: Dict[str, dict] = field(default_factory=dict)
     news_cache: Dict[str, tuple] = field(default_factory=dict)
@@ -782,10 +784,10 @@ async def configure_sniper(settings: Dict[str, Any]) -> Dict[str, Any]:
     Args:
         settings: Dict of config parameters. Common keys:
             enabled: bool - Turn sniper on/off
-            arb_min_edge: float - Minimum edge in cents to trigger (default 2.0)
-            max_capital: int - Max capital in cents (default 5000 = $50)
-            max_position: int - Max contracts per leg (default 10)
-            cooldown: float - Seconds between trades on same event (default 30)
+            arb_min_edge: float - Minimum edge in cents to trigger (default 3.0)
+            max_capital: int - Max capital in cents (default 100000 = $1000, minimum 5000 = $50)
+            max_position: int - Max contracts per leg (default 25)
+            cooldown: float - Seconds between trades on same event (default 10)
             vpin_reject_threshold: float - VPIN above this blocks trades (default 0.85)
 
     Returns:
@@ -834,6 +836,107 @@ async def get_account_health() -> Dict[str, Any]:
     return status.model_dump()
 
 
+# --- Tool 12: configure_automation ---
+
+@tool
+async def configure_automation(settings: Dict[str, Any]) -> Dict[str, Any]:
+    """Configure automated trading actions (stop_loss, time_exit, regime_gate).
+
+    Captain retains override authority over all auto-actions. Auto-actions fire
+    deterministically when conditions are met, but you can tune thresholds,
+    enable/disable per action, and set per-ticker/event overrides.
+
+    Args:
+        settings: Must include "action" key. Valid actions: "stop_loss", "time_exit", "regime_gate".
+            Common settings:
+            - "action": str (required) — which auto-action to configure
+            - "enabled": bool — enable/disable action globally
+            - "ticker": str — set per-ticker override (for stop_loss)
+            - "event": str — set per-event override (for time_exit, regime_gate)
+
+            stop_loss settings:
+            - "threshold": int — P&L threshold in cents/contract (default -12)
+
+            time_exit settings:
+            - "threshold_minutes": int — minutes before close to exit (default 30)
+            - "hold_through": bool — per-event override to hold through settlement
+
+            regime_gate settings:
+            - "cooldown": float — seconds to pause sniper after toxic regime (default 300)
+            - "ignore_regime": bool — per-event override to ignore regime changes
+
+    Returns:
+        Updated configuration for the specified action, or all actions if action="status".
+    """
+    if not _ctx or not _ctx.auto_actions:
+        return {"error": "Auto-actions not available"}
+
+    action_name = settings.get("action", "")
+    if action_name == "status":
+        return _ctx.auto_actions.get_stats()
+
+    if not action_name:
+        return {"error": "Missing 'action' key. Valid: stop_loss, time_exit, regime_gate, status"}
+
+    # Remove the "action" key before passing to configure
+    config_settings = {k: v for k, v in settings.items() if k != "action"}
+    return _ctx.auto_actions.configure(action_name, config_settings)
+
+
+# --- Tool 13: get_market_movers ---
+
+@tool
+async def get_market_movers(
+    event_ticker: str,
+    min_change_cents: int = 5,
+) -> Dict[str, Any]:
+    """Find news articles that moved prices for this event.
+
+    Queries the news_price_impacts table (populated every 30min) for articles
+    where price changed >= min_change_cents at 1h, 4h, or 24h after publication.
+    Use in DEEP_SCAN to understand which news types actually move prices.
+
+    Args:
+        event_ticker: Event to query (e.g., "KXEVENT-ABC")
+        min_change_cents: Minimum price change to qualify (default 5c)
+
+    Returns:
+        Dict with movers list and count
+    """
+    if not _ctx:
+        return {"error": "ToolContext not available"}
+
+    try:
+        from kalshiflow_rl.data.database import rl_db
+        pool = await rl_db.get_pool()
+    except Exception as e:
+        return {"error": f"Database not available: {e}", "movers": [], "count": 0}
+
+    try:
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM find_market_movers($1, $2, $3)",
+                event_ticker, min_change_cents, 10,
+            )
+
+        movers = [
+            {
+                "news_title": row["news_title"],
+                "news_url": row["news_url"],
+                "change_cents": row["change_cents"],
+                "direction": row["direction"],
+                "delay_hours": row["delay_hours"],
+                "market_ticker": row["market_ticker"],
+            }
+            for row in rows
+        ]
+        return {"event_ticker": event_ticker, "movers": movers, "count": len(movers)}
+
+    except Exception as e:
+        logger.warning(f"[TOOLS:MARKET_MOVERS] Query failed: {e}")
+        return {"error": f"Query failed: {e}", "movers": [], "count": 0}
+
+
 # --- Tool list for Captain V2 ---
 
 ALL_TOOLS = [
@@ -848,6 +951,8 @@ ALL_TOOLS = [
     store_insight,
     configure_sniper,
     get_account_health,
+    configure_automation,
+    get_market_movers,
 ]
 
 # Tool categorization for frontend event routing
@@ -862,6 +967,8 @@ TOOL_CATEGORIES = {
     "recall_memory": "memory",
     "store_insight": "memory",
     "configure_sniper": "sniper",
+    "configure_automation": "sniper",
     "get_account_health": "system",
+    "get_market_movers": "arb",
     "write_todos": "todo",
 }

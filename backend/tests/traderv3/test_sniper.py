@@ -24,6 +24,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from kalshiflow_rl.traderv3.single_arb.sniper import (
+    SNIPER_MIN_CAPITAL,
     Sniper,
     SniperAction,
     SniperConfig,
@@ -173,57 +174,61 @@ class TestBalanceGating:
         sniper._gateway.get_balance = AsyncMock(return_value=MockBalance(balance=100_000, portfolio_value=0))
 
         opp = MockArbOpportunity()
-        rejection = await sniper._check_risk_gates(opp)
+        rejection, contracts = await sniper._check_risk_gates(opp)
         assert rejection is None
+        assert contracts >= 1
 
     @pytest.mark.asyncio
     async def test_insufficient_balance_rejects(self):
-        """If available balance < estimated cost, reject."""
+        """If available balance < cost of 1 contract set, reject."""
         sniper = make_sniper(max_capital=50000)
-        # Only 100c available, but est_cost = 3 legs × 10 contracts × (40+30+20) = 900c
-        sniper._gateway.get_balance = AsyncMock(return_value=MockBalance(balance=100, portfolio_value=0))
+        # 90c per contract set (40+30+20), balance only 80c → can't afford even 1
+        sniper._gateway.get_balance = AsyncMock(return_value=MockBalance(balance=80, portfolio_value=0))
 
         opp = MockArbOpportunity()
-        rejection = await sniper._check_risk_gates(opp)
+        rejection, contracts = await sniper._check_risk_gates(opp)
         assert rejection is not None
         assert "insufficient_balance" in rejection
+        assert contracts == 0
 
     @pytest.mark.asyncio
     async def test_capital_active_plus_est_exceeds_max_rejects(self):
-        """If capital_active + est_cost > max_capital, reject."""
+        """If headroom < cost of 1 contract set, reject (even with scaling)."""
         sniper = make_sniper(max_capital=5000)
         sniper._gateway.get_balance = AsyncMock(return_value=MockBalance(balance=100_000, portfolio_value=0))
-        # Set capital_active to 4200c. Est cost = 3 legs x 10 x (40+30+20) = 900c.
-        # 4200 + 900 = 5100 > 5000 → should reject
-        sniper.state.capital_active = 4200
+        # headroom = 5000 - 4950 = 50c. Cost per contract set = 90c. 50 < 90 → reject
+        sniper.state.capital_active = 4950
 
         opp = MockArbOpportunity()
-        rejection = await sniper._check_risk_gates(opp)
+        rejection, contracts = await sniper._check_risk_gates(opp)
         assert rejection is not None
         assert "sniper_capital_limit" in rejection
+        assert contracts == 0
 
     @pytest.mark.asyncio
     async def test_capital_active_plus_est_within_max_passes(self):
         """If capital_active + est_cost <= max_capital, pass."""
         sniper = make_sniper(max_capital=5000)
         sniper._gateway.get_balance = AsyncMock(return_value=MockBalance(balance=100_000, portfolio_value=0))
-        # Set capital_active to 4000c. Est cost = 900c. 4000 + 900 = 4900 <= 5000 → should pass
+        # headroom = 5000 - 4000 = 1000c. 1000 // 90 = 11 contracts. min(10, 11, ...) = 10.
         sniper.state.capital_active = 4000
 
         opp = MockArbOpportunity()
-        rejection = await sniper._check_risk_gates(opp)
+        rejection, contracts = await sniper._check_risk_gates(opp)
         assert rejection is None
+        assert contracts == 10
 
     @pytest.mark.asyncio
     async def test_zero_capital_active_passes(self):
         """Fresh session with no capital deployed should pass."""
         sniper = make_sniper(max_capital=5000)
         sniper._gateway.get_balance = AsyncMock(return_value=MockBalance(balance=100_000, portfolio_value=8000))
-        # portfolio_value is high but irrelevant now; capital_active=0, est=900 <= 5000
+        # headroom = 5000 - 0 = 5000c. 5000 // 90 = 55. min(10, 55, ...) = 10.
 
         opp = MockArbOpportunity()
-        rejection = await sniper._check_risk_gates(opp)
+        rejection, contracts = await sniper._check_risk_gates(opp)
         assert rejection is None
+        assert contracts == 10
 
     @pytest.mark.asyncio
     async def test_balance_api_failure_rejects_conservatively(self):
@@ -232,9 +237,10 @@ class TestBalanceGating:
         sniper._gateway.get_balance = AsyncMock(side_effect=Exception("API down"))
 
         opp = MockArbOpportunity()
-        rejection = await sniper._check_risk_gates(opp)
+        rejection, contracts = await sniper._check_risk_gates(opp)
         assert rejection is not None
         assert "balance_api_error" in rejection
+        assert contracts == 0
 
     @pytest.mark.asyncio
     async def test_balance_telemetry_populated(self):
@@ -404,12 +410,13 @@ class TestCapitalGateCostEstimate:
     @pytest.mark.asyncio
     async def test_insufficient_balance_for_estimated_cost(self):
         sniper = make_sniper(max_capital=50000, max_position=10)
-        # 3 legs × 10 contracts × (40+30+20) = 900c. Balance only 500c.
-        sniper._gateway.get_balance = AsyncMock(return_value=MockBalance(balance=500, portfolio_value=0))
+        # 90c per contract set (40+30+20). Balance only 80c → can't afford even 1
+        sniper._gateway.get_balance = AsyncMock(return_value=MockBalance(balance=80, portfolio_value=0))
         opp = MockArbOpportunity()
-        rejection = await sniper._check_risk_gates(opp)
+        rejection, contracts = await sniper._check_risk_gates(opp)
         assert rejection is not None
         assert "insufficient_balance" in rejection
+        assert contracts == 0
 
     @pytest.mark.asyncio
     async def test_cost_estimate_with_size_limited_legs(self):
@@ -422,9 +429,10 @@ class TestCapitalGateCostEstimate:
             MockLeg(ticker="B", price_cents=30, size_available=2),
             MockLeg(ticker="C", price_cents=30, size_available=2),
         ]
-        # 180c < 200c balance, should pass
-        rejection = await sniper._check_risk_gates(opp)
+        # 180c < 200c balance, should pass with 2 contracts
+        rejection, contracts = await sniper._check_risk_gates(opp)
         assert rejection is None
+        assert contracts == 2
 
 
 # ---------------------------------------------------------------------------
@@ -615,6 +623,122 @@ class TestKillPositionsCapitalReset:
         assert sniper.state.capital_active == 0
         assert result["cancelled"] == 2
 
+
+# ---------------------------------------------------------------------------
+# Pause/Resume
+# ---------------------------------------------------------------------------
+
+class TestSniperPause:
+    @pytest.mark.asyncio
+    async def test_paused_sniper_rejects_opportunity(self):
+        """A paused sniper should return None without checking risk gates."""
+        sniper = make_sniper(max_capital=50000)
+        sniper.pause("test")
+
+        opp = MockArbOpportunity()
+        result = await sniper.on_arb_opportunity(opp)
+
+        assert result is None
+        # Balance API should NOT have been called (early return)
+        sniper._gateway.get_balance.assert_not_called()
+
+    def test_pause_resume_toggle(self):
+        """Pause and resume should toggle the flag correctly."""
+        sniper = make_sniper()
+        assert not sniper.is_paused
+        sniper.pause("test")
+        assert sniper.is_paused
+        sniper.resume()
+        assert not sniper.is_paused
+
+
+# ---------------------------------------------------------------------------
+# Attention callback
+# ---------------------------------------------------------------------------
+
+class TestAttentionCallback:
+    @pytest.mark.asyncio
+    async def test_attention_callback_on_execution(self):
+        """Attention callback should fire after successful arb execution."""
+        sniper = make_sniper(max_capital=50000)
+        callback = MagicMock()
+        sniper._attention_callback = callback
+
+        order_ids = iter(["a", "b", "c"])
+        sniper._gateway.create_order = AsyncMock(
+            side_effect=lambda **kw: MockOrderResponse(order_id=next(order_ids))
+        )
+
+        opp = MockArbOpportunity()
+        action = await sniper.on_arb_opportunity(opp)
+
+        assert action is not None
+        assert action.legs_filled == 3
+        callback.assert_called_once()
+
+        item = callback.call_args[0][0]
+        assert item.category == "sniper_execution"
+        assert item.event_ticker == "EVENT-1"
+        assert "direction" in item.data
+
+    @pytest.mark.asyncio
+    async def test_attention_callback_on_capital_rejection(self):
+        """Attention callback should fire when rejected for capital limit."""
+        sniper = make_sniper(max_capital=100)  # Very low capital limit
+        callback = MagicMock()
+        sniper._attention_callback = callback
+
+        # Set capital_active near limit
+        sniper.state.capital_active = 50
+
+        opp = MockArbOpportunity()
+        result = await sniper.on_arb_opportunity(opp)
+
+        assert result is None
+        callback.assert_called_once()
+
+        item = callback.call_args[0][0]
+        assert item.category == "sniper_rejection"
+        assert "sniper_capital_limit" in item.data["rejection_reason"]
+
+    @pytest.mark.asyncio
+    async def test_attention_callback_on_vpin_rejection(self):
+        """Attention callback should fire when rejected for VPIN toxicity."""
+        sniper = make_sniper(max_capital=50000)
+        callback = MagicMock()
+        sniper._attention_callback = callback
+
+        # Set VPIN above threshold on a market
+        event = sniper._index.events["EVENT-1"]
+        event.markets["MKT-A"].micro.vpin = 0.95
+
+        opp = MockArbOpportunity()
+        result = await sniper.on_arb_opportunity(opp)
+
+        assert result is None
+        callback.assert_called_once()
+
+        item = callback.call_args[0][0]
+        assert item.category == "sniper_rejection"
+        assert "vpin_toxic" in item.data["rejection_reason"]
+
+    @pytest.mark.asyncio
+    async def test_no_attention_callback_on_normal_rejection(self):
+        """Attention callback should NOT fire for non-notable rejections (e.g. cooldown)."""
+        sniper = make_sniper(max_capital=50000)
+        callback = MagicMock()
+        sniper._attention_callback = callback
+
+        # Trigger cooldown rejection
+        sniper.state._event_last_trade["EVENT-1"] = time.time()
+
+        opp = MockArbOpportunity()
+        result = await sniper.on_arb_opportunity(opp)
+
+        assert result is None
+        callback.assert_not_called()
+
+
     @pytest.mark.asyncio
     async def test_kill_positions_resets_capital_even_on_errors(self):
         """capital_active resets to 0 even if cancels fail."""
@@ -634,3 +758,141 @@ class TestKillPositionsCapitalReset:
         assert sniper.state.capital_active == 0
         assert result["cancelled"] == 0
         assert len(result["errors"]) == 1
+
+
+# ---------------------------------------------------------------------------
+# Capital scaling (trade size scaling when headroom is limited)
+# ---------------------------------------------------------------------------
+
+class TestCapitalScaling:
+    @pytest.mark.asyncio
+    async def test_scales_down_contracts_when_capital_limited(self):
+        """When capital headroom limits contracts, scale down instead of rejecting."""
+        sniper = make_sniper(max_capital=5000, max_position=25)
+        sniper._gateway.get_balance = AsyncMock(return_value=MockBalance(balance=100_000))
+        # headroom = 5000 - 4600 = 400c. total_price = 90c. 400 // 90 = 4 contracts.
+        sniper.state.capital_active = 4600
+
+        opp = MockArbOpportunity()
+        rejection, contracts = await sniper._check_risk_gates(opp)
+        assert rejection is None
+        assert contracts == 4
+
+    @pytest.mark.asyncio
+    async def test_scales_down_contracts_when_balance_limited(self):
+        """When balance limits contracts, scale down instead of rejecting."""
+        sniper = make_sniper(max_capital=50000, max_position=25)
+        # balance=450c, total_price=90c. 450 // 90 = 5 contracts.
+        sniper._gateway.get_balance = AsyncMock(return_value=MockBalance(balance=450))
+
+        opp = MockArbOpportunity()
+        rejection, contracts = await sniper._check_risk_gates(opp)
+        assert rejection is None
+        assert contracts == 5
+
+    @pytest.mark.asyncio
+    async def test_rejects_when_one_contract_exceeds_headroom(self):
+        """When headroom can't afford even 1 contract set, reject."""
+        sniper = make_sniper(max_capital=5000, max_position=25)
+        sniper._gateway.get_balance = AsyncMock(return_value=MockBalance(balance=100_000))
+        # headroom = 5000 - 4920 = 80c. total_price = 90c. 80 < 90 → reject
+        sniper.state.capital_active = 4920
+
+        opp = MockArbOpportunity()
+        rejection, contracts = await sniper._check_risk_gates(opp)
+        assert rejection is not None
+        assert "sniper_capital_limit" in rejection
+        assert contracts == 0
+
+    @pytest.mark.asyncio
+    async def test_rejects_when_capital_active_at_max(self):
+        """When capital_active >= max_capital, reject (zero headroom)."""
+        sniper = make_sniper(max_capital=5000, max_position=25)
+        sniper._gateway.get_balance = AsyncMock(return_value=MockBalance(balance=100_000))
+        sniper.state.capital_active = 5000  # Exactly at max
+
+        opp = MockArbOpportunity()
+        rejection, contracts = await sniper._check_risk_gates(opp)
+        assert rejection is not None
+        assert "sniper_capital_limit" in rejection
+        assert contracts == 0
+
+    @pytest.mark.asyncio
+    async def test_scaling_uses_min_of_all_constraints(self):
+        """Approved contracts = min(liquidity, capital, balance)."""
+        sniper = make_sniper(max_capital=50000, max_position=25)
+        # balance allows 3 contracts (300 // 90 = 3)
+        # capital allows many (50000 // 90 = 555)
+        # liquidity = size_available=5
+        # Result: min(5, 555, 3) = 3
+        sniper._gateway.get_balance = AsyncMock(return_value=MockBalance(balance=300))
+
+        opp = MockArbOpportunity()
+        opp.legs = [
+            MockLeg(ticker="A", price_cents=40, size_available=5),
+            MockLeg(ticker="B", price_cents=30, size_available=5),
+            MockLeg(ticker="C", price_cents=20, size_available=5),
+        ]
+        rejection, contracts = await sniper._check_risk_gates(opp)
+        assert rejection is None
+        assert contracts == 3
+
+
+# ---------------------------------------------------------------------------
+# Config validation (floor clamping)
+# ---------------------------------------------------------------------------
+
+class TestConfigValidation:
+    def test_max_capital_below_floor_gets_clamped(self):
+        """max_capital below SNIPER_MIN_CAPITAL should be clamped up."""
+        config = SniperConfig()
+        changed, _ = config.update(max_capital=1000)
+        assert config.max_capital == SNIPER_MIN_CAPITAL
+        assert "max_capital" in changed
+
+    def test_max_capital_zero_gets_clamped(self):
+        """max_capital=0 should be clamped to floor."""
+        config = SniperConfig()
+        changed, _ = config.update(max_capital=0)
+        assert config.max_capital == SNIPER_MIN_CAPITAL
+        assert "max_capital" in changed
+
+    def test_max_capital_negative_gets_clamped(self):
+        """Negative max_capital should be clamped to floor."""
+        config = SniperConfig()
+        changed, _ = config.update(max_capital=-500)
+        assert config.max_capital == SNIPER_MIN_CAPITAL
+        assert "max_capital" in changed
+
+    def test_max_capital_at_floor_stays(self):
+        """max_capital exactly at floor should be accepted without clamping."""
+        config = SniperConfig()
+        changed, _ = config.update(max_capital=SNIPER_MIN_CAPITAL)
+        assert config.max_capital == SNIPER_MIN_CAPITAL
+
+    def test_max_capital_above_floor_accepted(self):
+        """max_capital above floor should be accepted as-is."""
+        config = SniperConfig()
+        changed, _ = config.update(max_capital=20000)
+        assert config.max_capital == 20000
+        assert "max_capital" in changed
+
+    def test_max_position_zero_gets_clamped(self):
+        """max_position=0 should be clamped to 1."""
+        config = SniperConfig()
+        changed, _ = config.update(max_position=0)
+        assert config.max_position == 1
+        assert "max_position" in changed
+
+    def test_max_position_negative_gets_clamped(self):
+        """Negative max_position should be clamped to 1."""
+        config = SniperConfig()
+        changed, _ = config.update(max_position=-3)
+        assert config.max_position == 1
+        assert "max_position" in changed
+
+    def test_max_position_positive_accepted(self):
+        """Positive max_position should be accepted as-is."""
+        config = SniperConfig()
+        changed, _ = config.update(max_position=15)
+        assert config.max_position == 15

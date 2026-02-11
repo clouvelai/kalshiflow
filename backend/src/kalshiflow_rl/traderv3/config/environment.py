@@ -123,6 +123,16 @@ class V3Config:
     sniper_order_ttl: int = 30                     # V3_SNIPER_ORDER_TTL - order TTL in seconds
     sniper_leg_timeout: float = 5.0                # V3_SNIPER_LEG_TIMEOUT - per-leg placement timeout in seconds
 
+    # Discovery Configuration
+    discovery_event_count: int = 10               # V3_DISCOVERY_EVENT_COUNT - top N events by volume
+    discovery_seed_events: List[str] = field(default_factory=list)  # V3_DISCOVERY_SEED_EVENTS - optional hard-coded event tickers
+    discovery_max_markets_per_event: int = 50     # V3_DISCOVERY_MAX_MARKETS - skip oversized events
+    discovery_refresh_interval: float = 300.0      # V3_DISCOVERY_REFRESH_INTERVAL - seconds between discovery refreshes
+
+    # Attention-Driven Captain Configuration
+    strategic_interval: float = 300.0              # V3_STRATEGIC_INTERVAL - seconds between strategic reviews
+    deep_scan_interval: float = 1800.0             # V3_DEEP_SCAN_INTERVAL - seconds between deep scans
+
     # Account Health Configuration
     max_drawdown_pct: float = 25.0                 # V3_MAX_DRAWDOWN_PCT - pause Captain when drawdown exceeds this
 
@@ -293,6 +303,17 @@ class V3Config:
         sniper_order_ttl = int(os.environ.get("V3_SNIPER_ORDER_TTL", "30"))
         sniper_leg_timeout = float(os.environ.get("V3_SNIPER_LEG_TIMEOUT", "5.0"))
 
+        # Discovery Configuration
+        discovery_event_count = int(os.environ.get("V3_DISCOVERY_EVENT_COUNT", "10"))
+        discovery_seed_events_str = os.environ.get("V3_DISCOVERY_SEED_EVENTS", "")
+        discovery_seed_events = [s.strip() for s in discovery_seed_events_str.split(",") if s.strip()]
+        discovery_max_markets_per_event = int(os.environ.get("V3_DISCOVERY_MAX_MARKETS", "50"))
+        discovery_refresh_interval = float(os.environ.get("V3_DISCOVERY_REFRESH_INTERVAL", "300.0"))
+
+        # Attention-Driven Captain Configuration
+        strategic_interval = float(os.environ.get("V3_STRATEGIC_INTERVAL", "300.0"))
+        deep_scan_interval = float(os.environ.get("V3_DEEP_SCAN_INTERVAL", "1800.0"))
+
         # Account Health Configuration
         max_drawdown_pct = float(os.environ.get("V3_MAX_DRAWDOWN_PCT", "25.0"))
 
@@ -395,6 +416,12 @@ class V3Config:
             sniper_arb_min_edge=sniper_arb_min_edge,
             sniper_order_ttl=sniper_order_ttl,
             sniper_leg_timeout=sniper_leg_timeout,
+            discovery_event_count=discovery_event_count,
+            discovery_seed_events=discovery_seed_events,
+            discovery_max_markets_per_event=discovery_max_markets_per_event,
+            discovery_refresh_interval=discovery_refresh_interval,
+            strategic_interval=strategic_interval,
+            deep_scan_interval=deep_scan_interval,
             max_drawdown_pct=max_drawdown_pct,
             tavily_api_key=tavily_api_key,
             tavily_enabled=tavily_enabled,
@@ -471,6 +498,11 @@ class V3Config:
             logger.info(f"  - Sniper: ENABLED (max_pos={sniper_max_position}, max_cap=${sniper_max_capital/100:.0f}, cooldown={sniper_cooldown}s, arb_edge>{sniper_arb_min_edge}c)")
         else:
             logger.info(f"  - Sniper: DISABLED")
+
+        # Log discovery config
+        logger.info(f"  - Discovery: top {discovery_event_count} events by volume, max_markets={discovery_max_markets_per_event}, refresh={discovery_refresh_interval}s")
+        if discovery_seed_events:
+            logger.info(f"    - Seed events: {','.join(discovery_seed_events)}")
 
         # Log single-arb config
         if single_arb_enabled:

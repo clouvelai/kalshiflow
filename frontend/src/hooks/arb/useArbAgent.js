@@ -43,6 +43,7 @@ export const useArbAgent = (agentMessages = []) => {
 
   const [isRunning, setIsRunning] = useState(false);
   const [cycleCount, setCycleCount] = useState(snapshot?.cycleCount ?? 0);
+  const [cycleMode, setCycleMode] = useState(null);
   const [thinking, setThinking] = useState(
     snapshot?.thinking ?? { text: '', agent: null, streaming: false }
   );
@@ -120,6 +121,7 @@ export const useArbAgent = (agentMessages = []) => {
         setIsRunning(true);
         if (msg.agent === 'single_arb_captain') {
           setCycleCount(c => c + 1);
+          setCycleMode(msg.mode || null);
           setThinking({ text: '', agent: msg.agent, streaming: false });
         }
         break;
@@ -127,6 +129,7 @@ export const useArbAgent = (agentMessages = []) => {
       case 'subagent_complete':
         if (msg.agent === 'single_arb_captain') {
           setIsRunning(false);
+          setCycleMode(null);
         }
         break;
 
@@ -177,6 +180,7 @@ export const useArbAgent = (agentMessages = []) => {
   return {
     isRunning,
     cycleCount,
+    cycleMode,
     thinking,
     activeToolCall,
     toolCalls,

@@ -33,9 +33,12 @@ from typing import Any, Callable, Coroutine, Dict, List, Optional, Set, Tuple
 
 from ..core.events.types import EventType
 from .index import ArbOpportunity, EventArbIndex
+from .models import AttentionItem
 
 logger = logging.getLogger("kalshiflow_rl.traderv3.single_arb.sniper")
 
+# Minimum capital floor — prevents Captain from setting max_capital too low
+SNIPER_MIN_CAPITAL = 5000  # $50
 
 # Type alias for order registration callback
 # Signature: (order_id, ticker, side, action, contracts, price_cents, ttl_seconds) -> None
@@ -94,6 +97,23 @@ class SniperConfig:
                 unknown.append(k)
         if unknown:
             logger.warning(f"[SNIPER:CONFIG] Unknown fields ignored: {unknown}")
+        # Validation: clamp max_capital to floor
+        if self.max_capital < SNIPER_MIN_CAPITAL:
+            logger.warning(
+                f"[SNIPER:CONFIG] max_capital={self.max_capital}c below floor, "
+                f"clamped to {SNIPER_MIN_CAPITAL}c"
+            )
+            self.max_capital = SNIPER_MIN_CAPITAL
+            if "max_capital" not in changed:
+                changed.append("max_capital")
+        # Validation: clamp max_position to minimum 1
+        if self.max_position < 1:
+            logger.warning(
+                f"[SNIPER:CONFIG] max_position={self.max_position} invalid, clamped to 1"
+            )
+            self.max_position = 1
+            if "max_position" not in changed:
+                changed.append("max_position")
         return changed, unknown
 
 
@@ -200,6 +220,7 @@ class Sniper:
         config: SniperConfig,
         broadcast_callback: Optional[Callable[..., Coroutine]] = None,
         order_register_callback: Optional[OrderRegisterCallback] = None,
+        attention_callback: Optional[Callable] = None,
     ):
         self._gateway = gateway
         self._index = index
@@ -208,9 +229,11 @@ class Sniper:
         self.config = config
         self._broadcast = broadcast_callback
         self._register_order = order_register_callback
+        self._attention_callback = attention_callback
 
         self.state = SniperState()
         self._running = False
+        self._paused = False
 
     async def start(self) -> None:
         """Subscribe to EventBus and mark as running."""
@@ -238,6 +261,20 @@ class Sniper:
         """Called at start of each Captain cycle to reset per-cycle limits."""
         self.state.trades_this_cycle = 0
 
+    def pause(self, reason: str = "") -> None:
+        """Pause sniper execution. Called by AutoActionManager on toxic regime."""
+        self._paused = True
+        logger.info(f"[SNIPER:PAUSE] {reason}")
+
+    def resume(self) -> None:
+        """Resume sniper execution after pause."""
+        self._paused = False
+        logger.info("[SNIPER:RESUME]")
+
+    @property
+    def is_paused(self) -> bool:
+        return self._paused
+
     # ------------------------------------------------------------------
     # Hot path: arb opportunity handler
     # ------------------------------------------------------------------
@@ -252,12 +289,35 @@ class Sniper:
         if not self.config.enabled or not self._running:
             return None
 
-        # Risk gates (async — queries real API balance)
-        rejection = await self._check_risk_gates(opportunity)
+        if self._paused:
+            return None
+
+        # Risk gates (async — queries real API balance, returns scaled contracts)
+        rejection, approved_contracts = await self._check_risk_gates(opportunity)
         if rejection:
             self.state.total_arbs_rejected += 1
             self.state.last_rejection_reason = rejection
             logger.debug(f"[SNIPER:S1_ARB] Rejected {opportunity.event_ticker}: {rejection}")
+
+            # Emit attention for notable rejections (capital limit, VPIN toxic)
+            if self._attention_callback and (
+                "sniper_capital_limit" in rejection or "vpin_toxic" in rejection
+            ):
+                self._attention_callback(AttentionItem(
+                    event_ticker=opportunity.event_ticker,
+                    category="sniper_rejection",
+                    urgency="normal",
+                    summary=f"sniper rejected: {rejection}",
+                    score=40.0,
+                    data={
+                        "rejection_reason": rejection,
+                        "edge_cents": opportunity.edge_after_fees,
+                        "capital_active": self.state.capital_active,
+                        "total_rejections": self.state.total_arbs_rejected,
+                    },
+                    ttl_seconds=60.0,
+                ))
+
             return None
 
         # Check liquidity-adjusted edge (walk depth levels, not just BBO)
@@ -265,7 +325,7 @@ class Sniper:
         if event:
             la = event.liquidity_adjusted_edge(
                 direction=opportunity.direction,
-                target_contracts=min(self.config.max_position, 10),
+                target_contracts=approved_contracts,
             )
             if "error" in la:
                 self.state.total_arbs_rejected += 1
@@ -282,79 +342,117 @@ class Sniper:
                 )
                 return None
 
-        # Execute
-        action = await self._execute_arb(opportunity)
+        # Execute with pre-approved contract count
+        action = await self._execute_arb(opportunity, approved_contracts)
         return action
 
     # ------------------------------------------------------------------
     # Risk gates
     # ------------------------------------------------------------------
 
-    async def _check_risk_gates(self, opportunity: ArbOpportunity) -> Optional[str]:
-        """Check all risk gates. Returns rejection reason or None if clear."""
+    async def _check_risk_gates(self, opportunity: ArbOpportunity) -> Tuple[Optional[str], int]:
+        """Check all risk gates with trade size scaling.
+
+        Returns (rejection_reason, approved_contracts).
+        If rejected, approved_contracts is 0.
+        If approved, approved_contracts is the scaled contract count per leg.
+        """
 
         # 1. Per-cycle trade limit
         if self.state.trades_this_cycle >= self.config.max_trades_per_cycle:
-            return f"cycle_limit ({self.config.max_trades_per_cycle})"
+            return f"cycle_limit ({self.config.max_trades_per_cycle})", 0
 
         # 2. Edge threshold (BBO-level quick check before depth walk)
         if opportunity.edge_after_fees < self.config.arb_min_edge:
-            return f"edge={opportunity.edge_after_fees:.1f}c < min={self.config.arb_min_edge}c"
+            return f"edge={opportunity.edge_after_fees:.1f}c < min={self.config.arb_min_edge}c", 0
 
         # 3. Per-event cooldown
         et = opportunity.event_ticker
         last_trade = self.state._event_last_trade.get(et, 0)
         elapsed = time.time() - last_trade
         if elapsed < self.config.cooldown:
-            return f"cooldown ({elapsed:.0f}s < {self.config.cooldown}s)"
+            return f"cooldown ({elapsed:.0f}s < {self.config.cooldown}s)", 0
 
-        # 4. Balance check via real API (replaces shadow capital accounting)
-        contracts_per_leg = self.config.max_position
+        # 4. Balance + capital scaling (scale down instead of all-or-nothing reject)
+        liquidity_contracts = self.config.max_position
         for leg in opportunity.legs:
-            contracts_per_leg = min(contracts_per_leg, leg.size_available)
-        contracts_per_leg = max(1, contracts_per_leg)
-        est_cost = sum(leg.price_cents for leg in opportunity.legs) * contracts_per_leg
+            liquidity_contracts = min(liquidity_contracts, leg.size_available)
+        liquidity_contracts = max(1, liquidity_contracts)
+
+        total_price_per_contract = sum(leg.price_cents for leg in opportunity.legs)
+        if total_price_per_contract <= 0:
+            return "invalid_price (total_price_per_contract=0)", 0
+
         try:
             balance = await self._gateway.get_balance()
             self.state.last_balance_cents = balance.balance
             self.state.last_portfolio_value_cents = balance.portfolio_value
-            if balance.balance < est_cost:
-                return (
-                    f"insufficient_balance (available={balance.balance}c, est_cost={est_cost}c)"
-                )
-            if self.state.capital_active + est_cost > self.config.max_capital:
+
+            capital_headroom = self.config.max_capital - self.state.capital_active
+            if capital_headroom <= 0:
                 return (
                     f"sniper_capital_limit (active={self.state.capital_active}c "
-                    f"+ est={est_cost}c > max={self.config.max_capital}c)"
+                    f">= max={self.config.max_capital}c)"
+                ), 0
+
+            max_from_capital = capital_headroom // total_price_per_contract
+            max_from_balance = balance.balance // total_price_per_contract
+
+            contracts_per_leg = min(liquidity_contracts, max_from_capital, max_from_balance)
+
+            if contracts_per_leg < 1:
+                if max_from_balance < 1:
+                    return (
+                        f"insufficient_balance (available={balance.balance}c, "
+                        f"min_cost={total_price_per_contract}c)"
+                    ), 0
+                return (
+                    f"sniper_capital_limit (headroom={capital_headroom}c "
+                    f"< min_cost={total_price_per_contract}c)"
+                ), 0
+
+            # Log when scaling occurs
+            if contracts_per_leg < liquidity_contracts:
+                logger.info(
+                    f"[SNIPER:SCALE] {opportunity.event_ticker} scaled "
+                    f"{liquidity_contracts} -> {contracts_per_leg} contracts/leg "
+                    f"(headroom={capital_headroom}c, balance={balance.balance}c)"
                 )
         except Exception as e:
             logger.warning(f"[SNIPER:GATE] Balance API failed, rejecting conservatively: {e}")
-            return f"balance_api_error ({e})"
+            return f"balance_api_error ({e})", 0
 
         # 5. VPIN toxicity check (any market with VPIN > threshold)
         event = self._index.events.get(et)
         if event:
             for m in event.markets.values():
                 if m.micro.vpin > self.config.vpin_reject_threshold:
-                    return f"vpin_toxic ({m.ticker}: vpin={m.micro.vpin:.2f} > {self.config.vpin_reject_threshold})"
+                    return f"vpin_toxic ({m.ticker}: vpin={m.micro.vpin:.2f} > {self.config.vpin_reject_threshold})", 0
 
         # 6. Mutually exclusive check (S1_ARB only works on ME events)
         if event and not event.mutually_exclusive:
-            return "not_mutually_exclusive"
+            return "not_mutually_exclusive", 0
 
-        return None
+        return None, contracts_per_leg
 
     # ------------------------------------------------------------------
     # Execution
     # ------------------------------------------------------------------
 
-    async def _execute_arb(self, opportunity: ArbOpportunity) -> SniperAction:
+    async def _execute_arb(
+        self, opportunity: ArbOpportunity, contracts_per_leg: Optional[int] = None
+    ) -> SniperAction:
         """Execute parallel-leg arb via gateway.
 
         Places all legs concurrently with asyncio.gather().
         Tracks order IDs in session for attribution.
         On partial fill (some legs succeed, some fail), unwinds successful legs
         by cancelling them to avoid unhedged directional exposure.
+
+        Args:
+            opportunity: The arb opportunity to execute.
+            contracts_per_leg: Pre-approved contract count from risk gates.
+                If None, falls back to computing from config and liquidity.
         """
         action = SniperAction(
             event_ticker=opportunity.event_ticker,
@@ -366,11 +464,12 @@ class Sniper:
         )
         start = time.time()
 
-        # Determine contract count per leg (min of: config max, available size)
-        contracts_per_leg = self.config.max_position
-        for leg in opportunity.legs:
-            contracts_per_leg = min(contracts_per_leg, leg.size_available)
-        contracts_per_leg = max(1, contracts_per_leg)
+        # Use pre-approved count if provided, otherwise compute from scratch (fallback)
+        if contracts_per_leg is None:
+            contracts_per_leg = self.config.max_position
+            for leg in opportunity.legs:
+                contracts_per_leg = min(contracts_per_leg, leg.size_available)
+            contracts_per_leg = max(1, contracts_per_leg)
 
         # Compute expiration timestamp from config TTL
         expiration_ts = int(time.time()) + self.config.order_ttl
@@ -486,6 +585,32 @@ class Sniper:
                 "type": "sniper_execution",
                 "data": action.to_dict(),
             }))
+
+        # Emit attention item for Captain awareness (successful executions only)
+        if self._attention_callback and filled == len(opportunity.legs):
+            capital_pct = (self.state.capital_active / self.config.max_capital * 100) if self.config.max_capital > 0 else 0
+            urgency = "high" if capital_pct > 70 else "normal"
+            self._attention_callback(AttentionItem(
+                event_ticker=opportunity.event_ticker,
+                category="sniper_execution",
+                urgency=urgency,
+                summary=(
+                    f"sniper {opportunity.direction} arb {filled}/{len(opportunity.legs)} legs "
+                    f"edge={opportunity.edge_after_fees:.1f}c cost={total_cost}c "
+                    f"capital={capital_pct:.0f}%"
+                ),
+                score=55.0 if urgency == "high" else 45.0,
+                data={
+                    "direction": opportunity.direction,
+                    "edge_cents": opportunity.edge_after_fees,
+                    "legs_filled": filled,
+                    "total_cost": total_cost,
+                    "capital_active": self.state.capital_active,
+                    "capital_pct": round(capital_pct, 1),
+                    "total_trades": self.state.total_trades,
+                },
+                ttl_seconds=90.0,
+            ))
 
         return action
 

@@ -9,6 +9,8 @@ import { useState, useEffect, useRef, useCallback } from 'react';
  *   trading_state, agent_message, system_activity,
  *   feed_stats, captain_paused, exchange_status,
  *   account_health_update, sniper_status, sniper_execution,
+ *   attention_snapshot, auto_action_fired,
+ *   captain_cycle_start, captain_cycle_complete, captain_config,
  *   connection, ping/pong
  */
 
@@ -45,6 +47,27 @@ export const useArbWebSocket = () => {
   const [startupMessages, setStartupMessages] = useState([]);
   // Account health from background service
   const [accountHealth, setAccountHealth] = useState(null);
+  // Attention router state
+  const [attentionItems, setAttentionItems] = useState([]);
+  const [attentionStats, setAttentionStats] = useState(null);
+  // Auto-action events
+  const [autoActions, setAutoActions] = useState([]);
+  // Captain cycle mode
+  const [captainMode, setCaptainMode] = useState(null);
+  // Captain timing: last completion timestamps per mode + configured intervals
+  const [captainTiming, setCaptainTiming] = useState({
+    lastStrategic: null,
+    lastDeepScan: null,
+    strategicInterval: 300,   // default 5min
+    deepScanInterval: 1800,   // default 30min
+  });
+  // Discovery state: top events by volume
+  const [discoveryState, setDiscoveryState] = useState({
+    events: [],
+    stats: null,
+    lastFetch: null,
+    recentEvictions: [],
+  });
 
   const wsRef = useRef(null);
   const reconnectTimeoutRef = useRef(null);
@@ -296,6 +319,99 @@ export const useArbWebSocket = () => {
         break;
       }
 
+      case 'attention_snapshot': {
+        if (data.data) {
+          setAttentionItems(data.data.items || []);
+          setAttentionStats(data.data.stats || null);
+        }
+        break;
+      }
+
+      case 'auto_action_fired': {
+        if (data.data) {
+          setAutoActions(prev => [data.data, ...prev].slice(0, 20));
+        }
+        break;
+      }
+
+      case 'captain_cycle_start': {
+        if (data.data) {
+          setCaptainMode({
+            mode: data.data.mode,
+            cycle_num: data.data.cycle_num,
+            trigger_items: data.data.trigger_items,
+            timestamp: Date.now(),
+          });
+        }
+        break;
+      }
+
+      case 'captain_cycle_complete': {
+        if (data.data) {
+          const mode = data.data.mode;
+          const now = Date.now();
+          setCaptainTiming(prev => ({
+            ...prev,
+            ...(mode === 'strategic' ? { lastStrategic: now } : {}),
+            ...(mode === 'deep_scan' ? { lastDeepScan: now, lastStrategic: now } : {}),
+          }));
+        }
+        break;
+      }
+
+      case 'captain_config': {
+        if (data.data) {
+          setCaptainTiming(prev => ({
+            ...prev,
+            strategicInterval: data.data.strategic_interval ?? prev.strategicInterval,
+            deepScanInterval: data.data.deep_scan_interval ?? prev.deepScanInterval,
+          }));
+        }
+        break;
+      }
+
+      case 'discovery_state': {
+        if (data.data) {
+          setDiscoveryState(prev => ({
+            events: data.data.events || [],
+            stats: data.data.stats || null,
+            lastFetch: data.data.timestamp ? data.data.timestamp * 1000 : Date.now(),
+            recentEvictions: prev.recentEvictions || [],
+          }));
+        }
+        break;
+      }
+
+      case 'discovery_update': {
+        if (data.data?.event_ticker) {
+          setDiscoveryState(prev => {
+            const exists = prev.events.some(e => e.event_ticker === data.data.event_ticker);
+            if (exists) return prev;
+            return {
+              ...prev,
+              events: [...prev.events, data.data],
+              lastFetch: Date.now(),
+            };
+          });
+        }
+        break;
+      }
+
+      case 'discovery_eviction': {
+        if (data.data?.evicted) {
+          const now = Date.now();
+          const newEvictions = data.data.evicted.map(e => ({
+            ...e,
+            evicted_at: now,
+          }));
+          setDiscoveryState(prev => ({
+            ...prev,
+            recentEvictions: [...newEvictions, ...(prev.recentEvictions || [])].slice(0, 10),
+          }));
+        }
+        break;
+      }
+
       case 'sniper_execution': {
         if (data.data) {
           const d = data.data;
@@ -359,6 +475,13 @@ export const useArbWebSocket = () => {
 
       ws.onopen = () => {
         setConnectionStatus('connected');
+        // Clear session-scoped state so stale data from a previous backend session disappears
+        setAgentMessages([]);
+        setArbTrades([]);
+        setAttentionItems([]);
+        setAutoActions([]);
+        setCaptainMode(null);
+        setStartupMessages([]);
       };
 
       ws.onmessage = (event) => {
@@ -438,6 +561,12 @@ export const useArbWebSocket = () => {
     sniperState,
     startupMessages,
     accountHealth,
+    attentionItems,
+    attentionStats,
+    autoActions,
+    captainMode,
+    captainTiming,
+    discoveryState,
   };
 };
 

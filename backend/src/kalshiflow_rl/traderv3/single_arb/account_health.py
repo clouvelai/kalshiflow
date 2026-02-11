@@ -251,7 +251,12 @@ class AccountHealthService:
             self.state.known_settlement_ids.add(sid)
             result = s.result if hasattr(s, "result") else "unknown"
             revenue = s.revenue if hasattr(s, "revenue") else 0
-            ticker = s.market_ticker if hasattr(s, "market_ticker") else ""
+            ticker = (
+                getattr(s, "market_ticker", "")
+                or getattr(s, "ticker", "")
+                or getattr(s, "event_ticker", "")
+                or "unknown"
+            )
             settled_at = s.settled_time if hasattr(s, "settled_time") else None
 
             self.state.total_settlement_revenue += revenue
