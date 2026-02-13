@@ -6,15 +6,13 @@ When MARKET_ACTIVATED fires from the lifecycle WebSocket, this service:
 2. Scores it using EarlyBirdScore heuristics
 3. Signals the Captain via AttentionRouter if score exceeds threshold
 
-V1 design: Signal-to-Captain only (no auto-execute). Captain evaluates
-each early bird opportunity with full LLM reasoning.
-
 Key Responsibilities:
     - Subscribe to MARKET_ACTIVATED events via EventBus
     - Score opportunities using deterministic heuristics (no LLM)
-    - Enforce per-event cooldown to prevent signal spam
+    - Enforce per-market cooldown with event-level rate limiting
     - Expose recent scores for Captain tool query
     - Signal AttentionRouter on above-threshold opportunities
+    - Optionally auto-execute complement trades (disabled by default)
 
 Architecture Position:
     EventBus (MARKET_ACTIVATED) -> EarlyBirdService -> AttentionRouter -> Captain
@@ -87,6 +85,7 @@ class EarlyBirdService:
         attention_callback=None,  # Callable to inject attention signal
         search_service=None,  # Optional Tavily search service for news scoring
         health_callback: Optional[Callable[..., Coroutine]] = None,  # async () -> float (drawdown_pct)
+        trading_gateway=None,  # Optional gateway for auto-execution
     ):
         self._event_bus = event_bus
         self._tracked_events = tracked_events
@@ -95,18 +94,27 @@ class EarlyBirdService:
         self._attention_callback = attention_callback
         self._search_service = search_service
         self._health_callback = health_callback
+        self._trading_gateway = trading_gateway
 
         # Recent scores for Captain tool query
         self._recent_scores: List[EarlyBirdScore] = []
         self._max_recent = 20
 
-        # Cooldown tracking: event_ticker -> last_signal_time
+        # Per-market cooldown: market_ticker -> last_signal_time
         self._cooldowns: Dict[str, float] = {}
+
+        # Event-level rate limiting: event_ticker -> [signal_timestamps]
+        self._event_signal_times: Dict[str, List[float]] = {}
+        self._max_signals_per_event = 5  # Max signals per event per cooldown window
 
         # Stats
         self._activations_received = 0
         self._signals_emitted = 0
+        self._auto_executions = 0
         self._running = False
+
+        # Background news tasks (fire-and-forget)
+        self._pending_news_tasks: List[asyncio.Task] = []
 
     async def start(self) -> None:
         """Start listening for MARKET_ACTIVATED events."""
@@ -117,12 +125,62 @@ class EarlyBirdService:
         await self._event_bus.subscribe_to_market_activated(self._on_market_activated)
         logger.info("EarlyBirdService started")
 
+    async def run_startup_scan(self) -> int:
+        """Evaluate existing ACTIVE markets for early bird opportunities.
+
+        Called after startup to catch-up on markets that were already active
+        before the system started. Only evaluates mutually exclusive events
+        with 2+ markets (complement pricing requires other markets).
+
+        Returns:
+            Number of signals emitted.
+        """
+        if not self._running or not self._tracked_events:
+            return 0
+
+        signals_before = self._signals_emitted
+        scanned = 0
+
+        for event in self._tracked_events.get_all():
+            if not event.mutually_exclusive or len(event.market_tickers) < 2:
+                continue
+
+            for market_ticker in event.market_tickers:
+                market = self._tracked_markets.get_market(market_ticker) if self._tracked_markets else None
+                if not market:
+                    continue
+                # Simulate a MARKET_ACTIVATED event
+                from ..core.events.lifecycle_events import MarketActivatedEvent
+                from ..core.events.types import EventType
+                fake_event = MarketActivatedEvent(
+                    event_type=EventType.MARKET_ACTIVATED,
+                    market_ticker=market_ticker,
+                    event_ticker=event.event_ticker,
+                    category=market.category,
+                    timestamp=time.time(),
+                )
+                await self._on_market_activated(fake_event)
+                scanned += 1
+
+        signals_new = self._signals_emitted - signals_before
+        logger.info(
+            f"Early bird startup scan: {scanned} markets scanned, "
+            f"{signals_new} signals emitted"
+        )
+        return signals_new
+
     async def stop(self) -> None:
         """Stop the service."""
         self._running = False
+        # Cancel pending news tasks
+        for task in self._pending_news_tasks:
+            if not task.done():
+                task.cancel()
+        self._pending_news_tasks.clear()
         logger.info(
             f"EarlyBirdService stopped "
-            f"(activations={self._activations_received}, signals={self._signals_emitted})"
+            f"(activations={self._activations_received}, signals={self._signals_emitted}, "
+            f"auto_executions={self._auto_executions})"
         )
 
     async def _on_market_activated(self, event) -> None:
@@ -134,11 +192,16 @@ class EarlyBirdService:
         market_ticker = event.market_ticker
         event_ticker = event.event_ticker
 
-        # Check cooldown
+        # Per-market cooldown check
         now = time.time()
-        last_signal = self._cooldowns.get(event_ticker, 0)
+        last_signal = self._cooldowns.get(market_ticker, 0)
         if now - last_signal < self._config.early_bird_cooldown_seconds:
-            logger.debug(f"Early bird cooldown active for {event_ticker}")
+            logger.debug(f"Early bird cooldown active for market {market_ticker}")
+            return
+
+        # Event-level rate limit check
+        if not self._check_event_rate_limit(event_ticker, now):
+            logger.debug(f"Early bird event rate limit hit for {event_ticker}")
             return
 
         # Score the opportunity
@@ -152,28 +215,39 @@ class EarlyBirdService:
 
             # Signal Captain if above threshold
             if score.total_score >= self._config.early_bird_min_score:
-                self._cooldowns[event_ticker] = now
+                self._cooldowns[market_ticker] = now
+                self._record_event_signal(event_ticker, now)
                 self._signals_emitted += 1
 
+                # Auto-execute complement if enabled
+                auto_handled = False
+                if self._should_auto_execute(score):
+                    auto_handled = await self._auto_execute_complement(score)
+
                 if self._attention_callback:
+                    data = {
+                        "complement_score": score.complement_score,
+                        "news_score": score.news_score,
+                        "category_score": score.category_score,
+                        "timing_score": score.timing_score,
+                        "risk_score": score.risk_score,
+                    }
+                    if auto_handled:
+                        data["auto_handled"] = "complement_maker"
+
                     await self._attention_callback(
                         market_ticker=market_ticker,
                         event_ticker=event_ticker,
                         score=score.total_score,
                         strategy=score.strategy,
                         fair_value=score.fair_value_estimate,
-                        score_breakdown={
-                            "complement_score": score.complement_score,
-                            "news_score": score.news_score,
-                            "category_score": score.category_score,
-                            "timing_score": score.timing_score,
-                            "risk_score": score.risk_score,
-                        },
+                        score_breakdown=data,
                     )
 
                 logger.info(
                     f"Early bird signal: {market_ticker} score={score.total_score:.0f} "
                     f"strategy={score.strategy} fair_value={score.fair_value_estimate}"
+                    f"{' [AUTO-EXECUTED]' if auto_handled else ''}"
                 )
             else:
                 logger.debug(
@@ -183,10 +257,29 @@ class EarlyBirdService:
         except Exception as e:
             logger.error(f"Early bird scoring error for {market_ticker}: {e}", exc_info=True)
 
+    def _check_event_rate_limit(self, event_ticker: str, now: float) -> bool:
+        """Check if event-level rate limit allows another signal."""
+        cooldown = self._config.early_bird_cooldown_seconds
+        times = self._event_signal_times.get(event_ticker, [])
+        # Remove expired timestamps
+        times = [t for t in times if now - t < cooldown]
+        self._event_signal_times[event_ticker] = times
+        return len(times) < self._max_signals_per_event
+
+    def _record_event_signal(self, event_ticker: str, now: float) -> None:
+        """Record a signal timestamp for event-level rate limiting."""
+        if event_ticker not in self._event_signal_times:
+            self._event_signal_times[event_ticker] = []
+        self._event_signal_times[event_ticker].append(now)
+
     async def _score_opportunity(
         self, market_ticker: str, event_ticker: str
     ) -> EarlyBirdScore:
-        """Score a newly activated market opportunity."""
+        """Score a newly activated market opportunity.
+
+        Fast path: complement + category + timing + risk (no I/O).
+        Slow path: news scoring fires as background task if enabled.
+        """
         score = EarlyBirdScore(
             market_ticker=market_ticker,
             event_ticker=event_ticker,
@@ -239,14 +332,10 @@ class EarlyBirdService:
             elif 0 < time_to_close < 3600:  # <1h: too short
                 score.timing_score = 3
 
-        # Strategy 4: News scoring via Tavily (if wired)
-        if self._config.early_bird_use_news and self._search_service:
-            score.news_score = await self._score_news(market_ticker, event)
-
-        # Strategy 5: Risk score from account health (or default)
+        # Strategy 4: Risk score from account health (or default)
         score.risk_score = await self._score_risk()
 
-        # Compute total
+        # Compute fast-path total (no news)
         score.total_score = (
             score.complement_score
             + score.series_score
@@ -260,12 +349,34 @@ class EarlyBirdService:
         if not score.strategy or score.strategy == "unknown":
             if score.complement_score > 0:
                 score.strategy = "complement"
-            elif score.news_score > 0:
-                score.strategy = "news"
             else:
                 score.strategy = "captain_decide"
 
+        # Fire news scoring as background task (non-blocking)
+        if self._config.early_bird_use_news and self._search_service:
+            task = asyncio.create_task(
+                self._background_news_score(score, event)
+            )
+            self._pending_news_tasks.append(task)
+            task.add_done_callback(lambda t: self._pending_news_tasks.remove(t) if t in self._pending_news_tasks else None)
+
         return score
+
+    async def _background_news_score(self, score: EarlyBirdScore, event) -> None:
+        """Score news in background and update the stored score."""
+        try:
+            news_score = await self._score_news(score.market_ticker, event)
+            if news_score > 0:
+                score.news_score = news_score
+                score.total_score += news_score
+                if news_score > 0 and score.strategy == "captain_decide":
+                    score.strategy = "news"
+                logger.debug(
+                    f"Background news score updated: {score.market_ticker} "
+                    f"news={news_score} new_total={score.total_score}"
+                )
+        except Exception as e:
+            logger.debug(f"Background news scoring failed for {score.market_ticker}: {e}")
 
     async def _score_news(self, market_ticker: str, event) -> float:
         """Score based on news catalyst. Returns 0-20."""
@@ -303,17 +414,29 @@ class EarlyBirdService:
     def _score_complement(
         self, event, new_market_ticker: str
     ) -> Dict[str, Any]:
-        """Score based on complement pricing in mutually exclusive events."""
+        """Score based on complement pricing in mutually exclusive events.
+
+        Uses midprice (yes_bid + yes_ask) / 2 when available for more
+        accurate fair value. Falls back to yes_bid when no ask exists.
+        Reduces score when average spread > 10c (pricing less reliable).
+        """
         result: Dict[str, Any] = {"score": 0.0, "fair_value": None, "reasoning": ""}
 
-        # Sum YES prices of other markets in the event
+        # Collect midprices of other markets in the event
         other_prices = []
+        spreads = []
         for ticker in event.market_tickers:
             if ticker == new_market_ticker:
                 continue
             other_market = self._tracked_markets.get_market(ticker)
             if other_market and other_market.yes_bid > 0:
-                other_prices.append(other_market.yes_bid)
+                yes_ask = getattr(other_market, 'yes_ask', 0) or 0
+                if yes_ask > 0:
+                    midprice = (other_market.yes_bid + yes_ask) / 2
+                    spreads.append(yes_ask - other_market.yes_bid)
+                else:
+                    midprice = other_market.yes_bid
+                other_prices.append(midprice)
 
         if not other_prices:
             return result
@@ -323,22 +446,109 @@ class EarlyBirdService:
             # Overpriced event - no clear complement
             return result
 
-        # Fair value = 100 - sum(other prices)
+        # Fair value = 100 - sum(midprices)
         fair_value = 100 - price_sum
 
+        # Determine base score
         if 5 <= fair_value <= 95:  # Reasonable range
-            result["fair_value"] = fair_value
-            result["score"] = 25.0  # Full complement score
+            base_score = 25.0
+        elif fair_value > 0:
+            base_score = 15.0  # Partial score for extreme values
+        else:
+            return result
+
+        # Reduce score when average spread is wide (pricing less reliable)
+        avg_spread = sum(spreads) / len(spreads) if spreads else 0
+        if avg_spread > 10:
+            base_score = min(base_score, 15.0)
+
+        result["fair_value"] = fair_value
+        result["score"] = base_score
+
+        spread_note = f", avg_spread={avg_spread:.0f}c" if spreads else ""
+        if 5 <= fair_value <= 95:
             result["reasoning"] = (
                 f"Mutually exclusive event: {len(other_prices)} markets priced, "
-                f"sum={price_sum}c, residual={fair_value}c"
+                f"sum={price_sum:.0f}c, residual={fair_value:.0f}c{spread_note}"
             )
-        elif fair_value > 0:
-            result["fair_value"] = fair_value
-            result["score"] = 15.0  # Partial score for extreme values
-            result["reasoning"] = f"Complement price {fair_value}c (extreme range)"
+        else:
+            result["reasoning"] = f"Complement price {fair_value:.0f}c (extreme range){spread_note}"
 
         return result
+
+    # ------------------------------------------------------------------
+    # Auto-execution (disabled by default)
+    # ------------------------------------------------------------------
+
+    def _should_auto_execute(self, score: EarlyBirdScore) -> bool:
+        """Check if this score qualifies for auto-execution."""
+        if not getattr(self._config, 'early_bird_auto_execute', False):
+            return False
+        if not self._trading_gateway:
+            return False
+        if score.strategy != "complement":
+            return False
+        if score.fair_value_estimate is None:
+            return False
+        if not (20 <= score.fair_value_estimate <= 80):
+            return False
+        if score.total_score < 60:
+            return False
+        return True
+
+    async def _auto_execute_complement(self, score: EarlyBirdScore) -> bool:
+        """Auto-execute complement maker orders (YES + NO limits at fair_value +/- 2c).
+
+        Returns True if orders were placed successfully.
+        """
+        try:
+            fair_value = score.fair_value_estimate
+            yes_price = int(fair_value - 2)  # Buy YES below fair value
+            no_price = int(100 - fair_value - 2)  # Buy NO below complement
+
+            if yes_price < 5 or no_price < 5:
+                return False
+
+            # Place both legs via trading gateway
+            gateway = self._trading_gateway
+            results = []
+
+            # YES leg
+            yes_result = await gateway.place_order(
+                ticker=score.market_ticker,
+                side="yes",
+                action="buy",
+                count=10,  # Conservative default
+                price=yes_price,
+                order_type="limit",
+            )
+            results.append(yes_result)
+
+            # NO leg
+            no_result = await gateway.place_order(
+                ticker=score.market_ticker,
+                side="no",
+                action="buy",
+                count=10,
+                price=no_price,
+                order_type="limit",
+            )
+            results.append(no_result)
+
+            self._auto_executions += 1
+            logger.info(
+                f"Auto-executed complement: {score.market_ticker} "
+                f"YES@{yes_price}c NO@{no_price}c fair_value={fair_value:.0f}c"
+            )
+            return True
+
+        except Exception as e:
+            logger.warning(f"Auto-execution failed for {score.market_ticker}: {e}")
+            return False
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
 
     def get_recent_opportunities(self) -> List[Dict[str, Any]]:
         """Get recently scored opportunities for Captain tool."""
@@ -356,6 +566,7 @@ class EarlyBirdService:
             "enabled": self._config.early_bird_enabled if self._config else False,
             "activations_received": self._activations_received,
             "signals_emitted": self._signals_emitted,
+            "auto_executions": self._auto_executions,
             "recent_scores": len(self._recent_scores),
             "active_cooldowns": sum(
                 1

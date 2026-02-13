@@ -276,6 +276,16 @@ export const useArbWebSocket = () => {
         break;
       }
 
+      case 'activity_feed_replay': {
+        // Replay historical activity feed items on reconnect
+        if (data.data?.items) {
+          data.data.items.forEach(item => {
+            handleMessage({ type: item.type, data: item.data }, ws);
+          });
+        }
+        break;
+      }
+
       case 'connection':
         break;
 

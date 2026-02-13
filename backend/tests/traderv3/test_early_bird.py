@@ -46,6 +46,7 @@ def _make_config(**overrides) -> MagicMock:
     cfg.early_bird_min_score = overrides.get("early_bird_min_score", 30.0)
     cfg.early_bird_cooldown_seconds = overrides.get("early_bird_cooldown_seconds", 300.0)
     cfg.early_bird_use_news = overrides.get("early_bird_use_news", False)
+    cfg.early_bird_auto_execute = overrides.get("early_bird_auto_execute", False)
     return cfg
 
 
@@ -72,6 +73,7 @@ class MockTrackedMarket:
     ticker: str = "MKT-A"
     category: str = "Sports"
     yes_bid: int = 40
+    yes_ask: int = 0
     close_ts: int = 0
 
 
@@ -489,9 +491,15 @@ class TestRiskScore:
 
 
 class TestNewsScoring:
+    """News scoring is now non-blocking (background task).
+
+    After _score_opportunity returns, news_score = 0 (fast path).
+    We await pending tasks to let the background news score update.
+    """
+
     @pytest.mark.asyncio
     async def test_news_score_strong_presence(self):
-        """3+ search results -> news_score = 15."""
+        """3+ search results -> news_score = 15 (after background task completes)."""
         mock_search = AsyncMock()
         mock_search.search = AsyncMock(return_value=["r1", "r2", "r3"])
         config = _make_config(early_bird_use_news=True)
@@ -510,11 +518,15 @@ class TestNewsScoring:
             search_service=mock_search,
         )
         score = await svc._score_opportunity("MKT-NEW", "EVT-1")
+        # Fast path: news_score == 0
+        assert score.news_score == 0.0
+        # Await background task
+        await asyncio.gather(*svc._pending_news_tasks, return_exceptions=True)
         assert score.news_score == 15.0
 
     @pytest.mark.asyncio
     async def test_news_score_some_results(self):
-        """1-2 search results -> news_score = 8."""
+        """1-2 search results -> news_score = 8 (after background task)."""
         mock_search = AsyncMock()
         mock_search.search = AsyncMock(return_value=["r1"])
         config = _make_config(early_bird_use_news=True)
@@ -533,6 +545,7 @@ class TestNewsScoring:
             search_service=mock_search,
         )
         score = await svc._score_opportunity("MKT-NEW", "EVT-1")
+        await asyncio.gather(*svc._pending_news_tasks, return_exceptions=True)
         assert score.news_score == 8.0
 
     @pytest.mark.asyncio
@@ -556,11 +569,12 @@ class TestNewsScoring:
             search_service=mock_search,
         )
         score = await svc._score_opportunity("MKT-NEW", "EVT-1")
+        await asyncio.gather(*svc._pending_news_tasks, return_exceptions=True)
         assert score.news_score == 0.0
 
     @pytest.mark.asyncio
     async def test_news_score_disabled_by_config(self):
-        """early_bird_use_news=False -> news_score = 0 even with search service."""
+        """early_bird_use_news=False -> no background task spawned."""
         mock_search = AsyncMock()
         mock_search.search = AsyncMock(return_value=["r1", "r2", "r3"])
         config = _make_config(early_bird_use_news=False)
@@ -578,10 +592,11 @@ class TestNewsScoring:
         )
         score = await svc._score_opportunity("MKT-NEW", "EVT-1")
         assert score.news_score == 0.0
+        assert len(svc._pending_news_tasks) == 0  # No background task
 
     @pytest.mark.asyncio
     async def test_news_score_no_search_service(self):
-        """No search_service -> news_score = 0 even with use_news=True."""
+        """No search_service -> no background task spawned."""
         config = _make_config(early_bird_use_news=True)
         event_bus = _make_event_bus()
         tracked_events = _make_tracked_events({})
@@ -597,6 +612,7 @@ class TestNewsScoring:
         )
         score = await svc._score_opportunity("MKT-NEW", "EVT-1")
         assert score.news_score == 0.0
+        assert len(svc._pending_news_tasks) == 0
 
 
 # ===========================================================================
@@ -651,8 +667,8 @@ class TestStrategySelection:
 
 class TestCooldown:
     @pytest.mark.asyncio
-    async def test_cooldown_blocks_re_signal(self, config, event_bus, attention_callback):
-        """After signaling, same event_ticker is blocked for cooldown period."""
+    async def test_cooldown_blocks_same_market(self, config, event_bus, attention_callback):
+        """After signaling, same market_ticker is blocked for cooldown period."""
         config.early_bird_min_score = 0  # Always signal
         config.early_bird_cooldown_seconds = 300
 
@@ -674,10 +690,71 @@ class TestCooldown:
         await svc._on_market_activated(event1)
         assert attention_callback.await_count == 1
 
-        # Second signal within cooldown (same event_ticker)
+        # Second signal within cooldown (same market_ticker)
+        event2 = MockActivatedEvent(market_ticker="MKT-NEW", event_ticker="EVT-1")
+        await svc._on_market_activated(event2)
+        assert attention_callback.await_count == 1  # Blocked by per-market cooldown
+
+    @pytest.mark.asyncio
+    async def test_different_market_not_blocked(self, config, event_bus, attention_callback):
+        """Different market_ticker in same event is NOT blocked by per-market cooldown."""
+        config.early_bird_min_score = 0  # Always signal
+        config.early_bird_cooldown_seconds = 300
+
+        tracked_events = _make_tracked_events({})
+        tracked_markets = _make_tracked_markets({
+            "MKT-NEW": MockTrackedMarket(ticker="MKT-NEW", yes_bid=0, category="Sports"),
+            "MKT-NEW-2": MockTrackedMarket(ticker="MKT-NEW-2", yes_bid=0, category="Sports"),
+        })
+        svc = EarlyBirdService(
+            event_bus=event_bus,
+            tracked_events=tracked_events,
+            tracked_markets=tracked_markets,
+            config=config,
+            attention_callback=attention_callback,
+        )
+        await svc.start()
+
+        # First signal: MKT-NEW
+        event1 = MockActivatedEvent(market_ticker="MKT-NEW", event_ticker="EVT-1")
+        await svc._on_market_activated(event1)
+        assert attention_callback.await_count == 1
+
+        # Second signal: different market, same event -> NOT blocked
         event2 = MockActivatedEvent(market_ticker="MKT-NEW-2", event_ticker="EVT-1")
         await svc._on_market_activated(event2)
-        assert attention_callback.await_count == 1  # Not called again
+        assert attention_callback.await_count == 2  # Both signals went through
+
+    @pytest.mark.asyncio
+    async def test_event_rate_limit(self, config, event_bus, attention_callback):
+        """Event-level rate limit caps signals per event per cooldown window."""
+        config.early_bird_min_score = 0
+        config.early_bird_cooldown_seconds = 300
+
+        tracked_events = _make_tracked_events({})
+        markets = {}
+        for i in range(7):
+            t = f"MKT-{i}"
+            markets[t] = MockTrackedMarket(ticker=t, yes_bid=0, category="Sports")
+        tracked_markets = _make_tracked_markets(markets)
+
+        svc = EarlyBirdService(
+            event_bus=event_bus,
+            tracked_events=tracked_events,
+            tracked_markets=tracked_markets,
+            config=config,
+            attention_callback=attention_callback,
+        )
+        svc._max_signals_per_event = 3  # Low limit for testing
+        await svc.start()
+
+        # Send 5 activations for the same event
+        for i in range(5):
+            evt = MockActivatedEvent(market_ticker=f"MKT-{i}", event_ticker="EVT-1")
+            await svc._on_market_activated(evt)
+
+        # Only 3 should have signaled (rate limit)
+        assert attention_callback.await_count == 3
 
 
 # ===========================================================================
@@ -860,6 +937,7 @@ class TestGetStats:
         assert stats["enabled"] is True
         assert stats["activations_received"] == 0
         assert stats["signals_emitted"] == 0
+        assert stats["auto_executions"] == 0
         assert stats["recent_scores"] == 0
 
     @pytest.mark.asyncio
@@ -921,3 +999,180 @@ class TestErrorHandling:
         event = MockActivatedEvent()
         await svc._on_market_activated(event)
         assert svc._activations_received == 0
+
+
+# ===========================================================================
+# Midprice complement pricing
+# ===========================================================================
+
+
+class TestMidpriceComplement:
+    @pytest.mark.asyncio
+    async def test_midprice_used_when_ask_available(self, config, event_bus):
+        """Uses (yes_bid + yes_ask) / 2 when yes_ask > 0."""
+        tracked_events = _make_tracked_events({
+            "EVT-1": MockTrackedEvent(
+                mutually_exclusive=True,
+                market_tickers=["MKT-A", "MKT-NEW"],
+            ),
+        })
+        tracked_markets = _make_tracked_markets({
+            # bid=30, ask=40 -> midprice=35
+            "MKT-A": MockTrackedMarket(ticker="MKT-A", yes_bid=30, yes_ask=40),
+            "MKT-NEW": MockTrackedMarket(ticker="MKT-NEW", yes_bid=0, category="Sports"),
+        })
+        svc = EarlyBirdService(
+            event_bus=event_bus,
+            tracked_events=tracked_events,
+            tracked_markets=tracked_markets,
+            config=config,
+        )
+        score = await svc._score_opportunity("MKT-NEW", "EVT-1")
+        # fair_value = 100 - 35 = 65
+        assert score.fair_value_estimate == 65.0
+        assert score.complement_score == 25.0
+
+    @pytest.mark.asyncio
+    async def test_fallback_to_bid_when_no_ask(self, config, event_bus):
+        """Falls back to yes_bid when yes_ask = 0."""
+        tracked_events = _make_tracked_events({
+            "EVT-1": MockTrackedEvent(
+                mutually_exclusive=True,
+                market_tickers=["MKT-A", "MKT-NEW"],
+            ),
+        })
+        tracked_markets = _make_tracked_markets({
+            "MKT-A": MockTrackedMarket(ticker="MKT-A", yes_bid=30, yes_ask=0),
+            "MKT-NEW": MockTrackedMarket(ticker="MKT-NEW", yes_bid=0, category="Sports"),
+        })
+        svc = EarlyBirdService(
+            event_bus=event_bus,
+            tracked_events=tracked_events,
+            tracked_markets=tracked_markets,
+            config=config,
+        )
+        score = await svc._score_opportunity("MKT-NEW", "EVT-1")
+        # No ask, uses bid=30 -> fair_value = 100 - 30 = 70
+        assert score.fair_value_estimate == 70.0
+
+    @pytest.mark.asyncio
+    async def test_wide_spread_reduces_score(self, config, event_bus):
+        """Average spread > 10c reduces complement_score to max 15."""
+        tracked_events = _make_tracked_events({
+            "EVT-1": MockTrackedEvent(
+                mutually_exclusive=True,
+                market_tickers=["MKT-A", "MKT-NEW"],
+            ),
+        })
+        tracked_markets = _make_tracked_markets({
+            # spread = 50 - 30 = 20c (> 10c threshold)
+            "MKT-A": MockTrackedMarket(ticker="MKT-A", yes_bid=30, yes_ask=50),
+            "MKT-NEW": MockTrackedMarket(ticker="MKT-NEW", yes_bid=0, category="Sports"),
+        })
+        svc = EarlyBirdService(
+            event_bus=event_bus,
+            tracked_events=tracked_events,
+            tracked_markets=tracked_markets,
+            config=config,
+        )
+        score = await svc._score_opportunity("MKT-NEW", "EVT-1")
+        # midprice = 40, fair_value = 60 (5-95 range normally gives 25)
+        # But spread=20 > 10 -> capped at 15
+        assert score.complement_score == 15.0
+        assert score.fair_value_estimate == 60.0
+
+
+# ===========================================================================
+# Auto-execution
+# ===========================================================================
+
+
+class TestAutoExecution:
+    @pytest.mark.asyncio
+    async def test_auto_execute_disabled_by_default(self, config, event_bus):
+        """Auto-execution is off unless config flag is set."""
+        config.early_bird_auto_execute = False
+        svc = EarlyBirdService(
+            event_bus=event_bus,
+            tracked_events=MagicMock(),
+            tracked_markets=MagicMock(),
+            config=config,
+        )
+        score = EarlyBirdScore(
+            market_ticker="MKT-NEW", event_ticker="EVT-1",
+            total_score=70, complement_score=25, strategy="complement",
+            fair_value_estimate=50,
+        )
+        assert svc._should_auto_execute(score) is False
+
+    @pytest.mark.asyncio
+    async def test_auto_execute_requires_complement_strategy(self, config, event_bus):
+        """Only complement strategy qualifies for auto-execution."""
+        config.early_bird_auto_execute = True
+        gateway = AsyncMock()
+        svc = EarlyBirdService(
+            event_bus=event_bus,
+            tracked_events=MagicMock(),
+            tracked_markets=MagicMock(),
+            config=config,
+            trading_gateway=gateway,
+        )
+        score = EarlyBirdScore(
+            market_ticker="MKT-NEW", event_ticker="EVT-1",
+            total_score=70, complement_score=0, strategy="captain_decide",
+            fair_value_estimate=50,
+        )
+        assert svc._should_auto_execute(score) is False
+
+    @pytest.mark.asyncio
+    async def test_auto_execute_requires_fair_value_in_range(self, config, event_bus):
+        """Fair value must be 20-80 for auto-execution."""
+        config.early_bird_auto_execute = True
+        gateway = AsyncMock()
+        svc = EarlyBirdService(
+            event_bus=event_bus,
+            tracked_events=MagicMock(),
+            tracked_markets=MagicMock(),
+            config=config,
+            trading_gateway=gateway,
+        )
+        # Fair value too extreme (5c)
+        score = EarlyBirdScore(
+            market_ticker="MKT-NEW", event_ticker="EVT-1",
+            total_score=70, complement_score=15, strategy="complement",
+            fair_value_estimate=5,
+        )
+        assert svc._should_auto_execute(score) is False
+
+    @pytest.mark.asyncio
+    async def test_auto_execute_places_both_legs(self, config, event_bus):
+        """Auto-execution places YES and NO limit orders."""
+        config.early_bird_auto_execute = True
+        gateway = AsyncMock()
+        gateway.place_order = AsyncMock(return_value={"order_id": "test"})
+        svc = EarlyBirdService(
+            event_bus=event_bus,
+            tracked_events=MagicMock(),
+            tracked_markets=MagicMock(),
+            config=config,
+            trading_gateway=gateway,
+        )
+        score = EarlyBirdScore(
+            market_ticker="MKT-NEW", event_ticker="EVT-1",
+            total_score=70, complement_score=25, strategy="complement",
+            fair_value_estimate=50,
+        )
+        result = await svc._auto_execute_complement(score)
+        assert result is True
+        assert gateway.place_order.await_count == 2
+        assert svc._auto_executions == 1
+
+        # Verify YES leg: price = 50 - 2 = 48
+        yes_call = gateway.place_order.call_args_list[0]
+        assert yes_call.kwargs["side"] == "yes"
+        assert yes_call.kwargs["price"] == 48
+
+        # Verify NO leg: price = 100 - 50 - 2 = 48
+        no_call = gateway.place_order.call_args_list[1]
+        assert no_call.kwargs["side"] == "no"
+        assert no_call.kwargs["price"] == 48

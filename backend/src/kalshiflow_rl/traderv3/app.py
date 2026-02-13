@@ -10,6 +10,7 @@ import logging
 import logging.handlers
 import os
 import sys
+import time
 from pathlib import Path
 from contextlib import asynccontextmanager
 
@@ -348,15 +349,24 @@ async def health_endpoint(request):
     return JSONResponse(health, status_code=status_code)
 
 
+_status_cache = {"data": None, "expires_at": 0.0}
+
 async def status_endpoint(request):
-    """Detailed status endpoint."""
+    """Detailed status endpoint with 1s TTL cache."""
     if not coordinator:
         return JSONResponse(
             {"error": "System not initialized"},
             status_code=503
         )
 
-    return JSONResponse(coordinator.get_status())
+    now = time.time()
+    if _status_cache["data"] is not None and now < _status_cache["expires_at"]:
+        return JSONResponse(_status_cache["data"])
+
+    data = coordinator.get_status()
+    _status_cache["data"] = data
+    _status_cache["expires_at"] = now + 1.0
+    return JSONResponse(data)
 
 
 async def cleanup_endpoint(request):

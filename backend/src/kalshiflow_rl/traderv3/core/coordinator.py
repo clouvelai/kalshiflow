@@ -1040,6 +1040,11 @@ class V3Coordinator:
 
             logger.info("EarlyBirdService started")
 
+            # Run startup scan to evaluate existing ACTIVE markets
+            scan_signals = await self._early_bird_service.run_startup_scan()
+            if scan_signals > 0:
+                logger.info(f"EarlyBirdService startup scan: {scan_signals} signals emitted")
+
         except Exception as e:
             logger.error(f"EarlyBirdService init failed (degraded): {e}")
             self._early_bird_service = None

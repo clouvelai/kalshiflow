@@ -406,6 +406,20 @@ class V3WebSocketManager:
                 except Exception as e:
                     logger.debug(f"Could not send lifecycle_timeline to {client_id}: {e}")
 
+            # Replay activity feed history so the feed isn't empty on reconnect
+            if self._activity_feed_history and client_id in self._clients:
+                try:
+                    await self._send_to_client(client_id, {
+                        "type": "activity_feed_replay",
+                        "data": {
+                            "items": list(self._activity_feed_history),
+                            "count": len(self._activity_feed_history),
+                        }
+                    })
+                    logger.debug(f"Sent activity_feed_replay ({len(self._activity_feed_history)} items) to {client_id}")
+                except Exception as e:
+                    logger.debug(f"Could not send activity_feed_replay to {client_id}: {e}")
+
             # Send gateway config so frontend knows data source provenance
             if self._single_arb_coordinator and client_id in self._clients:
                 try:

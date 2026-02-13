@@ -310,6 +310,15 @@ class EventLifecycleService:
             market_info=market_info,
         )
 
+        # Step 7: If market is already ACTIVE, emit MARKET_ACTIVATED (early bird trigger)
+        if initial_status == MarketStatus.ACTIVE:
+            await self._event_bus.emit_market_activated(
+                market_ticker=market_ticker,
+                event_ticker=market_info.get("event_ticker", ""),
+                category=category,
+            )
+            logger.info(f"Market activated (early bird trigger): {market_ticker}")
+
         logger.info(f"Tracked {market_ticker} ({category}, status={initial_status.value}) via lifecycle WS")
 
     async def _handle_determined(self, market_ticker: str, payload: Dict[str, Any]) -> None:

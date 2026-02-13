@@ -106,6 +106,7 @@ class V3Config:
     early_bird_min_score: float = 40.0           # V3_EARLY_BIRD_MIN_SCORE - minimum score to signal Captain
     early_bird_cooldown_seconds: float = 120.0   # V3_EARLY_BIRD_COOLDOWN - cooldown between signals per event
     early_bird_use_news: bool = True             # V3_EARLY_BIRD_USE_NEWS - use Tavily for news context
+    early_bird_auto_execute: bool = False        # V3_EARLY_BIRD_AUTO_EXECUTE - auto-execute complement trades
 
     # Single-Event Arbitrage Configuration
     single_arb_enabled: bool = False  # Enable single-event arb system
@@ -319,6 +320,7 @@ class V3Config:
         early_bird_min_score = float(os.environ.get("V3_EARLY_BIRD_MIN_SCORE", "40.0"))
         early_bird_cooldown_seconds = float(os.environ.get("V3_EARLY_BIRD_COOLDOWN", "120.0"))
         early_bird_use_news = os.environ.get("V3_EARLY_BIRD_USE_NEWS", "true").lower() == "true"
+        early_bird_auto_execute = os.environ.get("V3_EARLY_BIRD_AUTO_EXECUTE", "false").lower() == "true"
 
         # Single-event arb configuration
         single_arb_enabled = os.environ.get("V3_SINGLE_ARB_ENABLED", "false").lower() == "true"
@@ -493,6 +495,7 @@ class V3Config:
             early_bird_min_score=early_bird_min_score,
             early_bird_cooldown_seconds=early_bird_cooldown_seconds,
             early_bird_use_news=early_bird_use_news,
+            early_bird_auto_execute=early_bird_auto_execute,
             single_arb_enabled=single_arb_enabled,
             single_arb_event_tickers=single_arb_event_tickers,
             single_arb_poll_interval=single_arb_poll_interval,

@@ -315,7 +315,9 @@ class AttentionItem:
 
     @property
     def key(self) -> str:
-        """Dedup key: (event_ticker, category)."""
+        """Dedup key: (event_ticker, category) or (event_ticker, market_ticker, category) for early_bird."""
+        if self.category == "early_bird" and self.market_ticker:
+            return f"{self.event_ticker}:{self.market_ticker}:{self.category}"
         return f"{self.event_ticker}:{self.category}"
 
     def to_prompt(self) -> str:
