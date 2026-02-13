@@ -1,34 +1,58 @@
 # Trading Guidance
 
-## Sizing
-- Edge >= 10c: up to 25 contracts (verify depth > 20 at price level)
-- Edge 5-10c: 5-15 contracts
-- Edge 2-5c: 1-5 contracts
-- Max 20% capital per event. Max 50 contracts per market.
+## Early Bird Details
 
-## Exits
-- Review positions each cycle. Use pnl_ct to assess per-contract profitability.
-- PnL < -12c/contract: cut the loss.
-- TIME_PRESSURE flag means < 1h to settlement: exit unless high conviction from recent news.
-- Partial arb fills create directional exposure: check and exit unhedged legs.
-- Exit a YES position: place_order(side="yes", action="sell")
-- Exit a NO position: place_order(side="no", action="sell")
-- NEVER buy the opposite side to hedge.
+### Why Early Bird Works
+- 0% maker fees on resting limits
+- First orders anchor the price (no opening auction on Kalshi)
+- Wide spreads at open (10-20c) narrow as market makers enter
+- System detects activation 10-50x faster than retail UI
 
-## Execution
-- Limit orders only. Use TTL.
+### Complement Strategy Execution
+fair_value is deterministic: 100 - sum(other market YES prices in ME event).
+1. Place YES limit at fair_value - 2c
+2. Place NO limit at (100 - fair_value) - 2c
+3. Both are maker orders = 0% fees
+4. If one side fills, cancel_order the other immediately
+5. If both fill, you captured the spread (net profit = 4c - directional risk)
+6. If spread < 5c when you check: opportunity has passed, skip
 
-## Sniper
-- Configure edge threshold, capital limits, cooldown.
-- Don't duplicate Sniper's arb execution — focus on position management and directional conviction.
+### Captain-Decide Execution
+1. search_news(event title + key entity)
+2. get_market_state(event_ticker) for current book
+3. Estimate fair YES price from news + context
+4. Place resting limit at your estimate
+5. store_insight with reasoning for future calibration
 
-## Regime Signals
-- VPIN > 0.85: reduce size by half.
-- VPIN > 0.95 with prior loss evidence in memory: stand aside.
-- Sweep/whale activity: data to store, not a reason to freeze.
+### Early Bird Exits
+- +5c profit in 30min: sell half (partial profit)
+- -8c against: cut the full position
+- Spread narrows to < 3c: market matured, tighten stops to -3c
 
-## Hard Stops
-- Negative edge (arb is unprofitable)
-- Spread > 15c (can't fill)
+## Position Exits
+- Exit YES: place_order(side="yes", action="sell")
+- Exit NO: place_order(side="no", action="sell")
+- NEVER buy opposite side. This locks in losses.
+- Auto-actions handle: stop_loss (-12c/ct), time_exit (<30min to close)
+- Override auto-actions via configure_automation ONLY with recent news that justifies holding
+
+## Hard Stops (non-negotiable)
+- Negative edge on ME arb
+- Spread > 15c (unfillable)
 - Position limit reached
-- Non-ME event for short arb (probability sum not guaranteed)
+- Short arb on non-ME event (probability sums not constrained to 100)
+
+## Key Market Rules
+- Non-ME events: YES sums CAN exceed 100c. NORMAL, not arb.
+- ME arb edge across many legs may net negative after fees. Let Sniper compute this.
+- YES@95c = 95% implied probability. The 5% downside costs 95c/contract.
+- YES_bid + NO_bid > 100c is market maker spread, not free money.
+
+## Search Query Quality
+Good queries (specific entity + event + timeframe):
+  "Tesla Q4 2025 earnings delivery numbers"
+  "Fed FOMC March 2026 rate decision expectations"
+  "Super Bowl 2026 winner odds Chiefs"
+Bad queries (vague, no entity):
+  "market news today"
+  "what's happening in politics"

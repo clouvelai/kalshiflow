@@ -252,3 +252,91 @@ class TestMentionsModelsConfigure:
         assert self._mm.get_subagent_model() == "claude-haiku-4-5-20251001"
         assert self._mm.get_utility_model() == "gemini-2.0-flash"
         assert self._mm.get_embedding_model() == "text-embedding-3-small"
+
+
+# ===========================================================================
+# TestPortfolioCacheTTL
+# ===========================================================================
+
+
+class TestPortfolioCacheTTL:
+    """Tests for portfolio_cache_ttl config field."""
+
+    def test_default_value(self):
+        cfg = make_config()
+        assert cfg.portfolio_cache_ttl == 15.0
+
+    def test_env_override(self):
+        env = {**REQUIRED_ENV, "V3_PORTFOLIO_CACHE_TTL": "30.0"}
+        with patch.dict(os.environ, env, clear=True):
+            cfg = V3Config.from_env()
+        assert cfg.portfolio_cache_ttl == 30.0
+
+    def test_env_override_custom(self):
+        env = {**REQUIRED_ENV, "V3_PORTFOLIO_CACHE_TTL": "5.0"}
+        with patch.dict(os.environ, env, clear=True):
+            cfg = V3Config.from_env()
+        assert cfg.portfolio_cache_ttl == 5.0
+
+    def test_make_config_override(self):
+        cfg = make_config(portfolio_cache_ttl=42.0)
+        assert cfg.portfolio_cache_ttl == 42.0
+
+
+# ===========================================================================
+# TestCaptainSizingConfig
+# ===========================================================================
+
+
+class TestCaptainSizingConfig:
+    """Tests for captain_* sizing configuration fields."""
+
+    def test_defaults(self):
+        cfg = make_config()
+        assert cfg.captain_eb_complement_size == "100-250"
+        assert cfg.captain_eb_decide_size == "50-150"
+        assert cfg.captain_news_size_small == "10-25"
+        assert cfg.captain_news_size_medium == "25-50"
+        assert cfg.captain_news_size_large == "50-100"
+        assert cfg.captain_max_contracts_per_market == 200
+        assert cfg.captain_max_capital_pct_per_event == 20
+
+    def test_env_overrides(self):
+        env = {
+            **REQUIRED_ENV,
+            "V3_CAPTAIN_EB_COMPLEMENT_SIZE": "200-500",
+            "V3_CAPTAIN_EB_DECIDE_SIZE": "100-300",
+            "V3_CAPTAIN_NEWS_SIZE_SMALL": "5-15",
+            "V3_CAPTAIN_NEWS_SIZE_MEDIUM": "15-30",
+            "V3_CAPTAIN_NEWS_SIZE_LARGE": "30-75",
+            "V3_CAPTAIN_MAX_CONTRACTS": "500",
+            "V3_CAPTAIN_MAX_CAPITAL_PCT": "30",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            cfg = V3Config.from_env()
+        assert cfg.captain_eb_complement_size == "200-500"
+        assert cfg.captain_eb_decide_size == "100-300"
+        assert cfg.captain_news_size_small == "5-15"
+        assert cfg.captain_news_size_medium == "15-30"
+        assert cfg.captain_news_size_large == "30-75"
+        assert cfg.captain_max_contracts_per_market == 500
+        assert cfg.captain_max_capital_pct_per_event == 30
+
+    def test_make_config_overrides(self):
+        cfg = make_config(
+            captain_eb_complement_size="50-100",
+            captain_max_contracts_per_market=100,
+        )
+        assert cfg.captain_eb_complement_size == "50-100"
+        assert cfg.captain_max_contracts_per_market == 100
+        # Others keep defaults
+        assert cfg.captain_eb_decide_size == "50-150"
+
+    def test_partial_env_override(self):
+        env = {**REQUIRED_ENV, "V3_CAPTAIN_MAX_CONTRACTS": "300"}
+        with patch.dict(os.environ, env, clear=True):
+            cfg = V3Config.from_env()
+        assert cfg.captain_max_contracts_per_market == 300
+        # Others keep defaults
+        assert cfg.captain_eb_complement_size == "100-250"
+        assert cfg.captain_max_capital_pct_per_event == 20
